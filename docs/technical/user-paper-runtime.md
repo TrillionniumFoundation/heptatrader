@@ -197,3 +197,24 @@ be cleared only after active orders are complete/empty and the authoritative
 position has not changed from the already-accounted position. Entry/exit counts
 and realized PnL are unchanged for that cancelled attempt. A nonzero unexpected
 position or partial fill must remain under reconciliation, not be called flat.
+
+
+### Synchronous non-send versus uncertain send
+
+The resident driver distinguishes the process transport from the typed tool
+outcome. Before any submit it durably writes `PREPARED` and then `POSSIBLY_SENT`.
+A missing response or typed `uncertain` retains that state and the original HSR1
+identity indefinitely. A decoded synchronous rejection is instead persisted as
+`DEFINITELY_REJECTED` with the service reason. The driver does not immediately
+assume flatness: it clears that pending record only after the next authoritative
+snapshot proves no active order and an unchanged position relative to
+`position_before_send`. Counters, entry basis and realized PnL are not modified.
+A later retry, if policy still requires one, begins with a fresh quote and preview;
+the rejected HSR1 request is never submitted again.
+
+If the process dies after receiving a rejection but before persisting the local
+classification, fail-closed `POSSIBLY_SENT` remains correct. Incident recovery
+must verify the append-only Gateway audit chain and the exact command's durable
+rejected outcome, confirm that Execution has no command, and recheck authoritative
+orders/position before annotating the local state. A missing Execution command by
+itself is not proof of non-send.

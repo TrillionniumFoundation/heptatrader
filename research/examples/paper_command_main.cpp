@@ -29,12 +29,23 @@ template<class T> T number(const std::string& text) {
     if (!(in >> n) || !in.eof()) throw std::invalid_argument("invalid number");
     return n;
 }
-int emit(bool ok, const std::string& id, const std::string& reason,
-         const NativeToolClientResult& result) {
-    std::cout << "{\"ok\":" << (ok ? "true" : "false")
+int emit(bool operationOk, const std::string& id, const std::string& reason,
+         const NativeToolClientResult& result, bool applicationAware = false) {
+    const bool transportOk = !result.responseJson.empty();
+    const std::string status = result.envelope.status;
+    const bool applicationAccepted = status == "ok" || status == "duplicate";
+    const bool accepted = applicationAware ? (operationOk && applicationAccepted) : operationOk;
+    const std::string outcome = !applicationAware || !transportOk ? "none" :
+        applicationAccepted ? "accepted" : status == "uncertain" ? "uncertain" : "rejected";
+    std::cout << "{\"ok\":" << (accepted ? "true" : "false")
+              << ",\"transport_ok\":" << (transportOk ? "true" : "false")
+              << ",\"application_outcome\":" << quote(outcome)
+              << ",\"application_status\":" << quote(status)
+              << ",\"application_reason\":" << quote(result.envelope.reasonCode)
+              << ",\"application_order_id\":" << result.envelope.orderId
               << ",\"command_id\":" << quote(id) << ",\"reason\":" << quote(reason)
               << ",\"result\":" << (result.responseJson.empty() ? "null" : result.responseJson) << "}\n";
-    return std::cout ? (ok ? 0 : 2) : 74;
+    return std::cout ? (accepted ? 0 : 2) : 74;
 }
 }
 int main(int argc, char** argv) {
@@ -79,7 +90,7 @@ int main(int argc, char** argv) {
                 return emit(false,id,"PAPER_TEST_TOOL_NOT_ALLOWED",result);
             const bool ok=op=="submit" ? client.Submit(prepared,result,reason) :
                 client.Inspect(prepared,args.at("--call-id"),result,reason);
-            return emit(ok,id,reason,result);
+            return emit(ok,id,reason,result,true);
         }
         id=prepared.CommandId();
         const bool saved=client.Persist(args.at("--directory"),prepared,reason);

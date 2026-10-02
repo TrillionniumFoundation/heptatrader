@@ -453,3 +453,23 @@ above, never as a converted/submittable HSR1 request.
 See [full operations, numeric domain, failure and installation contract](STRATEGY-GATEWAY.md)
 and [consumer/support decisions](../docs/technical/heptadll-consumers.md).
 The default production install remains unchanged.
+
+
+### Transport and application outcome are separate
+
+A successful `NativeToolClient::Call` means that the bounded request was framed,
+transported and decoded. It does not mean that the service accepted a mutation.
+The installed `hepta-paper-command` therefore reports `transport_ok` separately
+from `application_status`, `application_reason` and `application_outcome`. For
+`submit` and `inspect`, top-level `ok` is true only for application statuses `ok`
+or `duplicate`; a transported `error`, `rejected`, `permission_denied` or
+`invalid_tool` is a definite application rejection, while `uncertain` remains an
+unknown mutation outcome.
+
+The HSR1 record remains immutable in every case. Callers must persist
+`POSSIBLY_SENT` before the one transport attempt. A synchronous definite rejection
+may be classified as `DEFINITELY_REJECTED`, but it can be cleared only after a
+fresh authoritative read proves that active orders are empty and position is
+unchanged from the pre-send snapshot. Transport loss, malformed/no response and
+typed `uncertain` retain the original command for status-only reconciliation.
+They are never permission for another preview or command ID.

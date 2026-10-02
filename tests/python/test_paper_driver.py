@@ -37,6 +37,105 @@ class DriverPolicyTests(unittest.TestCase):
         finally:
             d.paper_cmd,d.atomic_json=old_cmd,old_atomic
 
+    def test_pending_snapshot_does_not_depend_on_quote_freshness(self):
+        from unittest.mock import patch
+        calls=[]
+        def native(_cli,tool,*_fields):
+            calls.append(tool)
+            if tool=="system.get_health":
+                return {"execution_mode":"PAPER","gateway_ready":True,"remote_execution_ready":True,
+                    "execution_service_epoch":"epoch","execution_service_fencing_generation":1,
+                    "execution_authoritative_health":{"source":"IB","authoritative":True,
+                        "owner_fenced":False,"owner_recovery_only":False,"mutation_ready":True}}
+            if tool=="orders.list":
+                return {"source":"IB","authoritative":True,"global_active_orders_complete":True,
+                    "owner_projection_complete":True,"active_order_ids":[],"recent_orders":[]}
+            if tool=="portfolio.list_positions":
+                return {"source":"IB","authoritative":True,
+                    "positions":[{"instrument":"EUR.USD","quantity":-25000}]}
+            raise AssertionError("pending reconciliation attempted "+tool)
+        with patch.object(d,"native",native):
+            snap=d.snapshot("cli",require_quote=False)
+        self.assertEqual(calls,["system.get_health","orders.list","portfolio.list_positions"])
+        self.assertEqual(snap["position"],-25000.0)
+        self.assertIsNone(snap["quote"])
+
+    def test_synchronous_application_rejection_is_not_unknown_send(self):
+        state=self.state();state["position"]=-25000.0;writes=[];calls=[]
+        old_cmd,old_atomic=d.paper_cmd,d.atomic_json
+        try:
+            def cmd(_b,_s,_t,_o,op,_extra):
+                calls.append(op)
+                if op=="prepare-close": return {"ok":True,"command_id":"rejected-close-1"}
+                return {"ok":False,"transport_ok":True,"application_status":"error",
+                    "application_reason":"AUTHORITATIVE_QUOTE_STALE",
+                    "result":{"status":"error","reason_code":"AUTHORITATIVE_QUOTE_STALE","order_id":-1}}
+            d.paper_cmd=cmd;d.atomic_json=lambda _p,value:writes.append(copy.deepcopy(value))
+            d.prepare_send(state,Path("/unused"),"b","s","t","o","CLOSE")
+        finally:d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+        self.assertEqual(calls,["prepare-close","submit"])
+        self.assertEqual([w["pending"]["send_state"] for w in writes],
+            ["PREPARED","POSSIBLY_SENT","DEFINITELY_REJECTED"])
+        self.assertEqual(state["pending"]["position_before_send"],-25000.0)
+        self.assertEqual(state["pending"]["application_reason"],"AUTHORITATIVE_QUOTE_STALE")
+        self.assertIsNone(state["pending"]["broker_order_id"])
+
+    def test_transport_loss_and_typed_uncertainty_remain_original_unknown(self):
+        for submitted in (
+            {"ok":False,"transport_ok":False,"reason":"SOCKET_TIMEOUT","result":None},
+            {"ok":False,"transport_ok":True,"application_status":"uncertain",
+             "application_reason":"IB_FLATTEN_OUTCOME_UNCERTAIN",
+             "result":{"status":"uncertain","reason_code":"IB_FLATTEN_OUTCOME_UNCERTAIN"}}):
+            state=self.state();state["position"]=-25000.0
+            old_cmd,old_atomic=d.paper_cmd,d.atomic_json
+            try:
+                d.atomic_json=lambda *_:None
+                d.paper_cmd=lambda _b,_s,_t,_o,op,_extra: (
+                    {"ok":True,"command_id":"same-original-close"} if op=="prepare-close" else submitted)
+                d.prepare_send(state,Path("/unused"),"b","s","t","o","CLOSE")
+            finally:d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+            self.assertEqual(state["pending"]["send_state"],"POSSIBLY_SENT")
+            self.assertEqual(state["pending"]["command_id"],"same-original-close")
+
+    def test_application_acceptance_is_acknowledged_but_not_assumed_filled(self):
+        state=self.state();old_cmd,old_atomic=d.paper_cmd,d.atomic_json
+        try:
+            d.atomic_json=lambda *_:None
+            d.paper_cmd=lambda _b,_s,_t,_o,op,_extra: (
+                {"ok":True,"command_id":"accepted-open"} if op=="prepare-open" else
+                {"ok":True,"transport_ok":True,"application_status":"ok",
+                 "application_reason":"","result":{"status":"ok","order_id":44}})
+            d.prepare_send(state,Path("/unused"),"b","s","t","o","OPEN",{"bid":1.1,"ask":1.2},"BUY")
+        finally:d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+        self.assertEqual(state["pending"]["send_state"],"ACKNOWLEDGED")
+        self.assertEqual(state["pending"]["broker_order_id"],44)
+        self.assertEqual(state["entries"],0)
+
+    def test_definite_non_send_clears_only_after_unchanged_authoritative_state(self):
+        base=self.state();base.update(position=-25000.0,entries=21,exits=20,
+            closed_trades=20,gross_pnl=142.5)
+        pending={"kind":"CLOSE","command_id":"definite-close","broker_order_id":None,
+            "send_state":"DEFINITELY_REJECTED","position_before_send":-25000.0,
+            "application_reason":"AUTHORITATIVE_QUOTE_STALE"}
+        old_cmd,old_atomic=d.paper_cmd,d.atomic_json
+        try:
+            d.paper_cmd=lambda *_:self.fail("definite rejection must not query or resubmit")
+            d.atomic_json=lambda *_:None
+            for snap in ({"position":0.0,"active":[],"orders":{}},
+                         {"position":-25000.0,"active":[77],"orders":{}}):
+                state=copy.deepcopy(base);state["pending"]=copy.deepcopy(pending)
+                d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
+                self.assertIsNotNone(state["pending"])
+                self.assertEqual(state["gross_pnl"],142.5)
+            state=copy.deepcopy(base);state["pending"]=copy.deepcopy(pending)
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",
+                {"position":-25000.0,"active":[],"orders":{}})
+        finally:d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+        self.assertIsNone(state["pending"])
+        self.assertEqual((state["entries"],state["exits"],state["closed_trades"]),(21,20,20))
+        self.assertEqual(state["gross_pnl"],142.5)
+        self.assertEqual(state["position"],-25000.0)
+
     def test_uncertain_original_command_never_clears_for_resend(self):
         state=self.state(); state["pending"]={"kind":"OPEN","command_id":"execution-command-0001",
             "broker_order_id":None,"reference_price":1.2}

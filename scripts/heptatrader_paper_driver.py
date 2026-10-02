@@ -65,7 +65,7 @@ def native(cli,tool,*fields):
     if p.returncode!=0 or v.get("status")!="ok": raise DriverError("native rejected: "+str(v.get("reason_code")))
     return v.get("payload") or {}
 
-def snapshot(cli,state=None,path=None):
+def snapshot(cli,state=None,path=None,require_quote=True):
     h=native(cli,"system.get_health")
     owner=h.get("execution_authoritative_health")
     if (not isinstance(owner,dict) or owner.get("source")!="IB" or owner.get("authoritative") is not True or
@@ -74,14 +74,16 @@ def snapshot(cli,state=None,path=None):
     if state is not None and (owner["owner_fenced"] or owner["owner_recovery_only"]):
         latch_owner_fence(state,path,owner.get("mutation_reason") or "SESSION_OWNER_FENCED")
     o=native(cli,"orders.list"); p=native(cli,"portfolio.list_positions")
-    q=native(cli,"market.get_quote","instrument=EUR.USD"); l=native(cli,"risk.get_limits")
-    if (h.get("execution_mode")!="PAPER" or not h.get("gateway_ready") or not h.get("remote_execution_ready")
+    q=native(cli,"market.get_quote","instrument=EUR.USD") if require_quote else None
+    l=native(cli,"risk.get_limits") if require_quote else None
+    invalid=(h.get("execution_mode")!="PAPER" or not h.get("gateway_ready") or not h.get("remote_execution_ready")
         or o.get("source")!="IB" or not o.get("authoritative") or not o.get("global_active_orders_complete")
         or not o.get("owner_projection_complete") or p.get("source")!="IB" or not p.get("authoritative")
-        or not isinstance(p.get("positions"),list) or not isinstance(o.get("active_order_ids"),list)
-        or q.get("source")!="IB" or not q.get("authoritative") or q.get("stale") is not False
-        or l.get("source")!="IB" or not l.get("authoritative")):
-        raise DriverError("authoritative PAPER snapshot incomplete")
+        or not isinstance(p.get("positions"),list) or not isinstance(o.get("active_order_ids"),list))
+    if require_quote:
+        invalid=(invalid or q.get("source")!="IB" or not q.get("authoritative") or q.get("stale") is not False
+            or l.get("source")!="IB" or not l.get("authoritative"))
+    if invalid: raise DriverError("authoritative PAPER snapshot incomplete")
     quantities=[float(x["quantity"]) for x in p["positions"]]
     if not all(math.isfinite(x) for x in quantities): raise DriverError("nonfinite authoritative position")
     pos=sum(float(x["quantity"]) for x in p["positions"] if x.get("instrument")==INSTRUMENT)
@@ -132,6 +134,30 @@ def paper_cmd(binary,socket,token,outbox,op,extra):
     if not p.stdout: return {"ok":False,"reason":"PROCESS_NO_RESPONSE"}
     v=strict_json(p.stdout); v["process_returncode"]=p.returncode; return v
 
+DEFINITE_APPLICATION_REJECTIONS={"error","rejected","permission_denied","invalid_tool"}
+
+
+def response_transport_ok(value):
+    if "transport_ok" in value: return value.get("transport_ok") is True
+    return bool(value.get("ok"))
+
+
+def response_application_status(value):
+    status=value.get("application_status")
+    if isinstance(status,str) and status: return status
+    result=value.get("result")
+    if isinstance(result,dict) and isinstance(result.get("status"),str): return result["status"]
+    return "ok" if value.get("ok") else ""
+
+
+def response_application_reason(value):
+    reason=value.get("application_reason")
+    if isinstance(reason,str) and reason: return reason
+    result=value.get("result")
+    if isinstance(result,dict) and isinstance(result.get("reason_code"),str): return result["reason_code"]
+    return str(value.get("reason", ""))
+
+
 def latch_owner_fence(state,path,reason):
     if not state.get("owner_fence_recovery_required"):
         state["owner_fence_owned_halt"]=not state.get("halt_new_entries",False)
@@ -150,26 +176,62 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
     else:
         ref=None; prepared=paper_cmd(binary,socket,token,outbox,"prepare-close",["--call-id",preview])
     if not prepared.get("ok") or not prepared.get("command_id"):
-        if prepared.get("reason") == "SESSION_OWNER_FENCED":
-            latch_owner_fence(state,path,"SESSION_OWNER_FENCED")
-        raise DriverError("prepare failed: "+str(prepared.get("reason")))
+        reason=response_application_reason(prepared) or str(prepared.get("reason", ""))
+        if reason=="SESSION_OWNER_FENCED": latch_owner_fence(state,path,reason)
+        raise DriverError("prepare failed: "+reason)
     pending={"kind":kind,"command_id":prepared["command_id"],"send_state":"PREPARED",
-        "created_at_ms":now_ms(),"broker_order_id":None,"side":side,"reference_price":ref}
+        "created_at_ms":now_ms(),"broker_order_id":None,"side":side,"reference_price":ref,
+        "position_before_send":float(state.get("position",0.0))}
     state["pending"]=pending; atomic_json(path,state)
+    # This state precedes the one and only transport attempt. A crash here must
+    # inspect the original HSR1 command and can never mint a replacement ID.
     pending["send_state"]="POSSIBLY_SENT"; atomic_json(path,state)
     sent=paper_cmd(binary,socket,token,outbox,"submit",["--command-id",pending["command_id"]])
-    pending["last_submit_transport_ok"]=bool(sent.get("ok")); pending["last_submit_reason"]=str(sent.get("reason",""))
+    transport_ok=response_transport_ok(sent)
+    application_status=response_application_status(sent)
+    application_reason=response_application_reason(sent)
+    pending["last_submit_transport_ok"]=transport_ok
+    pending["last_submit_reason"]=str(sent.get("reason", ""))
+    pending["application_status"]=application_status
+    pending["application_reason"]=application_reason
+    pending["application_observed_at_ms"]=now_ms()
     result=sent.get("result") if isinstance(sent.get("result"),dict) else {}
-    if isinstance(result.get("order_id"),int) and result["order_id"]>=0: pending["broker_order_id"]=result["order_id"]
+    if isinstance(result.get("order_id"),int) and result["order_id"]>=0:
+        pending["broker_order_id"]=result["order_id"]
+    if not transport_ok or not application_status or application_status=="uncertain":
+        pending["send_state"]="POSSIBLY_SENT"
+    elif application_status in {"ok","duplicate"}:
+        pending["send_state"]="ACKNOWLEDGED"
+    elif application_status in DEFINITE_APPLICATION_REJECTIONS:
+        pending["send_state"]="DEFINITELY_REJECTED"
+        state["last_error"]="definite non-send: "+application_reason
+        if application_reason=="SESSION_OWNER_FENCED":
+            latch_owner_fence(state,path,application_reason)
+    else:
+        pending["send_state"]="POSSIBLY_SENT"
     atomic_json(path,state)
 
 def inspect_pending(state,path,binary,socket,token,outbox,snap):
     p=state.get("pending")
+    if p.get("send_state")=="DEFINITELY_REJECTED":
+        before=p.get("position_before_send");current=float(snap["position"])
+        if (type(before) not in (int,float) or not math.isfinite(float(before)) or
+                snap["active"] or abs(current-float(before))>1e-9 or p.get("broker_order_id") is not None):
+            state["last_error"]="definite rejection awaits authoritative unchanged-state proof"
+            atomic_json(path,state); return
+        state["position"]=current;state["pending"]=None
+        state["last_error"]="definite non-send reconciled: "+str(p.get("application_reason", ""))
+        atomic_json(path,state);return
     inspected=paper_cmd(binary,socket,token,outbox,"inspect",
         ["--command-id",p["command_id"],"--call-id",cid("driver-status")])
-    payload={}
-    if inspected.get("ok") and isinstance(inspected.get("result"),dict):
-        payload=inspected["result"].get("payload") or {}
+    if not response_transport_ok(inspected):
+        p["last_status"]={"at_ms":now_ms(),"reason_code":str(inspected.get("reason","INSPECTION_TRANSPORT_FAILED"))}
+        atomic_json(path,state);return
+    inspect_status=response_application_status(inspected)
+    if inspect_status not in {"ok","duplicate"} or not isinstance(inspected.get("result"),dict):
+        p["last_status"]={"at_ms":now_ms(),"reason_code":response_application_reason(inspected) or "ORIGINAL_COMMAND_STATUS_UNAVAILABLE"}
+        atomic_json(path,state);return
+    payload=inspected["result"].get("payload") or {}
     if (payload.get("authoritative") is not True or payload.get("command_id")!=p["command_id"]):
         p["last_status"]={"at_ms":now_ms(),"reason_code":"ORIGINAL_COMMAND_STATUS_UNAVAILABLE"}
         atomic_json(path,state); return
@@ -196,8 +258,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             state["halt_new_entries"]=True
             state["risk_halt_reason"]="PARTIAL_OR_UNPROVEN_ENTRY"
             state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
-        else:
-            state["last_error"]=""
+        else: state["last_error"]=""
     elif (p["kind"]=="CLOSE" and abs(pos)<1e-9 and not active and fill is not None and
             payload.get("command_status")=="accepted"):
         entry=state.get("entry_price"); old=float(state.get("position",0))
@@ -419,7 +480,7 @@ def main():
         rearm_session(state,state_path,cli,args.rearm_session_generation)
         os.close(lock); return 0
     if args.reconcile_only:
-        snap=snapshot(cli)
+        snap=snapshot(cli,require_quote=False)
         if state.get("pending"):
             inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
         else:
@@ -428,71 +489,75 @@ def main():
     while not stop:
         started=time.monotonic()
         try:
-            snap=snapshot(cli,state,state_path); pos=float(snap["position"]); q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
+            pending_mode=state.get("pending") is not None
+            snap=snapshot(cli,state,state_path,require_quote=not pending_mode); pos=float(snap["position"])
+            if pending_mode:
+                inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                continue
+            q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
             if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
                 state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
                 state["history"]=state["history"][-MAX_HISTORY:]
-            if state.get("pending"):
-                inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
-            else:
-                if state.get("owner_fence_recovery_required"):
-                    state["position"]=pos; state["halt_new_entries"]=True
-                    model_worker=None
-                    if not snap["active"] and abs(pos)>1e-9:
-                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-                    elif not snap["active"] and snap["gross_position"]==0.0:
-                        recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
+            if state.get("owner_fence_recovery_required"):
+                state["position"]=pos; state["halt_new_entries"]=True
+                model_worker=None
+                if not snap["active"] and abs(pos)>1e-9:
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                elif not snap["active"] and snap["gross_position"]==0.0:
+                    recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
+                atomic_json(state_path,state)
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                continue
+            state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
+                pos,len(snap["active"]),state.get("pending"))
+            if state.get("owner_fence_recovery_required"):
+                model_worker=None
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            if abs(pos)<=1e-9 and snap["owner_health"]["mutation_ready"] is not True:
+                raise DriverError("authoritative mutation state is not ready")
+            decision=None
+            # Safety exits are evaluated on every sample and never wait for the model.
+            if not snap["active"] and abs(pos)>1e-9:
+                close,why=should_close(state,pos,q,None)
+                if close:
+                    state["last_exit_reason"]=why; atomic_json(state_path,state)
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
                     atomic_json(state_path,state)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
-                    continue
-                state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
-                    pos,len(snap["active"]),state.get("pending"))
-                if state.get("owner_fence_recovery_required"):
-                    model_worker=None
-                    if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-                if abs(pos)<=1e-9 and snap["owner_health"]["mutation_ready"] is not True:
-                    raise DriverError("authoritative mutation state is not ready")
-                decision=None
-                # Safety exits are evaluated on every sample and never wait for the model.
-                if not snap["active"] and abs(pos)>1e-9:
-                    close,why=should_close(state,pos,q,None)
-                    if close:
-                        state["last_exit_reason"]=why; atomic_json(state_path,state)
-                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-                        atomic_json(state_path,state)
-                        if args.once: break
-                        time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-                if model_worker is not None and model_worker.done():
-                    try:
-                        candidate=model_worker.result()
-                        age=now_ms()-model_worker.observed_at_ms
-                        if abs(pos-model_worker.position)>1e-9:
-                            raise DriverError("model decision discarded after authoritative position change")
-                        if age<0 or age>60000:
-                            raise DriverError("model decision discarded after market snapshot expiry")
-                        decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
-                        state["last_decision_ms"]=now_ms(); state["last_error"]=""
-                    except Exception as error:
-                        state["last_error"]=("model HOLD: "+str(error))[:500]
-                    model_worker=None
-                if snap["active"]:
-                    state["last_error"]="active broker order present; observing only"
-                elif abs(pos)>1e-9 and decision is not None:
-                    close,why=should_close(state,pos,q,decision)
-                    if close:
-                        state["last_exit_reason"]=why; atomic_json(state_path,state)
-                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-                elif abs(pos)<=1e-9 and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in {"BUY","SELL"}:
-                    guard=run([cli,"paper-on"],10)
-                    if guard.returncode!=0: raise DriverError("paper guard release failed")
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
-                due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
-                if model_worker is None and due and len(state["history"])>=6:
-                    state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
-                    model_worker=ModelWorker(codex,state_dir,state["history"],pos)
-                atomic_json(state_path,state)
+            if model_worker is not None and model_worker.done():
+                try:
+                    candidate=model_worker.result()
+                    age=now_ms()-model_worker.observed_at_ms
+                    if abs(pos-model_worker.position)>1e-9:
+                        raise DriverError("model decision discarded after authoritative position change")
+                    if age<0 or age>60000:
+                        raise DriverError("model decision discarded after market snapshot expiry")
+                    decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
+                    state["last_decision_ms"]=now_ms(); state["last_error"]=""
+                except Exception as error:
+                    state["last_error"]=("model HOLD: "+str(error))[:500]
+                model_worker=None
+            if snap["active"]:
+                state["last_error"]="active broker order present; observing only"
+            elif abs(pos)>1e-9 and decision is not None:
+                close,why=should_close(state,pos,q,decision)
+                if close:
+                    state["last_exit_reason"]=why; atomic_json(state_path,state)
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+            elif abs(pos)<=1e-9 and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in {"BUY","SELL"}:
+                guard=run([cli,"paper-on"],10)
+                if guard.returncode!=0: raise DriverError("paper guard release failed")
+                prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
+            due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
+            if model_worker is None and due and len(state["history"])>=6:
+                state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
+                model_worker=ModelWorker(codex,state_dir,state["history"],pos)
+            atomic_json(state_path,state)
         except Exception as e:
             if state.get("owner_fence_recovery_required"):
                 state["last_transient_error"]=str(e)[:500]

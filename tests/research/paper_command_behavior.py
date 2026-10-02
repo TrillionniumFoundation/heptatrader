@@ -8,6 +8,11 @@ class PaperCommandTests(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         value = json.loads(p.stdout)
         self.assertFalse(value["ok"])
+        self.assertFalse(value["transport_ok"])
+        self.assertEqual(value["application_outcome"],"none")
+        self.assertEqual(value["application_status"],"")
+        self.assertEqual(value["application_reason"],"")
+        self.assertEqual(value["application_order_id"],-1)
         self.assertIsNone(value["result"])
         return value
     def test_unknown_and_duplicate_arguments(self):
