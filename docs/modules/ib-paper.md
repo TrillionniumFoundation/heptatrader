@@ -254,10 +254,10 @@ Its profile credential binds this contract set and the crypto envelope; an old F
 credential cannot authorize the extension. Default/system/external-qualification
 profiles retain their original contract and limit semantics.
 
-BTC fresh exposure is long-only, quantity-based LMT/IOC, at most 0.001 BTC and
+BTC fresh exposure is long-only, quantity-based LMT/IOC with at most 5bp marketable protection, at most 0.001 BTC and
 USD 150 per opening, with a 0.25 USD price tick and 0.00000001 BTC size increment.
 A SELL is permitted only through the existing exact authoritative reduce-only
-flatten of a positive BTC position, with a limit at the current bid. The API
+flatten of a positive BTC position, with a tick-aligned protective limit no more than 5bp below the current bid. The API
 wrapper independently enforces BTC/PAXOS/USD and LMT/IOC. Stale quote, mismatched
 contract, unresolved command, fractional-grid error, active order or incomplete
 risk evidence rejects before Broker dispatch.

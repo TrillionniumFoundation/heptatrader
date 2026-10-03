@@ -861,6 +861,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
             !IbPaperExecutionProfileConfig::CryptoPriceOnGrid(command.order.lmtPrice) ||
             command.order.auxPrice != 0.0 || command.order.outsideRth || !command.order.orderRef.empty() ||
             command.referencePrice != command.order.lmtPrice ||
+            command.order.lmtPrice < authoritativePrice ||
             command.order.lmtPrice > authoritativePrice * 1.001)
         { reason = "IB_PAPER_CRYPTO_LIMIT_BUY_INVALID"; return false; }
     }
@@ -1985,4 +1986,17 @@ bool IbPaperExecutionProfileConfig::CryptoPriceOnGrid(double price)
 {
     if (!std::isfinite(price) || price <= 0.0 || price > 10000000.0) return false;
     return std::fabs(price * 4.0 - std::round(price * 4.0)) <= 1e-7;
+}
+double IbPaperExecutionProfileConfig::CryptoProtectedSellLimit(double bid)
+{
+    if (!std::isfinite(bid) || bid <= 0.0) return 0.0;
+    const double floor = bid * (1.0 - CryptoProtectionFraction());
+    const double price = std::ceil(floor * 4.0 - 1e-9) / 4.0;
+    return price > 0.0 && price <= bid ? price : 0.0;
+}
+bool IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(double price, double bid)
+{
+    if (!CryptoPriceOnGrid(price) || !std::isfinite(bid) || bid <= 0.0 || price > bid)
+        return false;
+    return price + 1e-9 >= bid * (1.0 - CryptoProtectionFraction());
 }

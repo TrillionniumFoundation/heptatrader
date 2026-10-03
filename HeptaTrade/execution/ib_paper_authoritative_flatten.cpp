@@ -197,15 +197,18 @@ bool IbPaperExecutionPolicyAuthority::BuildAuthoritativeFlattenPlan(
     BindAuthoritativeFlattenQuote(quote, externalLimitDay || crypto, plan);
     if (crypto && position.quantity != 0.0)
     {
+        const double protectedLimit =
+            IbPaperExecutionProfileConfig::CryptoProtectedSellLimit(quote.bid);
         if (!IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(position.quantity) ||
-            !IbPaperExecutionProfileConfig::CryptoPriceOnGrid(quote.bid))
+            !IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
+                protectedLimit, quote.bid))
         { reason = "IB_PAPER_CRYPTO_FLATTEN_GRID_INVALID"; return false; }
         plan.profileOrderMode = "USER_CRYPTO_LMT_IOC";
         plan.order.orderType = "LMT";
         plan.order.action = "SELL";
         plan.order.totalQuantity = position.quantity;
-        plan.order.lmtPrice = quote.bid;
-        plan.referencePrice = quote.bid;
+        plan.order.lmtPrice = protectedLimit;
+        plan.referencePrice = protectedLimit;
         plan.timeInForce = "IOC";
     }
     else if (position.quantity != 0.0)

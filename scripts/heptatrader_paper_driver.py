@@ -174,13 +174,27 @@ def latch_owner_fence(state,path,reason):
     state["last_error"]="owner fence recovery required: "+reason
     atomic_json(path,state)
 
+def crypto_protected_buy_limit(ask):
+    ask=float(ask)
+    if not math.isfinite(ask) or ask<=0:
+        raise DriverError("invalid crypto ask")
+    if abs(ask*4-round(ask*4))>1e-7:
+        raise DriverError("crypto quote violates tick constraints")
+    ceiling=min(ask*1.0005,150.0/QTY)
+    price=math.floor(ceiling*4.0+1e-9)/4.0
+    if (price<ask or price*QTY>150.0+1e-9 or
+            price>ask*1.0005+1e-9):
+        raise DriverError("crypto protected buy limit unavailable")
+    return price
+
 def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None):
     preview=cid("driver-preview")
     if kind=="OPEN":
         ref=float(quote["ask"] if side=="BUY" else quote["bid"])
         if INSTRUMENT=="BTC.USD":
             if side!="BUY": raise DriverError("crypto short entries are not supported")
-            if (not math.isfinite(ref) or ref<=0 or ref*QTY>150 or abs(ref*4-round(ref*4))>1e-7):
+            ref=crypto_protected_buy_limit(ref)
+            if abs(ref*4-round(ref*4))>1e-7:
                 raise DriverError("crypto quote violates notional/tick constraints")
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-open",
                 ["--call-id",preview,"--price",format(ref,".17g"),"--quantity",format(QTY,".17g"),"--expiry",str(now_ms()+45000)])

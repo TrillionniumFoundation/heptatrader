@@ -172,8 +172,9 @@ bool IbPaperExecutionGuard::AllowFlatten(
         plan.timeInForce == "IOC" && plan.order.orderType == "LMT" && plan.order.action == "SELL" &&
         plan.expectedPositionQuantity > 0.0 && plan.order.totalQuantity == plan.expectedPositionQuantity &&
         IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(quantity) &&
-        IbPaperExecutionProfileConfig::CryptoPriceOnGrid(plan.order.lmtPrice) &&
-        plan.order.lmtPrice == plan.quoteBid && plan.referencePrice == plan.order.lmtPrice &&
+        IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
+            plan.order.lmtPrice, plan.quoteBid) &&
+        plan.referencePrice == plan.order.lmtPrice &&
         plan.quoteAsk >= plan.quoteBid && std::isfinite(plan.quoteAsk) &&
         !plan.quoteSubscriptionId.empty() && plan.quoteObservedAtMs > 0 &&
         plan.quoteObservedAtMs <= static_cast<std::uint64_t>(nowMs) &&

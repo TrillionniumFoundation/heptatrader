@@ -936,7 +936,8 @@ void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
     plan.timeInForce="IOC";plan.expectedPositionQuantity=0.0004;
     plan.positionConnectionEpoch=1;plan.positionGeneration=1;
     plan.order.action="SELL";plan.order.orderType="LMT";plan.order.totalQuantity=0.0004;
-    plan.order.lmtPrice=85000;plan.referencePrice=85000;plan.quoteBid=85000;plan.quoteAsk=85000.25;
+    plan.order.lmtPrice=IbPaperExecutionProfileConfig::CryptoProtectedSellLimit(85000);
+    plan.referencePrice=plan.order.lmtPrice;plan.quoteBid=85000;plan.quoteAsk=85000.25;
     plan.quoteSubscriptionId="btc-quote";plan.quoteObservedAtMs=1000;plan.quoteStaleAfterMs=5000;
     IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.activeOrderCount=0;
     std::string reason;assert(guard.AllowFlatten(command,plan,risk,2000,reason));
@@ -949,6 +950,12 @@ void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
         if(kind==4)bad.contract.exchange="ZEROHASH";
         assert(!guard.AllowFlatten(command,bad,risk,2000,reason));
     }
+    auto tooDeep=plan;tooDeep.order.lmtPrice=84957.25;tooDeep.referencePrice=84957.25;
+    assert(!guard.AllowFlatten(command,tooDeep,risk,2000,reason));
+    auto aboveBid=plan;aboveBid.order.lmtPrice=85000.25;aboveBid.referencePrice=85000.25;
+    assert(!guard.AllowFlatten(command,aboveBid,risk,2000,reason));
+    assert(IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
+        plan.order.lmtPrice,plan.quoteBid));
 }
 
 void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()

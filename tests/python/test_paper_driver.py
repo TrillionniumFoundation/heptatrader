@@ -453,6 +453,25 @@ class CryptoDriverPolicyTests(unittest.TestCase):
             before=path.read_bytes()
             with self.assertRaisesRegex(d.DriverError,"cross-instrument"):d.load_state(path)
             self.assertEqual(path.read_bytes(),before)
+    def test_crypto_buy_uses_tick_aligned_five_bp_protection(self):
+        from unittest.mock import patch
+        state=self.state();calls=[]
+        def cmd(_b,_s,_t,_o,op,extra):
+            calls.append((op,list(extra)))
+            if op=="prepare-crypto-open":
+                return {"ok":True,"command_id":"protected-buy"}
+            return {"ok":False,"transport_ok":False,"reason":"SOCKET_TIMEOUT","result":None}
+        with patch.object(d,"paper_cmd",cmd),patch.object(d,"atomic_json"):
+            d.prepare_send(state,Path("/unused"),"b","s","t","o","OPEN",
+                {"bid":84569.0,"ask":84569.5},"BUY")
+        args=calls[0][1]
+        price=float(args[args.index("--price")+1])
+        self.assertGreaterEqual(price,84569.5)
+        self.assertLessEqual(price,84569.5*1.0005+1e-9)
+        self.assertAlmostEqual(price*4,round(price*4),places=8)
+        self.assertLessEqual(price*0.001,150.0)
+        self.assertEqual(state["pending"]["reference_price"],price)
+
     def test_crypto_short_rejected_before_preview(self):
         from unittest.mock import patch
         with patch.object(d,"paper_cmd") as cmd:

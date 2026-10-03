@@ -177,7 +177,8 @@ bool ExactReduceOnly(const FlattenPositionCommand& command,
         position > 0.0 && quantity == position && quantity <= 0.001 &&
         std::fabs(quantity * 100000000.0 - std::round(quantity * 100000000.0)) <= 1e-7 &&
         std::isfinite(plan.quoteBid) && plan.quoteBid > 0.0 && std::isfinite(plan.quoteAsk) &&
-        plan.quoteAsk >= plan.quoteBid && plan.order.lmtPrice == plan.quoteBid &&
+        plan.quoteAsk >= plan.quoteBid && plan.order.lmtPrice <= plan.quoteBid &&
+        plan.order.lmtPrice + 1e-9 >= plan.quoteBid * 0.9995 &&
         plan.referencePrice == plan.order.lmtPrice &&
         std::fabs(plan.order.lmtPrice * 4.0 - std::round(plan.order.lmtPrice * 4.0)) <= 1e-7;
     if (!validExternalOrder && !validLocalOrder && !validCryptoOrder)

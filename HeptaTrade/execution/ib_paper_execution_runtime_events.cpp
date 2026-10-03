@@ -55,7 +55,7 @@ bool IbPaperExecutionRuntimeComposition::AllowsBoundRiskIncreasingPlace(
          IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(order.totalQuantity) &&
          IbPaperExecutionProfileConfig::CryptoPriceOnGrid(order.lmtPrice) &&
          std::max(order.lmtPrice, quote.ask) <= 150.0 / order.totalQuantity &&
-         order.lmtPrice <= quote.ask * 1.001) : externalLimitDay ?
+         order.lmtPrice >= quote.ask && order.lmtPrice <= quote.ask * 1.001) : externalLimitDay ?
         (order.orderType == "LMT" &&
          order.auxPrice == 0.0 && !order.outsideRth &&
          std::isfinite(order.lmtPrice) && order.lmtPrice > 0.0 &&
