@@ -504,13 +504,25 @@ bool IbPaperExecutionRuntimeComposition::BuildPolicyAuthority(
         *m_coordinator, m_config.profile, policyCallbacks, m_killSwitch));
     std::size_t affected = 0;
     std::string recovery;
-    if (!m_policyAuthority->ReconcileAuthoritativeState(affected, recovery) ||
-        !RebuildRecentBrokerOrders(recovery))
+    const bool reconciled =
+        m_policyAuthority->ReconcileAuthoritativeState(affected, recovery);
+    if (!reconciled && recovery != "RECOVERY_RECONCILE_REQUIRED")
     {
         reason = recovery;
         CloseUnconsumedListenFds();
         return false;
     }
+    std::string rebuildReason;
+    if (!RebuildRecentBrokerOrders(rebuildReason))
+    {
+        reason = rebuildReason;
+        CloseUnconsumedListenFds();
+        return false;
+    }
+    // A replayed uncertain command is a mutation fence, not a reason to make
+    // the read/recovery service unavailable. New risk remains blocked; owned
+    // cancels can use the coordinator recovery reserve to drain active risk.
+    recovery.clear();
     NotifyTestStage("policy_authority_ready");
     return true;
 }

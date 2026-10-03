@@ -34,7 +34,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         m_fencedSessionOwners.end())
         return RefuseBeforeIntent(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
                             command.orderId);
-    if (m_mutationBlocked)
+    if (m_mutationBlocked && m_mutationBlockReason != "RECOVERY_RECONCILE_REQUIRED")
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, command.orderId);
     if (command.orderId < 0 || !m_callbacks.cancelOrder)
         return RefuseBeforeIntent(context, "INVALID_CANCEL", "valid order_id and cancel callback are required",
@@ -105,7 +105,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
                 context, "SESSION_OWNER_FENCED",
                 "revoked or expired session owner cannot mutate",
                 command.orderId);
-        if (m_mutationBlocked)
+        if (m_mutationBlocked && m_mutationBlockReason != "RECOVERY_RECONCILE_REQUIRED")
             return RefuseBeforeIntent(
                 context, "MUTATION_BLOCKED", m_mutationBlockReason,
                 command.orderId);

@@ -405,6 +405,12 @@ void TestDeferredCancelRecoveryResolution()
     assert(status.status == ExecutionCommandStatus::Uncertain);
     assert(status.reasonCode == "IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK");
 
+    // Recovery blocks fresh risk, but an explicitly scoped cancel remains
+    // available so an authoritative active order cannot deadlock startup.
+    const auto blockedPlace = coordinator.PlaceOrder(MakePlace("recovery-risk-stays-blocked"));
+    assert(blockedPlace.status == ExecutionCommandStatus::Rejected);
+    assert(blockedPlace.reasonCode == "MUTATION_BLOCKED");
+
     std::map<long, std::string> terminal;
     terminal[504] = "Cancelled";
     std::size_t resolved = 0;
