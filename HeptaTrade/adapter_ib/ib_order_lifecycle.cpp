@@ -94,7 +94,8 @@ bool IbOrderLifecycleTracker::CanCancel(
 bool IbOrderLifecycleTracker::IsBrokerAckStatus(
     const std::string& status)
 {
-    return status == "ApiPending" ||
+    return status == "Accepted" ||
+        status == "ApiPending" ||
         status == "PendingSubmit" ||
         status == "PreSubmitted" ||
         status == "Submitted" ||

@@ -1091,8 +1091,8 @@ void HeptaIBGatewayAdapter::DispatchPendingCancelIfAcknowledged(
     }
     if (status.empty() && !authoritativeOpenOrderAck)
         return;
-    if (!status.empty() && status != "ApiPending" && status != "PendingSubmit" &&
-        status != "PreSubmitted" && status != "Submitted" &&
+    if (!status.empty() && status != "Accepted" && status != "ApiPending" &&
+        status != "PendingSubmit" && status != "PreSubmitted" && status != "Submitted" &&
         status != "PartiallyFilled" && status != "PendingCancel" &&
         status != "Filled")
         return;

@@ -264,6 +264,16 @@ void TestTypedCancelAndDeferredNoResendAfterException() {
     const long id = deferred.Place();
     assert(deferred.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
     assert(deferred.broker->cancels == 0);
+    {
+        Fixture accepted;
+        const long acceptedId = accepted.Place();
+        assert(accepted.adapter.CancelOrder(acceptedId).disposition == VenueCancelDisposition::Deferred);
+        accepted.Push(accepted.Status("Accepted", 0));
+        assert(accepted.broker->cancels == 1);
+        accepted.Push(accepted.Status("Accepted", 0));
+        assert(accepted.broker->cancels == 1);
+    }
+
     deferred.broker->cancelFault = 1;
     bool threw = false;
     try { deferred.Push(deferred.Status("Submitted", 0)); }

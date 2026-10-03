@@ -26,8 +26,15 @@ void TestLocalSendRequiresBrokerAcknowledgement()
     tracker.BeginLocalOrderGeneration(41);
     ExpectBlocked(tracker, 41, "NO_BROKER_ACK");
 
-    tracker.RecordBrokerStatus(41, "Submitted");
+    tracker.RecordBrokerStatus(41, "Accepted");
     std::string unchanged("sentinel");
+    assert(tracker.CanCancel(41, &unchanged));
+    assert(unchanged == "sentinel");
+
+    tracker.BeginLocalOrderGeneration(41);
+    ExpectBlocked(tracker, 41, "NO_BROKER_ACK");
+    tracker.RecordBrokerStatus(41, "Submitted");
+    unchanged = "sentinel";
     assert(tracker.CanCancel(41, &unchanged));
     assert(unchanged == "sentinel");
 }
