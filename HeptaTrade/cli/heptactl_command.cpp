@@ -62,6 +62,7 @@ bool ApplyField(const std::string& argument, HeptaCtlCommand& command, std::stri
     else if (key == "preview_permit") call.previewPermit = value;
     else if (key == "order_id" && ParseLongLong(value, integer)) call.orderId = static_cast<long>(integer);
     else if (key == "quantity" && ParseDouble(value, decimal)) call.ibOrder.totalQuantity = decimal;
+    else if (key == "cash_quantity" && ParseDouble(value, decimal)) call.ibOrder.cashQuantity = decimal;
     else if (key == "limit_price" && ParseDouble(value, decimal)) call.ibOrder.lmtPrice = decimal;
     else if (key == "strike" && ParseDouble(value, decimal)) call.ibContract.strike = decimal;
     else if (key == "reference_price" && ParseDouble(value, decimal)) call.referencePrice = decimal;

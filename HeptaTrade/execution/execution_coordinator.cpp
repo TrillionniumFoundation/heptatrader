@@ -111,6 +111,9 @@ std::string PlaceRequestHash(const IbPlaceOrderCommand& command)
     AppendCanonicalField(canonical, "order.order_type", command.order.orderType);
     AppendCanonicalField(canonical, "order.position_effect", command.order.positionEffect);
     AppendCanonicalField(canonical, "order.quantity", CanonicalDouble(command.order.totalQuantity));
+    // Preserve every historical quantity-order hash, including order 146.
+    if (command.order.cashQuantity != 0.0)
+        AppendCanonicalField(canonical, "order.cash_quantity", CanonicalDouble(command.order.cashQuantity));
     AppendCanonicalField(canonical, "order.limit_price", CanonicalDouble(command.order.lmtPrice));
     AppendCanonicalField(canonical, "order.aux_price", CanonicalDouble(command.order.auxPrice));
     AppendCanonicalField(canonical, "order.outside_rth", command.order.outsideRth ? "1" : "0");
@@ -424,7 +427,10 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
     if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
         return RefuseBeforeIntent(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
                             -1);
-    if (command.contract.symbol.empty() || command.order.totalQuantity <= 0.0 || !IsBuyOrSell(command.order.action))
+    if (command.contract.symbol.empty() || !IsBuyOrSell(command.order.action) ||
+        !std::isfinite(command.order.cashQuantity) || command.order.cashQuantity < 0.0 ||
+        !std::isfinite(command.order.totalQuantity) ||
+        (command.order.cashQuantity > 0.0 ? command.order.totalQuantity != 0.0 : command.order.totalQuantity <= 0.0))
         return RefuseBeforeIntent(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
                             -1);
 

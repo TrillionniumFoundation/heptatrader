@@ -39,7 +39,7 @@ bool IbOrderLifecycleTracker::RecordBrokerOpenOrder(
     State& state = m_states[orderId];
     state.sentToBroker = true;
     state.brokerAck = true;
-    if (status == "PendingCancel") state.cancellationPending = true;
+    if (status == "PendingCancel" || status == "PreCancelled") state.cancellationPending = true;
     // An OpenOrder callback can carry terminal broker status when an order
     // was already cancelled/rejected before the snapshot reached us. Keep
     // that terminal evidence sticky. A textual Filled OpenOrder is
@@ -58,7 +58,7 @@ void IbOrderLifecycleTracker::RecordBrokerStatus(
     State& state = m_states[orderId];
     state.sentToBroker = true;
     if (IsBrokerAckStatus(status)) state.brokerAck = true;
-    if (status == "PendingCancel") state.cancellationPending = true;
+    if (status == "PendingCancel" || status == "PreCancelled") state.cancellationPending = true;
     if (IsFinalStatus(status) &&
         (status != "Filled" || economicFillEvidence))
         state.finalState = true;
@@ -110,6 +110,7 @@ bool IbOrderLifecycleTracker::IsBrokerAckStatus(
         status == "Submitted" ||
         status == "PartiallyFilled" ||
         status == "PendingCancel" ||
+        status == "PreCancelled" ||
         status == "Filled" ||
         status == "Cancelled" ||
         status == "ApiCancelled" ||

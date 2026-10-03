@@ -140,6 +140,13 @@ struct IBAuthoritativeTerminalCorrelationSnapshot {
     // evidence in this same snapshot.
     std::set<std::string> executionCorrelations;
     std::set<long> executionOrderIds;
+    bool HasEconomicTerminal(const std::string& correlation, long orderId,
+                             std::uint64_t expectedEpoch) const {
+        const auto found = terminalOrderIdsByCorrelation.find(correlation);
+        return complete && expectedEpoch != 0 && connectionEpoch == expectedEpoch &&
+            orderId >= 0 && !correlation.empty() && found != terminalOrderIdsByCorrelation.end() &&
+            found->second == orderId && executionCorrelations.count(correlation) != 0;
+    }
 };
 
 // One adapter-lock sample used only by PAPER recovery finalization.  It binds
@@ -497,6 +504,7 @@ private:
         IBContractLite contract;
         std::string side;
         double quantity = 0.0;
+        double cashQuantity = 0.0;
         double executionQuantity = 0.0;
         double executionAveragePrice = 0.0;
         double publishedExecutionQuantity = 0.0;

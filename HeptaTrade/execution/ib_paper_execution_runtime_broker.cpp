@@ -693,11 +693,9 @@ bool IbPaperExecutionRuntimeComposition::AuthorizeFinalBrokerSend(
             const bool crypto = m_config.profile.UsesUserCrypto() &&
                 IbPaperExecutionProfileConfig::IsCryptoContract(context->instrument, contract);
             const bool allowedOrder = crypto ?
-                (exactExternalQuote && context->timeInForce == "IOC" && order.orderType == "LMT" &&
-                 order.action == "SELL" &&
-                 IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(order.totalQuantity) &&
-                 IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
-                     order.lmtPrice, quote.bid)) : externalLimitDay ?
+                (exactExternalQuote && context->timeInForce == "IOC" && order.orderType == "MKT" &&
+                 order.action == "SELL" && order.cashQuantity == 0.0 && order.lmtPrice == 0.0 &&
+                 IbPaperExecutionProfileConfig::CryptoExecutionQuantityOnGrid(order.totalQuantity)) : externalLimitDay ?
                 (exactExternalQuote && order.orderType == "LMT" &&
                  order.auxPrice == 0.0 && !order.outsideRth &&
                  std::isfinite(order.lmtPrice) && order.lmtPrice > 0.0 &&

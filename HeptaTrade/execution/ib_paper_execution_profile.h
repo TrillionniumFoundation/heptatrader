@@ -75,6 +75,8 @@ struct IbPaperExecutionProfileConfig
     static constexpr double CryptoNotionalLimit() { return 150.0; }
     static constexpr double CryptoProtectionFraction() { return 0.0005; }
     static bool CryptoQuantityOnGrid(double quantity);
+    static bool CryptoExecutionQuantityOnGrid(double quantity);
+    static bool CryptoCashQuantityValid(double cashQuantity, double authoritativeAsk);
     static double CryptoProtectedSellLimit(double bid);
     static bool CryptoProtectedSellLimitValid(double price, double bid);
     static bool CryptoPriceOnGrid(double price);

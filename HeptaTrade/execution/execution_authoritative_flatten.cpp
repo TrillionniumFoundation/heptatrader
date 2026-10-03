@@ -133,7 +133,7 @@ bool ExactLocalMarketReduceOnly(
 bool ExactReduceOnly(const FlattenPositionCommand& command,
                      const AuthoritativeFlattenPlan& plan)
 {
-    if (command.instrument.empty() ||
+    if (plan.order.cashQuantity != 0.0 || command.instrument.empty() ||
         command.instrument != plan.instrument ||
         !SameContract(command.contract, plan.contract) ||
         !command.hasAuthoritativePreviewSnapshot ||
@@ -157,7 +157,7 @@ bool ExactReduceOnly(const FlattenPositionCommand& command,
             plan.order.totalQuantity == 0.0;
     if (plan.positionConnectionEpoch == 0 ||
         plan.positionGeneration == 0 ||
-        (plan.timeInForce != "DAY" && !(plan.profileOrderMode == "USER_CRYPTO_LMT_IOC" &&
+        (plan.timeInForce != "DAY" && !(plan.profileOrderMode == "USER_CRYPTO_MKT_IOC" &&
             plan.timeInForce == "IOC")) ||
         !std::isfinite(plan.order.totalQuantity) ||
         !std::isfinite(plan.order.lmtPrice) ||
@@ -170,17 +170,15 @@ bool ExactReduceOnly(const FlattenPositionCommand& command,
         ExactExternalLimitDayReduceOnly(plan, position, quantity);
     const bool validLocalOrder =
         ExactLocalMarketReduceOnly(plan, position, quantity);
-    const bool validCryptoOrder = plan.profileOrderMode == "USER_CRYPTO_LMT_IOC" &&
+    const bool validCryptoOrder = plan.profileOrderMode == "USER_CRYPTO_MKT_IOC" &&
         plan.instrument == "BTC.USD" && plan.contract.symbol == "BTC" &&
         plan.contract.secType == "CRYPTO" && plan.contract.exchange == "PAXOS" && plan.contract.currency == "USD" &&
-        plan.timeInForce == "IOC" && plan.order.orderType == "LMT" && plan.order.action == "SELL" &&
-        position > 0.0 && quantity == position && quantity <= 0.001 &&
+        plan.timeInForce == "IOC" && plan.order.orderType == "MKT" && plan.order.action == "SELL" &&
+        position > 0.0 && quantity == position && plan.order.cashQuantity == 0.0 &&
         std::fabs(quantity * 100000000.0 - std::round(quantity * 100000000.0)) <= 1e-7 &&
         std::isfinite(plan.quoteBid) && plan.quoteBid > 0.0 && std::isfinite(plan.quoteAsk) &&
-        plan.quoteAsk >= plan.quoteBid && plan.order.lmtPrice <= plan.quoteBid &&
-        plan.order.lmtPrice + 1e-9 >= plan.quoteBid * 0.9995 &&
-        plan.referencePrice == plan.order.lmtPrice &&
-        std::fabs(plan.order.lmtPrice * 4.0 - std::round(plan.order.lmtPrice * 4.0)) <= 1e-7;
+        plan.quoteAsk >= plan.quoteBid && plan.order.lmtPrice == 0.0 &&
+        plan.referencePrice == plan.quoteBid;
     if (!validExternalOrder && !validLocalOrder && !validCryptoOrder)
         return false;
     return (position > 0.0 && plan.order.action == "SELL") ||

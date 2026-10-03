@@ -67,7 +67,7 @@ VenueFlattenResult HeptaIBGatewayAdapter::PlaceReduceOnlyOrderCorrelated(
         const bool opposite =
             (position > 0.0 && order.action == "SELL") ||
             (position < 0.0 && order.action == "BUY");
-        if (!opposite || !std::isfinite(quantity) || quantity <= 0.0 ||
+        if (!opposite || order.cashQuantity != 0.0 || !std::isfinite(quantity) || quantity <= 0.0 ||
             quantity > std::fabs(position) ||
             (order.orderType == "LMT" &&
              quantity != std::fabs(position)))

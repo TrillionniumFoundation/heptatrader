@@ -236,10 +236,22 @@ public:
             if (call.ibOrder.action != "BUY" && call.ibOrder.action != "SELL")
                 return Reject("INVALID_SIDE", "side must be BUY or SELL",
                               reasonCode, detail);
-            if (!std::isfinite(call.ibOrder.totalQuantity) ||
-                call.ibOrder.totalQuantity <= 0.0)
+            const auto& order = call.ibOrder;
+            const auto& contract = call.ibContract;
+            const bool cash = order.cashQuantity != 0.0;
+            if (!std::isfinite(order.cashQuantity) || order.cashQuantity < 0.0 ||
+                !std::isfinite(order.totalQuantity) ||
+                (cash ? order.totalQuantity != 0.0 : order.totalQuantity <= 0.0))
                 return Reject("INVALID_QUANTITY",
-                              "quantity must be finite and greater than zero",
+                              "exactly one finite positive quantity or cash_quantity is required",
+                              reasonCode, detail);
+            if (cash && (call.instrument != "BTC.USD" || contract.symbol != "BTC" ||
+                contract.secType != "CRYPTO" || contract.exchange != "PAXOS" ||
+                contract.currency != "USD" || order.action != "BUY" ||
+                order.orderType != "MKT" || call.timeInForce != "IOC" ||
+                !order.positionEffect.empty()))
+                return Reject("INVALID_CASH_QUANTITY_SCOPE",
+                              "cash_quantity requires BTC/PAXOS/USD BUY MKT IOC",
                               reasonCode, detail);
             if (call.ibOrder.orderType != "MKT" && call.ibOrder.orderType != "LMT")
                 return Reject("INVALID_ORDER_TYPE",
@@ -325,7 +337,7 @@ private:
     static bool HasOrderFields(const OrderIntent& order)
     {
         return !order.action.empty() || !order.orderType.empty() ||
-            !order.positionEffect.empty() || order.totalQuantity != 0.0 ||
+            !order.positionEffect.empty() || order.totalQuantity != 0.0 || order.cashQuantity != 0.0 ||
             order.lmtPrice != 0.0 || order.auxPrice != 0.0 ||
             order.outsideRth || !order.orderRef.empty();
     }

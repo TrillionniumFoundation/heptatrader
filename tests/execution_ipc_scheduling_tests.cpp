@@ -153,6 +153,29 @@ struct Fixture {
         return Micros(start);
     }
 };
+void CashOrderWireIsOptionalBoundAndNonAmbiguous() {
+    ExecutionServiceRequest request;request.operation=ExecutionServiceOperation::PlaceIbOrder;
+    request.expectedServiceEpoch="cash-wire-epoch";
+    request.expectedServiceFencingGeneration=1;
+    request.place.context=Owner("cash-wire");request.place.instrument="BTC.USD";
+    request.place.contract.symbol="BTC";request.place.contract.secType="CRYPTO";
+    request.place.contract.exchange="PAXOS";request.place.contract.currency="USD";
+    request.place.order.action="BUY";request.place.order.orderType="MKT";
+    request.place.order.cashQuantity=84.56;request.place.timeInForce="IOC";
+    request.place.referencePrice=84569.5;request.place.expiresAtMs=1900000000000LL;
+    std::string body,again,reason;ExecutionServiceRequest decoded;
+    Check(ExecutionServiceProtocol::EncodeRequest(request,body,reason),"cash execution encode failed");
+    Check(ExecutionServiceProtocol::DecodeRequest(body,decoded,reason),"cash execution decode failed");
+    Check(decoded.place.order.cashQuantity==84.56 && decoded.place.order.totalQuantity==0,"cash amount lost");
+    Check(ExecutionServiceProtocol::EncodeRequest(decoded,again,reason) && body==again,"cash wire drift");
+    request.place.order.totalQuantity=0.001;
+    Check(ExecutionServiceProtocol::EncodeRequest(request,again,reason),"build hostile dual-size fixture");
+    Check(!ExecutionServiceProtocol::DecodeRequest(again,decoded,reason),"execution accepted dual sizing");
+    request.place.order.cashQuantity=0;request.place.order.orderType="LMT";request.place.order.lmtPrice=84569.75;
+    Check(ExecutionServiceProtocol::EncodeRequest(request,body,reason),"legacy execution encode failed");
+    Check(ExecutionServiceProtocol::DecodeRequest(body,decoded,reason) && decoded.place.order.cashQuantity==0,"legacy request requires cash migration");
+    Check(ExecutionServiceProtocol::EncodeRequest(decoded,again,reason) && body==again,"legacy quantity request changed");
+}
 void OrdinaryControlWireCannotCarryAuditOrTerminalEvidence() {
     Fixture f;
     f.authority.injectUnrelatedEvidence = true;
@@ -539,6 +562,7 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 }
 int main() {
     try {
+        CashOrderWireIsOptionalBoundAndNonAmbiguous();
         LocalControlDeadlineIsNotWireAuthorityOrRetry();
         OrdinaryControlWireCannotCarryAuditOrTerminalEvidence();
         TerminalWireCarriesOnlyOwnerBoundWitness();

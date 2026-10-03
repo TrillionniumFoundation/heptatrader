@@ -122,13 +122,17 @@ public:
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
-    Fixture(bool finishBootstrap=true):broker(new Broker()),adapter(
+    Fixture(bool finishBootstrap=true, bool cryptoScope=false):broker(new Broker()),adapter(
         std::unique_ptr<IIBApiWrapper>(broker), [this]() {
             broker=new Broker();return std::unique_ptr<IIBApiWrapper>(broker);
         }) {
         HeptaIBConfig cfg;cfg.account="DU123";cfg.clientId=73;cfg.readOnly=false;
         cfg.risk.enableOrderSubmission=true;cfg.risk.maxDailyOrders=100;
         cfg.risk.duplicateOrderWindowSec=0;cfg.risk.maxPriceDeviationBps=0;
+        if(cryptoScope) {
+            IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
+            cfg.authoritativeCryptoContracts["BTC.USD"]=c;
+        }
         assert(adapter.Init(cfg));assert(adapter.Connect());Bootstrap(finishBootstrap);
     }
     int Drain() {IBEvent event;int count=0;while(adapter.TryDequeueEvent(event)) ++count;return count;}
@@ -174,6 +178,62 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
+    for(int mode=0;mode<5;++mode) {
+        Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
+        IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
+        IBOrderLite order;order.action="BUY";order.orderType="MKT";order.cashQuantity=85;
+        IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";
+        ctx.authoritativeQuoteBound=true;ctx.quoteBid=84999.75;ctx.quoteAsk=85000;
+        const std::string corr="hepta-v1-sha256:"+std::string(64,'a');
+        const auto placed=f.adapter.PlaceOrderWithResult(c,order,corr,&ctx);
+        assert(placed.disposition==VenuePlaceDisposition::Submitted);
+        assert(f.broker->submitted.cashQuantity==85 && f.broker->submitted.totalQuantity==0);
+        assert(f.broker->submitted.orderType=="MKT" && f.broker->submittedTif=="IOC");
+        const double quantity=mode==2?0.00101:mode==3?0.0005:0.00099;
+        auto fill=f.Execution(quantity);fill.number=84000;fill.number3=0;fill.remainingQuantityKnown=false;
+        auto final=f.Status(mode==3?"Cancelled":"Filled",quantity);final.number=84000;final.number3=0;
+        if(mode==4) {
+            final=f.Status("Cancelled",0);final.number3=0;f.Push(final);
+            auto snap=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+            assert(snap.terminalStatusesByCorrelation.at(corr)=="Cancelled" && snap.executionCorrelations.empty());
+            assert(!snap.HasEconomicTerminal(corr,f.broker->orderId,f.broker->epoch));
+            continue;
+        }
+        if(mode==1) {
+            f.Push(final);
+            assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+        }
+        auto wrong=fill;wrong.brokerClientId++;
+        f.Push(wrong);
+        assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().executionCorrelations.empty());
+        f.Push(fill);
+        const auto afterFill=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(afterFill.executionCorrelations.count(corr)==1);
+        if(mode!=1) {
+            assert(afterFill.terminalOrderIdsByCorrelation.empty());
+            assert(!afterFill.HasEconomicTerminal(corr,f.broker->orderId,f.broker->epoch));
+            auto synthetic=final;synthetic.value="execDetails";synthetic.requestId=-1;
+            f.Push(synthetic);
+            assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+            f.Push(final);
+        }
+        auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(terminal.terminalStatusesByCorrelation.at(corr)==(mode==3?"Cancelled":"Filled"));
+        assert(terminal.HasEconomicTerminal(corr,f.broker->orderId,f.broker->epoch));
+        assert(!terminal.HasEconomicTerminal(corr,f.broker->orderId,f.broker->epoch+1));
+        assert(!terminal.HasEconomicTerminal(corr,f.broker->orderId+1,f.broker->epoch));
+        assert(!terminal.HasEconomicTerminal("hepta-v1-sha256:"+std::string(64,'b'),f.broker->orderId,f.broker->epoch));
+        auto incomplete=terminal;incomplete.complete=false;
+        assert(!incomplete.HasEconomicTerminal(corr,f.broker->orderId,f.broker->epoch));
+        const auto generation=terminal.generation;f.Push(fill);f.Push(final);
+        assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().generation==generation);
+        assert(f.broker->places==1 && f.broker->cancels==0);
+        IBSubmittedOrderQuantityTracker quantities;quantities.Reset(f.broker->epoch,73,"DU123");
+        quantities.Record(f.broker->orderId,c,f.broker->submitted);
+        assert(quantities.ObserveExecution(fill)==0); // No estimated full-fill synthesis.
+    }
+}
 void TestIbAdapterPreservesQualifiedIntentAtFinalSend() {
     Fixture f;
     IBContractLite c;c.symbol="ES";c.secType="FUT";c.exchange="CME";
@@ -322,6 +382,30 @@ void TestPendingCancelDoesNotResendOrManufactureTerminalEvidence() {
     assert(evidence.terminalStatusesByCorrelation.begin()->second=="Filled");
     assert(filled.adapter.CancelOrder(filledId).disposition==VenueCancelDisposition::RejectedBeforeSend);
     assert(filled.broker->cancels==0);
+}
+void TestPendingCancelErrorDoesNotTripGlobalFuse() {
+    for (const auto* pending : {"PendingCancel", "PreCancelled"}) {
+        Fixture f; const auto id = f.Place();
+        f.Push(f.Status(pending, 0));
+        auto error = f.Event(IBEventType::Error); error.key = "10148";
+        error.value = std::string("OrderId that needs to be cancelled can not be cancelled, state: ") + pending;
+        f.Push(error);
+        assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+        assert(f.adapter.CancelOrder(id).detail == "CANCEL_ALREADY_PENDING");
+        assert(f.broker->cancels == 0);
+        // The diagnostic must not globally disable unrelated, valid sends.
+        f.Place("hepta-v1-sha256:" + std::string(64, 'b'));
+        assert(f.broker->places == 2);
+    }
+    Fixture unknown; unknown.Place(); unknown.Push(unknown.Status("Submitted", 0));
+    auto error = unknown.Event(IBEventType::Error); error.key = "10148";
+    error.value = "can not be cancelled, state: PendingCancel";
+    unknown.Push(error);
+    IBContractLite c; c.symbol="EUR";c.secType="CASH";c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o; o.action="BUY";o.orderType="LMT";o.lmtPrice=1.18;o.totalQuantity=1;
+    long id=-1;
+    assert(!unknown.adapter.PlaceOrderCorrelated(c,o,"hepta-v1-sha256:"+std::string(64,'b'),&id));
+    assert(unknown.broker->places==1);
 }
 void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     Fixture f;const auto initial=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
@@ -551,6 +635,8 @@ int main() {
     TestTypedFlattenCapturesResultAtSendBoundary();
     TestTypedCancelAndDeferredNoResendAfterException();
     TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();
+    TestPendingCancelErrorDoesNotTripGlobalFuse();
+    TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();

@@ -196,6 +196,57 @@ void TestJournalBeforeSendAndDuplicate()
     std::remove(path.c_str());
 }
 
+void TestCashOrderIdentityAndZeroBaseQuantitySurviveRecovery()
+{
+    const std::string path=TempJournalPath();
+    auto command=MakePlace("cash-command-identity");
+    command.context.executionDomain="PAPER";command.context.venue="IB";
+    command.context.decisionLeaseFencingToken=7;
+    command.context.decisionLeaseGeneration=3;
+    command.instrument="BTC.USD";command.contract.symbol="BTC";
+    command.contract.secType="CRYPTO";command.contract.exchange="PAXOS";
+    command.order.orderType="MKT";command.order.totalQuantity=0;
+    command.order.cashQuantity=84.56;command.order.lmtPrice=0;
+    command.referencePrice=84569.5;command.timeInForce="IOC";
+    int sends=0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.validateDecisionLease=[](const AgentExecutionContext&,const std::string&,std::string*){return true;};
+    callbacks.placement=VenuePlacement::Immediate([&](const PlaceOrderCommand& submitted,const std::string&){
+        ++sends;assert(submitted.order.totalQuantity==0 && submitted.order.cashQuantity==84.56);
+        return VenuePlaceResult::Submitted(146);
+    });
+    {
+        OmsJournal journal;assert(journal.Init(path));
+        ExecutionCoordinator coordinator(journal,callbacks);
+        const auto first=coordinator.PlaceIbOrder(command);
+        assert(first.status==ExecutionCommandStatus::Accepted && first.orderId==146 && sends==1);
+        assert(coordinator.PlaceIbOrder(command).status==ExecutionCommandStatus::Duplicate && sends==1);
+        auto changed=command;changed.order.cashQuantity=84.55;
+        assert(coordinator.PlaceIbOrder(changed).status==ExecutionCommandStatus::Rejected && sends==1);
+        assert(coordinator.IsDurablePlaceReplay(command));
+        assert(!coordinator.IsDurablePlaceReplay(changed));
+        std::string hash;int attempts=0;
+        journal.Replay([&](const OmsJournalEvent& event){
+            if(event.reqId!=command.context.toolCallId)return;
+            if(event.eventType=="place_send_attempt")++attempts;
+            if(event.eventType=="order_intent" || event.eventType=="place_send_attempt" || event.eventType=="place_sent") {
+                assert(event.qty==0.0);assert(event.requestHash.rfind("sha256:",0)==0);
+                if(hash.empty())hash=event.requestHash;
+                assert(hash==event.requestHash);
+            }
+        });
+        assert(attempts==1 && !hash.empty());
+        ExecutionCoordinator restarted(journal,callbacks);std::string reason;
+        assert(restarted.RecoverFromJournal(reason));
+        assert(restarted.IsDurablePlaceReplay(command));
+        assert(!restarted.IsDurablePlaceReplay(changed));
+        assert(restarted.PlaceIbOrder(command).status==ExecutionCommandStatus::Duplicate);
+        assert(restarted.PlaceIbOrder(changed).status==ExecutionCommandStatus::Rejected);
+        assert(sends==1);
+    }
+    std::remove(path.c_str());
+}
+
 void TestPresendSyncFailureNeverSendsOrResetsIdentity()
 {
     const std::string path = TempJournalPath();
@@ -2629,6 +2680,7 @@ int main(int argc, char** argv)
     TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
+    TestCashOrderIdentityAndZeroBaseQuantitySurviveRecovery();
     TestPresendSyncFailureNeverSendsOrResetsIdentity();
     TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();

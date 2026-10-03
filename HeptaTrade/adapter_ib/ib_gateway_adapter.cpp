@@ -1093,13 +1093,13 @@ void HeptaIBGatewayAdapter::DispatchPendingCancelIfAcknowledged(
         return;
     if (!status.empty() && status != "Accepted" && status != "ApiPending" &&
         status != "PendingSubmit" && status != "PreSubmitted" && status != "Submitted" &&
-        status != "PartiallyFilled" && status != "PendingCancel" &&
+        status != "PartiallyFilled" && status != "PendingCancel" && status != "PreCancelled" &&
         status != "Filled")
         return;
     // PendingCancel is already an acknowledged cancellation request.  Avoid
     // issuing a second API cancel while retaining the broker's state as the
     // source of truth for final resolution.
-    if (status == "PendingCancel") {
+    if (status == "PendingCancel" || status == "PreCancelled") {
         m_pendingCancelOrderIds.erase(orderId);
         return;
     }
@@ -1338,6 +1338,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity;
+    if (o.cashQuantity != 0.0) oss << "|cash=" << o.cashQuantity;
     std::string sigNoPrice = oss.str();
 
     double lastPrice = 0.0;
@@ -1360,7 +1361,9 @@ void HeptaIBGatewayAdapter::RememberLastOrder(const IBContractLite& c, const IBO
     oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
-        << o.totalQuantity << "|" << o.lmtPrice;
+        << o.totalQuantity;
+    if (o.cashQuantity != 0.0) oss << "|cash=" << o.cashQuantity;
+    oss << "|" << o.lmtPrice;
     m_lastOrderSig = oss.str();
     m_lastOrderTs = nowTs;
 }

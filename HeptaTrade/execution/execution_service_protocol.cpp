@@ -21,7 +21,7 @@ enum Field : unsigned int
     AuxPrice, OutsideRth, OrderId, Side, TargetCommandId,
     ExpectedServiceEpoch, ExpectedServiceFencingGeneration, ReadQuery,
     TimeInForce, OrderRef, PreviewPermit, RecoveryIngressFence,
-    TerminalPreliminaryReceiptSha256, PositionEffect,
+    TerminalPreliminaryReceiptSha256, PositionEffect, CashQuantity,
     ResultStatus = 100, ResultCommandId, ResultOrderId, ResultReasonCode, ResultDetail,
     ResultTargetCommandId, ResultTargetStatus, ResultAffectedCount, ResultMutationBlocked,
     ResultServiceEpoch, ResultServiceFencingGeneration,
@@ -342,6 +342,8 @@ bool ExecutionServiceProtocol::EncodeRequest(const ExecutionServiceRequest& requ
         AppendField(body, Action, command.order.action);
         AppendField(body, OrderType, command.order.orderType);
         AppendField(body, Quantity, Number(command.order.totalQuantity));
+        if (command.order.cashQuantity != 0.0)
+            AppendField(body, CashQuantity, Number(command.order.cashQuantity));
         AppendField(body, LimitPrice, Number(command.order.lmtPrice));
         AppendField(body, AuxPrice, Number(command.order.auxPrice));
         AppendField(body, OutsideRth, command.order.outsideRth ? "1" : "0");
@@ -451,6 +453,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
             PreviewPermit};
         expectedFields.insert(placeFields,
             placeFields + sizeof(placeFields) / sizeof(placeFields[0]));
+        if (fields.count(CashQuantity)) expectedFields.insert(CashQuantity);
     }
     else if (kind == static_cast<unsigned int>(ExecutionServiceOperation::CancelIbOrder))
     {
@@ -583,6 +586,13 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
              !command.previewPermit.empty()))
         {
             if (reason.empty()) reason = "EXECUTION_PROTOCOL_INVALID_PLACE";
+            return false;
+        }
+        const auto cash = fields.find(CashQuantity);
+        if (cash != fields.end() &&
+            (!ParseDouble(cash->second, command.order.cashQuantity) ||
+             command.order.cashQuantity <= 0.0 || command.order.totalQuantity != 0.0)) {
+            reason = "EXECUTION_PROTOCOL_INVALID_CASH_QUANTITY";
             return false;
         }
         command.order.outsideRth = outsideRth == "1";

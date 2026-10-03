@@ -51,11 +51,9 @@ bool IbPaperExecutionRuntimeComposition::AllowsBoundRiskIncreasingPlace(
     const bool crypto = m_config.profile.UsesUserCrypto() &&
         IbPaperExecutionProfileConfig::IsCryptoContract(context->instrument, contract);
     const bool allowedOrder = crypto ?
-        (context->timeInForce == "IOC" && order.action == "BUY" && order.orderType == "LMT" &&
-         IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(order.totalQuantity) &&
-         IbPaperExecutionProfileConfig::CryptoPriceOnGrid(order.lmtPrice) &&
-         std::max(order.lmtPrice, quote.ask) <= 150.0 / order.totalQuantity &&
-         order.lmtPrice >= quote.ask && order.lmtPrice <= quote.ask * 1.001) : externalLimitDay ?
+        (context->timeInForce == "IOC" && order.action == "BUY" && order.orderType == "MKT" &&
+         order.totalQuantity == 0.0 && order.lmtPrice == 0.0 &&
+         IbPaperExecutionProfileConfig::CryptoCashQuantityValid(order.cashQuantity, quote.ask)) : externalLimitDay ?
         (order.orderType == "LMT" &&
          order.auxPrice == 0.0 && !order.outsideRth &&
          std::isfinite(order.lmtPrice) && order.lmtPrice > 0.0 &&
@@ -80,6 +78,14 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
         !std::isfinite(execution.number3) || execution.number3 < 0.0)
         return false;
     const double quantityTolerance = owner.instrument == "BTC.USD" ? 1e-10 : 1e-6;
+    // Cash-sized executions have no known submitted base total. Completion
+    // comes from native terminal evidence bound to the original correlation,
+    // including terminal-before-execution callback ordering, never a zero placeholder.
+    const auto terminal = m_adapter->GetAuthoritativeTerminalCorrelationSnapshot();
+    const bool boundTerminal = terminal.HasEconomicTerminal(
+        owner.venueCorrelationId, orderId, execution.connectionEpoch);
+    const bool completeExecution = boundTerminal ||
+        (execution.remainingQuantityKnown && execution.number3 <= quantityTolerance);
     const double signedFill = side == "BUY" ?
         execution.number2 : -execution.number2;
     if (m_postFillRiskRefreshPending.load())
@@ -98,7 +104,8 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
             return true;
         const bool cumulativeAdvanced =
             execution.number2 > priorCumulative + quantityTolerance;
-        const bool executionComplete = execution.number3 <= quantityTolerance;
+        const bool executionComplete = completeExecution;
+        m_postFillTerminalObserved = m_postFillTerminalObserved || boundTerminal;
         const bool completionAdvanced =
             executionComplete && !m_postFillExecutionComplete;
         if (!cumulativeAdvanced && !completionAdvanced)
@@ -141,11 +148,12 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
 
     m_postFillOrderId = orderId;
     m_postFillInstrument = owner.instrument;
+    m_postFillVenueCorrelationId = owner.venueCorrelationId;
     m_postFillSide = side;
     m_postFillBaselinePosition = baseline.positionQuantity;
     m_postFillExpectedPosition = baseline.positionQuantity + signedFill;
-    m_postFillExecutionComplete = execution.number3 <= quantityTolerance;
-    m_postFillTerminalObserved = false;
+    m_postFillExecutionComplete = completeExecution;
+    m_postFillTerminalObserved = boundTerminal;
     m_postFillBaselinePositionGeneration = baseline.positionGeneration;
     m_postFillBaselineFxCashGeneration = baseline.fxCashGeneration;
     m_postFillRiskRefreshAttempts = 0;
@@ -186,6 +194,15 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
     std::string reason;
     const std::map<std::string, InstrumentRef>::const_iterator contract =
         m_config.quoteContracts.find(m_postFillInstrument);
+    if (m_postFillInstrument == "BTC.USD") {
+        // A native Filled/status callback may arrive before execDetails.
+        // Keep the owner and risk gate until both witnesses refer to this
+        // original correlation, so the late execution cannot become unowned.
+        const auto terminal = m_adapter->GetAuthoritativeTerminalCorrelationSnapshot();
+        m_postFillExecutionComplete = terminal.HasEconomicTerminal(
+            m_postFillVenueCorrelationId, m_postFillOrderId, m_adapter->GetConnectionEpoch());
+        if (m_postFillExecutionComplete) m_postFillTerminalObserved = true;
+    }
     const bool coherent = m_postFillExecutionComplete &&
         risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete &&

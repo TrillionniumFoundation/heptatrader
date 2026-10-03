@@ -573,9 +573,9 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     AppendCanonicalField(canonical, "client_id", std::to_string(clientId));
     AppendCanonicalField(canonical, "control_directory", controlDirectory);
     AppendCanonicalField(canonical, "allowed_security_types", UsesUserCrypto() ? "STK,CASH,CRYPTO" : AllowedSecurityTypes());
-    AppendCanonicalField(canonical, "allowed_order_types", UsesUserCrypto() ? "MKT,LMT" : AllowedOrderTypes());
+    AppendCanonicalField(canonical, "allowed_order_types", UsesUserCrypto() ? "MKT" : AllowedOrderTypes());
     if (UsesUserCrypto())
-        AppendCanonicalField(canonical, "crypto_policy", "BTC/PAXOS/USD:LMT/IOC:LONG_ONLY:QTY_0.001:USD_150:TICK_0.25:STEP_0.00000001");
+        AppendCanonicalField(canonical, "crypto_policy", "BTC/PAXOS/USD:MKT/IOC:BUY_CASH:LONG_ONLY:NOMINAL_QTY_0.001:USD_150:ACTUAL_FILL_RECONCILIATION:STEP_0.00000001");
     AppendCanonicalField(canonical, "max_order_quantity",
                          CanonicalDouble(maxOrderQuantity));
     AppendCanonicalField(canonical, "max_order_notional",
@@ -839,14 +839,16 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_AUTHORITATIVE_RISK_SNAPSHOT_REQUIRED";
         return false;
     }
-    const double quantity = std::fabs(command.order.totalQuantity);
+    const double quantity = crypto && command.order.cashQuantity > 0.0 ?
+        command.order.cashQuantity / authoritativePrice : std::fabs(command.order.totalQuantity);
     if (!std::isfinite(quantity) || quantity <= 0.0 ||
         quantity > (crypto ? IbPaperExecutionProfileConfig::CryptoQuantityLimit() : m_config.maxOrderQuantity))
     {
         reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
         return false;
     }
-    if (command.timeInForce != (crypto ? "IOC" : "DAY") ||
+    if ((!crypto && command.order.cashQuantity != 0.0) ||
+        command.timeInForce != (crypto ? "IOC" : "DAY") ||
         !command.order.positionEffect.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL"))
@@ -856,14 +858,11 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     }
     if (crypto)
     {
-        if (command.order.action != "BUY" || command.order.orderType != "LMT" ||
-            !IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(quantity) ||
-            !IbPaperExecutionProfileConfig::CryptoPriceOnGrid(command.order.lmtPrice) ||
-            command.order.auxPrice != 0.0 || command.order.outsideRth || !command.order.orderRef.empty() ||
-            command.referencePrice != command.order.lmtPrice ||
-            command.order.lmtPrice < authoritativePrice ||
-            command.order.lmtPrice > authoritativePrice * 1.001)
-        { reason = "IB_PAPER_CRYPTO_LIMIT_BUY_INVALID"; return false; }
+        if (command.order.action != "BUY" || command.order.orderType != "MKT" ||
+            command.order.totalQuantity != 0.0 || command.order.lmtPrice != 0.0 ||
+            !IbPaperExecutionProfileConfig::CryptoCashQuantityValid(command.order.cashQuantity, authoritativePrice) ||
+            command.order.auxPrice != 0.0 || command.order.outsideRth || !command.order.orderRef.empty())
+        { reason = "IB_PAPER_CRYPTO_MARKET_CASH_BUY_INVALID"; return false; }
     }
     else if (m_config.UsesExternalLimitDay())
     {
@@ -1981,6 +1980,19 @@ bool IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(double quantity)
     if (!std::isfinite(quantity) || quantity <= 0.0 || quantity > CryptoQuantityLimit()) return false;
     const double atoms = quantity * 100000000.0;
     return atoms >= 1.0 && std::fabs(atoms - std::round(atoms)) <= 1e-7;
+}
+bool IbPaperExecutionProfileConfig::CryptoExecutionQuantityOnGrid(double quantity)
+{
+    if (!std::isfinite(quantity) || quantity <= 0.0) return false;
+    const double atoms = quantity * 100000000.0;
+    return std::isfinite(atoms) && atoms >= 1.0 && atoms <= 9007199254740991.0 &&
+        std::fabs(atoms - std::round(atoms)) <= 1e-7;
+}
+bool IbPaperExecutionProfileConfig::CryptoCashQuantityValid(double cash, double ask)
+{
+    return std::isfinite(cash) && cash > 0.0 && cash <= CryptoNotionalLimit() &&
+        std::fabs(cash * 100.0 - std::round(cash * 100.0)) <= 1e-7 &&
+        std::isfinite(ask) && ask > 0.0 && cash / ask <= CryptoQuantityLimit();
 }
 bool IbPaperExecutionProfileConfig::CryptoPriceOnGrid(double price)
 {

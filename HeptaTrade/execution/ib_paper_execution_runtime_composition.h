@@ -398,6 +398,7 @@ private:
     std::atomic<bool> m_postFillRiskRefreshPending;
     long m_postFillOrderId = -1;
     std::string m_postFillInstrument;
+    std::string m_postFillVenueCorrelationId;
     std::string m_postFillSide;
     double m_postFillBaselinePosition = 0.0;
     double m_postFillExpectedPosition = 0.0;

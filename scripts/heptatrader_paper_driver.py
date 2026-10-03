@@ -136,6 +136,33 @@ def terminal_nonfill(orders,pending,expected_side):
         row.get("filled_quantity")==0 and row.get("average_fill_price")==0 and
         row.get("status") in {"Cancelled","ApiCancelled","Rejected","Inactive"})
 
+def copy_exit_evidence(exits):
+    return [dict(item) for item in exits]
+
+def record_crypto_exit(state,pending,fill):
+    parent=state.get("entry_command_id")
+    if not parent or pending.get("parent_entry_command_id")!=parent:
+        return  # Economic settlement is retained, but cannot qualify a driver.
+    rows=state.setdefault("crypto_exit_evidence",[])
+    if any(x["command_id"]==pending["command_id"] for x in rows): return
+    rows.append({"command_id":pending["command_id"],"execution_id":fill["broker_execution_id"],
+        "quantity":float(fill["quantity"]),"price":float(fill["price"])})
+
+def crypto_roundtrip_qualified(state):
+    proof=state.get("crypto_roundtrip_proof")
+    if not isinstance(proof,dict) or not proof.get("entry_command_id") or not proof.get("entry_execution_id"):
+        return False
+    rows=proof.get("exits");qty=proof.get("entry_quantity")
+    if type(qty) not in (int,float) or not math.isfinite(qty) or qty<=0 or not isinstance(rows,list) or not rows:
+        return False
+    seen=set();total=0.0
+    for row in rows:
+        if (not isinstance(row,dict) or not row.get("command_id") or not row.get("execution_id") or
+            row["command_id"] in seen or type(row.get("quantity")) not in (int,float) or
+            not math.isfinite(row["quantity"]) or row["quantity"]<=0): return False
+        seen.add(row["command_id"]);total+=row["quantity"]
+    return math.isfinite(total) and abs(total-qty)<=QUANTITY_TOLERANCE
+
 def paper_cmd(binary,socket,token,outbox,op,extra):
     p=run([binary,op,"--socket",socket,"--token-file",token,"--directory",outbox,*extra],20)
     if not p.stdout: return {"ok":False,"reason":"PROCESS_NO_RESPONSE"}
@@ -174,30 +201,29 @@ def latch_owner_fence(state,path,reason):
     state["last_error"]="owner fence recovery required: "+reason
     atomic_json(path,state)
 
-def crypto_protected_buy_limit(ask):
+def crypto_market_cash_budget(ask):
     ask=float(ask)
     if not math.isfinite(ask) or ask<=0:
         raise DriverError("invalid crypto ask")
-    if abs(ask*4-round(ask*4))>1e-7:
-        raise DriverError("crypto quote violates tick constraints")
-    ceiling=min(ask*1.0005,150.0/QTY)
-    price=math.floor(ceiling*4.0+1e-9)/4.0
-    if (price<ask or price*QTY>150.0+1e-9 or
-            price>ask*1.0005+1e-9):
-        raise DriverError("crypto protected buy limit unavailable")
-    return price
+    # Cash limits requested spend, not the eventual base quantity. Round DOWN
+    # to cents and let Execution recheck against its own fresh Broker quote.
+    cash=math.floor(min(150.0,ask*QTY)*100.0)/100.0
+    if cash<=0 or cash>150.0 or cash/ask>QTY:
+        raise DriverError("crypto market cash budget unavailable")
+    return cash
 
 def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None):
+    if state.get("pending") is not None:
+        raise DriverError("original command pending; replacement preparation forbidden")
     preview=cid("driver-preview")
+    cash=None
     if kind=="OPEN":
         ref=float(quote["ask"] if side=="BUY" else quote["bid"])
         if INSTRUMENT=="BTC.USD":
             if side!="BUY": raise DriverError("crypto short entries are not supported")
-            ref=crypto_protected_buy_limit(ref)
-            if abs(ref*4-round(ref*4))>1e-7:
-                raise DriverError("crypto quote violates notional/tick constraints")
+            cash=crypto_market_cash_budget(ref)
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-open",
-                ["--call-id",preview,"--price",format(ref,".17g"),"--quantity",format(QTY,".17g"),"--expiry",str(now_ms()+45000)])
+                ["--call-id",preview,"--price",format(ref,".17g"),"--cash-quantity",format(cash,".17g"),"--expiry",str(now_ms()+45000)])
         else:
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-open",
                 ["--call-id",preview,"--side",side,"--price",format(ref,".17g"),"--expiry",str(now_ms()+45000)])
@@ -210,6 +236,10 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
     pending={"kind":kind,"command_id":prepared["command_id"],"send_state":"PREPARED",
         "created_at_ms":now_ms(),"instrument":INSTRUMENT,"broker_order_id":None,"side":side,"reference_price":ref,
         "position_before_send":float(state.get("position",0.0))}
+    if cash is not None:
+        pending.update(quantity_mode="CASH",cash_quantity=cash,order_type="MKT",tif="IOC")
+    if INSTRUMENT=="BTC.USD" and kind=="CLOSE":
+        pending["parent_entry_command_id"]=state.get("entry_command_id")
     state["pending"]=pending; atomic_json(path,state)
     # This state precedes the one and only transport attempt. A crash here must
     # inspect the original HSR1 command and can never mint a replacement ID.
@@ -282,19 +312,25 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
     p["last_status"]={"at_ms":now_ms(),"command_status":payload.get("command_status"),"reason_code":payload.get("reason_code","")}
     expected_sign=1.0 if p.get("side")=="BUY" else -1.0 if p.get("side")=="SELL" else 0.0
     open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>QUANTITY_TOLERANCE and
-        abs(pos)<=QTY+QUANTITY_TOLERANCE and expected_sign*pos>0 and fill is not None and
+        (abs(pos)<=QTY+QUANTITY_TOLERANCE or (INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH")) and
+        expected_sign*pos>0 and fill is not None and
         payload.get("command_status")=="accepted")
     if open_position_matches:
+        if INSTRUMENT=="BTC.USD":
+            state.update(entry_command_id=p["command_id"],entry_quantity=float(fill["quantity"]),
+                entry_broker_execution_id=fill["broker_execution_id"],entry_venue_correlation_id=fill["venue_correlation_id"],
+                entry_cash_quantity=p.get("cash_quantity"),crypto_exit_evidence=[])
         state["position"]=pos; state["entries"]+=1
         state["entry_price"]=fill_price
         state["entry_price_basis"]="broker_average_fill_price" if fill else "unavailable"
         state["entry_at_ms"]=now_ms(); state["pending"]=None
-        if abs(pos)<QTY-QUANTITY_TOLERANCE or not fill:
+        cash_sized=INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH"
+        if (abs(pos)<QTY-QUANTITY_TOLERANCE and not cash_sized) or not fill or abs(pos)>QTY+QUANTITY_TOLERANCE:
             if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
                 state["crypto_partial_owned_halt"]=True
             state["halt_new_entries"]=True
             state["risk_halt_reason"]="PARTIAL_OR_UNPROVEN_ENTRY"
-            state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
+            state["last_error"]="entry outside nominal quantity or without full proof; exact reduce-only exit required"
         else: state["last_error"]=""
     elif (p["kind"]=="CLOSE" and abs(pos)<QUANTITY_TOLERANCE and not active and fill is not None and
             payload.get("command_status")=="accepted"):
@@ -302,6 +338,14 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         if fill_price and entry and old:
             closed_qty=min(abs(old),float(fill.get("quantity",QTY)))
             state["gross_pnl"]+=((fill_price-entry)*closed_qty if old>0 else (entry-fill_price)*closed_qty)
+        if INSTRUMENT=="BTC.USD":
+            record_crypto_exit(state,p,fill)
+            exits=state.get("crypto_exit_evidence",[])
+            if (state.get("entry_command_id") and state.get("entry_broker_execution_id") and exits and
+                abs(sum(x["quantity"] for x in exits)-float(state.get("entry_quantity",0)))<=QUANTITY_TOLERANCE):
+                state["crypto_roundtrip_proof"]={"entry_command_id":state["entry_command_id"],
+                    "entry_execution_id":state["entry_broker_execution_id"],"entry_quantity":state["entry_quantity"],
+                    "exits":copy_exit_evidence(exits),"verified_at_ms":now_ms()}
         state.update(position=0.0,entry_price=None,entry_price_basis=None,entry_at_ms=None,pending=None,last_error="")
         state["exits"]+=1; state["closed_trades"]+=1
         if (INSTRUMENT=="BTC.USD" and state.get("crypto_partial_owned_halt") and
@@ -318,13 +362,16 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             state["last_error"]="partial exit quantity/economic evidence mismatch"
             atomic_json(path,state);return
         state["gross_pnl"]+=((fill_price-entry)*reduced if old>0 else (entry-fill_price)*reduced)
+        if INSTRUMENT=="BTC.USD": record_crypto_exit(state,p,fill)
         state["partial_exit_fills"]=int(state.get("partial_exit_fills",0))+1
         if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
             state["crypto_partial_owned_halt"]=True
         state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
         state["risk_halt_reason"]="PARTIAL_FLATTEN"
         state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
-    elif ((payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],p,expected_side)) and
+    # A status-only rejection after a possible send is not zero-fill proof.
+    # Definite pre-send refusals were handled separately above with no order ID.
+    elif (terminal_nonfill(snap["orders"],p,expected_side) and
           not active and math.isfinite(pos) and
           abs(pos-float(state.get("position",0.0)))<QUANTITY_TOLERANCE):
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
@@ -496,11 +543,13 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
     guard=run([cli,"paper-on"],10)
     if guard.returncode!=0: raise DriverError("post-audit local PAPER guard not ready")
     # Capability verification only: this permit is never submitted or persisted.
-    fields=["instrument="+INSTRUMENT,"side=BUY","quantity="+format(QTY,".17g"),
-        "order_type="+("LMT" if INSTRUMENT=="BTC.USD" else "MKT"),
+    fields=["instrument="+INSTRUMENT,"side=BUY","order_type=MKT",
         "tif="+("IOC" if INSTRUMENT=="BTC.USD" else "DAY"),
         "reference_price="+format(float(snap["quote"]["ask"]),".17g"),"expires_at_ms="+str(now_ms()+4000)]
-    if INSTRUMENT=="BTC.USD":fields.append("limit_price="+format(float(snap["quote"]["ask"]),".17g"))
+    if INSTRUMENT=="BTC.USD":
+        fields.extend(["symbol=BTC","sec_type=CRYPTO","exchange=PAXOS","currency=USD",
+            "cash_quantity="+format(crypto_market_cash_budget(snap["quote"]["ask"]),".17g")])
+    else: fields.append("quantity="+format(QTY,".17g"))
     preview=native(cli,"risk.preview_order",*fields)
     if (preview.get("approved") is not True or not preview.get("preview_permit") or
             preview.get("service_epoch")!=snap["service_epoch"] or
@@ -618,6 +667,8 @@ def main():
         else:
             state["position"]=float(snap["position"]); atomic_json(state_path,state)
         os.close(lock); return 0
+    if crypto and not crypto_roundtrip_qualified(state):
+        raise DriverError("crypto resident driver requires a correlation-bound completed round trip")
     while not stop:
         started=time.monotonic()
         try:

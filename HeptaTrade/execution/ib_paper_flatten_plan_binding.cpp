@@ -53,6 +53,8 @@ void AppendOrderBinding(
     AppendField(output, "order.type", plan.order.orderType);
     AppendField(output, "order.quantity",
                 Number(plan.order.totalQuantity));
+    if (plan.order.cashQuantity != 0.0)
+        AppendField(output, "order.cash_quantity", Number(plan.order.cashQuantity));
     AppendField(output, "order.limit_price", Number(plan.order.lmtPrice));
     AppendField(output, "order.aux_price", Number(plan.order.auxPrice));
     AppendField(output, "order.outside_rth",

@@ -43,8 +43,10 @@ const char* const kWatchSnapshotReadTools[] = {
 };
 
 const char* kPlaceInputSchema =
-    "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"quantity\",\"order_type\",\"tif\",\"expires_at_ms\",\"preview_permit\"],"
+    "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"order_type\",\"tif\",\"expires_at_ms\",\"preview_permit\"],"
+    "\"oneOf\":[{\"required\":[\"quantity\"],\"not\":{\"required\":[\"cash_quantity\"]}},{\"required\":[\"cash_quantity\"],\"not\":{\"required\":[\"quantity\"]}}],"
     "\"properties\":{\"instrument\":{\"type\":\"string\"},\"side\":{\"enum\":[\"BUY\",\"SELL\"]},"
+    "\"cash_quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
     "\"quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"order_type\":{\"enum\":[\"MKT\",\"LMT\"]},"
     "\"tif\":{\"enum\":[\"DAY\",\"IOC\",\"FOK\"]},\"position_effect\":{\"enum\":[\"OPEN\",\"CLOSE\",\"CLOSE_TODAY\",\"CLOSE_YESTERDAY\"]},"
     "\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
@@ -55,8 +57,10 @@ const char* kPlaceInputSchema =
     "\"preview_permit\":{\"type\":\"string\",\"minLength\":71,\"maxLength\":71}},\"additionalProperties\":false}";
 
 const char* kPreviewInputSchema =
-    "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"quantity\",\"order_type\",\"tif\",\"expires_at_ms\"],"
+    "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"order_type\",\"tif\",\"expires_at_ms\"],"
+    "\"oneOf\":[{\"required\":[\"quantity\"],\"not\":{\"required\":[\"cash_quantity\"]}},{\"required\":[\"cash_quantity\"],\"not\":{\"required\":[\"quantity\"]}}],"
     "\"properties\":{\"instrument\":{\"type\":\"string\"},\"side\":{\"enum\":[\"BUY\",\"SELL\"]},"
+    "\"cash_quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
     "\"quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"order_type\":{\"enum\":[\"MKT\",\"LMT\"]},"
     "\"tif\":{\"enum\":[\"DAY\",\"IOC\",\"FOK\"]},\"position_effect\":{\"enum\":[\"OPEN\",\"CLOSE\",\"CLOSE_TODAY\",\"CLOSE_YESTERDAY\"]},"
     "\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"

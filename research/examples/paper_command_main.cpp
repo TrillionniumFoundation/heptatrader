@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
         if (op == "prepare-open") {
             for (const auto* name : {"--call-id", "--side", "--price", "--expiry"}) required.insert(name);
         } else if (op == "prepare-crypto-open") {
-            for (const auto* name : {"--call-id", "--price", "--expiry", "--quantity"}) required.insert(name);
+            for (const auto* name : {"--call-id", "--price", "--expiry", "--cash-quantity"}) required.insert(name);
         } else if (op == "prepare-close" || op == "prepare-crypto-close") required.insert("--call-id");
         else if (op == "submit" || op == "inspect") {
             required.insert("--command-id");
@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
             if (!client.Prepare(order,args.at("--call-id"),prepared,result,reason))
                 return emit(false,prepared.CommandId(),reason,result);
         } else if (op == "prepare-crypto-open") {
-            const auto order = PreparedOrder::LimitCrypto(number<double>(args.at("--quantity")),
+            const auto order = PreparedOrder::MarketCrypto(number<double>(args.at("--cash-quantity")),
                 number<double>(args.at("--price")), number<std::int64_t>(args.at("--expiry")));
             if (!client.Prepare(order,args.at("--call-id"),prepared,result,reason))
                 return emit(false,prepared.CommandId(),reason,result);

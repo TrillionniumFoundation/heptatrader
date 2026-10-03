@@ -18,7 +18,7 @@ class ProtocolReferenceTests(unittest.TestCase):
         renderer = self.renderer()
         renderer.sync_tool_fields(ROOT)
         rows = renderer.parse_tool_fields((ROOT / renderer.TOOL_FIELDS).read_text())
-        self.assertEqual([number for _, number, _, enabled in rows if enabled], list(range(1, 27)))
+        self.assertEqual([number for _, number, _, enabled in rows if enabled], list(range(1, 27)) + [35])
         self.assertEqual([number for _, number, _, enabled in rows if not enabled], list(range(27, 35)))
         self.assertEqual(renderer.render(ROOT), (ROOT / "docs/technical/wire-field-reference.md").read_text())
 

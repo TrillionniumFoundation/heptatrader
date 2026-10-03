@@ -37,6 +37,10 @@ struct OrderIntent
     double auxPrice = 0.0;
     bool outsideRth = false;
     std::string orderRef;
+    // Quote-currency cash budget, mutually exclusive with base quantity.
+    // Zero is the legacy quantity-sized contract; it must remain absent from
+    // legacy request bytes/hashes. A budget is never a promised fill quantity.
+    double cashQuantity = 0.0;
 };
 
 enum class MarketSubscriptionState

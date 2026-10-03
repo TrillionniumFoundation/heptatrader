@@ -54,7 +54,7 @@ void IBSubmittedOrderQuantityTracker::Reset(
 void IBSubmittedOrderQuantityTracker::Record(
     long orderId, const IBContractLite& contract, const IBOrderLite& order) {
     if (m_connectionEpoch != 0 && m_clientId >= 0 && !m_account.empty() &&
-        orderId >= 0 && std::isfinite(order.totalQuantity) && order.totalQuantity > 0.0) {
+        orderId >= 0 && order.cashQuantity == 0.0 && std::isfinite(order.totalQuantity) && order.totalQuantity > 0.0) {
         SubmittedOrder submitted;submitted.contract = contract;submitted.order = order;
         m_orders[orderId] = submitted;
     }
@@ -739,6 +739,8 @@ static IBOrderLite BuildOrderLite(const Order& o) {
     if (o.totalQuantity != UNSET_DECIMAL) {
         out.totalQuantity = DecimalFunctions::decimalToDouble(o.totalQuantity);
     }
+    if (o.cashQty != UNSET_DOUBLE && std::isfinite(o.cashQty) && o.cashQty > 0.0)
+        out.cashQuantity = o.cashQty;
     if (o.lmtPrice != UNSET_DOUBLE && std::isfinite(o.lmtPrice)) {
         out.lmtPrice = o.lmtPrice;
     }
@@ -1429,6 +1431,7 @@ public:
             << " type=" << od.orderType
             << " tif=" << od.tif
             << " qty=" << DecimalFunctions::decimalToDouble(od.totalQuantity)
+            << " cash=" << (od.cashQty == UNSET_DOUBLE ? 0.0 : od.cashQty)
             << " lmt=" << od.lmtPrice
             << " outsideRth=" << (od.outsideRth ? 1 : 0);
         return oss.str();
@@ -1456,13 +1459,23 @@ public:
         Order od;
         od.action = o.action;
         od.orderType = o.orderType.empty() ? "MKT" : o.orderType;
+        const bool cash = o.cashQuantity != 0.0;
         const double qty = o.totalQuantity;
-        if (!(std::isfinite(qty)) || qty <= 0.0) {
+        if (!std::isfinite(o.cashQuantity) || o.cashQuantity < 0.0 ||
+            !std::isfinite(qty) || (cash ? qty != 0.0 : qty <= 0.0))
             return rejectLocal("IB_LOCAL_REJECT_QTY_INVALID", 32101);
-        }
-        od.totalQuantity = DecimalFunctions::doubleToDecimal(qty);
-        if (od.totalQuantity == UNSET_DECIMAL) {
-            return rejectLocal("IB_LOCAL_REJECT_QTY_DECIMAL_ENCODE", 32104);
+        if (cash) {
+            if (c.secType != "CRYPTO" || c.symbol != "BTC" || c.currency != "USD" ||
+                c.exchange != "PAXOS" || od.action != "BUY" || od.orderType != "MKT" ||
+                timeInForce != "IOC" || o.lmtPrice != 0.0)
+                return rejectLocal("IB_LOCAL_REJECT_CASH_SCOPE_INVALID", 32108);
+            // IB 10293: a crypto cash order must NOT also specify base size.
+            od.totalQuantity = UNSET_DECIMAL;
+            od.cashQty = o.cashQuantity;
+        } else {
+            od.totalQuantity = DecimalFunctions::doubleToDecimal(qty);
+            if (od.totalQuantity == UNSET_DECIMAL)
+                return rejectLocal("IB_LOCAL_REJECT_QTY_DECIMAL_ENCODE", 32104);
         }
         if (od.action != "BUY" && od.action != "SELL") {
             return rejectLocal("IB_LOCAL_REJECT_ACTION_INVALID", 32102);
@@ -1483,8 +1496,9 @@ public:
         }
         if (c.secType == "CRYPTO" &&
             (c.symbol != "BTC" || c.currency != "USD" || c.exchange != "PAXOS" ||
-             od.orderType != "LMT" || timeInForce != "IOC"))
-            return rejectLocal("IB_CRYPTO_LIMIT_IOC_REQUIRED", 32107);
+             od.orderType != "MKT" || timeInForce != "IOC" || o.lmtPrice != 0.0 ||
+             (od.action == "BUY" ? !cash : cash)))
+            return rejectLocal("IB_CRYPTO_MARKET_IOC_REQUIRED", 32107);
         od.tif = timeInForce;
         if (o.positionEffect.empty()) {
             od.openClose.clear();
@@ -1648,6 +1662,7 @@ public:
             + " synthStatus=" + synthStatus);
         const double remainingQty = (totalQty > 0.0) ? std::max(0.0, totalQty - cumQty) : 0.0;
         executionEvent.number3 = remainingQty;
+        executionEvent.remainingQuantityKnown = totalQuantityKnown;
         PushEvent(std::move(executionEvent));
         // execDetails does not carry the order's total quantity.  After a
         // process restart m_orderQuantities has no entry for historical fills,

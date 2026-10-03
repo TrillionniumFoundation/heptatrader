@@ -110,6 +110,9 @@ struct IBEvent {
     double number = 0.0;
     double number2 = 0.0;
     double number3 = 0.0;
+    // SDK execDetails omits total/remaining size. False forbids interpreting
+    // the placeholder number3=0 as an actual completion witness.
+    bool remainingQuantityKnown = true;
     double marketCapPrice = 0.0;
     IBContractLite contract;
     IBOrderLite order;

@@ -401,6 +401,11 @@ TradingToolResult TradingToolHost::PrepareMutationCall(
 				"CONTRACT_IDENTITY_MISMATCH", "client contract differs from the server-bound instrument");
 		call.ibContract = expected;
 	}
+	if (call.name == "trade.place_order" && call.ibOrder.cashQuantity != 0.0 &&
+        (binding.session.environment != "PAPER" || !std::isfinite(binding.maxOrderQuantity) ||
+         binding.maxOrderQuantity < 0.001))
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "CASH_QUANTITY_SESSION_SCOPE_REQUIRED", "cash sizing requires the bounded PAPER BTC scope");
 	if (call.name == "trade.place_order" &&
 		(!std::isfinite(call.ibOrder.totalQuantity) ||
 		 call.ibOrder.totalQuantity > binding.maxOrderQuantity))
@@ -431,6 +436,11 @@ TradingToolResult TradingToolHost::PrepareReadCall(
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SERVER_CONTRACT_BINDING_REQUIRED", "instrument has no server-side broker contract");
 		call.ibContract = bound->second;
+		if (call.name == "risk.preview_order" && call.ibOrder.cashQuantity != 0.0 &&
+            (binding.session.environment != "PAPER" || !std::isfinite(binding.maxOrderQuantity) ||
+             binding.maxOrderQuantity < 0.001))
+            return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+                "CASH_QUANTITY_SESSION_SCOPE_REQUIRED", "cash sizing requires the bounded PAPER BTC scope");
 		if (call.name == "risk.preview_order" &&
 			(!std::isfinite(call.ibOrder.totalQuantity) ||
 			 call.ibOrder.totalQuantity > binding.maxOrderQuantity))

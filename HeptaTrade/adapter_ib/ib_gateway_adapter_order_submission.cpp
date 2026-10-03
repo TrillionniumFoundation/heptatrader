@@ -161,10 +161,21 @@ bool HeptaIBGatewayAdapter::ValidateOrderRequest(
         detail = "IB openClose cannot distinguish CLOSE_TODAY/CLOSE_YESTERDAY";
         return false;
     }
-    if (!(order.totalQuantity > 0.0) ||
-        !std::isfinite(order.totalQuantity)) {
+    const bool cash = order.cashQuantity != 0.0;
+    if (!std::isfinite(order.cashQuantity) || order.cashQuantity < 0.0 ||
+        !std::isfinite(order.totalQuantity) ||
+        (cash ? order.totalQuantity != 0.0 : order.totalQuantity <= 0.0)) {
         reason = "RISK_QTY_INVALID";
         detail = "qty must be finite and > 0";
+        return false;
+    }
+    if (cash && (!m_cachedPaperAccount || contract.symbol != "BTC" ||
+        contract.secType != "CRYPTO" || contract.exchange != "PAXOS" ||
+        contract.currency != "USD" || order.action != "BUY" ||
+        order.orderType != "MKT" || order.lmtPrice != 0.0 ||
+        timeInForce != "IOC" || !order.positionEffect.empty())) {
+        reason = "IB_CRYPTO_MARKET_CASH_SCOPE_INVALID";
+        detail = "cash sizing is restricted to PAPER BTC/PAXOS/USD BUY MKT IOC";
         return false;
     }
     if (order.orderType == "LMT" &&
@@ -331,22 +342,27 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
     }
     if (crypto)
     {
-        const double atoms = order.totalQuantity * 100000000.0;
-        const bool grid = std::isfinite(atoms) && atoms >= 1.0 &&
-            std::fabs(atoms - std::round(atoms)) <= 1e-7;
-        if (context->timeInForce != "IOC" || order.orderType != "LMT" ||
-            !grid || order.totalQuantity > 0.001 || !std::isfinite(order.lmtPrice) ||
-            order.lmtPrice <= 0.0 || order.lmtPrice > 10000000.0 ||
-            std::fabs(order.lmtPrice * 4.0 - std::round(order.lmtPrice * 4.0)) > 1e-7 ||
-            position < 0.0 || position > 0.001)
+        if (context->timeInForce != "IOC" || order.orderType != "MKT" ||
+            order.lmtPrice != 0.0 || order.auxPrice != 0.0 || order.outsideRth ||
+            !order.positionEffect.empty() || !std::isfinite(position) || position < 0.0)
         { reason = "IB_CRYPTO_ORDER_ENVELOPE_INVALID"; return false; }
         if (context->exactReduceOnly)
         {
-            if (order.action != "SELL" || order.totalQuantity != position)
+            // An adverse/price-improved MKT fill can differ from the admission
+            // estimate. It must remain closable by exact owned-position SELL.
+            const double atoms = order.totalQuantity * 100000000.0;
+            if (order.action != "SELL" || order.cashQuantity != 0.0 ||
+                order.totalQuantity != position || !std::isfinite(atoms) ||
+                atoms < 1.0 || atoms > 9007199254740991.0 ||
+                std::fabs(atoms - std::round(atoms)) > 1e-7)
             { reason = "IB_CRYPTO_REDUCE_ONLY_REQUIRED"; return false; }
         }
-        else if (order.action != "BUY" || order.totalQuantity > 0.001 - position ||
-                 order.lmtPrice > 150.0 / order.totalQuantity)
+        else if (!context->authoritativeQuoteBound || order.action != "BUY" ||
+            order.totalQuantity != 0.0 || !std::isfinite(order.cashQuantity) ||
+            order.cashQuantity <= 0.0 || order.cashQuantity > 150.0 ||
+            std::fabs(order.cashQuantity * 100.0 - std::round(order.cashQuantity * 100.0)) > 1e-7 ||
+            !std::isfinite(context->quoteAsk) || context->quoteAsk <= 0.0 ||
+            position > 0.001 || order.cashQuantity / context->quoteAsk > 0.001 - position)
         { reason = "IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED"; return false; }
     }
     baseline.instrument = instrument;
@@ -391,6 +407,7 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
             binding.contract = contract;
             binding.side = order.action;
             binding.quantity = order.totalQuantity;
+            binding.cashQuantity = order.cashQuantity;
             m_liveTerminalBindings[orderId] = binding;
         }
         if (baseline) m_orderRiskBaselines[orderId] = *baseline;
@@ -456,6 +473,15 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
             contract, startedAt, "RISK_DUPLICATE_ORDER", std::string());
 
     PopulatePreTradeRiskContext(contract, order);
+    if (order.cashQuantity > 0.0) {
+        if (!context || !context->authoritativeQuoteBound ||
+            !std::isfinite(context->quoteAsk) || context->quoteAsk <= 0.0)
+            return RejectOrder(contract, startedAt, "IB_CRYPTO_CASH_QUOTE_REQUIRED", std::string());
+        // Quote-equivalent admission only. Never send this estimate as size,
+        // and never use it as actual execution/terminal evidence.
+        m_riskCtxScratch.totalQuantity = order.cashQuantity / context->quoteAsk;
+        m_riskCtxScratch.referencePrice = context->quoteAsk;
+    }
     const PreTradeRiskDecision decision =
         PreTradeRiskEngine::Evaluate(m_cachedRiskCfg, m_riskCtxScratch);
     if (!decision.allow)

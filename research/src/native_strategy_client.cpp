@@ -101,6 +101,21 @@ PreparedOrder PreparedOrder::LimitCrypto(double quantity, double limitPrice, std
     Validate(result.call_);
     return result;
 }
+PreparedOrder PreparedOrder::MarketCrypto(double cashQuantity, double referencePrice, std::int64_t expiry) {
+    if (!std::isfinite(cashQuantity) || cashQuantity <= 0.0 || cashQuantity > 150.0 ||
+        std::fabs(cashQuantity * 100.0 - std::round(cashQuantity * 100.0)) > 1e-7 ||
+        !std::isfinite(referencePrice) || referencePrice <= 0.0 ||
+        cashQuantity / referencePrice > 0.001 || expiry <= 0)
+        throw std::invalid_argument("RESEARCH_PAPER_CRYPTO_CASH_SCOPE_INVALID");
+    InstrumentRef contract; contract.symbol="BTC"; contract.secType="CRYPTO";
+    contract.exchange="PAXOS"; contract.currency="USD";
+    PreparedOrder result("BTC.USD", contract, "BUY", 0.001, referencePrice, referencePrice, expiry);
+    result.call_.ibOrder.orderType="MKT"; result.call_.timeInForce="IOC";
+    result.call_.ibOrder.totalQuantity=0.0; result.call_.ibOrder.lmtPrice=0.0;
+    result.call_.ibOrder.cashQuantity=cashQuantity;
+    Validate(result.call_);
+    return result;
+}
 TradingToolHostRequest PreparedOrder::PreviewRequest(const std::string& id) const {
     CheckId(id);
     TradingToolHostRequest request;

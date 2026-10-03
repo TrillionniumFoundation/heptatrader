@@ -57,6 +57,7 @@ FIELD_IDS = {
     "expected_schema_hash": 24,
     "preview_permit": 25,
     "command_id": 26,
+    "cash_quantity": 35,
 }
 # generated-tool-fields:end
 

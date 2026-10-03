@@ -146,6 +146,7 @@ Source: `HeptaTrade/execution/execution_service_protocol.cpp`
 | 40 | `RecoveryIngressFence` | `Number(request.control.recoveryIngressFence)` |
 | 41 | `TerminalPreliminaryReceiptSha256` | `request.control.terminalPreliminaryReceiptSha256` |
 | 42 | `PositionEffect` | `command.order.positionEffect` |
+| 43 | `CashQuantity` | `Number(command.order.cashQuantity)` |
 | 100 | `ResultStatus` | `Number(static_cast<int>(response.status))` |
 | 101 | `ResultCommandId` | `response.commandId` |
 | 102 | `ResultOrderId` | `Number(response.orderId)` |
@@ -269,3 +270,4 @@ Tags and names are shared mechanically. Python profile exclusions remain explici
 | 32 | `trading_class` | Excluded |
 | 33 | `local_symbol` | Excluded |
 | 34 | `position_effect` | Excluded |
+| 35 | `cash_quantity` | Included |

@@ -610,6 +610,23 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
     const IBEvent& event) {
     int errorCode = 0;
     if (!ParseBrokerErrorCode(event.key, errorCode)) return;
+    // A repeat-cancel diagnostic is not an economic failure or terminal proof.
+    // Suppress ONLY a current-epoch, locally corroborated pending-cancel 10148;
+    // do not globally whitelist this code or infer Filled from its description.
+    if (errorCode == 10148 && event.connectionEpoch == m_connectionEpoch &&
+        event.id >= 0 && event.id <= std::numeric_limits<long>::max() &&
+        (event.brokerClientId < 0 || event.brokerClientId == m_cfg.clientId) &&
+        (event.account.empty() || event.account == m_cfg.account) &&
+        (event.value.find("PendingCancel") != std::string::npos ||
+         event.value.find("PreCancelled") != std::string::npos)) {
+        std::string suppression;
+        if (!m_orderLifecycle.CanCancel(static_cast<long>(event.id), &suppression) &&
+            suppression == "CANCEL_ALREADY_PENDING") {
+            EmitObsEvent("risk.pending_cancel_diagnostic",
+                "\"error_code\":10148,\"order_id\":" + std::to_string(event.id));
+            return;
+        }
+    }
     if (!IsIbConnectionControlError(errorCode))
         NotifyErrorEvent(errorCode);
     if (event.id < 0 || (errorCode != 201 && errorCode != 202))
@@ -1185,6 +1202,7 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) c
     const bool supportedStatusSource = event.value.empty() ||
         (event.value == "execDetails" && event.requestId == -1 &&
          (event.key == "Filled" || event.key == "PartiallyFilled") &&
+         binding.cashQuantity == 0.0 &&
          binding.executionQuantity > 0.0 &&
          event.number2 == binding.executionQuantity &&
          event.number == binding.executionAveragePrice &&
@@ -1196,15 +1214,17 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) c
         event.brokerClientId >= 0 && event.brokerClientId == m_cfg.clientId &&
         (event.account.empty() || event.account == m_cfg.account) &&
         supportedStatusSource &&
-        std::isfinite(binding.quantity) && binding.quantity > 0.0 &&
+        std::isfinite(binding.quantity) && (binding.cashQuantity > 0.0 || binding.quantity > 0.0) &&
         std::isfinite(event.number2) && event.number2 >= 0.0 &&
-        event.number2 <= binding.quantity &&
         std::isfinite(event.number3) && event.number3 >= 0.0 &&
-        event.number3 <= binding.quantity &&
-        event.number2 + event.number3 <= binding.quantity &&
+        std::isfinite(event.number2 + event.number3) &&
+        (binding.cashQuantity > 0.0 ||
+         (event.number2 <= binding.quantity && event.number3 <= binding.quantity &&
+          event.number2 + event.number3 <= binding.quantity)) &&
         (event.number2 == 0.0 || HasEconomicFillEvidence(event)) &&
         (event.key != "Filled" ||
-         (event.number2 == binding.quantity && event.number3 == 0.0));
+         (event.number3 == 0.0 && (binding.cashQuantity > 0.0 ?
+          event.number2 > 0.0 : event.number2 == binding.quantity)));
 }
 
 bool HeptaIBGatewayAdapter::IsConsistentBoundLiveExecution(const IBEvent& event) const {
@@ -1223,8 +1243,8 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundLiveExecution(const IBEvent& event)
         event.brokerClientId >= 0 && event.brokerClientId == m_cfg.clientId &&
         !event.key.empty() && !m_cfg.account.empty() && event.account == m_cfg.account &&
         side == binding.side && HasEconomicFillEvidence(event) &&
-        std::isfinite(binding.quantity) && binding.quantity > 0.0 &&
-        event.number2 <= binding.quantity &&
+        std::isfinite(binding.quantity) && (binding.cashQuantity > 0.0 || binding.quantity > 0.0) &&
+        (binding.cashQuantity > 0.0 || event.number2 <= binding.quantity) &&
         MatchesSubmittedIBContract(binding.contract, event.contract) &&
         !expectedInstrument.empty() &&
         DecodeVenueOrderRef(event.order.orderRef, correlation, reason) &&
@@ -1243,9 +1263,9 @@ void HeptaIBGatewayAdapter::ApplyLiveTerminalEvidence(const IBEvent& event) {
     if (found == m_liveTerminalBindings.end()) return;
     LiveTerminalBinding& binding = found->second;
     if (binding.connectionEpoch != m_connectionEpoch ||
-        !std::isfinite(binding.quantity) || binding.quantity <= 0.0 ||
+        !std::isfinite(binding.quantity) || (binding.cashQuantity == 0.0 && binding.quantity <= 0.0) ||
         !std::isfinite(event.number2) || event.number2 < 0.0 ||
-        event.number2 > binding.quantity)
+        (binding.cashQuantity == 0.0 && event.number2 > binding.quantity))
         return;
     if (event.type == IBEventType::ExecutionDetails) {
         if (!IsConsistentBoundLiveExecution(event)) return;
@@ -1279,7 +1299,8 @@ void HeptaIBGatewayAdapter::PublishLiveTerminalEvidence(long orderId) {
     const bool terminal = !binding.terminalStatus.empty() &&
         binding.terminalFilledQuantity == binding.executionQuantity &&
         (binding.terminalStatus != "Filled" ||
-         binding.executionQuantity == binding.quantity);
+         (binding.cashQuantity > 0.0 ? binding.executionQuantity > 0.0 :
+          binding.executionQuantity == binding.quantity));
     if (!executed && !terminal) return;
     const auto existing = m_terminalCorrelationSnapshot.
         terminalOrderIdsByCorrelation.find(binding.correlationId);

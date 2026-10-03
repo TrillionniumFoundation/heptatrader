@@ -201,6 +201,8 @@ std::string ToolDecisionAudit::RequestFingerprint(
     AppendValue(canonical, "order_type", request.call.ibOrder.orderType);
     AppendValue(canonical, "position_effect", request.call.ibOrder.positionEffect);
     AppendValue(canonical, "quantity", Number(request.call.ibOrder.totalQuantity));
+    if (request.call.ibOrder.cashQuantity != 0.0)
+        AppendValue(canonical, "cash_quantity", Number(request.call.ibOrder.cashQuantity));
     AppendValue(canonical, "limit_price", Number(request.call.ibOrder.lmtPrice));
     AppendValue(canonical, "aux_price", Number(request.call.ibOrder.auxPrice));
     AppendValue(canonical, "outside_rth", request.call.ibOrder.outsideRth ? "1" : "0");

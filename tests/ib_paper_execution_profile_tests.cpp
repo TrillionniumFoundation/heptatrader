@@ -883,8 +883,8 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     command.context.account=config.account;command.context.venue="IB";command.context.executionDomain="PAPER";
     command.instrument="BTC.USD";command.contract.symbol="BTC";command.contract.secType="CRYPTO";
     command.contract.exchange="PAXOS";command.contract.currency="USD";
-    command.timeInForce="IOC";command.order.action="BUY";command.order.orderType="LMT";
-    command.order.totalQuantity=0.001;command.order.lmtPrice=85000.25;command.referencePrice=85000.25;
+    command.timeInForce="IOC";command.order.action="BUY";command.order.orderType="MKT";
+    command.order.totalQuantity=0.0;command.order.cashQuantity=85.0;command.order.lmtPrice=0.0;command.referencePrice=85000.25;
     IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.instrumentPositionsComplete=true;
     risk.instrumentPositions["EUR.USD"]=-25000;risk.instrumentPositions["BTC.USD"]=0;
     risk.grossAbsolutePosition=25000;std::string reason;
@@ -897,19 +897,25 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     for (int kind=0;kind!=12;++kind) {
         auto bad=command;auto badRisk=risk;
         if(kind==0)bad.order.totalQuantity=25000;
-        if(kind==1)bad.order.totalQuantity=0.00100001;
-        if(kind==2)bad.order.totalQuantity=0.000000005;
+        if(kind==1)bad.order.cashQuantity=85.01;
+        if(kind==2)bad.order.cashQuantity=84.995;
         if(kind==3)bad.order.action="SELL";
         if(kind==4)bad.timeInForce="DAY";
         if(kind==5)bad.contract.exchange="ZEROHASH";
         if(kind==6)bad.contract.symbol="ETH";
         if(kind==7)bad.order.lmtPrice=85000.10;
-        if(kind==8)bad.order.orderType="MKT";
-        if(kind==9){bad.order.lmtPrice=150000.25;bad.referencePrice=150000.25;}
+        if(kind==8)bad.order.orderType="LMT";
+        if(kind==9){bad.order.cashQuantity=150.01;bad.referencePrice=150000.25;}
         if(kind==10)badRisk.instrumentPositionsComplete=false;
         if(kind==11)badRisk.instrumentPositions["BTC.USD"]=0.0001;
         assert(!allowed(bad,badRisk));
     }
+    for (const double cash : {0.0, -1.0, 150.01, std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+        auto bad=command;bad.order.cashQuantity=cash;assert(!allowed(bad,risk));
+    }
+    auto arbitraryReference=command;arbitraryReference.referencePrice=85000.1;
+    assert(allowed(arbitraryReference,risk)); // MKT reference need not be a limit-price tick.
     auto foreign=risk;foreign.instrumentPositions["ETH.USD"]=1;
     assert(!allowed(command,foreign));
     auto excessiveFx=risk;excessiveFx.instrumentPositions["EUR.USD"]=-25001;
@@ -922,7 +928,7 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     assert(mixedCredential!=oldCredential && !single.UsesUserCrypto());
 }
 
-void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
+void TestCryptoFlattenIsExactOwnedLongAndMarketIOC()
 {
     if (::geteuid()==0 || ::getegid()==0)return;
     const auto config=MixedCryptoProfileForTest();
@@ -932,12 +938,12 @@ void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
     command.context.executionDomain="PAPER";command.instrument="BTC.USD";
     AuthoritativeFlattenPlan plan;
     plan.instrument="BTC.USD";plan.contract.symbol="BTC";plan.contract.secType="CRYPTO";
-    plan.contract.exchange="PAXOS";plan.contract.currency="USD";plan.profileOrderMode="USER_CRYPTO_LMT_IOC";
+    plan.contract.exchange="PAXOS";plan.contract.currency="USD";plan.profileOrderMode="USER_CRYPTO_MKT_IOC";
     plan.timeInForce="IOC";plan.expectedPositionQuantity=0.0004;
     plan.positionConnectionEpoch=1;plan.positionGeneration=1;
-    plan.order.action="SELL";plan.order.orderType="LMT";plan.order.totalQuantity=0.0004;
-    plan.order.lmtPrice=IbPaperExecutionProfileConfig::CryptoProtectedSellLimit(85000);
-    plan.referencePrice=plan.order.lmtPrice;plan.quoteBid=85000;plan.quoteAsk=85000.25;
+    plan.order.action="SELL";plan.order.orderType="MKT";plan.order.totalQuantity=0.0004;
+    plan.order.lmtPrice=0.0;
+    plan.referencePrice=85000;plan.quoteBid=85000;plan.quoteAsk=85000.25;
     plan.quoteSubscriptionId="btc-quote";plan.quoteObservedAtMs=1000;plan.quoteStaleAfterMs=5000;
     IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.activeOrderCount=0;
     std::string reason;assert(guard.AllowFlatten(command,plan,risk,2000,reason));
@@ -954,8 +960,12 @@ void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
     assert(!guard.AllowFlatten(command,tooDeep,risk,2000,reason));
     auto aboveBid=plan;aboveBid.order.lmtPrice=85000.25;aboveBid.referencePrice=85000.25;
     assert(!guard.AllowFlatten(command,aboveBid,risk,2000,reason));
-    assert(IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
-        plan.order.lmtPrice,plan.quoteBid));
+    auto injected=plan;injected.order.cashQuantity=20;
+    assert(!guard.AllowFlatten(command,injected,risk,2000,reason));
+    auto recovered=plan;recovered.expectedPositionQuantity=0.00101;recovered.order.totalQuantity=0.00101;
+    assert(guard.AllowFlatten(command,recovered,risk,2000,reason));
+    recovered.order.totalQuantity+=0.00000001;
+    assert(!guard.AllowFlatten(command,recovered,risk,2000,reason));
 }
 
 void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
@@ -1006,7 +1016,7 @@ int main()
     TestUserPaperCustodyIsExplicitAndBounded();
     TestMixedCryptoRuntimeParsesRealEnvironmentFields();
     TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
-    TestCryptoFlattenIsExactOwnedLongAndLimitIOC();
+    TestCryptoFlattenIsExactOwnedLongAndMarketIOC();
     TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();

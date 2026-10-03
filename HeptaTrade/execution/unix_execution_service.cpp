@@ -85,6 +85,10 @@ std::string PreviewFingerprint(const PlaceOrderCommand& command)
     AppendFingerprintField(value, command.order.orderType);
     AppendFingerprintField(value, command.order.positionEffect);
     AppendFingerprintField(value, FingerprintNumber(command.order.totalQuantity));
+    if (command.order.cashQuantity != 0.0) {
+        AppendFingerprintField(value, "cash_quantity");
+        AppendFingerprintField(value, FingerprintNumber(command.order.cashQuantity));
+    }
     AppendFingerprintField(value, FingerprintNumber(command.order.lmtPrice));
     AppendFingerprintField(value, FingerprintNumber(command.order.auxPrice));
     AppendFingerprintField(value, command.order.outsideRth ? "1" : "0");

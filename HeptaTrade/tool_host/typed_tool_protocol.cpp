@@ -54,7 +54,7 @@ bool IsToolFieldAllowed(const std::string& tool, unsigned int id)
     if (tool == "trade.place_order" || tool == "risk.preview_order")
     {
         return id == Instrument || id == Symbol || id == Currency || id == SecType ||
-               id == Exchange || id == Side || id == OrderType || id == Quantity ||
+               id == Exchange || id == Side || id == OrderType || id == Quantity || id == CashQuantity ||
                id == LimitPrice || id == ReferencePrice || id == ExpiresAtMs ||
                id == TimeInForce || id == PrimaryExchange || id == ContractMonth ||
                id == Right || id == Strike || id == Multiplier ||
@@ -115,6 +115,11 @@ bool ValidateFieldSet(const std::map<unsigned int, std::string>& fields, std::st
         return false;
     }
     const std::string& tool = toolIt->second;
+    if ((tool == "risk.preview_order" || tool == "trade.place_order") &&
+        fields.count(Quantity) && fields.count(CashQuantity)) {
+        reason = "SCHEMA_CONFLICTING_ORDER_SIZE";
+        return false;
+    }
     if (!TradingToolWireContract::IsCanonicalToolName(tool))
     {
         reason = "INVALID_TOOL_NAME";
@@ -148,7 +153,8 @@ bool ValidateFieldSet(const std::map<unsigned int, std::string>& fields, std::st
     }
     for (unsigned int id = Instrument; id <= TargetCommandId; ++id)
     {
-        if (IsRequiredToolField(tool, id) && fields.find(id) == fields.end())
+        if (IsRequiredToolField(tool, id) && fields.find(id) == fields.end() &&
+            !(id == Quantity && fields.count(CashQuantity)))
         {
             reason = std::string("SCHEMA_MISSING_REQUIRED_FIELD:") + FieldName(id);
             return false;
@@ -272,7 +278,7 @@ bool DecodeFields(const std::string& body, DecodedFields& fields,
         if (!ReadU16(body, offset, id) || !ReadU32(body, offset, length) ||
             length > 32768 || offset + length > body.size())
         { reason = "SCHEMA_MALFORMED_FIELD"; return false; }
-        if (id < SessionToken || id > PositionEffect || fields.count(id) != 0)
+        if (id < SessionToken || id > CashQuantity || fields.count(id) != 0)
         { reason = "SCHEMA_UNKNOWN_OR_DUPLICATE_FIELD"; return false; }
         fields[id] = body.substr(offset, length);
         offset += length;
@@ -281,7 +287,7 @@ bool DecodeFields(const std::string& body, DecodedFields& fields,
         fields.count(ToolName) == 0)
     { reason = "SCHEMA_MISSING_PROTOCOL_ENVELOPE"; return false; }
     if (!ValidateFieldSet(fields, reason)) return false;
-    for (unsigned int id = SessionToken; id <= PositionEffect; ++id)
+    for (unsigned int id = SessionToken; id <= CashQuantity; ++id)
         fields[id];
     return true;
 }
@@ -353,6 +359,9 @@ bool DecodeNumericFields(const DecodedFields& fields,
     if (!fields.at(Quantity).empty() &&
         !ParseDouble(fields.at(Quantity), request.call.ibOrder.totalQuantity))
     { reason = "INVALID_QUANTITY"; return false; }
+    if (!fields.at(CashQuantity).empty() &&
+        !ParseDouble(fields.at(CashQuantity), request.call.ibOrder.cashQuantity))
+    { reason = "INVALID_CASH_QUANTITY"; return false; }
     if (!fields.at(LimitPrice).empty() &&
         !ParseDouble(fields.at(LimitPrice), request.call.ibOrder.lmtPrice))
     { reason = "INVALID_LIMIT_PRICE"; return false; }
@@ -456,6 +465,7 @@ bool TypedToolProtocol::EncodeRequest(const TradingToolHostRequest& request, std
     if (!request.call.ibOrder.orderType.empty()) fields[OrderType] = request.call.ibOrder.orderType;
     if (!request.call.ibOrder.positionEffect.empty()) fields[PositionEffect] = request.call.ibOrder.positionEffect;
     if (request.call.ibOrder.totalQuantity != 0.0) fields[Quantity] = Number(request.call.ibOrder.totalQuantity);
+    if (request.call.ibOrder.cashQuantity != 0.0) fields[CashQuantity] = Number(request.call.ibOrder.cashQuantity);
     if (request.call.ibOrder.lmtPrice != 0.0) fields[LimitPrice] = Number(request.call.ibOrder.lmtPrice);
     if (request.call.referencePrice != 0.0) fields[ReferencePrice] = Number(request.call.referencePrice);
     if (request.call.expiresAtMs != 0) fields[ExpiresAtMs] = Number(request.call.expiresAtMs);

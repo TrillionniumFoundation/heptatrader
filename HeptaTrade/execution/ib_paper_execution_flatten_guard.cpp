@@ -168,13 +168,12 @@ bool IbPaperExecutionGuard::AllowFlatten(
     }
     const bool validExternalOrder = externalLimitDay &&
         ValidExternalFlattenOrder(plan, validExternalEnvelope);
-    const bool validCryptoOrder = crypto && plan.profileOrderMode == "USER_CRYPTO_LMT_IOC" &&
-        plan.timeInForce == "IOC" && plan.order.orderType == "LMT" && plan.order.action == "SELL" &&
+    const bool validCryptoOrder = crypto && plan.profileOrderMode == "USER_CRYPTO_MKT_IOC" &&
+        plan.timeInForce == "IOC" && plan.order.orderType == "MKT" && plan.order.action == "SELL" &&
         plan.expectedPositionQuantity > 0.0 && plan.order.totalQuantity == plan.expectedPositionQuantity &&
-        IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(quantity) &&
-        IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(
-            plan.order.lmtPrice, plan.quoteBid) &&
-        plan.referencePrice == plan.order.lmtPrice &&
+        IbPaperExecutionProfileConfig::CryptoExecutionQuantityOnGrid(quantity) &&
+        plan.order.lmtPrice == 0.0 && plan.order.cashQuantity == 0.0 &&
+        std::isfinite(plan.quoteBid) && plan.quoteBid > 0.0 && plan.referencePrice == plan.quoteBid &&
         plan.quoteAsk >= plan.quoteBid && std::isfinite(plan.quoteAsk) &&
         !plan.quoteSubscriptionId.empty() && plan.quoteObservedAtMs > 0 &&
         plan.quoteObservedAtMs <= static_cast<std::uint64_t>(nowMs) &&
