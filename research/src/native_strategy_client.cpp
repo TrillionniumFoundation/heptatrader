@@ -25,7 +25,8 @@ void Validate(const TradingToolCall& call) {
 PreparedOrder::PreparedOrder(const std::string& instrument, const InstrumentRef& contract,
                              const std::string& side, double quantity, double limit,
                              double reference, std::int64_t expiry) {
-    // This version explicitly supports only the existing LMT/DAY profile.
+    // This constructor defaults to LMT/DAY. Named bounded factories preserve
+    // immutable proposals while selecting their supported asset/TIF contract.
     // SHFE close-today/yesterday and legacy auto-open/close are not inferred.
     if (expiry <= 0 || !std::isfinite(quantity) || quantity <= 0 ||
         !std::isfinite(limit) || limit <= 0 || !std::isfinite(reference) || reference <= 0 ||
@@ -83,6 +84,20 @@ PreparedOrder PreparedOrder::MarketCash(const std::string& instrument,
     PreparedOrder result(instrument, contract, side, quantity, reference, reference, expiry);
     result.call_.ibOrder.orderType = "MKT";
     result.call_.ibOrder.lmtPrice = 0.0;
+    Validate(result.call_);
+    return result;
+}
+PreparedOrder PreparedOrder::LimitCrypto(double quantity, double limitPrice, std::int64_t expiry) {
+    if (!std::isfinite(quantity) || quantity <= 0.0 || quantity > 0.001 ||
+        std::fabs(quantity * 100000000.0 - std::round(quantity * 100000000.0)) > 1e-7 ||
+        !std::isfinite(limitPrice) || limitPrice <= 0.0 || limitPrice > 10000000.0 ||
+        std::fabs(limitPrice * 4.0 - std::round(limitPrice * 4.0)) > 1e-7 ||
+        limitPrice > 150.0 / quantity)
+        throw std::invalid_argument("RESEARCH_PAPER_CRYPTO_LIMIT_SCOPE_INVALID");
+    InstrumentRef contract; contract.symbol = "BTC"; contract.secType = "CRYPTO";
+    contract.exchange = "PAXOS"; contract.currency = "USD";
+    PreparedOrder result("BTC.USD", contract, "BUY", quantity, limitPrice, limitPrice, expiry);
+    result.call_.timeInForce = "IOC";
     Validate(result.call_);
     return result;
 }

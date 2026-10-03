@@ -74,6 +74,12 @@ public:
 	{
 		return Rejected(command);
 	}
+    std::function<ExecutionControlResult(const ExecutionControlCommand&)> leaseAudit;
+    ExecutionOwnerAuditResult AuditSessionLease(const ExecutionControlCommand& command) override
+    {
+        assert(command.recoveryIngressFence==0);
+        return leaseAudit ? leaseAudit(command) : Rejected(command);
+    }
     ExecutionOwnerAuditResult AuditSessionOwner(
         const ExecutionControlCommand& command) override
     {
@@ -140,6 +146,7 @@ void TestDurablePendingFenceRestartRecoveryWithReviewedPolicy();
 void TestDeterministicGenerationSchedules();
 void TestRestartAtEveryPersistedGeneration();
 void TestUserPaperResumeAuditsBeforeActivation();
+void TestCryptoAndFxSessionContractScopesRemainDisjoint();
 void TestWatchLeaseRestartFailsClosed();
 void TestSameHostWatchRestartFencesExactLocalSession();
 void TestWatchTransactionReservationRaces();

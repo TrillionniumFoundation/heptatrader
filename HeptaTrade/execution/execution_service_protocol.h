@@ -20,7 +20,8 @@ enum class ExecutionServiceOperation
     RecoveryQueryCommandStatus = 12,
     RecoveryAuditOwner = 13,
     TerminalizeRecoveryOwner = 14,
-    AuditSessionOwner = 15
+    AuditSessionOwner = 15,
+    AuditSessionLease = 16
 };
 
 struct ExecutionServiceRequest

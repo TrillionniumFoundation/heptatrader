@@ -218,3 +218,41 @@ must verify the append-only Gateway audit chain and the exact command's durable
 rejected outcome, confirm that Execution has no command, and recheck authoritative
 orders/position before annotating the local state. A missing Execution command by
 itself is not proof of non-send.
+
+## Isolated weekend crypto PAPER execution
+
+The same installed native stack can opt into BTC/PAXOS while keeping the existing
+EUR/USD CASH campaign, cash baseline, journal and open position. `heptatrader-paper-driver.service`
+continues the EUR strategy; `heptatrader-crypto-driver.service` runs the same driver
+with `--instrument BTC.USD`. The latter uses `crypto.token` and `crypto-driver/`
+state/outbox, not the existing FX token or `paper-driver/`. Cross-instrument state
+files are rejected. Both use the existing Execution process, original-command
+HSR1 persistence and authoritative Broker snapshots. The global active-order
+bound remains one, so concurrent strategies cannot independently bypass it.
+
+The crypto model uses the existing asynchronous gpt-6-luna direction-only flow.
+BUY may open a bounded long; SELL can trigger an existing long's exact reduce-only
+exit, never a naked short. Maximum size is 0.001 BTC and opening notional USD 150.
+Partial IOC fills are matched against the original command/correlation and exact
+position change before adoption or PnL settlement. Partial exits accumulate their
+realized portion once; only a fully reconciled flat position clears a partial-fill
+halt owned by that cycle. Other recovery or operator halts remain intact.
+
+Crypto state identifies USD `BROKER_FILL_GROSS` PnL. Until an independent complete
+fee ledger is available, `fees_complete=false` and `net_pnl=null`; simulated
+Broker execution prices are not fee-inclusive profitability evidence. The FX
+realized PnL is not carried over into the crypto ledger.
+
+`--instrument BTC.USD --canary-roundtrip` runs a bounded native entry/exit
+qualification, without calling the model or sending through another Broker
+client. It first proves its BTC position flat and global active orders empty,
+persists the original request, submits once, reconciles the economic fill, and
+flattens through the same native permit path. Unknown outcomes remain pending;
+no fresh command is manufactured to replace them. An IOC non-fill is not a
+successful trading qualification.
+
+A missing weekend FX quote does not stop crypto quote processing or force FX
+flattening. Quote-free position checks and held-position lease continuation keep
+the original FX state managed until its market reopens. A failed mixed deployment
+can switch the version/configuration back only after accounting for all crypto
+pending/positions; it must not hide inventory from the old FX-only configuration.

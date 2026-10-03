@@ -155,6 +155,35 @@ NativeToolClientConfig OutboxConfig() {
     config.timeoutMs = 100;
     return config;
 }
+void CryptoProposalRetainsExactNativeWireAndOutbox() {
+    const std::int64_t expiry=1900000000000LL;
+    const std::string id="crypto-test-command-001",permit="sha256:"+std::string(64,'b');
+    auto proposal=PreparedOrder::LimitCrypto(0.001,85000.25,expiry);
+    auto preview=proposal.PreviewRequest("crypto-preview-001");
+    Check(preview.call.instrument=="BTC.USD" && preview.call.ibContract.symbol=="BTC" &&
+        preview.call.ibContract.secType=="CRYPTO" && preview.call.ibContract.exchange=="PAXOS" &&
+        preview.call.ibContract.currency=="USD" && preview.call.ibOrder.action=="BUY" &&
+        preview.call.ibOrder.orderType=="LMT" && preview.call.timeInForce=="IOC" &&
+        preview.call.ibOrder.totalQuantity==0.001 && preview.call.ibOrder.lmtPrice==85000.25,
+        "crypto proposal escaped bounded IOC contract");
+    const auto request=proposal.SubmissionRequest(id,permit);
+    Check(!Wire(request).empty(),"crypto native codec failed");
+    OutboxTestRoot root;NativeToolClientConfig config=OutboxConfig();
+    NativeToolClient native(config);NativeStrategyClient client(native);
+    TradingToolHostRequest restored;std::string reason;
+    Check(client.Persist(root.path,proposal,id,permit,reason),"crypto HSR1 persist failed");
+    Check(client.LoadStored(root.path,id,restored,reason) && Wire(restored)==Wire(request),
+        "crypto restore changed original request/IOC/quantity");
+    for(double qty : {0.0,-0.001,0.00100001,0.000000005,25000.0})
+        Throws([&]{PreparedOrder::LimitCrypto(qty,85000.25,expiry);});
+    for(double price : {0.0,85000.10,150000.25,std::numeric_limits<double>::quiet_NaN()})
+        Throws([&]{PreparedOrder::LimitCrypto(0.001,price,expiry);});
+    Throws([&]{PreparedOrder::LimitCrypto(0.001,85000.25,0);});
+    auto changed=PreparedOrder::LimitCrypto(0.0009,85000.25,expiry);
+    const auto before=ReadBytes(root.path+"/"+id+".hsr");
+    Check(!client.Persist(root.path,changed,id,permit,reason),"crypto changed quantity reused old command");
+    Check(before==ReadBytes(root.path+"/"+id+".hsr"),"crypto original request overwritten");
+}
 void MarketCashProposalTests() {
     InstrumentRef contract; contract.symbol="EUR"; contract.secType="CASH";
     contract.exchange="IDEALPRO"; contract.currency="USD";
@@ -966,4 +995,4 @@ void Tests() {
     Check(result.envelope.status.empty(), "local validation failure retained old success");
 }
 }
-int main() { return Run([] { MarketCashProposalTests(); Tests(); }); }
+int main() { return Run([] { CryptoProposalRetainsExactNativeWireAndOutbox(); MarketCashProposalTests(); Tests(); }); }

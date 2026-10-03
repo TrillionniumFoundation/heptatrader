@@ -59,6 +59,8 @@ struct HeptaIBConfig {
     // position.  Each configured instrument is projected from the broker's
     // CashBalance for contract.symbol (the base currency).
     std::map<std::string, InstrumentRef> authoritativeCashFxContracts;
+    // Securities-position based crypto inventory; never interpreted as FX CashBalance.
+    std::map<std::string, InstrumentRef> authoritativeCryptoContracts;
     // Durable, operator-reconciled broker CashBalance anchors.  Absolute
     // multi-currency cash can predate this PAPER campaign and is never itself
     // treated as campaign risk.  The owned quantity is current cash minus this
@@ -253,7 +255,8 @@ public:
         std::uint64_t expectedQuoteStaleAfterMs,
         const std::string& venueCorrelationId,
         double expectedQuoteBid = 0.0,
-        double expectedQuoteAsk = 0.0);
+        double expectedQuoteAsk = 0.0,
+        const std::string& timeInForce = "DAY");
     bool ProveAndCommitFlatNoop(
         const std::string& instrument,
         std::uint64_t expectedConnectionEpoch,
@@ -346,7 +349,7 @@ private:
         const IBFinalOrderSendContext* context,
         const IBContractLite& contract, const IBOrderLite& order,
         std::string& reason);
-    bool ResolveCashFxInstrumentForOrder(
+    bool ResolveBoundInstrumentForOrder(
         const IBFinalOrderSendContext* context,
         const IBContractLite& contract, std::string& instrument,
         std::string& reason) const;

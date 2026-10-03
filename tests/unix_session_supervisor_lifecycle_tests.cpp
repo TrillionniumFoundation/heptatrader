@@ -2,6 +2,48 @@
 
 namespace hepta_supervisor_test {
 
+void TestCryptoAndFxSessionContractScopesRemainDisjoint()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    AgentOsRuntimeConfig agent;agent.userPaperScope=true;agent.agentUid=::geteuid();
+    agent.supervisorUid=::geteuid();agent.toolSocket="/tmp/scoped-tool.sock";
+    agent.supervisorSocket="/tmp/scoped-supervisor.sock";
+    ExecutionGatewayRuntimeConfig execution;execution.mode=ExecutionGatewayMode::Paper;
+    execution.mutationToolsEnabled=true;
+    std::map<std::string,std::string> values{
+        {"HEPTA_TOOL_AGENT_ID","pocket4-paper"},{"HEPTA_TOOL_ACCOUNT","DU123"},
+        {"HEPTA_EXECUTION_DOMAIN_ID","PAPER"},{"HEPTA_TOOL_SESSION_TEMPLATES","watch,paper"},
+        {"HEPTA_TOOL_MAX_ORDER_QTY","25000"},{"HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN","2"},
+        {"HEPTA_TOOL_CRYPTO_SESSION_ID","pocket4-user-crypto-20261003"},
+        {"HEPTA_TOOL_CONTRACT_BINDINGS","BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD"}};
+    ToolGatewaySessionPolicy policy;std::string reason;
+    assert(ToolGatewaySessionPolicy::FromValues(values,execution,agent,policy,reason));
+    SessionSupervisorRequest request;request.operation=SessionSupervisorOperation::Provision;
+    request.agentId="pocket4-paper";request.sessionId="pocket4-user-paper-20260928";
+    request.peerUid=::geteuid();request.templateId="paper";request.ttlMs=60000;
+    request.token="test-fx-token";
+    TradingToolHostSessionBinding fx,btc;
+    assert(policy.Resolve(request,fx,reason));
+    assert(fx.allowedInstruments.size()==1 && fx.allowedInstruments.count("EUR.USD"));
+    assert(fx.maxOrderQuantity==25000 && policy.Authorize("hepta.os.bootstrap",fx,reason));
+    request.sessionId=values["HEPTA_TOOL_CRYPTO_SESSION_ID"];request.token="test-crypto-token";
+    assert(policy.Resolve(request,btc,reason));
+    assert(btc.allowedInstruments.size()==1 && btc.allowedInstruments.count("BTC.USD"));
+    assert(btc.maxOrderQuantity==0.001 && policy.Authorize("hepta.os.bootstrap",btc,reason));
+    auto changed=btc;changed.allowedInstruments.insert("EUR.USD");
+    changed.instrumentContracts["EUR.USD"]=fx.instrumentContracts.at("EUR.USD");
+    assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
+    changed=btc;changed.maxOrderQuantity=25000;
+    assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
+    changed=btc;changed.session.executionContext.sessionId=fx.session.executionContext.sessionId;
+    assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
+    changed=fx;changed.session.executionContext.sessionId=btc.session.executionContext.sessionId;
+    assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
+    auto invalid=values;invalid.erase("HEPTA_TOOL_CRYPTO_SESSION_ID");
+    assert(!ToolGatewaySessionPolicy::FromValues(invalid,execution,agent,policy,reason));
+}
+
+
 void TestDurableLiveExpiryReap()
 {
 	const std::string journalPath = TempPath("/tmp/hepta-supervisor-reap-journal-XXXXXX");

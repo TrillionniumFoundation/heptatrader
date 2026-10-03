@@ -37,7 +37,7 @@ std::string OrderDetailJson(const std::string& detail) {
     return detail.empty() ? std::string() :
         "\"detail\":\"" + EscapeJson(detail) + "\"";
 }
-bool SameCashFxContract(const IBContractLite& l, const IBContractLite& r) {
+bool SameOrderContract(const IBContractLite& l, const IBContractLite& r) {
     return l.symbol == r.symbol && l.secType == r.secType &&
         l.exchange == r.exchange && l.primaryExchange == r.primaryExchange &&
         l.currency == r.currency && l.lastTradeDateOrContractMonth ==
@@ -256,25 +256,27 @@ bool HeptaIBGatewayAdapter::RunFinalOrderSendCheck(
         reason = "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN";
     return allowed;
 }
-bool HeptaIBGatewayAdapter::ResolveCashFxInstrumentForOrder(
+bool HeptaIBGatewayAdapter::ResolveBoundInstrumentForOrder(
     const IBFinalOrderSendContext* context,
     const IBContractLite& contract, std::string& instrument,
     std::string& reason) const {
     instrument = context ? context->instrument : std::string();
+    const auto& contracts = contract.secType == "CRYPTO" ?
+        m_cfg.authoritativeCryptoContracts : m_cfg.authoritativeCashFxContracts;
     if (!instrument.empty()) {
         const auto configured =
-            m_cfg.authoritativeCashFxContracts.find(instrument);
-        if (configured == m_cfg.authoritativeCashFxContracts.end() ||
-            !SameCashFxContract(configured->second, contract)) {
+            contracts.find(instrument);
+        if (configured == contracts.end() ||
+            !SameOrderContract(configured->second, contract)) {
             reason = "IB_PAPER_PLACE_CONTRACT_MISMATCH";
             return false;
         }
         return true;
     }
     for (std::map<std::string, InstrumentRef>::const_iterator it =
-             m_cfg.authoritativeCashFxContracts.begin();
-         it != m_cfg.authoritativeCashFxContracts.end(); ++it) {
-        if (!SameCashFxContract(it->second, contract)) continue;
+             contracts.begin();
+         it != contracts.end(); ++it) {
+        if (!SameOrderContract(it->second, contract)) continue;
         if (!instrument.empty()) {
             reason = "IB_POST_FILL_BASELINE_AMBIGUOUS";
             return false;
@@ -292,27 +294,30 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
     hasBaseline = false;
     std::string instrument;
     const bool contextBound = context && !context->instrument.empty();
+    const bool crypto = contract.secType == "CRYPTO";
+    if (crypto && (m_cfg.authoritativeCryptoContracts.empty() || !contextBound))
+    { reason = "IB_CRYPTO_BOUND_CONTRACT_REQUIRED"; return false; }
+    const auto& contracts = crypto ? m_cfg.authoritativeCryptoContracts : m_cfg.authoritativeCashFxContracts;
     // Generic exact-reduce adapters may omit PAPER FX mapping; ordinary sends
     // and mapped production reduce-only sends must bind the complete contract.
     const bool bindingRequiresContract = contextBound &&
         (!context->exactReduceOnly ||
-         !m_cfg.authoritativeCashFxContracts.empty());
+         !contracts.empty());
     if (bindingRequiresContract &&
-        !ResolveCashFxInstrumentForOrder(
+        !ResolveBoundInstrumentForOrder(
             context, contract, instrument, reason))
         return false;
-    if (contract.secType != "CASH" ||
-        m_cfg.authoritativeCashFxContracts.empty())
+    if ((contract.secType != "CASH" && !crypto) || contracts.empty())
         return true;
 
-    if (!bindingRequiresContract && !ResolveCashFxInstrumentForOrder(
+    if (!bindingRequiresContract && !ResolveBoundInstrumentForOrder(
             context, contract, instrument, reason))
         return false;
     double position = 0.0;
     const std::map<std::string, InstrumentRef>::const_iterator configured =
-        m_cfg.authoritativeCashFxContracts.find(instrument);
+        contracts.find(instrument);
     if (instrument.empty() ||
-        configured == m_cfg.authoritativeCashFxContracts.end() ||
+        configured == contracts.end() ||
         !m_riskSnapshot.accountComplete ||
         !m_riskSnapshot.positionsComplete ||
         !m_riskSnapshot.fxCashComplete ||
@@ -323,6 +328,26 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
             instrument, configured->second, position, detail)) {
         reason = "IB_POST_FILL_BASELINE_UNAVAILABLE";
         return false;
+    }
+    if (crypto)
+    {
+        const double atoms = order.totalQuantity * 100000000.0;
+        const bool grid = std::isfinite(atoms) && atoms >= 1.0 &&
+            std::fabs(atoms - std::round(atoms)) <= 1e-7;
+        if (context->timeInForce != "IOC" || order.orderType != "LMT" ||
+            !grid || order.totalQuantity > 0.001 || !std::isfinite(order.lmtPrice) ||
+            order.lmtPrice <= 0.0 || order.lmtPrice > 10000000.0 ||
+            std::fabs(order.lmtPrice * 4.0 - std::round(order.lmtPrice * 4.0)) > 1e-7 ||
+            position < 0.0 || position > 0.001)
+        { reason = "IB_CRYPTO_ORDER_ENVELOPE_INVALID"; return false; }
+        if (context->exactReduceOnly)
+        {
+            if (order.action != "SELL" || order.totalQuantity != position)
+            { reason = "IB_CRYPTO_REDUCE_ONLY_REQUIRED"; return false; }
+        }
+        else if (order.action != "BUY" || order.totalQuantity > 0.001 - position ||
+                 order.lmtPrice > 150.0 / order.totalQuantity)
+        { reason = "IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED"; return false; }
     }
     baseline.instrument = instrument;
     baseline.side = order.action;

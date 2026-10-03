@@ -34,6 +34,8 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              m_config.quoteContracts.begin();
          it != m_config.quoteContracts.end(); ++it) {
+        if (it->second.secType == "CRYPTO")
+        { adapterConfig.authoritativeCryptoContracts[it->first] = it->second; continue; }
         if (it->second.secType != "CASH") continue;
         const std::map<std::string, IbPaperFxCashBaseline>::const_iterator
             baseline = m_config.fxCashBaselines.find(it->first);

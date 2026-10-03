@@ -175,7 +175,8 @@ bool ToolGatewaySessionPolicy::FromEnvironment(
         "HEPTA_TOOL_CONTRACT_BINDINGS",
         "HEPTA_TOOL_MAX_ORDER_QTY",
         "HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN",
-        "HEPTA_TOOL_DECISION_LEASE_TTL_MS"
+        "HEPTA_TOOL_DECISION_LEASE_TTL_MS",
+        "HEPTA_TOOL_CRYPTO_SESSION_ID"
     };
     std::map<std::string, std::string> values;
     for (std::size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
@@ -292,7 +293,10 @@ bool ToolGatewaySessionPolicy::FromValues(
             if (fields.size() != 5 || !CanonicalInstrument(fields[0]) ||
                 !CanonicalText(fields[1], 64) || !CanonicalText(fields[2], 16) ||
                 !CanonicalText(fields[3], 32) || !CanonicalText(fields[4], 16) ||
-                fields[2] != "CASH" || policy.m_contracts.find(fields[0]) != policy.m_contracts.end())
+                (fields[2] != "CASH" && !(agentOs.userPaperScope && execution.mode == ExecutionGatewayMode::Paper &&
+                    fields[0] == "BTC.USD" && fields[1] == "BTC" && fields[2] == "CRYPTO" &&
+                    fields[3] == "PAXOS" && fields[4] == "USD")) ||
+                policy.m_contracts.find(fields[0]) != policy.m_contracts.end())
             {
                 reason = "TOOL_GATEWAY_CONTRACT_BINDING_INVALID";
                 return false;
@@ -305,6 +309,18 @@ bool ToolGatewaySessionPolicy::FromValues(
             policy.m_contracts[fields[0]] = contract;
         }
     }
+    const std::string cryptoSession = Read(values, "HEPTA_TOOL_CRYPTO_SESSION_ID");
+    if (policy.m_contracts.count("BTC.USD"))
+    {
+        if (!agentOs.userPaperScope || execution.mode != ExecutionGatewayMode::Paper ||
+            bindings != "BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD" ||
+            !CanonicalInstrument(cryptoSession) || cryptoSession.size() > 64 ||
+            !policy.m_paperEnabled)
+        { reason = "TOOL_GATEWAY_CRYPTO_SESSION_BINDING_INVALID"; return false; }
+        policy.m_cryptoSessionId = cryptoSession;
+    }
+    else if (!cryptoSession.empty())
+    { reason = "TOOL_GATEWAY_CRYPTO_SCOPE_RESIDUAL"; return false; }
     reason.clear();
     return true;
 }
@@ -357,12 +373,14 @@ bool ToolGatewaySessionPolicy::Resolve(
     for (std::unordered_map<std::string, IBContractLite>::const_iterator it =
          m_contracts.begin(); it != m_contracts.end(); ++it)
     {
+        if (!m_cryptoSessionId.empty() &&
+            (request.sessionId == m_cryptoSessionId) != (it->second.secType == "CRYPTO")) continue;
         binding.allowedInstruments.insert(it->first);
         binding.instrumentContracts[it->first] = it->second;
     }
     if (paper)
     {
-        binding.maxOrderQuantity = m_maxOrderQuantity;
+        binding.maxOrderQuantity = (!m_cryptoSessionId.empty() && request.sessionId == m_cryptoSessionId) ? 0.001 : m_maxOrderQuantity;
         binding.maxTradeCallsPerMinute = m_maxTradeCallsPerMinute;
     }
     reason.clear();
@@ -405,19 +423,23 @@ bool ToolGatewaySessionPolicy::Authorize(
         reason = "TOOL_GATEWAY_SESSION_POLICY_REJECTED";
         return false;
     }
+    const bool cryptoOwner = !m_cryptoSessionId.empty() &&
+        binding.session.executionContext.sessionId == m_cryptoSessionId;
+    const std::size_t expectedContractCount = m_cryptoSessionId.empty() ? m_contracts.size() : 1;
+    const double expectedMaxQuantity = cryptoOwner ? 0.001 : m_maxOrderQuantity;
     if (!paper)
     {
-        if (binding.allowedInstruments.size() != m_contracts.size() ||
-            binding.instrumentContracts.size() != m_contracts.size() ||
+        if (binding.allowedInstruments.size() != expectedContractCount ||
+            binding.instrumentContracts.size() != expectedContractCount ||
             binding.maxOrderQuantity != 0.0 || binding.maxTradeCallsPerMinute != 0)
         {
             reason = "TOOL_GATEWAY_WATCH_SCOPE_INVALID";
             return false;
         }
     }
-    else if (binding.allowedInstruments.size() != m_contracts.size() ||
-        binding.instrumentContracts.size() != m_contracts.size() ||
-        binding.maxOrderQuantity != m_maxOrderQuantity ||
+    else if (binding.allowedInstruments.size() != expectedContractCount ||
+        binding.instrumentContracts.size() != expectedContractCount ||
+        binding.maxOrderQuantity != expectedMaxQuantity ||
         binding.maxTradeCallsPerMinute != m_maxTradeCallsPerMinute)
     {
         reason = "TOOL_GATEWAY_PAPER_SCOPE_INVALID";
@@ -426,6 +448,7 @@ bool ToolGatewaySessionPolicy::Authorize(
     for (std::unordered_map<std::string, IBContractLite>::const_iterator it =
          m_contracts.begin(); it != m_contracts.end(); ++it)
     {
+        if (!m_cryptoSessionId.empty() && cryptoOwner != (it->second.secType == "CRYPTO")) continue;
         const std::unordered_map<std::string, IBContractLite>::const_iterator bound =
             binding.instrumentContracts.find(it->first);
         if (binding.allowedInstruments.find(it->first) == binding.allowedInstruments.end() ||

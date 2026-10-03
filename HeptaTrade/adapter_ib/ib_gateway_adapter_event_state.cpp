@@ -316,6 +316,18 @@ HeptaIBGatewayAdapter::GetAuthoritativePositionQuantities() const {
              m_authoritativeFxPositionQuantities.begin();
          it != m_authoritativeFxPositionQuantities.end(); ++it)
         combined[it->first] = it->second;
+    for (const auto& configured : m_cfg.authoritativeCryptoContracts)
+    {
+        double quantity = 0.0; std::string reason;
+        if (!ResolveAuthoritativePositionQuantity(configured.first, configured.second, quantity, reason)) continue;
+        for (const auto& observed : m_authoritativePositionContracts)
+            if (observed.second.symbol == configured.second.symbol &&
+                observed.second.secType == configured.second.secType &&
+                observed.second.currency == configured.second.currency &&
+                (observed.second.exchange.empty() || observed.second.exchange == configured.second.exchange))
+                combined.erase(observed.first);
+        if (quantity != 0.0) combined[configured.first] = quantity;
+    }
     return combined;
 }
 

@@ -122,6 +122,15 @@ public:
         ++reconciles;
         return Control(command, 1);
     }
+    ExecutionOwnerAuditResult AuditSessionLease(const ExecutionControlCommand& command) override
+    {
+        auto result=AuditSessionOwner(command);
+        result.reasonCode="SESSION_LEASE_CONTINUATION_CONFIRMED";
+        result.brokerPositionQuantity="-25000";
+        result.brokerGrossAbsolutePosition="25000";
+        result.brokerPositionGeneration=9;
+        return result;
+    }
     ExecutionOwnerAuditResult AuditSessionOwner(const ExecutionControlCommand& command) override
     {
         ++sessionAudits; assert(command.recoveryIngressFence == 0);
@@ -536,6 +545,13 @@ void TestRemoteAuthorityControlsAndRelay()
     assert(audit.serviceEpoch == identity.serviceEpoch);
     assert(audit.serviceFencingGeneration == identity.serviceFencingGeneration);
     assert(remote.sessionAudits == 1 && local.sessionAudits == 0 && remote.fences == 1);
+    const auto heldAudit=gateway.AuditSessionLease(fence);
+    assert(heldAudit.status==ExecutionCommandStatus::Accepted);
+    assert(heldAudit.reasonCode=="SESSION_LEASE_CONTINUATION_CONFIRMED");
+    assert(heldAudit.brokerPositionQuantity=="-25000" && heldAudit.brokerPositionGeneration==9);
+    assert(heldAudit.serviceEpoch==identity.serviceEpoch && heldAudit.serviceFencingGeneration==identity.serviceFencingGeneration);
+    assert(remote.sessionAudits==2 && remote.fences==1 && local.sessionAudits==0);
+
 
 
     ExecutionEvent localEvent;

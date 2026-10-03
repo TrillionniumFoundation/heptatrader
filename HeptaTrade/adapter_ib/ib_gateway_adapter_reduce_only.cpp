@@ -23,7 +23,7 @@ VenueFlattenResult HeptaIBGatewayAdapter::PlaceReduceOnlyOrderCorrelated(
     std::uint64_t expectedQuoteStaleAfterMs,
     const std::string& venueCorrelationId,
     double expectedQuoteBid,
-    double expectedQuoteAsk)
+    double expectedQuoteAsk, const std::string& timeInForce)
 {
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
     long orderId = -1;
@@ -91,6 +91,7 @@ VenueFlattenResult HeptaIBGatewayAdapter::PlaceReduceOnlyOrderCorrelated(
         }
         IBFinalOrderSendContext context;
         context.exactReduceOnly = true;
+        context.timeInForce = timeInForce;
         context.instrument = instrument;
         context.quoteSubscriptionId = expectedQuoteSubscriptionId;
         context.quoteObservedAtMs = expectedQuoteObservedAtMs;

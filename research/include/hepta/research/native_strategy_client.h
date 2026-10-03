@@ -25,6 +25,8 @@ public:
     static PreparedOrder MarketCash(const std::string& instrument,
         const InstrumentRef& contract, const std::string& side, double quantity,
         double referencePrice, std::int64_t expiresAtMs);
+    // Immutable quantity-based BTC proposal; authority/risk still come from the server.
+    static PreparedOrder LimitCrypto(double quantity, double limitPrice, std::int64_t expiresAtMs);
     TradingToolHostRequest PreviewRequest(const std::string& previewCallId) const;
     TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId,
                                              const std::string& previewPermit) const;

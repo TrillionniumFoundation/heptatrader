@@ -13,6 +13,7 @@ int main(int argc, char** argv)
     { TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation(); return 0; }
     assert(argc == 1);
     TestUserPaperResumeAuditsBeforeActivation();
+    TestCryptoAndFxSessionContractScopesRemainDisjoint();
     TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
     TestFailedPaperActivationRetainsOriginalWorkDeadline();
     TestReapPagesAdvancePastUnexpiredOwners();

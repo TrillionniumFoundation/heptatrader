@@ -213,6 +213,16 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
             cfg.authoritativeCashFxContracts.size() ||
         cfg.authoritativeCashFxStartupObservedBalances.size() !=
             cfg.authoritativeCashFxContracts.size()) return false;
+    for (const auto& item : cfg.authoritativeCryptoContracts)
+    {
+        const auto& c = item.second;
+        if (item.first != "BTC.USD" || c.symbol != "BTC" || c.secType != "CRYPTO" ||
+            c.exchange != "PAXOS" || c.currency != "USD" ||
+            !c.primaryExchange.empty() || !c.lastTradeDateOrContractMonth.empty() ||
+            !c.right.empty() || c.strike != 0 || !c.multiplier.empty() ||
+            !c.localSymbol.empty() || !c.tradingClass.empty() ||
+            cfg.authoritativeCashFxContracts.count(item.first)) return false;
+    }
     m_cfg = cfg;
     m_fxInstrumentByBaseCurrency = fxInstrumentByBaseCurrency;
     m_circuitBreakerTripped = false;
@@ -1457,6 +1467,11 @@ bool HeptaIBGatewayAdapter::ProveAndCommitFlatNoop(
         if (!ResolveAuthoritativePositionQuantity(
                 instrument, fx->second, positionQuantity, positionReason) ||
             positionQuantity != 0.0)
+            return reject("IB_FLATTEN_POSITION_CHANGED_BEFORE_NOOP");
+    } else if (m_cfg.authoritativeCryptoContracts.count(instrument)) {
+        std::string reason;
+        if (!ResolveAuthoritativePositionQuantity(instrument, m_cfg.authoritativeCryptoContracts.at(instrument),
+                positionQuantity, reason) || positionQuantity != 0.0)
             return reject("IB_FLATTEN_POSITION_CHANGED_BEFORE_NOOP");
     } else {
         const auto position =

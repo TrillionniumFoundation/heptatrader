@@ -811,6 +811,138 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 }
 
+IbPaperExecutionProfileConfig MixedCryptoProfileForTest()
+{
+    auto values=QualificationValues();
+    values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
+    values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
+    values["HEPTA_IB_PAPER_USER_SCOPE"]="1";
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"]="25000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"]="35000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"]="25000";
+    values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"]="2";
+    values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"]=IbPaperExecutionProfileConfig::UserControlDirectoryPath();
+    values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"]="BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
+    values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"]="BTC.USD";
+    IbPaperExecutionProfileConfig config;std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(values,config,reason));
+    assert(config.UsesUserCrypto());return config;
+}
+
+void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    const auto config=MixedCryptoProfileForTest();
+    IbPlaceOrderCommand command;
+    command.context.account=config.account;command.context.venue="IB";command.context.executionDomain="PAPER";
+    command.instrument="BTC.USD";command.contract.symbol="BTC";command.contract.secType="CRYPTO";
+    command.contract.exchange="PAXOS";command.contract.currency="USD";
+    command.timeInForce="IOC";command.order.action="BUY";command.order.orderType="LMT";
+    command.order.totalQuantity=0.001;command.order.lmtPrice=85000.25;command.referencePrice=85000.25;
+    IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.instrumentPositionsComplete=true;
+    risk.instrumentPositions["EUR.USD"]=-25000;risk.instrumentPositions["BTC.USD"]=0;
+    risk.grossAbsolutePosition=25000;std::string reason;
+    auto allowed=[&](const IbPlaceOrderCommand& order,const IbPaperAuthoritativeRiskSnapshot& snapshot) {
+        std::shared_ptr<IbPaperKillSwitchReader> guard(new FixedKillSwitchReader(IbPaperKillSwitchState::Disarmed));
+        IbPaperExecutionGuard admission(config,guard);
+        return admission.AllowPlaceAtAuthoritativePrice(order,snapshot,order.referencePrice,1000,reason);
+    };
+    assert(allowed(command,risk)); // An FX 25k short does not consume BTC unit capacity.
+    for (int kind=0;kind!=12;++kind) {
+        auto bad=command;auto badRisk=risk;
+        if(kind==0)bad.order.totalQuantity=25000;
+        if(kind==1)bad.order.totalQuantity=0.00100001;
+        if(kind==2)bad.order.totalQuantity=0.000000005;
+        if(kind==3)bad.order.action="SELL";
+        if(kind==4)bad.timeInForce="DAY";
+        if(kind==5)bad.contract.exchange="ZEROHASH";
+        if(kind==6)bad.contract.symbol="ETH";
+        if(kind==7)bad.order.lmtPrice=85000.10;
+        if(kind==8)bad.order.orderType="MKT";
+        if(kind==9){bad.order.lmtPrice=150000.25;bad.referencePrice=150000.25;}
+        if(kind==10)badRisk.instrumentPositionsComplete=false;
+        if(kind==11)badRisk.instrumentPositions["BTC.USD"]=0.0001;
+        assert(!allowed(bad,badRisk));
+    }
+    auto foreign=risk;foreign.instrumentPositions["ETH.USD"]=1;
+    assert(!allowed(command,foreign));
+    auto excessiveFx=risk;excessiveFx.instrumentPositions["EUR.USD"]=-25001;
+    assert(!allowed(command,excessiveFx));
+    auto invalid=risk;invalid.instrumentPositions["BTC.USD"]=-0.00000001;
+    assert(!allowed(command,invalid));
+    std::string mixedCredential;assert(config.BuildAuthorizationCredential(mixedCredential,reason));
+    auto single=config;single.userQuoteContracts="EUR.USD|EUR|CASH|IDEALPRO|USD";single.userPrimaryQuoteInstrument="EUR.USD";
+    std::string oldCredential;assert(single.BuildAuthorizationCredential(oldCredential,reason));
+    assert(mixedCredential!=oldCredential && !single.UsesUserCrypto());
+}
+
+void TestCryptoFlattenIsExactOwnedLongAndLimitIOC()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    const auto config=MixedCryptoProfileForTest();
+    std::shared_ptr<IbPaperKillSwitchReader> engaged(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionGuard guard(config,engaged);
+    FlattenPositionCommand command;command.context.account=config.account;command.context.venue="IB";
+    command.context.executionDomain="PAPER";command.instrument="BTC.USD";
+    AuthoritativeFlattenPlan plan;
+    plan.instrument="BTC.USD";plan.contract.symbol="BTC";plan.contract.secType="CRYPTO";
+    plan.contract.exchange="PAXOS";plan.contract.currency="USD";plan.profileOrderMode="USER_CRYPTO_LMT_IOC";
+    plan.timeInForce="IOC";plan.expectedPositionQuantity=0.0004;
+    plan.positionConnectionEpoch=1;plan.positionGeneration=1;
+    plan.order.action="SELL";plan.order.orderType="LMT";plan.order.totalQuantity=0.0004;
+    plan.order.lmtPrice=85000;plan.referencePrice=85000;plan.quoteBid=85000;plan.quoteAsk=85000.25;
+    plan.quoteSubscriptionId="btc-quote";plan.quoteObservedAtMs=1000;plan.quoteStaleAfterMs=5000;
+    IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.activeOrderCount=0;
+    std::string reason;assert(guard.AllowFlatten(command,plan,risk,2000,reason));
+    for(int kind=0;kind!=5;++kind) {
+        auto bad=plan;
+        if(kind==0)bad.order.totalQuantity=0.0005;
+        if(kind==1)bad.expectedPositionQuantity=-0.0004;
+        if(kind==2)bad.order.action="BUY";
+        if(kind==3)bad.timeInForce="DAY";
+        if(kind==4)bad.contract.exchange="ZEROHASH";
+        assert(!guard.AllowFlatten(command,bad,risk,2000,reason));
+    }
+}
+
+void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    const auto config=MixedCryptoProfileForTest();std::string reason;
+    char path[]="/tmp/hepta-active-crypto-lease-XXXXXX";
+    int fd=::mkstemp(path);assert(fd>=0);::close(fd);
+    OmsJournal journal;assert(journal.Init(path));ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(journal,callbacks);
+    IBAuthoritativeRecoveryAuditSnapshot s;
+    s.active.complete=true;s.active.connectionEpoch=1;s.active.generation=1;
+    s.terminal.complete=true;s.terminal.connectionEpoch=1;s.terminal.generation=1;
+    s.risk.complete=true;s.risk.coherentRefreshComplete=true;s.risk.accountComplete=true;
+    s.risk.positionsComplete=true;s.risk.fxCashComplete=true;s.risk.connectionEpoch=1;
+    s.risk.generation=1;s.risk.accountGeneration=1;s.risk.positionsGeneration=1;s.risk.fxCashGeneration=1;
+    s.positionQuantities["EUR.USD"]=-25000;s.risk.grossAbsolutePosition=25000;
+    s.newConnectionEpochRequired=true;s.barrierComplete=false;
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    policyCallbacks.nowMs=[] {return OmsJournal::NowEpochMs();};
+    policyCallbacks.leaseAuditSnapshot=[&] {return s;};
+    policyCallbacks.recoveryAuditSnapshot=[&] {return s;};
+    std::shared_ptr<IbPaperKillSwitchReader> guard(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(coordinator,config,policyCallbacks,guard);
+    ExecutionControlCommand command;command.context.account=config.account;command.context.executionDomain="PAPER";
+    command.context.venue="IB";command.context.agentId="fx-owner";command.context.sessionId="fx-session";
+    command.context.toolCallId="lease-continue";
+    const auto continued=policy.AuditSessionLease(command);
+    assert(continued.status==ExecutionCommandStatus::Accepted);
+    assert(continued.reasonCode=="SESSION_LEASE_CONTINUATION_CONFIRMED");
+    assert(policy.AuditSessionOwner(command).status==ExecutionCommandStatus::Rejected);
+    s.risk.complete=false;assert(policy.AuditSessionLease(command).status==ExecutionCommandStatus::Rejected);
+    s.risk.complete=true;s.active.activeOrderIds.insert(73);
+    assert(policy.AuditSessionLease(command).status==ExecutionCommandStatus::Rejected);
+    s.active.activeOrderIds.clear();coordinator.FenceSessionOwner("fx-owner","fx-session");
+    assert(policy.AuditSessionLease(command).status==ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsSessionOwnerFenced("fx-owner","fx-session"));
+    ::unlink(path);
+}
+
 int main()
 {
     TestFxCashRestartCatchUpZeroFillApiCancellation();
@@ -819,6 +951,9 @@ int main()
     TestRuntimeColdConnectBudgetDefaultsFailClosed();
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
+    TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
+    TestCryptoFlattenIsExactOwnedLongAndLimitIOC();
+    TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();

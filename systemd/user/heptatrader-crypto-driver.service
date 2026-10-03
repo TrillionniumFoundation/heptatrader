@@ -1,0 +1,20 @@
+[Unit]
+Description=HeptaTrader resident isolated BTC PAPER strategy driver
+Wants=heptatrader-execution.service heptatrader-gateway.service
+After=heptatrader-execution.service heptatrader-gateway.service
+PartOf=heptatrader.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/heptatrader/current/libexec/heptatrader/heptatrader_paper_driver.py --instrument BTC.USD
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=heptatrader.target

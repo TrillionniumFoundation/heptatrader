@@ -40,6 +40,7 @@ private:
     std::string m_account;
     std::string m_venue;
     std::string m_executionDomain;
+    std::string m_cryptoSessionId; // explicit BTC-only owner; existing FX leases stay FX-only
     std::uint32_t m_agentUid = 0;
     std::uint64_t m_maxSessionTtlMs = 0;
     std::uint32_t m_decisionLeaseTtlMs = 5000;

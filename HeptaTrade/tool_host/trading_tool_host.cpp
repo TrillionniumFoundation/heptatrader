@@ -94,7 +94,8 @@ bool ExactZeroOwnerAudit(
     const ExecutionOwnerAuditResult& audit,
     std::string& reason)
 {
-    if (audit.status != ExecutionCommandStatus::Accepted ||
+    if (audit.reasonCode == "SESSION_LEASE_CONTINUATION_CONFIRMED" ||
+        audit.status != ExecutionCommandStatus::Accepted ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
         audit.ownerAccount != binding.session.executionContext.account ||
         audit.ownerExecutionDomain != binding.executionDomain ||
@@ -1107,7 +1108,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
     ExecutionOwnerAuditResult& ownerAudit,
-    std::string& reason, bool resumeOwner)
+    std::string& reason, bool resumeOwner, bool continuation)
 {
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     TradingToolHostSessionBinding binding;
@@ -1139,8 +1140,22 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     command.context.executionDomain = binding.executionDomain;
     command.context.toolCallId = "paper-renew-owner-audit-" +
         std::to_string(expectedGeneration);
-    ownerAudit = authority->AuditSessionOwner(command);
-    if (!ExactZeroOwnerAudit(binding, ownerAudit, reason)) return false;
+    if (continuation && resumeOwner)
+    { reason = "SESSION_LEASE_CONTINUATION_CANNOT_RESUME"; return false; }
+    ownerAudit = continuation ? authority->AuditSessionLease(command) : authority->AuditSessionOwner(command);
+    if (continuation)
+    {
+        if (currentToken != replacementToken || ownerAudit.status != ExecutionCommandStatus::Accepted ||
+            ownerAudit.reasonCode != "SESSION_LEASE_CONTINUATION_CONFIRMED" ||
+            !ownerAudit.ownerAuditAuthoritative || !ownerAudit.ownerAuditComplete || ownerAudit.mutationBlocked ||
+            ownerAudit.ownerAccount != binding.session.executionContext.account ||
+            ownerAudit.ownerExecutionDomain != binding.executionDomain ||
+            ownerAudit.ownerActiveOrderCount != 0 || ownerAudit.ownerUncertainCommandCount != 0 ||
+            ownerAudit.brokerGlobalActiveOrderCount != 0 || ownerAudit.brokerPostFillRiskReconciliationPending ||
+            ownerAudit.brokerConnectionEpoch == 0 || ownerAudit.brokerPositionGeneration == 0)
+        { reason = ownerAudit.reasonCode.empty() ? "SESSION_LEASE_CONTINUATION_AUDIT_FAILED" : ownerAudit.reasonCode; return false; }
+    }
+    else if (!ExactZeroOwnerAudit(binding, ownerAudit, reason)) return false;
     if (resumeOwner)
     {
         command.context.toolCallId = "paper-resume-owner-" + std::to_string(expectedGeneration);

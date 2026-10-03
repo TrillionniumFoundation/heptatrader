@@ -252,6 +252,7 @@ bool SessionSupervisorAuditJournal::Append(const SessionSupervisorRequest& reque
     switch (request.operation)
     {
     case SessionSupervisorOperation::Provision:
+    case SessionSupervisorOperation::RenewActive:
     case SessionSupervisorOperation::PaperResume:
     case SessionSupervisorOperation::Renew:
     case SessionSupervisorOperation::Rotate:
@@ -758,6 +759,7 @@ std::string SessionSupervisorAuditJournal::HexEncode(const std::string& value)
 std::string SessionSupervisorAuditJournal::OperationName(SessionSupervisorOperation operation)
 {
     if (operation == SessionSupervisorOperation::Provision) return "provision";
+    if (operation == SessionSupervisorOperation::RenewActive) return "renew-active";
     if (operation == SessionSupervisorOperation::PaperResume) return "paper-resume";
     if (operation == SessionSupervisorOperation::Renew) return "renew";
     if (operation == SessionSupervisorOperation::Rotate) return "rotate";

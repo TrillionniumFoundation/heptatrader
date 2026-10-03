@@ -198,3 +198,23 @@ Terminal/recovery-only lease records are excluded. An active user lease with an
 old Execution-only recovery marker may be resumed after native audit; this does
 not re-provision or revive a revoked bearer. See the
 [user recovery contract](../technical/user-paper-runtime.md#audited-owner-fence-recovery).
+
+## Held-position active lease continuation
+
+`renew-active` is a separate user-custodian operation available only for the mixed
+user PAPER profile. It renews the same active bearer, owner and scope under exact
+lease-generation comparison and the existing write-ahead/audit locks. It can
+preserve a held FX or BTC position while the market is closed; it does not require
+a fresh quote or force an exit simply to refresh a lease.
+
+`AuditSessionLease` still requires coherent same-epoch Broker active/terminal/risk/
+account/position evidence, absorbed exposure, no active orders and no unresolved
+commands. It neither starts a new recovery connection nor releases a fence. An
+owner/recovery/terminal fence, revoked lease, incomplete evidence or changed bearer
+is refused. Continuation evidence cannot satisfy the zero-position owner-release
+contract. Lost replies retain the generation/uncertainty and reconcile rather
+than re-provisioning or resending trading commands.
+
+`HEPTA_TOOL_CRYPTO_SESSION_ID` gives only that exact session BTC contract access
+and quantity cap. Other user sessions retain their EUR contract. The same agent
+and account do not allow either bearer to cross the other instrument's scope.

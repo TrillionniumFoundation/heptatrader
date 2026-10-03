@@ -381,7 +381,8 @@
         "scripts/hepta_telemetry_collect.py",
         "scripts/heptatrader-user",
         "scripts/heptatrader_paper_driver.py",
-        "systemd/user/heptatrader-paper-driver.service"
+        "systemd/user/heptatrader-paper-driver.service",
+        "systemd/user/heptatrader-crypto-driver.service"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",

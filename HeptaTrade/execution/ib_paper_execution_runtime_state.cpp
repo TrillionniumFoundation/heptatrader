@@ -46,11 +46,17 @@ bool IbPaperExecutionRuntimeComposition::ValidateFxCashBaselineRecords(
                 return false;
         return true;
     };
-    if (records.size() != m_config.quoteContracts.size()) return false;
+    std::size_t cashContractCount = 0;
+    for (const auto& contract : m_config.quoteContracts)
+        if (contract.second.secType == "CASH") ++cashContractCount;
+    if (records.size() != cashContractCount) return false;
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              m_config.quoteContracts.begin();
          it != m_config.quoteContracts.end(); ++it)
     {
+        // Crypto security positions have no FX CashBalance baseline. Preserve
+        // exactly the original CASH anchors and reject all extraneous records.
+        if (it->second.secType != "CASH") continue;
         const std::map<std::string, IbPaperFxCashBaseline>::const_iterator
             found = records.find(it->first);
         if (found == records.end()) return false;
@@ -401,7 +407,11 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
         // The catch-up evaluator is the single owner of lifecycle evidence
         // classification. Do not hide cancellation records behind a second,
         // fill-only filter before the evaluator can inspect them.
-        if (event.source == toolSource || event.source == brokerSource)
+        const auto contract = m_config.quoteContracts.find(event.instrument);
+        const bool separateCrypto = m_config.profile.UsesUserCrypto() &&
+            contract != m_config.quoteContracts.end() &&
+            IbPaperExecutionProfileConfig::IsCryptoContract(event.instrument, contract->second);
+        if (!separateCrypto && (event.source == toolSource || event.source == brokerSource))
             events.push_back(event);
     });
     if (replayed < 0)

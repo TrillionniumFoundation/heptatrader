@@ -360,7 +360,7 @@ bool TradingToolSessionControlPlane::RenewPaperAfterAudit(
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
     ExecutionOwnerAuditResult& ownerAudit,
-    std::string& reason, bool resumeOwner)
+    std::string& reason, bool resumeOwner, bool continuation)
 {
     TradingToolHostSessionBinding existing;
     if (issuer.empty() || !m_authorizer ||
@@ -380,7 +380,7 @@ bool TradingToolSessionControlPlane::RenewPaperAfterAudit(
     }
     return m_host.UpdatePaperSessionLeaseAfterAudit(
         token, replacementToken, expectedGeneration, expiresAtMs,
-        newGeneration, ownerAudit, reason, resumeOwner);
+        newGeneration, ownerAudit, reason, resumeOwner, continuation);
 }
 
 bool TradingToolSessionControlPlane::Rotate(

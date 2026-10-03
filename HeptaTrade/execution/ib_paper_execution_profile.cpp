@@ -257,6 +257,14 @@ bool QualificationContractBinding(const std::string& contracts,
     return true;
 }
 
+const char* kMixedUserContracts =
+    "BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
+bool UserContractBinding(const std::string& contracts, const std::string& primary)
+{
+    return QualificationContractBinding(contracts, primary) ||
+        (contracts == kMixedUserContracts && (primary == "BTC.USD" || primary == "EUR.USD"));
+}
+
 bool ReadPrivateCredential(const std::string& path, std::string& value,
                            std::string& reason)
 {
@@ -410,7 +418,7 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         UsesExternalQualificationLimitDay() || maxOrderQuantity > 25000.0 ||
         maxOrderNotional > 35000.0 || maxGrossPosition > 25000.0 ||
         maxActiveOrders != 1 || maxOrdersPerMinute > 2 ||
-        !QualificationContractBinding(userQuoteContracts, userPrimaryQuoteInstrument) ||
+        !UserContractBinding(userQuoteContracts, userPrimaryQuoteInstrument) ||
         userQuoteMaxAgeMs < 100 || userQuoteMaxAgeMs > 5000))
     {
         reason = "IB_PAPER_USER_SCOPE_INVALID";
@@ -564,8 +572,10 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     AppendCanonicalField(canonical, "port", std::to_string(port));
     AppendCanonicalField(canonical, "client_id", std::to_string(clientId));
     AppendCanonicalField(canonical, "control_directory", controlDirectory);
-    AppendCanonicalField(canonical, "allowed_security_types", AllowedSecurityTypes());
-    AppendCanonicalField(canonical, "allowed_order_types", AllowedOrderTypes());
+    AppendCanonicalField(canonical, "allowed_security_types", UsesUserCrypto() ? "STK,CASH,CRYPTO" : AllowedSecurityTypes());
+    AppendCanonicalField(canonical, "allowed_order_types", UsesUserCrypto() ? "MKT,LMT" : AllowedOrderTypes());
+    if (UsesUserCrypto())
+        AppendCanonicalField(canonical, "crypto_policy", "BTC/PAXOS/USD:LMT/IOC:LONG_ONLY:QTY_0.001:USD_150:TICK_0.25:STEP_0.00000001");
     AppendCanonicalField(canonical, "max_order_quantity",
                          CanonicalDouble(maxOrderQuantity));
     AppendCanonicalField(canonical, "max_order_notional",
@@ -811,7 +821,9 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_EXECUTION_CONTEXT_MISMATCH";
         return false;
     }
-    if (command.contract.secType != "STK" && command.contract.secType != "CASH")
+    const bool crypto = m_config.UsesUserCrypto() &&
+        IbPaperExecutionProfileConfig::IsCryptoContract(command.instrument, command.contract);
+    if (command.contract.secType != "STK" && command.contract.secType != "CASH" && !crypto)
     {
         reason = "IB_PAPER_SECURITY_TYPE_NOT_ALLOWED";
         return false;
@@ -829,12 +841,12 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     }
     const double quantity = std::fabs(command.order.totalQuantity);
     if (!std::isfinite(quantity) || quantity <= 0.0 ||
-        quantity > m_config.maxOrderQuantity)
+        quantity > (crypto ? IbPaperExecutionProfileConfig::CryptoQuantityLimit() : m_config.maxOrderQuantity))
     {
         reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
         return false;
     }
-    if (command.timeInForce != "DAY" ||
+    if (command.timeInForce != (crypto ? "IOC" : "DAY") ||
         !command.order.positionEffect.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL"))
@@ -842,7 +854,17 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_ORDER_INTENT_INVALID";
         return false;
     }
-    if (m_config.UsesExternalLimitDay())
+    if (crypto)
+    {
+        if (command.order.action != "BUY" || command.order.orderType != "LMT" ||
+            !IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(quantity) ||
+            !IbPaperExecutionProfileConfig::CryptoPriceOnGrid(command.order.lmtPrice) ||
+            command.order.auxPrice != 0.0 || command.order.outsideRth || !command.order.orderRef.empty() ||
+            command.referencePrice != command.order.lmtPrice ||
+            command.order.lmtPrice > authoritativePrice * 1.001)
+        { reason = "IB_PAPER_CRYPTO_LIMIT_BUY_INVALID"; return false; }
+    }
+    else if (m_config.UsesExternalLimitDay())
     {
         if (!(command.order.totalQuantity > 0.0) ||
             command.order.auxPrice != 0.0 ||
@@ -897,8 +919,9 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_EXTERNAL_LIMIT_PRICE_MISMATCH";
         return false;
     }
-    if (authoritativePrice >
-        m_config.maxOrderNotional / quantity)
+    if (std::max(authoritativePrice, crypto ? command.order.lmtPrice : authoritativePrice) >
+        (crypto ? std::min(m_config.maxOrderNotional, IbPaperExecutionProfileConfig::CryptoNotionalLimit()) :
+            m_config.maxOrderNotional) / quantity)
     {
         reason = "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
         return false;
@@ -908,6 +931,29 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";
         return false;
     }
+    if (m_config.UsesUserCrypto())
+    {
+        if (!snapshot.instrumentPositionsComplete)
+        { reason = "IB_PAPER_ASSET_POSITION_SNAPSHOT_REQUIRED"; return false; }
+        double fx = 0.0, btc = 0.0;
+        for (const auto& item : snapshot.instrumentPositions)
+        {
+            if (!std::isfinite(item.second))
+            { reason = "IB_PAPER_ASSET_POSITION_INVALID"; return false; }
+            if (item.first == "EUR.USD") fx = item.second;
+            else if (item.first == "BTC.USD") btc = item.second;
+            else if (item.second != 0.0)
+            { reason = "IB_PAPER_UNMODELED_ASSET_EXPOSURE"; return false; }
+        }
+        if (std::fabs(fx) > m_config.maxGrossPosition || btc < 0.0 ||
+            btc > IbPaperExecutionProfileConfig::CryptoQuantityLimit())
+        { reason = "IB_PAPER_ASSET_POSITION_LIMIT_EXCEEDED"; return false; }
+        if (crypto ? quantity > IbPaperExecutionProfileConfig::CryptoQuantityLimit() - btc :
+                (command.instrument != "EUR.USD" || quantity > m_config.maxGrossPosition - std::fabs(fx)))
+        { reason = "IB_PAPER_ASSET_POSITION_LIMIT_EXCEEDED"; return false; }
+    }
+    else
+    {
     if (!std::isfinite(snapshot.grossAbsolutePosition) ||
         snapshot.grossAbsolutePosition < 0.0 ||
         snapshot.grossAbsolutePosition > m_config.maxGrossPosition ||
@@ -915,6 +961,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     {
         reason = "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED";
         return false;
+    }
     }
     PruneRateWindow(nowMs);
     if (m_acceptedPlaceTimesMs.size() >= m_config.maxOrdersPerMinute)
@@ -1010,7 +1057,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PlaceOrder(
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL") ||
-        command.timeInForce != "DAY" ||
+        command.timeInForce != ((m_config.UsesUserCrypto() &&
+            IbPaperExecutionProfileConfig::IsCryptoContract(command.instrument, command.contract)) ? "IOC" : "DAY") ||
         !command.order.positionEffect.empty())
         return Reject(command.context, -1, "IB_PAPER_ORDER_INTENT_INVALID");
     MarketQuoteSnapshot quote;
@@ -1099,7 +1147,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL") ||
-        command.timeInForce != "DAY" ||
+        command.timeInForce != ((m_config.UsesUserCrypto() &&
+            IbPaperExecutionProfileConfig::IsCryptoContract(command.instrument, command.contract)) ? "IOC" : "DAY") ||
         !command.order.positionEffect.empty())
         return Reject(command.context, -1, "IB_PAPER_ORDER_INTENT_INVALID");
     std::string blockedReason;
@@ -1323,6 +1372,27 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReconcileAuthorita
     return result;
 }
 
+ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionLease(
+    const ExecutionControlCommand& command)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ExecutionOwnerAuditResult result(BeginControl(command));
+    if (result.status == ExecutionCommandStatus::Rejected) return result;
+    if (!m_config.UsesUserCrypto() || !m_callbacks.leaseAuditSnapshot ||
+        command.recoveryIngressFence != 0 || command.context.account != m_account ||
+        m_coordinator.IsSessionOwnerFenced(command.context.agentId, command.context.sessionId) ||
+        m_coordinator.IsSessionOwnerRecoveryOnly(command.context.agentId, command.context.sessionId) ||
+        m_coordinator.IsMutationBlocked(nullptr))
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "SESSION_LEASE_CONTINUATION_NOT_ALLOWED";
+        return result;
+    }
+    // An unchanged active lease may be renewed while positions are held.
+    // This distinct operation never releases any owner or terminal fence.
+    return AuditRecoveryOwner(command, m_callbacks.leaseAuditSnapshot(), true);
+}
+
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
     const ExecutionControlCommand& command)
 {
@@ -1383,7 +1453,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
 
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     const ExecutionControlCommand& command,
-    const IBAuthoritativeRecoveryAuditSnapshot& recovery)
+    const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation)
 {
     ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
@@ -1436,7 +1506,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         CanonicalRecoveryDecimal(positionQuantity);
     result.brokerGrossAbsolutePosition =
         CanonicalRecoveryDecimal(risk.grossAbsolutePosition);
-    if (recovery.newConnectionEpochRequired || !recovery.barrierComplete)
+    if (!continuation && (recovery.newConnectionEpochRequired || !recovery.barrierComplete))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = recovery.reasonCode.empty() ?
@@ -1515,7 +1585,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         result.reasonCode = "RECOVERY_OWNER_POSITION_SNAPSHOT_INVALID";
         return result;
     }
-    if (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0)
+    if (!continuation && (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = "RECOVERY_OWNER_POSITION_NOT_FLAT";
@@ -1618,7 +1688,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         return result;
     }
     result.status = ExecutionCommandStatus::Accepted;
-    result.reasonCode = "RECOVERY_OWNER_ZERO_CONFIRMED";
+    result.reasonCode = continuation ? "SESSION_LEASE_CONTINUATION_CONFIRMED" : "RECOVERY_OWNER_ZERO_CONFIRMED";
     return result;
 }
 
@@ -1889,4 +1959,30 @@ bool ValidateIbPaperBrokerCallbackIdentity(const IBEvent& event,
         event.contract.currency != expectedContract->currency)
     { reason = "IB_EXECUTION_CONTRACT_MISMATCH"; return false; }
     return true;
+}
+
+bool IbPaperExecutionProfileConfig::UsesUserCrypto() const
+{
+    return enabled && userScope && !UsesExternalLimitDay() &&
+        userQuoteContracts == kMixedUserContracts;
+}
+bool IbPaperExecutionProfileConfig::IsCryptoContract(
+    const std::string& instrument, const InstrumentRef& contract)
+{
+    return instrument == "BTC.USD" && contract.symbol == "BTC" &&
+        contract.secType == "CRYPTO" && contract.exchange == "PAXOS" && contract.currency == "USD" &&
+        contract.primaryExchange.empty() && contract.lastTradeDateOrContractMonth.empty() &&
+        contract.right.empty() && contract.strike == 0.0 && contract.multiplier.empty() &&
+        contract.tradingClass.empty() && contract.localSymbol.empty();
+}
+bool IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(double quantity)
+{
+    if (!std::isfinite(quantity) || quantity <= 0.0 || quantity > CryptoQuantityLimit()) return false;
+    const double atoms = quantity * 100000000.0;
+    return atoms >= 1.0 && std::fabs(atoms - std::round(atoms)) <= 1e-7;
+}
+bool IbPaperExecutionProfileConfig::CryptoPriceOnGrid(double price)
+{
+    if (!std::isfinite(price) || price <= 0.0 || price > 10000000.0) return false;
+    return std::fabs(price * 4.0 - std::round(price * 4.0)) <= 1e-7;
 }

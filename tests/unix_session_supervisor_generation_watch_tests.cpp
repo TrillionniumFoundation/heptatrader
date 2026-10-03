@@ -163,6 +163,23 @@ void TestUserPaperResumeAuditsBeforeActivation()
     bool found=false; for (const auto& payload:AuditPayloads(auditPath))
         if (payload.find("operation=paper-resume")!=std::string::npos) found=true;
     assert(found);
+    authority.leaseAudit=[&](const ExecutionControlCommand& command) {
+        auto result=authority.ownerAudit(command);
+        result.reasonCode="SESSION_LEASE_CONTINUATION_CONFIRMED";
+        result.brokerPositionQuantity="-25000";result.brokerGrossAbsolutePosition="25000";
+        result.brokerPositionGeneration=2;
+        return result;
+    };
+    const auto continued=RunSessionCtl({"--socket",socketPath,"renew-active","--token-file",tokenPath,
+        "--generation","2","--ttl-sec","60","--token-owner-uid",std::to_string(::geteuid())});
+    assert(continued.exitCode==0);
+    assert(continued.standardOutput.find("SESSION_LEASE_CONTINUED")!=std::string::npos);
+    assert(releaseCalls==1 && store.Get(request.token,stored) && stored.leaseGeneration==3);
+    complete=false;
+    request.operation=SessionSupervisorOperation::RenewActive;request.expectedGeneration=3;
+    assert(!Call(socketPath,request).accepted);
+    assert(releaseCalls==1 && store.Get(request.token,stored) && stored.leaseGeneration==3);
+    assert(!execution.IsSessionOwnerFenced("resume-agent","resume-session"));
     server.Stop();
     std::remove(tokenPath.c_str()); std::remove(storePath.c_str()); std::remove(keyPath.c_str());
     std::remove(journalPath.c_str()); std::remove(auditPath.c_str());

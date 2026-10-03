@@ -223,6 +223,8 @@ bool SessionSupervisorProtocol::EncodeRequest(
 		operation = "provision";
 	else if (request.operation == SessionSupervisorOperation::Revoke)
 		operation = "revoke";
+	else if (request.operation == SessionSupervisorOperation::RenewActive)
+        operation = "renew-active";
 	else if (request.operation == SessionSupervisorOperation::PaperResume)
 		operation = "paper-resume";
 	else if (request.operation == SessionSupervisorOperation::Renew)
@@ -285,7 +287,8 @@ bool SessionSupervisorProtocol::EncodeRequest(
 				AppendField(body, PaperFinalizationRequired, "1");
 		}
 	}
-	else if (request.operation == SessionSupervisorOperation::PaperResume ||
+	else if (request.operation == SessionSupervisorOperation::RenewActive ||
+        request.operation == SessionSupervisorOperation::PaperResume ||
 		request.operation == SessionSupervisorOperation::Renew ||
 		request.operation == SessionSupervisorOperation::Rotate)
 	{
@@ -525,7 +528,7 @@ bool SessionSupervisorProtocol::DecodeRequest(
 		reason.clear();
 		return true;
 	}
-	if (operation == "renew" || operation == "rotate" || operation == "paper-resume")
+	if (operation == "renew" || operation == "rotate" || operation == "paper-resume" || operation == "renew-active")
 	{
 		const std::size_t expectedFields = operation == "rotate" ? 5 : 4;
 		if (fields.size() != expectedFields)
@@ -535,7 +538,8 @@ bool SessionSupervisorProtocol::DecodeRequest(
 		}
 		request.operation = operation == "rotate" ?
 			SessionSupervisorOperation::Rotate : (operation == "paper-resume" ?
-            SessionSupervisorOperation::PaperResume : SessionSupervisorOperation::Renew);
+            SessionSupervisorOperation::PaperResume : (operation == "renew-active" ?
+                SessionSupervisorOperation::RenewActive : SessionSupervisorOperation::Renew));
 		std::string ttlMs;
 		std::string generation;
 		if (!Require(fields, TtlMs, ttlMs, reason) ||

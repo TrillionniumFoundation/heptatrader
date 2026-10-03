@@ -171,6 +171,10 @@ bool IbPaperExecutionPolicyAuthority::BuildAuthoritativeFlattenPlan(
     plan.positionConnectionEpoch = position.connectionEpoch;
     plan.positionGeneration = position.generation;
     const bool externalLimitDay = m_config.UsesExternalLimitDay();
+    const bool crypto = m_config.UsesUserCrypto() &&
+        IbPaperExecutionProfileConfig::IsCryptoContract(command.instrument, authoritativeContract);
+    if (crypto && (position.quantity < 0.0 || position.quantity > IbPaperExecutionProfileConfig::CryptoQuantityLimit()))
+    { reason = "IB_PAPER_CRYPTO_POSITION_LIMIT_EXCEEDED"; return false; }
     if (externalLimitDay &&
         !ConfigureExternalLimitDayFlattenPlan(
             m_config, position, plan, reason))
@@ -190,8 +194,21 @@ bool IbPaperExecutionPolicyAuthority::BuildAuthoritativeFlattenPlan(
     if (!ValidateFreshQuote(
             quoteRequest, nowMs, quote, reason))
         return false;
-    BindAuthoritativeFlattenQuote(quote, externalLimitDay, plan);
-    if (position.quantity != 0.0)
+    BindAuthoritativeFlattenQuote(quote, externalLimitDay || crypto, plan);
+    if (crypto && position.quantity != 0.0)
+    {
+        if (!IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(position.quantity) ||
+            !IbPaperExecutionProfileConfig::CryptoPriceOnGrid(quote.bid))
+        { reason = "IB_PAPER_CRYPTO_FLATTEN_GRID_INVALID"; return false; }
+        plan.profileOrderMode = "USER_CRYPTO_LMT_IOC";
+        plan.order.orderType = "LMT";
+        plan.order.action = "SELL";
+        plan.order.totalQuantity = position.quantity;
+        plan.order.lmtPrice = quote.bid;
+        plan.referencePrice = quote.bid;
+        plan.timeInForce = "IOC";
+    }
+    else if (position.quantity != 0.0)
         PopulateNonzeroFlattenOrder(
             position, quote, externalLimitDay,
             m_maxOrderQuantity, plan);

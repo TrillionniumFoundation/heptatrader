@@ -913,6 +913,8 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
     }
     if (request.operation == ExecutionServiceOperation::ReleaseSessionOwnerFence)
         return ExecutionControlResult(m_controlAuthority->ReleaseSessionOwnerFence(request.control));
+    if (request.operation == ExecutionServiceOperation::AuditSessionLease)
+        return ExecutionControlResult(m_controlAuthority->AuditSessionLease(request.control));
     if (request.operation == ExecutionServiceOperation::AuditSessionOwner)
         return ExecutionControlResult(m_controlAuthority->AuditSessionOwner(request.control));
     if (request.operation == ExecutionServiceOperation::RecoveryAuditOwner)

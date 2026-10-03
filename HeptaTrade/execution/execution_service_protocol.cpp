@@ -383,6 +383,7 @@ bool ExecutionServiceProtocol::EncodeRequest(const ExecutionServiceRequest& requ
              request.operation == ExecutionServiceOperation::RecoveryQueryCommandStatus ||
              request.operation == ExecutionServiceOperation::FenceSessionOwner ||
              request.operation == ExecutionServiceOperation::ReleaseSessionOwnerFence ||
+             request.operation == ExecutionServiceOperation::AuditSessionLease ||
              request.operation == ExecutionServiceOperation::AuditSessionOwner ||
              request.operation == ExecutionServiceOperation::ReconcileAuthoritativeState ||
              request.operation == ExecutionServiceOperation::RecoveryAuditOwner ||
@@ -481,6 +482,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryQueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceSessionOwner) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReleaseSessionOwnerFence) ||
+             kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionLease) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionOwner) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReconcileAuthoritativeState) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryAuditOwner) ||
@@ -651,6 +653,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryQueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceSessionOwner) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReleaseSessionOwnerFence) ||
+             kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionLease) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionOwner) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReconcileAuthoritativeState) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryAuditOwner) ||

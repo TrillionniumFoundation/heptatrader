@@ -246,3 +246,24 @@ cannot substitute for that proof. Ambiguous input fails without modifying any
 baseline. A cancellation does not advance the observed-cash watermark, invent
 a fill, or add PnL. The existing current Broker account/position/cash attestation
 still gates startup and mutation readiness after journal catch-up.
+
+## Opt-in BTC/PAXOS user PAPER contract
+
+The mixed user profile accepts exactly `BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD`.
+Its profile credential binds this contract set and the crypto envelope; an old FX-only
+credential cannot authorize the extension. Default/system/external-qualification
+profiles retain their original contract and limit semantics.
+
+BTC fresh exposure is long-only, quantity-based LMT/IOC, at most 0.001 BTC and
+USD 150 per opening, with a 0.25 USD price tick and 0.00000001 BTC size increment.
+A SELL is permitted only through the existing exact authoritative reduce-only
+flatten of a positive BTC position, with a limit at the current bid. The API
+wrapper independently enforces BTC/PAXOS/USD and LMT/IOC. Stale quote, mismatched
+contract, unresolved command, fractional-grid error, active order or incomplete
+risk evidence rejects before Broker dispatch.
+
+The risk gate validates EUR and BTC quantities separately instead of adding
+incomparable asset units into one exposure limit. The FX cash baseline remains
+unchanged and applies only to CASH contracts; crypto uses Broker security positions.
+Post-fill position barriers reconcile BTC at crypto precision before another send.
+Crypto events are not replayed as FX cash movement.

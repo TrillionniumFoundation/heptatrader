@@ -16,7 +16,8 @@ enum class SessionSupervisorOperation
 	PaperTerminalizeAck,
 	PaperTerminalWitnessPrepare,
 	PaperTerminalWitnessAck,
-	PaperResume
+	PaperResume,
+    RenewActive
 };
 
 struct SessionSupervisorRequest

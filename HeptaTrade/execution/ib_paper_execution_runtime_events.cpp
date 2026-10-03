@@ -48,7 +48,14 @@ bool IbPaperExecutionRuntimeComposition::AllowsBoundRiskIncreasingPlace(
         context->quoteBid == quote.bid && context->quoteAsk == quote.ask;
     const bool externalLimitDay =
         m_config.profile.UsesExternalLimitDay();
-    const bool allowedOrder = externalLimitDay ?
+    const bool crypto = m_config.profile.UsesUserCrypto() &&
+        IbPaperExecutionProfileConfig::IsCryptoContract(context->instrument, contract);
+    const bool allowedOrder = crypto ?
+        (context->timeInForce == "IOC" && order.action == "BUY" && order.orderType == "LMT" &&
+         IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(order.totalQuantity) &&
+         IbPaperExecutionProfileConfig::CryptoPriceOnGrid(order.lmtPrice) &&
+         std::max(order.lmtPrice, quote.ask) <= 150.0 / order.totalQuantity &&
+         order.lmtPrice <= quote.ask * 1.001) : externalLimitDay ?
         (order.orderType == "LMT" &&
          order.auxPrice == 0.0 && !order.outsideRth &&
          std::isfinite(order.lmtPrice) && order.lmtPrice > 0.0 &&
@@ -72,6 +79,7 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
         !std::isfinite(execution.number2) || execution.number2 <= 0.0 ||
         !std::isfinite(execution.number3) || execution.number3 < 0.0)
         return false;
+    const double quantityTolerance = owner.instrument == "BTC.USD" ? 1e-10 : 1e-6;
     const double signedFill = side == "BUY" ?
         execution.number2 : -execution.number2;
     if (m_postFillRiskRefreshPending.load())
@@ -86,11 +94,11 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
         // regress the trusted cumulative quantity and never apply an exact
         // duplicate twice. A same-cumulative remaining=0 callback is still a
         // valid transition from partial to complete.
-        if (execution.number2 + 1e-6 < priorCumulative)
+        if (execution.number2 + quantityTolerance < priorCumulative)
             return true;
         const bool cumulativeAdvanced =
-            execution.number2 > priorCumulative + 1e-6;
-        const bool executionComplete = execution.number3 <= 1e-6;
+            execution.number2 > priorCumulative + quantityTolerance;
+        const bool executionComplete = execution.number3 <= quantityTolerance;
         const bool completionAdvanced =
             executionComplete && !m_postFillExecutionComplete;
         if (!cumulativeAdvanced && !completionAdvanced)
@@ -136,7 +144,7 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
     m_postFillSide = side;
     m_postFillBaselinePosition = baseline.positionQuantity;
     m_postFillExpectedPosition = baseline.positionQuantity + signedFill;
-    m_postFillExecutionComplete = execution.number3 <= 1e-6;
+    m_postFillExecutionComplete = execution.number3 <= quantityTolerance;
     m_postFillTerminalObserved = false;
     m_postFillBaselinePositionGeneration = baseline.positionGeneration;
     m_postFillBaselineFxCashGeneration = baseline.fxCashGeneration;
@@ -186,7 +194,7 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         contract != m_config.quoteContracts.end() &&
         m_adapter->ResolveAuthoritativePositionQuantity(
             m_postFillInstrument, contract->second, position, reason) &&
-        std::fabs(position - m_postFillExpectedPosition) <= 1e-6;
+        std::fabs(position - m_postFillExpectedPosition) <= (m_postFillInstrument == "BTC.USD" ? 1e-10 : 1e-6);
     if (coherent)
     {
         if (m_postFillStableSince ==
@@ -505,7 +513,8 @@ bool IbPaperExecutionRuntimeComposition::BeginEventPostFillRiskRefresh(
         const std::map<std::string, InstrumentRef>::const_iterator expected =
             m_config.quoteContracts.find(owner.instrument);
         if (expected == m_config.quoteContracts.end() ||
-            expected->second.secType != "CASH")
+            (expected->second.secType != "CASH" && !(m_config.profile.UsesUserCrypto() &&
+                IbPaperExecutionProfileConfig::IsCryptoContract(owner.instrument, expected->second))))
         {
             MarkFatalRuntimeError(
                 "IB_POST_FILL_RISK_REFRESH_CONTRACT_UNSUPPORTED");
@@ -522,7 +531,8 @@ bool IbPaperExecutionRuntimeComposition::BeginEventPostFillRiskRefresh(
         }
     }
     if (event.type == IBEventType::ExecutionDetails &&
-        event.contract.secType == "CASH" &&
+        (event.contract.secType == "CASH" || (m_config.profile.UsesUserCrypto() &&
+            IbPaperExecutionProfileConfig::IsCryptoContract(owner.instrument, event.contract))) &&
         std::isfinite(event.number2) && event.number2 > 0.0 &&
         std::isfinite(event.number) && event.number > 0.0 &&
         !BeginPostFillRiskRefresh(orderId, owner, event))

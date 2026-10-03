@@ -333,10 +333,23 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
         return false;
     }
     if (profile.userScope && (*allowedGatewayUids.begin() != ::geteuid() ||
-        gatewayContextBinding.executionDomain != "PAPER" || quoteContracts.size() != 1 ||
+        gatewayContextBinding.executionDomain != "PAPER" ||
+        quoteContracts.size() != (profile.UsesUserCrypto() ? 2U : 1U) ||
         quoteMaxAgeMs != profile.userQuoteMaxAgeMs))
     { reason = "IB_PAPER_USER_SCOPE_BINDING_INVALID"; return false; }
-    if (profile.userScope || profile.UsesExternalQualificationLimitDay())
+    if (profile.UsesUserCrypto())
+    {
+        std::string parsed;
+        for (const auto& entry : quoteContracts)
+        {
+            if (!parsed.empty()) parsed += ';';
+            parsed += entry.first + "|" + entry.second.symbol + "|" + entry.second.secType + "|" +
+                entry.second.exchange + "|" + entry.second.currency;
+        }
+        if (parsed != profile.userQuoteContracts || primaryQuoteInstrument != profile.userPrimaryQuoteInstrument)
+        { reason = "IB_PAPER_USER_CONTRACT_BINDING_MISMATCH"; return false; }
+    }
+    else if (profile.userScope || profile.UsesExternalQualificationLimitDay())
     {
         if (quoteContracts.size() != 1)
         {
@@ -362,7 +375,9 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     {
         const InstrumentRef& contract = it->second;
         if (!CanonicalText(it->first, 128) || !CanonicalText(contract.symbol, 64) ||
-            contract.secType != "CASH" || !CanonicalText(contract.exchange, 32) ||
+            (contract.secType != "CASH" && !(profile.UsesUserCrypto() &&
+                IbPaperExecutionProfileConfig::IsCryptoContract(it->first, contract))) ||
+            !CanonicalText(contract.exchange, 32) ||
             !CanonicalText(contract.currency, 16) ||
             it->first != contract.symbol + "." + contract.currency ||
             !contract.primaryExchange.empty() ||

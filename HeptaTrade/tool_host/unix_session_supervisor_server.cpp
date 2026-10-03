@@ -1408,12 +1408,14 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					result.leaseGeneration = request.expectedGeneration;
 			}
 		}
-		else if (request.operation == SessionSupervisorOperation::PaperResume ||
+		else if (request.operation == SessionSupervisorOperation::RenewActive ||
+            request.operation == SessionSupervisorOperation::PaperResume ||
             request.operation == SessionSupervisorOperation::Renew ||
 			request.operation == SessionSupervisorOperation::Rotate)
 		{
 			decodedRequest = true;
-            if (request.operation == SessionSupervisorOperation::PaperResume &&
+            if ((request.operation == SessionSupervisorOperation::PaperResume ||
+                 request.operation == SessionSupervisorOperation::RenewActive) &&
                 (!m_userPaperCustody || m_leaseStore == nullptr))
             {
                 result.ReasonCode() = "SESSION_USER_PAPER_RESUME_REQUIRED";
@@ -1434,7 +1436,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
                 result.leaseGeneration = previous.leaseGeneration;
                 result.ReasonCode() = "SESSION_LEASE_GENERATION_MISMATCH";
             }
-            else if (request.operation == SessionSupervisorOperation::PaperResume &&
+            else if ((request.operation == SessionSupervisorOperation::PaperResume ||
+                 request.operation == SessionSupervisorOperation::RenewActive) &&
                 (previous.templateId != "paper" || previous.recoveryOnly ||
                  previous.paperFinalizationRequired || previous.paperFinalizationState !=
                     SessionSupervisorPaperFinalizationState::None))
@@ -1562,7 +1565,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							replacement.token, request.expectedGeneration,
 							nowMs + request.ttlMs,
 							result.leaseGeneration, ownerAudit,
-							result.ReasonCode(), request.operation == SessionSupervisorOperation::PaperResume);
+							result.ReasonCode(), request.operation == SessionSupervisorOperation::PaperResume,
+                            request.operation == SessionSupervisorOperation::RenewActive);
 					}
 					else
 						result.accepted =
@@ -1919,6 +1923,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 	write_result:
     if (result.accepted && request.operation == SessionSupervisorOperation::PaperResume)
         result.ReasonCode() = "SESSION_OWNER_RESUMED";
+    if (result.accepted && request.operation == SessionSupervisorOperation::RenewActive)
+        result.ReasonCode() = "SESSION_LEASE_CONTINUED";
 	if (decodedRequest && m_auditJournal != nullptr)
 	{
 		std::string auditReason;

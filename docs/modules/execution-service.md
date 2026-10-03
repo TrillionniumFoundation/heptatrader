@@ -225,3 +225,11 @@ mutation/event identity disagreement remains
 EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH; no local authority fallback is
 permitted. Event cursors continue to require authoritative resync after an
 Execution service epoch change.
+
+## Crypto inventory and IPC continuation
+
+The mixed user profile adds `AuditSessionLease` to the existing authenticated,
+service-identity-bound control IPC. The typed audit result distinguishes active
+lease continuation from zero-exposure recovery; no parallel wire or order owner
+is introduced. Exact crypto flatten plans carry LMT/IOC, the authoritative BTC
+position and bound bid/ask through coordinator, policy and adapter dispatch.

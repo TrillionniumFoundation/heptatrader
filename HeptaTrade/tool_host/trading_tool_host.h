@@ -131,7 +131,7 @@ public:
         std::uint64_t expiresAtMs,
         std::uint64_t& newGeneration,
         ExecutionOwnerAuditResult& ownerAudit,
-        std::string& reason, bool resumeOwner = false);
+        std::string& reason, bool resumeOwner = false, bool continuation = false);
     std::size_t ReapExpiredSessions(std::uint64_t nowMs);
     TradingToolResult Invoke(std::uint32_t peerUid, const TradingToolHostRequest& request);
     TradingToolResult AuthorizeControlRequest(

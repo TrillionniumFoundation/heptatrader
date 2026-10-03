@@ -68,6 +68,13 @@ struct IbPaperExecutionProfileConfig
     std::string qualificationQuoteContracts;
     std::string qualificationPrimaryQuoteInstrument;
 
+    // Opt-in mixed user universe; old single-CASH authorization stays unchanged.
+    bool UsesUserCrypto() const;
+    static bool IsCryptoContract(const std::string& instrument, const InstrumentRef& contract);
+    static constexpr double CryptoQuantityLimit() { return 0.001; }
+    static constexpr double CryptoNotionalLimit() { return 150.0; }
+    static bool CryptoQuantityOnGrid(double quantity);
+    static bool CryptoPriceOnGrid(double price);
     bool Validate(std::string& reason) const;
     bool VerifyAuthorizationCredential(std::string& reason) const;
     bool BuildAuthorizationCredential(std::string& value,
@@ -93,6 +100,9 @@ struct IbPaperAuthoritativeRiskSnapshot
     bool complete = false;
     std::size_t activeOrderCount = 0;
     double grossAbsolutePosition = 0.0;
+    bool instrumentPositionsComplete = false;
+    // Units are never added across FX and crypto for a risk decision.
+    std::map<std::string, double> instrumentPositions;
 };
 
 struct IbPaperAuthoritativePositionSnapshot
@@ -154,6 +164,7 @@ struct IbPaperExecutionPolicyCallbacks
     // sample; the older callbacks remain for non-terminal reconciliation.
     std::function<IBAuthoritativeRecoveryAuditSnapshot()>
         recoveryAuditSnapshot;
+    std::function<IBAuthoritativeRecoveryAuditSnapshot()> leaseAuditSnapshot;
     // One-way runtime terminal boundary.  The first callback durably enters
     // TERMINALIZING, closes broker ingress, drains callbacks, and returns the
     // frozen snapshot.  The second fsyncs the exact terminal witness.  Replay
@@ -194,6 +205,8 @@ public:
     ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
+    ExecutionOwnerAuditResult AuditSessionLease(
+        const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult AuditSessionOwner(
         const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
@@ -221,7 +234,7 @@ private:
     ExecutionControlStatusResult BeginControl(const ExecutionControlCommand& command) const;
     ExecutionOwnerAuditResult AuditRecoveryOwner(
         const ExecutionControlCommand& command,
-        const IBAuthoritativeRecoveryAuditSnapshot& recovery);
+        const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation = false);
     void RefreshRateBudget(
         std::int64_t nowMs,
         const std::string& executionDomain = "PAPER");

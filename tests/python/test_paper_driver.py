@@ -437,4 +437,82 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertEqual(d.should_close(state,-25000,{"bid":1.0,"ask":1.001},None)[1],
                          "HALT_REDUCE_ONLY")
 
+class CryptoDriverPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.old=(d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE,d.NATIVE_ENDPOINT)
+        d.INSTRUMENT="BTC.USD";d.QTY=0.001;d.QUANTITY_TOLERANCE=1e-10;d.NATIVE_ENDPOINT=None
+    def tearDown(self):
+        d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE,d.NATIVE_ENDPOINT=self.old
+    def state(self):
+        return {"instrument":"BTC.USD","pending":None,"position":0.0,"entry_price":None,
+            "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":"","halt_new_entries":False}
+    def test_fx_state_cannot_be_reinterpreted_as_crypto(self):
+        import json
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/"state.json";path.write_text(json.dumps({"schema":"heptatrader.paper-driver.v1","position":-25000}));path.chmod(0o600)
+            before=path.read_bytes()
+            with self.assertRaisesRegex(d.DriverError,"cross-instrument"):d.load_state(path)
+            self.assertEqual(path.read_bytes(),before)
+    def test_crypto_short_rejected_before_preview(self):
+        from unittest.mock import patch
+        with patch.object(d,"paper_cmd") as cmd:
+            with self.assertRaisesRegex(d.DriverError,"short entries"):
+                d.prepare_send(self.state(),Path("/unused"),"b","s","t","o","OPEN",{"bid":85000,"ask":85000.25},"SELL")
+            cmd.assert_not_called()
+    def test_crypto_amount_and_tick_reject_before_preview(self):
+        from unittest.mock import patch
+        for ask in (150000.25,85000.1,float("nan"),0):
+            with patch.object(d,"paper_cmd") as cmd:
+                with self.assertRaises(d.DriverError):
+                    d.prepare_send(self.state(),Path("/unused"),"b","s","t","o","OPEN",{"bid":ask,"ask":ask},"BUY")
+                cmd.assert_not_called()
+    def inspect(self,state,qty,price,side,new_position,command):
+        from unittest.mock import patch
+        row=matched_fill(155,command,side,qty,price);row["instrument"]="BTC.USD"
+        response={"ok":True,"result":{"payload":{"authoritative":True,"command_id":command,"command_status":"accepted","order_id":155}}}
+        with patch.object(d,"paper_cmd",return_value=response) as native,patch.object(d,"atomic_json"):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",{"position":new_position,"active":[],"orders":{"recent_orders":[row]}})
+            self.assertEqual(native.call_args.args[4],"inspect")
+    def test_partial_ioc_entry_and_two_exits_settle_once_in_usd(self):
+        state=self.state()
+        state["pending"]={"kind":"OPEN","command_id":"crypto-open","broker_order_id":155,"side":"BUY","position_before_send":0.0}
+        self.inspect(state,0.0006,85000,"BUY",0.0006,"crypto-open")
+        self.assertEqual(state["entries"],1);self.assertTrue(state["halt_new_entries"])
+        state["pending"]={"kind":"CLOSE","command_id":"crypto-partial-close","broker_order_id":155,"position_before_send":0.0006}
+        self.inspect(state,0.0002,85100,"SELL",0.0004,"crypto-partial-close")
+        self.assertAlmostEqual(state["gross_pnl"],0.02,places=10)
+        self.assertEqual(state["closed_trades"],0);self.assertIsNone(state["pending"])
+        state["pending"]={"kind":"CLOSE","command_id":"crypto-final-close","broker_order_id":155,"position_before_send":0.0004}
+        self.inspect(state,0.0004,85050,"SELL",0.0,"crypto-final-close")
+        self.assertAlmostEqual(state["gross_pnl"],0.04,places=10)
+        self.assertEqual((state["entries"],state["exits"],state["closed_trades"]),(1,1,1))
+        self.assertFalse(state["halt_new_entries"]);self.assertIsNone(state["pending"])
+    def test_position_without_exact_fill_quantity_does_not_settle(self):
+        state=self.state();state["pending"]={"kind":"OPEN","command_id":"mismatch","broker_order_id":155,"side":"BUY","position_before_send":0}
+        self.inspect(state,0.0002,85000,"BUY",0.001,"mismatch")
+        self.assertIsNotNone(state["pending"]);self.assertEqual(state["entries"],0)
+        self.assertEqual(state["position"],0);self.assertEqual(state["gross_pnl"],0)
+    def test_crypto_cannot_use_an_fx_fill_with_same_number_and_command(self):
+        row=matched_fill(155,"same-command","BUY",0.001,1.1);row["instrument"]="EUR.USD"
+        self.assertIsNone(d.recent_fill({"recent_orders":[row]},{"command_id":"same-command","broker_order_id":155},"BUY"))
+    def test_active_lease_continues_without_flatten_or_quote(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(active_lease_continuation_supported=True,lease_generation=17,lease_last_renew_ms=0)
+        def run(argv,timeout):
+            self.assertIn("renew-active",argv);self.assertIn("17",argv)
+            return subprocess.CompletedProcess(argv,0,'{"accepted":true,"reason_code":"SESSION_LEASE_CONTINUED","lease_generation":18}',"")
+        with patch.object(d,"run",run),patch.object(d,"atomic_json"),patch.object(d,"paper_cmd") as order:
+            d.maybe_renew(state,Path("/unused"),"ctl","sock","token",1000,-25000,0,None)
+            order.assert_not_called()
+        self.assertEqual(state["lease_generation"],18);self.assertFalse(state["halt_new_entries"])
+        self.assertFalse(state["lease_uncertain"])
+    def test_active_lease_unknown_reply_keeps_original_generation_and_halt(self):
+        from unittest.mock import patch
+        state=self.state();state.update(lease_generation=3,lease_last_renew_ms=0)
+        with patch.object(d,"run",side_effect=TimeoutError("timeout")),patch.object(d,"atomic_json"):
+            with self.assertRaises(TimeoutError):d.continue_active_lease(state,Path("/unused"),"ctl","sock","token",1000,0,None)
+        self.assertEqual(state["lease_generation"],3);self.assertTrue(state["halt_new_entries"])
+        self.assertTrue(state["lease_uncertain"]);self.assertEqual(state["lease_renewal_state"],"POSSIBLY_SENT")
+
 if __name__=="__main__": unittest.main()

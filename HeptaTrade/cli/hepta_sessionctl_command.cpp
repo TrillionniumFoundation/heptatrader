@@ -167,6 +167,7 @@ const char* HeptaSessionCtlCommandParser::Usage()
            "--expected-owner-set-sha256 SHA256 --expected-owner-count N "
            "--receipt-sha256 SHA256 --terminal-evidence-file PATH "
            "--terminal-evidence-sha256 SHA256 [--token-owner-uid UID] | "
+           "renew-active --token-file PATH --generation N --ttl-sec N [--token-owner-uid UID] | "
            "paper-resume --token-file PATH --generation N --ttl-sec N [--token-owner-uid UID] | "
            "renew --token-file PATH --generation N --ttl-sec N "
            "[--token-owner-uid UID] | "
@@ -217,6 +218,7 @@ bool HeptaSessionCtlCommandParser::Parse(
     const std::string operation = argv[index++];
     if (operation == "provision") command.request.operation = SessionSupervisorOperation::Provision;
     else if (operation == "revoke") command.request.operation = SessionSupervisorOperation::Revoke;
+    else if (operation == "renew-active") command.request.operation = SessionSupervisorOperation::RenewActive;
     else if (operation == "paper-resume") command.request.operation = SessionSupervisorOperation::PaperResume;
     else if (operation == "renew") command.request.operation = SessionSupervisorOperation::Renew;
     else if (operation == "rotate") command.request.operation = SessionSupervisorOperation::Rotate;
@@ -321,7 +323,8 @@ bool HeptaSessionCtlCommandParser::Parse(
             (command.request.operation == SessionSupervisorOperation::RecoveryQuery ?
                 3 + (requirePaperFinalization ? 1 : 0) :
             ((command.request.operation == SessionSupervisorOperation::Renew ||
-              command.request.operation == SessionSupervisorOperation::PaperResume) ? 3 :
+              command.request.operation == SessionSupervisorOperation::PaperResume ||
+              command.request.operation == SessionSupervisorOperation::RenewActive) ? 3 :
             (command.request.operation == SessionSupervisorOperation::Rotate ? 4 :
             (command.request.operation ==
                 SessionSupervisorOperation::PaperFinalize ? 6 :

@@ -67,7 +67,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
                     plan.expectedPositionQuantity,
                     plan.positionConnectionEpoch, plan.positionGeneration,
                     plan.quoteSubscriptionId, plan.quoteObservedAtMs,
-                    plan.quoteStaleAfterMs, correlation, plan.quoteBid, plan.quoteAsk);
+                    plan.quoteStaleAfterMs, correlation, plan.quoteBid, plan.quoteAsk, plan.timeInForce);
             }
             if (outcome.disposition == VenueFlattenDisposition::Submitted)
                 NotifyTestStage("after_flatten_venue_send");
@@ -158,6 +158,18 @@ IbPaperExecutionRuntimeComposition::PolicyRiskSnapshot() const
         !PostFillRiskRefreshPending();
     result.activeOrderCount = correlations.activeOrderIds.size();
     result.grossAbsolutePosition = risk.grossAbsolutePosition;
+    if (m_config.profile.UsesUserCrypto())
+    {
+        result.instrumentPositions = m_adapter->GetAuthoritativePositionQuantities();
+        result.instrumentPositionsComplete = result.complete;
+        for (const auto& contract : m_config.quoteContracts)
+        {
+            double quantity = 0; std::string reason;
+            if (!m_adapter->ResolveAuthoritativePositionQuantity(contract.first, contract.second, quantity, reason))
+                result.instrumentPositionsComplete = false;
+            else result.instrumentPositions[contract.first] = quantity;
+        }
+    }
     return result;
 }
 IbPaperAuthoritativePositionSnapshot
@@ -195,6 +207,7 @@ std::string IbPaperExecutionRuntimeComposition::OwnedOrdersJson(const AgentExecu
     const bool complete = orders.complete && projection.complete;
     const std::string reason = !orders.complete ? (orders.reasonCode.empty() ? "IB_ACTIVE_ORDER_SNAPSHOT_INCOMPLETE" : orders.reasonCode) : (!projection.complete ? "EXECUTION_ORDER_OWNER_PROJECTION_INCOMPLETE" : "");
     std::ostringstream output;
+    output.precision(17);
     output << "{\"source\":\"IB\",\"authoritative\":" << (complete ? "true" : "false") << ",\"active_orders_source\":\"IB_OPEN_ORDERS\",\"active_orders_connection_epoch\":" << orders.connectionEpoch << ",\"active_orders_generation\":" << orders.generation << ",\"global_active_orders_complete\":" << (orders.complete ? "true" : "false")
            << ",\"owner_projection_source\":\"EXECUTION_COORDINATOR_ORDER_OWNERS\",\"owner_projection_connection_epoch\":" << orders.connectionEpoch << ",\"owner_projection_generation\":" << orders.generation << ",\"owner_projection_complete\":" << (complete ? "true" : "false") << ",\"owned_active_order_ids_authoritative\":" << (complete ? "true" : "false")
            << ",\"owner_scope\":{\"agent_id\":\"" << EscapeJson(context.agentId) << "\",\"session_id\":\"" << EscapeJson(context.sessionId) << "\",\"execution_domain\":\"" << EscapeJson(context.executionDomain) << "\",\"account\":\"" << EscapeJson(context.account) << "\"},\"reason_code\":\"" << EscapeJson(reason) << "\"";
@@ -259,6 +272,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"mutation_ready\":"
                    << (!fenced && !recoveryOnly && !blocked && snapshotsReady &&
                        authorizedConnectorCount == 1 ? "true" : "false")
+                   << ",\"active_lease_continuation_supported\":" << (m_config.profile.UsesUserCrypto() ? "true" : "false")
                    << ",\"mutation_reason\":\"" << EscapeJson(reason)
                    << "\",\"preview_required\":true";
         }
@@ -274,6 +288,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
     const std::string riskReason = postFillPending ?
         "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode;
     std::ostringstream output;
+    output.precision(17);
     if (command.query == "market.get_quote")
     {
         IBAuthoritativeQuoteSubscriptionHealth health;
@@ -426,6 +441,9 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                << m_config.profile.maxGrossPosition
                << ",\"gross_absolute_position\":"
                << risk.grossAbsolutePosition
+               << ",\"mixed_asset_units\":" << (m_config.profile.UsesUserCrypto() ? "true" : "false")
+               << ",\"crypto_quantity_limit\":" << (m_config.profile.UsesUserCrypto() ? 0.001 : 0.0)
+               << ",\"crypto_notional_limit_usd\":" << (m_config.profile.UsesUserCrypto() ? 150.0 : 0.0)
                << ",\"reason_code\":\"" << EscapeJson(riskReason)
                << "\",\"gross_scope\":\"PAPER_BASELINE_DELTA\"}";
     }
@@ -446,6 +464,12 @@ bool IbPaperExecutionRuntimeComposition::BuildPolicyAuthority(
         [this]() { return PolicyCorrelationSnapshot(); };
     policyCallbacks.terminalCorrelationSnapshot = [this]() {
         return m_adapter->GetAuthoritativeTerminalCorrelationSnapshot();
+    };
+    policyCallbacks.leaseAuditSnapshot = [this]() {
+        std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+        auto snapshot = m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        snapshot.postFillRiskReconciliationPending = snapshot.postFillRiskReconciliationPending || PostFillRiskRefreshPending();
+        return snapshot;
     };
     policyCallbacks.recoveryAuditSnapshot = [this]() {
         return PolicyRecoveryAuditSnapshot();

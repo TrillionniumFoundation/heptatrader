@@ -5,6 +5,8 @@ from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
+NATIVE_ENDPOINT=None
+QUANTITY_TOLERANCE=1e-9
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
 def cid(p): return p+"-"+uuid.uuid4().hex
@@ -46,7 +48,7 @@ def atomic_json(path,value):
 
 def load_state(path):
     if not path.exists():
-        return {"schema":"heptatrader.paper-driver.v1","history":[],"pending":None,"position":0.0,
+        return {"schema":"heptatrader.paper-driver.v1","instrument":INSTRUMENT,"history":[],"pending":None,"position":0.0,
             "entry_price":None,"entry_price_basis":None,"last_decision_ms":0,"decisions":0,
             "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":"",
             "halt_new_entries":False,"lease_generation":1,"lease_last_renew_ms":now_ms(),
@@ -56,10 +58,12 @@ def load_state(path):
         raise DriverError("unsafe state file")
     v=strict_json(path.read_text())
     if v.get("schema")!="heptatrader.paper-driver.v1": raise DriverError("state schema mismatch")
+    if v.get("instrument","EUR.USD")!=INSTRUMENT: raise DriverError("cross-instrument state file refused")
     return v
 
 def native(cli,tool,*fields):
-    p=run([cli,"native","--io-timeout-ms","4000","--call-id",cid("driver-read"),"call",tool,*fields],15)
+    endpoint=NATIVE_ENDPOINT if NATIVE_ENDPOINT is not None else [cli,"native"]
+    p=run([*endpoint,"--io-timeout-ms","4000","--call-id",cid("driver-read"),"call",tool,*fields],15)
     if not p.stdout: raise DriverError("native transport failed: "+p.stderr[:160])
     v=strict_json(p.stdout)
     if p.returncode!=0 or v.get("status")!="ok": raise DriverError("native rejected: "+str(v.get("reason_code")))
@@ -71,10 +75,12 @@ def snapshot(cli,state=None,path=None,require_quote=True):
     if (not isinstance(owner,dict) or owner.get("source")!="IB" or owner.get("authoritative") is not True or
             any(type(owner.get(k)) is not bool for k in ("owner_fenced","owner_recovery_only","mutation_ready"))):
         raise DriverError("authoritative owner mutation readiness unavailable")
+    if state is not None:
+        state["active_lease_continuation_supported"]=owner.get("active_lease_continuation_supported") is True
     if state is not None and (owner["owner_fenced"] or owner["owner_recovery_only"]):
         latch_owner_fence(state,path,owner.get("mutation_reason") or "SESSION_OWNER_FENCED")
     o=native(cli,"orders.list"); p=native(cli,"portfolio.list_positions")
-    q=native(cli,"market.get_quote","instrument=EUR.USD") if require_quote else None
+    q=native(cli,"market.get_quote","instrument="+INSTRUMENT) if require_quote else None
     l=native(cli,"risk.get_limits") if require_quote else None
     invalid=(h.get("execution_mode")!="PAPER" or not h.get("gateway_ready") or not h.get("remote_execution_ready")
         or o.get("source")!="IB" or not o.get("authoritative") or not o.get("global_active_orders_complete")
@@ -97,6 +103,7 @@ def matching_command_rows(orders,pending,expected_side):
     rows=[]
     for row in orders.get("recent_orders",[]):
         if row.get("command_id")!=pending.get("command_id"): continue
+        if row.get("instrument",INSTRUMENT)!=INSTRUMENT: continue
         correlation=row.get("venue_correlation_id")
         if (row.get("order_id")!=pending.get("broker_order_id") or
             not isinstance(correlation,str) or not correlation.startswith("hepta-v1-sha256:") or
@@ -171,16 +178,23 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
     preview=cid("driver-preview")
     if kind=="OPEN":
         ref=float(quote["ask"] if side=="BUY" else quote["bid"])
-        prepared=paper_cmd(binary,socket,token,outbox,"prepare-open",
-            ["--call-id",preview,"--side",side,"--price",format(ref,".17g"),"--expiry",str(now_ms()+45000)])
+        if INSTRUMENT=="BTC.USD":
+            if side!="BUY": raise DriverError("crypto short entries are not supported")
+            if (not math.isfinite(ref) or ref<=0 or ref*QTY>150 or abs(ref*4-round(ref*4))>1e-7):
+                raise DriverError("crypto quote violates notional/tick constraints")
+            prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-open",
+                ["--call-id",preview,"--price",format(ref,".17g"),"--quantity",format(QTY,".17g"),"--expiry",str(now_ms()+45000)])
+        else:
+            prepared=paper_cmd(binary,socket,token,outbox,"prepare-open",
+                ["--call-id",preview,"--side",side,"--price",format(ref,".17g"),"--expiry",str(now_ms()+45000)])
     else:
-        ref=None; prepared=paper_cmd(binary,socket,token,outbox,"prepare-close",["--call-id",preview])
+        ref=None; prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-close" if INSTRUMENT=="BTC.USD" else "prepare-close",["--call-id",preview])
     if not prepared.get("ok") or not prepared.get("command_id"):
         reason=response_application_reason(prepared) or str(prepared.get("reason", ""))
         if reason=="SESSION_OWNER_FENCED": latch_owner_fence(state,path,reason)
         raise DriverError("prepare failed: "+reason)
     pending={"kind":kind,"command_id":prepared["command_id"],"send_state":"PREPARED",
-        "created_at_ms":now_ms(),"broker_order_id":None,"side":side,"reference_price":ref,
+        "created_at_ms":now_ms(),"instrument":INSTRUMENT,"broker_order_id":None,"side":side,"reference_price":ref,
         "position_before_send":float(state.get("position",0.0))}
     state["pending"]=pending; atomic_json(path,state)
     # This state precedes the one and only transport attempt. A crash here must
@@ -216,7 +230,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
     if p.get("send_state")=="DEFINITELY_REJECTED":
         before=p.get("position_before_send");current=float(snap["position"])
         if (type(before) not in (int,float) or not math.isfinite(float(before)) or
-                snap["active"] or abs(current-float(before))>1e-9 or p.get("broker_order_id") is not None):
+                snap["active"] or abs(current-float(before))>QUANTITY_TOLERANCE or p.get("broker_order_id") is not None):
             state["last_error"]="definite rejection awaits authoritative unchanged-state proof"
             atomic_json(path,state); return
         state["position"]=current;state["pending"]=None
@@ -244,22 +258,31 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         p["venue_correlation_id"]=fill["venue_correlation_id"]
         p["broker_execution_id"]=fill["broker_execution_id"]
     fill_price=fill.get("price") if fill else None
+    if INSTRUMENT=="BTC.USD" and fill:
+        before=float(p.get("position_before_send",state.get("position",0)))
+        expected=pos-before if p["kind"]=="OPEN" else before-pos
+        if (not fill.get("terminal") or expected<=0 or
+                abs(expected-float(fill["quantity"]))>QUANTITY_TOLERANCE):
+            state["last_error"]="crypto fill awaits exact terminal position-delta reconciliation"
+            atomic_json(path,state);return
     p["last_status"]={"at_ms":now_ms(),"command_status":payload.get("command_status"),"reason_code":payload.get("reason_code","")}
     expected_sign=1.0 if p.get("side")=="BUY" else -1.0 if p.get("side")=="SELL" else 0.0
-    open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>1e-9 and
-        abs(pos)<=QTY+1e-9 and expected_sign*pos>0 and fill is not None and
+    open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>QUANTITY_TOLERANCE and
+        abs(pos)<=QTY+QUANTITY_TOLERANCE and expected_sign*pos>0 and fill is not None and
         payload.get("command_status")=="accepted")
     if open_position_matches:
         state["position"]=pos; state["entries"]+=1
         state["entry_price"]=fill_price
         state["entry_price_basis"]="broker_average_fill_price" if fill else "unavailable"
         state["entry_at_ms"]=now_ms(); state["pending"]=None
-        if abs(pos)<QTY-1e-9 or not fill:
+        if abs(pos)<QTY-QUANTITY_TOLERANCE or not fill:
+            if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
+                state["crypto_partial_owned_halt"]=True
             state["halt_new_entries"]=True
             state["risk_halt_reason"]="PARTIAL_OR_UNPROVEN_ENTRY"
             state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
         else: state["last_error"]=""
-    elif (p["kind"]=="CLOSE" and abs(pos)<1e-9 and not active and fill is not None and
+    elif (p["kind"]=="CLOSE" and abs(pos)<QUANTITY_TOLERANCE and not active and fill is not None and
             payload.get("command_status")=="accepted"):
         entry=state.get("entry_price"); old=float(state.get("position",0))
         if fill_price and entry and old:
@@ -267,14 +290,29 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             state["gross_pnl"]+=((fill_price-entry)*closed_qty if old>0 else (entry-fill_price)*closed_qty)
         state.update(position=0.0,entry_price=None,entry_price_basis=None,entry_at_ms=None,pending=None,last_error="")
         state["exits"]+=1; state["closed_trades"]+=1
+        if (INSTRUMENT=="BTC.USD" and state.get("crypto_partial_owned_halt") and
+                state.get("risk_halt_reason") in {"PARTIAL_OR_UNPROVEN_ENTRY","PARTIAL_FLATTEN"} and
+                not state.get("owner_fence_recovery_required") and not state.get("lease_uncertain")):
+            state["crypto_partial_owned_halt"]=False
+            state["risk_halt_reason"]=""
+            state["halt_new_entries"]=False
     elif (p["kind"]=="CLOSE" and not active and fill and fill.get("terminal") and
-          abs(pos)>1e-9 and abs(pos)<abs(float(state.get("position",0)))-1e-9):
+          abs(pos)>QUANTITY_TOLERANCE and abs(pos)<abs(float(state.get("position",0)))-QUANTITY_TOLERANCE):
+        old=float(state.get("position",0));entry=state.get("entry_price")
+        reduced=abs(old)-abs(pos)
+        if not entry or abs(reduced-float(fill["quantity"]))>QUANTITY_TOLERANCE:
+            state["last_error"]="partial exit quantity/economic evidence mismatch"
+            atomic_json(path,state);return
+        state["gross_pnl"]+=((fill_price-entry)*reduced if old>0 else (entry-fill_price)*reduced)
+        state["partial_exit_fills"]=int(state.get("partial_exit_fills",0))+1
+        if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
+            state["crypto_partial_owned_halt"]=True
         state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
         state["risk_halt_reason"]="PARTIAL_FLATTEN"
         state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
     elif ((payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],p,expected_side)) and
           not active and math.isfinite(pos) and
-          abs(pos-float(state.get("position",0.0)))<1e-9):
+          abs(pos-float(state.get("position",0.0)))<QUANTITY_TOLERANCE):
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
     else:
         state["last_error"]="original command awaiting correlation-bound Broker reconciliation"
@@ -307,7 +345,7 @@ def model_decision(codex,state_dir,history,position):
     elif schema.read_text()!=raw: raise DriverError("decision schema drift")
     output=state_dir/("decision-"+uuid.uuid4().hex+".json")
     compact=[{"t":x["observed_at_ms"],"bid":x["bid"],"ask":x["ask"],"mid":x["mid"]} for x in history[-24:]]
-    prompt=("Direction-only decision for an IB PAPER EUR/USD test. You cannot trade or use tools. "
+    prompt=(f"Direction-only decision for an IB PAPER {INSTRUMENT} test. You cannot trade or use tools. "
         "Return required JSON only. Prefer HOLD unless direction is coherent. BUY means bullish and SELL bearish. "
         f"Existing position={position:.17g}. Recent authoritative quotes="+json.dumps(compact,separators=(",",":")))
     p=run([codex,"-a","never","exec","--ignore-user-config","--ephemeral","--skip-git-repo-check","--sandbox","read-only",
@@ -342,15 +380,50 @@ def _finish_renewal(state,generation):
     if not state.get("owner_fence_recovery_required"): state["last_error"]=""
 
 
+def continue_active_lease(state,path,sessionctl,supervisor,token,uid,active_orders,pending):
+    due=(state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT" or
+        now_ms()-int(state.get("lease_last_renew_ms",0))>=4*60*60*1000)
+    if not due: return
+    if not state.get("halt_new_entries"):
+        state["lease_renewal_owned_halt"]=True
+    state["halt_new_entries"]=True
+    if active_orders or pending is not None:
+        state["last_error"]="lease continuation waits for original command settlement"
+        atomic_json(path,state);return
+    if now_ms()<int(state.get("lease_continue_retry_ms",0)):return
+    state["lease_continue_retry_ms"]=now_ms()+30000
+    g=int(state.get("lease_generation",1));state["lease_renewal_state"]="POSSIBLY_SENT"
+    atomic_json(path,state)
+    try:
+        result=run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","renew-active",
+            "--token-file",token,"--generation",str(g),"--ttl-sec","86400","--token-owner-uid",str(uid)],10)
+        value=_parse_command_json(result)
+    except Exception:
+        state["lease_uncertain"]=True;atomic_json(path,state);raise
+    generation=value.get("lease_generation")
+    if (result.returncode==0 and value.get("accepted") is True and value.get("reason_code")=="SESSION_LEASE_CONTINUED"
+            and type(generation) is int and generation==g+1):
+        _finish_renewal(state,generation);atomic_json(path,state);return
+    reason=str(value.get("reason_code") or "SESSION_LEASE_CONTINUATION_UNCERTAIN")
+    if reason=="SESSION_LEASE_GENERATION_MISMATCH" and type(generation) is int and generation>g:
+        state["lease_generation"]=generation
+    if reason in {"SESSION_OWNER_FENCE_PENDING","SESSION_OWNER_RECOVERY_REQUIRED","SESSION_LEASE_CONTINUATION_NOT_ALLOWED"}:
+        latch_owner_fence(state,path,reason);return
+    state["lease_uncertain"]=not bool(value)
+    state["last_error"]="lease continuation pending: "+reason
+    atomic_json(path,state)
+
 def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_orders,pending):
     if state.get("owner_fence_recovery_required"): return
+    if state.get("active_lease_continuation_supported"):
+        return continue_active_lease(state,path,sessionctl,supervisor,token,uid,active_orders,pending)
     if state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT":
         latch_owner_fence(state,path,"SESSION_RENEWAL_UNCERTAIN"); return
     if now_ms()-int(state.get("lease_last_renew_ms",0))<4*60*60*1000: return
     if not state.get("halt_new_entries"):
         state["lease_renewal_owned_halt"]=True
     state["halt_new_entries"]=True
-    if abs(float(position))>1e-9 or active_orders or pending is not None:
+    if abs(float(position))>QUANTITY_TOLERANCE or active_orders or pending is not None:
         state["lease_renewal_drain"]=True
         state["last_error"]="session renewal due; drain to exact-zero before renewal"
         atomic_json(path,state); return
@@ -409,9 +482,12 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
     guard=run([cli,"paper-on"],10)
     if guard.returncode!=0: raise DriverError("post-audit local PAPER guard not ready")
     # Capability verification only: this permit is never submitted or persisted.
-    preview=native(cli,"risk.preview_order","instrument=EUR.USD","side=BUY","quantity=25000",
-        "order_type=MKT","tif=DAY","reference_price="+format(float(snap["quote"]["ask"]),".17g"),
-        "expires_at_ms="+str(now_ms()+4000))
+    fields=["instrument="+INSTRUMENT,"side=BUY","quantity="+format(QTY,".17g"),
+        "order_type="+("LMT" if INSTRUMENT=="BTC.USD" else "MKT"),
+        "tif="+("IOC" if INSTRUMENT=="BTC.USD" else "DAY"),
+        "reference_price="+format(float(snap["quote"]["ask"]),".17g"),"expires_at_ms="+str(now_ms()+4000)]
+    if INSTRUMENT=="BTC.USD":fields.append("limit_price="+format(float(snap["quote"]["ask"]),".17g"))
+    preview=native(cli,"risk.preview_order",*fields)
     if (preview.get("approved") is not True or not preview.get("preview_permit") or
             preview.get("service_epoch")!=snap["service_epoch"] or
             preview.get("service_fencing_generation")!=snap["service_generation"]):
@@ -443,23 +519,55 @@ def should_close(state,pos,quote,decision):
         if pos<0 and decision["action"]=="BUY": return True,"MODEL_REVERSAL"
     return False,""
 
+def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
+    if INSTRUMENT!="BTC.USD":raise DriverError("bounded canary is crypto-only")
+    snap=snapshot(cli,state,path)
+    if (state.get("pending") is not None or state.get("position")!=0 or snap["position"]!=0 or
+            snap["active"] or state.get("halt_new_entries") or state.get("owner_fence_recovery_required")):
+        raise DriverError("canary requires its own authoritative flat/order-free unblocked state")
+    guard=run([cli,"paper-on"],10)
+    if guard.returncode:raise DriverError("local PAPER guard not ready")
+    prepare_send(state,path,binary,socket,token,outbox,"OPEN",snap["quote"],"BUY")
+    deadline=time.monotonic()+65
+    while state.get("pending") is not None and time.monotonic()<deadline:
+        inspect_pending(state,path,binary,socket,token,outbox,snapshot(cli,state,path,False))
+        if state.get("pending") is not None:time.sleep(1)
+    if state.get("pending") is not None:raise DriverError("canary pending preserved; no resubmission")
+    if state.get("position",0)<=0:raise DriverError("canary entry did not produce a proved crypto fill")
+    snap=snapshot(cli,state,path)
+    prepare_send(state,path,binary,socket,token,outbox,"CLOSE")
+    deadline=time.monotonic()+65
+    while state.get("pending") is not None and time.monotonic()<deadline:
+        inspect_pending(state,path,binary,socket,token,outbox,snapshot(cli,state,path,False))
+        if state.get("pending") is not None:time.sleep(1)
+    if state.get("pending") is not None or state.get("position")!=0:
+        raise DriverError("canary exit incomplete; original state retained")
+    return 0
+
 def main():
+    global INSTRUMENT,QTY,NATIVE_ENDPOINT,QUANTITY_TOLERANCE
     ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true")
     ap.add_argument("--reconcile-only",action="store_true")
     ap.add_argument("--recover-owner",action="store_true")
+    ap.add_argument("--instrument",choices=("EUR.USD","BTC.USD"),default="EUR.USD")
+    ap.add_argument("--canary-roundtrip",action="store_true")
     ap.add_argument("--rearm-session-generation",type=int,default=0)
     args=ap.parse_args()
-    if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation,args.recover_owner))>1:
+    if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation,args.recover_owner,args.canary_roundtrip))>1:
         raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
-    home=Path.home(); state_dir=home/".local/state/heptatrader/paper-driver"; private_dir(state_dir)
+    INSTRUMENT=args.instrument;crypto=INSTRUMENT=="BTC.USD"
+    QTY=0.001 if crypto else 25000.0;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
+    home=Path.home(); state_dir=home/".local/state/heptatrader"/("crypto-driver" if crypto else "paper-driver"); private_dir(state_dir)
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     cli=str(home/".local/bin/heptatrader"); binary=str(home/".local/share/heptatrader/current/bin/hepta-paper-command")
     sessionctl=str(home/".local/share/heptatrader/current/bin/hepta-sessionctl")
     codex=str(home/".local/share/heptatrader/tools/node_modules/.bin/codex")
     socket=f"/run/user/{os.geteuid()}/heptatrader/tools.sock"; supervisor=f"/run/user/{os.geteuid()}/heptatrader/supervisor.sock"
-    token=str(home/".config/heptatrader/paper.token")
+    token=str(home/".config/heptatrader"/("crypto.token" if crypto else "paper.token"))
+    if crypto:
+        NATIVE_ENDPOINT=[str(home/".local/share/heptatrader/current/bin/heptactl"),"--socket",socket,"--token-file",token]
     for x in (cli,binary,sessionctl,codex,token):
         if not Path(x).exists(): raise DriverError("required runtime missing: "+x)
     stop=False
@@ -467,9 +575,19 @@ def main():
         nonlocal stop; stop=True
     signal.signal(signal.SIGTERM,stopping); signal.signal(signal.SIGINT,stopping)
     state=load_state(state_path)
+    if crypto:
+        state.setdefault("pnl_currency","USD")
+        state.setdefault("pnl_basis","BROKER_FILL_GROSS")
+        state.setdefault("fees_complete",False)
+        state.setdefault("net_pnl",None)
     if state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT":
-        latch_owner_fence(state,state_path,"SESSION_RENEWAL_UNCERTAIN")
+        if state.get("active_lease_continuation_supported"):
+            state["halt_new_entries"]=True
+        else: latch_owner_fence(state,state_path,"SESSION_RENEWAL_UNCERTAIN")
     atomic_json(state_path,state); model_worker=None
+    if args.canary_roundtrip:
+        try:return canary_roundtrip(state,state_path,cli,binary,socket,token,str(outbox))
+        finally:os.close(lock)
     if args.recover_owner:
         latch_owner_fence(state,state_path,"OPERATOR_AUDITED_RECOVERY")
         try:
@@ -490,7 +608,14 @@ def main():
         started=time.monotonic()
         try:
             pending_mode=state.get("pending") is not None
-            snap=snapshot(cli,state,state_path,require_quote=not pending_mode); pos=float(snap["position"])
+            snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
+            if not pending_mode and state.get("active_lease_continuation_supported"):
+                maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),pos,len(snap["active"]),None)
+            if not pending_mode:
+                snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
+                q=snap["quote"]
+                if q.get("authoritative") is not True or q.get("source")!="IB" or q.get("stale") is not False:
+                    raise DriverError("authoritative instrument quote unavailable")
             if pending_mode:
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
                 if args.once: break
@@ -503,7 +628,7 @@ def main():
             if state.get("owner_fence_recovery_required"):
                 state["position"]=pos; state["halt_new_entries"]=True
                 model_worker=None
-                if not snap["active"] and abs(pos)>1e-9:
+                if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
                 elif not snap["active"] and snap["gross_position"]==0.0:
                     recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
@@ -511,17 +636,20 @@ def main():
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
                 continue
+            if INSTRUMENT=="BTC.USD" and abs(pos-float(state.get("position",0)))>QUANTITY_TOLERANCE:
+                state["halt_new_entries"]=True;state["risk_halt_reason"]="EXTERNAL_CRYPTO_POSITION_CHANGE"
+                raise DriverError("crypto position changed outside the original pending command")
             state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
                 pos,len(snap["active"]),state.get("pending"))
             if state.get("owner_fence_recovery_required"):
                 model_worker=None
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            if abs(pos)<=1e-9 and snap["owner_health"]["mutation_ready"] is not True:
+            if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
                 raise DriverError("authoritative mutation state is not ready")
             decision=None
             # Safety exits are evaluated on every sample and never wait for the model.
-            if not snap["active"] and abs(pos)>1e-9:
+            if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                 close,why=should_close(state,pos,q,None)
                 if close:
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
@@ -533,7 +661,7 @@ def main():
                 try:
                     candidate=model_worker.result()
                     age=now_ms()-model_worker.observed_at_ms
-                    if abs(pos-model_worker.position)>1e-9:
+                    if abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
                         raise DriverError("model decision discarded after authoritative position change")
                     if age<0 or age>60000:
                         raise DriverError("model decision discarded after market snapshot expiry")
@@ -544,12 +672,12 @@ def main():
                 model_worker=None
             if snap["active"]:
                 state["last_error"]="active broker order present; observing only"
-            elif abs(pos)>1e-9 and decision is not None:
+            elif abs(pos)>QUANTITY_TOLERANCE and decision is not None:
                 close,why=should_close(state,pos,q,decision)
                 if close:
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-            elif abs(pos)<=1e-9 and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in {"BUY","SELL"}:
+            elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in ({"BUY"} if INSTRUMENT=="BTC.USD" else {"BUY","SELL"}):
                 guard=run([cli,"paper-on"],10)
                 if guard.returncode!=0: raise DriverError("paper guard release failed")
                 prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])

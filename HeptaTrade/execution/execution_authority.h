@@ -367,6 +367,13 @@ public:
         const ExecutionControlCommand& command) = 0;
     virtual ExecutionControlStatusResult ReconcileAuthoritativeState(
         const ExecutionControlCommand& command) = 0;
+    virtual ExecutionOwnerAuditResult AuditSessionLease(const ExecutionControlCommand& command)
+    {
+        ExecutionOwnerAuditResult result;
+        result.commandId = command.context.toolCallId;
+        result.reasonCode = "EXECUTION_SESSION_LEASE_AUDIT_UNAVAILABLE";
+        return result;
+    }
     virtual ExecutionOwnerAuditResult AuditSessionOwner(const ExecutionControlCommand& command)
     {
         ExecutionOwnerAuditResult result;

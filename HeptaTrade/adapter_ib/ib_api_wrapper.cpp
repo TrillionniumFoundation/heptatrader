@@ -1481,6 +1481,10 @@ public:
             timeInForce != "FOK") {
             return rejectLocal("IB_LOCAL_REJECT_TIF_INVALID", 32105);
         }
+        if (c.secType == "CRYPTO" &&
+            (c.symbol != "BTC" || c.currency != "USD" || c.exchange != "PAXOS" ||
+             od.orderType != "LMT" || timeInForce != "IOC"))
+            return rejectLocal("IB_CRYPTO_LIMIT_IOC_REQUIRED", 32107);
         od.tif = timeInForce;
         if (o.positionEffect.empty()) {
             od.openClose.clear();

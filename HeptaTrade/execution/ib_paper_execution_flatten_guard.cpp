@@ -107,6 +107,10 @@ bool IbPaperExecutionGuard::AllowFlatten(
         return false;
     }
     const bool externalLimitDay = m_config.UsesExternalLimitDay();
+    const bool crypto = m_config.UsesUserCrypto() &&
+        IbPaperExecutionProfileConfig::IsCryptoContract(plan.instrument, plan.contract);
+    if (plan.contract.secType == "CRYPTO" && !crypto)
+    { reason = "IB_PAPER_CRYPTO_FLATTEN_NOT_AUTHORIZED"; return false; }
     const double externalPositionMaximum =
         m_config.UsesExternalQualificationLimitDay() ?
             m_config.maxOrderQuantity : 1.0;
@@ -164,9 +168,21 @@ bool IbPaperExecutionGuard::AllowFlatten(
     }
     const bool validExternalOrder = externalLimitDay &&
         ValidExternalFlattenOrder(plan, validExternalEnvelope);
-    const bool validLocalOrder = !externalLimitDay &&
+    const bool validCryptoOrder = crypto && plan.profileOrderMode == "USER_CRYPTO_LMT_IOC" &&
+        plan.timeInForce == "IOC" && plan.order.orderType == "LMT" && plan.order.action == "SELL" &&
+        plan.expectedPositionQuantity > 0.0 && plan.order.totalQuantity == plan.expectedPositionQuantity &&
+        IbPaperExecutionProfileConfig::CryptoQuantityOnGrid(quantity) &&
+        IbPaperExecutionProfileConfig::CryptoPriceOnGrid(plan.order.lmtPrice) &&
+        plan.order.lmtPrice == plan.quoteBid && plan.referencePrice == plan.order.lmtPrice &&
+        plan.quoteAsk >= plan.quoteBid && std::isfinite(plan.quoteAsk) &&
+        !plan.quoteSubscriptionId.empty() && plan.quoteObservedAtMs > 0 &&
+        plan.quoteObservedAtMs <= static_cast<std::uint64_t>(nowMs) &&
+        plan.quoteStaleAfterMs >= static_cast<std::uint64_t>(nowMs) &&
+        plan.quoteStaleAfterMs - plan.quoteObservedAtMs <= m_config.userQuoteMaxAgeMs &&
+        plan.order.auxPrice == 0.0 && !plan.order.outsideRth && plan.order.orderRef.empty();
+    const bool validLocalOrder = !externalLimitDay && !crypto &&
         ValidLocalFlattenOrder(plan);
-    if (!validExternalOrder && !validLocalOrder)
+    if (!validExternalOrder && !validLocalOrder && !validCryptoOrder)
     {
         reason = "IB_PAPER_FLATTEN_ORDER_INVALID";
         return false;
@@ -176,7 +192,7 @@ bool IbPaperExecutionGuard::AllowFlatten(
         reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
         return false;
     }
-    if (plan.referencePrice >
+    if (!crypto && plan.referencePrice >
         m_config.maxOrderNotional / quantity)
     {
         reason = "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
