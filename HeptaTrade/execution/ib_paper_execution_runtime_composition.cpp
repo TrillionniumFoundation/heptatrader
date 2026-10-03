@@ -561,6 +561,8 @@ bool IbPaperExecutionRuntimeComposition::Start(std::string& reason)
 
 void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
+    auto nextPendingReconcile = std::chrono::steady_clock::now();
+    auto nextPendingOpenOrderRead = nextPendingReconcile;
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -591,6 +593,35 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         if (m_reconnectPending.load()) continue;
         DrivePostFillRiskRefresh();
         if (m_fatalRuntimeError.load()) break;
+        // Recovery progress must not depend on a new trade or a flat-owner
+        // audit. Status reads are projections; actively ask this ORIGINAL API
+        // client for open-order evidence and reconcile existing commands.
+        // No place/cancel mutation or replacement command is issued here.
+        const auto now = std::chrono::steady_clock::now();
+        std::string pendingReason;
+        if (m_config.profile.userScope && m_coordinator && m_policyAuthority &&
+            m_coordinator->IsMutationBlocked(&pendingReason) &&
+            pendingReason == "RECOVERY_RECONCILE_REQUIRED" &&
+            !PostFillRiskRefreshPending() && now >= nextPendingReconcile) {
+            nextPendingReconcile = now + std::chrono::seconds(1);
+            std::size_t affected = 0;
+            std::string reason;
+            if (m_policyAuthority->ReconcileAuthoritativeState(affected, reason)) {
+                if (!RebuildRecentBrokerOrders(reason)) {
+                    MarkFatalRuntimeError(reason.empty() ? "OMS_RECOVERY_PROJECTION_FAILED" : reason);
+                    break;
+                }
+                NotifyTestStage("pending_command_reconciled");
+            } else if (now >= nextPendingOpenOrderRead &&
+                reason == "RECOVERY_RECONCILE_REQUIRED") {
+                nextPendingOpenOrderRead = now + std::chrono::seconds(15);
+                // The completed-orders stream has an untagged End; preserve
+                // its one-request-per-epoch fence. Fresh terminal collection
+                // still requires a controlled new connection, not blind replay.
+                m_adapter->ReqAuthoritativeOpenOrders();
+                NotifyTestStage("pending_command_open_orders_requested");
+            }
+        }
         if (!drained)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }

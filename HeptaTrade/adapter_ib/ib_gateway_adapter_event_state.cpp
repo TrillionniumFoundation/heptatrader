@@ -421,6 +421,44 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
             acceptedBrokerOpenOrder =
                 m_orderLifecycle.RecordBrokerOpenOrder(
                 static_cast<long>(event.id), event.value);
+            // Rebuild the callback identity from a broker-echoed open order,
+            // not the naked numeric id. Previously only a new local send made
+            // this binding, so every post-restart orderStatus was quarantined
+            // as unscoped and an original PendingCancel could never finish.
+            if (acceptedBrokerOpenOrder && event.connectionEpoch == m_connectionEpoch &&
+                event.brokerClientId == m_cfg.clientId && event.id <= LONG_MAX &&
+                (event.order.action == "BUY" || event.order.action == "SELL") &&
+                !event.contract.symbol.empty() && !event.contract.secType.empty() &&
+                !event.contract.currency.empty() && !event.contract.exchange.empty() &&
+                std::isfinite(event.order.totalQuantity) &&
+                std::isfinite(event.order.cashQuantity) &&
+                (event.order.cashQuantity > 0.0 ? event.order.totalQuantity == 0.0 :
+                    event.order.cashQuantity == 0.0 && event.order.totalQuantity > 0.0)) {
+                std::string correlation, decodeReason;
+                if (DecodeVenueOrderRef(event.order.orderRef, correlation, decodeReason)) {
+                    const long id = static_cast<long>(event.id);
+                    const auto existing = m_liveTerminalBindings.find(id);
+                    if (existing == m_liveTerminalBindings.end()) {
+                        LiveTerminalBinding binding;
+                        binding.connectionEpoch = m_connectionEpoch;
+                        binding.correlationId = correlation;
+                        binding.contract = event.contract;
+                        binding.side = event.order.action;
+                        binding.quantity = event.order.totalQuantity;
+                        binding.cashQuantity = event.order.cashQuantity;
+                        m_liveTerminalBindings.emplace(id, std::move(binding));
+                    } else if (existing->second.connectionEpoch != m_connectionEpoch ||
+                        existing->second.correlationId != correlation ||
+                        existing->second.side != event.order.action ||
+                        existing->second.quantity != event.order.totalQuantity ||
+                        existing->second.cashQuantity != event.order.cashQuantity ||
+                        !MatchesSubmittedIBContract(existing->second.contract, event.contract)) {
+                        MarkCallbackConflict(m_correlationRefreshConflict);
+                        InvalidateCorrelationSnapshot("IB_RECOVERED_ORDER_BINDING_CONFLICT");
+                        InvalidateTerminalCorrelationSnapshot("IB_RECOVERED_ORDER_BINDING_CONFLICT");
+                    }
+                }
+            }
             if (acceptedBrokerOpenOrder)
                 DispatchPendingCancelIfAcknowledged(
                     static_cast<long>(event.id), event.value,

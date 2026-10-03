@@ -234,6 +234,46 @@ void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
         assert(quantities.ObserveExecution(fill)==0); // No estimated full-fill synthesis.
     }
 }
+void TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend() {
+    for (const bool filled : {false,true}) {
+        Fixture f;
+        const std::string corr="hepta-v1-sha256:"+std::string(64,'d');
+        f.broker->orderId=146;
+        auto open=f.Event(IBEventType::OpenOrder);
+        open.contract.symbol="BTC";open.contract.secType="CRYPTO";
+        open.contract.currency="USD";open.contract.exchange="PAXOS";
+        open.order.action="BUY";open.order.orderType="LMT";
+        open.order.totalQuantity=0.001;open.order.lmtPrice=84569.75;
+        std::string reason;assert(IbVenueCorrelationCodec::EncodeOrderRef(corr,open.order.orderRef,reason));
+        open.value="PendingCancel";open.number=0.001;
+        f.Push(open);
+        assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.count(146)==1);
+        assert(f.adapter.CancelOrder(146).detail=="CANCEL_ALREADY_PENDING");
+        if(filled) {
+            auto execution=f.Event(IBEventType::ExecutionDetails);execution.requestId=-1;
+            execution.contract=open.contract;execution.order.orderRef=open.order.orderRef;
+            execution.key="original-execution-146";execution.value="BOT";
+            execution.number=84500;execution.number2=0.001;execution.number3=0;
+            f.Push(execution);
+        }
+        auto terminal=f.Status(filled?"Filled":"Cancelled",filled?0.001:0);
+        terminal.number=filled?84500:0;terminal.number3=0;
+        f.Push(terminal);
+        const auto snapshot=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(snapshot.terminalOrderIdsByCorrelation.at(corr)==146);
+        assert(snapshot.terminalStatusesByCorrelation.at(corr)==(filled?"Filled":"Cancelled"));
+        assert(snapshot.executionCorrelations.count(corr)==(filled?1:0));
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+    Fixture foreign;foreign.broker->orderId=146;
+    auto open=foreign.Event(IBEventType::OpenOrder);open.brokerClientId=999;
+    open.contract.symbol="BTC";open.contract.secType="CRYPTO";open.contract.currency="USD";open.contract.exchange="PAXOS";
+    open.order.action="BUY";open.order.totalQuantity=0.001;open.value="PendingCancel";
+    std::string reason;assert(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'e'),open.order.orderRef,reason));
+    foreign.Push(open);auto terminal=foreign.Status("Cancelled",0);terminal.number3=0;foreign.Push(terminal);
+    assert(foreign.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+    assert(foreign.broker->places==0 && foreign.broker->cancels==0);
+}
 void TestIbAdapterPreservesQualifiedIntentAtFinalSend() {
     Fixture f;
     IBContractLite c;c.symbol="ES";c.secType="FUT";c.exchange="CME";
@@ -636,6 +676,7 @@ int main() {
     TestTypedCancelAndDeferredNoResendAfterException();
     TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();
     TestPendingCancelErrorDoesNotTripGlobalFuse();
+    TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend();
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
