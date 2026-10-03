@@ -1009,7 +1009,14 @@ void TestOwnershipAndCancel()
         venueOrderId = 99;
         return VenuePlaceResult::Submitted(venueOrderId);
     });
-    callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
+    bool cancellationPending = false;
+    callbacks.canCancelIbOrder = [&](long, std::string* reason) {
+        if (cancellationPending) {
+            if (reason) *reason = "CANCEL_ALREADY_PENDING";
+            return false;
+        }
+        return true;
+    };
     callbacks.cancelOrder = [&](long orderId) {
         ++cancelCalls;
         return orderId == 99 ? VenueCancelResult::Submitted() : VenueCancelResult::RejectedBeforeSend("TEST_NO_SEND");
@@ -1059,6 +1066,16 @@ void TestOwnershipAndCancel()
     assert(cancelDuplicate.orderId == 99);
     assert(cancelCalls == 1);
 
+    cancellationPending = true;
+    own.context.toolCallId = "cancel-distinct-while-pending";
+    const auto suppressed = coordinator.CancelIbOrder(own);
+    assert(suppressed.status == ExecutionCommandStatus::Rejected);
+    assert(suppressed.reasonCode == "IB_CANCEL_SUPPRESSED");
+    assert(suppressed.detail == "CANCEL_ALREADY_PENDING");
+    assert(cancelCalls == 1 && cancelProjectionCalls == 1);
+    ExecutionCommandResult original;
+    assert(coordinator.GetCommandStatus("agent-a", "session-1", "place-owner", original));
+    assert(original.status == ExecutionCommandStatus::Accepted && original.orderId == 99);
     std::remove(path.c_str());
 }
 

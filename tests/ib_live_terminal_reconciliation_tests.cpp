@@ -284,6 +284,45 @@ void TestTypedCancelAndDeferredNoResendAfterException() {
     deferred.Push(deferred.Status("Submitted", 0));
     assert(deferred.broker->cancels == 1);
 }
+void TestPendingCancelDoesNotResendOrManufactureTerminalEvidence() {
+    Fixture f;
+    const long id=f.Place();
+    f.Push(f.Status("Submitted",0));
+    assert(f.adapter.CancelOrder(id).disposition==VenueCancelDisposition::Submitted);
+    assert(f.broker->cancels==1);
+    f.Push(f.Status("PendingCancel",0));
+    for(int n=0;n<3;++n) {
+        std::string reason;
+        assert(!f.adapter.CanCancelOrder(id,&reason));
+        assert(reason=="CANCEL_ALREADY_PENDING");
+        const auto duplicate=f.adapter.CancelOrder(id);
+        assert(duplicate.disposition==VenueCancelDisposition::RejectedBeforeSend);
+        assert(duplicate.detail=="CANCEL_ALREADY_PENDING");
+        assert(f.broker->cancels==1);
+    }
+    // A late Submitted callback or economic-free Filled label cannot resend.
+    f.Push(f.Status("Submitted",0));
+    f.Push(f.Status("Filled",0));
+    assert(f.adapter.CancelOrder(id).disposition==VenueCancelDisposition::RejectedBeforeSend);
+    assert(f.broker->cancels==1);
+    f.Push(f.Status("Cancelled",0));
+    const auto terminal=f.adapter.CancelOrder(id);
+    assert(terminal.disposition==VenueCancelDisposition::RejectedBeforeSend);
+    assert(terminal.detail=="ALREADY_FINAL");
+    assert(f.broker->cancels==1);
+    // A real fill can still win the cancellation race. The latch must not
+    // hide execution evidence or misreport it as zero-fill cancellation.
+    Fixture filled;
+    const long filledId=filled.Place();
+    filled.Push(filled.Status("PendingCancel",0));
+    filled.Push(filled.Execution());
+    filled.Push(filled.Status("Filled",1));
+    const auto evidence=filled.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+    assert(evidence.executionOrderIds.count(filledId)==1);
+    assert(evidence.terminalStatusesByCorrelation.begin()->second=="Filled");
+    assert(filled.adapter.CancelOrder(filledId).disposition==VenueCancelDisposition::RejectedBeforeSend);
+    assert(filled.broker->cancels==0);
+}
 void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     Fixture f;const auto initial=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
     const long id=f.Place();assert(f.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
@@ -511,6 +550,7 @@ int main() {
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestTypedFlattenCapturesResultAtSendBoundary();
     TestTypedCancelAndDeferredNoResendAfterException();
+    TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();

@@ -162,7 +162,33 @@ void TestPartialAndPendingCancelStatusesAcknowledgeBrokerOrder()
     tracker.RecordBrokerStatus(49, "PartiallyFilled");
     assert(tracker.CanCancel(49));
     tracker.RecordBrokerStatus(49, "PendingCancel");
-    assert(tracker.CanCancel(49));
+    ExpectBlocked(tracker, 49, "CANCEL_ALREADY_PENDING");
+}
+
+void TestPendingCancellationIsNotTerminalAndCannotBeResent()
+{
+    IbOrderLifecycleTracker tracker;
+    tracker.ActivateConnectionEpoch(13);
+    assert(tracker.RecordBrokerOpenOrder(146, "PendingCancel"));
+    ExpectBlocked(tracker, 146, "CANCEL_ALREADY_PENDING");
+    // Late nonterminal callbacks cannot erase acknowledged cancellation.
+    tracker.RecordBrokerStatus(146, "Submitted");
+    assert(tracker.RecordBrokerOpenOrder(146, "PreSubmitted"));
+    ExpectBlocked(tracker, 146, "CANCEL_ALREADY_PENDING");
+    tracker.RecordBrokerStatus(146, "Filled", false);
+    ExpectBlocked(tracker, 146, "CANCEL_ALREADY_PENDING");
+    tracker.RecordBrokerStatus(146, "Cancelled");
+    ExpectBlocked(tracker, 146, "ALREADY_FINAL");
+    // Reusing an integer must not inherit a previous command's cancel state.
+    tracker.BeginLocalOrderGeneration(146);
+    ExpectBlocked(tracker, 146, "NO_BROKER_ACK");
+    tracker.RecordBrokerStatus(146, "Submitted");
+    assert(tracker.CanCancel(146));
+    tracker.RecordBrokerStatus(146, "PendingCancel");
+    tracker.ActivateConnectionEpoch(14);
+    ExpectBlocked(tracker, 146, "NO_BROKER_SUBMIT");
+    tracker.RecordBrokerOpenOrder(146, "Submitted");
+    assert(tracker.CanCancel(146));
 }
 } // namespace
 
@@ -185,5 +211,6 @@ int main()
     TestTerminalOpenOrderStatusIsNotCancellable();
     TestFilledRequiresEconomicEvidenceBeforeFinalizing();
     TestPartialAndPendingCancelStatusesAcknowledgeBrokerOrder();
+    TestPendingCancellationIsNotTerminalAndCannotBeResent();
     return 0;
 }

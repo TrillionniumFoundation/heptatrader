@@ -26,6 +26,9 @@ private:
         bool sentToBroker = false;
         bool brokerAck = false;
         bool finalState = false;
+        // Acknowledged cancellation is not a terminal outcome. Keep its
+        // no-resend latch scoped to this connection/order generation.
+        bool cancellationPending = false;
         std::string lastStatus;
     };
 
