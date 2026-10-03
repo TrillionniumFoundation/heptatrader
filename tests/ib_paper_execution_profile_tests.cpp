@@ -829,6 +829,52 @@ IbPaperExecutionProfileConfig MixedCryptoProfileForTest()
     assert(config.UsesUserCrypto());return config;
 }
 
+void TestMixedCryptoRuntimeParsesRealEnvironmentFields()
+{
+    if (::geteuid()==0 || ::getegid()==0) return;
+    char stateDir[]="/tmp/hepta-crypto-runtime-state-XXXXXX";
+    char credentialDir[]="/tmp/hepta-crypto-runtime-credentials-XXXXXX";
+    assert(::mkdtemp(stateDir) && ::mkdtemp(credentialDir));
+    auto values=QualificationValues();
+    values["STATE_DIRECTORY"]=stateDir;
+    values["CREDENTIALS_DIRECTORY"]=credentialDir;
+    values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
+    values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
+    values["HEPTA_IB_PAPER_USER_SCOPE"]="1";
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"]="25000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"]="35000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"]="25000";
+    values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"]="2";
+    values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"]=IbPaperExecutionProfileConfig::UserControlDirectoryPath();
+    values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"]="BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
+    values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"]="BTC.USD";
+    values["HEPTA_IB_EXECUTION_GATEWAY_UID"]=std::to_string(::geteuid());
+    values["HEPTA_IB_EXECUTION_GATEWAY_AGENT_ID"]="pocket4-paper";
+    values["HEPTA_IB_EXECUTION_DOMAIN_ID"]="PAPER";
+    values["LISTEN_PID"]="1234"; values["LISTEN_FDS"]="2";
+    values["LISTEN_FDNAMES"]="execution:events";
+    IbPaperExecutionRuntimeConfig runtime;std::string reason;
+    const bool ok=IbPaperExecutionRuntimeConfig::FromValues(values,1234,runtime,reason);
+    if (!ok) std::cerr << reason << '\n';
+    assert(ok && runtime.profile.UsesUserCrypto() && runtime.quoteContracts.size()==2);
+    assert(runtime.quoteContracts.at("BTC.USD").secType=="CRYPTO");
+    assert(runtime.quoteContracts.at("EUR.USD").secType=="CASH");
+    for (const auto& contracts : {
+            "BTC.USD|BTC|CRYPTO|ZEROHASH|USD;EUR.USD|EUR|CASH|IDEALPRO|USD",
+            "ETH.USD|ETH|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD",
+            "BTC.USD|BTC|CRYPTO|PAXOS|USD"}) {
+        auto bad=values;bad["HEPTA_IB_PAPER_QUOTE_CONTRACTS"]=contracts;
+        assert(!IbPaperExecutionRuntimeConfig::FromValues(bad,1234,runtime,reason));
+    }
+    auto live=values;live["HEPTA_IB_EXECUTION_MODE"]="LIVE";
+    assert(!IbPaperExecutionRuntimeConfig::FromValues(live,1234,runtime,reason));
+    values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"]="EUR.USD|EUR|CASH|IDEALPRO|USD";
+    values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"]="EUR.USD";
+    assert(IbPaperExecutionRuntimeConfig::FromValues(values,1234,runtime,reason));
+    assert(!runtime.profile.UsesUserCrypto() && runtime.quoteContracts.size()==1);
+    assert(::rmdir(stateDir)==0 && ::rmdir(credentialDir)==0);
+}
+
 void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
 {
     if (::geteuid()==0 || ::getegid()==0)return;
@@ -951,6 +997,7 @@ int main()
     TestRuntimeColdConnectBudgetDefaultsFailClosed();
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
+    TestMixedCryptoRuntimeParsesRealEnvironmentFields();
     TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
     TestCryptoFlattenIsExactOwnedLongAndLimitIOC();
     TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();

@@ -105,7 +105,8 @@ std::vector<std::string> Split(const std::string& value, char delimiter)
 }
 
 bool ParseQuoteContracts(const std::string& value,
-                         std::map<std::string, InstrumentRef>& contracts)
+                         std::map<std::string, InstrumentRef>& contracts,
+                         bool allowUserCrypto)
 {
     contracts.clear();
     if (value.empty()) return false;
@@ -115,7 +116,10 @@ bool ParseQuoteContracts(const std::string& value,
     {
         const std::vector<std::string> fields = Split(records[i], '|');
         if (fields.size() != 5 || !CanonicalText(fields[0], 128) ||
-            !CanonicalText(fields[1], 64) || fields[2] != "CASH" ||
+            !CanonicalText(fields[1], 64) ||
+            (fields[2] != "CASH" && !(allowUserCrypto &&
+                fields[0] == "BTC.USD" && fields[1] == "BTC" && fields[2] == "CRYPTO" &&
+                fields[3] == "PAXOS" && fields[4] == "USD")) ||
             !CanonicalText(fields[3], 32) || !CanonicalText(fields[4], 16) ||
             fields[0] != fields[1] + "." + fields[4] ||
             contracts.find(fields[0]) != contracts.end())
@@ -621,7 +625,7 @@ bool IbPaperExecutionRuntimeConfig::FromValues(
 
     if (!ParseQuoteContracts(
             ReadString(values, "HEPTA_IB_PAPER_QUOTE_CONTRACTS"),
-            config.quoteContracts))
+            config.quoteContracts, config.profile.UsesUserCrypto()))
     {
         reason = "IB_PAPER_QUOTE_CONTRACTS_INVALID";
         return false;
