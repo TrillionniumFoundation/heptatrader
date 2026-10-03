@@ -390,6 +390,9 @@ private:
     std::atomic<bool> m_reconnectRefreshDispatched{false};
     std::atomic<bool> m_reconnectRiskRefreshDispatched{false};
     std::atomic<bool> m_recoveryAuditReconnectRequested;
+    // Latched for this process. Only a new complete startup may clear it;
+    // late callbacks cannot silently turn a diagnostic service into a trader.
+    std::atomic<bool> m_startupRecoveryReadOnly{false};
     std::atomic<std::uint64_t> m_reconnectConnectionEpoch{0};
     int m_reconnectAttempt = 0;
     std::chrono::steady_clock::time_point m_reconnectDeadline;

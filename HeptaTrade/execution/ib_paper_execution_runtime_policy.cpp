@@ -50,6 +50,8 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
         return outcome;
     });
     callbacks.cancelOrder = [this](long orderId) {
+        if (m_startupRecoveryReadOnly.load())
+            return VenueCancelResult::RejectedBeforeSend("IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE");
         NotifyTestStage("before_cancel_venue_send");
         const VenueCancelResult outcome = m_adapter->CancelOrder(orderId);
         if (outcome.disposition == VenueCancelDisposition::Submitted)
@@ -85,6 +87,10 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
                 commitAttempted, detail);
         };
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
+        if (m_startupRecoveryReadOnly.load()) {
+            if (detail) *detail = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+            return false;
+        }
         return m_adapter->CanCancelOrder(orderId, detail);
     };
     callbacks.validateDecisionLease = [this](const AgentExecutionContext& context,
@@ -153,7 +159,8 @@ IbPaperExecutionRuntimeComposition::PolicyRiskSnapshot() const
     const IBAuthoritativeCorrelationSnapshot correlations =
         m_adapter->GetAuthoritativeCorrelationSnapshot();
     IbPaperAuthoritativeRiskSnapshot result;
-    result.complete = risk.accountComplete && risk.positionsComplete &&
+    result.complete = !m_startupRecoveryReadOnly.load() &&
+        risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete && correlations.complete &&
         !PostFillRiskRefreshPending();
     result.activeOrderCount = correlations.activeOrderIds.size();
@@ -182,7 +189,8 @@ IbPaperExecutionRuntimeComposition::PolicyPositionSnapshot(
     result.connectionEpoch = risk.connectionEpoch;
     result.generation = risk.positionsGeneration;
     const bool postFillPending = PostFillRiskRefreshPending();
-    result.complete = risk.accountComplete && risk.positionsComplete &&
+    result.complete = !m_startupRecoveryReadOnly.load() &&
+        risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete && risk.connectionEpoch != 0 &&
         risk.positionsGeneration != 0 && !postFillPending;
     result.reasonCode = postFillPending ?
@@ -254,19 +262,24 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             const bool recoveryOnly = !m_coordinator || m_coordinator->IsSessionOwnerRecoveryOnly(
                 command.context.agentId, command.context.sessionId);
             std::string reason;
-            const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason);
+            const bool startupReadOnly = m_startupRecoveryReadOnly.load();
+            const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason) || startupReadOnly;
             const auto risk = m_adapter->GetAuthoritativeRiskSnapshot();
             const auto orders = m_adapter->GetAuthoritativeCorrelationSnapshot();
             const bool snapshotsReady = risk.complete && risk.coherentRefreshComplete &&
                 risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
                 orders.complete && risk.connectionEpoch != 0 &&
                 risk.connectionEpoch == orders.connectionEpoch && !PostFillRiskRefreshPending();
-            if (fenced) reason = "SESSION_OWNER_FENCED";
+            if (startupReadOnly) reason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+            else if (fenced) reason = "SESSION_OWNER_FENCED";
             else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
             else if (blocked && reason.empty()) reason = "EXECUTION_MUTATION_BLOCKED";
             else if (authorizedConnectorCount != 1) reason = "IB_CONNECTION_UNAVAILABLE";
             else if (!snapshotsReady) reason = "AUTHORITATIVE_STATE_INCOMPLETE";
-            health << ",\"owner_fenced\":" << (fenced ? "true" : "false")
+            health << ",\"startup_recovery_read_only\":" << (startupReadOnly ? "true" : "false")
+                   << ",\"terminal_download_complete\":"
+                   << (m_adapter->GetAuthoritativeTerminalCorrelationSnapshot().complete ? "true" : "false")
+                   << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
                    << ",\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"mutation_ready\":"
@@ -504,9 +517,9 @@ bool IbPaperExecutionRuntimeComposition::BuildPolicyAuthority(
         *m_coordinator, m_config.profile, policyCallbacks, m_killSwitch));
     std::size_t affected = 0;
     std::string recovery;
-    const bool reconciled =
+    const bool reconciled = !m_startupRecoveryReadOnly.load() &&
         m_policyAuthority->ReconcileAuthoritativeState(affected, recovery);
-    if (!reconciled && recovery != "RECOVERY_RECONCILE_REQUIRED")
+    if (!reconciled && !m_startupRecoveryReadOnly.load() && recovery != "RECOVERY_RECONCILE_REQUIRED")
     {
         reason = recovery;
         CloseUnconsumedListenFds();

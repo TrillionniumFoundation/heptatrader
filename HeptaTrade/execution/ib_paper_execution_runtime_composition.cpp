@@ -307,6 +307,10 @@ void IbPaperExecutionRuntimeComposition::CloseUnconsumedListenFds()
 bool IbPaperExecutionRuntimeComposition::AllowsRiskIncrease(
     std::string& reason) const
 {
+    if (m_startupRecoveryReadOnly.load()) {
+        reason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+        return false;
+    }
     if (HasFatalRuntimeError(&reason))
     {
         if (reason.empty()) reason = "IB_PAPER_RUNTIME_FATAL";
@@ -552,7 +556,7 @@ bool IbPaperExecutionRuntimeComposition::Start(std::string& reason)
     // A successful first broker snapshot seals the initial restart point (or
     // refreshes a previously sealed point) before policy/IPC can publish any
     // mutation authority.
-    if (!PersistFxCashRestartCheckpoint(reason))
+    if (!m_startupRecoveryReadOnly.load() && !PersistFxCashRestartCheckpoint(reason))
     { CloseUnconsumedListenFds(); return false; }
     if (!BuildPolicyAuthority(reason))
         return false;
@@ -599,6 +603,14 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         // No place/cancel mutation or replacement command is issued here.
         const auto now = std::chrono::steady_clock::now();
         std::string pendingReason;
+        if (m_startupRecoveryReadOnly.load()) {
+            if (now >= nextPendingOpenOrderRead && !PostFillRiskRefreshPending()) {
+                nextPendingOpenOrderRead = now + std::chrono::seconds(15);
+                m_adapter->ReqAuthoritativeOpenOrders();
+            }
+            if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         if (m_config.profile.userScope && m_coordinator && m_policyAuthority &&
             m_coordinator->IsMutationBlocked(&pendingReason) &&
             pendingReason == "RECOVERY_RECONCILE_REQUIRED" &&

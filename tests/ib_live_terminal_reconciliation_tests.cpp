@@ -1,6 +1,7 @@
 #include "adapter_ib/ib_gateway_adapter.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
+#include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -273,6 +274,33 @@ void TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend() {
     foreign.Push(open);auto terminal=foreign.Status("Cancelled",0);terminal.number3=0;foreign.Push(terminal);
     assert(foreign.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
     assert(foreign.broker->places==0 && foreign.broker->cancels==0);
+}
+void TestIncompleteHistoryReadOnlyAdmissionDoesNotCreateTerminalProof() {
+    IBAuthoritativeCorrelationSnapshot active;active.complete=true;active.connectionEpoch=7;
+    active.generation=11;active.activeOrderIds.insert(146);
+    active.activeOrderIdsByCorrelation["hepta-v1-sha256:"+std::string(64,'a')]=146;
+    IBAuthoritativeTerminalCorrelationSnapshot terminal;
+    terminal.connectionEpoch=7;terminal.generation=1;
+    terminal.reasonCode="IB_TERMINAL_CORRELATION_REFRESH_PENDING";
+    auto allowed=[&](bool scope,bool connected,bool stream,std::uint64_t epoch) {
+        return CanKeepPendingOrderReadOnly(scope,connected,stream,epoch,active,terminal);
+    };
+    assert(allowed(true,true,true,7));
+    assert(!terminal.complete && terminal.terminalOrderIdsByCorrelation.empty());
+    assert(!allowed(false,true,true,7));assert(!allowed(true,false,true,7));
+    assert(!allowed(true,true,false,7));assert(!allowed(true,true,true,0));
+    assert(!allowed(true,true,true,8));
+    active.complete=false;assert(!allowed(true,true,true,7));active.complete=true;
+    active.generation=0;assert(!allowed(true,true,true,7));active.generation=11;
+    terminal.complete=true;assert(!allowed(true,true,true,7));terminal.complete=false;
+    terminal.reasonCode="IB_TERMINAL_CORRELATION_CONFLICT";
+    assert(!allowed(true,true,true,7));terminal.reasonCode="IB_TERMINAL_CORRELATION_REFRESH_PENDING";
+    terminal.generation=0;assert(!allowed(true,true,true,7));terminal.generation=1;
+    terminal.connectionEpoch=6;assert(!allowed(true,true,true,7));terminal.connectionEpoch=7;
+    active.activeOrderIds.insert(147);assert(!allowed(true,true,true,7));
+    active.activeOrderIdsByCorrelation["other"]=146;assert(!allowed(true,true,true,7));
+    active.activeOrderIdsByCorrelation["other"]=147;assert(allowed(true,true,true,7));
+    active.activeOrderIds.clear();assert(!allowed(true,true,true,7));
 }
 void TestIbAdapterPreservesQualifiedIntentAtFinalSend() {
     Fixture f;
@@ -676,6 +704,7 @@ int main() {
     TestTypedCancelAndDeferredNoResendAfterException();
     TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();
     TestPendingCancelErrorDoesNotTripGlobalFuse();
+    TestIncompleteHistoryReadOnlyAdmissionDoesNotCreateTerminalProof();
     TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend();
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();

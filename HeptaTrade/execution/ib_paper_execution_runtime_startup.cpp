@@ -1,4 +1,5 @@
 #include "ib_paper_execution_runtime_internal.h"
+#include "ib_paper_startup_recovery.h"
 
 #include <algorithm>
 #include <chrono>
@@ -219,6 +220,21 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
             m_authoritativeQuoteSendMutex);
         quotesComplete = m_quoteSubscriptions &&
             m_quoteSubscriptions->GetHealth().ReadyForOperations();
+    }
+    if (CanKeepPendingOrderReadOnly(m_config.profile.userScope,
+            m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
+            startupConnectionEpoch, active, terminal)) {
+        m_startupRecoveryReadOnly.store(true);
+        m_recoveryReason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+        // This read is intentionally not a recovery-audit barrier. Do not
+        // checkpoint or grant mutation authority from these informational data.
+        const bool requested = m_adapter->ReqRiskRefresh();
+        std::clog << "IB PAPER startup retained read-only original-order recovery; "
+                  << "completedOrdersEnd missing; informational risk requested="
+                  << requested << std::endl;
+        NotifyTestStage("startup_original_order_read_only");
+        reason.clear();
+        return true;
     }
     CleanupStartupSnapshotFailure(
         reason, "IB_PAPER_AUTHORITATIVE_SNAPSHOTS_TIMEOUT");

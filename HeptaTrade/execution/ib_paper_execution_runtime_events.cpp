@@ -523,6 +523,10 @@ bool IbPaperExecutionRuntimeComposition::ValidateBrokerCallbackIdentity(
 bool IbPaperExecutionRuntimeComposition::BeginEventPostFillRiskRefresh(
     const IBEvent& event, const ExecutionOrderOwner& owner, long orderId)
 {
+    // The caller has already persisted the exact original callback. During
+    // incomplete-history recovery there is no admitted pre-fill baseline;
+    // keep adapter risk gates closed rather than crash or fabricate one.
+    if (m_startupRecoveryReadOnly.load()) return true;
     if (event.type == IBEventType::OrderStatus &&
         HasPositiveEconomicFillEvidence(event) &&
         !IsHistoricalSyntheticExecutionStatus(event))
@@ -645,7 +649,7 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
     // Terminal ownership is correlation/identity scoped. An unowned or
     // quarantined historical callback may share the same numeric order id but
     // can never retire the current owner.
-    if (routeOwner && IsTerminalBrokerEvent(event))
+    if (routeOwner && !m_startupRecoveryReadOnly.load() && IsTerminalBrokerEvent(event))
         RecordTerminalBrokerEvent(orderId);
     return AdapterRouteAction::Processed;
 }
