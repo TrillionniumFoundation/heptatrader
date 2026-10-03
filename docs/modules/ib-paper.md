@@ -267,3 +267,11 @@ incomparable asset units into one exposure limit. The FX cash baseline remains
 unchanged and applies only to CASH contracts; crypto uses Broker security positions.
 Post-fill position barriers reconcile BTC at crypto precision before another send.
 Crypto events are not replayed as FX cash movement.
+
+Mixed-profile market data is instrument-local: a missing/closed FX quote does not
+invalidate a fresh BTC quote. The subscription set keeps whole-set completeness
+false until every instrument is priced; operational readiness and per-instrument
+quote admission are separate. Only the explicitly mixed user profile opts into
+independent publication. Each order still requires its own current-epoch positive
+bid/ask and freshness check. PAXOS crypto uses the configured currency-qualified
+identity; other venues cannot alias the same inventory.

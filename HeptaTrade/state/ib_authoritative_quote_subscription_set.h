@@ -88,6 +88,20 @@ struct IBAuthoritativeQuoteSubscriptionHealth
     std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
     bool complete = false;
+    bool independentQuotes = false;
+    bool ReadyForOperations() const
+    {
+        if (!independentQuotes) return complete;
+        if (connectionEpoch == 0 || generation == 0 || contracts.empty()) return false;
+        bool hasTradable = false;
+        for (const auto& item : contracts)
+        {
+            const auto& c = item.second;
+            if (!c.active || !c.dispatchAccepted) return false;
+            hasTradable = hasTradable || (c.quote.HasQuote() && c.quote.bid > 0.0 && c.quote.ask > 0.0);
+        }
+        return hasTradable;
+    }
     std::string primaryInstrument;
     std::map<std::string, IBAuthoritativeQuoteContractHealth> contracts;
 };
@@ -101,7 +115,8 @@ public:
     bool Configure(const std::map<std::string, IBContractLite>& contracts,
                    const std::string& primaryInstrument,
                    std::string& reason,
-                   bool preserveActiveOnNextCycle = false);
+                   bool preserveActiveOnNextCycle = false,
+                   bool independentQuotes = false);
     IBAuthoritativeQuoteSubscriptionPlan BeginCycle(std::uint64_t connectionEpoch,
                                                     std::uint64_t generation,
                                                     std::uint64_t observedAtMs);
@@ -152,4 +167,5 @@ private:
     bool m_complete = false;
     std::uint64_t m_desiredRevision = 0;
     bool m_preserveActiveOnNextCycle = false;
+    bool m_independentQuotes = false;
 };

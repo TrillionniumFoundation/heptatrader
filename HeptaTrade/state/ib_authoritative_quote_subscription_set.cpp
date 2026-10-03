@@ -18,7 +18,7 @@ bool IBAuthoritativeQuoteSubscriptionSet::Configure(
     const std::map<std::string, IBContractLite>& contracts,
     const std::string& primaryInstrument,
     std::string& reason,
-    bool preserveActiveOnNextCycle)
+    bool preserveActiveOnNextCycle, bool independentQuotes)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (contracts.empty())
@@ -41,6 +41,7 @@ bool IBAuthoritativeQuoteSubscriptionSet::Configure(
             return false;
         }
     }
+    m_independentQuotes = independentQuotes;
     m_desiredContracts = contracts;
     m_primaryInstrument = primaryInstrument;
     ++m_desiredRevision;
@@ -231,6 +232,26 @@ IBAuthoritativeQuoteConsumeResult IBAuthoritativeQuoteSubscriptionSet::ConsumeTi
         state.quote.lastObservedAtMs = observedAtMs;
     }
 
+    if (m_independentQuotes)
+    {
+        // Market closures are instrument-local. Never publish a negative/missing
+        // FX quote or borrow its timestamp to authorize a BTC order.
+        const bool wasComplete = m_complete;
+        m_complete = AllQuotesReadyLocked();
+        result.cycleComplete = m_complete;
+        result.completedNow = !wasComplete && m_complete;
+        if (!state.dispatchAccepted || !state.quote.HasQuote() ||
+            state.quote.bid <= 0.0 || state.quote.ask <= 0.0) return result;
+        const std::uint64_t observed = state.quote.LivenessObservedAtMs();
+        if (observed == 0) return result;
+        result.write = m_store.UpsertQuote(MaterializeQuote(state), observed, "ib.instrument_tick");
+        if (!result.write.accepted)
+        {
+            result.status = IBAuthoritativeQuoteConsumeStatus::Rejected;
+            result.reasonCode = result.write.reasonCode;
+        }
+        return result;
+    }
     if (!m_complete)
     {
         if (!AllQuotesReadyLocked()) return result;
@@ -334,6 +355,7 @@ IBAuthoritativeQuoteSubscriptionHealth IBAuthoritativeQuoteSubscriptionSet::GetH
     health.connectionEpoch = m_connectionEpoch;
     health.generation = m_generation;
     health.complete = m_complete;
+    health.independentQuotes = m_independentQuotes;
     health.primaryInstrument = m_primaryInstrument;
     for (std::map<std::string, IBContractLite>::const_iterator desired = m_desiredContracts.begin();
          desired != m_desiredContracts.end(); ++desired)
@@ -396,6 +418,7 @@ bool IBAuthoritativeQuoteSubscriptionSet::AllQuotesReadyLocked() const
          it != m_quotesByRequestId.end(); ++it)
     {
         if (!it->second.dispatchAccepted || !it->second.quote.HasQuote()) return false;
+        if (m_independentQuotes && (it->second.quote.bid <= 0.0 || it->second.quote.ask <= 0.0)) return false;
     }
     return true;
 }

@@ -142,7 +142,7 @@ bool IbPaperExecutionRuntimeComposition::StartupSnapshotBarrierReady(
         std::lock_guard<std::recursive_mutex> quoteLock(
             m_authoritativeQuoteSendMutex);
         quotesComplete = m_quoteSubscriptions &&
-            m_quoteSubscriptions->IsComplete();
+            m_quoteSubscriptions->GetHealth().ReadyForOperations();
     }
     return risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
         active.complete && terminal.complete && quotesComplete &&
@@ -218,7 +218,7 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
         std::lock_guard<std::recursive_mutex> quoteLock(
             m_authoritativeQuoteSendMutex);
         quotesComplete = m_quoteSubscriptions &&
-            m_quoteSubscriptions->IsComplete();
+            m_quoteSubscriptions->GetHealth().ReadyForOperations();
     }
     CleanupStartupSnapshotFailure(
         reason, "IB_PAPER_AUTHORITATIVE_SNAPSHOTS_TIMEOUT");

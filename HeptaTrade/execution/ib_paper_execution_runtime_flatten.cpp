@@ -59,7 +59,7 @@ MarketQuoteSnapshot IbPaperExecutionRuntimeComposition::AuthoritativeQuote(
     const IBAuthoritativeQuoteSubscriptionHealth health = m_quoteSubscriptions->GetHealth();
     const std::map<std::string, IBAuthoritativeQuoteContractHealth>::
         const_iterator subscription = health.contracts.find(instrument);
-    if (!health.complete || health.connectionEpoch == 0 ||
+    if ((!health.complete && !health.independentQuotes) || health.connectionEpoch == 0 ||
         health.generation == 0 ||
         subscription == health.contracts.end() ||
         !subscription->second.active || !subscription->second.dispatchAccepted ||

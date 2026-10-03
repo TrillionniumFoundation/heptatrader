@@ -1,4 +1,6 @@
 #include "../HeptaTrade/state/authoritative_trading_snapshot_store.h"
+#include "../HeptaTrade/state/ib_contract_identity.h"
+#include "../HeptaTrade/state/ib_authoritative_quote_subscription_set.h"
 
 #include <algorithm>
 #include <atomic>
@@ -61,6 +63,50 @@ AuthoritativeActiveOrder ActiveOrder(long orderId)
     order.remainingQuantity = 75.0;
     order.limitPrice = 1.1;
     return order;
+}
+
+void TestCryptoIdentityAndIndependentClosedFxQuotes()
+{
+    IBContractLite btc;btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
+    IBContractLite fx;fx.symbol="EUR";fx.secType="CASH";fx.exchange="IDEALPRO";fx.currency="USD";
+    assert(BuildIBAuthoritativeInstrumentIdentity(btc)=="BTC.USD");
+    auto other=btc;other.exchange="ZEROHASH";
+    assert(BuildIBAuthoritativeInstrumentIdentity(other)!="BTC.USD");
+    other.exchange.clear();assert(BuildIBAuthoritativeInstrumentIdentity(other).empty());
+    std::map<std::string,IBContractLite> contracts{{"BTC.USD",btc},{"EUR.USD",fx}};
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet quotes(store);
+    std::string reason;assert(quotes.Configure(contracts,"BTC.USD",reason,false,true));
+    auto plan=quotes.BeginCycle(1,1,1000);assert(plan.accepted && plan.subscriptions.size()==2);
+    int bid=0,fid=0;
+    for(const auto& item:plan.subscriptions) {
+        assert(quotes.RecordDispatchResult(1,item.requestId,true));
+        if(item.instrument=="BTC.USD")bid=item.requestId;else fid=item.requestId;
+    }
+    auto tick=[&](int id,const char* field,double price,std::uint64_t at,std::uint64_t epoch=1) {
+        IBEvent event;event.type=IBEventType::TickPrice;event.id=id;event.key=field;
+        event.number=price;event.connectionEpoch=epoch;return quotes.ConsumeTick(event,at);
+    };
+    assert(!quotes.GetHealth().ReadyForOperations());
+    tick(fid,"1",-1,1001);tick(fid,"2",-1,1002);
+    tick(bid,"1",85000,1003);assert(!quotes.GetHealth().ReadyForOperations());
+    assert(tick(bid,"2",85000.25,1004).write.accepted);
+    assert(!quotes.IsComplete()); // Do not falsely report complete FX coverage.
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(store.GetQuote("BTC.USD",1004,100).state.availability==AuthoritativeSnapshotAvailability::Fresh);
+    assert(store.GetQuote("EUR.USD",1004,100).state.availability==AuthoritativeSnapshotAvailability::Missing);
+    assert(store.GetQuote("BTC.USD",2000,100).state.availability==AuthoritativeSnapshotAvailability::Stale);
+    assert(tick(bid,"66",90000,1005).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(bid,"1",90000,1006,2).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(quotes.GetQuote("BTC.USD").bid==85000);
+    tick(fid,"1",1.1,1007);tick(fid,"2",1.1001,1008);assert(quotes.IsComplete());
+    auto restarted=quotes.BeginCycle(2,2,1100);assert(restarted.accepted);
+    assert(!quotes.GetHealth().ReadyForOperations());
+    assert(tick(bid,"1",85001,1101).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    AuthoritativeTradingSnapshotStore strictStore;IBAuthoritativeQuoteSubscriptionSet strict(strictStore);
+    assert(strict.Configure(contracts,"BTC.USD",reason));
+    assert(!strict.GetHealth().independentQuotes && !strict.GetHealth().ReadyForOperations());
+    contracts["BTC.USD"]=other;assert(!strict.Configure(contracts,"BTC.USD",reason));
 }
 
 void TestMissingStaleAndStrictValidation()
@@ -347,6 +393,7 @@ void TestAtomicReplaceDuringConcurrentReads()
 
 int main()
 {
+    TestCryptoIdentityAndIndependentClosedFxQuotes();
     TestMissingStaleAndStrictValidation();
     TestAtomicReplaceAndKnownEmpty();
     TestQuoteInvalidationPreservesRecordsButRevokesCompleteness();

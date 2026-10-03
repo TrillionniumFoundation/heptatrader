@@ -363,7 +363,7 @@ bool IbPaperExecutionRuntimeComposition::ReconnectAuthoritativeStateReady(
         active.generation != 0 &&
         terminal.connectionEpoch == connectionEpoch && terminal.complete &&
         terminal.generation != 0 &&
-        quotes.connectionEpoch == connectionEpoch && quotes.complete &&
+        quotes.connectionEpoch == connectionEpoch && quotes.ReadyForOperations() &&
         quotes.generation != 0 && recovery.barrierComplete &&
         !recovery.postFillRiskReconciliationPending &&
         recovery.terminalExposureGeneration <=

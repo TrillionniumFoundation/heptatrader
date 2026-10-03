@@ -308,7 +308,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             result.reasonCode = "AUTHORITATIVE_QUOTE_UNAVAILABLE";
             return result;
         }
-        if (!health.complete || !subscription->second.active ||
+        if ((!health.complete && !health.independentQuotes) || !subscription->second.active ||
             !subscription->second.dispatchAccepted ||
             !HasPositiveTradableQuote(subscription->second.quote))
         {

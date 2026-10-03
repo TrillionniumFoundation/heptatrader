@@ -88,6 +88,15 @@ std::string BuildIBAuthoritativeInstrumentIdentity(const IBContractLite& contrac
     const std::string currency = NormalizeToken(contract.currency);
     if (securityType == "CASH" && !symbol.empty() && !currency.empty())
         return symbol + "." + currency;
+    if (securityType == "CRYPTO")
+    {
+        const std::string exchange = NormalizeToken(contract.exchange);
+        if (symbol.empty() || currency.empty() || exchange.empty()) return std::string();
+        // The canonical PAPER alias is PAXOS only. Another crypto venue cannot
+        // masquerade as the same inventory when Broker positions are projected.
+        if (exchange == "PAXOS") return symbol + "." + currency;
+        return "CRYPTO:" + symbol + ":" + currency + ":" + exchange;
+    }
     if (securityType == "OPT" || securityType == "FOP" || securityType == "FUT")
         return DerivativeIdentity(contract, securityType);
     if (!symbol.empty()) return symbol;

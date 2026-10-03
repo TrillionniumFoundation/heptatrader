@@ -73,7 +73,7 @@ bool IbPaperExecutionRuntimeComposition::PrepareQuoteSubscriptionPlan(
     subscriptions.reset(new IBAuthoritativeQuoteSubscriptionSet(
         m_authoritativeSnapshots, 1000001));
     if (!subscriptions->Configure(
-            m_config.quoteContracts, m_config.primaryQuoteInstrument, reason))
+            m_config.quoteContracts, m_config.primaryQuoteInstrument, reason, false, m_config.profile.UsesUserCrypto()))
     {
         if (reason.empty()) reason = "IB_PAPER_QUOTE_CONFIGURATION_INVALID";
         return false;
