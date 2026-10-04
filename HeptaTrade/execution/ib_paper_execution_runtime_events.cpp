@@ -907,26 +907,46 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
         event.reason.find("Unable to parse field: 'Order Size'") != std::string::npos)
     {
         std::lock_guard<std::mutex> lock(m_recentBrokerOrdersMutex);
-        RecentBrokerOrder* matched = nullptr;
+        RecentBrokerOrder* correlated = nullptr;
+        RecentBrokerOrder* epochWitness = nullptr;
         for (auto& item : m_recentBrokerOrders) {
             RecentBrokerOrder& candidate = item.second;
-            if (candidate.orderId != event.orderId ||
-                candidate.serviceEpoch != event.brokerServiceEpoch ||
-                candidate.connectionEpoch != event.brokerConnectionEpoch ||
-                candidate.venueCorrelationId.empty() || candidate.commandId.empty() ||
+            if (candidate.orderId != event.orderId || candidate.commandId.empty() ||
                 candidate.economicFill || candidate.brokerExecutionAmbiguous ||
                 !candidate.brokerExecutionId.empty())
                 continue;
-            if (matched != nullptr) return;
-            matched = &candidate;
+            if (!candidate.venueCorrelationId.empty()) {
+                // Durable place identity. Older place_sent rows intentionally
+                // predate the broker callback epoch, so empty epoch fields are
+                // allowed here, but a populated value must agree.
+                if ((!candidate.serviceEpoch.empty() &&
+                     candidate.serviceEpoch != event.brokerServiceEpoch) ||
+                    (candidate.connectionEpoch != 0 &&
+                     candidate.connectionEpoch != event.brokerConnectionEpoch))
+                    continue;
+                if (correlated != nullptr && correlated != &candidate) return;
+                correlated = &candidate;
+            }
+            if (candidate.status == "Accepted" &&
+                candidate.serviceEpoch == event.brokerServiceEpoch &&
+                candidate.connectionEpoch == event.brokerConnectionEpoch) {
+                if (epochWitness != nullptr && epochWitness != &candidate) return;
+                epochWitness = &candidate;
+            }
         }
-        if (matched != nullptr) {
-            matched->terminal = true;
-            matched->status = "Rejected";
-            matched->remainingQuantity = 0.0;
-            matched->reasonCode = "IB_ERROR_320";
-            matched->observedAtMs = event.tsMs > 0 ?
-                static_cast<std::uint64_t>(event.tsMs) : matched->observedAtMs;
+        // A naked numeric id is never sufficient. Join the callback only when
+        // one durable correlation-bearing row and one same-command broker ACK
+        // prove the exact order across the historical schema split.
+        if (correlated != nullptr && epochWitness != nullptr &&
+            correlated->commandId == epochWitness->commandId &&
+            (epochWitness->venueCorrelationId.empty() ||
+             epochWitness->venueCorrelationId == correlated->venueCorrelationId)) {
+            correlated->terminal = true;
+            correlated->status = "Rejected";
+            correlated->remainingQuantity = 0.0;
+            correlated->reasonCode = "IB_ERROR_320";
+            correlated->observedAtMs = event.tsMs > 0 ?
+                static_cast<std::uint64_t>(event.tsMs) : correlated->observedAtMs;
         }
         return;
     }
