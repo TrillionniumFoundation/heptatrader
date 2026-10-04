@@ -471,6 +471,77 @@ class CryptoDriverPolicyTests(unittest.TestCase):
     def state(self):
         return {"instrument":"BTC.USD","pending":None,"position":0.0,"entry_price":None,
             "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":"","halt_new_entries":False}
+    def test_crypto_recovery_precheck_uses_subject_position_without_weakening_fx(self):
+        self.assertTrue(d.recovery_position_flat({"position":0.0,"gross_position":25000.0}))
+        for value in (0.00000001,-0.00000001,float("nan"),float("inf"),None,False,"0"):
+            self.assertFalse(d.recovery_position_flat({"position":value,"gross_position":25000.0}))
+        with __import__("unittest.mock",fromlist=["patch"]).patch.object(d,"INSTRUMENT","EUR.USD"):
+            self.assertFalse(d.recovery_position_flat({"position":0.0,"gross_position":25000.0}))
+            self.assertTrue(d.recovery_position_flat({"position":0.0,"gross_position":0.0}))
+
+    def test_crypto_resume_keeps_fx_exposure_and_requires_native_ack_and_preview(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(lease_generation=1)
+        calls=[];snap_calls=[];saved=[]
+        def snap(_cli,_state,_path,require_quote=True):
+            snap_calls.append(require_quote)
+            resumed=any("paper-resume" in c for c in calls)
+            return {"position":0.0,"gross_position":25000.0,"active":[],"quote":{"ask":84569.5},
+                "owner_health":{"owner_fenced":False,"owner_recovery_only":not resumed,"mutation_ready":resumed},
+                "service_epoch":"native-epoch","service_generation":3}
+        def run(argv,*_):
+            calls.append(argv)
+            if "paper-resume" in argv:
+                self.assertEqual(argv[argv.index("--token-file")+1],"original-token-path")
+                self.assertEqual(argv[argv.index("--generation")+1],"1")
+                return subprocess.CompletedProcess(argv,0,'{"accepted":true,"reason_code":"SESSION_OWNER_RESUMED","lease_generation":2}',"")
+            self.assertEqual(argv,["cli","paper-on"])
+            return subprocess.CompletedProcess(argv,0,"","")
+        def preview(_cli,tool,*fields):
+            self.assertEqual(tool,"risk.preview_order")
+            self.assertIn("order_type=MKT",fields);self.assertIn("tif=IOC",fields)
+            self.assertTrue(any(f.startswith("cash_quantity=") for f in fields))
+            self.assertFalse(any(f.startswith("quantity=") or f.startswith("limit_price=") for f in fields))
+            return {"approved":True,"preview_permit":"test-only-permit","service_epoch":"native-epoch","service_fencing_generation":3}
+        with patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview),\
+             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
+            d.latch_owner_fence(state,Path("/unused"),"OPERATOR_AUDITED_RECOVERY")
+            self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","sessionctl","socket","original-token-path",1000))
+        self.assertEqual(snap_calls,[False,True]);self.assertEqual(len(calls),2)
+        self.assertEqual(state["lease_generation"],2);self.assertEqual(state["owner_recovery_phase"],"VERIFIED")
+        self.assertFalse(state["halt_new_entries"]);self.assertIsNone(state["pending"])
+        self.assertEqual(state["entries"],0);self.assertEqual(state["exits"],0);self.assertEqual(state["gross_pnl"],0)
+        self.assertNotIn("test-only-permit",str(saved))
+
+    def test_crypto_recovery_never_ignores_nonzero_btc_or_pending(self):
+        from unittest.mock import patch
+        state=self.state();state["owner_fence_recovery_required"]=True
+        with patch.object(d,"snapshot",return_value={"position":0.0001,"gross_position":25000.0001,"active":[]}),\
+             patch.object(d,"run") as run:
+            with self.assertRaises(d.DriverError):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            run.assert_not_called()
+        state["pending"]={"command_id":"original-uncertain"}
+        with patch.object(d,"snapshot") as snap,patch.object(d,"run") as run:
+            with self.assertRaisesRegex(d.DriverError,"original pending"):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            snap.assert_not_called();run.assert_not_called()
+
+    def test_crypto_native_resume_refusal_cannot_clear_recovery_latch(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(lease_generation=1,owner_fence_recovery_required=True,halt_new_entries=True)
+        snap={"position":0.0,"gross_position":25000.0,"active":[]}
+        refusal=subprocess.CompletedProcess([],1,'{"accepted":false,"reason_code":"CRYPTO_OWNER_POSITION_SCOPE_UNPROVEN","lease_generation":1}',"")
+        with patch.object(d,"snapshot",return_value=snap),patch.object(d,"run",return_value=refusal) as run,\
+             patch.object(d,"atomic_json"),patch.object(d,"native") as preview:
+            with self.assertRaisesRegex(d.DriverError,"CRYPTO_OWNER_POSITION_SCOPE_UNPROVEN"):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            self.assertEqual(run.call_count,1);preview.assert_not_called()
+        self.assertTrue(state["owner_fence_recovery_required"]);self.assertTrue(state["halt_new_entries"])
+        self.assertEqual(state["lease_generation"],1);self.assertIsNone(state["pending"])
+
     def test_fx_state_cannot_be_reinterpreted_as_crypto(self):
         import json
         with tempfile.TemporaryDirectory() as root:

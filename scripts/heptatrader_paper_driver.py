@@ -500,12 +500,20 @@ def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_order
     latch_owner_fence(state,path,str(value.get("reason_code") or "SESSION_RENEWAL_UNCERTAIN"))
 
 
+def recovery_position_flat(snap):
+    # Precheck only, not resumption authority. The native PAPER custodian
+    # independently validates its configured exact owner, BTC and FX snapshots,
+    # terminal evidence and the unchanged token/generation. FX recovery retains
+    # the original whole-account-flat rule.
+    value=snap.get("position" if INSTRUMENT=="BTC.USD" else "gross_position")
+    return type(value) in (int,float) and math.isfinite(value) and value==0.0
+
 def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
     if not state.get("owner_fence_recovery_required"): return False
     if state.get("pending") is not None: raise DriverError("recovery requires original pending command reconciliation")
-    snap=snapshot(cli,state,path)
-    if snap["active"] or snap["gross_position"]!=0.0:
-        raise DriverError("recovery requires authoritative zero orders and zero total strategy position")
+    snap=snapshot(cli,state,path,False)
+    if snap["active"] or not recovery_position_flat(snap):
+        raise DriverError("recovery requires authoritative zero orders and zero total strategy position in the recovery scope")
     # The native custodian distinguishes an active user lease with a stale
     # recovery marker from a revoked/finalized owner. A local flag cannot do so.
     # Never retry a strategy order here. This authenticated control operation
@@ -538,7 +546,7 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
         state["owner_recovery_phase"]="AUDIT_REQUIRED"; atomic_json(path,state)
         raise DriverError("owner fenced again before verification")
     if (owner["owner_recovery_only"] or owner["mutation_ready"] is not True or
-            snap["active"] or snap["gross_position"]!=0.0):
+            snap["active"] or not recovery_position_flat(snap)):
         raise DriverError("post-resume authoritative mutation gate is not ready")
     guard=run([cli,"paper-on"],10)
     if guard.returncode!=0: raise DriverError("post-audit local PAPER guard not ready")
