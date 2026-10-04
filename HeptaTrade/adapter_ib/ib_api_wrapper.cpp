@@ -737,7 +737,14 @@ static IBOrderLite BuildOrderLite(const Order& o) {
     out.action = o.action;
     out.orderType = o.orderType;
     if (o.totalQuantity != UNSET_DECIMAL) {
-        out.totalQuantity = DecimalFunctions::decimalToDouble(o.totalQuantity);
+        const double quantity = DecimalFunctions::decimalToDouble(o.totalQuantity);
+        // IB can replay completed cash-market orders with a Decimal NaN/unset
+        // payload that is not bit-identical to UNSET_DECIMAL.  Never let a
+        // non-finite SDK sentinel escape into the authoritative OMS journal.
+        // Zero remains the canonical unknown/cash-sized quantity; actual cash
+        // fills are recovered from execDetails and position reconciliation.
+        if (std::isfinite(quantity) && quantity >= 0.0)
+            out.totalQuantity = quantity;
     }
     if (o.cashQty != UNSET_DOUBLE && std::isfinite(o.cashQty) && o.cashQty > 0.0)
         out.cashQuantity = o.cashQty;
