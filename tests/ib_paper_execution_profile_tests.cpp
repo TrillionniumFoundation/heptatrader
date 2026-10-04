@@ -1006,6 +1006,96 @@ void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
     ::unlink(path);
 }
 
+void TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    auto config=MixedCryptoProfileForTest();std::string reason,oldCredential,newCredential;
+    assert(config.BuildAuthorizationCredential(oldCredential,reason));
+    config.userCryptoAgentId="user-agent";config.userCryptoSessionId="crypto-owner";
+    assert(config.BuildAuthorizationCredential(newCredential,reason));
+    assert(oldCredential!=newCredential);
+    auto changed=config;changed.userCryptoSessionId="another-owner";
+    std::string changedCredential;assert(changed.BuildAuthorizationCredential(changedCredential,reason));
+    assert(changedCredential!=newCredential);
+    for(int invalid=0;invalid!=5;++invalid) {
+        auto bad=config;
+        if(invalid==0)bad.userCryptoAgentId.clear();
+        if(invalid==1)bad.userCryptoSessionId.clear();
+        if(invalid==2)bad.userCryptoSessionId="../foreign";
+        if(invalid==3)bad.userCryptoAgentId=std::string(65,'x');
+        if(invalid==4){bad.userQuoteContracts="EUR.USD|EUR|CASH|IDEALPRO|USD";bad.userPrimaryQuoteInstrument="EUR.USD";}
+        assert(!bad.Validate(reason));
+    }
+    char path[]="/tmp/hepta-scoped-crypto-resume-XXXXXX";
+    int fd=::mkstemp(path);assert(fd>=0);::close(fd);
+    OmsJournal journal;assert(journal.Init(path));ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(journal,callbacks);
+    IBAuthoritativeRecoveryAuditSnapshot snapshot;
+    snapshot.active.complete=true;snapshot.active.connectionEpoch=3;snapshot.active.generation=4;
+    snapshot.terminal.complete=true;snapshot.terminal.connectionEpoch=3;snapshot.terminal.generation=5;
+    snapshot.risk.complete=true;snapshot.risk.coherentRefreshComplete=true;
+    snapshot.risk.accountComplete=true;snapshot.risk.positionsComplete=true;snapshot.risk.fxCashComplete=true;
+    snapshot.risk.connectionEpoch=3;snapshot.risk.generation=6;snapshot.risk.accountGeneration=7;
+    snapshot.risk.positionsGeneration=8;snapshot.risk.fxCashGeneration=9;snapshot.barrierComplete=true;
+    snapshot.risk.grossAbsolutePosition=25000;snapshot.positionQuantities["EUR.USD"]=-25000;
+    IbPaperAuthoritativePositionSnapshot btc;btc.complete=true;btc.connectionEpoch=3;btc.generation=8;
+    auto fx=btc;fx.quantity=-25000;
+    IbPaperExecutionPolicyCallbacks pc;pc.nowMs=[] {return OmsJournal::NowEpochMs();};
+    pc.recoveryAuditSnapshot=[&]{return snapshot;};pc.leaseAuditSnapshot=pc.recoveryAuditSnapshot;
+    pc.authoritativePosition=[&](const std::string& instrument){return instrument=="BTC.USD"?btc:fx;};
+    std::shared_ptr<IbPaperKillSwitchReader> kill(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(coordinator,config,pc,kill);
+    ExecutionControlCommand cmd;cmd.context.account=config.account;cmd.context.executionDomain="PAPER";
+    cmd.context.venue="IB";cmd.context.agentId="user-agent";cmd.context.sessionId="crypto-owner";
+    cmd.context.toolCallId="scoped-resume";
+    assert(coordinator.EnterRecoveryOnlyOwner("user-agent","crypto-owner",1,reason));
+    assert(coordinator.EnterRecoveryOnlyOwner("user-agent","fx-owner",1,reason));
+    auto audit=policy.AuditSessionOwner(cmd);
+    assert(audit.status==ExecutionCommandStatus::Accepted && audit.ownerAuditAuthoritative && audit.ownerAuditComplete);
+    assert(audit.reasonCode=="SESSION_CRYPTO_OWNER_ZERO_CONFIRMED");
+    assert(audit.brokerPositionQuantity=="-25000" && audit.brokerGrossAbsolutePosition=="25000");
+    // Scoped resume must never be used as a global recovery/finalization certificate.
+    auto global=cmd;global.recoveryIngressFence=1;
+    assert(policy.RecoveryAuditOwner(global).reasonCode=="RECOVERY_OWNER_POSITION_NOT_FLAT");
+    auto other=cmd;other.context.sessionId="fx-owner";
+    assert(policy.AuditSessionOwner(other).reasonCode=="RECOVERY_OWNER_POSITION_NOT_FLAT");
+    other=cmd;other.context.agentId="another-agent";
+    assert(policy.AuditSessionOwner(other).status==ExecutionCommandStatus::Rejected);
+    other=cmd;other.context.account="DU999999";
+    assert(policy.AuditSessionOwner(other).status==ExecutionCommandStatus::Rejected);
+    for(int invalid=0;invalid!=8;++invalid) {
+        auto previous=snapshot;auto priorBtc=btc;auto priorFx=fx;
+        if(invalid==0)btc.complete=false;
+        if(invalid==1)btc.connectionEpoch++;
+        if(invalid==2)btc.generation++;
+        if(invalid==3)fx.generation++;
+        if(invalid==4)fx.quantity=-25001;
+        if(invalid==5){snapshot.positionQuantities["OTHER"]=1;snapshot.risk.grossAbsolutePosition=25001;}
+        if(invalid==6)snapshot.terminal.complete=false;
+        if(invalid==7)snapshot.postFillRiskReconciliationPending=true;
+        assert(policy.AuditSessionOwner(cmd).status==ExecutionCommandStatus::Rejected);
+        assert(policy.ReleaseSessionOwnerFence(cmd).status==ExecutionCommandStatus::Rejected);
+        assert(coordinator.IsSessionOwnerRecoveryOnly("user-agent","crypto-owner"));
+        snapshot=previous;btc=priorBtc;fx=priorFx;
+    }
+    btc.quantity=0.0001;snapshot.positionQuantities["BTC.USD"]=btc.quantity;
+    snapshot.risk.grossAbsolutePosition=25000.0001;
+    assert(policy.AuditSessionOwner(cmd).reasonCode=="CRYPTO_OWNER_POSITION_NOT_FLAT");
+    assert(policy.ReleaseSessionOwnerFence(cmd).status==ExecutionCommandStatus::Rejected);
+    btc.quantity=0;snapshot.positionQuantities.erase("BTC.USD");snapshot.risk.grossAbsolutePosition=25000;
+    snapshot.active.activeOrderIds.insert(91);
+    assert(policy.ReleaseSessionOwnerFence(cmd).status==ExecutionCommandStatus::Rejected);
+    snapshot.active.activeOrderIds.clear();
+    auto released=policy.ReleaseSessionOwnerFence(cmd);
+    assert(released.status==ExecutionCommandStatus::Accepted && released.reasonCode=="SESSION_OWNER_FENCE_RELEASED");
+    assert(!coordinator.IsSessionOwnerRecoveryOnly("user-agent","crypto-owner"));
+    assert(coordinator.IsSessionOwnerRecoveryOnly("user-agent","fx-owner"));
+    assert(snapshot.positionQuantities.at("EUR.USD")==-25000);
+    int mutations=0;
+    journal.Replay([&](const OmsJournalEvent& e){if(e.eventType=="place_send_attempt"||e.eventType=="flatten_send_attempt"||e.eventType=="cancel_send_attempt")++mutations;});
+    assert(mutations==0);::unlink(path);
+}
+
 int main()
 {
     TestFxCashRestartCatchUpZeroFillApiCancellation();
@@ -1018,6 +1108,7 @@ int main()
     TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
     TestCryptoFlattenIsExactOwnedLongAndMarketIOC();
     TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();
+    TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();

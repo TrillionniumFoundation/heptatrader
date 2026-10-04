@@ -203,7 +203,7 @@ private:
                                 const TradingToolHostSessionBinding*
                                     expectedCurrent,
                                 std::string& reason,
-                                bool dispatchLocked = false);
+                                bool dispatchLocked = false, bool resumeRecoveryOnly = false);
     void MoveActiveDecisionLeasesLocked(
         const std::string& currentToken,
         const std::string& replacementToken);

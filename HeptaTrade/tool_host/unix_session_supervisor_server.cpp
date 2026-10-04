@@ -291,6 +291,14 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
                 current.leaseGeneration != records[i].leaseGeneration) continue;
             records[i] = current;
             if (m_recoveryOwnersInFlight.count({current.agentId, current.sessionId})) continue;
+            // An unexpired user recovery receiver is deliberately retained,
+            // not an automatic global-finalization job. Do not re-audit and
+            // rewrite its lease every maintenance tick while another owner trades.
+            if (m_userPaperCustody && current.templateId == "paper" &&
+                current.recoveryOnly && !current.fencePending && !current.fenceComplete &&
+                !current.paperFinalizationRequired &&
+                current.paperFinalizationState == SessionSupervisorPaperFinalizationState::None &&
+                current.expiresAtMs > nowMs) continue;
 			if (records[i].paperFinalizationState !=
 				SessionSupervisorPaperFinalizationState::None)
 				continue;
@@ -743,6 +751,24 @@ bool UnixSessionSupervisorServer::HasPendingOwner(
 	return false;
 }
 
+bool UnixSessionSupervisorServer::CanResumeExactUserPaperRecord(
+    const SessionSupervisorLeaseRecord& record) const
+{
+    if (!m_userPaperCustody || !m_leaseStore || record.templateId != "paper" ||
+        record.fencePending || record.fenceComplete || record.paperFinalizationRequired ||
+        record.paperFinalizationState != SessionSupervisorPaperFinalizationState::None)
+        return false;
+    for (const auto& other : m_leaseStore->List()) {
+        if (other.agentId != record.agentId || other.sessionId != record.sessionId) continue;
+        if (other.token != record.token || other.leaseGeneration != record.leaseGeneration ||
+            other.ownerAccount != record.ownerAccount || other.ownerExecutionDomain != record.ownerExecutionDomain ||
+            other.fencePending || other.fenceComplete || other.paperFinalizationRequired ||
+            other.paperFinalizationState != SessionSupervisorPaperFinalizationState::None)
+            return false;
+    }
+    return true;
+}
+
 bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 {
 	if (m_leaseStore == nullptr) return true;
@@ -825,6 +851,15 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 					// retains it; explicit PAPER finalization owns deletion.
 					break;
 				}
+                if (m_userPaperCustody && record.recoveryOnly &&
+                    !record.paperFinalizationRequired &&
+                    ownerAudit.reasonCode == "RECOVERY_OWNER_POSITION_NOT_FLAT") {
+                    // The exact local + durable recovery-only fence is already
+                    // installed. Retain it and serve recovery/read requests;
+                    // a held FX position is not a Gateway startup failure.
+                    reason.clear();
+                    break;
+                }
 				if (ownerAudit.status != ExecutionCommandStatus::Accepted &&
 					ownerAudit.reasonCode !=
 						"RECOVERY_OWNER_UNCERTAIN_COMMANDS_REMAIN")
@@ -1438,13 +1473,16 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
             }
             else if ((request.operation == SessionSupervisorOperation::PaperResume ||
                  request.operation == SessionSupervisorOperation::RenewActive) &&
-                (previous.templateId != "paper" || previous.recoveryOnly ||
+                (previous.templateId != "paper" ||
+                 (previous.recoveryOnly && request.operation != SessionSupervisorOperation::PaperResume) ||
                  previous.paperFinalizationRequired || previous.paperFinalizationState !=
                     SessionSupervisorPaperFinalizationState::None))
                 result.ReasonCode() = "SESSION_OWNER_NOT_RESUMABLE";
 			else if (m_leaseStore != nullptr &&
 				(previous.fencePending ||
-				 HasPendingOwner(previous.agentId, previous.sessionId)))
+                 (request.operation == SessionSupervisorOperation::PaperResume ?
+                    !CanResumeExactUserPaperRecord(previous) :
+                    HasPendingOwner(previous.agentId, previous.sessionId))))
 				result.ReasonCode() = "SESSION_OWNER_FENCE_PENDING";
 			else
 			{
@@ -1654,6 +1692,10 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 				else if (m_leaseStore != nullptr)
 				{
 						SessionSupervisorLeaseRecord active = replacement;
+                        if (request.operation == SessionSupervisorOperation::PaperResume) {
+                            active.recoveryOnly = false;
+                            active.recoveryCommandId.clear();
+                        }
 						active.predecessorToken.clear();
 						active.predecessorGeneration = 0;
 						active.fencePending = false;

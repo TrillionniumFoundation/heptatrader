@@ -185,6 +185,96 @@ void TestUserPaperResumeAuditsBeforeActivation()
     std::remove(journalPath.c_str()); std::remove(auditPath.c_str());
 }
 
+void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    const auto journalPath=TempPath("/tmp/hepta-scoped-resume-journal-XXXXXX");
+    const auto socketPath=TempPath("/tmp/hepta-scoped-resume-socket-XXXXXX");
+    const auto storePath=TempPath("/tmp/hepta-scoped-resume-store-XXXXXX");
+    const auto auditPath=TempPath("/tmp/hepta-scoped-resume-audit-XXXXXX");
+    const auto keyPath=TempKeyPath();std::string reason;
+    SessionSupervisorLeaseStore store;assert(store.Init(storePath,keyPath,reason));
+    SessionSupervisorAuditJournal audit;assert(audit.Init(auditPath,reason));
+    OmsJournal journal;assert(journal.Init(journalPath));
+    ExecutionCoordinatorCallbacks callbacks;ExecutionCoordinator execution(journal,callbacks);
+    TradingToolRegistry registry(execution);TradingToolHost host(registry);
+    RecoveryControlAuthority authority;bool valid=false;int releaseCalls=0;
+    authority.ownerAudit=[&](const ExecutionControlCommand& command){
+        ExecutionControlResult result;result.commandId=command.context.toolCallId;
+        result.ownerAccount=command.context.account;result.ownerExecutionDomain=command.context.executionDomain;
+        result.brokerConnectionEpoch=1;result.brokerActiveGeneration=2;result.brokerTerminalGeneration=3;
+        result.brokerRiskGeneration=4;result.brokerAccountGeneration=5;result.brokerPositionGeneration=6;
+        result.brokerFxCashGeneration=7;result.brokerRecoveryAuditBarrierComplete=true;
+        result.brokerPositionQuantity="-25000";result.brokerGrossAbsolutePosition="25000";
+        result.status=ExecutionCommandStatus::Rejected;result.reasonCode="RECOVERY_OWNER_POSITION_NOT_FLAT";
+        if(command.recoveryIngressFence) {
+            std::string why;assert(execution.EnterRecoveryOnlyOwner(command.context.agentId,
+                command.context.sessionId,command.recoveryIngressFence,why));
+        } else if(command.context.sessionId=="crypto-owner") {
+            result.status=ExecutionCommandStatus::Accepted;result.ownerAuditAuthoritative=true;
+            result.ownerAuditComplete=valid;result.reasonCode="SESSION_CRYPTO_OWNER_ZERO_CONFIRMED";
+        }
+        return result;
+    };
+    authority.release=[&](const ExecutionControlCommand& command){
+        ++releaseCalls;assert(valid && command.context.sessionId=="crypto-owner");
+        std::string why;auto fence=execution.SessionOwnerRecoveryIngressFence("agent","crypto-owner");
+        assert(execution.AuditAndReleaseSessionOwnerFence("agent","crypto-owner",true,why,fence));
+        ExecutionControlStatusResult out;out.commandId=command.context.toolCallId;
+        out.status=ExecutionCommandStatus::Accepted;out.reasonCode="SESSION_OWNER_FENCE_RELEASED";return out;
+    };
+    host.SetRecoveryControlAuthority(&authority);
+    TradingToolSessionControlPlane control(host,[](const std::string&,const TradingToolHostSessionBinding&,std::string&){return true;});
+    for(const auto* name : {"fx-owner","crypto-owner"}) {
+        SessionSupervisorLeaseRecord rec;rec.templateId="paper";rec.issuer="test.owner";
+        rec.token=std::string(64,name[0]);rec.agentId="agent";rec.sessionId=name;rec.peerUid=::geteuid();
+        rec.ownerAccount="DU123";rec.ownerExecutionDomain="PAPER";rec.expiresAtMs=1;rec.leaseGeneration=1;
+        assert(store.Put(rec,reason));
+    }
+    auto resolver=[](const SessionSupervisorRequest& req,TradingToolHostSessionBinding& binding,std::string&){
+        binding.token=req.token;binding.peerUid=req.peerUid;binding.expiresAtMs=OmsJournal::NowEpochMs()+req.ttlMs;
+        binding.session.executionContext.agentId=req.agentId;binding.session.executionContext.sessionId=req.sessionId;
+        binding.session.executionContext.account="DU123";binding.session.environment="PAPER";binding.executionDomain="PAPER";
+        const bool crypto=req.sessionId=="crypto-owner";const std::string instrument=crypto?"BTC.USD":"EUR.USD";
+        IBContractLite c;c.symbol=crypto?"BTC":"EUR";c.secType=crypto?"CRYPTO":"CASH";
+        c.exchange=crypto?"PAXOS":"IDEALPRO";c.currency="USD";
+        binding.allowedInstruments.insert(instrument);binding.instrumentContracts[instrument]=c;
+        binding.maxOrderQuantity=crypto?0.001:25000;return true;
+    };
+    UnixSessionSupervisorServer server(control);server.SetLeaseStore(&store);server.SetAuditJournal(&audit);
+    assert(server.ConfigureUserPaperCustodian(reason));std::map<std::uint32_t,std::string> issuers;
+    issuers[::geteuid()]="test.owner";assert(server.Start(socketPath,issuers,resolver,reason,4096,2000));
+    TradingToolHostSessionBinding local;SessionSupervisorLeaseRecord rec;
+    const auto cryptoToken=std::string(64,'c'),fxToken=std::string(64,'f');
+    assert(host.GetSession(cryptoToken,local) && local.recoveryOnly);
+    assert(host.GetSession(fxToken,local) && local.recoveryOnly);
+    assert(store.Get(cryptoToken,rec) && rec.recoveryOnly && rec.leaseGeneration==1);
+    const auto restoredExpiry=rec.expiresAtMs;std::size_t reaped=0;
+    assert(server.ReapExpired(OmsJournal::NowEpochMs(),reaped,reason) && reaped==0);
+    assert(store.Get(cryptoToken,rec) && rec.expiresAtMs==restoredExpiry && rec.recoveryOnly);
+    SessionSupervisorRequest req;req.operation=SessionSupervisorOperation::RenewActive;req.token=cryptoToken;
+    req.expectedGeneration=1;req.ttlMs=60000;assert(!Call(socketPath,req).accepted);
+    req.operation=SessionSupervisorOperation::PaperResume;
+    auto refused=Call(socketPath,req);assert(!refused.accepted && releaseCalls==0);
+    assert(store.Get(cryptoToken,rec) && rec.recoveryOnly && rec.leaseGeneration==1);
+    valid=true;const auto resumed=Call(socketPath,req);assert(resumed.accepted && releaseCalls==1);
+    assert(store.Get(cryptoToken,rec) && !rec.recoveryOnly && !rec.fencePending && rec.leaseGeneration==2);
+    assert(host.GetSession(cryptoToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
+    assert(host.GetSession(fxToken,local) && local.recoveryOnly && local.leaseGeneration==1);
+    assert(execution.IsSessionOwnerRecoveryOnly("agent","fx-owner"));
+    assert(!execution.IsSessionOwnerRecoveryOnly("agent","crypto-owner"));
+    assert(!Call(socketPath,req).accepted && releaseCalls==1); // old generation cannot renew twice
+    server.Stop();
+    TradingToolHost restartedHost(registry);restartedHost.SetRecoveryControlAuthority(&authority);
+    TradingToolSessionControlPlane restartedControl(restartedHost,[](const std::string&,const TradingToolHostSessionBinding&,std::string&){return true;});
+    UnixSessionSupervisorServer restarted(restartedControl);restarted.SetLeaseStore(&store);restarted.SetAuditJournal(&audit);
+    assert(restarted.ConfigureUserPaperCustodian(reason));assert(restarted.Start(socketPath,issuers,resolver,reason,4096,2000));
+    assert(restartedHost.GetSession(cryptoToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
+    assert(restartedHost.GetSession(fxToken,local) && local.recoveryOnly);
+    restarted.Stop();
+    std::remove(journalPath.c_str());std::remove(storePath.c_str());std::remove(keyPath.c_str());std::remove(auditPath.c_str());
+}
+
 void TestRestartAtEveryPersistedGeneration()
 {
 	const std::string journalPath = TempPath("/tmp/hepta-supervisor-generation-journal-XXXXXX");

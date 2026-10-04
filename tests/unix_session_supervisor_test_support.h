@@ -146,6 +146,7 @@ void TestDurablePendingFenceRestartRecoveryWithReviewedPolicy();
 void TestDeterministicGenerationSchedules();
 void TestRestartAtEveryPersistedGeneration();
 void TestUserPaperResumeAuditsBeforeActivation();
+void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume();
 void TestCryptoAndFxSessionContractScopesRemainDisjoint();
 void TestWatchLeaseRestartFailsClosed();
 void TestSameHostWatchRestartFencesExactLocalSession();

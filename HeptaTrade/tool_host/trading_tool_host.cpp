@@ -94,7 +94,8 @@ bool ExactZeroOwnerAudit(
     const ExecutionOwnerAuditResult& audit,
     std::string& reason)
 {
-    if (audit.reasonCode == "SESSION_LEASE_CONTINUATION_CONFIRMED" ||
+    if (audit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" ||
+        audit.reasonCode == "SESSION_LEASE_CONTINUATION_CONFIRMED" ||
         audit.status != ExecutionCommandStatus::Accepted ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
         audit.ownerAccount != binding.session.executionContext.account ||
@@ -1138,7 +1139,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
         authority = m_recoveryControlAuthority;
     }
     if (authority == nullptr || binding.session.environment != "PAPER" ||
-        !binding.enabled || binding.recoveryOnly)
+        !binding.enabled || (binding.recoveryOnly && !resumeOwner))
     {
         reason = authority == nullptr ?
             "SESSION_RECOVERY_QUERY_UNAVAILABLE" :
@@ -1165,6 +1166,28 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             ownerAudit.brokerConnectionEpoch == 0 || ownerAudit.brokerPositionGeneration == 0)
         { reason = ownerAudit.reasonCode.empty() ? "SESSION_LEASE_CONTINUATION_AUDIT_FAILED" : ownerAudit.reasonCode; return false; }
     }
+    else if (resumeOwner && ownerAudit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED")
+    {
+        const auto c = binding.instrumentContracts.find("BTC.USD");
+        if (currentToken != replacementToken || binding.allowedInstruments.size() != 1 ||
+            binding.allowedInstruments.count("BTC.USD") != 1 || binding.instrumentContracts.size() != 1 ||
+            c == binding.instrumentContracts.end() || c->second.symbol != "BTC" ||
+            c->second.secType != "CRYPTO" || c->second.exchange != "PAXOS" || c->second.currency != "USD" ||
+            binding.maxOrderQuantity != 0.001 || ownerAudit.status != ExecutionCommandStatus::Accepted ||
+            !ownerAudit.ownerAuditAuthoritative || !ownerAudit.ownerAuditComplete || ownerAudit.mutationBlocked ||
+            ownerAudit.ownerAccount != binding.session.executionContext.account ||
+            ownerAudit.ownerExecutionDomain != binding.executionDomain ||
+            ownerAudit.ownerActiveOrderCount != 0 || ownerAudit.ownerUncertainCommandCount != 0 ||
+            ownerAudit.brokerGlobalActiveOrderCount != 0 || ownerAudit.brokerPostFillRiskReconciliationPending ||
+            !ownerAudit.brokerRecoveryAuditBarrierComplete || ownerAudit.brokerRecoveryAuditNewConnectionEpochRequired ||
+            ownerAudit.brokerConnectionEpoch == 0 || ownerAudit.brokerActiveGeneration == 0 ||
+            ownerAudit.brokerTerminalGeneration == 0 || ownerAudit.brokerRiskGeneration == 0 ||
+            ownerAudit.brokerAccountGeneration == 0 || ownerAudit.brokerPositionGeneration == 0 ||
+            ownerAudit.brokerFxCashGeneration == 0) {
+            reason = "CRYPTO_OWNER_RESUME_AUDIT_INVALID";
+            return false;
+        }
+    }
     else if (!ExactZeroOwnerAudit(binding, ownerAudit, reason)) return false;
     if (resumeOwner)
     {
@@ -1180,5 +1203,5 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     }
     return UpdateSessionLeaseImpl(
         currentToken, replacementToken, expectedGeneration, expiresAtMs,
-        newGeneration, nullptr, nullptr, reason, true);
+        newGeneration, nullptr, nullptr, reason, true, resumeOwner);
 }

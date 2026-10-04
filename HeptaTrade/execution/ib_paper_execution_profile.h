@@ -42,6 +42,10 @@ struct IbPaperExecutionProfileConfig
     bool userScope = false;
     std::string userQuoteContracts;
     std::string userPrimaryQuoteInstrument;
+    // Optional exact user crypto owner. Bound into the reviewed profile;
+    // not supplied by an Agent or inferred from an arbitrary session name.
+    std::string userCryptoAgentId;
+    std::string userCryptoSessionId;
     std::uint64_t userQuoteMaxAgeMs = 0;
     std::string account;
     std::string host;
@@ -239,7 +243,9 @@ private:
     ExecutionControlStatusResult BeginControl(const ExecutionControlCommand& command) const;
     ExecutionOwnerAuditResult AuditRecoveryOwner(
         const ExecutionControlCommand& command,
-        const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation = false);
+        const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation = false,
+        bool cryptoOwnerResume = false);
+    bool IsConfiguredCryptoOwner(const ExecutionControlCommand& command) const;
     void RefreshRateBudget(
         std::int64_t nowMs,
         const std::string& executionDomain = "PAPER");

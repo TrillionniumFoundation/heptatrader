@@ -65,6 +65,7 @@ private:
 		std::uint64_t socketPathDevice = 0,
 		std::uint64_t socketPathInode = 0,
 		bool socketPathIdentityValid = false);
+    bool CanResumeExactUserPaperRecord(const SessionSupervisorLeaseRecord& record) const;
 	bool RestoreLeases(std::string& reason);
 	bool EnterPaperRecovery(
 		SessionSupervisorLeaseRecord& record,

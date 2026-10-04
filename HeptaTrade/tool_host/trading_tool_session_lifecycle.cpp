@@ -288,7 +288,7 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
     const std::string* watchTransactionId,
     const TradingToolHostSessionBinding* expectedCurrent,
     std::string& reason,
-    bool dispatchLocked)
+    bool dispatchLocked, bool resumeRecoveryOnly)
 {
     const std::uint64_t nowMs = LifecycleEpochNowMs();
     if (currentToken.empty() || replacementToken.size() < 24 ||
@@ -367,6 +367,8 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
     replacement.token = replacementToken;
     replacement.expiresAtMs = expiresAtMs;
     replacement.leaseGeneration = expectedGeneration + 1;
+    // Only the audited explicit PAPER resume caller holds this capability.
+    if (resumeRecoveryOnly) replacement.recoveryOnly = false;
     const TradingToolSessionContractRegistration registration =
         BuildCatalogRegistration(replacement);
     if (!m_contractCatalog.Replace(currentToken, registration, reason))

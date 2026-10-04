@@ -372,7 +372,7 @@ bool IbPaperExecutionProfileConfig::FromEnvironment(
     IbPaperExecutionProfileConfig& config, std::string& reason)
 {
     static const char* keys[] = {
-        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
+        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_CRYPTO_AGENT_ID", "HEPTA_IB_PAPER_CRYPTO_SESSION_ID", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
         "HEPTA_IB_PAPER_HOST", "HEPTA_IB_PAPER_PORT",
         "HEPTA_IB_PAPER_CLIENT_ID", "HEPTA_IB_PAPER_MAX_ORDER_QTY",
         "HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL",
@@ -429,6 +429,16 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     {
         reason = "IB_PAPER_USER_SCOPE_RESIDUAL_CONFIGURATION";
         return false;
+    }
+    if (!userCryptoAgentId.empty() || !userCryptoSessionId.empty()) {
+        const auto canonicalId = [](const std::string& id) {
+            return !id.empty() && id.size() <= 64 &&
+                id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == std::string::npos;
+        };
+        if (!UsesUserCrypto() || !canonicalId(userCryptoAgentId) || !canonicalId(userCryptoSessionId)) {
+            reason = "IB_PAPER_CRYPTO_OWNER_SCOPE_INVALID";
+            return false;
+        }
     }
     if (!StrictPaperAccount(account))
     {
@@ -608,6 +618,11 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
         AppendCanonicalField(canonical, "primary_quote_instrument", userPrimaryQuoteInstrument);
         AppendCanonicalField(canonical, "quote_max_age_ms", std::to_string(userQuoteMaxAgeMs));
     }
+    if (!userCryptoSessionId.empty()) {
+        AppendCanonicalField(canonical, "crypto_resume_agent", userCryptoAgentId);
+        AppendCanonicalField(canonical, "crypto_resume_session", userCryptoSessionId);
+        AppendCanonicalField(canonical, "crypto_resume_instrument", "BTC.USD|BTC|CRYPTO|PAXOS|USD");
+    }
     const std::string digest = Sha256Hex(canonical);
     if (digest.empty())
     {
@@ -633,6 +648,11 @@ bool IbPaperExecutionProfileConfig::FromValues(
     if (!userScope.empty() && userScope != "0" && userScope != "1")
     { reason = "IB_PAPER_USER_SCOPE_INVALID"; return false; }
     config.userScope = userScope == "1";
+    config.userCryptoAgentId = Read(values, "HEPTA_IB_PAPER_CRYPTO_AGENT_ID");
+    config.userCryptoSessionId = Read(values, "HEPTA_IB_PAPER_CRYPTO_SESSION_ID");
+    if ((!config.userCryptoAgentId.empty() || !config.userCryptoSessionId.empty()) &&
+        (!config.userScope || mode != "PAPER"))
+    { reason = "IB_PAPER_CRYPTO_OWNER_SCOPE_INVALID"; return false; }
     if (config.userScope)
     {
         if (mode != "PAPER")
@@ -1313,7 +1333,8 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
     const std::uint64_t userRecoveryFence = m_config.userScope ?
         m_coordinator.SessionOwnerRecoveryIngressFence(command.context.agentId, command.context.sessionId) : 0;
     const ExecutionOwnerAuditResult audit =
-        AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot());
+        AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot(), false,
+            IsConfiguredCryptoOwner(command));
     if (audit.status != ExecutionCommandStatus::Accepted ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
         audit.ownerActiveOrderCount != 0 || audit.ownerUncertainCommandCount != 0 ||
@@ -1408,7 +1429,8 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
         result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
         return result;
     }
-    return AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot());
+    return AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot(), false,
+        IsConfiguredCryptoOwner(command));
 }
 
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
@@ -1451,9 +1473,20 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
     return AuditRecoveryOwner(command, recovery);
 }
 
+bool IbPaperExecutionPolicyAuthority::IsConfiguredCryptoOwner(
+    const ExecutionControlCommand& command) const
+{
+    return m_config.UsesUserCrypto() && !m_config.userCryptoSessionId.empty() &&
+        command.context.agentId == m_config.userCryptoAgentId &&
+        command.context.sessionId == m_config.userCryptoSessionId &&
+        command.context.account == m_account && command.context.executionDomain == "PAPER" &&
+        command.recoveryIngressFence == 0;
+}
+
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     const ExecutionControlCommand& command,
-    const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation)
+    const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation,
+    bool cryptoOwnerResume)
 {
     ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
@@ -1585,7 +1618,33 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         result.reasonCode = "RECOVERY_OWNER_POSITION_SNAPSHOT_INVALID";
         return result;
     }
-    if (!continuation && (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0))
+    if (cryptoOwnerResume) {
+        // Keep brokerPositionQuantity/gross as the real WHOLE ACCOUNT values.
+        // Only this separately named resume result proves BTC-flatness; it is
+        // never a certificate for global finalization or FX-owner resumption.
+        if (continuation || !IsConfiguredCryptoOwner(command) || !m_callbacks.authoritativePosition) {
+            result.status = ExecutionCommandStatus::Rejected;
+            result.reasonCode = "CRYPTO_OWNER_RESUME_SCOPE_INVALID";
+            return result;
+        }
+        const auto btc = m_callbacks.authoritativePosition("BTC.USD");
+        const auto fx = m_callbacks.authoritativePosition("EUR.USD");
+        if (!btc.complete || !fx.complete || btc.connectionEpoch != risk.connectionEpoch ||
+            fx.connectionEpoch != risk.connectionEpoch || btc.generation != risk.positionsGeneration ||
+            fx.generation != risk.positionsGeneration || !std::isfinite(btc.quantity) ||
+            !std::isfinite(fx.quantity) || std::fabs(fx.quantity) > m_config.maxGrossPosition ||
+            std::fabs(btc.quantity) + std::fabs(fx.quantity) != risk.grossAbsolutePosition) {
+            result.status = ExecutionCommandStatus::Rejected;
+            result.reasonCode = "CRYPTO_OWNER_POSITION_SCOPE_UNPROVEN";
+            return result;
+        }
+        if (btc.quantity != 0.0) {
+            result.status = ExecutionCommandStatus::Rejected;
+            result.reasonCode = "CRYPTO_OWNER_POSITION_NOT_FLAT";
+            return result;
+        }
+    }
+    if (!continuation && !cryptoOwnerResume && (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = "RECOVERY_OWNER_POSITION_NOT_FLAT";
@@ -1688,7 +1747,8 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         return result;
     }
     result.status = ExecutionCommandStatus::Accepted;
-    result.reasonCode = continuation ? "SESSION_LEASE_CONTINUATION_CONFIRMED" : "RECOVERY_OWNER_ZERO_CONFIRMED";
+    result.reasonCode = continuation ? "SESSION_LEASE_CONTINUATION_CONFIRMED" :
+        cryptoOwnerResume ? "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" : "RECOVERY_OWNER_ZERO_CONFIRMED";
     return result;
 }
 
