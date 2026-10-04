@@ -16,7 +16,7 @@ bool IbPaperExecutionRuntimeComposition::CheckQuoteAdmissionPreflight(
         reason = "IB_PAPER_BROKER_CONNECTION_CHANGED_BEFORE_QUOTES";
         return false;
     }
-    if (!PrimaryQuoteRequiresCashMarketDataFarm(
+    if (!PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument)) return true;
     DrainAdapterEvents(0);
     if (HasFatalRuntimeError(&reason)) return false;

@@ -37,7 +37,7 @@ IbPaperExecutionRuntimeComposition::HandleStartupBrokerControl(
         // 1101 explicitly says market data was lost.  Invalidate even a
         // pre-admission 2104 witness (there may be no quote cycle yet); the
         // next formal request must wait for a fresh 2104 in this epoch.
-        if (PrimaryQuoteRequiresCashMarketDataFarm(
+        if (PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
             IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch))
         {
@@ -139,7 +139,7 @@ bool IbPaperExecutionRuntimeComposition::WaitForStartupUpstream(
 {
     if (AbortStartupIfCancelled(reason)) return false;
     const bool requiresCashMarketDataFarm =
-        PrimaryQuoteRequiresCashMarketDataFarm(
+        PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument);
     const int fastPathDelayMs = std::max(
         100, std::min(3000, m_config.reconnectTimeoutMs / 20));
@@ -501,7 +501,7 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
         kMarketDataAdmissionStabilityWindowMs);
     std::chrono::steady_clock::time_point cashFarmStableSince;
     const bool requiresCashMarketDataFarm =
-        PrimaryQuoteRequiresCashMarketDataFarm(
+        PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument);
     std::chrono::steady_clock::time_point snapshotDeadline =
         m_reconnectDeadline;

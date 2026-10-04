@@ -191,7 +191,7 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
             const std::string fatalReason = reason;
             return CleanupStartupSnapshotFailure(reason, fatalReason);
         }
-        if (PrimaryQuoteRequiresCashMarketDataFarm(
+        if (PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
             m_startupMarketDataFarmWaiting.load())
             return CleanupStartupSnapshotFailure(

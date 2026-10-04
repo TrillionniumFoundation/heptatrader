@@ -316,8 +316,8 @@ IbPaperExecutionRuntimeComposition::HandleReconnectBrokerControl(
     }
     if (controlErrorCode == 1101)
     {
-        // 1101 invalidates the farm witness; only a fresh CASH 2104 reopens it.
-        if (PrimaryQuoteRequiresCashMarketDataFarm(
+        // 1101 invalidates the primary farm witness; only a fresh scoped 2104 reopens it.
+        if (PrimaryQuoteRequiresMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
             IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch))
         {
@@ -379,10 +379,6 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
         ParseBrokerErrorCode(event.key, controlErrorCode);
     const bool cashMarketDataFarm =
         IsSupportedIbCashMarketDataFarm(event.value);
-    const bool primaryCashMarketDataFarm =
-        PrimaryQuoteRequiresCashMarketDataFarm(
-            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
-        cashMarketDataFarm;
     const bool primaryMarketDataFarm =
         IsPrimaryQuoteMarketDataFarm(
             m_config.quoteContracts, m_config.primaryQuoteInstrument,
@@ -400,7 +396,8 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
             // without invalidating the primary instrument. The affected
             // secondary instrument remains Missing/Stale and its own order
             // admission therefore stays fail-closed.
-            if (primaryCashMarketDataFarm) {
+            if (PrimaryQuoteRequiresMarketDataFarm(
+                    m_config.quoteContracts, m_config.primaryQuoteInstrument)) {
                 m_startupMarketDataFarmRestored.store(false);
                 m_startupMarketDataFarmWaiting.store(true);
                 m_startupMarketDataFarmEpoch.store(0);
@@ -419,7 +416,7 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
     }
     const bool marketDataFarmControl =
         controlErrorCode == 10197 ||
-        (primaryCashMarketDataFarm &&
+        (primaryMarketDataFarm &&
          (controlErrorCode == 2104 || controlErrorCode == 2119));
     // 10197 is a terminal real-time-data witness, not a readiness/control
     // acknowledgement.  Keep it on the persistence path even during
@@ -450,7 +447,7 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
          controlErrorCode == 1100 || controlErrorCode == 1101 ||
          controlErrorCode == 1102 || controlErrorCode == 1300 ||
          controlErrorCode == 2110 ||
-         (controlErrorCode == 2119 && primaryCashMarketDataFarm &&
+         (controlErrorCode == 2119 && primaryMarketDataFarm &&
           currentBrokerEpoch));
     if (event.type == IBEventType::ConnectionClosed && !currentBrokerEpoch)
         return AdapterControlAction::Route;

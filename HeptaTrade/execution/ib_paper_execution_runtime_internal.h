@@ -108,6 +108,14 @@ inline bool PrimaryQuoteRequiresCashMarketDataFarm(
     const auto primary = quoteContracts.find(primaryInstrument);
     return primary != quoteContracts.end() && primary->second.secType == "CASH";
 }
+inline bool PrimaryQuoteRequiresMarketDataFarm(
+    const std::map<std::string, InstrumentRef>& quoteContracts,
+    const std::string& primaryInstrument)
+{
+    const auto primary = quoteContracts.find(primaryInstrument);
+    return primary != quoteContracts.end() &&
+        (primary->second.secType == "CASH" || primary->second.secType == "CRYPTO");
+}
 inline bool IsPrimaryQuoteMarketDataFarm(
     const std::map<std::string, InstrumentRef>& quoteContracts,
     const std::string& primaryInstrument, const std::string& description)
