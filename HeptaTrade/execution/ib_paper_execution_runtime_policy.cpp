@@ -455,8 +455,8 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                << ",\"gross_absolute_position\":"
                << risk.grossAbsolutePosition
                << ",\"mixed_asset_units\":" << (m_config.profile.UsesUserCrypto() ? "true" : "false")
-               << ",\"crypto_quantity_limit\":" << (m_config.profile.UsesUserCrypto() ? 0.001 : 0.0)
-               << ",\"crypto_notional_limit_usd\":" << (m_config.profile.UsesUserCrypto() ? 150.0 : 0.0)
+               << ",\"crypto_quantity_limit\":" << (m_config.profile.UsesUserCrypto() ? IbPaperExecutionProfileConfig::CryptoQuantityLimit() : 0.0)
+               << ",\"crypto_notional_limit_usd\":" << (m_config.profile.UsesUserCrypto() ? IbPaperExecutionProfileConfig::CryptoNotionalLimit() : 0.0)
                << ",\"reason_code\":\"" << EscapeJson(riskReason)
                << "\",\"gross_scope\":\"PAPER_BASELINE_DELTA\"}";
     }

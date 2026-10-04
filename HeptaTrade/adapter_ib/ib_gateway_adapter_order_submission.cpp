@@ -359,10 +359,10 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
         }
         else if (!context->authoritativeQuoteBound || order.action != "BUY" ||
             order.totalQuantity != 0.0 || !std::isfinite(order.cashQuantity) ||
-            order.cashQuantity <= 0.0 || order.cashQuantity > 150.0 ||
+            std::fabs(order.cashQuantity - 25000.0) > 1e-7 ||
             std::fabs(order.cashQuantity * 100.0 - std::round(order.cashQuantity * 100.0)) > 1e-7 ||
             !std::isfinite(context->quoteAsk) || context->quoteAsk <= 0.0 ||
-            position > 0.001 || order.cashQuantity / context->quoteAsk > 0.001 - position)
+            position > 0.0 || order.cashQuantity / context->quoteAsk > 1.0)
         { reason = "IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED"; return false; }
     }
     baseline.instrument = instrument;

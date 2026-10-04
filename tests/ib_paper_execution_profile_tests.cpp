@@ -884,7 +884,7 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     command.instrument="BTC.USD";command.contract.symbol="BTC";command.contract.secType="CRYPTO";
     command.contract.exchange="PAXOS";command.contract.currency="USD";
     command.timeInForce="IOC";command.order.action="BUY";command.order.orderType="MKT";
-    command.order.totalQuantity=0.0;command.order.cashQuantity=85.0;command.order.lmtPrice=0.0;command.referencePrice=85000.25;
+    command.order.totalQuantity=0.0;command.order.cashQuantity=25000.0;command.order.lmtPrice=0.0;command.referencePrice=85000.25;
     IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;risk.instrumentPositionsComplete=true;
     risk.instrumentPositions["EUR.USD"]=-25000;risk.instrumentPositions["BTC.USD"]=0;
     risk.grossAbsolutePosition=25000;std::string reason;
@@ -897,7 +897,7 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     for (int kind=0;kind!=12;++kind) {
         auto bad=command;auto badRisk=risk;
         if(kind==0)bad.order.totalQuantity=25000;
-        if(kind==1)bad.order.cashQuantity=85.01;
+        if(kind==1)bad.order.cashQuantity=24999.99;
         if(kind==2)bad.order.cashQuantity=84.995;
         if(kind==3)bad.order.action="SELL";
         if(kind==4)bad.timeInForce="DAY";
@@ -905,12 +905,12 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
         if(kind==6)bad.contract.symbol="ETH";
         if(kind==7)bad.order.lmtPrice=85000.10;
         if(kind==8)bad.order.orderType="LMT";
-        if(kind==9){bad.order.cashQuantity=150.01;bad.referencePrice=150000.25;}
+        if(kind==9){bad.order.cashQuantity=25000.01;bad.referencePrice=150000.25;}
         if(kind==10)badRisk.instrumentPositionsComplete=false;
         if(kind==11)badRisk.instrumentPositions["BTC.USD"]=0.0001;
         assert(!allowed(bad,badRisk));
     }
-    for (const double cash : {0.0, -1.0, 150.01, std::numeric_limits<double>::infinity(),
+    for (const double cash : {0.0, -1.0, 24999.99, 25000.01, std::numeric_limits<double>::infinity(),
                               std::numeric_limits<double>::quiet_NaN()}) {
         auto bad=command;bad.order.cashQuantity=cash;assert(!allowed(bad,risk));
     }

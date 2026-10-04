@@ -231,8 +231,10 @@ HSR1 persistence and authoritative Broker snapshots. The global active-order
 bound remains one, so concurrent strategies cannot independently bypass it.
 
 The crypto model uses the existing asynchronous gpt-6-luna direction-only flow.
-BUY may open a bounded long; SELL can trigger an existing long's exact reduce-only
-exit, never a naked short. Maximum size is 0.001 BTC and opening notional USD 150.
+BUY may open a bounded long only from a flat BTC position; SELL can trigger an
+existing long's exact reduce-only exit, never a naked short. Each fresh BTC
+opening uses MKT/IOC with an exact USD 25,000 cash quantity. A 1 BTC protection
+ceiling prevents silent downsizing or excessive base exposure at abnormal prices.
 Partial IOC fills are matched against the original command/correlation and exact
 position change before adoption or PnL settlement. Partial exits accumulate their
 realized portion once; only a fully reconciled flat position clears a partial-fill

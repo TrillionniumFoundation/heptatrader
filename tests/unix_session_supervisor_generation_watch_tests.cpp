@@ -239,7 +239,7 @@ void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume()
         IBContractLite c;c.symbol=crypto?"BTC":"EUR";c.secType=crypto?"CRYPTO":"CASH";
         c.exchange=crypto?"PAXOS":"IDEALPRO";c.currency="USD";
         binding.allowedInstruments.insert(instrument);binding.instrumentContracts[instrument]=c;
-        binding.maxOrderQuantity=crypto?0.001:25000;return true;
+        binding.maxOrderQuantity=crypto?1.0:25000;return true;
     };
     UnixSessionSupervisorServer server(control);server.SetLeaseStore(&store);server.SetAuditJournal(&audit);
     assert(server.ConfigureUserPaperCustodian(reason));std::map<std::uint32_t,std::string> issuers;

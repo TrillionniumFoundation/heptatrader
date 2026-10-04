@@ -585,7 +585,7 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     AppendCanonicalField(canonical, "allowed_security_types", UsesUserCrypto() ? "STK,CASH,CRYPTO" : AllowedSecurityTypes());
     AppendCanonicalField(canonical, "allowed_order_types", UsesUserCrypto() ? "MKT" : AllowedOrderTypes());
     if (UsesUserCrypto())
-        AppendCanonicalField(canonical, "crypto_policy", "BTC/PAXOS/USD:MKT/IOC:BUY_CASH:LONG_ONLY:NOMINAL_QTY_0.001:USD_150:ACTUAL_FILL_RECONCILIATION:STEP_0.00000001");
+        AppendCanonicalField(canonical, "crypto_policy", "BTC/PAXOS/USD:MKT/IOC:BUY_CASH:LONG_ONLY:NOMINAL_QTY_1:USD_25000:ACTUAL_FILL_RECONCILIATION:STEP_0.00000001");
     AppendCanonicalField(canonical, "max_order_quantity",
                          CanonicalDouble(maxOrderQuantity));
     AppendCanonicalField(canonical, "max_order_notional",
@@ -968,7 +968,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         if (std::fabs(fx) > m_config.maxGrossPosition || btc < 0.0 ||
             btc > IbPaperExecutionProfileConfig::CryptoQuantityLimit())
         { reason = "IB_PAPER_ASSET_POSITION_LIMIT_EXCEEDED"; return false; }
-        if (crypto ? quantity > IbPaperExecutionProfileConfig::CryptoQuantityLimit() - btc :
+        if (crypto ? btc > 0.0 :
                 (command.instrument != "EUR.USD" || quantity > m_config.maxGrossPosition - std::fabs(fx)))
         { reason = "IB_PAPER_ASSET_POSITION_LIMIT_EXCEEDED"; return false; }
     }
@@ -2050,7 +2050,8 @@ bool IbPaperExecutionProfileConfig::CryptoExecutionQuantityOnGrid(double quantit
 }
 bool IbPaperExecutionProfileConfig::CryptoCashQuantityValid(double cash, double ask)
 {
-    return std::isfinite(cash) && cash > 0.0 && cash <= CryptoNotionalLimit() &&
+    return std::isfinite(cash) &&
+        std::fabs(cash - CryptoNotionalLimit()) <= 1e-7 &&
         std::fabs(cash * 100.0 - std::round(cash * 100.0)) <= 1e-7 &&
         std::isfinite(ask) && ask > 0.0 && cash / ask <= CryptoQuantityLimit();
 }

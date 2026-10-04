@@ -380,7 +380,7 @@ bool ToolGatewaySessionPolicy::Resolve(
     }
     if (paper)
     {
-        binding.maxOrderQuantity = (!m_cryptoSessionId.empty() && request.sessionId == m_cryptoSessionId) ? 0.001 : m_maxOrderQuantity;
+        binding.maxOrderQuantity = (!m_cryptoSessionId.empty() && request.sessionId == m_cryptoSessionId) ? 1.0 : m_maxOrderQuantity;
         binding.maxTradeCallsPerMinute = m_maxTradeCallsPerMinute;
     }
     reason.clear();
@@ -426,7 +426,7 @@ bool ToolGatewaySessionPolicy::Authorize(
     const bool cryptoOwner = !m_cryptoSessionId.empty() &&
         binding.session.executionContext.sessionId == m_cryptoSessionId;
     const std::size_t expectedContractCount = m_cryptoSessionId.empty() ? m_contracts.size() : 1;
-    const double expectedMaxQuantity = cryptoOwner ? 0.001 : m_maxOrderQuantity;
+    const double expectedMaxQuantity = cryptoOwner ? 1.0 : m_maxOrderQuantity;
     if (!paper)
     {
         if (binding.allowedInstruments.size() != expectedContractCount ||

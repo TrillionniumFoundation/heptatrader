@@ -29,7 +29,7 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
     request.sessionId=values["HEPTA_TOOL_CRYPTO_SESSION_ID"];request.token="test-crypto-token";
     assert(policy.Resolve(request,btc,reason));
     assert(btc.allowedInstruments.size()==1 && btc.allowedInstruments.count("BTC.USD"));
-    assert(btc.maxOrderQuantity==0.001 && policy.Authorize("hepta.os.bootstrap",btc,reason));
+    assert(btc.maxOrderQuantity==1.0 && policy.Authorize("hepta.os.bootstrap",btc,reason));
     auto changed=btc;changed.allowedInstruments.insert("EUR.USD");
     changed.instrumentContracts["EUR.USD"]=fx.instrumentContracts.at("EUR.USD");
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));

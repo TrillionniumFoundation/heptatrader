@@ -207,8 +207,8 @@ def crypto_market_cash_budget(ask):
         raise DriverError("invalid crypto ask")
     # Cash limits requested spend, not the eventual base quantity. Round DOWN
     # to cents and let Execution recheck against its own fresh Broker quote.
-    cash=math.floor(min(150.0,ask*QTY)*100.0)/100.0
-    if cash<=0 or cash>150.0 or cash/ask>QTY:
+    cash=25000.0
+    if cash<25000.0 or cash>25000.0 or cash/ask>QTY:
         raise DriverError("crypto market cash budget unavailable")
     return cash
 
@@ -628,7 +628,7 @@ def main():
         raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
     INSTRUMENT=args.instrument;crypto=INSTRUMENT=="BTC.USD"
-    QTY=0.001 if crypto else 25000.0;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
+    QTY=1.0 if crypto else 25000.0;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
     home=Path.home(); state_dir=home/".local/state/heptatrader"/("crypto-driver" if crypto else "paper-driver"); private_dir(state_dir)
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

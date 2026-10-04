@@ -254,13 +254,16 @@ Its profile credential binds this contract set and the crypto envelope; an old F
 credential cannot authorize the extension. Default/system/external-qualification
 profiles retain their original contract and limit semantics.
 
-BTC fresh exposure is long-only, quantity-based LMT/IOC with at most 5bp marketable protection, at most 0.001 BTC and
-USD 150 per opening, with a 0.25 USD price tick and 0.00000001 BTC size increment.
-A SELL is permitted only through the existing exact authoritative reduce-only
-flatten of a positive BTC position, with a tick-aligned protective limit no more than 5bp below the current bid. The API
-wrapper independently enforces BTC/PAXOS/USD and LMT/IOC. Stale quote, mismatched
-contract, unresolved command, fractional-grid error, active order or incomplete
-risk evidence rejects before Broker dispatch.
+BTC fresh exposure is long-only and flat-before-open. Every new opening is
+BTC/PAXOS/USD BUY MKT/IOC with an exact USD 25,000 cash quantity; smaller cash
+orders are rejected rather than accepted as canaries. A 1 BTC protection ceiling
+bounds the authoritative ask conversion, and 0.00000001 BTC remains the execution
+size grid. A SELL is permitted only through the existing exact authoritative
+reduce-only MKT/IOC flatten of the positive BTC position using the actual owned
+quantity. The API wrapper independently enforces BTC/PAXOS/USD, MKT/IOC, fixed
+cash sizing for entry and zero-cash exact-quantity exit. Stale quote, mismatched
+contract, unresolved command, non-flat entry state, fractional-grid error, active
+order or incomplete risk evidence rejects before Broker dispatch.
 
 The risk gate validates EUR and BTC quantities separately instead of adding
 incomparable asset units into one exposure limit. The FX cash baseline remains

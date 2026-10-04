@@ -8,9 +8,11 @@ New BTC/PAXOS/USD buys are MKT/IOC with a USD cash budget. HTT1 adds optional
 `cash_quantity` tag 35; HEX1 v11 adds optional `CashQuantity` tag 43.
 The public order has exactly one size. The internal cash representation uses
 base quantity zero, while the IB SDK sends `cashQty` and leaves `totalQuantity`
-unset. Cash is finite, positive, cent-aligned, no more than USD 150, and bounded
-by the fresh authoritative ask's remaining nominal 0.001 BTC capacity.
-This is a quote-time estimate, not a hard maximum on actual MKT filled BTC.
+unset. Cash is fixed at USD 25,000.00, cent-aligned, and accepted only from a
+flat BTC position. A 1 BTC protection ceiling bounds the fresh authoritative
+ask conversion; the cash order is rejected rather than silently downsized if
+USD 25,000 would exceed that ceiling. This is an admission bound, not a hard
+maximum on actual MKT filled BTC.
 Actual fills must be adopted even when price improvement changes base size;
 exact reduce-only MKT/IOC SELL uses the authoritative owned position.
 

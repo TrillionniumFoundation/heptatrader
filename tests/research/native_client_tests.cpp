@@ -187,10 +187,10 @@ void CryptoProposalRetainsExactNativeWireAndOutbox() {
 void CryptoMarketCashWireAndOriginalOutbox() {
     const std::int64_t expiry=1900000000000LL;
     const std::string id="crypto-market-command-001",permit="sha256:"+std::string(64,'c');
-    const auto proposal=PreparedOrder::MarketCrypto(84.56,84569.5,expiry);
+    const auto proposal=PreparedOrder::MarketCrypto(25000.0,84569.5,expiry);
     const auto request=proposal.SubmissionRequest(id,permit);
     Check(request.call.ibOrder.orderType=="MKT" && request.call.timeInForce=="IOC" &&
-          request.call.ibOrder.totalQuantity==0.0 && request.call.ibOrder.cashQuantity==84.56 &&
+          request.call.ibOrder.totalQuantity==0.0 && request.call.ibOrder.cashQuantity==25000.0 &&
           request.call.ibOrder.lmtPrice==0.0,"cash MKT wire specified both sizes or a limit");
     Check(!Wire(request).empty(),"cash MKT wire did not round trip");
     OutboxTestRoot root;NativeToolClient native(OutboxConfig());NativeStrategyClient client(native);
@@ -198,13 +198,13 @@ void CryptoMarketCashWireAndOriginalOutbox() {
     Check(client.Persist(root.path,proposal,id,permit,reason),"cash HSR1 persistence failed");
     const auto before=ReadBytes(root.path+"/"+id+".hsr");
     Check(client.LoadStored(root.path,id,restored,reason) && Wire(restored)==Wire(request),"cash HSR1 changed");
-    const auto changed=PreparedOrder::MarketCrypto(84.55,84569.5,expiry);
+    const auto changed=PreparedOrder::MarketCrypto(25000.0,84570.0,expiry);
     Check(!client.Persist(root.path,changed,id,permit,reason),"cash change reused original command");
     Check(before==ReadBytes(root.path+"/"+id+".hsr"),"original cash request overwritten");
-    for(const double amount : {0.0,-1.0,150.01,84.565,std::numeric_limits<double>::quiet_NaN()})
+    for(const double amount : {0.0,-1.0,24999.99,25000.01,25000.005,std::numeric_limits<double>::quiet_NaN()})
         Throws([&]{PreparedOrder::MarketCrypto(amount,84569.5,expiry);});
-    Throws([&]{PreparedOrder::MarketCrypto(85.0,84000,expiry);});
-    Throws([&]{PreparedOrder::MarketCrypto(84.56,84569.5,0);});
+    Throws([&]{PreparedOrder::MarketCrypto(25000.0,24999.0,expiry);});
+    Throws([&]{PreparedOrder::MarketCrypto(25000.0,84569.5,0);});
     auto both=request;both.call.ibOrder.totalQuantity=0.001;both.sessionToken="test-token";
     std::string wire;Check(!TypedToolProtocol::EncodeRequest(both,wire,reason),"cash and quantity accepted together");
     auto foreign=request;foreign.call.ibContract.exchange="ZEROHASH";foreign.sessionToken="test-token";

@@ -465,7 +465,7 @@ class DriverPolicyTests(unittest.TestCase):
 class CryptoDriverPolicyTests(unittest.TestCase):
     def setUp(self):
         self.old=(d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE,d.NATIVE_ENDPOINT)
-        d.INSTRUMENT="BTC.USD";d.QTY=0.001;d.QUANTITY_TOLERANCE=1e-10;d.NATIVE_ENDPOINT=None
+        d.INSTRUMENT="BTC.USD";d.QTY=1.0;d.QUANTITY_TOLERANCE=1e-10;d.NATIVE_ENDPOINT=None
     def tearDown(self):
         d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE,d.NATIVE_ENDPOINT=self.old
     def state(self):
@@ -564,7 +564,7 @@ class CryptoDriverPolicyTests(unittest.TestCase):
         price=float(args[args.index("--price")+1])
         self.assertEqual(price,84569.5)
         cash=float(args[args.index("--cash-quantity")+1])
-        self.assertEqual(cash,84.56)
+        self.assertEqual(cash,25000.0)
         self.assertNotIn("--quantity",args)
         self.assertNotIn("--limit-price",args)
         self.assertEqual(state["pending"]["quantity_mode"],"CASH")
@@ -596,34 +596,34 @@ class CryptoDriverPolicyTests(unittest.TestCase):
     def test_partial_ioc_entry_and_two_exits_settle_once_in_usd(self):
         state=self.state()
         state["pending"]={"kind":"OPEN","command_id":"crypto-open","broker_order_id":155,"side":"BUY","position_before_send":0.0}
-        self.inspect(state,0.0006,85000,"BUY",0.0006,"crypto-open")
+        self.inspect(state,0.6,85000,"BUY",0.6,"crypto-open")
         self.assertEqual(state["entries"],1);self.assertTrue(state["halt_new_entries"])
-        state["pending"]={"kind":"CLOSE","command_id":"crypto-partial-close","broker_order_id":155,"position_before_send":0.0006,
+        state["pending"]={"kind":"CLOSE","command_id":"crypto-partial-close","broker_order_id":155,"position_before_send":0.6,
             "parent_entry_command_id":"crypto-open"}
-        self.inspect(state,0.0002,85100,"SELL",0.0004,"crypto-partial-close")
-        self.assertAlmostEqual(state["gross_pnl"],0.02,places=10)
+        self.inspect(state,0.2,85100,"SELL",0.4,"crypto-partial-close")
+        self.assertAlmostEqual(state["gross_pnl"],20.0,places=10)
         self.assertEqual(state["closed_trades"],0);self.assertIsNone(state["pending"])
         self.assertFalse(d.crypto_roundtrip_qualified(state))
-        state["pending"]={"kind":"CLOSE","command_id":"crypto-final-close","broker_order_id":155,"position_before_send":0.0004,
+        state["pending"]={"kind":"CLOSE","command_id":"crypto-final-close","broker_order_id":155,"position_before_send":0.4,
             "parent_entry_command_id":"crypto-open"}
-        self.inspect(state,0.0004,85050,"SELL",0.0,"crypto-final-close")
-        self.assertAlmostEqual(state["gross_pnl"],0.04,places=10)
+        self.inspect(state,0.4,85050,"SELL",0.0,"crypto-final-close")
+        self.assertAlmostEqual(state["gross_pnl"],40.0,places=10)
         self.assertEqual((state["entries"],state["exits"],state["closed_trades"]),(1,1,1))
         self.assertFalse(state["halt_new_entries"]);self.assertIsNone(state["pending"])
         self.assertTrue(d.crypto_roundtrip_qualified(state))
         self.assertEqual(state["crypto_roundtrip_proof"]["entry_command_id"],"crypto-open")
         self.assertEqual(len(state["crypto_roundtrip_proof"]["exits"]),2)
     def test_mkt_actual_base_size_is_not_assumed_equal_to_nominal(self):
-        for qty in (0.00099,0.00101):
+        for qty in (0.29,1.01):
             state=self.state();command="cash-variable-fill"
             state["pending"]={"kind":"OPEN","command_id":command,"broker_order_id":155,"side":"BUY",
-                "position_before_send":0.0,"quantity_mode":"CASH","cash_quantity":85.0}
+                "position_before_send":0.0,"quantity_mode":"CASH","cash_quantity":25000.0}
             self.inspect(state,qty,84000,"BUY",qty,command)
             self.assertIsNone(state["pending"])
             self.assertEqual(state["position"],qty)
             self.assertEqual(state["entry_quantity"],qty)
             self.assertEqual(state["entries"],1)
-            self.assertEqual(state["halt_new_entries"],qty>0.001)
+            self.assertEqual(state["halt_new_entries"],qty>1.0)
             self.assertFalse(d.crypto_roundtrip_qualified(state))
             state["pending"]={"kind":"CLOSE","command_id":"cash-exit","broker_order_id":155,
                 "position_before_send":qty,"parent_entry_command_id":command}
@@ -639,8 +639,10 @@ class CryptoDriverPolicyTests(unittest.TestCase):
                         dict(proof,entry_execution_id=""),dict(proof,exits=[])):
             self.assertFalse(d.crypto_roundtrip_qualified({"crypto_roundtrip_proof":changed}))
     def test_market_reference_is_not_a_limit_price_tick(self):
-        self.assertEqual(d.crypto_market_cash_budget(85000.1),85.0)
-        self.assertEqual(d.crypto_market_cash_budget(150000.25),150.0)
+        self.assertEqual(d.crypto_market_cash_budget(85000.1),25000.0)
+        self.assertEqual(d.crypto_market_cash_budget(150000.25),25000.0)
+        with self.assertRaises(d.DriverError):
+            d.crypto_market_cash_budget(24999.0)
     def test_position_without_exact_fill_quantity_does_not_settle(self):
         state=self.state();state["pending"]={"kind":"OPEN","command_id":"mismatch","broker_order_id":155,"side":"BUY","position_before_send":0}
         self.inspect(state,0.0002,85000,"BUY",0.001,"mismatch")

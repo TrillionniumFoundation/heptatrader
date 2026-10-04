@@ -183,13 +183,13 @@ void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
     for(int mode=0;mode<5;++mode) {
         Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
         IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
-        IBOrderLite order;order.action="BUY";order.orderType="MKT";order.cashQuantity=85;
+        IBOrderLite order;order.action="BUY";order.orderType="MKT";order.cashQuantity=25000;
         IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";
         ctx.authoritativeQuoteBound=true;ctx.quoteBid=84999.75;ctx.quoteAsk=85000;
         const std::string corr="hepta-v1-sha256:"+std::string(64,'a');
         const auto placed=f.adapter.PlaceOrderWithResult(c,order,corr,&ctx);
         assert(placed.disposition==VenuePlaceDisposition::Submitted);
-        assert(f.broker->submitted.cashQuantity==85 && f.broker->submitted.totalQuantity==0);
+        assert(f.broker->submitted.cashQuantity==25000 && f.broker->submitted.totalQuantity==0);
         assert(f.broker->submitted.orderType=="MKT" && f.broker->submittedTif=="IOC");
         const double quantity=mode==2?0.00101:mode==3?0.0005:0.00099;
         auto fill=f.Execution(quantity);fill.number=84000;fill.number3=0;fill.remainingQuantityKnown=false;
@@ -306,7 +306,7 @@ void TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder() {
     const auto placeCash=[](Fixture& f,std::string correlation) {
         assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
         IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
-        IBOrderLite o;o.action="BUY";o.orderType="MKT";o.cashQuantity=85.0;
+        IBOrderLite o;o.action="BUY";o.orderType="MKT";o.cashQuantity=25000.0;
         IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";
         ctx.authoritativeQuoteBound=true;ctx.quoteBid=85000;ctx.quoteAsk=85001;
         const auto placed=f.adapter.PlaceOrderWithResult(c,o,correlation,&ctx);

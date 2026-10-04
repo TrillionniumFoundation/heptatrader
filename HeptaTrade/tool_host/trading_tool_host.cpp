@@ -404,7 +404,7 @@ TradingToolResult TradingToolHost::PrepareMutationCall(
 	}
 	if (call.name == "trade.place_order" && call.ibOrder.cashQuantity != 0.0 &&
         (binding.session.environment != "PAPER" || !std::isfinite(binding.maxOrderQuantity) ||
-         binding.maxOrderQuantity < 0.001))
+         binding.maxOrderQuantity < 1.0))
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
             "CASH_QUANTITY_SESSION_SCOPE_REQUIRED", "cash sizing requires the bounded PAPER BTC scope");
 	if (call.name == "trade.place_order" &&
@@ -439,7 +439,7 @@ TradingToolResult TradingToolHost::PrepareReadCall(
 		call.ibContract = bound->second;
 		if (call.name == "risk.preview_order" && call.ibOrder.cashQuantity != 0.0 &&
             (binding.session.environment != "PAPER" || !std::isfinite(binding.maxOrderQuantity) ||
-             binding.maxOrderQuantity < 0.001))
+             binding.maxOrderQuantity < 1.0))
             return Reject(call.name, TradingToolCallStatus::PermissionDenied,
                 "CASH_QUANTITY_SESSION_SCOPE_REQUIRED", "cash sizing requires the bounded PAPER BTC scope");
 		if (call.name == "risk.preview_order" &&
@@ -1173,7 +1173,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             binding.allowedInstruments.count("BTC.USD") != 1 || binding.instrumentContracts.size() != 1 ||
             c == binding.instrumentContracts.end() || c->second.symbol != "BTC" ||
             c->second.secType != "CRYPTO" || c->second.exchange != "PAXOS" || c->second.currency != "USD" ||
-            binding.maxOrderQuantity != 0.001 || ownerAudit.status != ExecutionCommandStatus::Accepted ||
+            binding.maxOrderQuantity != 1.0 || ownerAudit.status != ExecutionCommandStatus::Accepted ||
             !ownerAudit.ownerAuditAuthoritative || !ownerAudit.ownerAuditComplete || ownerAudit.mutationBlocked ||
             ownerAudit.ownerAccount != binding.session.executionContext.account ||
             ownerAudit.ownerExecutionDomain != binding.executionDomain ||

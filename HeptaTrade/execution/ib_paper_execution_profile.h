@@ -75,8 +75,8 @@ struct IbPaperExecutionProfileConfig
     // Opt-in mixed user universe; old single-CASH authorization stays unchanged.
     bool UsesUserCrypto() const;
     static bool IsCryptoContract(const std::string& instrument, const InstrumentRef& contract);
-    static constexpr double CryptoQuantityLimit() { return 0.001; }
-    static constexpr double CryptoNotionalLimit() { return 150.0; }
+    static constexpr double CryptoQuantityLimit() { return 1.0; }
+    static constexpr double CryptoNotionalLimit() { return 25000.0; }
     static constexpr double CryptoProtectionFraction() { return 0.0005; }
     static bool CryptoQuantityOnGrid(double quantity);
     static bool CryptoExecutionQuantityOnGrid(double quantity);
