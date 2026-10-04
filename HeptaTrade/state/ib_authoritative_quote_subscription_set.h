@@ -92,15 +92,13 @@ struct IBAuthoritativeQuoteSubscriptionHealth
     bool ReadyForOperations() const
     {
         if (!independentQuotes) return complete;
-        if (connectionEpoch == 0 || generation == 0 || contracts.empty()) return false;
-        bool hasTradable = false;
-        for (const auto& item : contracts)
-        {
-            const auto& c = item.second;
-            if (!c.active || !c.dispatchAccepted) return false;
-            hasTradable = hasTradable || (c.quote.HasQuote() && c.quote.bid > 0.0 && c.quote.ask > 0.0);
-        }
-        return hasTradable;
+        if (connectionEpoch == 0 || generation == 0 || contracts.empty() ||
+            primaryInstrument.empty()) return false;
+        const auto primary = contracts.find(primaryInstrument);
+        if (primary == contracts.end()) return false;
+        const auto& c = primary->second;
+        return c.active && c.dispatchAccepted && c.quote.HasQuote() &&
+            c.quote.bid > 0.0 && c.quote.ask > 0.0;
     }
     std::string primaryInstrument;
     std::map<std::string, IBAuthoritativeQuoteContractHealth> contracts;

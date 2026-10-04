@@ -103,6 +103,30 @@ void TestCryptoIdentityAndIndependentClosedFxQuotes()
     auto restarted=quotes.BeginCycle(2,2,1100);assert(restarted.accepted);
     assert(!quotes.GetHealth().ReadyForOperations());
     assert(tick(bid,"1",85001,1101).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    AuthoritativeTradingSnapshotStore partialStore;
+    IBAuthoritativeQuoteSubscriptionSet partial(partialStore);
+    assert(partial.Configure(contracts,"BTC.USD",reason,false,true));
+    auto partialPlan=partial.BeginCycle(4,1,1200);assert(partialPlan.accepted);
+    int partialBtc=0,partialFx=0;
+    for(const auto& item:partialPlan.subscriptions) {
+        if(item.instrument=="BTC.USD") {
+            partialBtc=item.requestId;
+            assert(partial.RecordDispatchResult(1,item.requestId,true));
+        } else {
+            partialFx=item.requestId;
+            assert(partial.RecordDispatchResult(1,item.requestId,false));
+        }
+    }
+    assert(partialBtc>0&&partialFx>0&&!partial.GetHealth().ReadyForOperations());
+    IBEvent pb;pb.type=IBEventType::TickPrice;pb.id=partialBtc;pb.key="1";pb.number=85100;pb.connectionEpoch=4;
+    IBEvent pa=pb;pa.key="2";pa.number=85100.25;
+    partial.ConsumeTick(pb,1201);partial.ConsumeTick(pa,1202);
+    assert(partial.GetHealth().ReadyForOperations());
+    assert(partialStore.GetQuote("BTC.USD",1202,100).state.availability==
+        AuthoritativeSnapshotAvailability::Fresh);
+    assert(partialStore.GetQuote("EUR.USD",1202,100).state.availability==
+        AuthoritativeSnapshotAvailability::Missing);
+
     AuthoritativeTradingSnapshotStore strictStore;IBAuthoritativeQuoteSubscriptionSet strict(strictStore);
     assert(strict.Configure(contracts,"BTC.USD",reason));
     assert(!strict.GetHealth().independentQuotes && !strict.GetHealth().ReadyForOperations());

@@ -203,8 +203,17 @@ bool IbPaperExecutionRuntimeComposition::DispatchQuoteAdmissionPlan(
         }
         if (!dispatched)
         {
-            reason = "IB_PAPER_QUOTE_SUBSCRIPTION_REJECTED";
-            return false;
+            const bool optionalSecondary =
+                m_config.profile.UsesUserCrypto() &&
+                subscription.instrument != m_config.primaryQuoteInstrument;
+            if (!optionalSecondary)
+            {
+                reason = "IB_PAPER_QUOTE_SUBSCRIPTION_REJECTED";
+                return false;
+            }
+            // Independent mixed-user quotes are instrument-local. A failed
+            // secondary request remains Missing and cannot authorize its own
+            // orders, but it must not disable the fresh primary BTC stream.
         }
         if (m_adapter->EventIngressAdmissionFailed())
         {
