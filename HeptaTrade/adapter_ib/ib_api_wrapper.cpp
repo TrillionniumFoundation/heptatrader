@@ -2063,6 +2063,9 @@ private:
             end == nullptr || *end != '\0')
             return true; // unknown broker error: keep the send gate closed
         switch (code) {
+        case 2103: // scoped market-data farm loss is consumed by the runtime
+                   // before/after admission; it is not by itself a global
+                   // sender-boundary fault.
         case 2104: // market-data farm connection OK
         case 2106: // HMDS farm connection OK
         case 2107: // HMDS farm inactive (not needed for live quotes)
@@ -2085,7 +2088,8 @@ private:
     }
 
     static bool IsCashFarmWarningEvent(const IBEvent& event) {
-        return event.type == IBEventType::Error && event.key == "2119";
+        return event.type == IBEventType::Error && event.key == "2119" &&
+            IsSupportedIbCashMarketDataFarm(event.value);
     }
 
     static bool IsCashFarmReadyEvent(const IBEvent& event) {

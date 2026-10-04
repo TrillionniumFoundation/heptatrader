@@ -199,8 +199,13 @@ int main()
         assert(IsSupportedIbCashMarketDataFarm(description));
     for (const auto& description : {"Market data farm connection is OK", "cashfarm",
             "notice:notcashfarm", "notice:hfarm-extra", "notice:usfarm",
-            "cashfarm is mentioned:other", "notice:", "notice:cashfarm,other"})
+            "cashfarm is mentioned:other", "notice:", "notice:cashfarm,other",
+            "notice:uscrypto"})
         assert(!IsSupportedIbCashMarketDataFarm(description));
+    assert(IsSupportedIbCryptoMarketDataFarm("localized:uscrypto"));
+    assert(IsSupportedIbCryptoMarketDataFarm("localized: USCRYPTO \r\n"));
+    assert(!IsSupportedIbCryptoMarketDataFarm("localized:hfarm"));
+    assert(IbMarketDataFarmId("localized:hfarm") == "hfarm");
     TestLocalSendRequiresBrokerAcknowledgement();
     TestEveryTerminalStatusSuppressesCancel();
     TestAuthoritativeOpenOrderRestoresCancelAuthority();

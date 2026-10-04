@@ -8,6 +8,7 @@
 #include "ib_paper_execution_hook_authority.h"
 #include "ib_paper_execution_profile.h"
 #include "ib_paper_kill_switch.h"
+#include "../adapter_ib/ib_market_data_farm.h"
 #include "unix_execution_service_server.h"
 
 #include <cstddef>
@@ -98,6 +99,25 @@ inline bool RequiresCashMarketDataFarm(
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              quoteContracts.begin(); it != quoteContracts.end(); ++it)
         if (it->second.secType == "CASH") return true;
+    return false;
+}
+inline bool PrimaryQuoteRequiresCashMarketDataFarm(
+    const std::map<std::string, InstrumentRef>& quoteContracts,
+    const std::string& primaryInstrument)
+{
+    const auto primary = quoteContracts.find(primaryInstrument);
+    return primary != quoteContracts.end() && primary->second.secType == "CASH";
+}
+inline bool IsPrimaryQuoteMarketDataFarm(
+    const std::map<std::string, InstrumentRef>& quoteContracts,
+    const std::string& primaryInstrument, const std::string& description)
+{
+    const auto primary = quoteContracts.find(primaryInstrument);
+    if (primary == quoteContracts.end()) return false;
+    if (primary->second.secType == "CASH")
+        return IsSupportedIbCashMarketDataFarm(description);
+    if (primary->second.secType == "CRYPTO")
+        return IsSupportedIbCryptoMarketDataFarm(description);
     return false;
 }
 

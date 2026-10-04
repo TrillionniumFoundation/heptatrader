@@ -59,7 +59,8 @@ bool IbPaperExecutionRuntimeComposition::PrepareQuoteSubscriptionPlan(
         reason = "IB_PAPER_BROKER_CONNECTION_CHANGED_BEFORE_QUOTES";
         return false;
     }
-    if (RequiresCashMarketDataFarm(m_config.quoteContracts) &&
+    if (PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
         (!m_startupMarketDataFarmRestored.load() ||
          m_startupMarketDataFarmWaiting.load() ||
          m_startupMarketDataFarmEpoch.load() == 0 ||
@@ -131,7 +132,8 @@ bool IbPaperExecutionRuntimeComposition::PrepareQuoteAdmissionPass(
         reason = "IB_PAPER_BROKER_CONNECTION_CHANGED_BEFORE_QUOTES";
         return false;
     }
-    if (RequiresCashMarketDataFarm(m_config.quoteContracts) &&
+    if (PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
         (!m_startupMarketDataFarmRestored.load() ||
          m_startupMarketDataFarmWaiting.load() ||
          m_startupMarketDataFarmEpoch.load() == 0 ||
@@ -231,7 +233,8 @@ bool IbPaperExecutionRuntimeComposition::FinishQuoteAdmission(
         reason = "IB_PAPER_BROKER_CONNECTION_CHANGED_BEFORE_QUOTES";
         return false;
     }
-    if (RequiresCashMarketDataFarm(m_config.quoteContracts) &&
+    if (PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
         (!m_startupMarketDataFarmRestored.load() ||
          m_startupMarketDataFarmWaiting.load() ||
          m_startupMarketDataFarmEpoch.load() == 0 ||

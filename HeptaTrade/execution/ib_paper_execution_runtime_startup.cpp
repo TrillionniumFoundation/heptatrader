@@ -191,7 +191,8 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
             const std::string fatalReason = reason;
             return CleanupStartupSnapshotFailure(reason, fatalReason);
         }
-        if (RequiresCashMarketDataFarm(m_config.quoteContracts) &&
+        if (PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
             m_startupMarketDataFarmWaiting.load())
             return CleanupStartupSnapshotFailure(
                 reason, "IB_PAPER_STARTUP_MARKET_DATA_FARM_LOST_DURING_REFRESH");

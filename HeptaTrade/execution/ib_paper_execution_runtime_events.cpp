@@ -317,7 +317,8 @@ IbPaperExecutionRuntimeComposition::HandleReconnectBrokerControl(
     if (controlErrorCode == 1101)
     {
         // 1101 invalidates the farm witness; only a fresh CASH 2104 reopens it.
-        if (RequiresCashMarketDataFarm(m_config.quoteContracts) &&
+        if (PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
             IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch))
         {
             m_startupMarketDataFarmWaiting.store(true);
@@ -378,6 +379,14 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
         ParseBrokerErrorCode(event.key, controlErrorCode);
     const bool cashMarketDataFarm =
         IsSupportedIbCashMarketDataFarm(event.value);
+    const bool primaryCashMarketDataFarm =
+        PrimaryQuoteRequiresCashMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
+        cashMarketDataFarm;
+    const bool primaryMarketDataFarm =
+        IsPrimaryQuoteMarketDataFarm(
+            m_config.quoteContracts, m_config.primaryQuoteInstrument,
+            event.value);
     const bool currentBrokerEpoch =
         IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch);
     if (brokerControlError && currentBrokerEpoch &&
@@ -386,12 +395,12 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
         // request; only the scoped CASH-farm 2104 path below establishes the
         // epoch-bound readiness witness.  A 2103 revokes that witness until a
         // fresh scoped 2104 arrives.
-        if (controlErrorCode == 2103) {
-            // Do not leave a prior CASH 2104 lease valid after the broker has
-            // explicitly declared a market-data farm broken.  This state is
-            // also needed by test/adapter implementations whose wrapper does
-            // not carry the production marker's blocking bit.
-            if (RequiresCashMarketDataFarm(m_config.quoteContracts)) {
+        if (controlErrorCode == 2103 && primaryMarketDataFarm) {
+            // A non-primary farm may be unavailable in independent-quote mode
+            // without invalidating the primary instrument. The affected
+            // secondary instrument remains Missing/Stale and its own order
+            // admission therefore stays fail-closed.
+            if (primaryCashMarketDataFarm) {
                 m_startupMarketDataFarmRestored.store(false);
                 m_startupMarketDataFarmWaiting.store(true);
                 m_startupMarketDataFarmEpoch.store(0);
@@ -405,12 +414,12 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
             }
             if (quoteActive)
                 MarkFatalRuntimeError(
-                    "IB_PAPER_MARKET_DATA_FARM_LOST_DURING_REFRESH");
+                    "IB_PAPER_PRIMARY_MARKET_DATA_FARM_LOST_DURING_REFRESH");
         }
     }
     const bool marketDataFarmControl =
         controlErrorCode == 10197 ||
-        (cashMarketDataFarm &&
+        (primaryCashMarketDataFarm &&
          (controlErrorCode == 2104 || controlErrorCode == 2119));
     // 10197 is a terminal real-time-data witness, not a readiness/control
     // acknowledgement.  Keep it on the persistence path even during
@@ -441,7 +450,7 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
          controlErrorCode == 1100 || controlErrorCode == 1101 ||
          controlErrorCode == 1102 || controlErrorCode == 1300 ||
          controlErrorCode == 2110 ||
-         (controlErrorCode == 2119 && cashMarketDataFarm &&
+         (controlErrorCode == 2119 && primaryCashMarketDataFarm &&
           currentBrokerEpoch));
     if (event.type == IBEventType::ConnectionClosed && !currentBrokerEpoch)
         return AdapterControlAction::Route;
