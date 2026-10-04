@@ -587,6 +587,64 @@ void TestDurableAuthoritativeCancelResolution()
     std::remove(zeroPath.c_str());
 }
 
+void TestCorrelationCancelRecoveryAcceptsCompletedOrderUnknownNumericId()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    const std::string correlation =
+        "hepta-v1-sha256:" + std::string(64, 'c');
+    AppendUncertainCancel(
+        journal, "cancel-completed-unknown-id", 146, correlation);
+
+    ExecutionCoordinator coordinator(
+        journal, ExecutionCoordinatorCallbacks());
+    std::string reason;
+    assert(!coordinator.RecoverFromJournal(reason));
+    assert(reason == "RECOVERY_RECONCILE_REQUIRED");
+
+    std::map<std::string, long> terminalIds;
+    std::map<std::string, std::string> terminalStatuses;
+    std::set<std::string> executions;
+    terminalIds[correlation] = 0;
+    terminalStatuses[correlation] = "Cancelled";
+    std::size_t resolved = 0;
+    assert(coordinator.ResolveUncertainCancelCommandsByCorrelation(
+        {}, true, terminalIds, terminalStatuses, executions, true,
+        resolved, reason));
+    assert(resolved == 1);
+    assert(!coordinator.IsMutationBlocked());
+
+    ExecutionCommandResult status;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "cancel-completed-unknown-id", status));
+    assert(status.status == ExecutionCommandStatus::Accepted);
+    assert(status.orderId == 146);
+    assert(status.reasonCode ==
+        "AUTHORITATIVE_CANCEL_TERMINAL_CONFIRMED");
+
+    const std::string mismatchPath = TempJournalPath();
+    OmsJournal mismatchJournal;
+    assert(mismatchJournal.Init(mismatchPath));
+    AppendUncertainCancel(
+        mismatchJournal, "cancel-positive-id-mismatch", 146, correlation);
+    ExecutionCoordinator mismatch(
+        mismatchJournal, ExecutionCoordinatorCallbacks());
+    assert(!mismatch.RecoverFromJournal(reason));
+    terminalIds[correlation] = 145;
+    resolved = 0;
+    assert(!mismatch.ResolveUncertainCancelCommandsByCorrelation(
+        {}, true, terminalIds, terminalStatuses, executions, true,
+        resolved, reason));
+    assert(reason ==
+        "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_ID_MISMATCH");
+    assert(resolved == 0);
+    assert(mismatch.IsMutationBlocked());
+
+    std::remove(path.c_str());
+    std::remove(mismatchPath.c_str());
+}
+
 void TestCorrelationCancelRecoveryIgnoresReusedNumericOrderId()
 {
     const std::string path = TempJournalPath();
@@ -2708,6 +2766,7 @@ int main(int argc, char** argv)
     TestDurableAuthoritativeCorrelationResolution();
     TestDeferredCancelRecoveryResolution();
     TestDurableAuthoritativeCancelResolution();
+    TestCorrelationCancelRecoveryAcceptsCompletedOrderUnknownNumericId();
     TestCorrelationCancelRecoveryIgnoresReusedNumericOrderId();
     std::cout << "execution_coordinator_tests: PASS" << std::endl;
     return 0;

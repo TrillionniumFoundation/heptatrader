@@ -1234,7 +1234,7 @@ bool ExecutionCoordinator::ResolveUncertainCancelCommandsByCorrelation(
         const auto terminal =
             authoritativeTerminalOrderIdsByCorrelation.find(record.venueCorrelationId);
         if (terminal != authoritativeTerminalOrderIdsByCorrelation.end() &&
-            terminal->second != record.orderId)
+            terminal->second != 0 && terminal->second != record.orderId)
         {
             reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_ID_MISMATCH";
             return false;
