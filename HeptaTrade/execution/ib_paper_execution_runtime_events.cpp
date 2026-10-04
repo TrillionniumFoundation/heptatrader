@@ -871,8 +871,18 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
         event.eventType == "flatten_intent" || event.eventType == "place_sent" ||
         event.eventType == "flatten_sent" || event.eventType == "command_resolved";
 
+    // A successful authoritative cancel resolution is already durable OMS
+    // evidence for the exact original venue correlation. Project it back onto
+    // the original order row so read models and the driver can converge after
+    // IB completedOrder() omitted its connection-scoped numeric order id.
+    // Generic cancel acknowledgements are deliberately NOT terminal evidence.
+    const bool authoritativeCancelNonfill =
+        event.eventType == "cancel_command_resolved" &&
+        event.riskCode == "AUTHORITATIVE_CANCEL_TERMINAL_CONFIRMED" &&
+        !event.venueCorrelationId.empty();
     const bool reconciledTerminal =
-        event.eventType == "order_owner_reconciled_terminal";
+        event.eventType == "order_owner_reconciled_terminal" ||
+        authoritativeCancelNonfill;
     const bool projectable = acceptedSend || commandBinding || reconciledTerminal ||
         event.eventType == "broker_order_status" ||
         event.eventType == "broker_error" ||
@@ -901,6 +911,22 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
     }
     RecentBrokerOrder& order =
         m_recentBrokerOrders[RecentBrokerOrderKey(event, agentId)];
+    if (authoritativeCancelNonfill)
+    {
+        // cancel_command_resolved.reqId is the cancel command, not the original
+        // place command. Preserve the original command identity already bound
+        // to this correlation and project only the terminal zero-fill result.
+        OmsJournalEvent resolved = event;
+        resolved.reqId.clear();
+        resolved.status = "Cancelled";
+        resolved.qty = 0.0;
+        resolved.price = 0.0;
+        resolved.brokerRemainingQuantity = 0.0;
+        ApplyRecentBrokerOrderIdentity(order, resolved, agentId);
+        ApplyRecentBrokerTerminalEvidence(order, resolved, true, false);
+        TrimRecentBrokerOrders();
+        return;
+    }
     ApplyRecentBrokerOrderIdentity(order, event, agentId);
     ApplyRecentBrokerExecutionIdentity(order, event);
     if (commandBinding) { TrimRecentBrokerOrders(); return; }
