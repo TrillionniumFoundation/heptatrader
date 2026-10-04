@@ -1,6 +1,7 @@
 #include "ib_paper_execution_runtime_internal.h"
 #include "../adapter_ib/ib_market_data_farm.h"
 #include "../adapter_ib/ib_venue_correlation.h"
+#include "../adapter_ib/ib_order_parse_rejection.h"
 
 #include <algorithm>
 #include <chrono>
@@ -574,8 +575,9 @@ bool IbPaperExecutionRuntimeComposition::IsTerminalBrokerEvent(
             event.key == "Inactive" || event.key == "Rejected";
     if (event.type != IBEventType::Error) return false;
     int errorCode = 0;
-    return ParseBrokerErrorCode(event.key, errorCode) &&
-        (errorCode == 201 || errorCode == 202);
+    return (ParseBrokerErrorCode(event.key, errorCode) &&
+        (errorCode == 201 || errorCode == 202)) ||
+        IsIbOrderSizeParseRejection320(event);
 }
 
 void IbPaperExecutionRuntimeComposition::RecordTerminalBrokerEvent(
@@ -608,8 +610,10 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
     if (event.type == IBEventType::Error)
     {
         int errorCode = 0;
-        ownerEligible = ParseBrokerErrorCode(event.key, errorCode) &&
-            (errorCode == 201 || errorCode == 202);
+        ownerEligible = (ParseBrokerErrorCode(event.key, errorCode) &&
+            (errorCode == 201 || errorCode == 202)) ||
+            (IsIbOrderSizeParseRejection320(event) && m_adapter &&
+             event.connectionEpoch == m_adapter->GetConnectionEpoch());
     }
     ExecutionOrderOwner owner;
     ExecutionOrderOwnerLookupStatus ownerLookup =
@@ -742,7 +746,8 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
         {
             record.brokerErrorCode = errorCode;
             record.riskCode = "IB_ERROR_" + std::to_string(errorCode);
-            if (errorCode == 201) record.status = "Rejected";
+            if (errorCode == 201 || IsIbOrderSizeParseRejection320(event))
+                record.status = "Rejected";
             else if (errorCode == 202) record.status = "Cancelled";
         }
     }
@@ -843,7 +848,7 @@ void IbPaperExecutionRuntimeComposition::PublishBrokerCallback(
         int errorCode = 0;
         if (!ParseBrokerErrorCode(event.key, errorCode)) return;
         output.reasonCode = "IB_ERROR_" + std::to_string(errorCode);
-        if (errorCode == 201)
+        if (errorCode == 201 || IsIbOrderSizeParseRejection320(event))
         {
             output.type = "order.reject";
             output.status = "Rejected";
@@ -890,6 +895,35 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
         event.eventType == "broker_completed_order";
     if (!projectable || (event.orderId < 0 &&
         (!commandBinding || event.venueCorrelationId.empty() || event.reqId.empty()))) return;
+    if (event.eventType == "broker_error" && event.brokerErrorCode == 320 &&
+        event.orderId > 0 && !event.brokerServiceEpoch.empty() &&
+        event.brokerConnectionEpoch != 0 &&
+        event.reason.find("Unable to parse field: 'Order Size'") != std::string::npos)
+    {
+        std::lock_guard<std::mutex> lock(m_recentBrokerOrdersMutex);
+        RecentBrokerOrder* matched = nullptr;
+        for (auto& item : m_recentBrokerOrders) {
+            RecentBrokerOrder& candidate = item.second;
+            if (candidate.orderId != event.orderId ||
+                candidate.serviceEpoch != event.brokerServiceEpoch ||
+                candidate.connectionEpoch != event.brokerConnectionEpoch ||
+                candidate.venueCorrelationId.empty() || candidate.commandId.empty() ||
+                candidate.economicFill || candidate.brokerExecutionAmbiguous ||
+                !candidate.brokerExecutionId.empty())
+                continue;
+            if (matched != nullptr) return;
+            matched = &candidate;
+        }
+        if (matched != nullptr) {
+            matched->terminal = true;
+            matched->status = "Rejected";
+            matched->remainingQuantity = 0.0;
+            matched->reasonCode = "IB_ERROR_320";
+            matched->observedAtMs = event.tsMs > 0 ?
+                static_cast<std::uint64_t>(event.tsMs) : matched->observedAtMs;
+        }
+        return;
+    }
     const std::string brokerAgentPrefix("agent:");
     const std::string toolAgentPrefix("agent.tool:");
     std::string agentId;

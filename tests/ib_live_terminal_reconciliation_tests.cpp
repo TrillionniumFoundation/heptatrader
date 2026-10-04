@@ -302,6 +302,51 @@ void TestIncompleteHistoryReadOnlyAdmissionDoesNotCreateTerminalProof() {
     active.activeOrderIdsByCorrelation["other"]=147;assert(allowed(true,true,true,7));
     active.activeOrderIds.clear();assert(!allowed(true,true,true,7));
 }
+void TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder() {
+    const auto placeCash=[](Fixture& f,std::string correlation) {
+        assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
+        IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
+        IBOrderLite o;o.action="BUY";o.orderType="MKT";o.cashQuantity=85.0;
+        IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";
+        ctx.authoritativeQuoteBound=true;ctx.quoteBid=85000;ctx.quoteAsk=85001;
+        const auto placed=f.adapter.PlaceOrderWithResult(c,o,correlation,&ctx);
+        assert(placed.disposition==VenuePlaceDisposition::Submitted);
+        return placed.orderId;
+    };
+    const std::string corr="hepta-v1-sha256:"+std::string(64,'f');
+    {
+        Fixture f(true,true);const long id=placeCash(f,corr);
+        auto error=f.Event(IBEventType::Error);error.id=id;error.key="320";
+        error.brokerClientId=-1;error.account.clear();
+        error.value="localized prefix: Unable to parse field: 'Order Size' for input string: '-SNaN'";
+        f.Push(error);
+        const auto active=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(active.complete&&active.activeOrderIds.count(id)==0);
+        assert(terminal.complete&&terminal.terminalOrderIdsByCorrelation.at(corr)==id);
+        assert(terminal.terminalStatusesByCorrelation.at(corr)=="Rejected");
+        assert(terminal.executionCorrelations.count(corr)==0);
+        const auto generation=terminal.generation;
+        f.Push(error);
+        assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().generation==generation);
+        assert(f.broker->places==1&&f.broker->cancels==0);
+    }
+    for(int mode=0;mode<4;++mode) {
+        Fixture f(true,true);const long id=placeCash(f,corr);
+        auto error=f.Event(IBEventType::Error);error.id=id;error.key="320";
+        error.brokerClientId=-1;error.account.clear();
+        error.value="Unable to parse field: 'Order Size' for input string: '-SNaN'";
+        if(mode==0)error.key="321";
+        if(mode==1)error.value="Unable to parse field: 'Limit Price' for input string: '-SNaN'";
+        if(mode==2)++error.id;
+        if(mode==3)++error.connectionEpoch;
+        f.Push(error);
+        const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(terminal.terminalOrderIdsByCorrelation.count(corr)==0);
+        assert(f.broker->places==1&&f.broker->cancels==0);
+    }
+}
+
 void TestIbAdapterPreservesQualifiedIntentAtFinalSend() {
     Fixture f;
     IBContractLite c;c.symbol="ES";c.secType="FUT";c.exchange="CME";
@@ -700,6 +745,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 int main() {
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
+    TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
     TestTypedFlattenCapturesResultAtSendBoundary();
     TestTypedCancelAndDeferredNoResendAfterException();
     TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();

@@ -1,5 +1,6 @@
 #include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
+#include "ib_order_parse_rejection.h"
 #include "../state/ib_contract_identity.h"
 
 #include <algorithm>
@@ -667,11 +668,19 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
     }
     if (!IsIbConnectionControlError(errorCode))
         NotifyErrorEvent(errorCode);
-    if (event.id < 0 || (errorCode != 201 && errorCode != 202))
+    const bool cashSizeParseRejected =
+        IsIbOrderSizeParseRejection320(event) &&
+        event.connectionEpoch == m_connectionEpoch && event.id <= LONG_MAX &&
+        m_liveTerminalBindings.find(static_cast<long>(event.id)) !=
+            m_liveTerminalBindings.end() &&
+        m_liveTerminalBindings.at(static_cast<long>(event.id)).connectionEpoch ==
+            m_connectionEpoch;
+    if (event.id < 0 ||
+        (errorCode != 201 && errorCode != 202 && !cashSizeParseRejected))
         return;
     const long orderId = static_cast<long>(event.id);
     const std::string status =
-        errorCode == 201 ? "Rejected" : "Cancelled";
+        errorCode == 202 ? "Cancelled" : "Rejected";
     m_orderLifecycle.RecordBrokerStatus(orderId, status, true);
     // Error 201/202 is terminal broker evidence too.  Clear any pre-ACK
     // cancel intent before retiring the order so a same-epoch order-id reuse
@@ -1290,10 +1299,12 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundLiveExecution(const IBEvent& event)
 }
 
 void HeptaIBGatewayAdapter::ApplyLiveTerminalEvidence(const IBEvent& event) {
+    const bool cashSizeParseRejected = IsIbOrderSizeParseRejection320(event);
     if ((event.type != IBEventType::ExecutionDetails &&
-         event.type != IBEventType::OrderStatus) ||
+         event.type != IBEventType::OrderStatus && !cashSizeParseRejected) ||
         event.connectionEpoch == 0 || event.connectionEpoch != m_connectionEpoch ||
-        event.brokerClientId < 0 || event.brokerClientId != m_cfg.clientId ||
+        (!cashSizeParseRejected &&
+         (event.brokerClientId < 0 || event.brokerClientId != m_cfg.clientId)) ||
         event.id <= 0 || event.id > LONG_MAX || !m_eventStreamAuthoritative)
         return;
     const long orderId = static_cast<long>(event.id);
@@ -1305,7 +1316,13 @@ void HeptaIBGatewayAdapter::ApplyLiveTerminalEvidence(const IBEvent& event) {
         !std::isfinite(event.number2) || event.number2 < 0.0 ||
         (binding.cashQuantity == 0.0 && event.number2 > binding.quantity))
         return;
-    if (event.type == IBEventType::ExecutionDetails) {
+    if (cashSizeParseRejected) {
+        // The exact current-order binding supplies the identity omitted by the
+        // generic IB error callback. This error occurs before venue acceptance,
+        // so there is no economic fill to synthesize.
+        binding.terminalStatus = "Rejected";
+        binding.terminalFilledQuantity = 0.0;
+    } else if (event.type == IBEventType::ExecutionDetails) {
         if (!IsConsistentBoundLiveExecution(event)) return;
         // Cumulative execution quantity is monotonic. Duplicate callbacks do
         // not create a new terminal generation or reopen a completed proof.

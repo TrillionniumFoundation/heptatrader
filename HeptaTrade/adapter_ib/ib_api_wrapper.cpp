@@ -1469,8 +1469,13 @@ public:
                 c.exchange != "PAXOS" || od.action != "BUY" || od.orderType != "MKT" ||
                 timeInForce != "IOC" || o.lmtPrice != 0.0)
                 return rejectLocal("IB_LOCAL_REJECT_CASH_SCOPE_INVALID", 32108);
-            // IB 10293: a crypto cash order must NOT also specify base size.
-            od.totalQuantity = UNSET_DECIMAL;
+            // EClient::placeOrder always serializes totalQuantity. The SDK's
+            // UNSET_DECIMAL prints as -SNaN, which Gateway rejects as malformed
+            // Order Size before it can consume cashQty. Numeric zero is the wire
+            // representation of "no base quantity" for this cash-sized BUY.
+            od.totalQuantity = DecimalFunctions::doubleToDecimal(0.0);
+            if (od.totalQuantity == UNSET_DECIMAL)
+                return rejectLocal("IB_LOCAL_REJECT_CASH_ZERO_DECIMAL_ENCODE", 32109);
             od.cashQty = o.cashQuantity;
         } else {
             od.totalQuantity = DecimalFunctions::doubleToDecimal(qty);
