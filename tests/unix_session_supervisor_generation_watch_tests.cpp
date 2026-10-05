@@ -205,21 +205,24 @@ void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume()
         result.brokerConnectionEpoch=1;result.brokerActiveGeneration=2;result.brokerTerminalGeneration=3;
         result.brokerRiskGeneration=4;result.brokerAccountGeneration=5;result.brokerPositionGeneration=6;
         result.brokerFxCashGeneration=7;result.brokerRecoveryAuditBarrierComplete=true;
-        result.brokerPositionQuantity="-25000";result.brokerGrossAbsolutePosition="25000";
+        result.brokerPositionQuantity=command.context.sessionId=="crypto-owner"?"-25000":"0.00099993";
+        result.brokerGrossAbsolutePosition=command.context.sessionId=="crypto-owner"?"25000":"0.00099993";
         result.status=ExecutionCommandStatus::Rejected;result.reasonCode="RECOVERY_OWNER_POSITION_NOT_FLAT";
         if(command.recoveryIngressFence) {
             std::string why;assert(execution.EnterRecoveryOnlyOwner(command.context.agentId,
                 command.context.sessionId,command.recoveryIngressFence,why));
-        } else if(command.context.sessionId=="crypto-owner") {
+        } else if(command.context.sessionId=="crypto-owner" || command.context.sessionId=="fx-owner") {
             result.status=ExecutionCommandStatus::Accepted;result.ownerAuditAuthoritative=true;
-            result.ownerAuditComplete=valid;result.reasonCode="SESSION_CRYPTO_OWNER_ZERO_CONFIRMED";
+            result.ownerAuditComplete=valid;
+            result.reasonCode=command.context.sessionId=="crypto-owner"?
+                "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED":"SESSION_FX_OWNER_ZERO_CONFIRMED";
         }
         return result;
     };
     authority.release=[&](const ExecutionControlCommand& command){
-        ++releaseCalls;assert(valid && command.context.sessionId=="crypto-owner");
-        std::string why;auto fence=execution.SessionOwnerRecoveryIngressFence("agent","crypto-owner");
-        assert(execution.AuditAndReleaseSessionOwnerFence("agent","crypto-owner",true,why,fence));
+        ++releaseCalls;assert(valid && (command.context.sessionId=="crypto-owner" || command.context.sessionId=="fx-owner"));
+        std::string why;auto fence=execution.SessionOwnerRecoveryIngressFence("agent",command.context.sessionId);
+        assert(execution.AuditAndReleaseSessionOwnerFence("agent",command.context.sessionId,true,why,fence));
         ExecutionControlStatusResult out;out.commandId=command.context.toolCallId;
         out.status=ExecutionCommandStatus::Accepted;out.reasonCode="SESSION_OWNER_FENCE_RELEASED";return out;
     };
@@ -263,14 +266,22 @@ void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume()
     assert(host.GetSession(fxToken,local) && local.recoveryOnly && local.leaseGeneration==1);
     assert(execution.IsSessionOwnerRecoveryOnly("agent","fx-owner"));
     assert(!execution.IsSessionOwnerRecoveryOnly("agent","crypto-owner"));
-    assert(!Call(socketPath,req).accepted && releaseCalls==1); // old generation cannot renew twice
+
+    req.token=fxToken;req.expectedGeneration=1;
+    const auto resumedFx=Call(socketPath,req);assert(resumedFx.accepted && releaseCalls==2);
+    assert(store.Get(fxToken,rec) && !rec.recoveryOnly && !rec.fencePending && rec.leaseGeneration==2);
+    assert(host.GetSession(fxToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
+    assert(!execution.IsSessionOwnerRecoveryOnly("agent","fx-owner"));
+
+    req.token=cryptoToken;req.expectedGeneration=1;
+    assert(!Call(socketPath,req).accepted && releaseCalls==2); // old generation cannot renew twice
     server.Stop();
     TradingToolHost restartedHost(registry);restartedHost.SetRecoveryControlAuthority(&authority);
     TradingToolSessionControlPlane restartedControl(restartedHost,[](const std::string&,const TradingToolHostSessionBinding&,std::string&){return true;});
     UnixSessionSupervisorServer restarted(restartedControl);restarted.SetLeaseStore(&store);restarted.SetAuditJournal(&audit);
     assert(restarted.ConfigureUserPaperCustodian(reason));assert(restarted.Start(socketPath,issuers,resolver,reason,4096,2000));
     assert(restartedHost.GetSession(cryptoToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
-    assert(restartedHost.GetSession(fxToken,local) && local.recoveryOnly);
+    assert(restartedHost.GetSession(fxToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
     restarted.Stop();
     std::remove(journalPath.c_str());std::remove(storePath.c_str());std::remove(keyPath.c_str());std::remove(auditPath.c_str());
 }

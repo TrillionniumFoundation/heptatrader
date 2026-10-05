@@ -95,6 +95,7 @@ bool ExactZeroOwnerAudit(
     std::string& reason)
 {
     if (audit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" ||
+        audit.reasonCode == "SESSION_FX_OWNER_ZERO_CONFIRMED" ||
         audit.reasonCode == "SESSION_LEASE_CONTINUATION_CONFIRMED" ||
         audit.status != ExecutionCommandStatus::Accepted ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
@@ -1166,14 +1167,24 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             ownerAudit.brokerConnectionEpoch == 0 || ownerAudit.brokerPositionGeneration == 0)
         { reason = ownerAudit.reasonCode.empty() ? "SESSION_LEASE_CONTINUATION_AUDIT_FAILED" : ownerAudit.reasonCode; return false; }
     }
-    else if (resumeOwner && ownerAudit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED")
+    else if (resumeOwner &&
+        (ownerAudit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" ||
+         ownerAudit.reasonCode == "SESSION_FX_OWNER_ZERO_CONFIRMED"))
     {
-        const auto c = binding.instrumentContracts.find("BTC.USD");
+        const bool crypto = ownerAudit.reasonCode == "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED";
+        const std::string instrument = crypto ? "BTC.USD" : "EUR.USD";
+        const auto c = binding.instrumentContracts.find(instrument);
+        const bool contractOk = c != binding.instrumentContracts.end() &&
+            (crypto ?
+                (c->second.symbol == "BTC" && c->second.secType == "CRYPTO" &&
+                 c->second.exchange == "PAXOS" && c->second.currency == "USD" &&
+                 binding.maxOrderQuantity == 1.0) :
+                (c->second.symbol == "EUR" && c->second.secType == "CASH" &&
+                 c->second.exchange == "IDEALPRO" && c->second.currency == "USD" &&
+                 binding.maxOrderQuantity == 25000.0));
         if (currentToken != replacementToken || binding.allowedInstruments.size() != 1 ||
-            binding.allowedInstruments.count("BTC.USD") != 1 || binding.instrumentContracts.size() != 1 ||
-            c == binding.instrumentContracts.end() || c->second.symbol != "BTC" ||
-            c->second.secType != "CRYPTO" || c->second.exchange != "PAXOS" || c->second.currency != "USD" ||
-            binding.maxOrderQuantity != 1.0 || ownerAudit.status != ExecutionCommandStatus::Accepted ||
+            binding.allowedInstruments.count(instrument) != 1 || binding.instrumentContracts.size() != 1 ||
+            !contractOk || ownerAudit.status != ExecutionCommandStatus::Accepted ||
             !ownerAudit.ownerAuditAuthoritative || !ownerAudit.ownerAuditComplete || ownerAudit.mutationBlocked ||
             ownerAudit.ownerAccount != binding.session.executionContext.account ||
             ownerAudit.ownerExecutionDomain != binding.executionDomain ||
@@ -1184,7 +1195,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             ownerAudit.brokerTerminalGeneration == 0 || ownerAudit.brokerRiskGeneration == 0 ||
             ownerAudit.brokerAccountGeneration == 0 || ownerAudit.brokerPositionGeneration == 0 ||
             ownerAudit.brokerFxCashGeneration == 0) {
-            reason = "CRYPTO_OWNER_RESUME_AUDIT_INVALID";
+            reason = crypto ? "CRYPTO_OWNER_RESUME_AUDIT_INVALID" : "FX_OWNER_RESUME_AUDIT_INVALID";
             return false;
         }
     }

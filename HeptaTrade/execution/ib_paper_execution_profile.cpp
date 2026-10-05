@@ -1332,9 +1332,10 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
     }
     const std::uint64_t userRecoveryFence = m_config.userScope ?
         m_coordinator.SessionOwnerRecoveryIngressFence(command.context.agentId, command.context.sessionId) : 0;
+    const bool cryptoOwner = IsConfiguredCryptoOwner(command);
     const ExecutionOwnerAuditResult audit =
         AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot(), false,
-            IsConfiguredCryptoOwner(command));
+            cryptoOwner, !cryptoOwner && IsConfiguredFxOwner(command));
     if (audit.status != ExecutionCommandStatus::Accepted ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
         audit.ownerActiveOrderCount != 0 || audit.ownerUncertainCommandCount != 0 ||
@@ -1429,8 +1430,9 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
         result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
         return result;
     }
+    const bool cryptoOwner = IsConfiguredCryptoOwner(command);
     return AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot(), false,
-        IsConfiguredCryptoOwner(command));
+        cryptoOwner, !cryptoOwner && IsConfiguredFxOwner(command));
 }
 
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
@@ -1483,10 +1485,22 @@ bool IbPaperExecutionPolicyAuthority::IsConfiguredCryptoOwner(
         command.recoveryIngressFence == 0;
 }
 
+bool IbPaperExecutionPolicyAuthority::IsConfiguredFxOwner(
+    const ExecutionControlCommand& command) const
+{
+    return m_config.UsesUserCrypto() && !m_config.userCryptoSessionId.empty() &&
+        command.context.agentId == m_config.userCryptoAgentId &&
+        !command.context.sessionId.empty() &&
+        command.context.sessionId != m_config.userCryptoSessionId &&
+        command.context.account == m_account &&
+        command.context.executionDomain == "PAPER" &&
+        command.recoveryIngressFence == 0;
+}
+
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     const ExecutionControlCommand& command,
     const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation,
-    bool cryptoOwnerResume)
+    bool cryptoOwnerResume, bool fxOwnerResume)
 {
     ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
@@ -1618,13 +1632,18 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         result.reasonCode = "RECOVERY_OWNER_POSITION_SNAPSHOT_INVALID";
         return result;
     }
-    if (cryptoOwnerResume) {
+    if (cryptoOwnerResume || fxOwnerResume) {
         // Keep brokerPositionQuantity/gross as the real WHOLE ACCOUNT values.
-        // Only this separately named resume result proves BTC-flatness; it is
-        // never a certificate for global finalization or FX-owner resumption.
-        if (continuation || !IsConfiguredCryptoOwner(command) || !m_callbacks.authoritativePosition) {
+        // A separately named scoped result proves only its own asset is flat;
+        // it is never a certificate for global recovery/finalization.
+        const bool configuredScope =
+            cryptoOwnerResume ? IsConfiguredCryptoOwner(command) :
+            fxOwnerResume ? IsConfiguredFxOwner(command) : false;
+        if (continuation || cryptoOwnerResume == fxOwnerResume ||
+            !configuredScope || !m_callbacks.authoritativePosition) {
             result.status = ExecutionCommandStatus::Rejected;
-            result.reasonCode = "CRYPTO_OWNER_RESUME_SCOPE_INVALID";
+            result.reasonCode = cryptoOwnerResume ?
+                "CRYPTO_OWNER_RESUME_SCOPE_INVALID" : "FX_OWNER_RESUME_SCOPE_INVALID";
             return result;
         }
         const auto btc = m_callbacks.authoritativePosition("BTC.USD");
@@ -1635,16 +1654,23 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
             !std::isfinite(fx.quantity) || std::fabs(fx.quantity) > m_config.maxGrossPosition ||
             std::fabs(btc.quantity) + std::fabs(fx.quantity) != risk.grossAbsolutePosition) {
             result.status = ExecutionCommandStatus::Rejected;
-            result.reasonCode = "CRYPTO_OWNER_POSITION_SCOPE_UNPROVEN";
+            result.reasonCode = cryptoOwnerResume ?
+                "CRYPTO_OWNER_POSITION_SCOPE_UNPROVEN" : "FX_OWNER_POSITION_SCOPE_UNPROVEN";
             return result;
         }
-        if (btc.quantity != 0.0) {
+        if (cryptoOwnerResume && btc.quantity != 0.0) {
             result.status = ExecutionCommandStatus::Rejected;
             result.reasonCode = "CRYPTO_OWNER_POSITION_NOT_FLAT";
             return result;
         }
+        if (fxOwnerResume && fx.quantity != 0.0) {
+            result.status = ExecutionCommandStatus::Rejected;
+            result.reasonCode = "FX_OWNER_POSITION_NOT_FLAT";
+            return result;
+        }
     }
-    if (!continuation && !cryptoOwnerResume && (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0))
+    if (!continuation && !cryptoOwnerResume && !fxOwnerResume &&
+        (positionQuantity != 0.0 || risk.grossAbsolutePosition != 0.0))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = "RECOVERY_OWNER_POSITION_NOT_FLAT";
@@ -1748,7 +1774,8 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     }
     result.status = ExecutionCommandStatus::Accepted;
     result.reasonCode = continuation ? "SESSION_LEASE_CONTINUATION_CONFIRMED" :
-        cryptoOwnerResume ? "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" : "RECOVERY_OWNER_ZERO_CONFIRMED";
+        cryptoOwnerResume ? "SESSION_CRYPTO_OWNER_ZERO_CONFIRMED" :
+        fxOwnerResume ? "SESSION_FX_OWNER_ZERO_CONFIRMED" : "RECOVERY_OWNER_ZERO_CONFIRMED";
     return result;
 }
 

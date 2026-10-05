@@ -244,8 +244,9 @@ private:
     ExecutionOwnerAuditResult AuditRecoveryOwner(
         const ExecutionControlCommand& command,
         const IBAuthoritativeRecoveryAuditSnapshot& recovery, bool continuation = false,
-        bool cryptoOwnerResume = false);
+        bool cryptoOwnerResume = false, bool fxOwnerResume = false);
     bool IsConfiguredCryptoOwner(const ExecutionControlCommand& command) const;
+    bool IsConfiguredFxOwner(const ExecutionControlCommand& command) const;
     void RefreshRateBudget(
         std::int64_t nowMs,
         const std::string& executionDomain = "PAPER");

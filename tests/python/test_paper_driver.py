@@ -471,13 +471,13 @@ class CryptoDriverPolicyTests(unittest.TestCase):
     def state(self):
         return {"instrument":"BTC.USD","pending":None,"position":0.0,"entry_price":None,
             "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":"","halt_new_entries":False}
-    def test_crypto_recovery_precheck_uses_subject_position_without_weakening_fx(self):
+    def test_owner_recovery_precheck_uses_subject_position(self):
         self.assertTrue(d.recovery_position_flat({"position":0.0,"gross_position":25000.0}))
         for value in (0.00000001,-0.00000001,float("nan"),float("inf"),None,False,"0"):
             self.assertFalse(d.recovery_position_flat({"position":value,"gross_position":25000.0}))
         with __import__("unittest.mock",fromlist=["patch"]).patch.object(d,"INSTRUMENT","EUR.USD"):
-            self.assertFalse(d.recovery_position_flat({"position":0.0,"gross_position":25000.0}))
-            self.assertTrue(d.recovery_position_flat({"position":0.0,"gross_position":0.0}))
+            self.assertTrue(d.recovery_position_flat({"position":0.0,"gross_position":0.00099993}))
+            self.assertFalse(d.recovery_position_flat({"position":-25000.0,"gross_position":25000.00099993}))
 
     def test_crypto_resume_keeps_fx_exposure_and_requires_native_ack_and_preview(self):
         from unittest.mock import patch
@@ -512,6 +512,40 @@ class CryptoDriverPolicyTests(unittest.TestCase):
         self.assertEqual(state["lease_generation"],2);self.assertEqual(state["owner_recovery_phase"],"VERIFIED")
         self.assertFalse(state["halt_new_entries"]);self.assertIsNone(state["pending"])
         self.assertEqual(state["entries"],0);self.assertEqual(state["exits"],0);self.assertEqual(state["gross_pnl"],0)
+        self.assertNotIn("test-only-permit",str(saved))
+
+    def test_fx_resume_keeps_btc_exposure_and_requires_native_ack_and_preview(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(instrument="EUR.USD",lease_generation=1)
+        calls=[];saved=[]
+        def snap(_cli,_state,_path,require_quote=True):
+            resumed=any("paper-resume" in c for c in calls)
+            return {"position":0.0,"gross_position":0.00099993,"active":[],"quote":{"ask":1.1234},
+                "owner_health":{"owner_fenced":False,"owner_recovery_only":not resumed,"mutation_ready":resumed},
+                "service_epoch":"native-epoch","service_generation":3}
+        def run(argv,*_):
+            calls.append(argv)
+            if "paper-resume" in argv:
+                return subprocess.CompletedProcess(argv,0,'{"accepted":true,"reason_code":"SESSION_OWNER_RESUMED","lease_generation":2}',"")
+            self.assertEqual(argv,["cli","paper-on"])
+            return subprocess.CompletedProcess(argv,0,"","")
+        def preview(_cli,tool,*fields):
+            self.assertEqual(tool,"risk.preview_order")
+            self.assertIn("instrument=EUR.USD",fields)
+            self.assertIn("order_type=MKT",fields)
+            self.assertIn("tif=DAY",fields)
+            self.assertIn("quantity=25000",fields)
+            self.assertFalse(any(f.startswith("cash_quantity=") for f in fields))
+            return {"approved":True,"preview_permit":"test-only-permit","service_epoch":"native-epoch","service_fencing_generation":3}
+        with patch.object(d,"INSTRUMENT","EUR.USD"),patch.object(d,"QTY",25000.0),             patch.object(d,"QUANTITY_TOLERANCE",1e-9),patch.object(d,"snapshot",snap),             patch.object(d,"run",run),patch.object(d,"native",preview),             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
+            d.latch_owner_fence(state,Path("/unused"),"SESSION_RECOVERY_ONLY")
+            self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","sessionctl","socket","token",1000))
+        self.assertEqual(state["lease_generation"],2)
+        self.assertEqual(state["owner_recovery_phase"],"VERIFIED")
+        self.assertFalse(state["halt_new_entries"])
+        self.assertFalse(state["owner_fence_recovery_required"])
+        self.assertIsNone(state["pending"])
         self.assertNotIn("test-only-permit",str(saved))
 
     def test_crypto_recovery_never_ignores_nonzero_btc_or_pending(self):

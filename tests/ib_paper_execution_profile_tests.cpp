@@ -1006,7 +1006,7 @@ void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
     ::unlink(path);
 }
 
-void TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness()
+void TestConfiguredUserOwnerResumeScopesAreIndependent()
 {
     if (::geteuid()==0 || ::getegid()==0)return;
     auto config=MixedCryptoProfileForTest();std::string reason,oldCredential,newCredential;
@@ -1058,7 +1058,7 @@ void TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness()
     auto global=cmd;global.recoveryIngressFence=1;
     assert(policy.RecoveryAuditOwner(global).reasonCode=="RECOVERY_OWNER_POSITION_NOT_FLAT");
     auto other=cmd;other.context.sessionId="fx-owner";
-    assert(policy.AuditSessionOwner(other).reasonCode=="RECOVERY_OWNER_POSITION_NOT_FLAT");
+    assert(policy.AuditSessionOwner(other).reasonCode=="FX_OWNER_POSITION_NOT_FLAT");
     other=cmd;other.context.agentId="another-agent";
     assert(policy.AuditSessionOwner(other).status==ExecutionCommandStatus::Rejected);
     other=cmd;other.context.account="DU999999";
@@ -1091,6 +1091,24 @@ void TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness()
     assert(!coordinator.IsSessionOwnerRecoveryOnly("user-agent","crypto-owner"));
     assert(coordinator.IsSessionOwnerRecoveryOnly("user-agent","fx-owner"));
     assert(snapshot.positionQuantities.at("EUR.USD")==-25000);
+
+    // Symmetric FX-owner resume: EUR is flat while the isolated BTC owner may
+    // retain exposure.  The global recovery path must still require all-flat.
+    snapshot.positionQuantities.clear();
+    snapshot.positionQuantities["BTC.USD"]=0.0001;
+    snapshot.risk.grossAbsolutePosition=0.0001;
+    btc.quantity=0.0001;fx.quantity=0.0;
+    auto fxOwner=cmd;fxOwner.context.sessionId="fx-owner";fxOwner.context.toolCallId="scoped-fx-resume";
+    const auto fxAudit=policy.AuditSessionOwner(fxOwner);
+    assert(fxAudit.status==ExecutionCommandStatus::Accepted && fxAudit.ownerAuditAuthoritative && fxAudit.ownerAuditComplete);
+    assert(fxAudit.reasonCode=="SESSION_FX_OWNER_ZERO_CONFIRMED");
+    assert(fxAudit.brokerPositionQuantity=="0.0001" && fxAudit.brokerGrossAbsolutePosition=="0.0001");
+    auto fxGlobal=fxOwner;fxGlobal.recoveryIngressFence=1;
+    assert(policy.RecoveryAuditOwner(fxGlobal).reasonCode=="RECOVERY_OWNER_POSITION_NOT_FLAT");
+    const auto fxReleased=policy.ReleaseSessionOwnerFence(fxOwner);
+    assert(fxReleased.status==ExecutionCommandStatus::Accepted && fxReleased.reasonCode=="SESSION_OWNER_FENCE_RELEASED");
+    assert(!coordinator.IsSessionOwnerRecoveryOnly("user-agent","fx-owner"));
+
     int mutations=0;
     journal.Replay([&](const OmsJournalEvent& e){if(e.eventType=="place_send_attempt"||e.eventType=="flatten_send_attempt"||e.eventType=="cancel_send_attempt")++mutations;});
     assert(mutations==0);::unlink(path);
@@ -1108,7 +1126,7 @@ int main()
     TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
     TestCryptoFlattenIsExactOwnedLongAndMarketIOC();
     TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();
-    TestConfiguredCryptoResumeDoesNotRequireOrAssertGlobalFlatness();
+    TestConfiguredUserOwnerResumeScopesAreIndependent();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();

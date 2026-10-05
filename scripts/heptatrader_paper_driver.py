@@ -501,11 +501,11 @@ def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_order
 
 
 def recovery_position_flat(snap):
-    # Precheck only, not resumption authority. The native PAPER custodian
-    # independently validates its configured exact owner, BTC and FX snapshots,
-    # terminal evidence and the unchanged token/generation. FX recovery retains
-    # the original whole-account-flat rule.
-    value=snap.get("position" if INSTRUMENT=="BTC.USD" else "gross_position")
+    # Precheck only, not resumption authority. Each isolated user PAPER owner
+    # may request resume once its own instrument is flat; the native custodian
+    # independently proves the exact owner binding, both BTC/FX snapshots,
+    # terminal evidence, active-order zero and the unchanged token/generation.
+    value=snap.get("position")
     return type(value) in (int,float) and math.isfinite(value) and value==0.0
 
 def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
@@ -703,7 +703,7 @@ def main():
                 model_worker=None
                 if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-                elif not snap["active"] and snap["gross_position"]==0.0:
+                elif not snap["active"] and recovery_position_flat(snap):
                     recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
                 atomic_json(state_path,state)
                 if args.once: break
