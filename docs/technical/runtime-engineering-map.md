@@ -165,3 +165,14 @@ interface rejection and unprivileged-client boundary tests remain native behavio
 The optional native options observer, risk/economic evidence core, MKT proposal
 codec and acceptance boundaries are documented in [Native 0DTE](native-zero-dte.md).
 This is shadow delivery only; it does not enable OPT in the current PAPER profile.
+
+### Options source correction: Snowball / IB authority split
+
+See [native options source and acceptance contract](native-zero-dte.md).
+SnowballOptionFeed is the native normalized input/cache layer, not an implemented
+Snowball network transport. Default shadow selection is SNOWBALL and blocks
+before broker I/O until an official authorized quote transport exists.
+`hepta-options-observer --qualify-occ` is a separate actual IB contract-only
+route with no market-data subscription. Feed and Broker epochs are independent;
+H0D2 records their separate normalized provenance. No source migration enables
+OPT, bypasses native Execution, or changes FX/BTC OMS state.

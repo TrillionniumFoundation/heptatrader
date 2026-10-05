@@ -1,4 +1,5 @@
 #include "options/zero_dte.h"
+#include "options/snowball_option_feed.h"
 #include "options/zero_dte_quote_cache.h"
 #include "DefaultEWrapper.h"
 #include "EClientSocket.h"
@@ -57,16 +58,18 @@ class Observer final:public DefaultEWrapper {
     EClientSocket client_{this,&signal_};
     std::unique_ptr<EReader> reader_;
     std::string account_;
+    bool marketDataRequired_=true;
 public:
     const std::uint64_t epoch=(static_cast<std::uint64_t>(Now())<<16)|(getpid()&0xffff);
     bool ready=false,accountVerified=false;
+    int contractRequestCount=0,marketDataRequestCount=0,marketDataTypeRequestCount=0;
     std::string connectionFault;
     std::map<int,std::vector<ContractDetails>> contracts;
     std::map<int,std::vector<Chain>> chains;
     std::map<int,Quote> quotes;
     std::set<int> done;
     std::vector<int> subscriptions;
-    explicit Observer(const std::string& account):account_(account){}
+    explicit Observer(const std::string& account,bool marketDataRequired=true):account_(account),marketDataRequired_(marketDataRequired){}
     bool Connect(int clientId){
         if(!client_.eConnect("127.0.0.1",4002,clientId,false))return false;
         reader_.reset(new EReader(&client_,&signal_));reader_->start();
@@ -90,10 +93,10 @@ public:
         for(auto& item:quotes)item.second.Invalidate();
     }
     void connectionClosed()override{InvalidateConnection("OPTIONS_BROKER_CONNECTION_CLOSED");}
-    bool Details(int id,const ::Contract& c){client_.reqContractDetails(id,c);return Wait([&]{return done.count(id);},7000);}
+    bool Details(int id,const ::Contract& c){++contractRequestCount;client_.reqContractDetails(id,c);return Wait([&]{return done.count(id);},7000);}
     bool OptionChain(int id,const std::string& symbol,int conId){client_.reqSecDefOptParams(id,symbol,"","IND",conId);return Wait([&]{return done.count(id);},8000);}
-    void DataType(int t){client_.reqMarketDataType(t);}
-    void Subscribe(int id,const ::Contract& c){quotes[id]=Quote();client_.reqMktData(id,c,"",false,false,TagValueListSPtr());subscriptions.push_back(id);}
+    void DataType(int t){++marketDataTypeRequestCount;client_.reqMarketDataType(t);}
+    void Subscribe(int id,const ::Contract& c){++marketDataRequestCount;quotes[id]=Quote();client_.reqMktData(id,c,"",false,false,TagValueListSPtr());subscriptions.push_back(id);}
     void CancelData(int id){client_.cancelMktData(id);subscriptions.erase(std::remove(subscriptions.begin(),subscriptions.end(),id),subscriptions.end());}
     opt::Tick Tick(double value){opt::Tick t;t.observedMs=Now();t.epoch=epoch;t.valid=std::isfinite(value)&&value>0&&value<1e100;t.value=t.valid?value:0;return t;}
     void nextValidId(OrderId)override{ready=true;}
@@ -105,7 +108,7 @@ public:
     void error(int id,int code,const std::string& message,const std::string&)override{
         if(code==354 || code==10090 || code==10089 || code==10167)quotes[id].EntitlementDenied();
         // Recovery starts a new attempt/epoch; old cached data is never trusted.
-        if(code==1100 || code==1101 || code==1102 || code==1300 || code==2110 || code==2103 || code==504)
+        if(code==1100 || code==1101 || code==1102 || code==1300 || code==2110 || (code==2103 && marketDataRequired_) || code==504)
             InvalidateConnection("OPTIONS_BROKER_DATA_BOUNDARY_"+std::to_string(code));
         if(code==200 || code==321 || code==322)done.insert(id);
         if(code==2104 || code==2106 || code==2107 || code==2108 || code==2158)return;
@@ -160,6 +163,48 @@ opt::Contract Convert(const ContractDetails& d,int underlying){
     return c;
 }
 struct Candidate {opt::Contract contract;int ticker=0,underlyingTicker=0;};
+
+// Public read-only contract route: no price subscription and no quote used to
+// choose a strike. Input is an exact caller-supplied canonical OCC identity.
+int QualifyOnly(const std::string& account,const std::string& occ,int clientId){
+    opt::CanonicalOptionIdentity identity;std::string reason;
+    if(!opt::ParseCanonicalOcc(occ,identity,reason))throw std::runtime_error(reason);
+    if(identity.expiry!=opt::NewYorkDate(Now()))throw std::runtime_error("OPTION_NOT_TODAY_EXPIRY");
+    Observer ib(account,false);if(!ib.Connect(clientId))throw std::runtime_error("OPTIONS_PAPER_CONNECT_UNVERIFIED");
+    ::Contract underlying;underlying.symbol=identity.symbol;underlying.secType="IND";
+    underlying.exchange="CBOE";underlying.currency=identity.currency;
+    if(!ib.Details(8700,underlying)||ib.contracts[8700].size()!=1)
+        throw std::runtime_error("OPTIONS_UNDERLYING_QUALIFICATION_NOT_UNIQUE");
+    const auto& qualifiedUnderlying=ib.contracts[8700][0].contract;
+    if(qualifiedUnderlying.conId<=0 || qualifiedUnderlying.symbol!=identity.symbol ||
+       qualifiedUnderlying.secType!="IND" || qualifiedUnderlying.currency!=identity.currency)
+        throw std::runtime_error("OPTIONS_QUALIFIED_UNDERLYING_MISMATCH");
+    ::Contract requested;requested.symbol=identity.symbol;requested.secType="OPT";
+    requested.exchange="SMART";requested.currency=identity.currency;
+    requested.lastTradeDateOrContractMonth=identity.expiry;requested.right=identity.right;
+    requested.strike=identity.strikeMilli/1000.0;requested.multiplier=std::to_string(identity.multiplier);
+    requested.tradingClass=identity.tradingClass;requested.localSymbol=identity.localSymbol;
+    if(!ib.Details(8701,requested)||ib.contracts[8701].size()!=1)
+        throw std::runtime_error("OPTIONS_CONTRACT_QUALIFICATION_NOT_UNIQUE");
+    const auto contract=Convert(ib.contracts[8701][0],qualifiedUnderlying.conId);
+    reason=opt::MatchBrokerOption(identity,contract);
+    if(!reason.empty())throw std::runtime_error(reason);
+    if(!ib.Connected() || !ib.accountVerified)throw std::runtime_error("OPTIONS_QUALIFICATION_CONNECTION_LOST");
+    Emit("{\"event\":\"options_contract_qualification\",\"qualified\":true,\"broker\":\"IB\","
+         "\"input_origin\":\"CALLER_SUPPLIED_OCC_NOT_A_LIVE_FEED\",\"canonical_key\":"+J(identity.Key())+
+         ",\"broker_contract_key\":"+J(contract.key())+",\"local_symbol\":"+J(identity.localSymbol)+
+         ",\"broker_epoch\":"+std::to_string(ib.epoch)+",\"con_id\":"+std::to_string(contract.conId)+
+         ",\"underlying_con_id\":"+std::to_string(contract.underlyingConId)+
+         ",\"exchange_date\":"+J(contract.session.tradingDate)+
+         ",\"session_open_ms\":"+std::to_string(contract.session.openMs)+
+         ",\"last_trade_ms\":"+std::to_string(contract.session.lastTradeMs)+
+         ",\"contract_requests\":"+std::to_string(ib.contractRequestCount)+
+         ",\"market_data_requests\":"+std::to_string(ib.marketDataRequestCount)+
+         ",\"market_data_type_requests\":"+std::to_string(ib.marketDataTypeRequestCount)+
+         ",\"snowball_realtime_proven\":false,\"trading_permission_proven\":false,\"broker_order_send_count\":0}");
+    return 0;
+}
+
 int Replay(const std::string& file){
     std::ifstream in(file);if(!in)throw std::runtime_error("OPTIONS_REPLAY_OPEN_FAILED");
     std::string row;std::size_t n=0,ready=0;
@@ -175,16 +220,20 @@ int Replay(const std::string& file){
 }
 int main(int argc,char** argv){
     try{
-        std::string account,file,replay;int duration=60,clientId=8661;
+        std::string account,file,replay,qualifyOcc;int duration=60,clientId=8661;
         for(int i=1;i<argc;++i){const std::string k=argv[i];if(i+1==argc)throw std::runtime_error("MISSING_OPTION_VALUE");const std::string v=argv[++i];
             if(k=="--account")account=v;else if(k=="--capture")file=v;else if(k=="--replay")replay=v;
+            else if(k=="--qualify-occ")qualifyOcc=v;
             else if(k=="--duration-sec")duration=std::stoi(v);else if(k=="--client-id")clientId=std::stoi(v);
             else throw std::runtime_error("UNKNOWN_OPTION");}
-        if(!replay.empty())return Replay(replay);
+        if(!replay.empty()){if(!qualifyOcc.empty())throw std::runtime_error("OPTIONS_MODE_CONFLICT");return Replay(replay);}
         if(geteuid()==0 || account.size()<3 || account.compare(0,2,"DU") ||
-           account.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",2)!=std::string::npos || file.empty() || file[0]!='/' ||
+           account.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",2)!=std::string::npos ||
+           (qualifyOcc.empty() && (file.empty() || file[0]!='/')) || (!qualifyOcc.empty() && !file.empty()) ||
            duration<15 || duration>3600 || clientId<8000 || clientId>9999)throw std::runtime_error("OPTIONS_READONLY_CONFIG_INVALID");
-        std::signal(SIGTERM,Stop);std::signal(SIGINT,Stop);Capture capture(file);Observer ib(account);
+        std::signal(SIGTERM,Stop);std::signal(SIGINT,Stop);
+        if(!qualifyOcc.empty())return QualifyOnly(account,qualifyOcc,clientId);
+        Capture capture(file);Observer ib(account);
         if(!ib.Connect(clientId))throw std::runtime_error("OPTIONS_PAPER_CONNECT_UNVERIFIED");
         const std::string date=opt::NewYorkDate(Now());
         Emit("{\"event\":\"options_readonly_started\",\"exchange_date\":"+J(date)+",\"order_send_capability\":false}");

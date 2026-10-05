@@ -140,6 +140,33 @@ def validate_replay(replay: dict, returncode: int, status: dict) -> None:
         raise RuntimeError("OPTIONS_CAPTURE_REPLAY_COUNT_MISMATCH")
 
 
+def snowball_source_status() -> dict:
+    # No Snowball quote endpoint/schema or credential was found in the deployed
+    # project. Never invent a transport, use an App cookie, reinterpret an IB
+    # subscription error as Snowball's status, or fall back silently to IB data.
+    return {
+        "mode": "SHADOW_READ_ONLY",
+        "state": "BLOCKED_SNOWBALL_OFFICIAL_FEED_UNCONFIGURED",
+        "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+        "market_data_source": "SNOWBALL",
+        "ib_role": "CONTRACT_ACCOUNT_EXECUTION_VERIFICATION",
+        "ib_market_data_required": False,
+        "snowball_transport_connected": False,
+        "snowball_wire_protocol_verified": False,
+        "snowball_api_entitlement_verified": False,
+        "reasons": ["SNOWBALL_OFFICIAL_QUOTE_TRANSPORT_NOT_IMPLEMENTED",
+                    "SNOWBALL_API_ENTITLEMENT_NOT_VERIFIED",
+                    "SNOWBALL_XSP_SPXW_AND_UNDERLYING_COVERAGE_NOT_VERIFIED"],
+        "records": 0,
+        "realtime_ready_records": 0,
+        "stage1_proven": False,
+        "broker_order_submission_enabled": False,
+        "options_paper_roundtrip_proven": False,
+        "trading_permission": "UNVERIFIED",
+        "premium_budget": "UNSET",
+    }
+
+
 def run(args, binary: Path) -> int:
     now = datetime.now(timezone.utc)
     run = args.state_dir / (now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
@@ -147,6 +174,9 @@ def run(args, binary: Path) -> int:
     os.umask(0o077)
     status = {
         "mode": "SHADOW_READ_ONLY",
+        "market_data_source": "IB_DIAGNOSTIC",
+        "acceptance_target": "SNOWBALL",
+        "stage1_proven": False,
         "started_at_utc": now.isoformat(),
         "observer": str(binary),
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -199,6 +229,7 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--duration-sec", type=int, default=300)
     parser.add_argument("--client-id", type=int, default=8662)
+    parser.add_argument("--market-data-source", choices=("SNOWBALL", "IB_DIAGNOSTIC"), default="SNOWBALL")
     parser.add_argument("--max-state-mib", type=int, default=2048)
     parser.add_argument("--min-free-mib", type=int, default=4096)
     args = parser.parse_args()
@@ -215,6 +246,12 @@ def main() -> int:
     private_directory(args.state_dir)
     try:
         with single_writer(args.state_dir):
+            if args.market_data_source == "SNOWBALL":
+                blocked = snowball_source_status()
+                atomic_status(args.state_dir / "status.json", blocked)
+                print(json.dumps(blocked), flush=True)
+                return 78  # configuration blocker; systemd must NOT retry IB.
+
             if args.max_state_mib < 64 or args.min_free_mib < 64:
                 raise RuntimeError("OPTIONS_STORAGE_POLICY_TOO_SMALL")
             budget = storage_budget(args.state_dir, args.max_state_mib * 1024 * 1024,

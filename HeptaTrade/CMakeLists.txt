@@ -433,7 +433,7 @@ add_library(hepta_risk_engine STATIC
 target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(hepta_options_core STATIC
-    options/zero_dte.cpp options/zero_dte_observation.cpp)
+    options/zero_dte.cpp options/zero_dte_observation.cpp options/snowball_option_feed.cpp)
 target_include_directories(hepta_options_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(hepta_options_core PUBLIC cxx_std_11)
 if(HEPTA_ENABLE_IBAPI)

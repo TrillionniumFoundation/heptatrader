@@ -2,6 +2,9 @@
 """Runner boundary tests, synthetic logs only; no broker or order API."""
 import importlib.util
 import json
+import subprocess
+import sys
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -96,6 +99,35 @@ class RunnerBoundaries(unittest.TestCase):
     def test_storage_attempt_reserve_blocks(self):
         budget = shadow.storage_budget(self.directory, 1024, 0, reserve_bytes=2048)
         self.assertFalse(budget["allowed"])
+    def test_snowball_default_has_no_ib_fallback(self):
+        status = shadow.snowball_source_status()
+        self.assertEqual(status["market_data_source"], "SNOWBALL")
+        self.assertFalse(status["ib_market_data_required"])
+        self.assertFalse(status["stage1_proven"])
+        self.assertFalse(status["snowball_transport_connected"])
+        self.assertFalse(status["broker_order_submission_enabled"])
+    def test_missing_official_feed_never_launches_observer(self):
+        if os.geteuid() == 0:
+            self.skipTest("runner intentionally rejects root")
+        marker = self.directory / "observer-was-run"
+        binary = self.directory / "fake-observer"
+        binary.write_text("#!/bin/sh\ntouch '" + str(marker) + "'\nexit 1\n")
+        binary.chmod(0o700)
+        state = self.directory / "state"
+        process = subprocess.run([sys.executable, str(ROOT / "scripts/heptatrader_options_shadow.py"),
+                                  "--observer", str(binary), "--account", "DU123", "--state-dir", str(state)],
+                                 capture_output=True, text=True, timeout=5)
+        self.assertEqual(process.returncode, 78, process.stdout + process.stderr)
+        self.assertFalse(marker.exists())
+        actual = json.loads((state / "status.json").read_text())
+        self.assertEqual(actual["state"], "BLOCKED_SNOWBALL_OFFICIAL_FEED_UNCONFIGURED")
+        self.assertFalse(actual["stage1_proven"])
+        self.assertEqual(actual["records"], 0)
+    def test_unsupported_source_is_rejected(self):
+        process = subprocess.run([sys.executable, str(ROOT / "scripts/heptatrader_options_shadow.py"),
+                                  "--observer", "/nonexistent", "--account", "DU123", "--state-dir", str(self.directory),
+                                  "--market-data-source", "AUTO_FALLBACK"], capture_output=True, timeout=5)
+        self.assertEqual(process.returncode, 2)
     def test_atomic_status(self):
         path = self.directory / "status.json"
         shadow.atomic_status(path, {"phase": 3, "trade_enabled": False})

@@ -1,240 +1,209 @@
-# Native 0DTE options: shadow delivery and trading acceptance boundaries
+# Native options: Snowball market data, IB contract and execution authority
 
-Status: IMPLEMENTED SHADOW; OPTIONS TRADING NOT ENABLED
-Base: user-owned PAPER line, d384e98c3a52485bfba97cd93cd89197d9872fa0
-Scope: XSP and SPXW standard European, PM cash-settled options; long one-contract
-Call/Put proposals, MKT/IOC; never naked option selling or a multi-leg spread.
+Status: SNOWBALL SOURCE REQUIRED; OFFICIAL LIVE TRANSPORT BLOCKED; NO OPTIONS ORDERS.
+Deployed trading base: d384e98. Continue feat/native-0dte-20261005 / PR #165.
+Scope: standard XSP and SPXW European, PM cash-settled options, long one-contract
+Call/Put proposals, MKT/IOC, no naked selling, no multi-leg expansion.
 
-## What is executable now
+## Source correction and actual inventory
 
-`hepta-options-observer` uses the pinned IB C++ API to qualify the underlying,
-retrieve today's option chains, qualify a concrete Call and Put, subscribe to
-real-time top-of-book prices/sizes and model Greeks, and record the complete
-observation with its deterministic eligibility decision. It contains no call to
-placeOrder, cancelOrder, reqGlobalCancel, or exerciseOptions. Connections are
-restricted to local port 4002 and an explicitly verified singleton DU account.
+The operator designates Snowball Securities as the options data provider. This
+is the intended source, not evidence that a programmatic Snowball feed already
+exists. The previous observation of IB 354/10090 proves only the outcome of the
+IB data request. It does not prove anything about Snowball API entitlement.
 
-Delayed index data is used only to choose diagnostic strikes. It is cancelled
-and replaced with a separate type-1 subscription before constructing an
-admission snapshot. Every delayed tick independently marks its book as delayed;
-no stale/frozen/delayed value is a real-time authorization witness. Type changes
-invalidate all cached prices, sizes and Greeks. Connection/data-farm loss aborts
-the attempt and requires a new connection epoch and request set. Timeouts use a
-monotonic clock. Broker-qualified option and chain underlying identities must
-match their requests; supplied conIds are not accepted as qualification evidence. Candidate
-lookup and a catalog containing MKT/IOC are not evidence of trading permission.
-The observer requests no account-wide update stream and does not take over the
-running Execution client's account subscription.
+The baseline 283e6a6 tracked tree contains no Snowball/Xueqiu/snbpy references.
+A case-insensitive extended inspection of 25,719 other project/config/script/
+document files on pocket4 found no matching transport or configuration. An
+initial narrower 11,019-file scan overlaps that inspection; do not add the counts.
+Scans excluded build/vendor/cache/session/history directories, large files and
+symlinks. This is a scoped inventory, not a claim about every device or account.
+The existing shadow env contained only the IB PAPER account.
 
-The zero-dte core validates full contract identity, New York trading date,
-exchange-provided liquid hours and last-trade time, product settlement style,
-per-side quote and size freshness, epochs, Greeks, independent premium/loss
-budgets, owner/account completeness, explicit trading permission and margin
-preview, and unresolved commands. Each decision records all refusal reasons.
-An eligible library result remains `broker_authorized=false`: only the existing
-Execution preview/permit path may grant a mutation capability.
+The public Snowball SDK inspected exposes account/order/position/security-detail
+operations, not a documented live option quote/Greeks subscription method. Its
+production endpoint is not a license to invent a quote URL. Public App stock-
+option features do not establish XSP/SPXW index-option and underlying coverage,
+programmatic permission, source timestamp semantics or this account's rights.
+No App cookies, private endpoints, purchased subscriptions or new agreements
+were used by this delivery. No Snowball HTTP/stream transport is implemented.
 
-`PreparedOrder::MarketOption` creates a one-contract BUY MKT/IOC proposal.
-`IBOPT:<conId>` preserves the broker contract identifier in the canonical
-instrument; expiry/right/strike/multiplier/tradingClass/localSymbol remain in the
-existing rich HTT1/HEX contract fields. The server must independently resolve
-that instrument and metadata. The factory does not widen the existing PAPER
-security-type whitelist. Existing FX/BTC native entry paths are unchanged.
+## Executable components and their evidence limits
 
-The new `EvidenceLedger` keeps individual execution shares/prices separate from
-cumulative quantities/averages, deduplicates exact execution IDs, refuses
-conflicting replays/corrections, handles fees arriving before or after execution,
-and requires an exact join of all positive-fill terminals, individual executions
-and fees. Every intermediate cumulative checkpoint must balance; checking only
-the final cumulative quantity is insufficient. Unjoined fees or positive-fill
-terminals prevent complete economics. A correlation cannot identify two commands.
-An exact original execution replay after cash settlement remains idempotent.
-Local flatness is FLAT_BROKER_AUDIT_REQUIRED, never ROUNDTRIP_PROVEN by itself. Round-trip proof consumes a complete authoritative Snapshot with exact PAPER
-account, owner and contract key, a nonzero connection epoch, zero held contracts,
-zero active orders and no unresolved send; a bare flat-position boolean is not
-sufficient. Complete execution and fee joins remain independently required. Contract disappearance
-at expiry is not a sell. A separately identified authoritative cash-settlement
-receipt produces CASH_SETTLED, never a fake traded round-trip proof.
+### SnowballOptionFeed: native normalized-feed admission, not a vendor SDK
 
-## Legacy cumulative execution repair
+`options/snowball_option_feed.{h,cpp}` accepts a trusted transport's normalized
+records. It does not connect to Snowball and cannot confer trading authority.
+The official transport must verify the source context before calling BeginEpoch:
+provider, endpoint identity, account subject, API-use authority receipt, receipt
+validity, exact XSP/SPXW product coverage and matching real-time index data.
+These fields in synthetic tests are explicitly fixtures, not vendor receipts.
+A JSON/config realtime=true flag cannot activate a real feed through the runner.
 
-The current IB wrapper journals `execution.cumQty` and `execution.avgPrice` as
-broker_execution qty/price. The old read model incorrectly made any second
-execution ID ambiguous, freezing quantity at the first fill. The shared
-`IbCumulativeExecutionAggregate` now preserves every real execution identity and
-selects the greatest cumulative quantity and its cumulative average, without
-summing cumulative amounts. Exact duplicate downloads and reverse arrival order
-are idempotent. Same-ID conflicting economics and correction families remain
-blocked rather than rewriting already-booked money silently.
+CanonicalOptionIdentity uses symbol, underlying type, currency, expiry, C/P,
+integer strike in thousandths, multiplier, tradingClass and fixed-width OCC
+symbol. The canonical HCOPT1 key contains neither a Snowball opaque symbol ID
+nor an IB conId. MatchBrokerOption requires a complete Broker-qualified Contract
+with an exact matching economic identity and permitted settlement/session data.
+SPY, standard AM-settled SPX, a different expiry/multiplier/right/strike and proxy
+underlyings cannot substitute for the requested product.
 
-The real order-159 read-only OMS-prefix replay contains cumulative 0.01 then
-0.03313821 at cumulative average 86437.099117. This branch reproduces 0.03313821,
-two execution IDs, Cancelled-with-partial-fill, and ambiguity=false. It does not
-apply that result to production driver state or deploy the new Execution binary.
-The production change remains a separate controlled rollout requiring the
-original pending command and broker position audit; no hand-edited pending state.
+Each cache instance covers one vendor contract. BeginEpoch requires a new epoch
+and session identity, clears cached data and records the source authority context.
+Every frame must be a complete real-time normalized snapshot. Continuity sequence
+is adapter-local and per contract; a future adapter must explicitly map the real
+vendor's sequence/resync protocol, not assume its wire fields match these structs.
 
-Recent-orders JSON additionally exposes all cumulative execution witnesses and
-their semantics. Its legacy scalar names the real last cumulative witness, not
-a fabricated aggregate execution ID. Reconciliation of an absent active owner
-no longer converts a partially filled Cancelled order into Filled.
+Each bid, ask, bidSize, askSize, index value and Greeks record carries source UTC,
+receive UTC and receive monotonic time. Source time is never replaced by a poll or
+heartbeat time. Epoch mismatches, missing/future/stale source or receive times,
+clock/sequence regressions, conflicting duplicate frames and sequence gaps reject
+readiness. Exact duplicates never renew freshness. Connection loss or entitlement
+revocation must call Disconnect; recovery starts a new epoch with a fresh full
+snapshot. Delayed/frozen fields cannot qualify as live. No local Greeks calculator
+is implemented or silently substituted for Snowball Greeks in this delivery.
 
-## Native capture/replay
+### Independent feed and broker epochs
 
-H0D1 records contain 80 typed input fields plus the deterministic expected
-result. The full contract, exchange session, policy, each quote timestamp/epoch,
-Greeks and permission/budget gates are recorded with precision-17 classic-locale
-numbers. Files are private, no-follow, single-writer and fsynced per complete
-record. A decoder rejects schema/value/expected-result drift. The replay command
-also rejects an unterminated tail; a crashed writer cannot turn a partial last
-record into accepted evidence.
+Snapshot.epoch is the Broker account/order/position epoch. marketDataEpoch is the
+separate feed epoch, with marketDataSource identifying its source. Quote and
+Greeks checks compare against the feed epoch; Broker state and contract bindings
+compare against the Broker epoch. An Execution/Broker restart requires a new
+contract binding but never retags cached feed data or resets the independent
+source epoch. A feed reconnect clears only its cache and does not alter Broker
+positions, pending commands, send counts or PnL.
 
-These captures are reproducibility artifacts, not a second trading OMS or a
-signed authorization. Replay requires the matching evaluator version. Changing
-a historical policy or feeding a diagnostic price as live data cannot produce
-credit for the original decision. Missing market data currently gives NO_TRADE;
-there is not yet enough real-time data to validate a strategy's profitability.
+The normalized adapter overwrites only market data in a copied Broker snapshot.
+Account/owner, orders, positions, trading permission and margin preview remain
+Broker/runtime-owned. Existing Evaluate and DecisionJson still grant no order
+capability; the privileged Execution preview/permit integration is incomplete.
 
-The private runner `heptatrader_options_shadow.py` records one bounded native
-observation and replays it. Its single-writer lock prevents competing processes
-from replacing the active status. It requires one successful PAPER account check,
-one no-order-capability start, exactly one completion, an appropriate exit code,
-zero order sends, and exact native replay record/readiness counts. A partial log,
-reported error, failed process, interrupted attempt or count mismatch is ERROR,
-not a successful observation. It writes a machine-readable status with the binary
-SHA-256, capture path, counts, broker notices, and explicit false PAPER round-trip
-and order-submission capability fields. It never launches a trading driver.
+### IB qualification without any market-data request
 
-## Risk and calendar contract
+`hepta-options-observer --qualify-occ <exact-21-character-OCC>` uses the configured
+singleton DU account and localhost PAPER gateway port 4002. It requests underlying
+contract details and the exact option contract details; both must be unique and
+match. No reqMktData or reqMarketDataType is issued on this route, and market-data
+farm readiness is not an admission prerequisite. Connection/account identity and
+secdef results remain required. No order/cancel/exercise interface is called.
 
-The options premium and daily-loss budgets default to ZERO / UNSET. Do not reuse
-BTC's USD 25,000 cash quantity or FX's 25,000 base units. No option entry is allowed
-until the operator sets independent budgets and a privileged runtime validates
-the account, permissions and margin preview. A displayed ask-based MKT cost is an
-estimate, not a guaranteed final fill-price cap.
+Its JSON receipt includes canonical key, Broker contract key, conId, underlying
+conId, Broker epoch, session dates and instrumented request counts. Input origin is
+CALLER_SUPPLIED_OCC_NOT_A_LIVE_FEED. It explicitly does not prove Snowball live data
+or account options trading permissions.
 
-Entry cutoff is 60 minutes before the qualified last-trade time; planned exit is
-30 minutes before it. These are initial engineering parameters, not an optimized
-strategy. Half-day sessions use their actual earlier close. Exchange timezone
-parsing supports US Eastern and Central, using post-2007 US DST rules for
-2007-2099; the runtime must be updated if those timezone rules change. Unknown
-zones, invalid dates, spring gaps and ambiguous fall-back local times fail.
-Host midnight is not the New York trading-day boundary.
+Actual Oct 5, 2026 New York session checks succeeded for:
+- XSP   261005C00775000 -> IB 913173379, underlying 137851301.
+- XSP   261005P00775000 -> IB 913174277, underlying 137851301.
+- SPXW  261005C07750000 -> IB 913164396, underlying 416904.
+Each performed two contract requests, zero market-data/type requests and zero
+order sends. These are real Broker identity receipts, not Snowball-derived quotes.
 
-Exact reduce-only requires a positive actual option quantity and the same
-complete contract key. It does not require a new-entry budget, fresh model
-opinion, or nonzero Greeks, but it still requires authoritative state and a
-valid quote. If the market is unavailable or expiry has passed, no fake zero
-position is written; recovery/settlement evidence remains required.
+### Shadow runner source selection
 
-## Tests and evidence ceilings
+The existing `heptatrader-options-shadow.service` structure is retained. Its
+explicit/default market-data source is SNOWBALL. Until the official transport is
+implemented and account rights are verified, the runner atomically writes:
 
-| Evidence | What it proves | What it does not prove |
+    BLOCKED_SNOWBALL_OFFICIAL_FEED_UNCONFIGURED
+    market_data_source=SNOWBALL
+    ib_market_data_required=false
+    snowball_transport_connected=false
+    stage1_proven=false
+    broker_order_submission_enabled=false
+
+It exits 78 before launching the IB observer. RestartPreventExitStatus=78 avoids
+an endless retry of a missing configuration. A configuration-blocked unit is not
+an active Snowball reader, and its enabled flag must not be reported as readiness.
+There is no automatic fallback to IB. An explicit `--market-data-source
+IB_DIAGNOSTIC` permits the old IB-only diagnostic capture, labeled as such; even
+valid IB diagnostic records cannot pass Snowball Stage 1.
+
+## Capture, economics and fault evidence preserved
+
+H0D1 remains byte-compatible for legacy IB normalized observations. H0D2 adds
+marketDataSource and marketDataEpoch while retaining the separate Broker epoch.
+Decoder re-encoding rejects schema/value/expected-result drift and resets source
+fields when reusing an output Snapshot for a legacy record. H0D2 is normalized
+snapshot reproducibility, NOT a complete Snowball raw-feed/rights receipt. The
+real provider recorder/replayer remains pending alongside the transport; Stage 3
+must not be credited with raw-source replay based only on H0D2 unit tests.
+
+Existing native capture files remain private/no-follow/single-writer and synced
+per record. Unterminated tails are rejected. The runner verifies exactly one
+completion, account check, no-order start, appropriate exit, zero sends and exact
+replay counts; errors and interrupted attempts cannot become successful evidence.
+
+EvidenceLedger keeps individual shares/prices separate from cumulative values,
+checks every cumulative checkpoint, joins all positive-fill terminals/executions/
+fees, rejects correction/conflicting replay, and permits identical execution
+replay after settlement. Local flatness is FLAT_BROKER_AUDIT_REQUIRED. A true
+RoundTripProven requires a complete exact PAPER account/owner/contract snapshot,
+nonzero Broker epoch, no active order/unresolved send, flat position and complete
+economic joins. Disappearance at expiry is not a sell. Authoritative cash
+settlement is separately identified and never a traded round-trip proof.
+
+The previously added shared cumulative-execution aggregation repair remains in
+this candidate, including original order-159 offline tests. It is NOT deployed to
+shared Execution. Original pending command recovery must precede any such rollout;
+no driver JSON is hand-edited or pending order cleared by the source migration.
+
+## Risk, calendar and resource limits
+
+Options premium and daily-loss budgets remain ZERO/UNSET, independent of FX/BTC
+sizes. MKT ask-based estimated cost is not a guaranteed execution price cap.
+Entry cutoff is 60 minutes and planned exit 30 minutes before the qualified last
+trade time. Actual half-day schedules apply. New York exchange date, not host
+midnight, determines expiry. Current civil-time logic supports post-2007 US DST
+for 2007-2099; unknown/invalid/ambiguous local times fail closed.
+
+Same-contract reduce-only still requires actual authoritative quantity and state;
+no new entry budget or fresh model opinion is required. Missing usable market or
+expiry does not erase a position; recovery/settlement evidence is still required.
+
+The isolated OptionsShadow release/current link never replaces the trading
+release/current link. State cap 2 GiB, minimum filesystem free reserve 4 GiB,
+per-attempt reserve 32 MiB, per-file limit 16 MiB and invocation limit 480 seconds
+remain. No previous evidence is automatically deleted. Storage exhaustion is a
+separate blocked state, never proof of data readiness.
+
+## Corrected five-stage ledger
+
+| Stage | Required acceptance | Current result |
 |---|---|---|
-| zero_dte_tests | Contract/date/DST/half-day/data/Greeks/permission/budget rejection; fee and partial-fill economics; late settlement; deterministic capture | IB trading permission or live fills |
-| zero_dte_execution_fault_tests | Real canonical coordinator with synthetic venue; lost ACK, fork/_exit after durable send marker, no resend, exact rich identity replay, fill racing cancellation, final stale-quote rejection | Real broker round trip or production restart acceptance |
-| ib_recent_execution_aggregation_tests | Same production read-model functions; multi-execution, duplicates, reverse order, conflicts, original Cancelled terminal | Deployed production repair |
-| research_native_client_tests | Complete option proposal identity and MKT/IOC quantity survive HTT1 encoding; changed conId/right have different bytes | Server OPT permit or exchange acceptance |
-| Native observer with actual IB connection | Actual contract discovery/market-data entitlement outcome and recorded NO_TRADE decisions | Profitability, subscribed live data when IB denies it, or account permissions |
+| 1: Snowball data/rights | Verified programmatic rights, exact product/index coverage, live bid/ask/sizes/index/Greeks with source+receive TTL across multiple real trading windows; immediate stale/disconnect rejection | BLOCKED: no verified official transport/configuration/entitlement; zero real Snowball frames |
+| 2: native option chain | Snowball normalized identity -> canonical key -> actual IB qualification; privileged native risk/permit/economic callback path | Native admission/mapping implemented; real quote-free IB qualification verified; transport and privileged Execution integration unfinished |
+| 3: Snowball shadow | Real source capture, source-aware reproducible signal/cost/cutoff/exit decisions; IB used for contract/account checks | Default switched and no-fallback block deployed; normalized replay primitives tested; no actual Snowball shadow run |
+| 4: one-contract PAPER | Snowball live signal -> native IB MKT -> original command execution/fees -> exact reduce-only exit and full proof | NOT ATTEMPTED; OPT remains rejected by current production Execution |
+| 5: resident/restarts | Feed reconnect and driver/Execution restarts with independent epochs, cross-date cutoff and invariant three-line economics/identity/send counters | Synthetic dual-epoch/disconnect tests and real contract-only process checks; no real Snowball reconnect or three-line trading restart acceptance |
 
-The existing canonical coordinator cancellation/crash suites also remain active;
-a cancel racing a fill cannot be called zero-fill cancellation. The new option
-ledger separately tests partial fills followed by cancellation. One-contract
-orders themselves cannot partially fill a fraction of a standard contract;
-multiple-execution tests deliberately include larger *synthetic* fixtures and
-must not be confused with permission to place larger canaries.
+The previous 240-record IB diagnostic and its shadow-restart result are retained
+as historical IB diagnostics only, not as Snowball Stage 1/3/5 passes. No positive
+strategy performance or live profitability has been established.
 
-## Remaining work before one-contract PAPER acceptance
+## Build and validation
 
-1. Activate and verify appropriate live underlying/option data in the operator's
-   IB account and its PAPER mapping. Current actual probes return 354/10090 and
-   zero usable real-time option quotes/Greeks. Do not accept agreements or buy
-   subscriptions on the user's behalf without the appropriate specific approval.
-2. Verify account trading permissions, and obtain options-only premium/daily-loss
-   budgets. The observer cannot prove either and reports them as UNVERIFIED/UNSET.
-3. Finish the privileged runtime integration: qualified option registry and
-   dynamic session binding, live quote/Greeks snapshots, broker whatIf result
-   persistence, commission callbacks, and settlement receipts feeding the native
-   options guard/ledger. The current production profile STILL rejects OPT.
-4. Deploy the reviewed shared execution aggregation repair through controlled
-   original-command recovery; never change production driver JSON manually.
-5. Perform the original one-contract MKT entry, exact broker execution/fees/owner
-   reconciliation, same-conId reduce-only exit, and prove real PAPER round trip.
-6. Only after that perform real driver-only / Execution-only restart acceptance
-   with three-line state/identity/send-count invariants; only then enable the
-   options trading resident. A shadow observer restart is not this acceptance.
+Normal top-level CMake with pinned IB 10.30.01; no dependency change. New native
+target: hepta_snowball_option_feed_tests. Observer still installs via the isolated
+OptionsShadow component. Final local CTest: 55/55; runner target: 21 Python cases
+(included in CTest, not added as 21 more targets); separate FX/BTC driver: 43/43.
+The new feed tests are synthetic fixtures, not real provider observations. Hosted
+CI must be reported from its actual run, not inferred from these local checks.
 
-No item in 1/2/3/5/6 is converted to PASS by a unit test or a source-only factory.
+## External handoff needed before real feed implementation
 
-## Build and local use
+Obtain the official authorized quote API/stream documentation and sample payloads
+for this account: endpoint/protocol and authentication, separate market-data API
+rights, XSP/SPXW and matching index coverage, full canonical identity, bid/ask and
+sizes, source timestamps/clock units, real-time/delayed flags, sequence/snapshot/
+reconnect behavior and Greeks provenance. A trading-only snbpy key or an App
+screenshot is not sufficient. Do not put secrets into Git or the report.
 
-Build through the normal top-level CMake project with the existing pinned
-IBAPI_ROOT and IBAPI_DECIMAL_LIBRARY. Targets: hepta_options_observer,
-hepta_zero_dte_tests, hepta_zero_dte_execution_fault_tests,
-hepta_ib_recent_execution_aggregation_tests. Install the optional OptionsShadow
-component to a separate immutable prefix; do not replace the current trading
-release or existing systemd units for a shadow rollout.
+Public primary references checked for this continuation:
 
-Examples (read-only):
-
-```sh
-hepta-options-observer --account DU_EXPLICIT_PAPER_ACCOUNT \
-  --capture /absolute/private/capture.h0d1 --duration-sec 60 --client-id 8662
-hepta-options-observer --replay /absolute/private/capture.h0d1
+```text
+https://github.com/snowballsecurities/snbpy
+https://raw.githubusercontent.com/snowballsecurities/snbpy/master/src/snbpy/snb_api_client.py
+https://broker.xueqiu.com/activity/level/setting?action=us_lv1
+https://cn.snowball-x.com/trade
 ```
-
-Official primary references: IB TWS API option-chain, option-computation,
-executions/commissions and what-if documentation; Cboe XSP contract specifications.
-The runtime uses the locally pinned 10.30.01 C++ API; API and product documentation
-must be rechecked at any SDK or contract-policy upgrade.
-
-## Five-stage acceptance ledger (2026-10-06 JST)
-
-The deployed trading base for this candidate is d384e98. The remote default
-branch is older than this local deployed-base lineage; do not replace the current
-FX/BTC runtime with default-branch binaries to install the observer.
-
-| Stage | Current evidence | Acceptance state |
-|---|---|---|
-| 1: live data and permission | Actual Oct 5 New York session: four qualified candidates, 240 observations and exact 240-record replay; zero real-time-ready records; IB 354/10090 plus delayed-data notices | BLOCKED: data unavailable; trading permission remains UNVERIFIED |
-| 2: native options support | Native contract/capture/risk/economic primitives, proposal encoding, coordinator faults and boundary regressions | PARTIAL: privileged registry, permission/what-if receipts, callback/fee/settlement integration remain unfinished; production still rejects OPT |
-| 3: read-only recording | Bounded native capture and deterministic replay; independently installable no-order shadow worker | OBSERVATION MECHANISM VERIFIED; no valid market-data strategy sample or profitability proof |
-| 4: one-contract MKT PAPER round trip | None; zero option order sends | NOT ATTEMPTED; must follow stages 1/2 and independent options-only budgets |
-| 5: trading restarts and persistence | Synthetic coordinator crash/replay tests only | NOT ATTEMPTED on the production options trading lane |
-
-The added boundary suite first reproduced nine failed checks, then passed after
-repair. The rebuilt full CTest suite passed 54/54, including the runner test
-which contains eighteen Python boundary cases. These are code checks, not broker
-trading permission, real options executions or production restart acceptance.
-Canonical identity and decision JSON are independent of the process locale.
-
-## Read-only resident deployment
-
-Only the OptionsShadow CMake install component belongs in
-`~/.local/share/heptatrader/options-shadow/releases/<source-sha>/`.
-Its separate `current` link must never replace `~/.local/share/heptatrader/current`.
-The unit `heptatrader-options-shadow.service` requires
-`~/.config/heptatrader/options-shadow.env` containing only the explicitly verified
-`HEPTA_OPTIONS_PAPER_ACCOUNT`. It runs 300-second native capture windows with a
-30-second interval and recreates contract discovery each time. Failures retry
-without trading. The state directory is `~/.local/state/heptatrader/options-shadow`.
-Existing evidence is never pruned automatically. The runner stops before starting
-another capture when its dedicated state would exceed 2 GiB (including a 32 MiB
-attempt reserve), or filesystem free space would fall below a 4 GiB reserve.
-`--max-state-mib` and `--min-free-mib` explicitly configure these storage limits.
-Every runner/observer output file is capped at 16 MiB. Storage exhaustion produces
-STORAGE_BUDGET_BLOCKED with trading disabled, not a replay or readiness success.
-The service also bounds each invocation to 480 seconds; previous capture evidence
-remains available for deliberate archival or cleanup.
-
-This worker is not `heptatrader-options-driver.service`. Starting or restarting
-it does not pass stage 5. It has no placeOrder, cancelOrder, exerciseOptions,
-reqGlobalCancel, or Execution mutation capability. Existing FX/BTC drivers and
-shared Execution must remain in place; original pending BTC order 159 is not
-cleared, replaced or reinterpreted by this deployment.
-
-A profitable-looking PAPER result would still be pipeline/simulator evidence,
-not proof of live strategy returns. Strategy qualification needs time-ordered,
-out-of-sample observations, explicit all-in costs and conservative execution
-assumptions, with failed/missing-data decisions retained rather than excluded.
-No positive strategy result has been established by this delivery.

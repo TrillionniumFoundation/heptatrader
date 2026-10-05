@@ -36,6 +36,10 @@ add_test(NAME hepta_options_shadow_runner_tests
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/options_shadow_runner_tests.py)
 set_tests_properties(hepta_options_shadow_runner_tests PROPERTIES LABELS "core;options")
 
+add_executable(hepta_snowball_option_feed_tests snowball_option_feed_tests.cpp)
+target_link_libraries(hepta_snowball_option_feed_tests PRIVATE hepta_options_core)
+hepta_register_core_test(hepta_snowball_option_feed_tests)
+
 add_executable(hepta_zero_dte_boundary_tests zero_dte_boundary_tests.cpp)
 target_link_libraries(hepta_zero_dte_boundary_tests PRIVATE hepta_options_core)
 hepta_register_core_test(hepta_zero_dte_boundary_tests)

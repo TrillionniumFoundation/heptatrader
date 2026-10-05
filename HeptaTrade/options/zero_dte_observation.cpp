@@ -20,7 +20,8 @@ bool Get(const std::string& s,std::string& v){v=s;return true;}
 bool Get(const std::string& s,bool& v){if(s!="0" && s!="1")return false;v=s=="1";return true;}
 }
 std::string EncodeObservation(const Policy& p,const Contract& c,const Snapshot& s){
-    std::ostringstream o;o.imbue(std::locale::classic());o.precision(17);o << "H0D1";
+    const bool external=s.marketDataSource!="IB" || s.marketDataEpoch!=0;
+    std::ostringstream o;o.imbue(std::locale::classic());o.precision(17);o << (external?"H0D2":"H0D1");
     Put(o,c.conId);
     Put(o,c.underlyingConId);
     Put(o,c.ref.symbol);
@@ -101,6 +102,7 @@ std::string EncodeObservation(const Policy& p,const Contract& c,const Snapshot& 
     Put(o,s.ownedContractKey);
     Put(o,s.dailyRealizedLossUsd);
     Put(o,s.estimatedFeesUsd);
+    if(external) { Put(o,s.marketDataSource); Put(o,s.marketDataEpoch); }
     Put(o,DecisionJson(Evaluate(p,c,s,false)));
     return o.str();
 }
@@ -108,7 +110,13 @@ bool DecodeObservation(const std::string& row,Policy& p,Contract& c,Snapshot& s,
     if(row.size()>32768 || row.find_first_of("\r\n")!=std::string::npos){reason="OPTION_CAPTURE_RECORD_SIZE";return false;}
     std::vector<std::string> f;std::size_t start=0;
     for(;;){const auto n=row.find('\t',start);f.push_back(row.substr(start,n==std::string::npos?n:n-start));if(n==std::string::npos)break;start=n+1;}
-    if(f.size()!=82 || f[0]!="H0D1"){reason="OPTION_CAPTURE_SCHEMA";return false;}
+    const bool legacy=f.size()==82 && f[0]=="H0D1";
+    const bool external=f.size()==84 && f[0]=="H0D2";
+    if(!legacy && !external){reason="OPTION_CAPTURE_SCHEMA";return false;}
+    s.marketDataSource="IB";s.marketDataEpoch=0;
+    if(external && (!Get(f[81],s.marketDataSource) || !Get(f[82],s.marketDataEpoch))) {
+        reason="OPTION_CAPTURE_FEED_PROVENANCE";return false;
+    }
     if(
         !Get(f[1],c.conId) ||
         !Get(f[2],c.underlyingConId) ||

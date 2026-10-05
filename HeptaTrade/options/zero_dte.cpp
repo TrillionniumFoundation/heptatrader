@@ -154,18 +154,21 @@ Decision Evaluate(const Policy& p,const Contract& c,const Snapshot& s,bool close
     if(!s.accountComplete || !s.positionsComplete || !s.ordersComplete || !s.epoch) add("OPTION_ACCOUNT_SNAPSHOT_INCOMPLETE");
     if(s.unresolvedSend || s.ownedActiveOrders!=0) add("OPTION_ORIGINAL_COMMAND_UNRESOLVED");
     const auto beforeData=d.reasons.size();
+    const auto quoteEpoch=s.marketDataEpoch?s.marketDataEpoch:s.epoch;
+    if(s.marketDataSource!="IB" && s.marketDataSource!="SNOWBALL") add("OPTION_MARKET_DATA_SOURCE_INVALID");
+    if(s.marketDataSource=="SNOWBALL" && !s.marketDataEpoch) add("OPTION_FEED_EPOCH_REQUIRED");
     if(s.option.entitlementDenied) add("OPTION_MARKET_DATA_NOT_SUBSCRIBED");
     if(s.option.marketDataType!=1 || s.underlyingDataType!=1) add("OPTION_REALTIME_DATA_REQUIRED");
-    if(!Fresh(s.option.bid,s.nowMs,s.epoch,p.maxQuoteAgeMs)) add("OPTION_BID_STALE_OR_MISSING");
-    if(!Fresh(s.option.ask,s.nowMs,s.epoch,p.maxQuoteAgeMs)) add("OPTION_ASK_STALE_OR_MISSING");
-    if(!Fresh(s.option.bidSize,s.nowMs,s.epoch,p.maxQuoteAgeMs) ||
-       !Fresh(s.option.askSize,s.nowMs,s.epoch,p.maxQuoteAgeMs)) add("OPTION_SIZE_STALE_OR_MISSING");
-    if(!Fresh(s.underlying,s.nowMs,s.epoch,p.maxQuoteAgeMs)) add("OPTION_UNDERLYING_STALE_OR_MISSING");
+    if(!Fresh(s.option.bid,s.nowMs,quoteEpoch,p.maxQuoteAgeMs)) add("OPTION_BID_STALE_OR_MISSING");
+    if(!Fresh(s.option.ask,s.nowMs,quoteEpoch,p.maxQuoteAgeMs)) add("OPTION_ASK_STALE_OR_MISSING");
+    if(!Fresh(s.option.bidSize,s.nowMs,quoteEpoch,p.maxQuoteAgeMs) ||
+       !Fresh(s.option.askSize,s.nowMs,quoteEpoch,p.maxQuoteAgeMs)) add("OPTION_SIZE_STALE_OR_MISSING");
+    if(!Fresh(s.underlying,s.nowMs,quoteEpoch,p.maxQuoteAgeMs)) add("OPTION_UNDERLYING_STALE_OR_MISSING");
     const double spread=s.option.ask.value-s.option.bid.value;
     if(!Finite(spread) || spread<0 || spread>p.maxAbsoluteSpread ||
        (s.option.ask.value>0 && spread/s.option.ask.value>p.maxRelativeSpread)) add("OPTION_SPREAD_REJECTED");
     const auto& g=s.greeks;
-    if(!close && (!g.valid || g.epoch!=s.epoch || g.observedMs<=0 || g.observedMs>s.nowMs ||
+    if(!close && (!g.valid || g.epoch!=quoteEpoch || g.observedMs<=0 || g.observedMs>s.nowMs ||
        s.nowMs-g.observedMs>p.maxGreeksAgeMs || !Finite(g.delta) || !Finite(g.gamma) ||
        !Finite(g.theta) || !Finite(g.vega) || !Finite(g.iv) || !Finite(g.underlying) ||
        g.gamma<0 || g.gamma>=1e6 || g.vega<0 || g.vega>=1e6 || std::fabs(g.theta)>=1e6 || g.iv<0 || g.iv>5 || g.underlying<=0 ||

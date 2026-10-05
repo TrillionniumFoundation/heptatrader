@@ -39,7 +39,11 @@ struct Greeks {
 };
 struct Snapshot {
     std::int64_t nowMs = 0;
-    std::uint64_t epoch = 0;
+    std::uint64_t epoch = 0; // Broker account/position/order epoch.
+    // Independent market-data epoch. Zero preserves legacy IB-only captures.
+    // Never retag an external feed's old ticks with a new broker epoch.
+    std::string marketDataSource = "IB";
+    std::uint64_t marketDataEpoch = 0;
     std::string account, owner, executionDomain;
     Book option;
     Tick underlying;
