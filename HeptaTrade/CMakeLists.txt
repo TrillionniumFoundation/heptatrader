@@ -432,6 +432,24 @@ add_library(hepta_risk_engine STATIC
     risk/portfolio_risk_snapshot_builder.cpp)
 target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_library(hepta_options_core STATIC
+    options/zero_dte.cpp options/zero_dte_observation.cpp)
+target_include_directories(hepta_options_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(hepta_options_core PUBLIC cxx_std_11)
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_options_observer options/zero_dte_observer.cpp)
+    set_target_properties(hepta_options_observer PROPERTIES OUTPUT_NAME "hepta-options-observer")
+    target_compile_features(hepta_options_observer PRIVATE cxx_std_11)
+    target_link_libraries(hepta_options_observer PRIVATE hepta_options_core hepta_ibapi_client Threads::Threads)
+    install(TARGETS hepta_options_observer RUNTIME DESTINATION bin COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(PROGRAMS ../scripts/heptatrader_options_shadow.py
+        DESTINATION libexec/heptatrader COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(FILES ../docs/technical/native-zero-dte.md
+        DESTINATION share/doc/heptatrader COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(FILES ../systemd/user/heptatrader-options-shadow.service
+        DESTINATION share/heptatrader/user-systemd COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+endif()
+
 add_library(hepta_ib_order_state STATIC
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp)

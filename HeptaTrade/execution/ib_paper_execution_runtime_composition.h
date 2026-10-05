@@ -1,3 +1,4 @@
+#include "ib_execution_aggregate.h"
 #pragma once
 
 #include "execution_runtime_observation.h"
@@ -306,7 +307,7 @@ private:
     void ProjectRecentBrokerOrder(const OmsJournalEvent& event);
     void ProjectAcceptedRecentBrokerOrder(
         const OmsJournalEvent& event, const std::string& agentId);
-    void ApplyRecentBrokerOrderIdentity(
+    static void ApplyRecentBrokerOrderIdentity(
         RecentBrokerOrder& order, const OmsJournalEvent& event,
         const std::string& agentId);
     static void ApplyRecentBrokerExecutionIdentity(
@@ -420,6 +421,7 @@ private:
     std::chrono::steady_clock::time_point m_brokerReconnectRefreshStartedAt;
     OmsLatencySummary m_brokerReconnectLatency;
     OmsLatencySummary m_brokerReconnectRefreshLatency;
+    friend class IbRecentOrderProjectionTestAccess;
     struct RecentBrokerOrder
     {
         long orderId = -1;
@@ -435,6 +437,7 @@ private:
         int brokerClientId = -1;
         std::string brokerExecutionId;
         bool brokerExecutionAmbiguous = false;
+        IbCumulativeExecutionAggregate executionAggregate;
         double brokerExecutionQuantity = 0.0;
         double brokerExecutionPrice = 0.0;
         std::string status;

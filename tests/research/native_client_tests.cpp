@@ -42,6 +42,38 @@ std::string Wire(TradingToolHostRequest request) {
     Check(body == roundTrip, "exit wire round trip changed fields");
     return body;
 }
+void OptionProposalsPreserveContractAndConId() {
+    InstrumentRef c; c.symbol="XSP";c.secType="OPT";c.currency="USD";c.exchange="SMART";
+    c.lastTradeDateOrContractMonth="20261005";c.right="C";c.strike=775;
+    c.multiplier="100";c.tradingClass="XSP";c.localSymbol="XSP   261005C00775000";
+    const auto p=PreparedOrder::MarketOption(913173379,c,1,2.0,2000000000000LL);
+    auto request=p.PreviewRequest("options-wire-preview-001");
+    const auto wire=Wire(request);
+    Check(request.call.instrument=="IBOPT:913173379", "conId not bound to instrument");
+    Check(request.call.ibOrder.orderType=="MKT" && request.call.timeInForce=="IOC" &&
+          request.call.ibOrder.totalQuantity==1 && request.call.ibOrder.cashQuantity==0 &&
+          request.call.ibOrder.lmtPrice==0, "option size/order semantics changed");
+    request.sessionToken="test-only-option-token";
+    std::string body,reason;TradingToolHostRequest decoded;
+    Check(TypedToolProtocol::EncodeRequest(request,body,reason),"encode option");
+    Check(TypedToolProtocol::DecodeRequest(body,decoded,reason),"decode option");
+    const auto& d=decoded.call.ibContract;
+    Check(d.lastTradeDateOrContractMonth==c.lastTradeDateOrContractMonth && d.strike==c.strike &&
+          d.right==c.right && d.multiplier==c.multiplier && d.tradingClass==c.tradingClass &&
+          d.localSymbol==c.localSymbol && decoded.call.instrument==request.call.instrument,
+          "rich option identity lost in HTT1");
+    Check(wire!=Wire(PreparedOrder::MarketOption(913173380,c,1,2.0,2000000000000LL).PreviewRequest("options-wire-preview-001")),
+          "changed conId has identical request bytes");
+    auto put=c;put.right="P";put.localSymbol="XSP   261005P00775000";
+    Check(wire!=Wire(PreparedOrder::MarketOption(913174277,put,1,2.0,2000000000000LL).PreviewRequest("options-wire-preview-001")),
+          "Call/Put identity collision");
+    Throws([&]{PreparedOrder::MarketOption(0,c,1,2.0,2000000000000LL);});
+    Throws([&]{PreparedOrder::MarketOption(913173379,c,2,2.0,2000000000000LL);});
+    auto bad=c;bad.multiplier="10";
+    Throws([&]{PreparedOrder::MarketOption(913173379,bad,1,2.0,2000000000000LL);});
+    bad=c;bad.strike=776;
+    Throws([&]{PreparedOrder::MarketOption(913173379,bad,1,2.0,2000000000000LL);});
+}
 void ExitRequests() {
     const std::string cancelId = "research-cancel-command-001";
     // Exercise the actual wire's full nonnegative long domain, including zero.
@@ -1021,4 +1053,4 @@ void Tests() {
     Check(result.envelope.status.empty(), "local validation failure retained old success");
 }
 }
-int main() { return Run([] { CryptoProposalRetainsExactNativeWireAndOutbox(); CryptoMarketCashWireAndOriginalOutbox(); MarketCashProposalTests(); Tests(); }); }
+int main() { return Run([] { OptionProposalsPreserveContractAndConId(); CryptoProposalRetainsExactNativeWireAndOutbox(); CryptoMarketCashWireAndOriginalOutbox(); MarketCashProposalTests(); Tests(); }); }

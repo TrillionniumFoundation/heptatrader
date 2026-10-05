@@ -1,0 +1,20 @@
+[Unit]
+Description=HeptaTrader native options read-only shadow (NO order authority)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/heptatrader/options-shadow.env
+ExecStart=%h/.local/share/heptatrader/options-shadow/current/libexec/heptatrader/heptatrader_options_shadow.py --observer %h/.local/share/heptatrader/options-shadow/current/bin/hepta-options-observer --account ${HEPTA_OPTIONS_PAPER_ACCOUNT} --state-dir %h/.local/state/heptatrader/options-shadow --duration-sec 300 --client-id 8665
+Restart=always
+RestartSec=30
+TimeoutStopSec=20
+KillMode=control-group
+Nice=10
+UMask=0077
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=default.target

@@ -159,3 +159,9 @@ Historical HeptaDLL inventory consistency belongs only to the Python source
 partition. It is not repeated in native/sanitizer CTest and no longer requires
 particular English explanation phrases. Canonical old-record decoding, retired
 interface rejection and unprivileged-client boundary tests remain native behavior.
+
+## 0DTE options development
+
+The optional native options observer, risk/economic evidence core, MKT proposal
+codec and acceptance boundaries are documented in [Native 0DTE](native-zero-dte.md).
+This is shadow delivery only; it does not enable OPT in the current PAPER profile.

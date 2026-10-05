@@ -98,28 +98,21 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerOrderIdentity(
 void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerExecutionIdentity(
     RecentBrokerOrder& order, const OmsJournalEvent& event)
 {
-    if (event.eventType != "broker_execution" ||
-        event.brokerExecutionId.empty() || order.brokerExecutionAmbiguous)
-        return;
-    if (order.brokerExecutionId.empty())
-    {
-        order.brokerExecutionId = event.brokerExecutionId;
-        order.brokerExecutionQuantity = event.qty;
-        order.brokerExecutionPrice = event.price;
+    if (event.eventType != "broker_execution" || event.brokerExecutionId.empty() ||
+        order.brokerExecutionAmbiguous) return;
+    if (!order.executionAggregate.Observe(event.brokerExecutionId, event.qty, event.price)) {
+        order.brokerExecutionAmbiguous = true;
+        order.brokerExecutionId.clear();
+        order.brokerExecutionQuantity = 0;
+        order.brokerExecutionPrice = 0;
+        order.reasonCode = order.executionAggregate.Reason();
         return;
     }
-    const bool conflictingReplay =
-        order.brokerExecutionId != event.brokerExecutionId ||
-        order.brokerExecutionQuantity != event.qty ||
-        order.brokerExecutionPrice != event.price;
-    if (!conflictingReplay) return;
-    // One recent_orders row cannot faithfully represent multiple executions
-    // or a conflicting replay under one execution id. Remove the usable id so
-    // performance accounting must fail closed instead of inventing a VWAP.
-    order.brokerExecutionId.clear();
-    order.brokerExecutionAmbiguous = true;
-    order.brokerExecutionQuantity = 0.0;
-    order.brokerExecutionPrice = 0.0;
+    // A second genuine execution is not a conflicting replay. The wrapper's
+    // qty/price are broker cumulative quantity / cumulative average; never SUM.
+    order.brokerExecutionId = order.executionAggregate.LastExecutionId();
+    order.brokerExecutionQuantity = order.executionAggregate.Quantity();
+    order.brokerExecutionPrice = order.executionAggregate.AveragePrice();
 }
 
 bool IbPaperExecutionRuntimeComposition::HasPositiveEconomicEvidence(
@@ -137,9 +130,18 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerEconomicEvidence(
         event.eventType == "broker_order_status";
     if (!economicCallback || !positiveEconomicEvidence || order.brokerExecutionAmbiguous) return;
     order.economicFill = true;
-    order.filledQuantity = std::max(order.filledQuantity, event.qty);
-    order.averageFillPrice = event.price;
-    order.reasonCode.clear();
+    if (order.executionAggregate.Valid()) {
+        order.filledQuantity = order.executionAggregate.Quantity();
+        order.averageFillPrice = order.executionAggregate.AveragePrice();
+        order.reasonCode = event.qty > order.filledQuantity ?
+            "IB_EXECUTION_DETAILS_PENDING" : "";
+    } else if (event.qty >= order.filledQuantity) {
+        // A status can inform the display but has no execution id and therefore
+        // cannot authorize economic reconciliation by itself.
+        order.filledQuantity = event.qty;
+        order.averageFillPrice = event.price;
+        order.reasonCode.clear();
+    }
 }
 
 void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
@@ -150,11 +152,10 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
     {
         order.terminal = true;
         order.remainingQuantity = 0.0;
-        if (order.economicFill)
-        {
-            order.status = "Filled";
+        // Removal from active orders proves a lifecycle boundary, not that
+        // every requested unit filled. Preserve Cancelled-with-partial-fill.
+        if (order.economicFill && !order.brokerExecutionAmbiguous)
             order.reasonCode.clear();
-        }
     }
     const bool explicitNonFillTerminal =
         event.status == "Cancelled" || event.status == "ApiCancelled" ||
@@ -163,9 +164,12 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
         event.status == "Filled" && positiveEconomicEvidence;
     const bool errorTerminal = event.eventType == "broker_error" &&
         (event.brokerErrorCode == 201 || event.brokerErrorCode == 202);
-    if (explicitNonFillTerminal || reconciledTerminal ||
-        economicTerminal || errorTerminal)
+    if (explicitNonFillTerminal || reconciledTerminal || economicTerminal || errorTerminal) {
         order.terminal = true;
+        order.remainingQuantity = 0;
+        if (explicitNonFillTerminal || economicTerminal || errorTerminal)
+            order.status = event.status;
+    }
     if (event.status != "Filled" || positiveEconomicEvidence ||
         order.economicFill)
         return;
@@ -252,7 +256,22 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                << EscapeJson(order.executionDomain) << "\""
                << ",\"instrument\":\"" << EscapeJson(order.instrument)
                << "\",\"side\":\"" << EscapeJson(order.side) << "\"}";
-        const std::string row = output.str();
+        // Keep every real execution identity in the result; the legacy scalar
+        // names the broker's latest cumulative witness, never a fabricated ID.
+        std::string serialized = output.str();
+        serialized.pop_back();
+        std::ostringstream evidence;
+        evidence.precision(17);
+        evidence << ",\"broker_execution_semantics\":\"CUMULATIVE\",\"broker_executions\":[";
+        std::size_t index = 0;
+        for (const auto& point : order.executionAggregate.Points()) {
+            if (index++) evidence << ',';
+            evidence << "{\"execution_id\":\"" << EscapeJson(point.first)
+                << "\",\"cumulative_quantity\":" << point.second.cumulativeQuantity
+                << ",\"cumulative_average_price\":" << point.second.cumulativeAveragePrice << '}';
+        }
+        evidence << "]}";
+        const std::string row = serialized + evidence.str();
         if (result.size() + row.size() + (returned ? 1 : 0) + 1 > recentByteBudget)
             break;
         if (returned) result += ',';

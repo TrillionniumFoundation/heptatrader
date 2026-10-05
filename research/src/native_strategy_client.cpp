@@ -1,6 +1,9 @@
 #include "hepta/research/native_strategy_client.h"
 #include <tools/trading_tool_wire_contract.h>
 #include <cmath>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 #include <atomic>
 #include <cerrno>
@@ -115,6 +118,42 @@ PreparedOrder PreparedOrder::MarketCrypto(double cashQuantity, double referenceP
     result.call_.ibOrder.cashQuantity=cashQuantity;
     Validate(result.call_);
     return result;
+}
+PreparedOrder PreparedOrder::MarketOption(std::int64_t conId,
+    const InstrumentRef& contract, int contracts, double referencePrice,
+    std::int64_t expiresAtMs) {
+    const bool product = (contract.symbol == "XSP" && contract.tradingClass == "XSP") ||
+        (contract.symbol == "SPX" && contract.tradingClass == "SPXW");
+    if (conId <= 0 || contracts != 1 || !product || contract.secType != "OPT" ||
+        contract.currency != "USD" || contract.exchange != "SMART" ||
+        !contract.primaryExchange.empty() || contract.multiplier != "100" ||
+        (contract.right != "C" && contract.right != "P") ||
+        contract.lastTradeDateOrContractMonth.size() != 8 ||
+        contract.lastTradeDateOrContractMonth.find_first_not_of("0123456789") != std::string::npos ||
+        !std::isfinite(contract.strike) || contract.strike <= 0 || contract.strike > 99999.999 ||
+        std::fabs(contract.strike*1000-std::round(contract.strike*1000)) > 1e-6 ||
+        !std::isfinite(referencePrice) || referencePrice <= 0 || expiresAtMs <= 0)
+        throw std::invalid_argument("RESEARCH_PAPER_OPTION_PROPOSAL_INVALID");
+    std::ostringstream occ;
+    occ.imbue(std::locale::classic());
+    occ << std::left << std::setw(6) << contract.tradingClass
+        << contract.lastTradeDateOrContractMonth.substr(2) << contract.right
+        << std::right << std::setfill('0') << std::setw(8)
+        << static_cast<long long>(std::llround(contract.strike*1000));
+    if (occ.str() != contract.localSymbol)
+        throw std::invalid_argument("RESEARCH_PAPER_OPTION_LOCAL_SYMBOL_MISMATCH");
+    PreparedOrder proposal;
+    proposal.call_.name = "risk.preview_order";
+    proposal.call_.instrument = "IBOPT:" + std::to_string(conId);
+    proposal.call_.ibContract = contract;
+    proposal.call_.ibOrder.action = "BUY";
+    proposal.call_.ibOrder.orderType = "MKT";
+    proposal.call_.ibOrder.totalQuantity = contracts;
+    proposal.call_.timeInForce = "IOC";
+    proposal.call_.referencePrice = referencePrice;
+    proposal.call_.expiresAtMs = expiresAtMs;
+    Validate(proposal.call_);
+    return proposal;
 }
 TradingToolHostRequest PreparedOrder::PreviewRequest(const std::string& id) const {
     CheckId(id);

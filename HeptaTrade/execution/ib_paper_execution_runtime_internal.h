@@ -27,7 +27,17 @@ static const int kMarketDataAdmissionStabilityWindowMs = 250;
 extern const char* const kFxCashRestartCheckpointFile;
 extern const char* const kPaperTerminalLatchFile;
 
-std::string EscapeJson(const std::string& value);
+inline std::string EscapeJson(const std::string& value)
+{
+    std::string escaped;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+    {
+        const unsigned char byte = static_cast<unsigned char>(*it);
+        if (byte == '"' || byte == '\\') escaped.push_back('\\');
+        escaped.push_back(byte < 0x20 ? '?' : static_cast<char>(byte));
+    }
+    return escaped;
+}
 bool ParsePositiveUnsigned(
     const std::string& value, std::uint64_t& parsed);
 bool HasPositiveEconomicFillEvidence(const IBEvent& event);

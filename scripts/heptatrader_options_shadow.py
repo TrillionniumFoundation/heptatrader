@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Bounded native 0DTE observation/replay runner. No strategy or order submission.
+
+Each invocation records a new private capture and replays that same capture.
+Systemd may repeat the bounded invocation; it never enables options trading.
+"""
+import argparse
+from datetime import datetime, timezone
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import stat
+import subprocess
+import tempfile
+import uuid
+
+
+def private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise RuntimeError("OPTIONS_SHADOW_STATE_DIRECTORY_UNSAFE")
+
+
+def atomic_status(path: Path, data: dict) -> None:
+    fd, name = tempfile.mkstemp(prefix=".status-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(data, output, indent=2, allow_nan=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, path)
+        dirfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+@contextmanager
+def single_writer(directory: Path):
+    fd = os.open(directory / "observer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_mode & 0o077:
+            raise RuntimeError("OPTIONS_SHADOW_LOCK_UNSAFE")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("OPTIONS_SHADOW_ALREADY_RUNNING") from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def observer_result(log: Path, returncode: int) -> dict:
+    if returncode not in (0, 2):
+        raise RuntimeError("OPTIONS_OBSERVER_FAILED:" + str(returncode))
+    complete, starts, accounts, notices = [], [], [], []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            if line.lstrip().startswith("{"):
+                raise RuntimeError("OPTIONS_OBSERVER_INVALID_JSON")
+            continue  # SDK diagnostics are not completion evidence.
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("event")
+        if kind == "options_readonly_failed":
+            raise RuntimeError("OPTIONS_OBSERVER_REPORTED_FAILURE")
+        if kind == "options_readonly_complete":
+            complete.append(event)
+        if kind == "options_readonly_started":
+            starts.append(event)
+        if kind == "paper_account_check":
+            accounts.append(event.get("verified"))
+        if kind == "ib_notice" and type(event.get("code")) is int:
+            notices.append(event["code"])
+    if len(complete) != 1 or len(starts) != 1 or not accounts or any(x is not True for x in accounts):
+        raise RuntimeError("OPTIONS_OBSERVER_COMPLETION_UNPROVEN")
+    end = complete[0]
+    if starts[0].get("order_send_capability") is not False or type(end.get("broker_order_send_count")) is not int or end["broker_order_send_count"] != 0:
+        raise RuntimeError("OPTIONS_SHADOW_MUTATION_BOUNDARY_VIOLATION")
+    count, ready = end.get("records"), end.get("realtime_ready_records")
+    if type(count) is not int or type(ready) is not int or count < 0 or not 0 <= ready <= count or (returncode == 2) != (count == 0):
+        raise RuntimeError("OPTIONS_OBSERVER_RECORD_COUNTS_INVALID")
+    if end.get("trading_permission") != "UNVERIFIED" or end.get("premium_budget") != "UNSET":
+        raise RuntimeError("OPTIONS_OBSERVER_CANNOT_GRANT_TRADING_AUTHORITY")
+    return {"records": count, "realtime_ready_records": ready,
+            "exchange_date": starts[0].get("exchange_date"),
+            "ib_notice_codes": sorted(set(notices))}
+
+
+def validate_replay(replay: dict, returncode: int, status: dict) -> None:
+    if not isinstance(replay, dict) or returncode != 0 or replay.get("replay_pass") is not True or replay.get("broker_authorized") is not False:
+        raise RuntimeError("OPTIONS_NATIVE_CAPTURE_REPLAY_FAILED")
+    if type(replay.get("records")) is not int or type(replay.get("market_data_ready_records")) is not int or replay["records"] != status["records"] or replay["market_data_ready_records"] != status["realtime_ready_records"]:
+        raise RuntimeError("OPTIONS_CAPTURE_REPLAY_COUNT_MISMATCH")
+
+
+def run(args, binary: Path) -> int:
+    now = datetime.now(timezone.utc)
+    run = args.state_dir / (now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    private_directory(run)
+    os.umask(0o077)
+    status = {
+        "mode": "SHADOW_READ_ONLY",
+        "started_at_utc": now.isoformat(),
+        "observer": str(binary),
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "capture": str(run / "observations.h0d1"),
+        "broker_order_submission_enabled": False,
+        "options_paper_roundtrip_proven": False,
+        "trading_permission": "UNVERIFIED",
+        "premium_budget": "UNSET",
+        "state": "COLLECTING",
+    }
+    atomic_status(args.state_dir / "status.json", status)
+    args_list = [str(binary), "--account", args.account, "--capture", status["capture"],
+                 "--duration-sec", str(args.duration_sec), "--client-id", str(args.client_id)]
+    try:
+        with (run / "observer.jsonl").open("x", encoding="utf-8") as log:
+            process = subprocess.run(args_list, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                     check=False, timeout=args.duration_sec + 150)
+        status["observer_exit"] = process.returncode
+        status.update(observer_result(run / "observer.jsonl", process.returncode))
+        if status.get("records", 0) > 0:
+            replay = subprocess.run([str(binary), "--replay", status["capture"]],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    timeout=60, check=False)
+            (run / "replay.json").write_text(replay.stdout, encoding="utf-8")
+            status["replay_exit"] = replay.returncode
+            status["replay"] = json.loads(replay.stdout)
+            validate_replay(status["replay"], replay.returncode, status)
+            status["state"] = "OBSERVED_NO_TRADING_AUTHORITY"
+        else:
+            status["state"] = "NO_QUALIFIED_CANDIDATE"
+        status["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+        atomic_status(args.state_dir / "status.json", status)
+        atomic_status(run / "result.json", status)
+        print(json.dumps(status, allow_nan=False), flush=True)
+        return 0
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
+        status["state"] = "ERROR"
+        status["error"] = str(exc)
+        status["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+        atomic_status(args.state_dir / "status.json", status)
+        atomic_status(run / "result.json", status)
+        print(json.dumps(status, allow_nan=False), flush=True)
+        return 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--observer", type=Path, required=True)
+    parser.add_argument("--account", required=True)
+    parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--duration-sec", type=int, default=300)
+    parser.add_argument("--client-id", type=int, default=8662)
+    args = parser.parse_args()
+    if os.geteuid() == 0 or not re.fullmatch(r"DU[A-Z0-9]+", args.account):
+        parser.error("Requires an unprivileged user and an explicit PAPER account")
+    if not args.observer.is_absolute() or not args.state_dir.is_absolute():
+        parser.error("Absolute observer and state paths are required")
+    if not 15 <= args.duration_sec <= 900 or not 8000 <= args.client_id <= 9999:
+        parser.error("Duration/client-id outside read-only limits")
+    binary = args.observer.resolve(strict=True)
+    st = binary.stat()
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022 or not os.access(binary, os.X_OK):
+        parser.error("Observer binary ownership/mode is unsafe")
+    private_directory(args.state_dir)
+    try:
+        with single_writer(args.state_dir):
+            def interrupted(signum, frame):
+                raise RuntimeError("OPTIONS_SHADOW_INTERRUPTED:" + str(signum))
+            signal.signal(signal.SIGTERM, interrupted)
+            signal.signal(signal.SIGINT, interrupted)
+            return run(args, binary)
+    except (OSError, RuntimeError) as exc:
+        # A second writer must never overwrite the active owner's status.
+        print(json.dumps({"state": "START_REJECTED", "error": str(exc),
+                          "broker_order_submission_enabled": False}), flush=True)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

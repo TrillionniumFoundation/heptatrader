@@ -26,17 +26,6 @@ const char* const kFxCashRestartCheckpointFile =
 const char* const kPaperTerminalLatchFile =
     "ib-paper-terminal-halt.v1";
 
-std::string EscapeJson(const std::string& value)
-{
-    std::string escaped;
-    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
-    {
-        const unsigned char byte = static_cast<unsigned char>(*it);
-        if (byte == '"' || byte == '\\') escaped.push_back('\\');
-        escaped.push_back(byte < 0x20 ? '?' : static_cast<char>(byte));
-    }
-    return escaped;
-}
 
 using namespace ib_paper_execution_runtime_internal;
 

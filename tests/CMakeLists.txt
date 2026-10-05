@@ -28,6 +28,28 @@ function(hepta_register_core_test target)
     set(HEPTA_CORE_TEST_TARGETS "${HEPTA_CORE_TEST_TARGETS}" PARENT_SCOPE)
 endfunction()
 
+add_executable(hepta_zero_dte_execution_fault_tests zero_dte_execution_fault_tests.cpp)
+target_link_libraries(hepta_zero_dte_execution_fault_tests PRIVATE hepta_execution_core hepta_options_core)
+hepta_register_core_test(hepta_zero_dte_execution_fault_tests)
+
+add_test(NAME hepta_options_shadow_runner_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/options_shadow_runner_tests.py)
+set_tests_properties(hepta_options_shadow_runner_tests PROPERTIES LABELS "core;options")
+
+add_executable(hepta_zero_dte_boundary_tests zero_dte_boundary_tests.cpp)
+target_link_libraries(hepta_zero_dte_boundary_tests PRIVATE hepta_options_core)
+hepta_register_core_test(hepta_zero_dte_boundary_tests)
+
+add_executable(hepta_zero_dte_tests zero_dte_tests.cpp)
+target_link_libraries(hepta_zero_dte_tests PRIVATE hepta_options_core hepta_oms_journal)
+hepta_register_core_test(hepta_zero_dte_tests)
+add_executable(hepta_ib_recent_execution_aggregation_tests
+    ib_recent_execution_aggregation_tests.cpp
+    ../HeptaTrade/execution/ib_paper_execution_runtime_recent_orders.cpp)
+target_link_libraries(hepta_ib_recent_execution_aggregation_tests PRIVATE
+    hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_options_core)
+hepta_register_core_test(hepta_ib_recent_execution_aggregation_tests)
+
 add_executable(hepta_trading_contract_tests
     trading_contract_tests.cpp)
 hepta_register_core_test(hepta_trading_contract_tests)
