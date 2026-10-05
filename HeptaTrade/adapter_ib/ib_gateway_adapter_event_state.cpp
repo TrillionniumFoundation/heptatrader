@@ -1,3 +1,4 @@
+#include "ib_admission_event_policy.h"
 #include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
 #include "ib_order_parse_rejection.h"
@@ -649,6 +650,10 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
     const IBEvent& event) {
     int errorCode = 0;
     if (!ParseBrokerErrorCode(event.key, errorCode)) return;
+    if (IsIbGlobalUpgradeNotice(event) && event.connectionEpoch==m_connectionEpoch) {
+        EmitObsEvent("risk.client_upgrade_notice", "\"error_code\":2172");
+        return; // event remains in the queue and is persisted by Execution.
+    }
     // A repeat-cancel diagnostic is not an economic failure or terminal proof.
     // Suppress ONLY a current-epoch, locally corroborated pending-cancel 10148;
     // do not globally whitelist this code or infer Filled from its description.

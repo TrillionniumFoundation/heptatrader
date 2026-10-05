@@ -214,6 +214,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(hepta_audit_journal_lifecycle_tests PROPERTIES TIMEOUT 90)
 endif()
 
+add_executable(hepta_ib_admission_event_policy_tests ib_admission_event_policy_tests.cpp)
+hepta_register_core_test(hepta_ib_admission_event_policy_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
         hepta_tool_gatewayd

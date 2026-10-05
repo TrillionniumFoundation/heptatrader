@@ -1,4 +1,5 @@
-﻿#include "ib_api_wrapper.h"
+﻿#include "ib_admission_event_policy.h"
+#include "ib_api_wrapper.h"
 
 #include <algorithm>
 #include "ib_market_data_farm.h"
@@ -2058,40 +2059,7 @@ private:
     }
 
     static bool IsAdmissionBlockingEvent(const IBEvent& event) {
-        if (event.type == IBEventType::ConnectionClosed ||
-            event.type == IBEventType::EventQueueOverflow)
-            return true;
-        if (event.type != IBEventType::Error || event.key.empty())
-            return event.type == IBEventType::Error;
-        char* end = nullptr;
-        errno = 0;
-        const long code = std::strtol(event.key.c_str(), &end, 10);
-        if (errno != 0 || end == event.key.c_str() ||
-            end == nullptr || *end != '\0')
-            return true; // unknown broker error: keep the send gate closed
-        switch (code) {
-        case 2103: // scoped market-data farm loss is consumed by the runtime
-                   // before/after admission; it is not by itself a global
-                   // sender-boundary fault.
-        case 2104: // market-data farm connection OK
-        case 2106: // HMDS farm connection OK
-        case 2107: // HMDS farm inactive (not needed for live quotes)
-        case 2108:
-        case 2109: // outside-RTH notice
-        case 2119: // CASH-farm status is handled by the runtime gate; it is
-                   // promoted to a blocking witness only while admission is
-                   // formally open (see PushEvent above).
-        case 2158: // sec-def farm connection OK
-        case 1102: // connectivity restored; data maintained
-            return false;
-        case 1101: // connectivity restored; data lost: force a fresh
-                    // admission/recovery boundary before another quote send
-            return true;
-        default:
-            // Unknown and all other broker errors keep the admission closed;
-            // routing will preserve the exact callback/reason.
-            return true;
-        }
+        return IbAdmissionBlockingEvent(event);
     }
 
     static bool IsCashFarmWarningEvent(const IBEvent& event) {
