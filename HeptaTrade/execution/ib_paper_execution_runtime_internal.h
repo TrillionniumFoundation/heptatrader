@@ -113,8 +113,14 @@ inline bool PrimaryQuoteRequiresMarketDataFarm(
     const std::string& primaryInstrument)
 {
     const auto primary = quoteContracts.find(primaryInstrument);
-    return primary != quoteContracts.end() &&
-        (primary->second.secType == "CASH" || primary->second.secType == "CRYPTO");
+    // CASH has no safe pre-readiness request path: require an epoch-bound
+    // positive farm witness before its first ReqMktData.  CRYPTO is different:
+    // IB may not publish uscrypto 2104 until a subscription is requested, so
+    // requiring that callback before ReqMktData deadlocks startup.  Crypto
+    // admission remains fail-closed on actual quote readiness and current-epoch
+    // 10197, while IsPrimaryQuoteMarketDataFarm still recognizes uscrypto
+    // control callbacks after the request exists.
+    return primary != quoteContracts.end() && primary->second.secType == "CASH";
 }
 inline bool IsPrimaryQuoteMarketDataFarm(
     const std::map<std::string, InstrumentRef>& quoteContracts,
