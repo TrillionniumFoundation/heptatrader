@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import resource
 import stat
 import subprocess
 import tempfile
@@ -43,6 +44,38 @@ def atomic_status(path: Path, data: dict) -> None:
             os.close(dirfd)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def storage_budget(directory: Path, maximum_bytes: int, minimum_free_bytes: int,
+                   reserve_bytes: int = 32 * 1024 * 1024) -> dict:
+    if maximum_bytes <= 0 or minimum_free_bytes < 0 or reserve_bytes < 0:
+        raise ValueError("OPTIONS_STORAGE_POLICY_INVALID")
+    used = 0
+    for root, dirs, files in os.walk(directory, followlinks=False):
+        for name in dirs + files:
+            item = Path(root) / name
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise RuntimeError("OPTIONS_STATE_SYMLINK_REJECTED")
+            if stat.S_ISREG(info.st_mode):
+                used += info.st_size
+    filesystem = os.statvfs(directory)
+    free = filesystem.f_bavail * filesystem.f_frsize
+    reasons = []
+    if used + reserve_bytes > maximum_bytes:
+        reasons.append("OPTIONS_SHADOW_STATE_BUDGET_EXHAUSTED")
+    if free < minimum_free_bytes + reserve_bytes:
+        reasons.append("OPTIONS_SHADOW_FILESYSTEM_RESERVE_REQUIRED")
+    return {"allowed": not reasons, "state_bytes": used, "available_bytes": free,
+            "maximum_bytes": maximum_bytes, "minimum_free_bytes": minimum_free_bytes,
+            "attempt_reserve_bytes": reserve_bytes, "reasons": reasons}
+
+
+def limit_output_files() -> None:
+    limits = [16 * 1024 * 1024]
+    limits += [x for x in resource.getrlimit(resource.RLIMIT_FSIZE) if x != resource.RLIM_INFINITY]
+    limit = min(limits)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
 
 
 @contextmanager
@@ -166,6 +199,8 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--duration-sec", type=int, default=300)
     parser.add_argument("--client-id", type=int, default=8662)
+    parser.add_argument("--max-state-mib", type=int, default=2048)
+    parser.add_argument("--min-free-mib", type=int, default=4096)
     args = parser.parse_args()
     if os.geteuid() == 0 or not re.fullmatch(r"DU[A-Z0-9]+", args.account):
         parser.error("Requires an unprivileged user and an explicit PAPER account")
@@ -180,6 +215,19 @@ def main() -> int:
     private_directory(args.state_dir)
     try:
         with single_writer(args.state_dir):
+            if args.max_state_mib < 64 or args.min_free_mib < 64:
+                raise RuntimeError("OPTIONS_STORAGE_POLICY_TOO_SMALL")
+            budget = storage_budget(args.state_dir, args.max_state_mib * 1024 * 1024,
+                                    args.min_free_mib * 1024 * 1024)
+            if not budget["allowed"]:
+                blocked = {"mode": "SHADOW_READ_ONLY", "state": "STORAGE_BUDGET_BLOCKED",
+                           "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+                           "storage_budget": budget, "broker_order_submission_enabled": False,
+                           "options_paper_roundtrip_proven": False}
+                atomic_status(args.state_dir / "status.json", blocked)
+                print(json.dumps(blocked), flush=True)
+                return 2
+            limit_output_files()
             def interrupted(signum, frame):
                 raise RuntimeError("OPTIONS_SHADOW_INTERRUPTED:" + str(signum))
             signal.signal(signal.SIGTERM, interrupted)

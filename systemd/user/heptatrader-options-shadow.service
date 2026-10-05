@@ -13,6 +13,8 @@ TimeoutStopSec=20
 KillMode=control-group
 Nice=10
 UMask=0077
+LimitFSIZE=16M
+RuntimeMaxSec=480
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 

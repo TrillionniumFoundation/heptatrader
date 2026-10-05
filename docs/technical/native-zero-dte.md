@@ -204,7 +204,7 @@ FX/BTC runtime with default-branch binaries to install the observer.
 
 The added boundary suite first reproduced nine failed checks, then passed after
 repair. The rebuilt full CTest suite passed 54/54, including the runner test
-which contains fourteen Python boundary cases. These are code checks, not broker
+which contains eighteen Python boundary cases. These are code checks, not broker
 trading permission, real options executions or production restart acceptance.
 Canonical identity and decision JSON are independent of the process locale.
 
@@ -218,7 +218,14 @@ The unit `heptatrader-options-shadow.service` requires
 `HEPTA_OPTIONS_PAPER_ACCOUNT`. It runs 300-second native capture windows with a
 30-second interval and recreates contract discovery each time. Failures retry
 without trading. The state directory is `~/.local/state/heptatrader/options-shadow`.
-No pruning of evidence is performed; disk usage must be reviewed operationally.
+Existing evidence is never pruned automatically. The runner stops before starting
+another capture when its dedicated state would exceed 2 GiB (including a 32 MiB
+attempt reserve), or filesystem free space would fall below a 4 GiB reserve.
+`--max-state-mib` and `--min-free-mib` explicitly configure these storage limits.
+Every runner/observer output file is capped at 16 MiB. Storage exhaustion produces
+STORAGE_BUDGET_BLOCKED with trading disabled, not a replay or readiness success.
+The service also bounds each invocation to 480 seconds; previous capture evidence
+remains available for deliberate archival or cleanup.
 
 This worker is not `heptatrader-options-driver.service`. Starting or restarting
 it does not pass stage 5. It has no placeOrder, cancelOrder, exerciseOptions,

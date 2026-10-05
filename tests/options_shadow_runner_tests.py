@@ -83,6 +83,19 @@ class RunnerBoundaries(unittest.TestCase):
         with self.assertRaises(OSError):
             with shadow.single_writer(self.directory):
                 self.fail("symlink lock accepted")
+    def test_storage_with_room(self):
+        budget = shadow.storage_budget(self.directory, 64 * 1024 * 1024, 0)
+        self.assertTrue(budget["allowed"])
+    def test_storage_owned_budget_blocks(self):
+        (self.directory / "history").write_bytes(b"x" * 1000)
+        budget = shadow.storage_budget(self.directory, 100, 0, reserve_bytes=0)
+        self.assertIn("OPTIONS_SHADOW_STATE_BUDGET_EXHAUSTED", budget["reasons"])
+    def test_storage_free_space_floor_blocks(self):
+        budget = shadow.storage_budget(self.directory, 64 * 1024 * 1024, 1 << 63)
+        self.assertIn("OPTIONS_SHADOW_FILESYSTEM_RESERVE_REQUIRED", budget["reasons"])
+    def test_storage_attempt_reserve_blocks(self):
+        budget = shadow.storage_budget(self.directory, 1024, 0, reserve_bytes=2048)
+        self.assertFalse(budget["allowed"])
     def test_atomic_status(self):
         path = self.directory / "status.json"
         shadow.atomic_status(path, {"phase": 3, "trade_enabled": False})
