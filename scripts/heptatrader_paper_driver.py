@@ -379,13 +379,22 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["last_error"]="original command awaiting correlation-bound Broker reconciliation"
     atomic_json(path,state)
 
+def openclaw_model_ref(model):
+    model=str(model).strip()
+    if not model: raise DriverError("model id is empty")
+    # Preserve the historical HeptaTrader Luna preference while using the
+    # canonical model id advertised by the current OpenClaw catalog.
+    if model=="gpt-6-luna": return "openai/gpt-5.6-luna"
+    if "/" in model: return model
+    return "openai/"+model
+
 class ModelWorker:
-    def __init__(self,codex,state_dir,history,position):
+    def __init__(self,openclaw,state_dir,history,position):
         self.position=float(position); self.observed_at_ms=int(history[-1]["observed_at_ms"])
         self._decision=None; self._error=None; self._done=threading.Event()
         snapshot=[dict(x) for x in history]
         def target():
-            try: self._decision=model_decision(codex,state_dir,snapshot,self.position)
+            try: self._decision=model_decision(openclaw,state_dir,snapshot,self.position)
             except BaseException as error: self._error=error
             finally: self._done.set()
         self._thread=threading.Thread(target=target,name="heptatrader-paper-model",daemon=True)
@@ -396,7 +405,7 @@ class ModelWorker:
         if self._error is not None: raise self._error
         return self._decision
 
-def model_decision(codex,state_dir,history,position):
+def model_decision(openclaw,state_dir,history,position):
     schema=state_dir/"decision-schema.json"
     schema_value={"type":"object","required":["action","confidence","rationale"],
         "properties":{"action":{"enum":["BUY","SELL","HOLD"]},
@@ -404,18 +413,32 @@ def model_decision(codex,state_dir,history,position):
     raw=json.dumps(schema_value,separators=(",",":"))
     if not schema.exists(): schema.write_text(raw); schema.chmod(0o600)
     elif schema.read_text()!=raw: raise DriverError("decision schema drift")
-    output=state_dir/("decision-"+uuid.uuid4().hex+".json")
     compact=[{"t":x["observed_at_ms"],"bid":x["bid"],"ask":x["ask"],"mid":x["mid"]} for x in history[-24:]]
     prompt=(f"Direction-only decision for an IB PAPER {INSTRUMENT} test. You cannot trade or use tools. "
-        "Return required JSON only. Prefer HOLD unless direction is coherent. BUY means bullish and SELL bearish. "
+        "Return exactly one JSON object and nothing else matching this schema: "+raw+". "
+        "Prefer HOLD unless direction is coherent. BUY means bullish and SELL bearish. "
         f"Existing position={position:.17g}. Recent authoritative quotes="+json.dumps(compact,separators=(",",":")))
-    p=run([codex,"-a","never","exec","--ignore-user-config","--ephemeral","--skip-git-repo-check","--sandbox","read-only",
-        "--disable","shell_tool","--disable","unified_exec","--disable","apps","--disable","skill_mcp_dependency_install",
-        "--model",MODEL,"-c",'model_reasoning_effort="low"',"-c",'web_search="disabled"',
-        "--output-schema",schema,"-o",output,prompt],150)
-    if p.returncode!=0 or not output.exists(): raise DriverError("model decision failed: "+p.stderr[-200:])
-    d=strict_json(output.read_text()); output.unlink(missing_ok=True); conf=float(d.get("confidence",-1))
-    if d.get("action") not in {"BUY","SELL","HOLD"} or not math.isfinite(conf) or not 0<=conf<=1:
+    p=run([openclaw,"infer","model","run","--local","--model",openclaw_model_ref(MODEL),
+        "--thinking","low","--prompt",prompt,"--json"],150)
+    if p.returncode!=0: raise DriverError("model decision failed: "+p.stderr[-200:])
+    try:
+        envelope=strict_json(p.stdout)
+        outputs=envelope.get("outputs")
+        if envelope.get("ok") is not True or not isinstance(outputs,list) or len(outputs)!=1:
+            raise DriverError("model decision envelope invalid")
+        text=outputs[0].get("text") if isinstance(outputs[0],dict) else None
+        if not isinstance(text,str) or not text.strip():
+            raise DriverError("model decision output missing")
+        d=strict_json(text)
+    except DriverError:
+        raise
+    except Exception as error:
+        raise DriverError("model decision envelope invalid") from error
+    conf=float(d.get("confidence",-1))
+    if (set(d.keys())!={"action","confidence","rationale"} or
+            d.get("action") not in {"BUY","SELL","HOLD"} or
+            not isinstance(d.get("rationale"),str) or
+            not math.isfinite(conf) or not 0<=conf<=1):
         raise DriverError("invalid model decision")
     d["confidence"]=conf; return d
 
@@ -634,12 +657,12 @@ def main():
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     cli=str(home/".local/bin/heptatrader"); binary=str(home/".local/share/heptatrader/current/bin/hepta-paper-command")
     sessionctl=str(home/".local/share/heptatrader/current/bin/hepta-sessionctl")
-    codex=str(home/".local/share/heptatrader/tools/node_modules/.bin/codex")
+    openclaw=str(home/".npm-global/bin/openclaw")
     socket=f"/run/user/{os.geteuid()}/heptatrader/tools.sock"; supervisor=f"/run/user/{os.geteuid()}/heptatrader/supervisor.sock"
     token=str(home/".config/heptatrader"/("crypto.token" if crypto else "paper.token"))
     if crypto:
         NATIVE_ENDPOINT=[str(home/".local/share/heptatrader/current/bin/heptactl"),"--socket",socket,"--token-file",token]
-    for x in (cli,binary,sessionctl,codex,token):
+    for x in (cli,binary,sessionctl,openclaw,token):
         if not Path(x).exists(): raise DriverError("required runtime missing: "+x)
     stop=False
     def stopping(_sig,_frame):
@@ -757,7 +780,7 @@ def main():
             due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
             if model_worker is None and due and len(state["history"])>=6:
                 state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
-                model_worker=ModelWorker(codex,state_dir,state["history"],pos)
+                model_worker=ModelWorker(openclaw,state_dir,state["history"],pos)
             atomic_json(state_path,state)
         except Exception as e:
             if state.get("owner_fence_recovery_required"):
