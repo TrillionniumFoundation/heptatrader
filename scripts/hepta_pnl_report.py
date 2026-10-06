@@ -347,6 +347,94 @@ def initialize_period(reset: Path, path: Path, reader: Callable, state_root: Pat
     return period
 
 
+def attach_account(report: dict, period_path: Path, state_root: Path, config: Path) -> dict:
+    from hepta_account_pnl import account_report, reconcile_nav_return, validate_nav
+    period = load_private(period_path)
+    validate_period(period)
+    root = state_root / "pnl/account"
+    issues = []
+    def optional(path):
+        if not path.exists(): return None
+        return load_private(path)
+    nav = optional(root / "nav.json")
+    if nav and (nav.get("journal_fingerprint") != list(fingerprint(state_root / "execution/oms-journal.jsonl")) or
+                nav.get("period_sha256") != hashlib.sha256(read_private(period_path)[0]).hexdigest()):
+        nav = None
+        issues.append("ACCOUNT_NAV_LEDGER_OR_PERIOD_CHANGED")
+    first = optional(root / ("first-" + hashlib.sha256(period["period_id"].encode()).hexdigest()[:16] + ".json"))
+    activity = optional(root / "activity.json")
+    model = optional(config / "exit-cost-model.json")
+    result = account_report(period, nav, activity, model, first, now_ms())
+    result["reason_codes"].extend(issues)
+    inputs = optional(root / "return-inputs.json")
+    if inputs and nav and result["nav_complete"]:
+        try:
+            # Provider evidence must be retained, not just a claimed digest.
+            for key in ("external_flows", "unbooked_liabilities"):
+                item = inputs.get(key)
+                if not item: continue
+                sha = item.get("source_sha256", "")
+                if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+                    raise EvidenceError("ACCOUNT_RETURN_SOURCE_DIGEST_INVALID")
+                candidates = (root / "statement-sources" / (sha + ".xml"), root / "supporting-sources" / sha)
+                source = next((path for path in candidates if path.exists()), None)
+                if source is None or hashlib.sha256(read_private(source, 16*1024*1024)[0]).hexdigest() != sha:
+                    raise EvidenceError("ACCOUNT_RETURN_SOURCE_NOT_RETAINED")
+            # Re-derive funding from the retained raw XML, not caller-authored
+            # rows or completeness flags in return-inputs.json.
+            from hepta_account_activity import parse_flex, derive_external_flows
+            flow_input = inputs["external_flows"]
+            flex_raw = read_private(root / "statement-sources" / (flow_input["source_sha256"] + ".xml"), 16*1024*1024)[0]
+            parsed = parse_flex(flex_raw, period["account"], period["currency"], inputs["statement_timezone"])
+            flows = derive_external_flows(parsed, period["started_at_ms"], nav["observed_at_ms"])
+            # The opening NAV receipt must retain the actual raw read, too.
+            from hepta_account_pnl import normalize_nav
+            opening_raw = inputs["opening_nav_raw"]
+            original_opening = normalize_nav(opening_raw, period)
+            computed = reconcile_nav_return(period, original_opening, nav, flows,
+                                            inputs.get("unbooked_liabilities"), now_ms())
+            result.update(computed)
+            result["complete"] = computed["all_in_complete"]
+            result["reason_codes"] = [r for r in result["reason_codes"] if r not in (
+                "RESET_OPENING_FULL_NAV_OR_EXTERNAL_FLOW_COVERAGE_MISSING",
+                "BROKER_CASH_FLOW_AND_CHARGE_STATEMENTS_MISSING", "STATEMENT_DOES_NOT_COVER_RESET_TO_LIVE_NAV")]
+            if computed["all_in_complete"]:
+                result["reason_codes"] = [r for r in result["reason_codes"] if r != "EXTERNAL_UNREPORTED_LIABILITIES_AND_PERSONAL_TAX_UNPROVEN"]
+        except (ValueError, KeyError, OSError) as error:
+            result["reason_codes"].append(str(error) if isinstance(error, EvidenceError) else "ACCOUNT_RETURN_INPUT_INVALID")
+    report = dict(report)
+    report["account"] = result
+    report["account_nav"] = result["nav"]
+    report["account_complete"] = result["complete"]
+    report["account_nav_reason"] = None if result["nav_complete"] else ";".join(result["reason_codes"])
+    report["all_in_account_net_pnl"] = result["all_in_account_net_pnl"]
+    return report
+
+
+def render_account(account: dict) -> str:
+    def money(value): return "UNKNOWN" if value is None else f"{number(value):+.2f}"
+    lines = ["ACCOUNT | USD | " + str(account.get("period_id")),
+             "Broker NAV (includes reported accruals)=" + money(account.get("nav")),
+             "  Cash=" + money(account.get("cash")) + "; marked assets=" + money(account.get("marked_assets")) +
+             "; accrued interest=" + money(account.get("accrued_interest")) + "; dividend accruals=" + money(account.get("dividend_accruals")),
+             "Funding-adjusted account return=" + money(account.get("broker_reported_account_net_pnl")) +
+             "; including documented outside-NAV liabilities=" + money(account.get("all_in_account_net_pnl"))]
+    future = account.get("future_exit_costs") or {}
+    lines.append("ESTIMATE ONLY: future exit commissions=" + money(future.get("estimated_future_exit_commissions")))
+    for scenario in future.get("scenarios", []):
+        lines.append("  " + scenario["name"] + " estimated NAV after liquidation=" + money(scenario["estimated_nav_after_liquidation"]) +
+                     "; assumed total cost=" + money(scenario["total_estimated_cost"]))
+    for statement in account.get("statement_periods", [])[-3:]:
+        lines.append("STATEMENT " + str(statement["from_ms"]) + ".." + str(statement["to_ms"]) +
+                     " broker-account net=" + money(statement.get("broker_reported_account_net_pnl")))
+    lines.append("Posted fees/interest/taxes are already reflected in NAV; never subtract them twice.")
+    lines.append("Future commissions/spread/slippage are model scenarios, NOT incurred costs or executable quotes.")
+    lines.append("Personal income tax and unreported outside-account costs remain UNKNOWN without source coverage.")
+    lines.append("NAV observed_at_ms=" + str(account.get("nav_observed_at_ms")) + "; valid_until_ms=" + str(account.get("nav_valid_until_ms")))
+    lines.extend("  " + r for r in account.get("reason_codes", []))
+    return "\n".join(lines)
+
+
 def render(report: dict) -> str:
     def money(value):
         return "UNKNOWN" if value is None else f"{number(value):+.2f}"
@@ -366,6 +454,8 @@ def render(report: dict) -> str:
     lines.append("observed_at_ms=" + str(report.get("observed_at_ms")) + "; valid_until_ms=" + str(report.get("valid_until_ms")))
     if report.get("reason_codes"):
         lines.append("; ".join(report["reason_codes"]))
+    if isinstance(report.get("account"), dict):
+        lines.append("\n" + render_account(report["account"]))
     return "\n".join(lines)
 
 
@@ -376,6 +466,9 @@ def main(argv=None) -> int:
     modes.add_argument("--watch", action="store_true")
     modes.add_argument("--cached", action="store_true")
     modes.add_argument("--init-from-reset", type=Path)
+    modes.add_argument("--import-flex", type=Path)
+    parser.add_argument("--statement-timezone")
+    parser.add_argument("--account", action="store_true", help="show complete account scope, not strategy total")
     parser.add_argument("--broker-client-id", type=int)
     parser.add_argument("--period", type=Path, default=home / ".config/heptatrader/pnl-period.json")
     parser.add_argument("--state-root", type=Path, default=home / ".local/state/heptatrader")
@@ -393,6 +486,18 @@ def main(argv=None) -> int:
     output = args.output or args.state_root / "pnl/snapshot.json"
     reader = NativeReader(args.prefix, args.config, args.socket)
     os.umask(0o077)
+    if args.import_flex:
+        if not args.statement_timezone:
+            parser.error("--import-flex requires explicit --statement-timezone")
+        from hepta_account_activity import import_flex
+        try:
+            result = import_flex(args.import_flex, args.period, args.state_root / "pnl/account", args.statement_timezone)
+        except (OSError, ValueError, KeyError) as error:
+            parser.exit(2, str(error) + "\n")
+        print(json.dumps({"imported_statement_periods": len(result["statements"]),
+                          "account_return_periods_complete": sum(s["complete"] for s in result["statements"]),
+                          "trading_state_changed": False, "current_period_coverage_inferred": False}))
+        return 0
     if args.init_from_reset:
         if not positive_int(args.broker_client_id):
             parser.error("--init-from-reset requires the existing nonzero --broker-client-id")
@@ -423,11 +528,20 @@ def main(argv=None) -> int:
                 report = unavailable(str(error) if isinstance(error, EvidenceError) else type(error).__name__)
                 if not isinstance(error, EvidenceError) or "CHANGED" not in str(error):
                     break
+        try:
+            report = attach_account(report, args.period, args.state_root, args.config)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            report["account"] = {"nav": None, "nav_complete": False, "complete": False,
+                "mutation_authorized": False, "reason_codes": [str(error) if isinstance(error, EvidenceError) else "ACCOUNT_REPORT_UNAVAILABLE"]}
+            report["account_nav"] = None
+            report["account_complete"] = False
+            report["all_in_account_net_pnl"] = None
         if args.watch or (args.output and not args.cached):
             write_snapshot(output, report)
         if not args.watch:
-            print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.format == "json" else render(report))
-            return 0 if report.get("complete") else 2
+            view = report.get("account", {}) if args.account else report
+            print(json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) if args.format == "json" else (render_account(view) if args.account else render(report)))
+            return 0 if (view.get("complete") if args.account else report.get("complete")) else 2
         deadline = start + args.interval_sec
         while not stop and time.monotonic() < deadline:
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
