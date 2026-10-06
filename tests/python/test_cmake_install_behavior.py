@@ -17,6 +17,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
+    "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
     "scripts/run_release_simulator_smoke.py",
@@ -119,6 +120,18 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
                 docs = tree / "share/doc/heptatrader"
                 self.assertEqual((docs / "developer.md").read_text(), "# installed fixture documentation\n")
                 self.assertEqual((docs / "README.md").exists(), present)
+
+    def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
+        with installed_fixture() as prefix:
+            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py"):
+                p=prefix/"libexec/heptatrader"/name
+                self.assertTrue(p.is_file())
+                self.assertTrue(os.access(p,os.X_OK))
+            self.assertEqual((prefix/"libexec/heptatrader/PNL_SOURCE_SHA").read_text().strip(),"a"*40)
+            unit=prefix/"share/heptatrader/user-systemd/heptatrader-pnl.service"
+            self.assertTrue(unit.is_file())
+            self.assertNotIn("Requires=",unit.read_text())
+            self.assertEqual(list(prefix.glob("**/default.target.wants/heptatrader-pnl.service")),[])
 
     def test_private_namespace_and_mode_from_real_install(self) -> None:
         with installed_fixture() as tree:

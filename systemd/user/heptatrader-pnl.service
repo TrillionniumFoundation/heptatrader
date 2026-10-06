@@ -1,0 +1,24 @@
+[Unit]
+Description=HeptaTrader read-only current strategy PnL observer
+After=heptatrader-gateway.service
+ConditionPathExists=%h/.config/heptatrader/pnl-period.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B %h/.local/share/heptatrader/current/libexec/heptatrader/hepta_pnl_report.py --watch --interval-sec 2
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+Nice=10
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=%h/.local/state/heptatrader/pnl
+
+[Install]
+WantedBy=default.target

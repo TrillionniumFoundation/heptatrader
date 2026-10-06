@@ -68,6 +68,8 @@ install(FILES
 set(_hepta_runtime_helpers
     scripts/heptatrader-user
     scripts/heptatrader_paper_driver.py
+    scripts/hepta_pnl_accounting.py
+    scripts/hepta_pnl_report.py
     scripts/hepta-user-mcp
     scripts/hepta_agent_mcp_launcher.py
     scripts/hepta_agent_trust_domain.py
@@ -154,6 +156,11 @@ if(HEPTA_DOCUMENTATION_SOURCE_SHA STREQUAL "")
 else()
     set(_hepta_doc_sha "${HEPTA_DOCUMENTATION_SOURCE_SHA}")
 endif()
+# Reuse the existing exact source identity for the read-only PnL producer.
+file(WRITE "${PROJECT_BINARY_DIR}/pnl-source-sha.txt" "${_hepta_doc_sha}\n")
+install(FILES "${PROJECT_BINARY_DIR}/pnl-source-sha.txt"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"
+    RENAME PNL_SOURCE_SHA COMPONENT runtime)
 file(GLOB_RECURSE _hepta_doc_inputs CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/docs/*.md" "${PROJECT_SOURCE_DIR}/docs/*.json")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

@@ -363,3 +363,77 @@ exposure or advance the attestation. Any changed balance (including a return
 to the old expected value), malformed value, AccountReady=false, disconnect,
 new account refresh or other risk invalidation discards this duplicate-only
 memory. Delayed old pushes cannot recreate position authority after invalidation.
+
+
+## Current PnL: explicit-period, read-only reporting
+
+`heptatrader pnl` is the canonical current PnL display. It reads existing native
+health, owner-scoped orders, positions and quotes plus the existing durable OMS;
+it does not submit, cancel, reconcile or edit a trading driver. `heptatrader
+status` shows the observer's cached view, with expiration enforced. The legacy
+`state.json: gross_pnl` remains a compatibility **realized-gross-only** counter,
+never a current total, net return, account NAV or Broker daily PnL.
+
+The independent producer is `scripts/hepta_pnl_report.py`, sharing pure Decimal
+accounting in `scripts/hepta_pnl_accounting.py`. The optional user unit
+`heptatrader-pnl.service` writes only `~/.local/state/heptatrader/pnl/`; it cannot
+write the trading ledger/driver files, uses only AF_UNIX, and has no Wants or
+Requires dependencies capable of starting trading services. Installing the unit
+does not enable it. Both scripts are ordinary runtime package helpers.
+
+Attach this reporter to an **already completed, user-authorized reset**, once:
+
+```sh
+python3 -B scripts/hepta_pnl_report.py --init-from-reset /absolute/private/reset-receipts --broker-client-id EXISTING_CLIENT_ID
+heptatrader pnl
+heptatrader pnl --format json
+heptatrader pnl --cached
+```
+
+The initializer verifies opening Broker, fresh opening quote and reset receipts,
+current owner bindings and matching driver period IDs before exclusively creating
+`~/.config/heptatrader/pnl-period.json`. It cannot overwrite an existing period,
+reset Broker cash, rewrite the FX baseline, clear pending, restore deleted old
+history or restart services. Carried inventory starts at the evidenced reset
+midpoint; original purchase and Broker average cost remain separate historical
+references. Original send timestamps, not late historical callback receipt
+timestamps, assign trades to the period. Manual cash normalization, foreign
+clients, prior-period transactions and their fees are excluded. There is no
+silent calendar rollover: the explicit reset period can span midnight.
+
+Version-1 JSON uses decimal strings and `null` for unknown amounts. Each
+instrument and the aggregate expose `realized_gross_pnl`,
+`unrealized_gross_pnl`, `gross_total_pnl`, `fees_paid`, `fees_complete`,
+`realized_net_pnl`, `unrealized_net_pnl` and `net_total_pnl`. Longs mark at the
+fresh IB bid, shorts at the ask; true authoritative flatness needs no mark.
+Missing/stale/future/crossed/wrong-epoch quotes, unproven empty position lists,
+position/ledger mismatches and changing observation generations cannot publish
+an apparently complete current total. Journal/period changes invalidate cache
+immediately, even within quote TTL. Failure replaces, rather than silently
+retains, the last good observer snapshot. Aggregate values require every
+component; a partial sum never appears as account total.
+
+Executions bind to the original command/correlation/account/client/contract.
+Distinct execution IDs are deduplicated, individual shares/prices are preferred,
+and legacy cumulative observations are differenced, never summed. Conflicting
+replays, corrections, partial gaps and incompatible terminal totals fail closed.
+A real executed position can be valued while terminal/driver settlement remains
+pending: this is explicitly flagged and **does not clear or replace pending**.
+The driver being locally flat cannot hide Broker-confirmed executed exposure.
+
+A commission has no account or order ownership. Fee attribution requires a
+unique execution binding and paired native stream epoch. Missing, conflicting
+or non-USD/unconverted fee evidence leaves net values null; zero commission and
+rebates are valid only with positive evidence. Weighted open-entry fees are
+allocated on partial closes, preserving total = realized + unrealized and
+net total = gross total - reported execution commissions. The entire bounded
+journal is accounted for; only displayed execution details are limited to the
+latest 128, with total/truncation flags.
+
+Here **net means after reported execution commissions for this strategy period**,
+not all-in account profit. Financing, tax, unreported non-execution charges and
+future exit costs remain excluded. `account_nav` and `all_in_account_net_pnl`
+remain null until a separate complete account cash-flow/FX/NAV producer exists.
+Do not compare this reset-period strategy measure directly with the differently
+reset Broker account/portfolio-window PnL series or infer commissions from the
+difference between purchase price and Broker average cost.

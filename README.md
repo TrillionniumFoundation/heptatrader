@@ -7,3 +7,12 @@ Python partitions use `python3 scripts/run_python_tests.py --lane core` or `--la
 
 The simulator is the default development venue. IB PAPER still requires independent
 exact-artifact qualification; LIVE is unavailable. Source checks never grant trading authority.
+
+
+### Current PAPER PnL
+
+Use `heptatrader pnl` (or `heptatrader pnl --format json`) for realized, floating,
+total and execution-commission-adjusted PnL. The driver's historical `gross_pnl`
+is realized-only and must not be shown as current profit. See the
+[read-only PnL and accounting-period contract](docs/technical/user-paper-runtime.md#current-pnl-explicit-period-read-only-reporting)
+for reset attachment, freshness, fee completeness and account-NAV boundaries.
