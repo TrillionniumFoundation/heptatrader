@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/execution`, `HeptaTrade/agent`, `HeptaTrade/events`
-Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/send_attempt_time_index_cases.h`, `tests/python/test_send_attempt_time_index.py`, `tests/venue_placement_cases.h`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`, `tests/pre_intent_refusal_cases.h`, `tests/python/test_execution_latency_boundaries.py`, `tests/cancel_uncertainty_cases.h`, `tests/oms_recovery_growth_probe.h`, `tests/python/test_venue_place_rejection.py`, `tests/flatten_result_cases.h`, `tests/python/test_execution_reason_metrics.py`, `tests/execution_ipc_scheduling_tests.cpp`
+Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_coordinator_test_support.h`, `tests/execution_coordinator_test_support.cpp`, `tests/execution_coordinator_placement_recovery_tests.cpp`, `tests/execution_coordinator_flatten_tests.cpp`, `tests/execution_coordinator_session_concurrency_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/send_attempt_time_index_cases.h`, `tests/python/test_send_attempt_time_index.py`, `tests/venue_placement_cases.h`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`, `tests/pre_intent_refusal_cases.h`, `tests/python/test_execution_latency_boundaries.py`, `tests/cancel_uncertainty_cases.h`, `tests/oms_recovery_growth_probe.h`, `tests/python/test_venue_place_rejection.py`, `tests/flatten_result_cases.h`, `tests/python/test_execution_reason_metrics.py`, `tests/execution_ipc_scheduling_tests.cpp`
 
 ## Responsibilities
 
@@ -103,6 +103,8 @@ Coordinator outcome reasons, IB callback ingress lag/conflict, quote/snapshot ag
 Tests cover idempotency, journal-before-send, conflicting command IDs, send exceptions, cancel, reconnect, recovery, owner fencing, event ordering, transport failure, simulator end-to-end behavior, and terminal paths. Every new mutation state needs restart tests at each durable boundary.
 
 Generation tests additionally cover V1/V2 verification, repeated generation cuts, pointer/sentinel/lineage corruption, ancient duplicate/conflict lookup, no second venue send, send-attempt continuity, bounded hot recovery and explicit downgrade export. PAPER terminal evidence also carries compact HPM2 history counts through the supervisor witness and external-halt capsule as full unsigned counters; the old 4,096 limit remains only on bounded owner/protocol or legacy HPM1 structures, not permanent mutation-history cardinality. Send-window tests must preserve strict `timestamp > cutoff`, insertion/sequence semantics, exclusion of active-tail duplicates, exact sorted lower-bound behavior for forward and backwards cutoffs, and conservative full-scan compatibility for legacy unsorted indexes.
+
+The coordinator matrix remains one `hepta_execution_coordinator_tests` executable and one CTest contract. Its unchanged cases compile as shared support plus placement/recovery, flatten, and session/concurrency translation units, while the existing generated growth probes and hostile result cases stay in the canonical entry translation unit. This exposes test-only parallelism without creating another coordinator implementation or changing selector behavior.
 
 ### Pre-intent refusals versus retained command identity
 

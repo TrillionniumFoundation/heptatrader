@@ -94,6 +94,11 @@
       ],
       "tests": [
         "tests/execution_coordinator_tests.cpp",
+        "tests/execution_coordinator_test_support.h",
+        "tests/execution_coordinator_test_support.cpp",
+        "tests/execution_coordinator_placement_recovery_tests.cpp",
+        "tests/execution_coordinator_flatten_tests.cpp",
+        "tests/execution_coordinator_session_concurrency_tests.cpp",
         "tests/execution_event_feed_tests.cpp",
         "tests/execution_decision_lease_authority_tests.cpp",
         "tests/send_attempt_time_index_cases.h",
