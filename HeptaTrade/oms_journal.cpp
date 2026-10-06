@@ -497,6 +497,7 @@ bool OmsJournal::IsCriticalEventType(const std::string& eventType)
            eventType == "broker_order_accepted" ||
            eventType == "broker_error" ||
            eventType == "broker_execution" ||
+           eventType == "broker_commission" ||
            eventType == "broker_completed_order" ||
            eventType == "broker_completed_orders_end" ||
            eventType == "broker_execution_details_end";
@@ -911,6 +912,7 @@ bool OmsJournal::EncodeValidatedEventLocked(
         !std::isfinite(event.price) ||
         !std::isfinite(event.brokerRemainingQuantity) ||
         !std::isfinite(event.brokerMarketCapPrice)) return false;
+    if (event.brokerEconomics.version==0 ? !event.brokerEconomics.Absent() : !event.brokerEconomics.ValidShape()) return false;
     line = BuildJsonLine(event);
     // Record limits apply before any write; total-file limits do not delete
     // exit/terminal records or expire command identities.
@@ -1284,8 +1286,26 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
         << ",\"price\":" << JsonNumber(evt.price)
         << ",\"status\":\"" << EscapeJson(evt.status) << "\""
         << ",\"reason\":\"" << EscapeJson(evt.reason) << "\""
-        << ",\"source\":\"" << EscapeJson(evt.source) << "\""
-        << "}";
+        << ",\"source\":\"" << EscapeJson(evt.source) << "\"";
+    if (evt.brokerEconomics.version!=0) {
+        const auto& economic=evt.brokerEconomics;
+        oss << ",\"broker_econ_version\":" << economic.version;
+        oss << ",\"broker_econ_valid\":" << economic.valid;
+        oss << ",\"broker_econ_kind\":\"" << EscapeJson(economic.kind) << "\"";
+        oss << ",\"broker_econ_contract_identity\":\"" << EscapeJson(economic.contractIdentity) << "\"";
+        oss << ",\"broker_econ_contract_id\":" << economic.contractId;
+        oss << ",\"broker_econ_permanent_order_id\":" << economic.permanentOrderId;
+        oss << ",\"broker_econ_shares\":" << JsonNumber(economic.shares);
+        oss << ",\"broker_econ_execution_price\":" << JsonNumber(economic.executionPrice);
+        oss << ",\"broker_econ_cumulative_quantity\":" << JsonNumber(economic.cumulativeQuantity);
+        oss << ",\"broker_econ_cumulative_average\":" << JsonNumber(economic.cumulativeAverage);
+        oss << ",\"broker_econ_price_revision_pending\":" << economic.priceRevisionPending;
+        oss << ",\"broker_econ_commission\":" << JsonNumber(economic.commission);
+        oss << ",\"broker_econ_commission_currency\":\"" << EscapeJson(economic.commissionCurrency) << "\"";
+        oss << ",\"broker_econ_realized_pnl\":" << JsonNumber(economic.realizedPnl);
+        oss << ",\"broker_econ_realized_pnl_known\":" << economic.realizedPnlKnown;
+    }
+    oss << "}";
     return oss.str();
 }
 
@@ -1331,6 +1351,38 @@ bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
     if (!ReadDouble(fields, "price", out.price)) return false;
     if (!ReadDouble(fields, "broker_remaining_quantity", out.brokerRemainingQuantity)) return false;
     if (!ReadDouble(fields, "broker_market_cap_price", out.brokerMarketCapPrice)) return false;
+    const char* economicFields[]={"broker_econ_version","broker_econ_valid","broker_econ_kind","broker_econ_contract_identity","broker_econ_contract_id","broker_econ_permanent_order_id","broker_econ_shares","broker_econ_execution_price","broker_econ_cumulative_quantity","broker_econ_cumulative_average","broker_econ_price_revision_pending","broker_econ_commission","broker_econ_commission_currency","broker_econ_realized_pnl","broker_econ_realized_pnl_known"};
+    bool hasEconomicFields=false;
+    for(const auto& field:fields) if(field.first.compare(0,12,"broker_econ_")==0) {
+        bool known=false;for(const char* name:economicFields)if(field.first==name)known=true;
+        if(!known)return false;hasEconomicFields=true;
+    }
+    if(hasEconomicFields) {
+        for(const char* name:economicFields)if(!fields.count(name))return false;
+        auto& economic=out.brokerEconomics;
+        if(!ReadInteger(fields,"broker_econ_version",economic.version))return false;
+        if(!ReadInteger(fields,"broker_econ_valid",economic.valid))return false;
+        if(!ReadString(fields,"broker_econ_kind",economic.kind))return false;
+        if(!ReadString(fields,"broker_econ_contract_identity",economic.contractIdentity))return false;
+        if(!ReadInteger(fields,"broker_econ_contract_id",economic.contractId))return false;
+        if(!ReadInteger(fields,"broker_econ_permanent_order_id",economic.permanentOrderId))return false;
+        if(!ReadDouble(fields,"broker_econ_shares",economic.shares))return false;
+        if(!ReadDouble(fields,"broker_econ_execution_price",economic.executionPrice))return false;
+        if(!ReadDouble(fields,"broker_econ_cumulative_quantity",economic.cumulativeQuantity))return false;
+        if(!ReadDouble(fields,"broker_econ_cumulative_average",economic.cumulativeAverage))return false;
+        if(!ReadInteger(fields,"broker_econ_price_revision_pending",economic.priceRevisionPending))return false;
+        if(!ReadDouble(fields,"broker_econ_commission",economic.commission))return false;
+        if(!ReadString(fields,"broker_econ_commission_currency",economic.commissionCurrency))return false;
+        if(!ReadDouble(fields,"broker_econ_realized_pnl",economic.realizedPnl))return false;
+        if(!ReadInteger(fields,"broker_econ_realized_pnl_known",economic.realizedPnlKnown))return false;
+        if(!economic.ValidShape())return false;
+        if((economic.kind=="EXECUTION" && out.eventType!="broker_execution") ||
+           (economic.kind=="COMMISSION" && out.eventType!="broker_commission"))return false;
+    }
+    if(out.eventType=="broker_commission" && (!hasEconomicFields || out.orderId!=-1 ||
+       !out.reqId.empty() || !out.clientReqId.empty() || !out.account.empty() || !out.traceId.empty() ||
+       !out.instrument.empty() || !out.venueCorrelationId.empty() || out.brokerClientId!=-1 ||
+       out.source!="ib-api-callback"))return false;
     if (out.eventType.empty()) return false;
     if (out.reqId.empty()) out.reqId = out.clientReqId;
     if (out.clientReqId.empty()) out.clientReqId = out.reqId;

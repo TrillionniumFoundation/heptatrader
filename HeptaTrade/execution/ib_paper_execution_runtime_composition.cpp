@@ -75,6 +75,7 @@ bool IsEconomicallyTerminalOrderStatus(const IBEvent& event)
 bool IsPersistedBrokerCallback(IBEventType type)
 {
     return type == IBEventType::OrderStatus || type == IBEventType::Error ||
+        type == IBEventType::CommissionReport ||
         type == IBEventType::ExecutionDetails ||
         type == IBEventType::ExecutionDetailsEnd ||
         type == IBEventType::CompletedOrder ||

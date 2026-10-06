@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "../execution/trading_contract.h"
+#include "../execution/ib_economic_evidence.h"
 
 #include <string>
 #include <vector>
@@ -85,7 +86,8 @@ enum class IBEventType {
     CompletedOrdersEnd,
     ExecutionDetails,
     ExecutionDetailsEnd,
-    EventQueueOverflow
+    EventQueueOverflow,
+    CommissionReport // appended: retain existing enum values
 };
 
 struct IBEvent {
@@ -114,6 +116,7 @@ struct IBEvent {
     // the placeholder number3=0 as an actual completion witness.
     bool remainingQuantityKnown = true;
     double marketCapPrice = 0.0;
+    IbEconomicEvidence economics;
     IBContractLite contract;
     IBOrderLite order;
     std::uint64_t overflowGeneration = 0;

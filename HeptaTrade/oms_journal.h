@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oms_latency_observation.h"
+#include "execution/ib_economic_evidence.h"
 
 #include <cstdint>
 #include <functional>
@@ -53,6 +54,7 @@ struct OmsJournalEvent {
     std::string brokerExecutionId;
     double brokerRemainingQuantity = 0.0;
     double brokerMarketCapPrice = 0.0;
+    IbEconomicEvidence brokerEconomics;
 
     std::string rawLine;
 };

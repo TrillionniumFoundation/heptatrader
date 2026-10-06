@@ -207,3 +207,83 @@ https://raw.githubusercontent.com/snowballsecurities/snbpy/master/src/snbpy/snb_
 https://broker.xueqiu.com/activity/level/setting?action=us_lv1
 https://cn.snowball-x.com/trade
 ```
+
+## 2026-10-06 continuation: actual Broker economics and runtime incident
+
+### Native execution/commission receipt capture (source candidate only)
+
+The pinned IB C++ SDK callback path now retains individual Execution.shares and
+Execution.price separately from cumQty and avgPrice. Legacy broker_execution
+qty/price semantics remain cumulative so existing FX/BTC readers are not silently
+changed. An additive, all-or-nothing broker_econ_* receipt retains the exact
+contract fingerprint/conId, permanent order ID and pending-price-revision flag.
+Version zero means absent evidence, not a zero fee or an inferred individual fill.
+
+The actual commissionReport callback now enters the same Execution event queue
+and the same critical/fsynced OMS. Its only economic join identity from the SDK
+is execId; it supplies no account, numeric order ID, API client ID or orderRef.
+The runtime deliberately never assigns it a numeric-order owner. Account, order,
+command and correlation remain unbound until a verified execution joins them.
+Currency/amount and known/unknown realized-PnL status are retained separately.
+Nonfinite SDK sentinels are explicitly marked unusable, never usable zero values.
+
+The grouped extension rejects missing fields, unknown extension fields, wrong
+types, inconsistent flags, malformed valid economics and partially populated
+absent envelopes. Old records remain byte-identical when the extension is absent.
+Callback tests prove fee-before-execution durable ordering and native OMS reopen
+and replay, NOT a complete option ledger or Broker round trip. The economic
+replay bridge into the option EvidenceLedger was not delivered in this turn;
+one write action for that component was blocked by the tool safety check and was
+not retried through another route. OPT permission, fees-to-owner reconciliation,
+settlement integration and live Snowball capture therefore remain incomplete.
+
+### Official Snowball MCP discovery
+
+The official AI page now documents https://openapi.snowball-x.com/mcp for order,
+account and portfolio access. Its public feature list is not a proven realtime
+XSP/SPXW quote/Greeks protocol. An unauthenticated initialize request from pocket4
+returned HTTP 403. No credentials or tools/call were sent, no order tool was used,
+and no VPN or alternate-network bypass was attempted. Zero real Snowball frames
+or entitlement proofs were obtained; shadow remains explicitly blocked.
+
+### Shared Execution incident found before this continuation changed anything
+
+Initial observation found the existing Execution in a restart loop (252 recorded
+restarts), rejecting IB_PAPER_QUOTE_ADMISSION_CALLBACK_UNSAFE. Actual Broker error
+2172 was a global advance notice that Gateway 1045.1 would require upgrading to at
+least 1050.1 from 2026-12-15. The generic unknown-error latch treated it as fatal.
+
+The scoped fix preserves and journals that notice but excludes ONLY the global,
+unscoped 2172 from the sender-admission latch and error fuse. Order/account-scoped
+2172, advanced order rejects, unknown errors, data entitlement errors, connection
+loss and event overflow retain their prior rejection semantics.
+
+A minimal backport was built from the exact deployed d384e98 base, not from this
+options candidate. Its separate 49-test suite passed. It was installed through an
+Execution-only ExecStart drop-in, without changing the main release symlink or
+including the unqualified options/aggregation/commission source changes.
+
+With new-entry protection engaged and both FX/BTC drivers paused, the deployed
+2172 patch removed the first startup blocker. It exposed a second, real blocker:
+IB_FX_CASH_ATTESTED_BALANCE_MISMATCH. Independent account-scoped Broker reads
+completed account, positions, orders and current executions. The EUR cash balance
+is 3432.58 EUR below the persisted attestation; the cause is UNVERIFIED until an
+actual cash-transaction/statement receipt explains it. No interest/fee/deposit
+cause is assumed and no attestation or baseline is rebased automatically.
+The Broker also reports 0.03313821 BTC held and zero active orders. Driver BTC=0
+is not an authoritative flatness witness. The original pending order 159 and its
+command remain preserved. An empty current execution download is not zero-fill
+proof and does not undo historical executions.
+
+This is a diagnosed, protected but UNRECOVERED trading runtime, not completed
+three-line restart acceptance. The paper/options canary must not run while this
+money mismatch or source/permission/budget prerequisites remain unresolved.
+
+### Validation and evidence boundary
+
+Current candidate native build: 57/57 CTest; separate FX/BTC Python driver 43/43.
+The isolated minimal 2172 backport: 49/49 CTest. These are local tests, not hosted
+CI acceptance. Raw private source probes, JUnit, service logs, before-state copies
+and the independent Broker audit are retained under operator-evidence/
+options-native-economics-20261005T235055Z on pocket4. No real options order was
+submitted. Existing OMS prefix and original driver pending identities are retained.
