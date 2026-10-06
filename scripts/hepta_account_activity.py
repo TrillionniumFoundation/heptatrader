@@ -65,6 +65,8 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
         if statement.get('model') or statement.get('modelCode'): raise EvidenceError('MODEL_STATEMENT_NOT_ACCOUNT_TOTAL')
         statement_from = day(statement.get('fromDate'), zone)
         statement_to = day(statement.get('toDate'), zone) + timedelta(days=1)
+        if not statement_from < statement_to:
+            raise EvidenceError('STATEMENT_DATE_RANGE_INVALID')
         statement_key = str(int(statement_from.timestamp()*1000)) + ":" + str(int(statement_to.timestamp()*1000))
         statement_sections = sorted({x.tag for x in statement})
         for info in statement.iter('AccountInformation'):
@@ -82,6 +84,9 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
             from_day = day(attributes.get('fromDate', statement.get('fromDate')), zone)
             to_day = day(attributes.get('toDate', statement.get('toDate')), zone) + timedelta(days=1)
             if not from_day < to_day: raise EvidenceError('STATEMENT_DATE_RANGE_INVALID')
+            # Child controls cannot enlarge the enclosing source's coverage.
+            if not statement_from <= from_day < to_day <= statement_to:
+                raise EvidenceError('NAV_DATE_RANGE_OUTSIDE_STATEMENT')
             components = {k: amount(number(v)) for k, v in attributes.items() if k in EFFECTS}
             missing = [x for x in FUNDING if x not in components]
             unknown = sorted(set(attributes) - set(EFFECTS) - META)
