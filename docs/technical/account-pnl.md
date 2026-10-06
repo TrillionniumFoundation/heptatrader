@@ -82,6 +82,31 @@ snapshot lifetime is thirty seconds. A read failure publishes unavailable state.
 `pnl-current` selects an immutable observer release independent of the trading
 release. Deployment and rollback may restart the PnL observers only.
 
+## Account preflight before a trading/accounting period exists
+
+The independent `heptatrader-account-preflight@OBSERVATION_SCOPE.service` may read
+an existing reset-scoped PAPER account without creating a PnL period or fake
+strategy owners. It shares the exact paired-account protocol allowlist and NAV
+component/FX checks with the account observer. Operator configuration remains
+`account-observer.json`; a private `observations/OBSERVATION_SCOPE/account-preflight.json`
+uses `heptatrader.account-preflight-scope.v1`, the exact account, USD/PAPER scope,
+creation time, reset-marker SHA256, read-only flag and excluded native client IDs.
+No session bearer, new trade authorization or cash mutation is involved.
+
+Preflight downloads and NAV use distinct `account-preflight-download.v1` and
+`account-preflight-nav.v1` schemas and `observation_scope_id`, never `period_id`.
+They cannot enter the ordinary period/return validation path. A successfully
+valued preflight sample is still explicitly ineligible as opening NAV; the first
+retained preflight download is a diagnostic reference, not an opening receipt.
+It remains byte-identical across observer restart. Outputs are confined to the
+existing observation namespace's `account-preflight/` directory. A changed reset,
+changed scope during collection or newly created accounting period prevents
+publication; the preflight process stops on lifecycle invalidation.
+
+Installation is inert. Starting this observer or passing its restart checks is
+not permission to unmask FX/BTC drivers, release the kill switch, create an
+accounting period or label unavailable cash-flow/tax documents complete.
+
 ## Same-period financial evidence
 
 A complete opening NAV must have actually been observed at the reset boundary,

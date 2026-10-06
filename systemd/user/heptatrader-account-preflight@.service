@@ -1,0 +1,29 @@
+[Unit]
+Description=HeptaTrader reset-scoped read-only account preflight %i
+After=ibgateway.service
+ConditionPathExists=%h/.config/heptatrader/account-observer.json
+ConditionPathExists=%h/.config/heptatrader/observations/%i/account-preflight.json
+ConditionPathExists=!%h/.config/heptatrader/pnl-period.json
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -B %h/.local/share/heptatrader/current/libexec/heptatrader/hepta_account_observer.py --preflight-scope %h/.config/heptatrader/observations/%i/account-preflight.json --state-root %h/.local/state/heptatrader/observations/%i --watch --interval-sec 10
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+Nice=10
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=10
+TimeoutStopSec=25
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+ReadWritePaths=%h/.local/state/heptatrader/observations/%i/account-preflight
+
+[Install]
+WantedBy=default.target

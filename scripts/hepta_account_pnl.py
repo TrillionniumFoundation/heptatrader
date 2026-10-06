@@ -34,23 +34,67 @@ def rounding_bound(value: str) -> Decimal:
     return Decimal(5).scaleb(x.as_tuple().exponent - 1)
 
 
-def normalize_nav(raw: dict, period: dict) -> dict:
-    """Use ledgerAndNLV=True for currency values; False only for aggregate keys.
+def validate_preflight_scope(scope: dict) -> None:
+    """A read-only observation identity, deliberately NOT a PnL period."""
+    keys = {"schema", "account", "currency", "execution_domain", "observation_scope_id",
+            "created_at_ms", "reset_sha256", "excluded_client_ids", "read_only"}
+    if (set(scope) != keys or scope.get("schema") != "heptatrader.account-preflight-scope.v1" or
+            scope.get("execution_domain") != "PAPER" or scope.get("currency") != "USD" or
+            scope.get("read_only") is not True or
+            not isinstance(scope.get("account"), str) or not re.fullmatch(r"DU[A-Z0-9_]{1,30}", scope["account"]) or
+            not isinstance(scope.get("observation_scope_id"), str) or
+            not re.fullmatch(r"obs-[a-z0-9-]{8,48}", scope["observation_scope_id"]) or
+            not positive_int(scope.get("created_at_ms")) or
+            not isinstance(scope.get("reset_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", scope["reset_sha256"]) or
+            not isinstance(scope.get("excluded_client_ids"), list) or not 1 <= len(scope["excluded_client_ids"]) <= 16 or
+            any(not positive_int(x) for x in scope["excluded_client_ids"]) or
+            len(set(scope["excluded_client_ids"])) != len(scope["excluded_client_ids"])):
+        raise EvidenceError("ACCOUNT_PREFLIGHT_SCOPE_INVALID")
 
-    Without the optional $LEDGER- prefix, full account subscriptions emit BOTH
-    account-level AccruedCash:USD and currency-level AccruedCash:USD. A dict that
-    overwrites either one is wrong. The separate lightweight request removes
-    this ambiguity without changing Gateway settings for other clients.
-    """
+
+def normalize_nav(raw: dict, period: dict) -> dict:
+    """Account-period entry point. Preflight sources cannot become period evidence."""
     validate_period(period)
+    if "observation_scope_id" in raw:
+        raise EvidenceError("PREFLIGHT_IS_NOT_ACCOUNTING_PERIOD_EVIDENCE")
+    return _normalize_account_download(raw, period, "period_id", "heptatrader.account-download.v1",
+        "heptatrader.account-nav.v1", {x["broker_client_id"] for x in period["instruments"].values()})
+
+
+def normalize_preflight_nav(raw: dict, scope: dict) -> dict:
+    validate_preflight_scope(scope)
+    if "period_id" in raw or "period_sha256" in raw:
+        raise EvidenceError("ACCOUNT_PREFLIGHT_PERIOD_CONTAMINATION")
+    nav = _normalize_account_download(raw, scope, "observation_scope_id",
+        "heptatrader.account-preflight-download.v1", "heptatrader.account-preflight-nav.v1",
+        set(scope["excluded_client_ids"]))
+    nav.pop("period_sha256", None)
+    nav.pop("journal_fingerprint", None)
+    nav.update(scope_sha256=raw.get("scope_sha256"),
+               reporting_scope="PREFLIGHT_NOT_ACCOUNTING_PERIOD", opening_nav_eligible=False)
+    return nav
+
+
+def validate_preflight_nav_evidence(nav: dict, raw: dict, scope: dict, at_ms: int) -> None:
+    """Validate current preflight publication; never authorizes an opening or return."""
+    expected = normalize_preflight_nav(raw, scope)
+    if (expected != nav or not positive_int(at_ms) or
+            not nav["observed_at_ms"] <= at_ms < nav["valid_until_ms"]):
+        raise EvidenceError("ACCOUNT_PREFLIGHT_MISSING_STALE_OR_WRONG_SOURCE")
+
+
+def _normalize_account_download(raw: dict, period: dict, identity_key: str,
+                                raw_schema: str, nav_schema: str, excluded_clients: set) -> dict:
+    # Paired ledger/full subscriptions keep ambiguous aggregate AccruedCash out
+    # of currency ledgers. All existing component and FX comparisons are shared.
     requests = raw.get("request_ids", {})
     first, completed = raw.get("started_at_ms"), raw.get("observed_at_ms")
-    if (raw.get("schema") != "heptatrader.account-download.v1" or raw.get("read_only") is not True or
-            raw.get("account") != period["account"] or raw.get("period_id") != period["period_id"] or
+    if (raw.get("schema") != raw_schema or raw.get("read_only") is not True or
+            raw.get("account") != period["account"] or raw.get(identity_key) != period[identity_key] or
             not positive_int(first) or not positive_int(completed) or not 0 <= completed - first <= 15000 or
             not isinstance(raw.get("connection_id"), str) or not raw["connection_id"] or
             not positive_int(raw.get("client_id")) or
-            raw["client_id"] in {x["broker_client_id"] for x in period["instruments"].values()} or
+            raw["client_id"] in excluded_clients or
             set(requests) != {"ledger", "account", "positions"} or
             any(not positive_int(x) for x in requests.values()) or len(set(requests.values())) != 3 or
             (not isinstance(raw.get("ends"), list) or any(not positive_int(x) for x in raw["ends"]) or
@@ -157,8 +201,8 @@ def normalize_nav(raw: dict, period: dict) -> dict:
                 p["conid"] in position_ids):
             raise EvidenceError("ACCOUNT_POSITION_IDENTITY_INVALID")
         number(p.get("quantity")); number(p.get("average_cost")); position_ids.add(p["conid"])
-    return {"schema": "heptatrader.account-nav.v1", "account": period["account"], "currency": base_currency,
-            "period_id": period["period_id"], "source": "IB_ACCOUNT_UPDATES_MULTI_PAIRED_LEDGER",
+    return {"schema": nav_schema, "account": period["account"], "currency": base_currency,
+            identity_key: period[identity_key], "source": "IB_ACCOUNT_UPDATES_MULTI_PAIRED_LEDGER",
             "authoritative": True, "mutation_authorized": False, "nav": amount(nav),
             "ledger_nav": amount(base["NetLiquidationByCurrency"]), "cash": amount(base["CashBalance"]),
             "accrued_interest": amount(base["AccruedCash"]), "dividend_accruals": amount(base["NetDividend"]),
@@ -175,7 +219,7 @@ def normalize_nav(raw: dict, period: dict) -> dict:
 
 
 def validate_nav(nav: dict, period: dict, at_ms: int, historical: bool = False) -> None:
-    if (nav.get("schema") != "heptatrader.account-nav.v1" or nav.get("authoritative") is not True or
+    if ("observation_scope_id" in nav or nav.get("schema") != "heptatrader.account-nav.v1" or nav.get("authoritative") is not True or
             nav.get("mutation_authorized") is not False or nav.get("account") != period["account"] or
             nav.get("currency") != period["currency"] or nav.get("period_id") != period["period_id"] or
             nav.get("source") != "IB_ACCOUNT_UPDATES_MULTI_PAIRED_LEDGER" or
