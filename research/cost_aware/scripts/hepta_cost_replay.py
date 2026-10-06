@@ -537,7 +537,10 @@ def sampling_quality(capture, *, cutoff_ms=None, expected_cycle_id=None, expecte
 
 def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000",
                              capital="100000", max_drawdown_usd=None,
-                             policy=DEFAULT_POLICY):
+                             policy=DEFAULT_POLICY, training_end_ms=None,
+                             outcome_end_ms=None, min_directional_candidates=None,
+                             min_completed_round_trips=None, max_turnover_usd=None,
+                             max_reentries=None):
     """Fixed-time remote-model OOS with NO training/refit in the test window.
 
     The remote model's raw position-neutral forecasts are candidates. Entry
@@ -546,17 +549,29 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
     """
     validate_tape(tape)
     policy.validate()
-    first, last = tape["rows"][0]["at_ms"], tape["rows"][-1]["at_ms"]
+    first, observed_until = tape["rows"][0]["at_ms"], tape["rows"][-1]["at_ms"]
+    last = observed_until if outcome_end_ms is None else outcome_end_ms
     if (type(oos_start_ms) is not int or type(decision_end_ms) is not int or
-            not first < oos_start_ms < decision_end_ms < last):
+            type(last) is not int or not first < oos_start_ms < decision_end_ms < last):
         raise CostError("OOS_REQUIRES_START_DECISION_END_AND_OUTCOME_TAIL")
+    if training_end_ms is not None and (type(training_end_ms) is not int or
+            not 0 < training_end_ms <= oos_start_ms):
+        raise CostError("OOS_TRAINING_BOUNDARY_INVALID")
+    for value in (min_directional_candidates, min_completed_round_trips):
+        if value is not None and (type(value) is not int or value < 1):
+            raise CostError("OOS_SAMPLE_BOUND_INVALID")
+    if max_reentries is not None and (type(max_reentries) is not int or max_reentries < 0):
+        raise CostError("OOS_REENTRY_BOUND_INVALID")
+    turnover_budget = None if max_turnover_usd is None else dec(max_turnover_usd)
+    if turnover_budget is not None and turnover_budget <= 0:
+        raise CostError("OOS_TURNOVER_BOUND_INVALID")
     budget = None if max_drawdown_usd is None else dec(max_drawdown_usd)
     if budget is not None and budget <= 0:
         raise CostError("HOLDOUT_DRAWDOWN_BUDGET_INVALID")
 
     heldout, selected, purged = [], [], []
     for row in tape["rows"]:
-        if row["at_ms"] <= oos_start_ms:
+        if row["at_ms"] < oos_start_ms or row["at_ms"] > last:
             continue
         output = copy.deepcopy(row)
         forecast = row.get("forecast")
@@ -564,7 +579,7 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
             issued = forecast["issued_at_ms"]
             known = row.get("forecast_available_at_ms", row["at_ms"])
             reason = None
-            if issued <= oos_start_ms:
+            if issued < oos_start_ms:
                 reason = "FORECAST_BEFORE_OOS_WINDOW"
             elif known > decision_end_ms or row["at_ms"] > decision_end_ms:
                 reason = "OUTSIDE_PREDECLARED_DECISION_WINDOW"
@@ -575,6 +590,8 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
             else:
                 selected.append(forecast)
         heldout.append(output)
+    if not heldout:
+        raise CostError("OOS_WINDOW_NOT_YET_OBSERVED")
     evaluation = {**tape, "rows": heldout}
     stress = remote_stress_compare(
         evaluation, size=size, capital=capital, policy=policy)
@@ -584,14 +601,38 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
     selected_outcomes = [x for x in outcomes if x["candidate_id"] in selected_ids]
     directional = [x for x in selected_outcomes if x["forecast"]["action"] != "HOLD"]
     observed_directional = [x for x in directional if x["reason"] == "OBSERVED"]
+    timely_directional = [x for x in observed_directional
+        if x["forecast_available_at_ms"] - x["forecast"]["issued_at_ms"] <= policy.forecast_entry_ttl_ms
+        and x["forecast_available_at_ms"] < x["label_observed_at_ms"]]
     action_counts = Counter(x["forecast"]["action"] for x in selected_outcomes)
     horizon_counts = Counter(str(x["forecast"]["horizon_sec"]) for x in selected_outcomes)
 
     reasons = []
+    if training_end_ms is None:
+        reasons.append("OOS_TRAINING_END_UNSET")
+    if outcome_end_ms is None:
+        reasons.append("OOS_FIXED_OUTCOME_END_UNSET")
+    elif observed_until < outcome_end_ms:
+        reasons.append("OUTCOME_WINDOW_NOT_COMPLETE")
+    if min_directional_candidates is None or min_completed_round_trips is None:
+        reasons.append("OOS_SAMPLE_BOUNDS_UNSET")
+    if max_turnover_usd is None or max_reentries is None:
+        reasons.append("OOS_TURNOVER_REENTRY_BOUNDS_UNSET")
+    context = tape.get("observation_context") or {}
+    if (context.get("mode") != "WATCH" or
+            context.get("broker_mutation_authorized") is not False or
+            not context.get("cycle_id") or not context.get("reset_sha256") or
+            not tape.get("input_sha256")):
+        reasons.append("REAL_WATCH_CAPTURE_PROVENANCE_REQUIRED")
     if tape["source_kind"] != "IB_CAPTURE":
         reasons.append("SYNTHETIC_IS_NOT_REAL_OOS")
     if not directional:
         reasons.append("NO_DIRECTIONAL_OOS_CANDIDATES")
+    if (min_directional_candidates is not None and
+            len(timely_directional) < min_directional_candidates):
+        reasons.append("INSUFFICIENT_TIMELY_DIRECTIONAL_OOS_CANDIDATES")
+    if any(x["reason"] != "OBSERVED" for x in selected_outcomes):
+        reasons.append("INCOMPLETE_OOS_OUTCOMES")
     if any(x["reason"] != "OBSERVED" for x in directional):
         reasons.append("INCOMPLETE_DIRECTIONAL_OOS_OUTCOMES")
     if budget is None:
@@ -612,6 +653,14 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
                 path_checks.append("PATH_INCOMPLETE")
             if path["completed_round_trips"] <= 0:
                 path_checks.append("NO_COMPLETED_OOS_ROUNDTRIP")
+            if (min_completed_round_trips is not None and
+                    path["completed_round_trips"] < min_completed_round_trips):
+                path_checks.append("INSUFFICIENT_COMPLETED_OOS_ROUNDTRIPS")
+            if turnover_budget is not None and dec(path["turnover_usd"]) > turnover_budget:
+                path_checks.append("TURNOVER_BOUND_EXCEEDED")
+            reentries = max(0, path["open_events"] - 1)
+            if max_reentries is not None and reentries > max_reentries:
+                path_checks.append("REENTRY_BOUND_EXCEEDED")
             if dec(path["remaining_simulated_quantity"]) != 0:
                 path_checks.append("OPEN_POSITION_AT_OUTCOME_END")
             net = path["net_liquidation_pnl_usd"]
@@ -620,8 +669,8 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
                 path_checks.append("NONPOSITIVE_OR_UNKNOWN_NET_RETURN")
             if net is not None and baseline_net is not None:
                 advantage = dec(net) - dec(baseline_net)
-                if advantage <= 0:
-                    path_checks.append("NO_NET_ADVANTAGE_VS_DIRECTION_BASELINE")
+                if advantage < 0:
+                    path_checks.append("BELOW_SAME_INPUT_BASELINE")
             drawdown = path["max_drawdown_usd"]
             if budget is not None and (drawdown is None or dec(drawdown) > budget):
                 path_checks.append("DRAWDOWN_BUDGET_NOT_MET")
@@ -634,6 +683,7 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
                 "net_advantage_vs_direction_baseline_usd":
                     None if advantage is None else str(advantage),
                 "max_drawdown_usd": drawdown,
+                "turnover_usd": path["turnover_usd"], "reentries": reentries,
                 "passed": not path_checks,
                 "reasons": path_checks,
             })
@@ -646,12 +696,19 @@ def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000
         "schema": "heptatrader.remote-model-oos.v1",
         "source_kind": tape["source_kind"], "input_sha256": digest(tape),
         "oos_start_ms": oos_start_ms, "decision_end_ms": decision_end_ms,
-        "outcome_end_ms": last, "holdout_rows_including_outcome_tail": len(heldout),
+        "training_end_ms": training_end_ms, "decision_start_ms": oos_start_ms,
+        "outcome_end_ms": last, "observed_until_ms": observed_until,
+        "holdout_rows_including_outcome_tail": len(heldout),
+        "sample_bounds": {"min_directional_candidates": min_directional_candidates,
+                          "min_completed_round_trips": min_completed_round_trips},
+        "path_bounds": {"max_turnover_usd": max_turnover_usd,
+                        "max_reentries": max_reentries},
         "purged_or_outside_window_candidates": purged,
         "oos_evidence": {
             "selected_candidates": len(selected_outcomes),
             "directional_candidates": len(directional),
             "observed_directional_candidates": len(observed_directional),
+            "timely_observed_directional_candidates": len(timely_directional),
             "candidate_actions": dict(action_counts),
             "candidate_horizons_sec": dict(horizon_counts),
         },
@@ -852,6 +909,8 @@ def main():
         report = chronological_assessment(
             tape, args.remote_oos_start_ms, args.holdout_decision_end_ms,
             max_drawdown_usd=args.max_drawdown_usd)
+        report["reasons"].append("PREREGISTERED_OOS_PLAN_REQUIRED_USE_HEPTA_COST_OOS")
+        report["strategy_accepted"] = report["research_acceptance_passed"] = False
     elif args.fit_cutoff_ms is not None:
         report = fit_from_tape(tape, args.fit_cutoff_ms)
     else:

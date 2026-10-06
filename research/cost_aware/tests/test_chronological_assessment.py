@@ -143,13 +143,21 @@ def remote_oos_fixture(source_kind='IB_CAPTURE'):
             f=forecast(at,action='BUY',move='500',mid=str(mid))
         rows.append({'at_ms':at,'quote':quote(at,mid=str(mid)),'forecast':f})
     return {'schema':'heptatrader.cost-tape.v1','instrument':'BTC.USD',
-            'source_kind':source_kind,'rows':rows}
+            'source_kind':source_kind,'rows':rows,
+            'input_sha256':'1'*64,
+            'observation_context':{'mode':'WATCH','broker_mutation_authorized':False,
+                                   'cycle_id':'obs-unit-fixture-only','reset_sha256':'2'*64}}
 
 class RemoteModelOosTests(unittest.TestCase):
     def assess(self,tape=None,**kwargs):
         return chronological_assessment(
             tape or remote_oos_fixture(),REMOTE_START,REMOTE_END,
-            max_drawdown_usd=kwargs.pop('max_drawdown_usd','1000'),**kwargs)
+            max_drawdown_usd=kwargs.pop('max_drawdown_usd','1000'),
+            training_end_ms=NOW, outcome_end_ms=kwargs.pop('outcome_end_ms',REMOTE_TAIL),
+            min_directional_candidates=kwargs.pop('min_directional_candidates',2),
+            min_completed_round_trips=kwargs.pop('min_completed_round_trips',1),
+            max_turnover_usd=kwargs.pop('max_turnover_usd','1000000'),
+            max_reentries=kwargs.pop('max_reentries',10), **kwargs)
 
     def test_remote_oos_never_refits_or_reads_training_cohorts(self):
         with patch.object(replay,'fit_from_tape',side_effect=AssertionError('remote OOS must not fit')):

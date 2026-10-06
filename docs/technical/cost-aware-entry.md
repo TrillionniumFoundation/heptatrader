@@ -231,7 +231,10 @@ still fails rather than being repaired or silently ignored.
 The replay executable accepts one predeclared OOS start, a later last-decision
 boundary, and the remaining quote-only outcome tail:
 
-    python3 research/cost_aware/scripts/hepta_cost_replay.py       --capture /private/current-cycle/immutable-prefix.jsonl       --remote-oos-start-ms "$REMOTE_OOS_START"       --holdout-decision-end-ms "$LAST_TEST_DECISION"       --max-drawdown-usd "$EXPLICIT_RESEARCH_RISK_BUDGET"       --output /private/current-cycle/remote-oos.json
+    python3 research/cost_aware/scripts/hepta_cost_oos.py evaluate \
+      --capture /private/current-cycle/immutable-prefix.jsonl \
+      --plan /private/current-cycle/preregistered-oos-plan.json \
+      --output /private/current-cycle/remote-oos.json
 
 Choose both boundaries before examining performance. The remote OOS path does not
 call fit_from_tape, does not accept --calibration, and does not refit any holdout
@@ -391,3 +394,60 @@ more than 60 seconds earlier; the next local check and reader restart must retai
 that accepted renewal without changing the profile or token. Expired, future,
 foreign-session, changed-token and reset-mismatched evidence still fails closed.
 This does not restore a revoked WATCH token or grant PAPER trade authority.
+
+
+### Fixed remote OOS preregistration and acceptance hardening (2026-10-06)
+
+Use `research/cost_aware/scripts/hepta_cost_oos.py register` before observing any
+of the decision window, then `evaluate` on a verified immutable capture prefix.
+The legacy replay CLI remains diagnostic: a user-labelled `IB_CAPTURE` tape and
+an implicit file tail cannot grant strategy acceptance. No extra branch, local
+training cohort, or calibration artifact is required.
+
+The spec has exactly these fields, with no inferred monetary or sample limits:
+`training_end_ms`, `decision_start_ms`, `decision_end_ms`, `outcome_end_ms`,
+`min_directional_candidates`, `min_completed_round_trips`, `max_drawdown_usd`,
+`max_turnover_usd`, `max_reentries`, `size`, and `capital`.
+`training_end_ms` freezes the pretest evidence/configuration boundary; it does
+not mean fitting a local model. Choose research limits before the window; a
+small engineering count is not a statistical significance claim or a live risk
+budget. There is no local 30-sample/two-UTC-date prerequisite for remote OOS.
+
+    python3 research/cost_aware/scripts/hepta_cost_oos.py register \
+      --capture /private/current-cycle/registration-prefix.jsonl \
+      --spec /private/current-cycle/fixed-oos-spec.json \
+      --expected-cycle-id "$OBSERVATION_CYCLE" \
+      --expected-reset-sha256 "$RESET_SHA256" \
+      --output /private/current-cycle/preregistered-oos-plan.json
+
+The exclusive-create, fsynced plan binds the WATCH context hash, reset and cycle,
+registration prefix/chain head, implementation hashes, model identity, cost
+policy, stress cases and all limits. Registration must precede decision_start;
+backdated registration, in-window implementation/policy changes, a changed
+prefix, wrong cycle and synthetic sources fail. A local hash proves integrity,
+not vendor authentication or a trusted external timestamp. Protect the private
+operator directory; an actor who can rewrite code and local evidence is outside
+this offline research trust boundary.
+
+Evaluation does not expand outcome_end when more data arrives. The final mark
+must be observable by that endpoint, never borrowed from a later quote. HOLD,
+late results, missing outcomes and gap-crossing candidates remain in the original
+capture and the outcome/rejection evidence. Late directional forecasts do not
+inflate the timely candidate minimum; missing selected outcomes reject the
+assessment. Historical gaps before decision_start remain in the bound prefix,
+but are not invented as continuous observations or eligible holding paths.
+
+Every cost-aware path in every predefined stress case requires sufficient
+completed round trips, positive simulated net PnL, complete observed holding
+paths, no residual simulated position, explicit drawdown/turnover/reentry bounds,
+and net PnL not below the same-input direction-only baseline. Equality with a
+positive baseline is allowed; neither equality at zero nor HOLD-only activity
+passes. Reentry count is the number of opens after the first open in that path.
+
+Costs remain conservative schedule-based simulations, not actual account
+commission receipts. BTC rebates are not credited until confirmed. Existing
+quote TTL, pre-submit quote checks, no-adjustment band, reentry gate, spot-BTC
+short prohibition, missing-fee handling, and priority risk exits are unchanged.
+PENDING/FAIL/PASS reports always have `authorization_effect=NONE`, no orders and
+no driver switch. Only a separately authorized, subsequently verified controlled
+PAPER cutover may change runtime admission.

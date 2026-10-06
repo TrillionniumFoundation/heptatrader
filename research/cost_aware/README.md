@@ -11,8 +11,9 @@ Generated reports/captures belong in a private evidence directory, never Git.
 The executable observer and driver honor an explicit factory-reset stop before
 any live I/O. The resident driver uses the raw remote-model distribution plus
 deterministic transaction costs; it never reads a local calibration artifact.
-Use --remote-oos-start-ms with --holdout-decision-end-ms for fixed remote-model
-OOS decisions followed by a quote-only outcome tail. No refit occurs in that
+Use hepta_cost_oos.py register/evaluate for a preregistered fixed remote-model
+OOS window followed by a fixed quote-only outcome tail. The legacy replay CLI
+is diagnostic only and never grants strategy acceptance. No refit occurs in that
 window. --fit-cutoff-ms is reserved for optional local-model training readiness
 and does not block the current remote strategy. Neither mode promotes a model or
 authorizes a driver. See the technical contract for time and cost boundaries.
