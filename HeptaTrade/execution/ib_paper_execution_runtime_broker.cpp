@@ -627,6 +627,13 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
 bool IbPaperExecutionRuntimeComposition::RequestReconnectRiskRefresh(
     std::string& reason)
 {
+    if (m_config.profile.observationOnly) {
+        if (!m_reconnectRefreshDispatched.load()) {
+            reason="IB_OBSERVATION_REFRESH_NOT_DISPATCHED"; return false;
+        }
+        m_reconnectRiskRefreshDispatched.store(true);
+        reason.clear(); return true;
+    }
     const IBAuthoritativeRecoveryAuditSnapshot broker =
         m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
     if (!broker.active.complete || !broker.terminal.complete ||

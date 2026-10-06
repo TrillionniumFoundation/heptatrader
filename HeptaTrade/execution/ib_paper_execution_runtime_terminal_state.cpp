@@ -1,3 +1,4 @@
+#include "ib_observation_refresh.h"
 #include "ib_paper_execution_runtime_internal.h"
 
 #include <cerrno>
@@ -444,8 +445,7 @@ bool IbPaperExecutionRuntimeComposition::DispatchReconnectRefreshIfReady(
     const bool quotesStarted = StartQuoteSubscriptions(
         reason, m_reconnectConnectionEpoch.load());
     const bool refreshAccepted = quotesStarted &&
-        m_adapter->ReqAuthoritativeOpenOrders() &&
-        m_adapter->ReqTerminalCorrelations();
+        DispatchIbReconnectReadEvidence(*m_adapter, m_config.profile.observationOnly);
     if (!refreshAccepted)
     {
         // StartQuoteSubscriptions drains callbacks immediately; a fatal
@@ -480,6 +480,9 @@ bool IbPaperExecutionRuntimeComposition::DispatchReconnectRefreshIfReady(
     }
     BeginBrokerReconnectRefreshObservation(observedNow);
     m_reconnectRefreshDispatched.store(true);
+    // In observation mode the accepted account request above is the only risk
+    // read required. No order-history or financial reconciliation is implied.
+    if (m_config.profile.observationOnly) m_reconnectRiskRefreshDispatched.store(true);
     snapshotDeadline = std::min(
         m_reconnectDeadline,
         observedNow + std::chrono::milliseconds(m_config.readinessTimeoutMs));

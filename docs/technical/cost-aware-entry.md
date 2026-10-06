@@ -339,3 +339,14 @@ The existing 30 nonoverlapping samples and two UTC dates per cohort remain an
 engineering minimum, and the holdout/risk/cost tests remain separate. BTC remains
 spot-long-only for new entries; a SELL forecast may be useful as observational
 or exit evidence but cannot authorize a new short position.
+
+
+A live observation-only reconnect also exposed an incorrect shared trading
+barrier: reconnect dispatched completed-order history and waited for terminal
+reconciliation before refreshing the account. Observation reconnect now uses
+the same account-plus-authoritative-quote requirement as observation startup.
+It never requests open-order/terminal history on that route, creates a financial
+checkpoint or changes the permanent no-mutation guard. The normal PAPER trading
+open/terminal/risk sequence is unchanged and covered by the same request-selector
+regression tests. A real observation transport recovery is not a trading restart
+qualification.
