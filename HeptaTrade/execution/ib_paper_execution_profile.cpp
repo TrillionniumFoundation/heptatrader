@@ -2091,17 +2091,7 @@ bool IbPaperExecutionProfileConfig::CryptoExecutionQuantityOnGrid(double quantit
 }
 bool IbPaperExecutionProfileConfig::CryptoCashQuantityValid(double cash, double ask)
 {
-    if (!std::isfinite(cash) || cash <= 0.0 ||
-        std::fabs(cash * 100.0 - std::round(cash * 100.0)) > 1e-7 ||
-        !std::isfinite(ask) || ask <= 0.0)
-        return false;
-    const bool resident =
-        std::fabs(cash - CryptoNotionalLimit()) <= 1e-7 &&
-        cash / ask <= CryptoQuantityLimit();
-    const bool canary =
-        cash <= CryptoCanaryNotionalLimit() + 1e-7 &&
-        cash / ask <= CryptoCanaryQuantityLimit() + 1e-15;
-    return resident || canary;
+    return ib_crypto_cash_envelope::CashQuantityValid(cash, ask);
 }
 bool IbPaperExecutionProfileConfig::CryptoPriceOnGrid(double price)
 {

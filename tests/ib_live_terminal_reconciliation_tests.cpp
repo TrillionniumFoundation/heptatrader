@@ -230,6 +230,33 @@ void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     }
 }
 
+void TestCryptoCashBaselineUsesSharedResidentAndCanaryEnvelope() {
+    Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
+    IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
+    IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";
+    ctx.authoritativeQuoteBound=true;ctx.quoteBid=84999.75;ctx.quoteAsk=85000;
+    auto place=[&](double cash,char suffix) {
+        IBOrderLite o;o.action="BUY";o.orderType="MKT";o.cashQuantity=cash;
+        const std::string corr="hepta-v1-sha256:"+std::string(63,'a')+suffix;
+        return f.adapter.PlaceOrderWithResult(c,o,corr,&ctx);
+    };
+    auto tiny=place(42.50,'b');
+    assert(tiny.disposition==VenuePlaceDisposition::Submitted);
+    assert(f.broker->submitted.cashQuantity==42.50 && f.broker->submitted.totalQuantity==0.0);
+    auto cancelled=f.Status("Cancelled",0);cancelled.id=tiny.orderId;cancelled.number3=0;f.Push(cancelled);
+    for (const double cash : {42.51,150.01,151.0,24999.99}) {
+        const int places=f.broker->places;
+        auto rejected=place(cash,'c');
+        assert(rejected.disposition==VenuePlaceDisposition::Rejected);
+        assert(f.adapter.GetLastRejectReason()=="IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED");
+        assert(f.broker->places==places);
+    }
+    ctx.quoteAsk=400000.0;
+    auto cap=place(150.0,'d');
+    assert(cap.disposition==VenuePlaceDisposition::Submitted);
+    assert(f.broker->submitted.cashQuantity==150.0);
+}
+
 void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
     for(int mode=0;mode<5;++mode) {
         Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
@@ -804,6 +831,7 @@ int main() {
     TestPendingCancelErrorDoesNotTripGlobalFuse();
     TestIncompleteHistoryReadOnlyAdmissionDoesNotCreateTerminalProof();
     TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend();
+    TestCryptoCashBaselineUsesSharedResidentAndCanaryEnvelope();
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();

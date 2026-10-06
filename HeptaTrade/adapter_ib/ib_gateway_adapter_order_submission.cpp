@@ -1,4 +1,5 @@
 #include "ib_gateway_adapter.h"
+#include "../execution/ib_crypto_cash_envelope.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -358,11 +359,9 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
             { reason = "IB_CRYPTO_REDUCE_ONLY_REQUIRED"; return false; }
         }
         else if (!context->authoritativeQuoteBound || order.action != "BUY" ||
-            order.totalQuantity != 0.0 || !std::isfinite(order.cashQuantity) ||
-            std::fabs(order.cashQuantity - 25000.0) > 1e-7 ||
-            std::fabs(order.cashQuantity * 100.0 - std::round(order.cashQuantity * 100.0)) > 1e-7 ||
-            !std::isfinite(context->quoteAsk) || context->quoteAsk <= 0.0 ||
-            position > 0.0 || order.cashQuantity / context->quoteAsk > 1.0)
+            order.totalQuantity != 0.0 || position > 0.0 ||
+            !ib_crypto_cash_envelope::CashQuantityValid(
+                order.cashQuantity, context->quoteAsk))
         { reason = "IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED"; return false; }
     }
     baseline.instrument = instrument;
