@@ -78,7 +78,7 @@ class CaptureTests(unittest.TestCase):
                 with self.assertRaisesRegex(CostError,'CLOCK'):c.append('QUOTE',quote(),at_ms=NOW-1)
     def test_directory_private(self):
         with tempfile.TemporaryDirectory() as td:
-            p=Path(td)/'open';p.mkdir(mode=0o755)
+            p=Path(td)/'open';p.mkdir(mode=0o755);p.chmod(0o755)
             with self.assertRaisesRegex(CostError,'DIRECTORY'):Capture(p/'capture','BTC.USD',min_free_bytes=0)
     def test_disk_reserve(self):
         with tempfile.TemporaryDirectory() as td:

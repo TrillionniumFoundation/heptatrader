@@ -42,7 +42,7 @@ CANDIDATE_SCHEMA = {
 }
 
 
-def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture, capture_path=None, lifecycle_guard=None):
+def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture, capture_path=None, lifecycle_guard=None, learning_export=None):
     """Attach the remote-model cost guard to a hash-checked PAPER driver.
 
     The optional second positional argument is retained only for old test/call-site compatibility and is never
@@ -54,6 +54,13 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
     def lifecycle_check():
         if lifecycle_guard is not None:
             lifecycle_guard()
+
+    def learn(kind, payload):
+        if learning_export is not None:
+            try:
+                learning_export.emit(kind, payload)
+            except Exception:
+                pass  # Learning export cannot block execution or a risk exit.
 
     original = {name: getattr(driver, name) for name in
                 ("prepare_send", "paper_cmd", "atomic_json", "native", "should_close", "inspect_pending", "model_decision")}
@@ -81,6 +88,7 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
         value = original["native"](cli, tool, *fields)
         if tool == "market.get_quote":
             recorder("QUOTE", {key: value.get(key) for key in QUOTE_FIELDS})
+            learn("QUOTE", {key: value.get(key) for key in QUOTE_FIELDS})
         return value
 
     def check(state, quote, side):
@@ -130,7 +138,14 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
                       abs(position) <= driver.QUANTITY_TOLERANCE):
                     value["cost_last_exit_ms"] = driver.now_ms()
                     value.pop("cost_entry_forecast", None)
-        return original["atomic_json"](path, value)
+        result = original["atomic_json"](path, value)
+        if learning_export is not None:
+            try:
+                from hepta_learning_export import projected_state
+                learn("DECISION", projected_state(value))
+            except Exception:
+                pass
+        return result
 
     def prepare_send(state, path, binary, socket, token, outbox, kind, quote=None, side=None):
         if kind != "OPEN":
@@ -206,6 +221,15 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
         actual_model = driver.openclaw_model_ref(driver.MODEL)
         if actual_model + ":" + FORECAST_VERSION != MODEL_ID:
             raise driver.DriverError("forecast model identity changed; review remote OOS before rollout")
+        input_snapshot = {
+            "instrument": driver.INSTRUMENT, "model_id": MODEL_ID,
+            "forecast_version": FORECAST_VERSION, "quotes": copy.deepcopy(compact),
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "request_started_at_ms": driver.now_ms(),
+            "position_neutral": True,
+        }
+        input_id = digest(input_snapshot)
+        learn("MODEL_INPUT", {"input_id": input_id, "input": input_snapshot})
         lifecycle_check()
         process = driver.run([openclaw, "infer", "model", "run", "--local", "--model", actual_model,
                               "--thinking", "low", "--prompt", prompt, "--json"], 150)
@@ -227,6 +251,9 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
         lifecycle_check()
         if not recorder("CANDIDATE", {"forecast": forecast, "candidate_id": digest(forecast)}):
             raise driver.DriverError("cost candidate capture failed")
+        learn("FORECAST", {"input_id": input_id, "candidate_id": digest(forecast),
+                           "forecast": copy.deepcopy(forecast),
+                           "available_at_ms": driver.now_ms()})
         return forecast
 
     def model_decision(openclaw, state_dir, history, position):
@@ -272,6 +299,12 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
             if reconciliation.get("command_id") == before.get("command_id"):
                 recorder("SETTLEMENT", {"kind": before.get("kind"), "command_id": before.get("command_id"),
                                         "position_after": state.get("position"), "reconciled_at_ms": driver.now_ms()})
+                if learning_export is not None:
+                    try:
+                        from hepta_learning_export import projected_state
+                        learn("SETTLEMENT", projected_state(state))
+                    except Exception:
+                        pass
         return result
 
     for name, value in {"native": native, "atomic_json": atomic_json, "prepare_send": prepare_send,
@@ -304,6 +337,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--enable-paper-hooks", action="store_true", required=True)
     parser.add_argument("--base-driver", type=Path, required=True)
+    parser.add_argument("--learning-export-dir", type=Path,
+                        help="optional non-authorizing, bounded asynchronous learning export")
     args, remaining = parser.parse_known_args()
     if os.geteuid() == 0:
         parser.error("unprivileged PAPER owner required")
@@ -314,12 +349,25 @@ def main():
                           "driver_started": False, "broker_orders_sent": 0}), file=sys.stderr)
         return 78
     module = load_pinned_driver(args.base_driver)
-    close = attach(module, lifecycle_guard=require_no_reset_hold)
+    exporter = None
+    if args.learning_export_dir is not None:
+        try:
+            from hepta_learning_export import LearningExport
+            instrument = "EUR.USD"
+            if "--instrument" in remaining:
+                instrument = remaining[remaining.index("--instrument") + 1]
+            exporter = LearningExport(args.learning_export_dir, instrument)
+        except Exception as exc:
+            print(json.dumps({"learning_export_started": False,
+                              "reason": type(exc).__name__}), file=sys.stderr)
+    close = attach(module, lifecycle_guard=require_no_reset_hold, learning_export=exporter)
     sys.argv = [str(args.base_driver), *remaining]
     try:
         return module.main()
     finally:
         close()
+        if exporter is not None:
+            exporter.close()
 
 
 if __name__ == "__main__":
