@@ -201,7 +201,17 @@ def main(argv=None):
             write_snapshot(out/'raw-latest.json', raw)
             write_snapshot(out/'nav.json', nav)
             first = out/('first-' + hashlib.sha256(nav['period_id'].encode()).hexdigest()[:16] + '.json')
-            if not first.exists(): write_snapshot(first, nav, exclusive=True)
+            first_raw = first.with_suffix('.raw.json')
+            if not first.exists():
+                # Keep the first original account read, never fabricate/reset an opening NAV.
+                if not first_raw.exists(): write_snapshot(first_raw, raw, exclusive=True)
+                if digest(load_private(first_raw)) == nav['raw_sha256']:
+                    write_snapshot(first, nav, exclusive=True)
+                else:
+                    # Interrupted first publication: recover the existing raw observation,
+                    # not a later value relabelled with its timestamp.
+                    recovered = normalize_nav(load_private(first_raw), load_private(args.period))
+                    write_snapshot(first, recovered, exclusive=True)
             # Each completed observation is a bounded file, never overwrite a
             # reset baseline. Journal movement is checked again by the consumer.
             print(json.dumps({'nav_complete': True, 'observed_at_ms': nav['observed_at_ms']}), flush=True)

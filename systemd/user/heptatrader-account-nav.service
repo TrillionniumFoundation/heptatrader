@@ -1,0 +1,27 @@
+[Unit]
+Description=HeptaTrader read-only exact-account NAV observer
+After=ibgateway.service
+ConditionPathExists=%h/.config/heptatrader/pnl-period.json
+ConditionPathExists=%h/.config/heptatrader/account-observer.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B %h/.local/share/heptatrader/current/libexec/heptatrader/hepta_account_observer.py --watch --interval-sec 10
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+Nice=10
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=25
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+ReadWritePaths=%h/.local/state/heptatrader/pnl/account
+
+[Install]
+WantedBy=default.target

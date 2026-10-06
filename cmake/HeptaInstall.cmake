@@ -70,6 +70,9 @@ set(_hepta_runtime_helpers
     scripts/heptatrader_paper_driver.py
     scripts/hepta_pnl_accounting.py
     scripts/hepta_pnl_report.py
+    scripts/hepta_account_pnl.py
+    scripts/hepta_account_observer.py
+    scripts/hepta_account_activity.py
     scripts/hepta-user-mcp
     scripts/hepta_agent_mcp_launcher.py
     scripts/hepta_agent_trust_domain.py

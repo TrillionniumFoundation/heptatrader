@@ -348,25 +348,64 @@ def initialize_period(reset: Path, path: Path, reader: Callable, state_root: Pat
 
 
 def attach_account(report: dict, period_path: Path, state_root: Path, config: Path) -> dict:
-    from hepta_account_pnl import account_report, reconcile_nav_return, validate_nav
+    from hepta_account_pnl import account_report, reconcile_nav_return, validate_nav, validate_nav_evidence, normalize_nav, digest
     period = load_private(period_path)
     validate_period(period)
     root = state_root / "pnl/account"
     issues = []
     def optional(path):
         if not path.exists(): return None
-        return load_private(path)
+        try:
+            return load_private(path)
+        except (ValueError, OSError, KeyError, TypeError):
+            issues.append("ACCOUNT_OPTIONAL_INPUT_INVALID:" + path.name)
+            return None
     nav = optional(root / "nav.json")
+    raw_nav = optional(root / "raw-latest.json")
+    if nav:
+        try:
+            if raw_nav is None: raise EvidenceError("ACCOUNT_NAV_RAW_SOURCE_MISSING")
+            validate_nav_evidence(nav, raw_nav, period, now_ms())
+        except (ValueError, KeyError, TypeError) as error:
+            issues.append(str(error) if isinstance(error, EvidenceError) else "ACCOUNT_NAV_SOURCE_INVALID")
+            nav = None
     if nav and (nav.get("journal_fingerprint") != list(fingerprint(state_root / "execution/oms-journal.jsonl")) or
                 nav.get("period_sha256") != hashlib.sha256(read_private(period_path)[0]).hexdigest()):
         nav = None
         issues.append("ACCOUNT_NAV_LEDGER_OR_PERIOD_CHANGED")
     first = optional(root / ("first-" + hashlib.sha256(period["period_id"].encode()).hexdigest()[:16] + ".json"))
     activity = optional(root / "activity.json")
+    if activity:
+        try:
+            from hepta_account_activity import verify_activity_sources
+            activity = verify_activity_sources(activity, root / "statement-sources", period["account"], now_ms())
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            issues.append(str(error) if isinstance(error, EvidenceError) else "ACCOUNT_ACTIVITY_SOURCE_INVALID")
+            activity = None
+    if first:
+        try:
+            first_raw = optional(root / ("first-" + hashlib.sha256(period["period_id"].encode()).hexdigest()[:16] + ".raw.json"))
+            if first_raw is None or normalize_nav(first_raw, period) != first or digest(first_raw) != first.get("raw_sha256"):
+                raise EvidenceError("FIRST_NAV_RAW_SOURCE_MISMATCH")
+        except (ValueError, KeyError, TypeError) as error:
+            issues.append(str(error) if isinstance(error, EvidenceError) else "FIRST_NAV_SOURCE_INVALID")
+            first = None
     model = optional(config / "exit-cost-model.json")
     result = account_report(period, nav, activity, model, first, now_ms())
     result["reason_codes"].extend(issues)
     inputs = optional(root / "return-inputs.json")
+    opening_proven = False
+    flow_coverage_proven = False
+    if inputs and inputs.get("opening_nav_raw"):
+        try:
+            original_opening = normalize_nav(inputs["opening_nav_raw"], period)
+            validate_nav(original_opening, period, now_ms(), historical=True)
+            boundary = period["started_at_ms"]
+            if not original_opening["observed_at_ms"] <= boundary <= original_opening["valid_until_ms"]:
+                raise EvidenceError("RESET_OPENING_NAV_NOT_OBSERVED_AT_BOUNDARY")
+            opening_proven = True
+        except (ValueError, KeyError, TypeError) as error:
+            result["reason_codes"].append(str(error) if isinstance(error, EvidenceError) else "OPENING_NAV_SOURCE_INVALID")
     if inputs and nav and result["nav_complete"]:
         try:
             # Provider evidence must be retained, not just a claimed digest.
@@ -380,6 +419,11 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
                 source = next((path for path in candidates if path.exists()), None)
                 if source is None or hashlib.sha256(read_private(source, 16*1024*1024)[0]).hexdigest() != sha:
                     raise EvidenceError("ACCOUNT_RETURN_SOURCE_NOT_RETAINED")
+                if key == "unbooked_liabilities":
+                    assessment = strict_json(read_private(source)[0].decode())
+                    # A random retained attachment cannot certify hand-edited tax amounts.
+                    if assessment != {k: v for k, v in item.items() if k != "source_sha256"}:
+                        raise EvidenceError("LIABILITY_AMOUNTS_DIFFER_FROM_RETAINED_ASSESSMENT")
             # Re-derive funding from the retained raw XML, not caller-authored
             # rows or completeness flags in return-inputs.json.
             from hepta_account_activity import parse_flex, derive_external_flows
@@ -387,6 +431,7 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
             flex_raw = read_private(root / "statement-sources" / (flow_input["source_sha256"] + ".xml"), 16*1024*1024)[0]
             parsed = parse_flex(flex_raw, period["account"], period["currency"], inputs["statement_timezone"])
             flows = derive_external_flows(parsed, period["started_at_ms"], nav["observed_at_ms"])
+            flow_coverage_proven = True
             # The opening NAV receipt must retain the actual raw read, too.
             from hepta_account_pnl import normalize_nav
             opening_raw = inputs["opening_nav_raw"]
@@ -402,6 +447,30 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
                 result["reason_codes"] = [r for r in result["reason_codes"] if r != "EXTERNAL_UNREPORTED_LIABILITIES_AND_PERSONAL_TAX_UNPROVEN"]
         except (ValueError, KeyError, OSError) as error:
             result["reason_codes"].append(str(error) if isinstance(error, EvidenceError) else "ACCOUNT_RETURN_INPUT_INVALID")
+    # Presence is not proof. Expose each missing financial prerequisite, including
+    # the exact unchanged reset boundary, independently of deployment readiness.
+    def status(known, reason, path=None):
+        return {"status": "KNOWN" if known else "UNKNOWN", "reason": None if known else reason,
+                "evidence_path": str(path) if path is not None else None}
+    result["evidence_status"] = {
+        "current_nav": status(result["nav_complete"], "NO_FRESH_SOURCE_VERIFIED_ACCOUNT_NAV", root / "nav.json"),
+        "opening_nav_at_reset": status(opening_proven,
+            "EXACT_RESET_OPENING_FULL_NAV_NOT_PROVEN", root / "return-inputs.json"),
+        "external_cash_and_asset_flows": status(flow_coverage_proven or result.get("reported_account_complete") is True,
+            "RESET_TO_CURRENT_EXTERNAL_FLOW_COVERAGE_NOT_PROVEN", root / "statement-sources"),
+        "posted_financing_in_period": status(result.get("posted_financing") is not None,
+            "DATED_INTEREST_AND_ACCRUAL_CHANGE_BREAKDOWN_MISSING", root / "activity.json"),
+        "posted_taxes_in_period": status(result.get("posted_withholding_tax") is not None and result.get("posted_transaction_tax") is not None,
+            "DATED_BROKER_TAX_BREAKDOWN_MISSING", root / "activity.json"),
+        "other_broker_charges_in_period": status(result.get("posted_other_fees") is not None,
+            "DATED_OTHER_CHARGE_COVERAGE_MISSING", root / "activity.json"),
+        "personal_tax_assessment": status(result.get("all_in_complete") is True,
+            "PERIOD_BOUND_SOURCE_ASSESSMENT_MISSING_OR_UNVERIFIED", root / "supporting-sources"),
+        "outside_nav_liabilities": status(result.get("all_in_complete") is True,
+            "UNREPORTED_COST_NONOVERLAP_AND_COVERAGE_NOT_PROVEN", root / "supporting-sources"),
+        "future_exit_costs": {"status": "ESTIMATE" if (result.get("future_exit_costs") or {}).get("complete") else "UNKNOWN",
+            "reason": "MODELED_NOT_INCURRED_OR_ACCOUNT_QUALIFIED", "evidence_path": str(config / "exit-cost-model.json")}}
+    result["period_boundary_unchanged"] = True
     report = dict(report)
     report["account"] = result
     report["account_nav"] = result["nav"]
@@ -432,6 +501,10 @@ def render_account(account: dict) -> str:
     lines.append("Personal income tax and unreported outside-account costs remain UNKNOWN without source coverage.")
     lines.append("NAV observed_at_ms=" + str(account.get("nav_observed_at_ms")) + "; valid_until_ms=" + str(account.get("nav_valid_until_ms")))
     lines.extend("  " + r for r in account.get("reason_codes", []))
+    if account.get("evidence_status"):
+        lines.append("Evidence (same reset boundary; not silently reinitialized):")
+        for name, evidence in account["evidence_status"].items():
+            lines.append("  " + name + "=" + evidence["status"] + ("; " + evidence["reason"] if evidence.get("reason") else ""))
     return "\n".join(lines)
 
 

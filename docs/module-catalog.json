@@ -384,7 +384,10 @@
         "systemd/user/heptatrader-paper-driver.service",
         "systemd/user/heptatrader-crypto-driver.service",
         "scripts/hepta_pnl_accounting.py",
-        "scripts/hepta_pnl_report.py"
+        "scripts/hepta_pnl_report.py",
+        "scripts/hepta_account_pnl.py",
+        "scripts/hepta_account_observer.py",
+        "scripts/hepta_account_activity.py"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",
@@ -400,7 +403,8 @@
         "tests/monitoring/process_smoke.py",
         "tests/python/test_paper_driver.py",
         "tests/python/test_pnl_accounting.py",
-        "tests/python/test_pnl_cli.py"
+        "tests/python/test_pnl_cli.py",
+        "tests/python/test_account_pnl.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

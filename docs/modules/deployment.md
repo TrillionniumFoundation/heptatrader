@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`
+Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`
 
 ## Scope
 
@@ -89,3 +89,7 @@ trading driver state and durable OMS. They report an explicitly attached reset
 period, current bid/ask marking, and execution-commission completeness; they do
 not start trading, settle pending or create cash/position authority. See the
 [current PnL contract](../technical/user-paper-runtime.md#current-pnl-explicit-period-read-only-reporting).
+
+
+The independent account NAV observer and raw-backed evidence consumers belong
+to deployment reporting, not trading authority. See [account PnL operations](../technical/account-pnl.md).

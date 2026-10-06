@@ -81,6 +81,6 @@ GUARD
       -c "mcp_servers.heptatrader.command=\"$prefix/libexec/heptatrader/hepta-user-mcp\"" \
       "You operate only the configured local IB PAPER simulator through the HeptaTrader MCP tools. Never request LIVE or change credentials, configuration, risk limits or kill switch. Obtain current tool schemas and authoritative state before acting. Use exact unqualified catalog names for tool_name, for example market.get_quote, without the heptatrader server prefix. A lost or uncertain send must be inspected under its original command ID, never resent as a new order. A quoted price or accepted request is not a fill. Do not place any order unless this user instruction explicitly asks for one. User instruction: $1" < /dev/null ;;
   *)
-    echo 'usage: heptatrader {start|restart|stop|status|pnl [--format json|--cached]|logs|pause|paper-on|native <args>|session <args>|ask "instruction"}' >&2
+    echo 'usage: heptatrader {start|restart|stop|status|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|paper-on|native <args>|session <args>|ask "instruction"}' >&2
     exit 64 ;;
 esac

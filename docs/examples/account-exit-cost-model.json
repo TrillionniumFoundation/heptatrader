@@ -1,0 +1,35 @@
+{
+  "schema": "heptatrader.exit-cost-model.v1",
+  "currency": "USD",
+  "version": "ib-public-upfront-20261006-v1",
+  "assumed_not_account_qualified": true,
+  "rebates_assumed": false,
+  "BTC.USD": {
+    "rate": "0.0018",
+    "minimum_usd": "1.75"
+  },
+  "FX": {
+    "rate": "0.00002",
+    "minimum_usd": "2"
+  },
+  "scenarios": {
+    "base_assumption": {
+      "all_in_price_impact_bps": "2",
+      "new_order_count_multiplier": 1
+    },
+    "stress_assumption": {
+      "all_in_price_impact_bps": "10",
+      "new_order_count_multiplier": 2
+    }
+  },
+  "notes": [
+    "Public upfront assumptions; account-specific tariff not qualified.",
+    "No future rebates or tax rate assumed.",
+    "Actual non-USD posted cash tails included; conversion feasibility not proven.",
+    "Hypothetical spread and slippage; not an executable quote or incurred charge."
+  ],
+  "sources": [
+    "https://www.interactivebrokers.com/en/pricing/commissions-cryptocurrencies.php",
+    "https://www.interactivebrokers.com/en/pricing/commissions-spot-currencies.php"
+  ]
+}

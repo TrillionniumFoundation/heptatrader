@@ -10,6 +10,7 @@ import os
 import importlib.util
 import shutil
 import stat
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
+    "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
     "scripts/run_release_simulator_smoke.py",
@@ -56,6 +58,11 @@ def installed_fixture(*, readme: bool = False):
                 "scripts/hepta_agent_mcp_launcher.py",
                 "scripts/hepta_agent_trust_domain.py",
                 "adapters/mcp/hepta_mcp_server.py",
+                "scripts/hepta_pnl_accounting.py",
+                "scripts/hepta_pnl_report.py",
+                "scripts/hepta_account_pnl.py",
+                "scripts/hepta_account_observer.py",
+                "scripts/hepta_account_activity.py",
             }:
                 target = source / helper
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +130,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:
-            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py"):
+            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py"):
                 p=prefix/"libexec/heptatrader"/name
                 self.assertTrue(p.is_file())
                 self.assertTrue(os.access(p,os.X_OK))
@@ -132,6 +139,17 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertTrue(unit.is_file())
             self.assertNotIn("Requires=",unit.read_text())
             self.assertEqual(list(prefix.glob("**/default.target.wants/heptatrader-pnl.service")),[])
+            account_unit = prefix/"share/heptatrader/user-systemd/heptatrader-account-nav.service"
+            self.assertTrue(account_unit.is_file())
+            self.assertNotIn("Requires=", account_unit.read_text())
+            self.assertNotIn("Wants=", account_unit.read_text())
+            self.assertIn("IPAddressDeny=any", account_unit.read_text())
+            self.assertIn("ReadWritePaths=%h/.local/state/heptatrader/pnl/account", account_unit.read_text())
+            self.assertEqual(list(prefix.glob("**/default.target.wants/heptatrader-account-nav.service")), [])
+            for helper in ("hepta_pnl_report.py", "hepta_account_observer.py"):
+                result=subprocess.run([sys.executable,"-B",str(prefix/"libexec/heptatrader"/helper),"--help"],
+                    capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,0,result.stderr)
 
     def test_private_namespace_and_mode_from_real_install(self) -> None:
         with installed_fixture() as tree:

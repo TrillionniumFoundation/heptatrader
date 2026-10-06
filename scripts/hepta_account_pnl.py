@@ -181,6 +181,15 @@ def validate_nav(nav: dict, period: dict, at_ms: int, historical: bool = False) 
     number(nav.get("nav")); number(nav.get("accrued_interest"))
 
 
+def validate_nav_evidence(nav: dict, raw: dict, period: dict, at_ms: int) -> None:
+    """A normalised cache is not its own source; reproduce it from the paired raw read."""
+    validate_nav(nav, period, at_ms)
+    if nav.get("raw_sha256") != digest(raw):
+        raise EvidenceError("ACCOUNT_NAV_RAW_SOURCE_MISMATCH")
+    if normalize_nav(raw, period) != nav:
+        raise EvidenceError("ACCOUNT_NAV_NORMALIZED_SOURCE_CONFLICT")
+
+
 def liquidation_estimate(nav: dict, model: dict | None) -> dict:
     result = {"estimated": True, "actual_expense": False, "mutation_authorized": False,
               "complete": False, "estimated_future_exit_commissions": None,
@@ -260,8 +269,13 @@ def account_report(period: dict, nav: dict | None, activity: dict | None, model:
         result.update(nav=nav["nav"], nav_complete=True, nav_observed_at_ms=nav["observed_at_ms"],
                       nav_valid_until_ms=nav["valid_until_ms"], cash=nav["cash"], marked_assets=nav["marked_assets"],
                       accrued_interest=nav["accrued_interest"], dividend_accruals=nav["dividend_accruals"],
-                      nav_includes_reported_accruals=True, ledgers=nav["ledgers"],
-                      future_exit_costs=liquidation_estimate(nav, model))
+                      nav_includes_reported_accruals=True, ledgers=nav["ledgers"])
+        try:
+            result["future_exit_costs"] = liquidation_estimate(nav, model)
+        except (EvidenceError, KeyError, TypeError) as error:
+            result["future_exit_costs"] = {"estimated": True, "actual_expense": False, "complete": False,
+                "estimated_future_exit_commissions": None, "estimated_nav_after_liquidation": None,
+                "reason_codes": [str(error) if isinstance(error, EvidenceError) else "EXIT_MODEL_INVALID"]}
         if first_observation:
             validate_nav(first_observation, period, at_ms, historical=True)
             result["observed_nav_change"] = {"from_ms": first_observation["observed_at_ms"],

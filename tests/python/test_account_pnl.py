@@ -376,4 +376,89 @@ class IntegrationTests(unittest.TestCase):
         text=report.render(dict(base,period_id='fixture',account={'nav':None,'reason_codes':['NO_SOURCE']}))
         self.assertIn('NO_SOURCE',text);self.assertIn('UNKNOWN',text)
 
+class SourceBackedDeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
+        self.cfg=self.root/'config';self.cfg.mkdir(mode=0o700)
+        self.state=self.root/'state';(self.state/'execution').mkdir(parents=True,mode=0o700)
+        self.out=self.state/'pnl/account';self.out.mkdir(parents=True,mode=0o700)
+        self.pp=self.cfg/'pnl-period.json'
+        self.pp.write_text(json.dumps(period()));self.pp.chmod(0o600)
+        self.journal=self.state/'execution/oms-journal.jsonl';self.journal.write_text('{}\n');self.journal.chmod(0o600)
+        self.raw=raw_snapshot();self.raw.update(journal_fingerprint=list(report.fingerprint(self.journal)),
+                    period_sha256=hashlib.sha256(self.pp.read_bytes()).hexdigest())
+        self.nav=a.normalize_nav(self.raw,period())
+        self.save('raw-latest.json',self.raw);self.save('nav.json',self.nav)
+    def tearDown(self):self.temp.cleanup()
+    def save(self,name,value):
+        p=self.out/name;p.write_text(json.dumps(value));p.chmod(0o600)
+    def attach(self):
+        with patch.object(report,'now_ms',lambda:T+130):
+            return report.attach_account({'complete':True,'totals':{'net_total_pnl':'-5'}},self.pp,self.state,self.cfg)
+    def test_current_nav_and_every_missing_prerequisite_are_separate(self):
+        x=self.attach();self.assertEqual(x['totals']['net_total_pnl'],'-5');self.assertTrue(x['account']['nav_complete'])
+        e=x['account']['evidence_status'];self.assertEqual(e['current_nav']['status'],'KNOWN')
+        for k in ('opening_nav_at_reset','external_cash_and_asset_flows','posted_taxes_in_period','outside_nav_liabilities'):
+            self.assertEqual(e[k]['status'],'UNKNOWN')
+        self.assertIsNone(x['all_in_account_net_pnl'])
+    def test_nav_without_raw_download_cannot_self_certify(self):
+        (self.out/'raw-latest.json').unlink();x=self.attach();self.assertIsNone(x['account_nav'])
+        self.assertIn('ACCOUNT_NAV_RAW_SOURCE_MISSING',x['account']['reason_codes'])
+    def test_normalized_nav_tamper_rejected_even_with_original_digest(self):
+        self.nav['nav']='999999';self.save('nav.json',self.nav)
+        self.assertIsNone(self.attach()['account_nav'])
+    def test_new_raw_with_old_nav_racing_publication_is_unavailable(self):
+        self.raw['connection_id']='new-read';self.save('raw-latest.json',self.raw)
+        self.assertIsNone(self.attach()['account_nav'])
+    def test_activity_index_cannot_invent_source_coverage(self):
+        x=activity.parse_flex(xml_fixture(),'DU_TEST','USD','UTC',T+2*86400000)
+        self.save('activity.json',x);r=self.attach()
+        self.assertTrue(r['account']['nav_complete']);self.assertIsNone(r['account']['broker_reported_account_net_pnl'])
+    def test_invalid_cost_model_does_not_hide_valid_nav(self):
+        p=self.cfg/'exit-cost-model.json';p.write_text('{bad');p.chmod(0o600)
+        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+    def test_failing_cost_model_keeps_current_nav_not_previous_scenarios(self):
+        m=model();m['BTC.USD']['rate']='-1'
+        p=self.cfg/'exit-cost-model.json';p.write_text(json.dumps(m));p.chmod(0o600)
+        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+    def test_late_first_observation_without_raw_is_not_profit_or_opening(self):
+        name='first-'+hashlib.sha256(period()['period_id'].encode()).hexdigest()[:16]+'.json'
+        self.save(name,self.nav);x=self.attach()
+        self.assertNotIn('observed_nav_change',x['account']);self.assertIsNone(x['account']['broker_reported_account_net_pnl'])
+    def test_stale_raw_and_nav_pair_does_not_remain_current(self):
+        with patch.object(report,'now_ms',lambda:T+100000):
+            x=report.attach_account({},self.pp,self.state,self.cfg)
+        self.assertIsNone(x['account_nav'])
+    def test_verified_opening_is_known_even_when_funding_sources_are_missing(self):
+        self.save('return-inputs.json',{'opening_nav_raw':raw_snapshot(T-20,T)})
+        x=self.attach()['account']
+        self.assertEqual(x['evidence_status']['opening_nav_at_reset']['status'],'KNOWN')
+        self.assertEqual(x['evidence_status']['external_cash_and_asset_flows']['status'],'UNKNOWN')
+        self.assertIsNone(x['broker_reported_account_net_pnl'])
+    def test_consumer_has_no_ledger_or_period_writes(self):
+        before=(self.journal.read_bytes(),self.pp.read_bytes(),self.nav)
+        self.attach();self.assertEqual((self.journal.read_bytes(),self.pp.read_bytes(),self.nav),before)
+    def test_statement_section_from_other_period_cannot_prove_this_period(self):
+        x=activity.parse_flex(xml_fixture(),'DU_TEST','USD','UTC',T+2*86400000)
+        x['statements'][0]['source_sections'].remove('CashTransactions')
+        with self.assertRaises(EvidenceError):activity.derive_external_flows(x,T+1,T+12*3600000)
+    def test_retained_statement_is_reparsed_not_trusting_index_amounts(self):
+        raw=xml_fixture();x=activity.parse_flex(raw,'DU_TEST','USD','UTC',T+2*86400000)
+        src=self.out/'statement-sources';src.mkdir(mode=0o700)
+        p=src/(hashlib.sha256(raw).hexdigest()+'.xml');p.write_bytes(raw);p.chmod(0o600)
+        x['statements'][0]['broker_reported_account_net_pnl']='999'
+        rebuilt=activity.verify_activity_sources(x,src,'DU_TEST',T+3*86400000)
+        self.assertEqual(rebuilt['statements'][0]['broker_reported_account_net_pnl'],'3')
+    def test_retained_statement_altered_bytes_rejected(self):
+        raw=xml_fixture();x=activity.parse_flex(raw,'DU_TEST','USD','UTC',T+2*86400000)
+        src=self.out/'statement-sources';src.mkdir(mode=0o700)
+        p=src/(hashlib.sha256(raw).hexdigest()+'.xml');p.write_bytes(raw+b' ');p.chmod(0o600)
+        with self.assertRaises(EvidenceError):activity.verify_activity_sources(x,src,'DU_TEST',T+3*86400000)
+    def test_service_has_no_trading_activation_or_ledger_write_authority(self):
+        text=(ROOT/'systemd/user/heptatrader-account-nav.service').read_text()
+        self.assertNotIn('Requires=',text);self.assertNotIn('Wants=',text)
+        self.assertIn('ProtectHome=read-only',text);self.assertIn('IPAddressDeny=any',text)
+        writes=[l for l in text.splitlines() if l.startswith('ReadWritePaths=')]
+        self.assertEqual(writes,['ReadWritePaths=%h/.local/state/heptatrader/pnl/account'])
+
 if __name__=='__main__':unittest.main()

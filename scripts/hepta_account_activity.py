@@ -63,6 +63,10 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
     transaction_signatures = {}
     for statement in selected:
         if statement.get('model') or statement.get('modelCode'): raise EvidenceError('MODEL_STATEMENT_NOT_ACCOUNT_TOTAL')
+        statement_from = day(statement.get('fromDate'), zone)
+        statement_to = day(statement.get('toDate'), zone) + timedelta(days=1)
+        statement_key = str(int(statement_from.timestamp()*1000)) + ":" + str(int(statement_to.timestamp()*1000))
+        statement_sections = sorted({x.tag for x in statement})
         for info in statement.iter('AccountInformation'):
             if info.get('accountId', account) != account or info.get('currency', info.get('baseCurrency', currency)) != currency:
                 raise EvidenceError('STATEMENT_ACCOUNT_BASE_CURRENCY_CONFLICT')
@@ -95,6 +99,7 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
             funding = None if missing else sum((number(components[k]) for k in FUNDING), Decimal(0))
             reports.append({'account': account, 'currency': currency, 'source': 'IMPORTED_IB_FLEX_ACTIVITY',
                 'source_sha256': source_sha, 'timezone': timezone_name,
+                'statement_key': statement_key, 'source_sections': statement_sections,
                 'from_ms': int(from_day.timestamp()*1000), 'to_ms': int(to_day.timestamp()*1000),
                 'date_range_convention': '[from_local_midnight,to_next_local_midnight)',
                 'starting_nav': amount(start), 'ending_nav': amount(end), 'nav_change': amount(delta),
@@ -115,7 +120,7 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
             if not isinstance(c, str) or not re.fullmatch('[A-Z]{3}', c) or rate <= 0 or (c == currency and rate != 1):
                 raise EvidenceError('CASH_TRANSACTION_FX_INVALID')
             n = number(a.get('amount'))
-            signature = (a.get('dateTime'), a.get('type'), c, amount(n), amount(rate))
+            signature = (statement_key, a.get('dateTime'), a.get('type'), c, amount(n), amount(rate))
             if xid in transaction_signatures:
                 if transaction_signatures[xid] != signature: raise EvidenceError('CASH_TRANSACTION_ID_CONFLICT')
                 continue
@@ -123,10 +128,11 @@ def parse_flex(raw: bytes, account: str, currency: str, timezone_name: str, avai
             transactions.append({'transaction_id': xid, 'raw_date_time': a.get('dateTime'), 'type': a.get('type'),
                 'category': CASH_TYPES.get(a.get('type'), 'UNCLASSIFIED_NOT_ZERO'), 'currency': c,
                 'amount': amount(n), 'fx_rate_to_base': amount(rate), 'amount_usd': amount(n*rate),
-                'source_sha256': source_sha})
+                'source_sha256': source_sha, 'statement_key': statement_key})
     if not reports: raise EvidenceError('FLEX_CHANGE_IN_NAV_SECTION_REQUIRED')
     return {'schema': 'heptatrader.account-activity-index.v1', 'account': account, 'currency': currency,
             'source_sha256': source_sha, 'statements': reports, 'cash_transactions': transactions,
+            'source_documents': [{'sha256': source_sha, 'timezone': timezone_name, 'imported_at_ms': available_at_ms}],
             'source_sections': sorted({x.tag for s in selected for x in s}),
             'live_period_coverage_inferred': False, 'mutation_authorized': False}
 
@@ -150,7 +156,14 @@ def merge_activity(existing: dict | None, incoming: dict) -> dict:
         if old and {k:v for k,v in old.items() if k!='source_sha256'} != {k:v for k,v in x.items() if k!='source_sha256'}:
             raise EvidenceError('CASH_TRANSACTION_IMPORT_CONFLICT')
         txs[x['transaction_id']] = x
-    result.update(statements=sorted(statements, key=lambda s: (s['from_ms'],s['to_ms'])), cash_transactions=list(txs.values()))
+    documents = {x['sha256']: x for x in existing.get('source_documents', [])}
+    for x in incoming.get('source_documents', []):
+        if x['sha256'] in documents and documents[x['sha256']]['timezone'] != x['timezone']:
+            raise EvidenceError('STATEMENT_SOURCE_TIMEZONE_CONFLICT')
+        documents.setdefault(x['sha256'], x)
+    if len(documents) > 366: raise EvidenceError('ACTIVITY_SOURCE_BOUND')
+    result.update(statements=sorted(statements, key=lambda s: (s['from_ms'],s['to_ms'])),
+                  cash_transactions=list(txs.values()), source_documents=list(documents.values()))
     return result
 
 
@@ -220,11 +233,13 @@ def derive_external_flows(activity: dict, begin_ms: int, end_ms: int) -> dict:
                   s['from_ms'] <= begin_ms < end_ms <= s['to_ms']]
     if len(candidates) != 1: raise EvidenceError('EXACT_NONOVERLAPPING_STATEMENT_COVERAGE_REQUIRED')
     s = candidates[0]
+    if 'CashTransactions' not in s.get('source_sections', []):
+        raise EvidenceError('CASH_SECTION_MISSING_FOR_MATCHING_STATEMENT')
     if any(number(s['components'][k]) != 0 for k in FUNDING if k != 'depositsWithdrawals'):
         raise EvidenceError('NONCASH_OR_INTERNAL_TRANSFER_DETAILS_REQUIRED')
     events = []
     for row in activity.get('cash_transactions', []):
-        if row.get('source_sha256') != s['source_sha256']: continue
+        if row.get('source_sha256') != s['source_sha256'] or row.get('statement_key') != s.get('statement_key'): continue
         if row.get('category') != 'external_cash_flow': continue
         at = exact_transaction_time(row.get('raw_date_time'), s['timezone'])
         if not s['from_ms'] <= at < s['to_ms']: raise EvidenceError('CASH_TRANSACTION_OUTSIDE_STATEMENT')
@@ -237,3 +252,24 @@ def derive_external_flows(activity: dict, begin_ms: int, end_ms: int) -> dict:
             'source': 'IMPORTED_IB_FLEX_ACTIVITY', 'complete': True,
             'cash_transfers_complete': True, 'position_transfers_complete': True,
             'from_ms': s['from_ms'], 'to_ms': s['to_ms'], 'source_sha256': s['source_sha256'], 'events': events}
+
+
+def verify_activity_sources(index: dict, source_root: Path, account: str, at_ms: int) -> dict:
+    """An edited index cannot self-certify financial coverage; reparse retained originals."""
+    from hepta_pnl_report import read_private
+    docs = index.get('source_documents', [])
+    if (index.get('schema') != 'heptatrader.account-activity-index.v1' or index.get('account') != account or
+            index.get('currency') != 'USD' or not isinstance(docs, list) or not 1 <= len(docs) <= 366):
+        raise EvidenceError('ACTIVITY_RETAINED_SOURCE_MANIFEST_INVALID')
+    result = None
+    for doc in docs:
+        sha = doc.get('sha256')
+        imported = doc.get('imported_at_ms')
+        if (not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or
+                type(imported) is not int or not 0 < imported <= at_ms):
+            raise EvidenceError('ACTIVITY_SOURCE_IDENTITY_INVALID')
+        raw = read_private(source_root / (sha + '.xml'), 16*1024*1024)[0]
+        if hashlib.sha256(raw).hexdigest() != sha:
+            raise EvidenceError('ACTIVITY_RAW_DIGEST_CONFLICT')
+        result = merge_activity(result, parse_flex(raw, account, 'USD', doc['timezone'], imported))
+    return result

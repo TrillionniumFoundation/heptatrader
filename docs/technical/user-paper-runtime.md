@@ -437,3 +437,9 @@ remain null until a separate complete account cash-flow/FX/NAV producer exists.
 Do not compare this reset-period strategy measure directly with the differently
 reset Broker account/portfolio-window PnL series or infer commissions from the
 difference between purchase price and Broker average cost.
+
+
+Account-wide valuation and source-covered returns are separate from strategy
+PnL. See [account NAV and net-return operations](account-pnl.md) for read-only
+deployment, same-reset evidence, statement import, unknown fields and estimated
+liquidation costs.
