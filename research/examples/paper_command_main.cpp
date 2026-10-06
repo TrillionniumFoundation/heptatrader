@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         std::set<std::string> required{"--socket", "--token-file", "--directory"};
         if (op == "prepare-open") {
             for (const auto* name : {"--call-id", "--side", "--price", "--expiry"}) required.insert(name);
-        } else if (op == "prepare-crypto-open") {
+        } else if (op == "prepare-crypto-open" || op == "prepare-crypto-canary-open") {
             for (const auto* name : {"--call-id", "--price", "--expiry", "--cash-quantity"}) required.insert(name);
         } else if (op == "prepare-close" || op == "prepare-crypto-close") required.insert("--call-id");
         else if (op == "submit" || op == "inspect") {
@@ -82,9 +82,13 @@ int main(int argc, char** argv) {
                 number<std::int64_t>(args.at("--expiry")));
             if (!client.Prepare(order,args.at("--call-id"),prepared,result,reason))
                 return emit(false,prepared.CommandId(),reason,result);
-        } else if (op == "prepare-crypto-open") {
-            const auto order = PreparedOrder::MarketCrypto(number<double>(args.at("--cash-quantity")),
-                number<double>(args.at("--price")), number<std::int64_t>(args.at("--expiry")));
+        } else if (op == "prepare-crypto-open" || op == "prepare-crypto-canary-open") {
+            const double cash = number<double>(args.at("--cash-quantity"));
+            const double price = number<double>(args.at("--price"));
+            const std::int64_t expiry = number<std::int64_t>(args.at("--expiry"));
+            const auto order = op == "prepare-crypto-canary-open" ?
+                PreparedOrder::MarketCryptoCanary(cash, price, expiry) :
+                PreparedOrder::MarketCrypto(cash, price, expiry);
             if (!client.Prepare(order,args.at("--call-id"),prepared,result,reason))
                 return emit(false,prepared.CommandId(),reason,result);
         } else if (op == "prepare-close" || op == "prepare-crypto-close") {

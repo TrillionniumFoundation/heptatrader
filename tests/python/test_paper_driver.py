@@ -612,6 +612,20 @@ class CryptoDriverPolicyTests(unittest.TestCase):
         self.assertEqual(state["pending"]["tif"],"IOC")
         self.assertEqual(state["pending"]["reference_price"],price)
 
+    def test_crypto_tiny_prepare_uses_dedicated_canary_native_operation(self):
+        from unittest.mock import patch
+        state=self.state();calls=[]
+        def cmd(_b,_s,_t,_o,op,extra):
+            calls.append((op,list(extra)))
+            return {"ok":True,"command_id":"tiny-protected-buy"}
+        with patch.object(d,"paper_cmd",cmd),patch.object(d,"atomic_json"):
+            d.prepare_send(state,Path("/unused"),"b","s","t","o","OPEN",
+                {"bid":85999.0,"ask":86000.0},"BUY",crypto_cash_limit=150.0,crypto_base_limit=0.0005)
+        self.assertEqual(calls[0][0],"prepare-crypto-canary-open")
+        args=calls[0][1]
+        self.assertLessEqual(float(args[args.index("--cash-quantity")+1]),150.0)
+        self.assertEqual(state["pending"]["quantity_mode"],"CASH")
+
     def test_crypto_canary_budget_is_separate_and_below_requested_ceiling(self):
         with __import__("unittest.mock",fromlist=["patch"]).patch.object(d,"QTY",1.0):
             cash=d.crypto_market_cash_budget(86000.0,cash_limit=150.0,base_limit=0.0005,allow_smaller=True)

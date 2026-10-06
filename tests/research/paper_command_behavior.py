@@ -29,6 +29,18 @@ class PaperCommandTests(unittest.TestCase):
                 result=self.call(*common,"--side",side,"--price",price,"--expiry",expiry)
                 self.assertEqual(result["command_id"],"")
                 self.assertEqual(list(root.glob("*.hsr")),[])
+    def test_crypto_canary_has_distinct_tiny_scope_before_transport(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); token=root/"token"; token.write_text("synthetic-test-token"); token.chmod(0o600)
+            common=["prepare-crypto-canary-open","--socket","/dev/null/impossible","--token-file",str(token),
+                    "--directory",str(root),"--call-id","crypto-canary-preview-001",
+                    "--price","86000","--expiry","1900000000000"]
+            bad=self.call(*common,"--cash-quantity","150")
+            self.assertEqual(bad["reason"],"RESEARCH_PAPER_CRYPTO_CANARY_CASH_SCOPE_INVALID")
+            good=self.call(*common,"--cash-quantity","43")
+            self.assertNotEqual(good["reason"],"RESEARCH_PAPER_CRYPTO_CANARY_CASH_SCOPE_INVALID")
+            self.assertEqual(list(root.glob("*.hsr")),[])
+
     def test_missing_record_is_not_recreated_or_sent(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); token=root/"token"; token.write_text("synthetic-test-token"); token.chmod(0o600)

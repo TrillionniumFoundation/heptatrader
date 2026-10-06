@@ -281,9 +281,11 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
         ref=float(quote["ask"] if side=="BUY" else quote["bid"])
         if INSTRUMENT=="BTC.USD":
             if side!="BUY": raise DriverError("crypto short entries are not supported")
+            canary_scope=(crypto_cash_limit!=25000.0 or crypto_base_limit!=1.0)
             cash=crypto_market_cash_budget(ref,cash_limit=crypto_cash_limit,base_limit=crypto_base_limit,
-                allow_smaller=(crypto_cash_limit!=25000.0 or crypto_base_limit!=1.0))
-            prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-open",
+                allow_smaller=canary_scope)
+            prepared=paper_cmd(binary,socket,token,outbox,
+                "prepare-crypto-canary-open" if canary_scope else "prepare-crypto-open",
                 ["--call-id",preview,"--price",format(ref,".17g"),"--cash-quantity",format(cash,".17g"),"--expiry",str(now_ms()+45000)])
         else:
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-open",

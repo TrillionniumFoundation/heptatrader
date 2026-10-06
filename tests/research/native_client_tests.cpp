@@ -242,6 +242,21 @@ void CryptoMarketCashWireAndOriginalOutbox() {
     auto foreign=request;foreign.call.ibContract.exchange="ZEROHASH";foreign.sessionToken="test-token";
     Check(!TypedToolProtocol::EncodeRequest(foreign,wire,reason),"cash escaped contract scope");
 }
+void CryptoCanaryMarketCashWireAndScope() {
+    const std::int64_t expiry=1900000000000LL;
+    const std::string id="crypto-canary-command-001",permit="sha256:"+std::string(64,'d');
+    const auto proposal=PreparedOrder::MarketCryptoCanary(43.0,86000.0,expiry);
+    const auto request=proposal.SubmissionRequest(id,permit);
+    Check(request.call.ibOrder.orderType=="MKT" && request.call.timeInForce=="IOC" &&
+          request.call.ibOrder.totalQuantity==0.0 && request.call.ibOrder.cashQuantity==43.0 &&
+          request.call.ibOrder.lmtPrice==0.0,"canary cash MKT wire changed sizing semantics");
+    Throws([&]{PreparedOrder::MarketCrypto(43.0,86000.0,expiry);});
+    for(const double amount : {0.0,-1.0,150.01,43.001,std::numeric_limits<double>::quiet_NaN()})
+        Throws([&]{PreparedOrder::MarketCryptoCanary(amount,86000.0,expiry);});
+    Throws([&]{PreparedOrder::MarketCryptoCanary(43.01,86000.0,expiry);});
+    Throws([&]{PreparedOrder::MarketCryptoCanary(43.0,0.0,expiry);});
+    Throws([&]{PreparedOrder::MarketCryptoCanary(43.0,86000.0,0);});
+}
 void MarketCashProposalTests() {
     InstrumentRef contract; contract.symbol="EUR"; contract.secType="CASH";
     contract.exchange="IDEALPRO"; contract.currency="USD";
@@ -1053,4 +1068,4 @@ void Tests() {
     Check(result.envelope.status.empty(), "local validation failure retained old success");
 }
 }
-int main() { return Run([] { OptionProposalsPreserveContractAndConId(); CryptoProposalRetainsExactNativeWireAndOutbox(); CryptoMarketCashWireAndOriginalOutbox(); MarketCashProposalTests(); Tests(); }); }
+int main() { return Run([] { OptionProposalsPreserveContractAndConId(); CryptoProposalRetainsExactNativeWireAndOutbox(); CryptoMarketCashWireAndOriginalOutbox(); CryptoCanaryMarketCashWireAndScope(); MarketCashProposalTests(); Tests(); }); }
