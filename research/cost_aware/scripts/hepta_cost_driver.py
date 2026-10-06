@@ -20,7 +20,7 @@ import stat
 import sys
 import threading
 from hepta_cost_policy import (CostError, DEFAULT_POLICY, FORECAST_VERSION, MODEL_ID, HORIZONS,
-    dec, digest, validate_forecast, load_calibration, entry_admission, risk_exit, discretionary_exit)
+    dec, digest, validate_forecast, remote_entry_admission, risk_exit, remote_discretionary_exit)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
 BASE_DRIVER_SHA256 = "df3e05610ffd29797db39ad231b765955a3fdf83b35e6f7c41a85534a213cefb"
@@ -42,11 +42,12 @@ CANDIDATE_SCHEMA = {
 }
 
 
-def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=None, lifecycle_guard=None):
-    """Attach to an already loaded, hash-checked driver. Tests inject a fake host.
+def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture, capture_path=None, lifecycle_guard=None):
+    """Attach the remote-model cost guard to a hash-checked PAPER driver.
 
-    Never use this function as a substitute for the launcher's source verification.
-    All synthetic-calibration paths are refused in this resident adapter.
+    The optional second positional argument is retained only for old test/call-site compatibility and is never
+    read by the resident remote-model path. Local training artifacts belong to
+    offline training/research, not runtime authority.
     """
     # Pure host fixtures may omit the local lifecycle callback. Both executable
     # entry points always supply it; there is no runtime CLI opt-out.
@@ -76,12 +77,6 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
                 capture_problem = str(exc)
                 return False
 
-    def get_artifact():
-        try:
-            return load_calibration(calibration_path), None
-        except Exception as exc:
-            return None, "CALIBRATION_REQUIRED" if isinstance(exc, FileNotFoundError) else "CALIBRATION_LOAD_FAILED:" + str(exc)
-
     def native(cli, tool, *fields):
         value = original["native"](cli, tool, *fields)
         if tool == "market.get_quote":
@@ -91,10 +86,10 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
     def check(state, quote, side):
         lifecycle_check()
         forecast = state.get("last_decision")
-        artifact, load_reason = get_artifact()
         size = driver.crypto_market_cash_budget(quote["ask"]) if driver.INSTRUMENT == "BTC.USD" else driver.QTY
-        result = entry_admission(forecast, quote, size, driver.now_ms(), artifact,
-                                 last_exit_ms=state.get("cost_last_exit_ms", 0))
+        result = remote_entry_admission(
+            forecast, quote, size, driver.now_ms(),
+            last_exit_ms=state.get("cost_last_exit_ms", 0))
         if not isinstance(forecast, dict) or forecast.get("instrument") != driver.INSTRUMENT or forecast.get("action") != side:
             result["allowed"] = False
             result["reasons"].append("COST_FORECAST_ORDER_SCOPE_MISMATCH")
@@ -104,9 +99,6 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
         if abs(float(state.get("position", 0))) > driver.QUANTITY_TOLERANCE:
             result["allowed"] = False
             result["reasons"].append("COST_ENTRY_REQUIRES_FLAT")
-        if load_reason:
-            result["allowed"] = False
-            result["calibration_load_reason"] = load_reason
         if not recorder("ENTRY_CHECK", {"forecast": forecast, "quote": quote, "result": result}):
             result["allowed"] = False
             result["reasons"].append("COST_EVIDENCE_WRITE_FAILED")
@@ -213,7 +205,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
                   + "Instrument=" + driver.INSTRUMENT + "; quotes=" + json.dumps(compact, separators=(",", ":")))
         actual_model = driver.openclaw_model_ref(driver.MODEL)
         if actual_model + ":" + FORECAST_VERSION != MODEL_ID:
-            raise driver.DriverError("forecast model requires a new calibration identity")
+            raise driver.DriverError("forecast model identity changed; review remote OOS before rollout")
         lifecycle_check()
         process = driver.run([openclaw, "infer", "model", "run", "--local", "--model", actual_model,
                               "--thinking", "low", "--prompt", prompt, "--json"], 150)
@@ -262,8 +254,8 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
             # A pre-upgrade position keeps its original exit behavior. Do not
             # invent an entry thesis or make an inherited holding wait for fees.
             return original["should_close"](state, position, quote, decision)
-        artifact, _ = get_artifact()
-        result = discretionary_exit(decision, quote, position, driver.now_ms(), artifact)
+        result = remote_discretionary_exit(
+            decision, quote, position, driver.now_ms())
         recorder("EXIT_CHECK", {"forecast": decision, "position": position, "close": result[0], "reason": result[1]})
         return result
 
@@ -312,7 +304,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--enable-paper-hooks", action="store_true", required=True)
     parser.add_argument("--base-driver", type=Path, required=True)
-    parser.add_argument("--calibration", type=Path, default=Path.home() / ".config/heptatrader/cost-calibration.json")
     args, remaining = parser.parse_known_args()
     if os.geteuid() == 0:
         parser.error("unprivileged PAPER owner required")
@@ -323,7 +314,7 @@ def main():
                           "driver_started": False, "broker_orders_sent": 0}), file=sys.stderr)
         return 78
     module = load_pinned_driver(args.base_driver)
-    close = attach(module, args.calibration, lifecycle_guard=require_no_reset_hold)
+    close = attach(module, lifecycle_guard=require_no_reset_hold)
     sys.argv = [str(args.base_driver), *remaining]
     try:
         return module.main()

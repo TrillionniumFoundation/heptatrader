@@ -1,8 +1,10 @@
 import copy
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from fixtures import *
-from hepta_cost_replay import chronological_assessment,fit_from_tape,candidate_outcomes
+import hepta_cost_replay as replay
+from hepta_cost_replay import chronological_assessment,local_training_assessment,fit_from_tape,candidate_outcomes
 
 # Full original 30-sample/two-UTC-date limits also apply to synthetic tests.
 # Short sessions straddle midnight; no production minimum is weakened.
@@ -29,8 +31,9 @@ def tape_fixture():
 
 
 def assess(tape=None,**kw):
-    return chronological_assessment(tape or tape_fixture(),CUT,END,policy=TEST_POLICY,
-                                    max_drawdown_usd=kw.pop('max_drawdown_usd','1000'),**kw)
+    # Historical 30x2 cohort tests now exercise LOCAL training readiness only.
+    return local_training_assessment(tape or tape_fixture(),CUT,END,policy=TEST_POLICY,
+                                     max_drawdown_usd=kw.pop('max_drawdown_usd','1000'),**kw)
 
 class ChronologicalAssessmentTests(unittest.TestCase):
     def test_synthetic_positive_paths_do_not_become_real_acceptance(self):
@@ -51,7 +54,7 @@ class ChronologicalAssessmentTests(unittest.TestCase):
             if row['at_ms']>CUT:row['quote']['bid']=str(dec(row['quote']['bid'])*D('.999'))
         self.assertEqual(assess(before)['training']['artifact'],assess(after)['training']['artifact'])
     def test_future_labels_never_complete_a_training_window(self):
-        result=chronological_assessment(tape_fixture(),START+29*430000+150000,END,policy=TEST_POLICY,max_drawdown_usd='1000')
+        result=local_training_assessment(tape_fixture(),START+29*430000+150000,END,policy=TEST_POLICY,max_drawdown_usd='1000')
         self.assertEqual(result['training']['artifact']['cohorts'],{})
         self.assertIn('NO_QUALIFIED_TRAINING_COHORT',result['reasons'])
     def test_decision_tail_is_quotes_only_not_new_orders(self):
@@ -96,7 +99,7 @@ class ChronologicalAssessmentTests(unittest.TestCase):
     def test_explicit_boundaries_and_types(self):
         for a,b in [(START,END),(CUT,CUT),(CUT,HOLDOUT+99999999),(True,END),(CUT,False)]:
             with self.subTest(a=a,b=b),self.assertRaises(CostError):
-                chronological_assessment(tape_fixture(),a,b)
+                local_training_assessment(tape_fixture(),a,b)
     def test_input_and_model_guesses_unchanged(self):
         tape=tape_fixture();before=canonical(tape);a=assess(tape);b=assess(tape)
         self.assertEqual(canonical(tape),before);self.assertEqual(canonical(a),canonical(b))
@@ -113,3 +116,121 @@ class ChronologicalAssessmentTests(unittest.TestCase):
         self.assertEqual(result['sample_rows_usable_before_purging'],29)
         self.assertEqual(result['candidate_outcomes'][0]['reason'],'OBSERVED')
         self.assertTrue(any(x['reason'].startswith('HOLD_') for x in result['calibration_sample_exclusions']))
+
+
+# Synthetic unit fixture. IB_CAPTURE here tests control flow only; no test
+# result is installed or represented as real operator evidence.
+REMOTE_START=NOW+5000
+REMOTE_END=NOW+100000
+REMOTE_TAIL=NOW+500000
+
+def remote_oos_fixture(source_kind='IB_CAPTURE'):
+    rows=[]
+    for sec in range(0,501,10):
+        at=NOW+sec*1000
+        if sec < 20:
+            mid=D('100')
+        elif sec < 60:
+            mid=D('99.6')
+        elif sec <= 360:
+            mid=D('99.6')*(D(1)+D('.05')*D(sec-60)/D(300))
+        else:
+            mid=D('104.58')
+        f=None
+        if sec==10:
+            f=forecast(at,action='BUY',move='20',mid=str(mid))
+        elif sec==60:
+            f=forecast(at,action='BUY',move='500',mid=str(mid))
+        rows.append({'at_ms':at,'quote':quote(at,mid=str(mid)),'forecast':f})
+    return {'schema':'heptatrader.cost-tape.v1','instrument':'BTC.USD',
+            'source_kind':source_kind,'rows':rows}
+
+class RemoteModelOosTests(unittest.TestCase):
+    def assess(self,tape=None,**kwargs):
+        return chronological_assessment(
+            tape or remote_oos_fixture(),REMOTE_START,REMOTE_END,
+            max_drawdown_usd=kwargs.pop('max_drawdown_usd','1000'),**kwargs)
+
+    def test_remote_oos_never_refits_or_reads_training_cohorts(self):
+        with patch.object(replay,'fit_from_tape',side_effect=AssertionError('remote OOS must not fit')):
+            result=self.assess()
+        self.assertTrue(result['strategy_accepted'])
+        self.assertFalse(result['remote_model_refit_performed'])
+        self.assertFalse(result['calibration_artifact_used'])
+        self.assertFalse(result['local_training_required_for_acceptance'])
+        self.assertIsNone(result['local_training_ready'])
+        self.assertNotIn('NO_QUALIFIED_TRAINING_COHORT',result['reasons'])
+        self.assertNotIn('NO_TRAINED_COHORT',canonical(result))
+
+    def test_remote_oos_pass_requires_positive_net_advantage_under_every_stress(self):
+        result=self.assess()
+        self.assertTrue(result['strategy_accepted'])
+        self.assertEqual(result['oos_evidence']['directional_candidates'],2)
+        self.assertEqual(result['oos_evidence']['observed_directional_candidates'],2)
+        for case in result['cost_case_checks'].values():
+            self.assertTrue(case['passed'],case)
+            for path in case['paths']:
+                self.assertGreater(path['completed_round_trips'],0)
+                self.assertGreater(dec(path['net_liquidation_pnl_usd']),0)
+                self.assertGreater(dec(path['net_advantage_vs_direction_baseline_usd']),0)
+
+    def test_remote_cost_gate_rejects_small_raw_edge_but_keeps_larger_candidate(self):
+        result=self.assess()
+        base=result['stress']['BASE']
+        gate=base['results'][1]
+        decisions=[d for d in gate['decisions'] if d.get('evidence')]
+        self.assertEqual(decisions[0]['action'],'REJECT')
+        self.assertIn('NET_EDGE_BELOW_COST_HURDLE',decisions[0]['reason'])
+        self.assertEqual(decisions[1]['action'],'OPEN')
+        self.assertEqual(decisions[1]['evidence']['forecast_basis'],
+                         'REMOTE_MODEL_RAW_POSITION_NEUTRAL_SCENARIOS')
+        self.assertFalse(decisions[1]['evidence']['local_training_artifact_used'])
+
+    def test_remote_oos_is_fixed_time_and_outcome_tail_cannot_start_new_entry(self):
+        tape=remote_oos_fixture()
+        late=forecast(NOW+200000,action='BUY',move='500',mid='102')
+        tape['rows'][20]['forecast']=late
+        result=self.assess(tape)
+        self.assertTrue(any(x['reason']=='OUTSIDE_PREDECLARED_DECISION_WINDOW'
+                            for x in result['purged_or_outside_window_candidates']))
+        for case in result['stress'].values():
+            for path in case['results']:
+                self.assertTrue(all(t['at_ms']<=REMOTE_END for t in path['trades']
+                                    if t['event']=='OPEN'))
+
+    def test_synthetic_marker_never_becomes_strategy_acceptance(self):
+        result=self.assess(remote_oos_fixture('SYNTHETIC'))
+        self.assertFalse(result['strategy_accepted'])
+        self.assertIn('SYNTHETIC_IS_NOT_REAL_OOS',result['reasons'])
+
+    def test_missing_directional_outcome_blocks_strategy_not_local_training(self):
+        tape=remote_oos_fixture();tape['rows']=tape['rows'][:25]
+        result=chronological_assessment(
+            tape,REMOTE_START,REMOTE_END,max_drawdown_usd='1000')
+        self.assertFalse(result['strategy_accepted'])
+        self.assertIn('INCOMPLETE_DIRECTIONAL_OOS_OUTCOMES',result['reasons'])
+        self.assertNotIn('NO_QUALIFIED_TRAINING_COHORT',result['reasons'])
+
+    def test_no_trade_cannot_pass_by_avoiding_fees(self):
+        tape=remote_oos_fixture()
+        for row in tape['rows']:
+            if row['forecast'] and row['at_ms']>REMOTE_START:
+                row['forecast']=forecast(row['at_ms'],action='HOLD',move='0',
+                                         mid=row['quote']['bid'])
+        result=self.assess(tape)
+        self.assertFalse(result['strategy_accepted'])
+        self.assertIn('NO_DIRECTIONAL_OOS_CANDIDATES',result['reasons'])
+        self.assertTrue(any('NO_COMPLETED_OOS_ROUNDTRIP' in reason
+                            for case in result['cost_case_checks'].values()
+                            for reason in case['reasons']))
+
+    def test_explicit_drawdown_budget_is_still_required(self):
+        result=self.assess(max_drawdown_usd=None)
+        self.assertFalse(result['strategy_accepted'])
+        self.assertIn('OPERATOR_DRAWDOWN_BUDGET_UNSET',result['reasons'])
+
+    def test_remote_oos_input_is_not_mutated(self):
+        tape=remote_oos_fixture();before=canonical(tape)
+        a=self.assess(tape);b=self.assess(tape)
+        self.assertEqual(canonical(tape),before)
+        self.assertEqual(canonical(a),canonical(b))

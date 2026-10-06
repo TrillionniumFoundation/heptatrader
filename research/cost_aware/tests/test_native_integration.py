@@ -140,19 +140,19 @@ class RealDriverIntegration(unittest.TestCase):
         self.assertEqual(pending['order_type'], 'MKT')
         self.assertEqual(pending['cash_quantity'], 25000.)
 
-    def test_missing_calibration_prevents_prepare(self):
+    def test_missing_local_calibration_does_not_block_remote_entry(self):
         self.calibration.unlink()
-        with self.assertRaisesRegex(self.d.DriverError, 'COST_ENTRY_REJECTED'):
-            self.open()
-        self.assertEqual(self.calls, [])
-        self.assertIsNone(self.state['pending'])
-        self.assertIn('CALIBRATION_REQUIRED', self.state['cost_last_admission']['reasons'])
+        self.open()
+        self.assertEqual(self.calls.count('prepare-crypto-open'), 1)
+        self.assertEqual(self.calls.count('submit'), 1)
+        self.assertFalse(self.state['cost_last_admission']['local_training_artifact_used'])
 
-    def test_synthetic_calibration_never_grants_entry(self):
+    def test_synthetic_local_calibration_cannot_change_remote_entry(self):
         self.calibration.write_text(json.dumps(test_artifact(synthetic=True)))
-        with self.assertRaises(self.d.DriverError):
-            self.open()
-        self.assertEqual(self.calls, [])
+        self.open()
+        self.assertEqual(self.calls.count('prepare-crypto-open'), 1)
+        self.assertEqual(self.calls.count('submit'), 1)
+        self.assertIsNone(self.state['cost_last_admission']['calibration_id'])
 
     def test_price_move_after_prepare_prevents_submit_keeps_command(self):
         self.after_prepare = lambda: self.q.update(bid='101000', ask='101000')
@@ -162,7 +162,7 @@ class RealDriverIntegration(unittest.TestCase):
         self.assertEqual(self.state['pending']['send_state'], 'DEFINITELY_REJECTED')
         self.assertEqual(json.loads(self.path.read_text())['pending']['command_id'], 'test-original-command')
 
-    def test_calibration_expiry_after_prepare_prevents_submit(self):
+    def test_forecast_expiry_after_prepare_prevents_submit(self):
         self.after_prepare = lambda: setattr(self.d, 'now_ms', lambda: NOW + 2*86400000)
         self.open()
         self.assertNotIn('submit', self.calls)

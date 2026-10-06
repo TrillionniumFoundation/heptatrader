@@ -160,7 +160,7 @@ def main():
     writer = Capture(state_dir/'cost-observations.jsonl', args.instrument, observation_context=access.context if access else None)
     writer.append('QUOTE', {key: first_quote.get(key) for key in QUOTE_FIELDS})
     original_read = driver.native
-    close_adapter = attach(driver, state_dir/'unused-calibration.json', capture_factory=lambda *_a, **_k: writer, lifecycle_guard=lifecycle_guard)
+    close_adapter = attach(driver, capture_factory=lambda *_a, **_k: writer, lifecycle_guard=lifecycle_guard)
     def only_quote(cli, tool, *fields):
         lifecycle_guard()
         if tool != 'market.get_quote':

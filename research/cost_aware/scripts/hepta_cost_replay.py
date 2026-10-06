@@ -18,7 +18,8 @@ from pathlib import Path
 import sys
 from hepta_cost_policy import (D, BPS, CostError, DEFAULT_POLICY, FORECAST_VERSION, MODEL_ID,
     canonical, digest, dec, quote_values, validate_forecast, commission, entry_admission,
-    risk_exit, discretionary_exit, build_calibration, strict_loads)
+    remote_entry_admission, risk_exit, discretionary_exit, remote_discretionary_exit,
+    build_calibration, strict_loads)
 from hepta_cost_capture import read_capture
 
 NAMES = ("DIRECTION_BASELINE", "COST_GATE", "COST_GATE_BAND")
@@ -195,9 +196,12 @@ def artifact_for(forecast, artifacts):
 
 
 class PathState:
-    def __init__(self, name, instrument, size, capital, policy):
+    def __init__(self, name, instrument, size, capital, policy, gate_mode="calibrated"):
         self.name, self.instrument, self.size, self.initial_cash = name, instrument, dec(size), dec(capital)
         self.policy = policy
+        if gate_mode not in ("calibrated", "remote_raw"):
+            raise CostError("REPLAY_GATE_MODE_INVALID")
+        self.gate_mode = gate_mode
         self.cash, self.quantity, self.entry_price = self.initial_cash, D(0), None
         self.entry_at = self.last_exit = 0
         self.forecast = None
@@ -276,7 +280,7 @@ class PathState:
         if forecast:
             identity = digest(forecast)
             decision = {"candidate_id": identity, "at_ms": at, "position_before": str(self.quantity)}
-            artifact = artifact_for(forecast, artifacts)
+            artifact = artifact_for(forecast, artifacts) if self.gate_mode == "calibrated" else None
             if closed:
                 decision.update(action="NO_SAME_TICK_REENTRY", reason="RISK_EXIT_HAS_PRIORITY")
             elif at - forecast["issued_at_ms"] > self.policy.forecast_entry_ttl_ms:
@@ -287,8 +291,13 @@ class PathState:
                 opposite = "SELL" if self.quantity > 0 else "BUY"
                 if forecast["action"] == opposite and dec(forecast["confidence"]) >= D(".62"):
                     if self.name == "COST_GATE_BAND":
-                        take_exit, reason = discretionary_exit(forecast, quote, self.quantity, at, artifact,
-                                                              policy=self.policy, synthetic_ok=synthetic_ok)
+                        if self.gate_mode == "remote_raw":
+                            take_exit, reason = remote_discretionary_exit(
+                                forecast, quote, self.quantity, at, policy=self.policy)
+                        else:
+                            take_exit, reason = discretionary_exit(
+                                forecast, quote, self.quantity, at, artifact,
+                                policy=self.policy, synthetic_ok=synthetic_ok)
                     else:
                         take_exit, reason = True, "DIRECTION_REVERSAL"
                     if take_exit:
@@ -304,8 +313,16 @@ class PathState:
                 if self.name == "DIRECTION_BASELINE":
                     allowed, evidence = True, {"allowed": True, "reason": "BASELINE_COST_UNAWARE"}
                 else:
-                    evidence = entry_admission(forecast, quote, self.size, at, artifact, last_exit_ms=self.last_exit,
-                                               no_trade_band=self.name == "COST_GATE_BAND", policy=self.policy, synthetic_ok=synthetic_ok)
+                    if self.gate_mode == "remote_raw":
+                        evidence = remote_entry_admission(
+                            forecast, quote, self.size, at, last_exit_ms=self.last_exit,
+                            no_trade_band=self.name == "COST_GATE_BAND", policy=self.policy)
+                    else:
+                        evidence = entry_admission(
+                            forecast, quote, self.size, at, artifact,
+                            last_exit_ms=self.last_exit,
+                            no_trade_band=self.name == "COST_GATE_BAND",
+                            policy=self.policy, synthetic_ok=synthetic_ok)
                     allowed = evidence["allowed"]
                 if allowed:
                     self.open(forecast, quote, at)
@@ -330,7 +347,8 @@ class PathState:
             if decision["action"] in ("REJECT", "HOLD", "NO_SAME_TICK_REENTRY"):
                 reasons[decision["reason"]] = reasons.get(decision["reason"], 0) + 1
         return {
-            "strategy": self.name, "complete_observed_path": self.path_complete,
+            "strategy": self.name, "gate_mode": self.gate_mode,
+            "complete_observed_path": self.path_complete,
             "net_liquidation_pnl_usd": str(self.last_equity - self.initial_cash) if self.path_complete else None,
             "partial_observed_net_liquidation_pnl_usd": str(self.last_equity - self.initial_cash),
             "commission_paid_usd": str(self.fees), "holding_haircut_usd": str(self.carry),
@@ -347,19 +365,22 @@ class PathState:
         }
 
 
-def compare(tape, artifacts=(), *, size="25000", capital="100000", policy=DEFAULT_POLICY):
+def compare(tape, artifacts=(), *, size="25000", capital="100000",
+            policy=DEFAULT_POLICY, gate_mode="calibrated"):
     validate_tape(tape)
     policy.validate()
     if dec(size) <= 0 or dec(size) > 25000 or dec(capital) <= 0:
         raise CostError("REPLAY_SIZE_OR_CAPITAL_INVALID")
-    states = [PathState(name, tape["instrument"], size, capital, policy) for name in NAMES]
+    states = [PathState(name, tape["instrument"], size, capital, policy, gate_mode=gate_mode)
+              for name in NAMES]
     synthetic_ok = tape["source_kind"] == "SYNTHETIC"
     for row in tape["rows"]:
         for state in states:
             state.step(row, artifacts, synthetic_ok)
     duration = tape["rows"][-1]["at_ms"] - tape["rows"][0]["at_ms"]
     return {
-        "mode": "THREE_INDEPENDENT_COUNTERFACTUAL_PATHS", "source_kind": tape["source_kind"],
+        "mode": "THREE_INDEPENDENT_COUNTERFACTUAL_PATHS", "gate_mode": gate_mode,
+        "source_kind": tape["source_kind"],
         "input_sha256": digest(tape), "policy": asdict(policy), "instrument": tape["instrument"],
         "size": str(size), "initial_simulation_capital_usd": str(capital),
         "rows": len(tape["rows"]), "duration_ms": duration,
@@ -374,6 +395,23 @@ def stress_compare(tape, artifacts=(), **kwargs):
     cases = (("BASE", "1", "1"), ("SLIPPAGE_2X", "1", "2"), ("SLIPPAGE_5X", "1", "5"),
              ("FEES_125PCT", "1.25", "1"), ("FEES_150PCT_SLIPPAGE_5X", "1.5", "5"))
     return {name: compare(tape, artifacts, policy=replace(policy, fee_stress=fee, slippage_stress=slip), **kwargs)
+            for name, fee, slip in cases}
+
+
+def remote_compare(tape, *, size="25000", capital="100000", policy=DEFAULT_POLICY):
+    """Three independent paths using raw remote forecasts and deterministic costs."""
+    return compare(tape, (), size=size, capital=capital, policy=policy,
+                   gate_mode="remote_raw")
+
+
+def remote_stress_compare(tape, **kwargs):
+    policy = kwargs.pop("policy", DEFAULT_POLICY)
+    cases = (("BASE", "1", "1"), ("SLIPPAGE_2X", "1", "2"),
+             ("SLIPPAGE_5X", "1", "5"), ("FEES_125PCT", "1.25", "1"),
+             ("FEES_150PCT_SLIPPAGE_5X", "1.5", "5"))
+    return {name: remote_compare(
+                tape, policy=replace(policy, fee_stress=fee, slippage_stress=slip),
+                **kwargs)
             for name, fee, slip in cases}
 
 
@@ -487,14 +525,154 @@ def sampling_quality(capture, *, cutoff_ms=None, expected_cycle_id=None, expecte
         'candidate_actions':dict(Counter(e['data']['forecast']['action'] for e in candidates)),
         'candidate_outcomes':dict(Counter(x['reason'] for x in outcomes)),
         'calibration_exclusion_reasons':dict(Counter(x['reason'] for x in exclusions)),
-        'cohort_counts':cohort_counts,'eligible_training_cohorts':len(artifact['cohorts']) if artifact is not None else 0,
+        'cohort_counts':cohort_counts,
+        'local_training_ready':bool(artifact and artifact['cohorts']),
+        'local_training_cohort_count':len(artifact['cohorts']) if artifact is not None else 0,
+        'local_training_deployment_blocker':False,
         'calibration_evaluation_error':fit_error,'calibration_artifact':artifact,
-        'next_action':'COLLECT_REAL_PAST_ONLY_SAMPLES' if not artifact or not artifact['cohorts'] else 'RUN_PREDECLARED_CHRONOLOGICAL_HOLDOUT',
+        'next_action':'RUN_FIXED_REMOTE_MODEL_OOS',
         'authorization_effect':'NONE','calibration_activated':False,'strategy_accepted':False,
         'trading_driver_switched':False,'broker_orders_sent':0,'live_profitability_proven':False}
 
 
-def chronological_assessment(tape, fit_cutoff_ms, decision_end_ms, *, size="25000",
+def chronological_assessment(tape, oos_start_ms, decision_end_ms, *, size="25000",
+                             capital="100000", max_drawdown_usd=None,
+                             policy=DEFAULT_POLICY):
+    """Fixed-time remote-model OOS with NO training/refit in the test window.
+
+    The remote model's raw position-neutral forecasts are candidates. Entry
+    eligibility is deterministic cost arithmetic only. Local training readiness
+    is intentionally not an acceptance condition.
+    """
+    validate_tape(tape)
+    policy.validate()
+    first, last = tape["rows"][0]["at_ms"], tape["rows"][-1]["at_ms"]
+    if (type(oos_start_ms) is not int or type(decision_end_ms) is not int or
+            not first < oos_start_ms < decision_end_ms < last):
+        raise CostError("OOS_REQUIRES_START_DECISION_END_AND_OUTCOME_TAIL")
+    budget = None if max_drawdown_usd is None else dec(max_drawdown_usd)
+    if budget is not None and budget <= 0:
+        raise CostError("HOLDOUT_DRAWDOWN_BUDGET_INVALID")
+
+    heldout, selected, purged = [], [], []
+    for row in tape["rows"]:
+        if row["at_ms"] <= oos_start_ms:
+            continue
+        output = copy.deepcopy(row)
+        forecast = row.get("forecast")
+        if forecast:
+            issued = forecast["issued_at_ms"]
+            known = row.get("forecast_available_at_ms", row["at_ms"])
+            reason = None
+            if issued <= oos_start_ms:
+                reason = "FORECAST_BEFORE_OOS_WINDOW"
+            elif known > decision_end_ms or row["at_ms"] > decision_end_ms:
+                reason = "OUTSIDE_PREDECLARED_DECISION_WINDOW"
+            if reason:
+                purged.append({"candidate_id": digest(forecast), "reason": reason})
+                output["forecast"] = None
+                output.pop("forecast_available_at_ms", None)
+            else:
+                selected.append(forecast)
+        heldout.append(output)
+    evaluation = {**tape, "rows": heldout}
+    stress = remote_stress_compare(
+        evaluation, size=size, capital=capital, policy=policy)
+    outcomes = stress["BASE"]["candidate_outcomes"]
+
+    selected_ids = {digest(f) for f in selected}
+    selected_outcomes = [x for x in outcomes if x["candidate_id"] in selected_ids]
+    directional = [x for x in selected_outcomes if x["forecast"]["action"] != "HOLD"]
+    observed_directional = [x for x in directional if x["reason"] == "OBSERVED"]
+    action_counts = Counter(x["forecast"]["action"] for x in selected_outcomes)
+    horizon_counts = Counter(str(x["forecast"]["horizon_sec"]) for x in selected_outcomes)
+
+    reasons = []
+    if tape["source_kind"] != "IB_CAPTURE":
+        reasons.append("SYNTHETIC_IS_NOT_REAL_OOS")
+    if not directional:
+        reasons.append("NO_DIRECTIONAL_OOS_CANDIDATES")
+    if any(x["reason"] != "OBSERVED" for x in directional):
+        reasons.append("INCOMPLETE_DIRECTIONAL_OOS_OUTCOMES")
+    if budget is None:
+        reasons.append("OPERATOR_DRAWDOWN_BUDGET_UNSET")
+
+    case_checks = {}
+    for name, report in stress.items():
+        baseline = report["results"][0]
+        checks = []
+        baseline_net = baseline["net_liquidation_pnl_usd"]
+        if not baseline["complete_observed_path"] or baseline_net is None:
+            checks.append("BASELINE_PATH_INCOMPLETE")
+        paths = []
+        for path in report["results"][1:]:
+            prefix = path["strategy"] + ":"
+            path_checks = []
+            if not path["complete_observed_path"]:
+                path_checks.append("PATH_INCOMPLETE")
+            if path["completed_round_trips"] <= 0:
+                path_checks.append("NO_COMPLETED_OOS_ROUNDTRIP")
+            if dec(path["remaining_simulated_quantity"]) != 0:
+                path_checks.append("OPEN_POSITION_AT_OUTCOME_END")
+            net = path["net_liquidation_pnl_usd"]
+            advantage = None
+            if net is None or dec(net) <= 0:
+                path_checks.append("NONPOSITIVE_OR_UNKNOWN_NET_RETURN")
+            if net is not None and baseline_net is not None:
+                advantage = dec(net) - dec(baseline_net)
+                if advantage <= 0:
+                    path_checks.append("NO_NET_ADVANTAGE_VS_DIRECTION_BASELINE")
+            drawdown = path["max_drawdown_usd"]
+            if budget is not None and (drawdown is None or dec(drawdown) > budget):
+                path_checks.append("DRAWDOWN_BUDGET_NOT_MET")
+            checks.extend(prefix + value for value in path_checks)
+            paths.append({
+                "strategy": path["strategy"],
+                "completed_round_trips": path["completed_round_trips"],
+                "net_liquidation_pnl_usd": net,
+                "baseline_net_liquidation_pnl_usd": baseline_net,
+                "net_advantage_vs_direction_baseline_usd":
+                    None if advantage is None else str(advantage),
+                "max_drawdown_usd": drawdown,
+                "passed": not path_checks,
+                "reasons": path_checks,
+            })
+        case_checks[name] = {"passed": not checks, "reasons": checks,
+                             "paths": paths}
+        if checks:
+            reasons.append(name + "_REMOTE_OOS_COST_PATH_NOT_ACCEPTED")
+
+    return {
+        "schema": "heptatrader.remote-model-oos.v1",
+        "source_kind": tape["source_kind"], "input_sha256": digest(tape),
+        "oos_start_ms": oos_start_ms, "decision_end_ms": decision_end_ms,
+        "outcome_end_ms": last, "holdout_rows_including_outcome_tail": len(heldout),
+        "purged_or_outside_window_candidates": purged,
+        "oos_evidence": {
+            "selected_candidates": len(selected_outcomes),
+            "directional_candidates": len(directional),
+            "observed_directional_candidates": len(observed_directional),
+            "candidate_actions": dict(action_counts),
+            "candidate_horizons_sec": dict(horizon_counts),
+        },
+        "cost_case_checks": case_checks, "stress": stress,
+        "operator_max_drawdown_usd": None if budget is None else str(budget),
+        "remote_model_refit_performed": False,
+        "calibration_artifact_used": False,
+        "local_training_required_for_acceptance": False,
+        "local_training_ready": None,
+        "strategy_accepted": not reasons,
+        "research_acceptance_passed": not reasons,
+        "reasons": reasons,
+        "acceptance_meaning":
+            "FIXED_TIME_REMOTE_MODEL_OOS_NET_ADVANTAGE_SCREEN_NOT_LIVE_EXECUTION_PROOF",
+        "authorization_effect": "NONE", "calibration_activated": False,
+        "trading_driver_switched": False, "broker_orders_sent": 0,
+        "live_profitability_proven": False,
+    }
+
+
+def local_training_assessment(tape, fit_cutoff_ms, decision_end_ms, *, size="25000",
                             capital="100000", max_drawdown_usd=None, policy=DEFAULT_POLICY):
     """Fixed-prefix training, later decisions, then quote-only outcome tail.
 
@@ -619,8 +797,10 @@ def chronological_assessment(tape, fit_cutoff_ms, decision_end_ms, *, size="2500
             "stress": stress, "operator_max_drawdown_usd": None if budget is None else str(budget),
             "engineering_minimum_per_cohort": {"nonoverlapping_samples": policy.min_calibration_samples,
                 "utc_dates": policy.min_calibration_days, "completed_roundtrips_per_cost_path": policy.min_calibration_samples},
+            "local_training_ready": bool(artifact["cohorts"]),
+            "deployment_blocker": False,
             "research_acceptance_passed": not reasons, "reasons": reasons,
-            "acceptance_meaning": "FIXED_HOLDOUT_ENGINEERING_SCREEN_NOT_STATISTICAL_OR_BROKER_QUALIFICATION",
+            "acceptance_meaning": "LOCAL_MODEL_TRAINING_HOLDOUT_ONLY_NOT_REMOTE_STRATEGY_DEPLOYMENT",
             "authorization_effect": "NONE", "calibration_activated": False,
             "trading_driver_switched": False, "broker_orders_sent": 0, "live_profitability_proven": False}
 
@@ -631,7 +811,9 @@ def main():
     group.add_argument("--tape", type=Path)
     group.add_argument("--capture", type=Path)
     parser.add_argument("--calibration", type=Path, action="append", default=[])
-    parser.add_argument("--fit-cutoff-ms", type=int)
+    parser.add_argument("--fit-cutoff-ms", type=int,
+                        help="offline LOCAL training calibration cutoff only")
+    parser.add_argument("--remote-oos-start-ms", type=int)
     parser.add_argument("--stress", action="store_true")
     parser.add_argument("--quality", action="store_true", help="diagnose an immutable capture without promotion or orders")
     parser.add_argument("--expected-cycle-id")
@@ -640,8 +822,12 @@ def main():
     parser.add_argument("--max-drawdown-usd")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.holdout_decision_end_ms is not None and (args.fit_cutoff_ms is None or args.calibration or args.stress):
-        parser.error("holdout requires --fit-cutoff-ms and its own past-only fit; no supplied calibration/stress switch")
+    if args.holdout_decision_end_ms is not None and (
+            args.remote_oos_start_ms is None or args.fit_cutoff_ms is not None or
+            args.calibration or args.stress):
+        parser.error("remote OOS requires --remote-oos-start-ms and never accepts fit/calibration/stress inputs")
+    if args.remote_oos_start_ms is not None and args.holdout_decision_end_ms is None:
+        parser.error("--remote-oos-start-ms requires --holdout-decision-end-ms")
     if args.max_drawdown_usd is not None and args.holdout_decision_end_ms is None:
         parser.error("drawdown budget belongs to an explicit holdout assessment")
     if args.quality and (not args.capture or args.calibration or args.stress or args.holdout_decision_end_ms is not None):
@@ -663,8 +849,9 @@ def main():
                                   expected_cycle_id=args.expected_cycle_id,
                                   expected_reset_sha256=args.expected_reset_sha256)
     elif args.holdout_decision_end_ms is not None:
-        report = chronological_assessment(tape, args.fit_cutoff_ms, args.holdout_decision_end_ms,
-                                          max_drawdown_usd=args.max_drawdown_usd)
+        report = chronological_assessment(
+            tape, args.remote_oos_start_ms, args.holdout_decision_end_ms,
+            max_drawdown_usd=args.max_drawdown_usd)
     elif args.fit_cutoff_ms is not None:
         report = fit_from_tape(tape, args.fit_cutoff_ms)
     else:

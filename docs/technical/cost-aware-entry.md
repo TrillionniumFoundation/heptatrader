@@ -9,13 +9,15 @@ Before integration all 14 delivered Python source/test hashes were checked exact
 The active original driver hash is
 `df3e05610ffd29797db39ad231b765955a3fdf83b35e6f7c41a85534a213cefb`.
 
-The package is under `research/cost_aware`. Its files do not replace Execution,
+The package is under research/cost_aware. Its files do not replace Execution,
 the main release link, PnL accounting, driver state or HSR1 commands. The optional
 CostResearch install component creates separate tools and an independent read-only
-user unit. Trading use requires explicit `--enable-paper-hooks`, a hash-pinned
-original driver and an accepted real calibration artifact. The research observer
-never calls driver main, prepare/submit, pending reconciliation or guard release.
-No automatic calibration promotion or trading switch exists.
+user unit. Trading use still requires explicit --enable-paper-hooks, the
+hash-pinned original driver, native Broker readiness and a separately accepted
+remote-model strategy rollout. Resident remote-model admission does NOT read or
+require a local training calibration artifact. The research observer never calls
+driver main, prepare/submit, pending reconciliation or guard release. No automatic
+local-model training, strategy promotion or trading switch exists.
 
 ## Deterministic costs and entry boundary
 
@@ -29,12 +31,17 @@ Holding reserve and minimum net-edge margins are provisional assumptions, not
 measured account financing or demonstrated execution quality. Official schedules
 were checked on 2026-10-06; broker-specific additions still need account evidence.
 
-The adapter refuses OPEN before prepare when calibration, quote, cost or evidence
-is missing. After native prepare and immediately before the single original submit
-transport it re-reads authoritative flatness/orders/owner readiness and a fresh
-quote, and recomputes against the same anchored forecast. A failed last check is
-a definite NON-SEND through the existing driver recovery path. The original command
-and durable POSSIBLY_SENT marker are retained; no replacement ID or retry appears.
+The adapter refuses OPEN before prepare when the remote candidate, authoritative
+quote, deterministic cost edge or evidence is invalid. The raw position-neutral
+remote forecast is priced scenario-by-scenario against the current quote; actual
+commission schedule, bid/ask spread, provisional slippage, holding reserve and the
+configured minimum net-edge safety margin are deducted before admission. No local
+training cohort or calibration file can grant or deny the resident entry. After
+native prepare and immediately before the single original submit transport it
+re-reads authoritative flatness/orders/owner readiness and a fresh quote, then
+recomputes the same raw remote candidate. A failed last check is a definite
+NON-SEND through the existing driver recovery path. The original command and
+durable POSSIBLY_SENT marker are retained; no replacement ID or retry appears.
 This is a driver-layer cost check, not an Execution-wide permit for all clients.
 Native risk/identity/lease/reduce-only gates remain mandatory and unchanged.
 
@@ -43,25 +50,38 @@ entry forecast in the same first atomic state write that clears pending; flat
 close settlement writes cooldown at that same boundary. Safety exits never wait
 for a calibration file, storage success, cooldown or recovery of entry fees.
 
-## Forecast, calibration and no-adjustment region
+## Remote forecast, optional local training and no-adjustment region
 
-The forecast is position-neutral signed underlying MID-return scenarios with
-probabilities, horizon, invalidation price, source reference and model identity.
-Actual held position is not supplied, permitting common candidates across three
-independent state paths. Model confidence is not calibration or execution authority.
+The remote forecast is position-neutral signed underlying MID-return scenarios
+with probabilities, horizon, invalidation price, source reference and exact model
+identity. Actual held position is not supplied, permitting common candidates
+across independent state paths. Model confidence is not calibration or execution
+authority. Resident admission uses this raw distribution only as a candidate and
+applies deterministic transaction-cost arithmetic before any OPEN.
 
-Calibration accepts only past-known, nonoverlapping observations per instrument,
-direction, horizon and exact forecast/model version. At least 30 independent
-samples across two UTC dates are required. Extrapolation beyond observed support,
-future labels, late unobservable labels, invalid hashes and synthetic calibration
-are refused for resident entry. A q90 overprediction haircut is empirical and is
-NOT guaranteed statistical coverage under regime change. Meeting sample minimums
-alone is not sufficient for strategy qualification: chronological out-of-sample,
-cost-stress and live-execution limitations must still be evaluated before promotion.
+Local-model training is a separate optional workflow. Its calibration builder
+accepts only past-known, nonoverlapping observations per instrument, direction,
+horizon and exact forecast/model version. local_training_ready requires at
+least 30 independent samples across two UTC dates; extrapolation beyond observed
+support, future labels, late unobservable labels, invalid hashes and synthetic
+training data are refused. This readiness is informational for the current
+remote-model strategy and is NOT a deployment fail/pass condition. A q90
+overprediction haircut remains available for future local-model research but is
+never read by the resident remote-model adapter.
 
-Discretionary reversals use a heuristic cost/no-adjustment region; this is not an
-optimal-control proof. Already-paid entry fees are sunk, not a reason to delay a
-necessary exit. No favorable real calibration artifact has been produced so far.
+Remote strategy qualification instead uses a fixed-time chronological OOS window
+with no refit in that test period. The same raw remote predictions feed the
+direction baseline and deterministic cost-aware paths. Strategy acceptance
+requires completed observed paths, completed cost-aware round trips, positive net
+return and positive net advantage versus the same-input direction baseline under
+every configured fee/slippage stress, plus the explicit drawdown budget. HOLD-only,
+zero-trade, incomplete or synthetic runs cannot qualify. These are engineering
+screens, not statistical significance or live execution proof.
+
+Discretionary remote reversals use a heuristic cost/no-adjustment region based on
+the raw remote candidate and incremental exit costs; already-paid entry fees are
+sunk. Safety exits remain independent of model training, recording, cooldown and
+transaction-cost recovery.
 
 ## Independent sampling and causal replay
 
@@ -206,44 +226,50 @@ an exception. HOLD outcomes do not increase usable directional sample counts.
 Input corruption, duplicate candidate identity or a broken capture hash chain
 still fails rather than being repaired or silently ignored.
 
-### Reproducible chronological assessment
+### Reproducible remote-model chronological OOS
 
-The existing replay executable now supports a fixed training cutoff, a later
-last-decision boundary, and the remaining observed quote-only outcome tail:
+The replay executable accepts one predeclared OOS start, a later last-decision
+boundary, and the remaining quote-only outcome tail:
 
-```bash
-python3 research/cost_aware/scripts/hepta_cost_replay.py \
-  --capture /private/new-cycle/immutable-prefix.jsonl \
-  --fit-cutoff-ms "$TRAINING_CUTOFF" \
-  --holdout-decision-end-ms "$LAST_TEST_DECISION" \
-  --max-drawdown-usd "$EXPLICIT_RESEARCH_RISK_BUDGET" \
-  --output /private/new-cycle/chronological-assessment.json
-```
+    python3 research/cost_aware/scripts/hepta_cost_replay.py       --capture /private/current-cycle/immutable-prefix.jsonl       --remote-oos-start-ms "$REMOTE_OOS_START"       --holdout-decision-end-ms "$LAST_TEST_DECISION"       --max-drawdown-usd "$EXPLICIT_RESEARCH_RISK_BUDGET"       --output /private/current-cycle/remote-oos.json
 
-Choose the boundaries before examining performance; this tool does not optimize
-cutoffs or select the best run. Training sees only rows strictly before its cutoff
-and labels actually known then. The one resulting calibration is frozen; no
-holdout outcome is refitted into it. Forecasts that straddle the split are purged
-with their identities/reasons retained. Post-decision quotes complete existing
-outcomes and exits but cannot start a new decision. The three simulated paths
-start flat together, then each maintains its own positions, fees, risk exits and
-reentry clock under each of five cost/slippage stresses.
+Choose both boundaries before examining performance. The remote OOS path does not
+call fit_from_tape, does not accept --calibration, and does not refit any holdout
+outcome. Candidates known before the OOS start or after the last-decision boundary
+are excluded with their identities/reasons retained. Post-decision quotes may
+complete existing outcomes and exits but cannot start a new position.
 
-The report includes all candidate outcomes, per-cohort nonoverlap/date coverage,
-all three complete paths, per-stress comparisons and explicit rejection reasons.
-A no-trade, HOLD-only, uncalibrated, open-ended, nonpositive, missing-price or
-synthetic run cannot qualify. The heldout engineering screen uses the same
-30 nonoverlapping samples / two UTC dates minimum, and requires at least 30
-completed simulated round trips in each cost-aware path under every stress.
-Those floors are engineering checks, not statistical significance guarantees.
-The drawdown budget is explicit; the tool does not invent an account risk limit.
+The three paths start flat from the same fixed OOS input. The direction baseline
+is cost-unaware at admission but uses the same risk exits. The two remote cost
+paths use raw remote forecasts plus deterministic fees, spread, slippage, holding
+reserve and the net-edge safety margin; one also applies the no-adjustment/reentry
+band. Each path owns its own cash, positions, fees, exits and cooldown state under
+each cost stress. A trade rejected by one path changes that path's later state;
+the replay never deletes historical trades from another path.
 
-`research_acceptance_passed` is only a fixed-holdout research screen. Even a true
-value writes no active calibration, switches no driver, grants no Broker permit
-and proves no live MKT execution quality or profitability. Exact source/account/
-cycle, native paper qualification, operational readiness and controlled rollout
-remain separate decisions. Ordinary source CI is not conditioned on meeting
-these financial sample counts; tests use synthetic inputs to exercise behavior.
+strategy_accepted requires real IB_CAPTURE input, at least one observed
+directional OOS candidate, complete directional outcomes, an explicit drawdown
+budget, at least one completed round trip in each cost-aware path, positive
+cost-aware net liquidation PnL and strictly positive net advantage over the
+same-input direction baseline under every configured fee/slippage stress. A
+zero-trade path cannot pass by merely avoiding fees. Local training cohort count,
+30x2-day readiness and local calibration artifacts are absent from this decision.
+
+research_acceptance_passed is retained as an alias of that fixed-time remote OOS
+screen for report compatibility. Even a true value writes no active calibration,
+switches no driver, grants no Broker permit and proves no live MKT execution
+quality. Exact source/account/cycle, native PAPER qualification, operational
+readiness and controlled rollout remain separate.
+
+### Optional local training assessment
+
+--fit-cutoff-ms remains an offline local-training/calibration operation. The
+30 nonoverlapping-sample/two-UTC-date rule and q90 haircut apply there only.
+local_training_ready and local_training_cohort_count describe whether local
+model training has enough accepted history; local_training_deployment_blocker
+is always false for the current remote-model strategy. Local-model training may
+later use its own chronological evaluation, but it cannot retroactively gate the
+current remote strategy or provide runtime authority.
 
 
 ## A new-cycle native WATCH path after an accounting reset
@@ -334,11 +360,13 @@ path-continuity check. Original WATCH native endpoint identity in the header is
 not confused with the updated Python collector implementation.
 
 These diagnostics and retry fixes do not complete financial-cycle readiness,
-training, chronological holdout, live execution quality or a trading rollout.
-The existing 30 nonoverlapping samples and two UTC dates per cohort remain an
-engineering minimum, and the holdout/risk/cost tests remain separate. BTC remains
-spot-long-only for new entries; a SELL forecast may be useful as observational
-or exit evidence but cannot authorize a new short position.
+remote-model OOS, live execution quality or a trading rollout. The 30
+nonoverlapping-sample/two-UTC-date rule now describes optional local-model
+training readiness only and does not block the remote-model OOS or deployment
+decision. Remote OOS still requires complete observed outcomes, actual cost-aware
+round trips, positive net advantage across stress cases and the explicit risk
+budget. BTC remains spot-long-only for new entries; a SELL forecast may be useful
+as observational or exit evidence but cannot authorize a new short position.
 
 
 A live observation-only reconnect also exposed an incorrect shared trading

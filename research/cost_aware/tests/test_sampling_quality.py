@@ -53,7 +53,7 @@ class SamplingQualityTests(unittest.TestCase):
     def test_clock_or_source_expiry_not_renewed_by_capture(self):
         cap=self.make([('QUOTE',quote(),NOW+6000)])
         report=sampling_quality(cap);self.assertEqual(report['valid_quote_reads'],0)
-        self.assertEqual(report['source_age_ms']['count'],0);self.assertEqual(report['eligible_training_cohorts'],0)
+        self.assertEqual(report['source_age_ms']['count'],0);self.assertFalse(report['local_training_ready']);self.assertEqual(report['local_training_cohort_count'],0);self.assertFalse(report['local_training_deployment_blocker'])
     def test_conflicting_same_observation_does_not_fit(self):
         first=quote();changed=copy.deepcopy(first);changed['bid']='99.9';changed['ask']='100.1'
         cap=self.make([('QUOTE',first,NOW),('QUOTE',changed,NOW+1)])

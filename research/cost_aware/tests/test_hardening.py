@@ -158,6 +158,25 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)['broker_orders_sent'], 0)
             self.assertEqual(output.stat().st_mode & 0o077, 0)
+    def test_remote_oos_cli_never_accepts_calibration_or_refits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);tape=root/'tape.json';out=root/'remote-oos.json';cal=root/'cal.json'
+            data=small_tape();tape.write_text(json.dumps(data));cal.write_text(json.dumps(full_artifact()))
+            start=data['rows'][1]['at_ms'];decision_end=data['rows'][50]['at_ms']
+            argv=[sys.executable,str(ROOT/'scripts/hepta_cost_replay.py'),'--tape',str(tape),
+                  '--remote-oos-start-ms',str(start),'--holdout-decision-end-ms',str(decision_end),
+                  '--max-drawdown-usd','1000','--output',str(out)]
+            result=subprocess.run(argv,capture_output=True,text=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stderr)
+            report=json.loads(out.read_text())
+            self.assertFalse(report['remote_model_refit_performed'])
+            self.assertFalse(report['calibration_artifact_used'])
+            self.assertFalse(report['local_training_required_for_acceptance'])
+            self.assertEqual(report['broker_orders_sent'],0)
+            rejected=subprocess.run(argv[:-2]+['--calibration',str(cal),'--output',str(root/'bad.json')],
+                                    capture_output=True,text=True,timeout=20)
+            self.assertEqual(rejected.returncode,2)
+            self.assertIn('never accepts fit/calibration',rejected.stderr)
     def test_cli_refuses_overwriting_report(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); tape, output = root/'tape.json', root/'out.json'

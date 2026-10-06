@@ -139,6 +139,33 @@ class CalibrationTests(unittest.TestCase):
         for raw in ['{"x":1,"x":2}','{"x":NaN}']:
             with self.assertRaises(CostError):strict_loads(raw)
 
+class RemoteRuntimeGateTests(unittest.TestCase):
+    def test_remote_raw_positive_edge_requires_no_local_training_artifact(self):
+        r=remote_entry_admission(forecast(),quote(),25000,NOW)
+        self.assertTrue(r['allowed']);self.assertIsNone(r['calibration_id'])
+        self.assertFalse(r['local_training_artifact_used'])
+        self.assertEqual(r['forecast_basis'],'REMOTE_MODEL_RAW_POSITION_NEUTRAL_SCENARIOS')
+    def test_remote_raw_small_edge_rejected_by_deterministic_costs(self):
+        r=remote_entry_admission(forecast(move='20'),quote(),25000,NOW)
+        self.assertFalse(r['allowed']);self.assertIn('NET_EDGE_BELOW_COST_HURDLE',r['reasons'])
+        self.assertGreater(dec(r['cost_components']['entry_commission_usd']),0)
+        self.assertGreater(dec(r['cost_components']['exit_commission_usd']),0)
+        self.assertGreater(dec(r['cost_components']['minimum_net_edge_usd']),0)
+    def test_remote_raw_reentry_and_quote_freshness_still_fail_closed(self):
+        r=remote_entry_admission(forecast(),quote(),25000,NOW,last_exit_ms=NOW-1)
+        self.assertIn('REENTRY_COOLDOWN',r['reasons'])
+        q=quote();q['stale']=True
+        self.assertFalse(remote_entry_admission(forecast(),q,25000,NOW)['allowed'])
+    def test_remote_reversal_uses_exit_cost_not_sunk_entry_fee(self):
+        close,reason=remote_discretionary_exit(
+            forecast(instrument='EUR.USD',action='SELL',move='-80',mid='1.12'),
+            quote(instrument='EUR.USD',mid='1.12'),25000,NOW)
+        self.assertTrue(close);self.assertEqual(reason,'REMOTE_RAW_REVERSAL')
+    def test_remote_hold_never_becomes_entry(self):
+        self.assertFalse(remote_entry_admission(
+            forecast(action='HOLD',move='0'),quote(),25000,NOW)['allowed'])
+
+
 class GateTests(unittest.TestCase):
     def test_calibrated_positive_net(self):
         self.assertTrue(entry_admission(forecast(),quote(),25000,NOW,artifact(),synthetic_ok=True)['allowed'])

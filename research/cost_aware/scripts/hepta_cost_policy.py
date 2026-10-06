@@ -440,6 +440,94 @@ def entry_admission(forecast, quote, size, now_ms, artifact=None, *, last_exit_m
     return result
 
 
+
+def remote_entry_admission(forecast, quote, size, now_ms, *, last_exit_ms=0,
+                           no_trade_band=True, policy=DEFAULT_POLICY):
+    """Deterministic resident gate for the current remote model.
+
+    No local calibration artifact is read or inferred. The model's original
+    position-neutral scenario distribution is priced against the real current
+    quote. Explicit commissions, bid/ask spread, provisional slippage, holding
+    reserve and the configured minimum net-edge safety margin are all deducted
+    before a new OPEN can pass. This is a cost gate, not strategy qualification.
+    """
+    result = {"allowed": False, "authorization_effect": "NONE",
+              "policy_version": policy.version, "reasons": [],
+              "forecast_id": None, "calibration_id": None,
+              "local_training_artifact_used": False,
+              "forecast_basis": "REMOTE_MODEL_RAW_POSITION_NEUTRAL_SCENARIOS",
+              "quote_fingerprint": None, "checked_at_ms": now_ms}
+    try:
+        policy.validate()
+        validate_forecast(forecast)
+        result.update(forecast_id=digest(forecast), quote_fingerprint=digest(quote))
+        instrument, side = forecast["instrument"], forecast["action"]
+        if side == "HOLD":
+            raise CostError("DIRECTION_HOLD")
+        bid, ask, _ = quote_values(quote, instrument, now_ms, policy)
+        age = now_ms - forecast["issued_at_ms"]
+        if not 0 <= age <= min(policy.forecast_entry_ttl_ms, forecast["horizon_sec"] * 1000):
+            raise CostError("FORECAST_STALE")
+        if ((side == "BUY" and bid <= dec(forecast["invalidation_price"])) or
+                (side == "SELL" and ask >= dec(forecast["invalidation_price"]))):
+            raise CostError("FORECAST_ALREADY_INVALIDATED")
+        estimate = expected_round_trip(forecast, quote, size, policy=policy)
+        result["remote_raw_estimate"] = estimate
+        result["cost_components"] = {
+            key: estimate[key] for key in (
+                "entry_commission_usd", "exit_commission_usd", "spread_usd",
+                "slippage_usd", "holding_reserve_usd", "minimum_net_edge_usd",
+                "net_edge_usd")
+        }
+        if dec(estimate["net_edge_usd"]) <= dec(estimate["minimum_net_edge_usd"]):
+            raise CostError("NET_EDGE_BELOW_COST_HURDLE")
+        if no_trade_band and last_exit_ms:
+            if (type(last_exit_ms) is not int or last_exit_ms > now_ms or
+                    now_ms - last_exit_ms < policy.reentry_cooldown_ms):
+                raise CostError("REENTRY_COOLDOWN")
+        result["allowed"] = True
+    except (CostError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+        result["reasons"].append(str(exc) or "COST_INPUT_INVALID")
+    return result
+
+
+def remote_discretionary_exit(forecast, quote, position, now_ms, *,
+                              policy=DEFAULT_POLICY, no_trade_band=True):
+    """Cost-aware non-emergency reversal using the raw remote forecast only.
+
+    Entry commission is sunk. Risk/halt/invalidation/horizon exits stay in
+    risk_exit and never depend on this function or on local training.
+    """
+    pos = dec(position)
+    if pos == 0 or not forecast:
+        return False, "NO_POSITION_OR_CANDIDATE"
+    opposite = "SELL" if pos > 0 else "BUY"
+    if forecast.get("action") != opposite:
+        return False, "NO_REVERSAL"
+    try:
+        mean = validate_forecast(forecast)
+        _, _, mid = quote_values(quote, forecast["instrument"], now_ms, policy)
+        if not 0 <= now_ms - forecast["issued_at_ms"] <= policy.forecast_entry_ttl_ms:
+            raise CostError("FORECAST_STALE")
+        direction = D(1 if opposite == "BUY" else -1)
+        directional = mean * direction
+        remaining = (
+            dec(forecast["reference_mid"]) *
+            (1 + direction * directional / BPS) / mid - 1
+        ) * BPS * direction
+        exit_fee = commission(
+            forecast["instrument"], abs(pos) * mid, fee_stress=policy.fee_stress)
+        execution_bps = (
+            (dec(quote["ask"]) - dec(quote["bid"])) / (2 * mid) * BPS +
+            policy.slip(forecast["instrument"]))
+        band = (policy.hurdle(forecast["instrument"]) + execution_bps +
+                exit_fee / (abs(pos) * mid) * BPS) if no_trade_band else D(0)
+        return ((True, "REMOTE_RAW_REVERSAL") if remaining > band
+                else (False, "NO_ADJUSTMENT_BAND"))
+    except (CostError, KeyError, ValueError, TypeError, ArithmeticError) as exc:
+        return False, str(exc)
+
+
 def risk_exit(position, entry_price, quote, now_ms, *, halt=False, entry_forecast=None, max_adverse=".002"):
     """No calibration, fee budget, cooldown or recorder dependency."""
     pos = dec(position)

@@ -9,10 +9,13 @@ Run tests with the repository core partition or tests/run_with_receipts.py.
 Generated reports/captures belong in a private evidence directory, never Git.
 
 The executable observer and driver honor an explicit factory-reset stop before
-any live I/O. Use the existing replay tool's `--holdout-decision-end-ms` together
-with `--fit-cutoff-ms` for frozen training / heldout decisions / quote-only outcome
-evaluation. It does not promote calibration or authorize a driver. See the
-technical contract for field completeness, time boundaries and limits.
+any live I/O. The resident driver uses the raw remote-model distribution plus
+deterministic transaction costs; it never reads a local calibration artifact.
+Use --remote-oos-start-ms with --holdout-decision-end-ms for fixed remote-model
+OOS decisions followed by a quote-only outcome tail. No refit occurs in that
+window. --fit-cutoff-ms is reserved for optional local-model training readiness
+and does not block the current remote strategy. Neither mode promotes a model or
+authorizes a driver. See the technical contract for time and cost boundaries.
 
 After a deliberate accounting reset, observation may use a separately provisioned
 native WATCH-only cycle through `--observation-profile`. Legacy launch paths and

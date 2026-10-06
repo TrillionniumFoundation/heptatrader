@@ -96,8 +96,7 @@ class ResetHoldTests(unittest.TestCase):
         h.change_after_prepare=self.mark
         state={'pending':None,'position':0.,'last_decision':forecast(),'halt_new_entries':False}
         try:
-            with patch.object(adapter,'load_calibration',return_value=artifact(synthetic=False)):
-                h.prepare_send(state,self.home/'state','b','s','t','o','OPEN',h.q,'BUY')
+            h.prepare_send(state,self.home/'state','b','s','t','o','OPEN',h.q,'BUY')
             self.assertNotIn('submit',h.calls)
             self.assertEqual(state['pending']['command_id'],'original-command')
             self.assertEqual(state['pending']['send_state'],'DEFINITELY_REJECTED')
