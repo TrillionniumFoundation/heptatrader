@@ -80,6 +80,11 @@ struct IbPaperExecutionProfileConfig
     static bool IsCryptoContract(const std::string& instrument, const InstrumentRef& contract);
     static constexpr double CryptoQuantityLimit() { return 1.0; }
     static constexpr double CryptoNotionalLimit() { return 25000.0; }
+    // Tiny PAPER qualification envelope. It is deliberately disjoint from the
+    // resident $25k policy: amounts above this cap are not promoted into a
+    // variable-size production order.
+    static constexpr double CryptoCanaryNotionalLimit() { return 150.0; }
+    static constexpr double CryptoCanaryQuantityLimit() { return 0.0005; }
     static constexpr double CryptoProtectionFraction() { return 0.0005; }
     static bool CryptoQuantityOnGrid(double quantity);
     static bool CryptoExecutionQuantityOnGrid(double quantity);

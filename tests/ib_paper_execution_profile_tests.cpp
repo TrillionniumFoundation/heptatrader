@@ -894,6 +894,17 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
         return admission.AllowPlaceAtAuthoritativePrice(order,snapshot,order.referencePrice,1000,reason);
     };
     assert(allowed(command,risk)); // An FX 25k short does not consume BTC unit capacity.
+    // The resident policy stays exactly $25k. Qualification gets one separate
+    // smaller envelope and cannot turn the production order into arbitrary sizing.
+    assert(IbPaperExecutionProfileConfig::CryptoCashQuantityValid(25000.0,85000.25));
+    assert(IbPaperExecutionProfileConfig::CryptoCashQuantityValid(42.50,85000.25));
+    assert(IbPaperExecutionProfileConfig::CryptoCashQuantityValid(150.0,400000.0));
+    assert(!IbPaperExecutionProfileConfig::CryptoCashQuantityValid(42.51,85000.25));
+    assert(!IbPaperExecutionProfileConfig::CryptoCashQuantityValid(150.01,400000.0));
+    assert(!IbPaperExecutionProfileConfig::CryptoCashQuantityValid(151.0,400000.0));
+    assert(!IbPaperExecutionProfileConfig::CryptoCashQuantityValid(24999.99,85000.25));
+    assert(!IbPaperExecutionProfileConfig::CryptoCashQuantityValid(42.505,85000.25));
+    auto canary=command;canary.order.cashQuantity=42.50;assert(allowed(canary,risk));
     for (int kind=0;kind!=12;++kind) {
         auto bad=command;auto badRisk=risk;
         if(kind==0)bad.order.totalQuantity=25000;
