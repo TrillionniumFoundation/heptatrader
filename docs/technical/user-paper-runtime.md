@@ -65,6 +65,31 @@ is still checked against the fresh Broker account attestation before Execution
 becomes ready. Ambiguous, partial-only, over-limit or mismatched evidence fails
 closed; startup never edits a balance merely to satisfy attestation.
 
+## Startup diagnostic holds
+
+An unscoped IB error 2172 is an advance client-upgrade advisory, not an order
+rejection. Its original callback remains in observability and OMS. Only an
+unscoped event without account, order reference or advanced rejection evidence
+is excluded from admission blocking; scoped, unknown, connection and actual
+order errors remain fail-closed.
+
+A real `IB_FX_CASH_ATTESTED_BALANCE_MISMATCH` is not repaired by changing cash,
+loosening tolerance or accepting a stale campaign position. In the user PAPER
+profile, a connected authoritative event stream with same-epoch completed
+position, active-order and terminal downloads may retain a **diagnostic-only**
+service. Health reports `startup_recovery_read_only=true`,
+`mutation_ready=false` and the original cash-mismatch reason. Place, flatten and
+cancel all stay blocked; cash/campaign snapshots remain non-authoritative and
+no HFXR1 checkpoint, owner settlement or driver pending state is rewritten.
+`risk.fx_cash_attestation_mismatch` logs the expected and observed balance,
+difference, currency, connection epoch and account generation.
+
+The hold is latched for the process lifetime. Later callbacks cannot silently
+promote it to trading readiness. Missing/conflicting downloads, disconnected
+streams and the external qualification profile do not use this fallback. A new
+startup must pass the existing complete reconciliation contract before trading
+can resume. An available socket or locally accepted command is never a fill.
+
 ## Normal commands and model selection
 
 The `heptatrader-user` command provides `start`, `restart`, `stop`, `status` and

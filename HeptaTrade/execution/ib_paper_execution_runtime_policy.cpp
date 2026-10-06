@@ -51,7 +51,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
     });
     callbacks.cancelOrder = [this](long orderId) {
         if (m_startupRecoveryReadOnly.load())
-            return VenueCancelResult::RejectedBeforeSend("IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE");
+            return VenueCancelResult::RejectedBeforeSend(StartupRecoveryReadOnlyReason());
         NotifyTestStage("before_cancel_venue_send");
         const VenueCancelResult outcome = m_adapter->CancelOrder(orderId);
         if (outcome.disposition == VenueCancelDisposition::Submitted)
@@ -88,7 +88,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
         };
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
         if (m_startupRecoveryReadOnly.load()) {
-            if (detail) *detail = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+            if (detail) *detail = StartupRecoveryReadOnlyReason();
             return false;
         }
         return m_adapter->CanCancelOrder(orderId, detail);
@@ -270,7 +270,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                 risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
                 orders.complete && risk.connectionEpoch != 0 &&
                 risk.connectionEpoch == orders.connectionEpoch && !PostFillRiskRefreshPending();
-            if (startupReadOnly) reason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+            if (startupReadOnly) reason = StartupRecoveryReadOnlyReason();
             else if (fenced) reason = "SESSION_OWNER_FENCED";
             else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
             else if (blocked && reason.empty()) reason = "EXECUTION_MUTATION_BLOCKED";

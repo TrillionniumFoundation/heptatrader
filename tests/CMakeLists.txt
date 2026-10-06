@@ -217,6 +217,9 @@ endif()
 add_executable(hepta_ib_admission_event_policy_tests ib_admission_event_policy_tests.cpp)
 hepta_register_core_test(hepta_ib_admission_event_policy_tests)
 
+add_executable(hepta_ib_startup_recovery_hold_tests ib_startup_recovery_hold_tests.cpp)
+hepta_register_core_test(hepta_ib_startup_recovery_hold_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
         hepta_tool_gatewayd

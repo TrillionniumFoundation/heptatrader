@@ -23,3 +23,23 @@ inline bool CanKeepPendingOrderReadOnly(
             !bound.insert(item.second).second) return false;
     return bound == active.activeOrderIds;
 }
+
+// A verified cash discrepancy is a trading fence, not a transport failure.
+// Retain diagnostic IPC only after the SAME live epoch has finished positions,
+// active orders and terminal downloads. Never mark the cash snapshot complete,
+// rebase an account, checkpoint the mismatch, or promote the process later.
+inline bool CanKeepFxCashMismatchReadOnly(
+    bool userScope, bool connected, bool eventStreamAuthoritative,
+    std::uint64_t epoch, const IBAuthoritativeRecoveryAuditSnapshot& recovery)
+{
+    const auto& risk = recovery.risk;
+    const auto& active = recovery.active;
+    const auto& terminal = recovery.terminal;
+    return userScope && connected && eventStreamAuthoritative && epoch != 0 &&
+        risk.reasonCode == "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH" &&
+        !risk.accountComplete && !risk.fxCashComplete &&
+        risk.positionsComplete && risk.accountGeneration != 0 &&
+        risk.positionsGeneration != 0 && risk.connectionEpoch == epoch &&
+        active.complete && active.generation != 0 && active.connectionEpoch == epoch &&
+        terminal.complete && terminal.generation != 0 && terminal.connectionEpoch == epoch;
+}

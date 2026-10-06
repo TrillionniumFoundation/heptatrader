@@ -199,9 +199,24 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
         const IBAuthoritativeRecoveryAuditSnapshot recovery =
             m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
         if (recovery.risk.reasonCode ==
-            "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH")
-            return CleanupStartupSnapshotFailure(
-                reason, recovery.risk.reasonCode);
+            "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH") {
+            if (CanKeepFxCashMismatchReadOnly(m_config.profile.userScope,
+                    m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
+                    startupConnectionEpoch, recovery)) {
+                m_startupFxCashMismatchReadOnly.store(true);
+                m_startupRecoveryReadOnly.store(true);
+                m_recoveryReason = StartupRecoveryReadOnlyReason();
+                std::clog << "IB PAPER startup retained diagnostic-only cash mismatch; "
+                          << "all order mutations and checkpoints remain blocked" << std::endl;
+                NotifyTestStage("startup_cash_mismatch_read_only");
+                reason.clear();
+                return true;
+            }
+            if (!m_config.profile.userScope)
+                return CleanupStartupSnapshotFailure(reason, recovery.risk.reasonCode);
+            // accountDownloadEnd may precede positionEnd. Wait for that
+            // read-only barrier instead of exiting on callback ordering.
+        }
         if (!DispatchStartupRecoveryRisk(
                 recovery, recoveryRiskDispatched, reason))
             return CleanupStartupSnapshotFailure(reason, reason);
@@ -222,6 +237,8 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
         quotesComplete = m_quoteSubscriptions &&
             m_quoteSubscriptions->GetHealth().ReadyForOperations();
     }
+    if (risk.reasonCode == "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH")
+        return CleanupStartupSnapshotFailure(reason, risk.reasonCode);
     if (CanKeepPendingOrderReadOnly(m_config.profile.userScope,
             m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
             startupConnectionEpoch, active, terminal)) {

@@ -308,7 +308,7 @@ bool IbPaperExecutionRuntimeComposition::AllowsRiskIncrease(
     std::string& reason) const
 {
     if (m_startupRecoveryReadOnly.load()) {
-        reason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+        reason = StartupRecoveryReadOnlyReason();
         return false;
     }
     if (HasFatalRuntimeError(&reason))

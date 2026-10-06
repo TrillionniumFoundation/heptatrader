@@ -97,7 +97,7 @@ bool IbPaperExecutionRuntimeComposition::AllowsAuthoritativeFlatten(
     std::string& reason, bool requireSettledQuote) const
 {
     if (m_startupRecoveryReadOnly.load())
-        return RejectFlatten(reason, "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE");
+        return RejectFlatten(reason, StartupRecoveryReadOnlyReason());
     if (requireSettledQuote && m_pendingAuthoritativeQuoteEvents != 0)
         return RejectFlatten(reason, "IB_PAPER_FLATTEN_QUOTE_CHANGED_BEFORE_SEND");
     if (HasFatalRuntimeError(&reason))

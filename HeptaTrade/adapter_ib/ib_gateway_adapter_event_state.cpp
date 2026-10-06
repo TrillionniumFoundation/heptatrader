@@ -1,3 +1,4 @@
+#include <sstream>
 #include "ib_admission_event_policy.h"
 #include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
@@ -1004,9 +1005,25 @@ void HeptaIBGatewayAdapter::RejectAccountRiskRefresh(
         m_riskSnapshot.reasonCode = "IB_FX_CASH_BALANCE_INVALID";
     else if (m_accountReadyObserved && !m_accountReady)
         m_riskSnapshot.reasonCode = "IB_ACCOUNT_NOT_READY";
-    else if (!initialAttestationMatches)
-        m_riskSnapshot.reasonCode =
-            "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH";
+    else if (!initialAttestationMatches) {
+        m_riskSnapshot.reasonCode = "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH";
+        for (const auto& item : m_cfg.authoritativeCashFxContracts) {
+            const auto expected = m_cfg.authoritativeCashFxStartupObservedBalances.find(item.first);
+            const auto observed = m_pendingFxCashBalances.find(item.second.symbol);
+            if (expected == m_cfg.authoritativeCashFxStartupObservedBalances.end() ||
+                observed == m_pendingFxCashBalances.end()) continue;
+            std::ostringstream diagnostic;
+            diagnostic.precision(17);
+            diagnostic << "\"instrument\":\"" << EscapeJson(item.first)
+                       << "\",\"currency\":\"" << EscapeJson(item.second.symbol)
+                       << "\",\"expected_balance\":" << expected->second
+                       << ",\"observed_balance\":" << observed->second
+                       << ",\"difference\":" << (observed->second - expected->second)
+                       << ",\"connection_epoch\":" << m_connectionEpoch
+                       << ",\"account_generation\":" << m_riskSnapshot.accountGeneration;
+            EmitObsEvent("risk.fx_cash_attestation_mismatch", diagnostic.str());
+        }
+    }
     else
         m_riskSnapshot.reasonCode = "IB_FX_CASH_BALANCE_MISSING";
 }
