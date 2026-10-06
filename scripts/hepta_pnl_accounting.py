@@ -172,7 +172,23 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
     start = period["started_at_ms"]
     sends: dict[str, dict] = {}
     old_correlations: set[str] = set()
+    old_execution_ids: set[str] = set()
     intents: set[str] = set()
+    # IB completed-execution downloads can replay an execution after a new
+    # accounting boundary.  Baseline the exact pre-period execution identity,
+    # never merely its numeric order id or later download timestamp.
+    for event in events:
+        if (event.get("event") == "broker_execution" and
+                event.get("account") == period["account"] and
+                event.get("execution_domain") == "PAPER" and
+                event.get("instrument") == instrument and
+                event.get("broker_client_id") == owner["broker_client_id"] and
+                event.get("source") == "ib-api-callback" and
+                event.get("broker_callback_type") == "execDetails" and
+                positive_int(event.get("ts_ms")) and event["ts_ms"] < start):
+            execution_id = event.get("broker_execution_id")
+            if isinstance(execution_id, str) and 1 <= len(execution_id) <= 128:
+                old_execution_ids.add(execution_id)
     for event in events:
         if not _owns(event, period, instrument):
             continue
@@ -221,10 +237,18 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
             if (event.get("event") == "broker_execution" and event.get("account") == period["account"] and
                     event.get("instrument") == instrument and event.get("broker_client_id") == owner["broker_client_id"] and
                     event.get("ts_ms", 0) >= start):
-                if correlation not in old_correlations:
-                    raise EvidenceError("UNBOUND_OWN_EXECUTION")
+                # A live callback is never excused by an older execution id.
+                # For historical downloads, accept only an execution id that was
+                # itself observed before this period under the exact same account,
+                # domain, instrument and Broker client.
                 if event.get("broker_request_id") == -1:
                     raise EvidenceError("PRE_PERIOD_LATE_LIVE_EXECUTION")
+                historical_execution = (event.get("source") == "ib-api-callback" and
+                    event.get("broker_callback_type") == "execDetails" and
+                    event.get("execution_domain") == "PAPER" and
+                    event.get("broker_execution_id") in old_execution_ids)
+                if correlation not in old_correlations and not historical_execution:
+                    raise EvidenceError("UNBOUND_OWN_EXECUTION")
             continue
         if (event.get("account") != period["account"] or event.get("execution_domain") != "PAPER" or
                 event.get("instrument") != instrument or event.get("broker_client_id") != owner["broker_client_id"] or

@@ -268,6 +268,28 @@ class AccountingTests(unittest.TestCase):
         f['broker_request_id'] = -1
         self.assertFalse(self.row([old, f], observation(0))['ledger_complete'])
 
+    def test_completed_execution_redownload_requires_preperiod_execution_identity(self):
+        old = fill(send('historical', at=START - 3000), 'old-exec.1', at=START - 2000)
+        old.update(source='ib-api-callback', trace_id='', req_id='', client_req_id='', venue_correlation_id='',
+                   broker_request_id=18)
+        replayed = dict(old, ts_ms=NOW - 10, broker_service_epoch='service-2', broker_connection_epoch=4)
+        result = self.row([old, replayed], observation(0))
+        self.assertTrue(result['ledger_complete'])
+        self.assertEqual(result['gross_total_pnl'], '0')
+
+        unseen = dict(replayed, broker_execution_id='new-after-boundary.1')
+        self.assertFalse(self.row([old, unseen], observation(0))['ledger_complete'])
+
+        live = dict(replayed, broker_request_id=-1)
+        self.assertFalse(self.row([old, live], observation(0))['ledger_complete'])
+
+    def test_preperiod_execution_identity_must_be_exact_callback_scope(self):
+        old = fill(send('historical', at=START - 3000), 'old-exec.2', at=START - 2000)
+        old.update(source='agent:agent', trace_id='', req_id='', client_req_id='', venue_correlation_id='',
+                   broker_request_id=18)
+        replayed = dict(old, source='ib-api-callback', ts_ms=NOW - 10)
+        self.assertFalse(self.row([old, replayed], observation(0))['ledger_complete'])
+
     def test_manual_cash_conversion_does_not_enter_strategy_book(self):
         s = send('manual', instrument='EUR.USD'); s['trace_id'] = ''; s['source'] = 'ib-api-callback'
         f = fill(s, 'manual1.1'); f['broker_client_id'] = 8813
