@@ -32,31 +32,47 @@ class QuoteReadinessUnavailable(CostError):
 def first_authoritative_quote(driver, cli, instrument, lifecycle_guard, *,
                               monotonic=time.monotonic, sleep=time.sleep,
                               max_attempts=10, retry_sec=2, budget_sec=20):
-    """Retry only genuine stale-quote responses, never credentials or authority.
+    """Retry stale quotes and explicit native service-not-ready replies only.
 
-    Each native read already has its original I/O timeout. The retry budget is
-    checked before another attempt; one in-flight native timeout may complete
-    later. No catch-up burst, source timestamp rewrite or synthetic quote.
+    Credentials, owner fences, scope/epoch mismatches and undecoded discovery or
+    transport errors remain terminal. A not-ready reply never supplies a quote
+    or authority: the next successful read must pass the original quote checks.
+    Each native read retains its I/O timeout. Check the budget before each read;
+    an already in-flight read may finish later. No catch-up or synthetic quote.
     """
-    start=monotonic();deadline=start+budget_sec;failures=[]
+    start=monotonic();deadline=start+budget_sec;failures=[];readiness_failures=[]
+    stale_reasons=('AUTHORITATIVE_QUOTE_STALE','COST_QUOTE_STALE')
+    readiness_replies={
+        'native rejected: EXECUTION_EVENT_SERVICE_NOT_READY',
+        'native rejected: EXECUTION_SERVICE_NOT_READY',
+    }
     if type(max_attempts) is not int or max_attempts<1 or retry_sec<=0 or budget_sec<=0:
         raise ValueError('INVALID_QUOTE_WARMUP_BUDGET')
     for attempt in range(1,max_attempts+1):
         lifecycle_guard()
+        # Sleeping up to the deadline must not permit one extra native read.
+        if monotonic()>=deadline:
+            raise QuoteReadinessUnavailable('COST_FIRST_FRESH_QUOTE_RETRY_EXHAUSTED')
         try:
             value=driver.native(cli,'market.get_quote','instrument='+instrument)
             quote_values(value,instrument,driver.now_ms())
         except Exception as exc:
-            reason=str(exc).removeprefix('native rejected: ')
-            if reason not in ('AUTHORITATIVE_QUOTE_STALE','COST_QUOTE_STALE'):
+            message=str(exc)
+            reason=message.removeprefix('native rejected: ')
+            if reason in stale_reasons:
+                rejected=failures
+            elif message in readiness_replies:
+                rejected=readiness_failures
+            else:
                 raise CostError('COST_FIRST_AUTHORITATIVE_QUOTE_UNAVAILABLE') from exc
-            failures.append({'reason_code':reason,'observed_at_ms':driver.now_ms()})
+            rejected.append({'reason_code':reason,'observed_at_ms':driver.now_ms()})
             if attempt>=max_attempts or monotonic()>=deadline:
                 raise QuoteReadinessUnavailable('COST_FIRST_FRESH_QUOTE_RETRY_EXHAUSTED') from exc
             sleep(min(retry_sec,max(0,deadline-monotonic())))
             continue
         lifecycle_guard()
         return value, {'attempts':attempt,'stale_rejections':failures,
+                       'readiness_rejections':readiness_failures,
                        'wait_monotonic_ms':int((monotonic()-start)*1000),
                        'source_clock_rewritten':False,'quote_ttl_ms':DEFAULT_POLICY.quote_ttl_ms}
     raise QuoteReadinessUnavailable('COST_FIRST_FRESH_QUOTE_RETRY_EXHAUSTED')
