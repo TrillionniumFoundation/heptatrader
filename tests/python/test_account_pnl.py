@@ -86,6 +86,26 @@ class NavTests(unittest.TestCase):
         n=self.nav();self.assertEqual(Decimal(n['nav']),Decimal('1203.90'));self.assertEqual(Decimal(n['accrued_interest']),Decimal('-6.1'))
         self.assertEqual(Decimal(n['cash'])+Decimal(n['marked_assets'])+Decimal(n['accrued_interest']),Decimal(n['nav']))
         self.assertTrue(n['nav_includes_reported_accruals']);self.assertFalse(n['mutation_authorized'])
+    def test_base_sentinel_resolves_only_through_exact_account_currency(self):
+        expected=self.nav()
+        self.mutate_row('RealCurrency','BASE','BASE')
+        self.assertEqual(self.nav(), {**expected, 'raw_sha256':a.digest(self.raw)})
+    def test_base_sentinel_requires_independent_currency_identity(self):
+        self.mutate_row('RealCurrency','BASE','BASE')
+        for value in ('EUR','BASE',''):
+            with self.subTest(value=value):
+                self.mutate_row('RealCurrency','USD',value)
+                with self.assertRaisesRegex(EvidenceError,'BASE_IDENTITY'):self.nav()
+        self.raw['rows']=[r for r in self.raw['rows'] if not(r['request_id']==1 and r['currency']=='USD')]
+        with self.assertRaisesRegex(EvidenceError,'BASE_IDENTITY'):self.nav()
+    def test_base_sentinel_does_not_relax_fx_reconciliation(self):
+        self.mutate_row('RealCurrency','BASE','BASE')
+        self.mutate_row('ExchangeRate','EUR','1.2')
+        with self.assertRaisesRegex(EvidenceError,'FX_RECONCILIATION'):self.nav()
+    def test_non_sentinel_wrong_base_currency_still_rejected(self):
+        for value in ('EUR','', 'base'):
+            self.mutate_row('RealCurrency','BASE',value)
+            with self.subTest(value=value),self.assertRaisesRegex(EvidenceError,'BASE_IDENTITY'):self.nav()
     def test_aggregate_currency_collision_is_not_last_write_wins(self):
         n=self.nav();self.assertEqual(n['ledgers']['USD']['AccruedCash'],'-5');self.assertEqual(n['accrued_interest'],'-6.1')
         self.raw['rows'].reverse();self.assertEqual(self.nav()['nav'],n['nav'])

@@ -26,6 +26,9 @@ maximum collection time, period digest and stable OMS fingerprint are mandatory.
 Currency NAV reconstructs from cash, reported interest/dividend accruals and asset
 values. Futures PnL already reflected in cash and virtual FX positions are not
 added again. Broker aggregate and BASE ledger NAV must agree within USD 0.05.
+A literal `RealCurrency=BASE` Gateway sentinel is resolved only through the
+unique account-scoped aggregate NAV currency and a matching independently
+identified currency ledger. Missing or conflicting identity is still rejected.
 Separately rounded FX translations use a fixed USD 1 diagnostic comparison
 bound, retain the precise residual/precision bound, and never widen to fit a
 mismatch. This is a non-atomic Broker valuation observation, not an executable

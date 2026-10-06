@@ -94,7 +94,15 @@ def normalize_nav(raw: dict, period: dict) -> dict:
     if len(navs) != 1 or navs[0][0] != period["currency"] or "BASE" not in ledgers:
         raise EvidenceError("ACCOUNT_BASE_CURRENCY_OR_NAV_MISSING")
     base_currency, nav = navs[0]
-    if ledgers["BASE"].get("RealCurrency") != base_currency or len(ledgers) > 65:
+    # Some Gateway versions preserve the BASE sentinel in RealCurrency.
+    # Resolve only that literal sentinel through the unique account-scoped
+    # NetLiquidation currency and its independently identified currency ledger.
+    # This is not permission to infer a missing/mismatched currency or relax
+    # any component, aggregate or FX amount reconciliation below.
+    base_identity = ledgers["BASE"].get("RealCurrency")
+    if (base_identity not in (base_currency, "BASE") or len(ledgers) > 65 or
+            (base_identity == "BASE" and
+             ledgers.get(base_currency, {}).get("RealCurrency") != base_currency)):
         raise EvidenceError("ACCOUNT_LEDGER_BASE_IDENTITY_INVALID")
     values = {}
     for currency, ledger in ledgers.items():
