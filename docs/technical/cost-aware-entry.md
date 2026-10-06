@@ -378,3 +378,16 @@ checkpoint or changes the permanent no-mutation guard. The normal PAPER trading
 open/terminal/risk sequence is unchanged and covered by the same request-selector
 regression tests. A real observation transport recovery is not a trading restart
 qualification.
+
+
+### WATCH access continuity after native renewal
+
+A rotated access segment keeps its token and lease within the exact reset-cycle
+and instrument namespace. The pinned profile digest, token digest, native lease
+identity, expiry, and no-trade mode remain mandatory. Initial native issuance may
+precede profile persistence by at most 60 seconds. A later accepted native WATCH
+renewal must not be rejected merely because the original profile was created
+more than 60 seconds earlier; the next local check and reader restart must retain
+that accepted renewal without changing the profile or token. Expired, future,
+foreign-session, changed-token and reset-mismatched evidence still fails closed.
+This does not restore a revoked WATCH token or grant PAPER trade authority.

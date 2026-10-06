@@ -112,7 +112,11 @@ class ObservationAccess:
                 type(lease_issued) is not int or type(profile_created) is not int or
                 not reset_ms < lease_issued <= now < lease['expires_at_ms'] or
                 not reset_ms < profile_created <= now or
-                abs(profile_created-lease_issued)>60000 or
+                # Initial native issuance may precede profile persistence by
+                # at most one minute. A later native WATCH renewal is expected
+                # to follow the original profile creation by hours or days.
+                # Identity, source digest, expiry and reset checks still apply.
+                lease_issued < profile_created-60000 or
                 lease['expires_at_ms']-lease_issued>86400000):
                 raise CostError('OBSERVATION_WATCH_LEASE_UNVERIFIED_OR_EXPIRED')
             if allow_renew and lease['expires_at_ms']-now<120000:

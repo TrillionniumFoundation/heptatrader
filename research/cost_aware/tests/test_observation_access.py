@@ -100,6 +100,34 @@ class ObservationAccessTests(unittest.TestCase):
             a.check();argv=run.call_args.args[0]
             self.assertIn('renew',argv);self.assertNotIn('paper-resume',argv);self.assertNotIn('provision',argv)
         self.assertEqual(json.loads(self.lease.read_text())['lease_generation'],2)
+    def test_successful_renewal_survives_next_check_and_reader_restart(self):
+        access=self.access();self.now+=550000
+        original_profile=self.path.read_bytes();original_token=self.token.read_bytes()
+        reply=SimpleNamespace(returncode=0,stdout=json.dumps({'accepted':True,'lease_generation':2}))
+        with patch('hepta_cost_observation_access.subprocess.run',return_value=reply) as run:
+            access.check()
+            self.assertEqual(run.call_count,1)
+        self.now+=2000
+        with patch('hepta_cost_observation_access.subprocess.run',side_effect=AssertionError('no additional renewal required')):
+            self.assertEqual(access.check(allow_renew=False)['mode'],'WATCH')
+            self.assertEqual(self.access().check(allow_renew=False)['mode'],'WATCH')
+        self.assertEqual(self.path.read_bytes(),original_profile)
+        self.assertEqual(self.token.read_bytes(),original_token)
+        self.assertTrue(self.marker.exists())
+    def test_renewed_lease_still_rejects_foreign_identity(self):
+        access=self.access();self.now+=550000
+        reply=SimpleNamespace(returncode=0,stdout=json.dumps({'accepted':True,'lease_generation':2}))
+        with patch('hepta_cost_observation_access.subprocess.run',return_value=reply):access.check()
+        lease=json.loads(self.lease.read_text());lease['session_id']='different-owner'
+        self.lease.write_text(json.dumps(lease));self.lease.chmod(0o600)
+        with self.assertRaisesRegex(CostError,'LEASE_UNVERIFIED'):access.check(allow_renew=False)
+    def test_renewed_lease_still_rejects_future_issuance(self):
+        access=self.access();self.now+=550000
+        reply=SimpleNamespace(returncode=0,stdout=json.dumps({'accepted':True,'lease_generation':2}))
+        with patch('hepta_cost_observation_access.subprocess.run',return_value=reply):access.check()
+        lease=json.loads(self.lease.read_text());lease['issued_at_ms']=self.now+1
+        self.lease.write_text(json.dumps(lease));self.lease.chmod(0o600)
+        with self.assertRaisesRegex(CostError,'LEASE_UNVERIFIED'):access.check(allow_renew=False)
     def test_unknown_renew_result_stops_before_future_read(self):
         a=self.access();self.now+=550000
         with patch('hepta_cost_observation_access.subprocess.run',return_value=SimpleNamespace(returncode=1,stdout='{}')):
