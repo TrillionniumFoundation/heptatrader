@@ -160,7 +160,11 @@ class Learner:
             self.save_model(self.model)
         self.db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)',('current_model_id',self.model['model_id']));self.db.commit()
         atomic(self.selected_pointer,self.model) # Repair only from the committed local model record.
-        self.last_train_ms=0;self.last_fingerprint=None
+        stamp=self.db.execute("SELECT value FROM meta WHERE key='last_training_ms'").fetchone()
+        prior=self.db.execute('SELECT payload FROM trains ORDER BY rowid DESC LIMIT 1').fetchone()
+        self.last_train_ms=int(stamp[0]) if stamp else (int(strict(prior[0])['at_ms']) if prior else 0)
+        if not 0<=self.last_train_ms<=int(time.time()*1000):raise ValueError('TRAINING_CLOCK_REGRESSION')
+        self.last_fingerprint=None
         row=self.db.execute("SELECT value FROM meta WHERE key='training_fingerprint'").fetchone()
         if row:self.last_fingerprint=row[0]
         self.rounds=0
@@ -261,10 +265,11 @@ class Learner:
             self.db.execute('INSERT OR IGNORE INTO models VALUES (?,?)',(next_model['model_id'],canonical(next_model)))
             self.db.execute('INSERT INTO trains VALUES (?,?)',(receipt_id,canonical(record)))
             self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('training_fingerprint',fingerprint))
+            self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('last_training_ms',str(record['at_ms'])))
             self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('current_model_id',next_model['model_id']))
         self.model=next_model
         atomic(self.selected_pointer,self.model)
-        self.last_fingerprint=fingerprint;self.last_train_ms=now
+        self.last_fingerprint=fingerprint;self.last_train_ms=record['at_ms']
         stats.update(state='GPU_CANDIDATE_TRAINED' if changed else 'NO_ADMISSIBLE_UPDATE',
             training_receipt=receipt_id,candidate_model_id=self.model['model_id'],changed_parameters=changed,
             training_huber_before=before['loss'],training_huber_after=after['loss'],gpu_kernel_ms=raw['gpu_kernel_ms'],

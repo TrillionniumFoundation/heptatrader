@@ -206,6 +206,12 @@ class CandidateRecoveryTests(unittest.TestCase):
             a.db.close();b=Learner(c)
             self.assertEqual(b.model,model);self.assertEqual(b.last_fingerprint,'committed-input')
             self.assertEqual(json.loads(b.selected_pointer.read_text()),model);b.db.close()
+    def test_restart_retains_training_cadence(self):
+        from runner import Learner
+        with tempfile.TemporaryDirectory() as root:
+            c=self.config(root);a=Learner(c)
+            with a.db:a.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',('last_training_ms',str(T)))
+            a.db.close();b=Learner(c);self.assertEqual(b.last_train_ms,T);b.db.close()
     def test_orphan_candidate_pointer_cannot_advance_committed_model(self):
         from runner import Learner
         with tempfile.TemporaryDirectory() as root:
