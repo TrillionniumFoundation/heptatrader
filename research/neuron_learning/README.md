@@ -159,3 +159,13 @@ Private diagnostics: `status.json`, `economics.json`, `shadow-status.json`,
 bounded and never pruned to hide evidence. Resource exhaustion makes learning
 unavailable and does not disable the remote trading loop. No new periodic
 ChatGPT task or future personal monitoring promise is implied by these services.
+
+## Core SDK build ownership
+
+The HIP translation unit is explicitly outside the SDK-free CMake core profile
+and is listed under the existing research-sdk module unbuilt-in-core paths.
+It is not an uncompiled implementation claim: the opt-in hipcc build above
+produces the separately hashed library actually tested and installed on pocket4.
+Ordinary core builds do not acquire a ROCm dependency. The build-ownership check
+remains enabled; this exact experimental backend exclusion does not wildcard
+other research sources or weaken normal core reachability.
