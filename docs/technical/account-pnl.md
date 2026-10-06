@@ -29,10 +29,19 @@ added again. Broker aggregate and BASE ledger NAV must agree within USD 0.05.
 A literal `RealCurrency=BASE` Gateway sentinel is resolved only through the
 unique account-scoped aggregate NAV currency and a matching independently
 identified currency ledger. Missing or conflicting identity is still rejected.
-Separately rounded FX translations use a fixed USD 1 diagnostic comparison
-bound, retain the precise residual/precision bound, and never widen to fit a
-mismatch. This is a non-atomic Broker valuation observation, not an executable
-liquidation quote. Unexplained components or missing fields are rejected.
+Separately rounded FX translations use a fixed USD 1 comparison bound for
+components that share the current ledger exchange-rate basis, retain the precise
+residual/precision bound, and never widen to fit a mismatch. Interest accruals
+are the exception documented by IBKR: they are translated to base currency using
+daily / transaction-time conversion rates and later reversed when posted. The
+collector therefore treats current-rate translation of `AccruedCash` as a
+diagnostic, reconciles the non-interest NAV at current ledger rates, and then
+uses the Broker's BASE accrued-interest balance exactly once. Aggregate
+`NetLiquidation` must still independently agree with BASE NAV. This is not a
+threshold relaxation and cannot turn an unexplained cash, dividend, asset or
+aggregate mismatch into an accepted NAV. This is a non-atomic Broker valuation
+observation, not an executable liquidation quote. Unexplained components or
+missing fields are rejected.
 
 The consumer reproduces each normalised NAV from `raw-latest.json`, checks its
 digest and every resulting field, and rejects mismatched two-file publication

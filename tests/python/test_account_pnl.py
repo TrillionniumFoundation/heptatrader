@@ -86,6 +86,28 @@ class NavTests(unittest.TestCase):
         n=self.nav();self.assertEqual(Decimal(n['nav']),Decimal('1203.90'));self.assertEqual(Decimal(n['accrued_interest']),Decimal('-6.1'))
         self.assertEqual(Decimal(n['cash'])+Decimal(n['marked_assets'])+Decimal(n['accrued_interest']),Decimal(n['nav']))
         self.assertTrue(n['nav_includes_reported_accruals']);self.assertFalse(n['mutation_authorized'])
+    def test_daily_interest_fx_translation_does_not_fake_current_rate_nav_failure(self):
+        self.mutate_row('AccruedCash','BASE','-10')
+        self.mutate_row('NetLiquidationByCurrency','BASE','1200')
+        self.mutate_row('NetLiquidation','USD','1200',2)
+        n=self.nav()
+        self.assertEqual(n['nav'],'1200')
+        self.assertEqual(n['accrued_interest'],'-10')
+        self.assertEqual(n['translated_currency_nav'],'1203.9')
+        self.assertEqual(n['fx_reconciliation_difference'],'3.9')
+        self.assertEqual(n['translated_non_accrual_nav'],'1210.0')
+        self.assertEqual(n['non_accrual_fx_reconciliation_difference'],'0')
+        self.assertEqual(n['accrued_interest_current_rate_translation_difference'],'3.9')
+        self.assertEqual(n['fx_reconciliation_acceptance_basis'],
+                         'CURRENT_RATE_NON_ACCRUAL_PLUS_BROKER_BASE_ACCRUED_CASH')
+    def test_interest_exception_does_not_relax_non_accrual_fx_mismatch(self):
+        self.mutate_row('AccruedCash','BASE','-10')
+        self.mutate_row('NetLiquidationByCurrency','BASE','1200')
+        self.mutate_row('NetLiquidation','USD','1200',2)
+        self.mutate_row('CashBalance','EUR','102')
+        self.mutate_row('TotalCashBalance','EUR','102')
+        self.mutate_row('NetLiquidationByCurrency','EUR','101')
+        with self.assertRaisesRegex(EvidenceError,'FX_RECONCILIATION'):self.nav()
     def test_base_sentinel_resolves_only_through_exact_account_currency(self):
         expected=self.nav()
         self.mutate_row('RealCurrency','BASE','BASE')

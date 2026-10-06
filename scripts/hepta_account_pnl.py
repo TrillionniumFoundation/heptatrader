@@ -175,19 +175,31 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     with localcontext() as ctx:
         ctx.prec = 40
         translated = sum((values[c]["NetLiquidationByCurrency"] * values[c]["ExchangeRate"] for c in currencies), ZERO)
+        translated_accrued = sum((values[c]["AccruedCash"] * values[c]["ExchangeRate"] for c in currencies), ZERO)
+        # IB reports current ledger ExchangeRate values, while interest accruals
+        # are translated into base currency using daily/transaction-time FX.
+        # Therefore current-rate translation of AccruedCash is diagnostic only.
+        # Reconcile the non-interest portion with current ledger rates, then use
+        # the Broker's BASE AccruedCash exactly once. This preserves strict NAV
+        # identity without inventing a current-rate interest conversion basis.
+        translated_non_accrual = sum(((values[c]["NetLiquidationByCurrency"] - values[c]["AccruedCash"]) *
+                                      values[c]["ExchangeRate"] for c in currencies), ZERO)
+        base_non_accrual = base["NetLiquidationByCurrency"] - base["AccruedCash"]
         bound = Decimal("0.01")
         for c in currencies:
             if c != base_currency:  # USD identity conversion has exactly zero rate uncertainty.
-                bound += abs(values[c]["NetLiquidationByCurrency"]) * rounding_bound(ledgers[c]["ExchangeRate"])
-            bound += abs(values[c]["ExchangeRate"]) * rounding_bound(ledgers[c]["NetLiquidationByCurrency"])
+                bound += abs(values[c]["NetLiquidationByCurrency"] - values[c]["AccruedCash"]) * rounding_bound(ledgers[c]["ExchangeRate"])
+            bound += abs(values[c]["ExchangeRate"]) * (rounding_bound(ledgers[c]["NetLiquidationByCurrency"]) +
+                                                        rounding_bound(ledgers[c]["AccruedCash"]))
         precision_bound = bound
         # IB emits FX translation and aggregate totals as separately rounded
         # fields, not an atomic valuation tick. Use an explicit, fixed $1
-        # diagnostic reconciliation envelope, never widen it on a mismatch.
+        # reconciliation envelope for current-rate components; never widen it
+        # on a mismatch. Aggregate NAV must independently agree with BASE NAV.
         bound = Decimal("1.00")
-        if not near(translated, base["NetLiquidationByCurrency"], bound) or not near(nav, base["NetLiquidationByCurrency"]):
+        if not near(translated_non_accrual, base_non_accrual, bound) or not near(nav, base["NetLiquidationByCurrency"]):
             raise EvidenceError("ACCOUNT_NAV_FX_RECONCILIATION_FAILED")
-        for field in ("CashBalance", "AccruedCash", "NetDividend"):
+        for field in ("CashBalance", "NetDividend"):
             check = sum((values[c][field] * values[c]["ExchangeRate"] for c in currencies), ZERO)
             if not near(check, base[field], bound):
                 raise EvidenceError("ACCOUNT_COMPONENT_FX_RECONCILIATION_FAILED:" + field)
@@ -209,6 +221,12 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
             "marked_assets": amount(sum((base[k] for k in ASSET_KEYS), ZERO)),
             "nav_includes_reported_accruals": True, "booked_fees_already_in_cash": True,
             "translated_currency_nav": amount(translated), "fx_reconciliation_difference": amount(translated-base["NetLiquidationByCurrency"]),
+            "translated_non_accrual_nav": amount(translated_non_accrual),
+            "non_accrual_fx_reconciliation_difference": amount(translated_non_accrual-base_non_accrual),
+            "accrued_interest_current_rate_translation": amount(translated_accrued),
+            "accrued_interest_current_rate_translation_difference": amount(translated_accrued-base["AccruedCash"]),
+            "accrued_interest_fx_basis": "BROKER_BASE_DAILY_OR_TRANSACTION_TIME_FX_NOT_CURRENT_LEDGER_RATE",
+            "fx_reconciliation_acceptance_basis": "CURRENT_RATE_NON_ACCRUAL_PLUS_BROKER_BASE_ACCRUED_CASH",
             "fx_reconciliation_bound_usd": amount(bound), "fx_reported_precision_bound_usd": amount(precision_bound),
             "fx_translation_atomic_tick": False, "ledgers": {c: {k: amount(v) for k, v in x.items()} for c, x in values.items()},
             "positions": positions, "positions_complete": requests["positions"] in raw.get("ends", []),
