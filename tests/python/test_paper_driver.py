@@ -607,6 +607,66 @@ class CryptoDriverPolicyTests(unittest.TestCase):
         self.assertEqual(state["pending"]["tif"],"IOC")
         self.assertEqual(state["pending"]["reference_price"],price)
 
+    def test_crypto_canary_budget_is_separate_and_below_requested_ceiling(self):
+        with __import__("unittest.mock",fromlist=["patch"]).patch.object(d,"QTY",1.0):
+            cash=d.crypto_market_cash_budget(86000.0,cash_limit=150.0,base_limit=0.0005,allow_smaller=True)
+        self.assertLessEqual(cash,150.0)
+        self.assertLessEqual(cash/86000.0,0.0005)
+        self.assertLess(cash/86000.0,0.001)
+        self.assertEqual(cash,43.0)
+
+    def test_crypto_canary_calls_prepare_with_tiny_envelope(self):
+        from unittest.mock import patch
+        state=self.state();calls=[]
+        snap={"position":0.0,"active":[],"quote":{"bid":85999.0,"ask":86000.0},
+              "owner_health":{"mutation_ready":True}}
+        def prep(*args,**kwargs):
+            calls.append((args[6],kwargs))
+            if args[6]=="OPEN":
+                state["pending"]={"command_id":"entry"};state["position"]=0.0004
+            else:
+                state["pending"]={"command_id":"exit"};state["position"]=0.0
+        def inspect(*_): state["pending"]=None
+        with patch.object(d,"snapshot",return_value=snap),patch.object(d,"run") as run,\
+             patch.object(d,"prepare_send",side_effect=prep),patch.object(d,"inspect_pending",side_effect=inspect):
+            run.return_value=__import__("subprocess").CompletedProcess([],0,"","")
+            self.assertEqual(d.canary_roundtrip(state,Path("/unused"),"c","b","s","t","o"),0)
+        self.assertEqual(calls[0][0],"OPEN")
+        self.assertEqual(calls[0][1]["crypto_cash_limit"],150.0)
+        self.assertEqual(calls[0][1]["crypto_base_limit"],0.0005)
+        self.assertEqual(calls[1][0],"CLOSE")
+
+    def test_crypto_canary_allows_only_bare_prequalification_halt_and_clears_after_flat_roundtrip(self):
+        from unittest.mock import patch
+        state=self.state();state["halt_new_entries"]=True;writes=[];calls=[]
+        snap={"position":0.0,"active":[],"quote":{"bid":85999.0,"ask":86000.0},
+              "owner_health":{"mutation_ready":True}}
+        def prep(*args,**kwargs):
+            calls.append(args[6])
+            if args[6]=="OPEN":
+                state["pending"]={"command_id":"entry"};state["position"]=0.0004;state["entry_price"]=86000.0
+            else:
+                state["pending"]={"command_id":"exit"};state["position"]=0.0
+        def inspect(*_): state["pending"]=None
+        with patch.object(d,"snapshot",return_value=snap),patch.object(d,"run") as run,\
+             patch.object(d,"prepare_send",side_effect=prep),patch.object(d,"inspect_pending",side_effect=inspect),\
+             patch.object(d,"atomic_json",lambda _p,v:writes.append(copy.deepcopy(v))):
+            run.return_value=__import__("subprocess").CompletedProcess([],0,"","")
+            self.assertEqual(d.canary_roundtrip(state,Path("/unused"),"c","b","s","t","o"),0)
+        self.assertEqual(calls,["OPEN","CLOSE"]);self.assertFalse(state["halt_new_entries"]);self.assertTrue(writes)
+
+    def test_crypto_canary_never_bypasses_owned_or_reasoned_halt(self):
+        from unittest.mock import patch
+        snap={"position":0.0,"active":[],"quote":{"bid":1,"ask":2},"owner_health":{"mutation_ready":True}}
+        for field,value in (("risk_halt_reason","RISK"),("settlement_hold_reason","SETTLEMENT"),
+                            ("owner_fence_recovery_required",True),("lease_uncertain",True),
+                            ("lease_renewal_owned_halt",True),("owner_fence_owned_halt",True)):
+            state=self.state();state["halt_new_entries"]=True;state[field]=value
+            with self.subTest(field=field),patch.object(d,"snapshot",return_value=snap),patch.object(d,"run") as run:
+                with self.assertRaisesRegex(d.DriverError,"unblocked state"):
+                    d.canary_roundtrip(state,Path("/unused"),"c","b","s","t","o")
+                run.assert_not_called()
+
     def test_crypto_short_rejected_before_preview(self):
         from unittest.mock import patch
         with patch.object(d,"paper_cmd") as cmd:
