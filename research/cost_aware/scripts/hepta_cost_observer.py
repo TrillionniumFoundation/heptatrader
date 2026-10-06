@@ -16,7 +16,7 @@ import signal
 import re
 from hepta_cost_driver import load_pinned_driver, attach
 from hepta_cost_policy import CostError, quote_values, DEFAULT_POLICY
-from hepta_cost_capture import Capture, private_directory, QUOTE_FIELDS
+from hepta_cost_capture import Capture, private_directory, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
 
 def forbidden(*_args, **_kwargs):
@@ -25,15 +25,18 @@ def forbidden(*_args, **_kwargs):
 
 class Sampler:
     """One fixed-schedule step. No position or pending command input."""
-    def __init__(self, driver, cli, state_dir, writer, *, decision_ms=120000):
+    def __init__(self, driver, cli, state_dir, writer, *, decision_ms=120000, lifecycle_guard=None):
         self.driver, self.cli, self.state_dir, self.writer = driver, cli, state_dir, writer
         self.decision_ms = decision_ms
+        self.lifecycle_guard = lifecycle_guard
         self.next_slot, self.history, self.worker = None, [], None
         self.next_history_slot = None  # Model features retain the original ten-second grid.
         self.samples = self.failures = self.forecasts_started = self.slots_skipped = 0
         self.failure_reasons = {}
 
     def poll(self, at_ms):
+        if self.lifecycle_guard is not None:
+            self.lifecycle_guard()
         # Denser evidence sampling must not silently change model features or
         # make forecasts run more frequently. Missed history slots stay missing.
         if self.next_history_slot is None:
@@ -89,6 +92,8 @@ def main():
     args = parser.parse_args()
     if os.geteuid() == 0 or not args.state_dir.is_absolute() or not 60 <= args.duration_sec <= 86400:
         parser.error('requires unprivileged owner, absolute independent state directory and bounded 60..86400 second duration')
+    # Before driver import, state creation, capture, credentials, model or API I/O.
+    require_no_reset_hold()
     home = Path.home()
     forbidden_dirs = [home/'.local/state/heptatrader'/name for name in ('paper-driver','crypto-driver')]
     state_dir = args.state_dir.resolve()
@@ -101,10 +106,22 @@ def main():
         driver.NATIVE_ENDPOINT = [str(home/'.local/share/heptatrader/current/bin/heptactl'), '--socket',
                                  f'/run/user/{os.geteuid()}/heptatrader/tools.sock', '--token-file',
                                  str(home/'.config/heptatrader/crypto.token')]
+    # A missing/revoked profile must not create a COLLECTING capture made only of
+    # transport errors. The first genuine quote is required before opening it.
+    require_no_reset_hold()
+    cli = str(home/'.local/bin/heptatrader')
+    try:
+        first_quote = driver.native(cli, 'market.get_quote', 'instrument=' + args.instrument)
+        quote_values(first_quote, args.instrument, driver.now_ms())
+    except Exception as exc:
+        raise CostError('COST_FIRST_AUTHORITATIVE_QUOTE_UNAVAILABLE') from exc
+    require_no_reset_hold()
     writer = Capture(state_dir/'cost-observations.jsonl', args.instrument)
+    writer.append('QUOTE', {key: first_quote.get(key) for key in QUOTE_FIELDS})
     original_read = driver.native
-    close_adapter = attach(driver, state_dir/'unused-calibration.json', capture_factory=lambda *_a, **_k: writer)
+    close_adapter = attach(driver, state_dir/'unused-calibration.json', capture_factory=lambda *_a, **_k: writer, lifecycle_guard=require_no_reset_hold)
     def only_quote(cli, tool, *fields):
+        require_no_reset_hold()
         if tool != 'market.get_quote':
             raise CostError('READ_ONLY_COST_OBSERVER_TOOL_FORBIDDEN')
         value = original_read(cli, tool, *fields)
@@ -113,7 +130,8 @@ def main():
     driver.native = only_quote
     for name in ('main', 'prepare_send', 'paper_cmd', 'inspect_pending', 'recover_owner', 'canary_roundtrip'):
         setattr(driver, name, forbidden)
-    sampler = Sampler(driver, str(home/'.local/bin/heptatrader'), state_dir, writer)
+    sampler = Sampler(driver, cli, state_dir, writer, lifecycle_guard=require_no_reset_hold)
+    sampler.samples = 1  # Include the actual pre-capture readiness quote.
     stopped = False
     def stop(*_):
         nonlocal stopped
@@ -149,6 +167,7 @@ def main():
             sampler.worker._thread.join(timeout=155)
         close_adapter()
         writer.close()
+    require_no_reset_hold()
     result = {'mode':'INDEPENDENT_READ_ONLY_COST_OBSERVATIONS', 'quote_samples':sampler.samples,
               'quote_failures':sampler.failures, 'forecast_requests':sampler.forecasts_started,
               'skipped_forecast_slots':sampler.slots_skipped, 'broker_order_submissions':0,
@@ -162,6 +181,10 @@ def main():
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
+    except ResetHold as exc:
+        print(json.dumps({'state': 'RESET_HOLD', 'reason': str(exc),
+                          'broker_order_submissions': 0, 'calibration_activated': False}), file=sys.stderr)
+        raise SystemExit(78)
     except (CostError, OSError, ValueError) as exc:
         print(json.dumps({'error':str(exc), 'broker_order_submissions':0}), file=sys.stderr)
         raise SystemExit(2)

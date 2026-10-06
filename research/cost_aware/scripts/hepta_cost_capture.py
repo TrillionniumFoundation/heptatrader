@@ -23,6 +23,24 @@ QUOTE_FIELDS = ("source", "authoritative", "instrument", "subscription_id", "sub
                 "observed_at_ms", "stale_after_ms", "stale", "bid", "ask")
 
 
+class ResetHold(CostError):
+    """Explicit operator stop: observing or enabling a new driver is forbidden."""
+
+
+def require_no_reset_hold(home=None):
+    # Presence is sufficient, even for an unreadable or dangling marker. Reading
+    # its text is unnecessary and may expose account details. Never remove it.
+    root = Path.home() if home is None else Path(home)
+    marker = root / ".local/state/heptatrader/RESET-STOPPED.json"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ResetHold("COST_RESET_HOLD_UNREADABLE") from exc
+    raise ResetHold("COST_RESET_HOLD_ACTIVE")
+
+
 def private_directory(path):
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True, mode=0o700)

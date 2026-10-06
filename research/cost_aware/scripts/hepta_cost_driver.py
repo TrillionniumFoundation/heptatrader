@@ -21,7 +21,7 @@ import sys
 import threading
 from hepta_cost_policy import (CostError, DEFAULT_POLICY, FORECAST_VERSION, MODEL_ID, HORIZONS,
     dec, digest, validate_forecast, load_calibration, entry_admission, risk_exit, discretionary_exit)
-from hepta_cost_capture import Capture, QUOTE_FIELDS
+from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
 BASE_DRIVER_SHA256 = "df3e05610ffd29797db39ad231b765955a3fdf83b35e6f7c41a85534a213cefb"
 BASE_COMMIT = "387a1ed0373e298d0c38c37999ddc3975f8dfc37"
@@ -42,12 +42,18 @@ CANDIDATE_SCHEMA = {
 }
 
 
-def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=None):
+def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=None, lifecycle_guard=None):
     """Attach to an already loaded, hash-checked driver. Tests inject a fake host.
 
     Never use this function as a substitute for the launcher's source verification.
     All synthetic-calibration paths are refused in this resident adapter.
     """
+    # Pure host fixtures may omit the local lifecycle callback. Both executable
+    # entry points always supply it; there is no runtime CLI opt-out.
+    def lifecycle_check():
+        if lifecycle_guard is not None:
+            lifecycle_guard()
+
     original = {name: getattr(driver, name) for name in
                 ("prepare_send", "paper_cmd", "atomic_json", "native", "should_close", "inspect_pending", "model_decision")}
     ctx = threading.local()
@@ -59,6 +65,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
         # Recorder calls from model and main threads share the same single writer.
         with lock:
             try:
+                lifecycle_check()
                 if capture is None:
                     directory = Path.home() / ".local/state/heptatrader" / ("crypto-driver" if driver.INSTRUMENT == "BTC.USD" else "paper-driver")
                     capture = capture_factory(Path(capture_path) if capture_path is not None else directory / "cost-observations.jsonl", driver.INSTRUMENT)
@@ -82,6 +89,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
         return value
 
     def check(state, quote, side):
+        lifecycle_check()
         forecast = state.get("last_decision")
         artifact, load_reason = get_artifact()
         size = driver.crypto_market_cash_budget(quote["ask"]) if driver.INSTRUMENT == "BTC.USD" else driver.QTY
@@ -158,6 +166,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
             # A local final rejection returns a definite non-send result through
             # the original driver's normal reconciliation path; pending isn't erased.
             try:
+                lifecycle_check()
                 cli = str(Path.home() / ".local/bin/heptatrader")
                 snap = driver.snapshot(cli, require_quote=False)
                 if (snap["active"] or abs(float(snap["position"])) > driver.QUANTITY_TOLERANCE or
@@ -183,6 +192,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
     def build_model_candidate(openclaw, state_dir, history, _position):
         # The position is deliberately not included. One exogenous forecast tape
         # can therefore be replayed through three different position trajectories.
+        lifecycle_check()
         if not history:
             raise driver.DriverError("forecast needs a quote history")
         schema_path = state_dir / "decision-schema-v2.json"
@@ -204,6 +214,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
         actual_model = driver.openclaw_model_ref(driver.MODEL)
         if actual_model + ":" + FORECAST_VERSION != MODEL_ID:
             raise driver.DriverError("forecast model requires a new calibration identity")
+        lifecycle_check()
         process = driver.run([openclaw, "infer", "model", "run", "--local", "--model", actual_model,
                               "--thinking", "low", "--prompt", prompt, "--json"], 150)
         if process.returncode != 0:
@@ -221,6 +232,7 @@ def attach(driver, calibration_path, *, capture_factory=Capture, capture_path=No
                         position_neutral=True)
         validate_forecast(forecast)
         # Record HOLD, refused, and eventually accepted candidates alike.
+        lifecycle_check()
         if not recorder("CANDIDATE", {"forecast": forecast, "candidate_id": digest(forecast)}):
             raise driver.DriverError("cost candidate capture failed")
         return forecast
@@ -304,8 +316,14 @@ def main():
     args, remaining = parser.parse_known_args()
     if os.geteuid() == 0:
         parser.error("unprivileged PAPER owner required")
+    try:
+        require_no_reset_hold()
+    except ResetHold as exc:
+        print(json.dumps({"state": "RESET_HOLD", "reason": str(exc),
+                          "driver_started": False, "broker_orders_sent": 0}), file=sys.stderr)
+        return 78
     module = load_pinned_driver(args.base_driver)
-    close = attach(module, args.calibration)
+    close = attach(module, args.calibration, lifecycle_guard=require_no_reset_hold)
     sys.argv = [str(args.base_driver), *remaining]
     try:
         return module.main()

@@ -166,3 +166,81 @@ statistical sufficiency. It does not authorize trading.
 Default runtime packaging excludes the cost-observer unit; only explicit
 CostResearch installation supplies that unit together with its helpers. This
 avoids publishing a service whose research executable was intentionally omitted.
+
+
+## Reset-aware continuation and a fixed chronological holdout
+
+The source is maintained on `main`. The factory-reset marker
+`~/.local/state/heptatrader/RESET-STOPPED.json` is an explicit operator stop,
+not a transient quote failure. Its presence (including a broken link or unreadable
+marker) blocks both executable entry points before loading the pinned driver,
+creating a capture or requesting a model/native quote. It is checked again at
+sampling, model request/result and new-entry preparation/final-submit boundaries.
+Exit 78 does not trigger the observer's automatic restart. These paths never
+remove the marker, unmask a service, recreate account credentials, replace a
+pending command or restore deleted historical samples.
+
+A reset between prepare and submit returns the existing definite-non-send result
+through the original command path. Existing reduce-only handling is not blocked
+by cost calibration, recording or the added new-entry check. This is not authority
+to restart a stopped trading process to liquidate an account. Resuming the
+factory-reset installation still requires a new, explicitly configured PAPER
+runtime/account profile. A removed marker by itself is not authentication or a
+calibration receipt. Both executable launchers provide the reset check; injectable
+host fixtures are not a production launch route.
+
+A collector must obtain and validate an actual first authoritative quote before
+it opens its capture or reports COLLECTING. Missing credentials or an unavailable
+native endpoint therefore cannot masquerade as an operational observation stream.
+No initial quote is replaced with a synthetic value. Existing quote TTLs, feature
+sampling cadence, model identity, calibration sample/date minima and order-cost
+policies remain unchanged.
+
+### Late inference is excluded individually, not an entire failed fit
+
+`fit_from_tape` preserves every candidate's forward outcome, including HOLD and
+late results, but separately lists why a record cannot train a directional
+calibration. A result that arrived after the entry TTL cannot train the model;
+it also must not cause all timely records in the same input to be discarded by
+an exception. HOLD outcomes do not increase usable directional sample counts.
+Input corruption, duplicate candidate identity or a broken capture hash chain
+still fails rather than being repaired or silently ignored.
+
+### Reproducible chronological assessment
+
+The existing replay executable now supports a fixed training cutoff, a later
+last-decision boundary, and the remaining observed quote-only outcome tail:
+
+```bash
+python3 research/cost_aware/scripts/hepta_cost_replay.py \
+  --capture /private/new-cycle/immutable-prefix.jsonl \
+  --fit-cutoff-ms "$TRAINING_CUTOFF" \
+  --holdout-decision-end-ms "$LAST_TEST_DECISION" \
+  --max-drawdown-usd "$EXPLICIT_RESEARCH_RISK_BUDGET" \
+  --output /private/new-cycle/chronological-assessment.json
+```
+
+Choose the boundaries before examining performance; this tool does not optimize
+cutoffs or select the best run. Training sees only rows strictly before its cutoff
+and labels actually known then. The one resulting calibration is frozen; no
+holdout outcome is refitted into it. Forecasts that straddle the split are purged
+with their identities/reasons retained. Post-decision quotes complete existing
+outcomes and exits but cannot start a new decision. The three simulated paths
+start flat together, then each maintains its own positions, fees, risk exits and
+reentry clock under each of five cost/slippage stresses.
+
+The report includes all candidate outcomes, per-cohort nonoverlap/date coverage,
+all three complete paths, per-stress comparisons and explicit rejection reasons.
+A no-trade, HOLD-only, uncalibrated, open-ended, nonpositive, missing-price or
+synthetic run cannot qualify. The heldout engineering screen uses the same
+30 nonoverlapping samples / two UTC dates minimum, and requires at least 30
+completed simulated round trips in each cost-aware path under every stress.
+Those floors are engineering checks, not statistical significance guarantees.
+The drawdown budget is explicit; the tool does not invent an account risk limit.
+
+`research_acceptance_passed` is only a fixed-holdout research screen. Even a true
+value writes no active calibration, switches no driver, grants no Broker permit
+and proves no live MKT execution quality or profitability. Exact source/account/
+cycle, native paper qualification, operational readiness and controlled rollout
+remain separate decisions. Ordinary source CI is not conditioned on meeting
+these financial sample counts; tests use synthetic inputs to exercise behavior.
