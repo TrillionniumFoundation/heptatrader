@@ -81,3 +81,11 @@ acceptance remain distinct from this test.
 For single-operator development without system-wide installation, see the
 [user runtime contract](../technical/user-paper-runtime.md). System/independent
 qualification custody is unchanged; these are deliberately different scopes.
+
+
+The optional `heptatrader-pnl.service` and `heptatrader pnl` client are owned here
+as user-scope **read-only observers**. Their PnL files are independent of the
+trading driver state and durable OMS. They report an explicitly attached reset
+period, current bid/ask marking, and execution-commission completeness; they do
+not start trading, settle pending or create cash/position authority. See the
+[current PnL contract](../technical/user-paper-runtime.md#current-pnl-explicit-period-read-only-reporting).
