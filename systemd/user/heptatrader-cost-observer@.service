@@ -1,0 +1,21 @@
+[Unit]
+Description=HeptaTrader independent %i cost research (quotes and forecasts only)
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -B %h/.local/share/heptatrader/cost-research/current/libexec/heptatrader/cost-aware/hepta_cost_observer.py --base-driver %h/.local/share/heptatrader/execution-hotfixes/387a1ed0373e298d0c38c37999ddc3975f8dfc37/heptatrader_paper_driver.py --instrument %i --state-dir %h/.local/state/heptatrader/cost-observer/%i --duration-sec 86400 --sample-sec 2
+Restart=always
+RestartPreventExitStatus=2
+RestartSec=30
+TimeoutStopSec=170
+KillMode=control-group
+RuntimeMaxSec=86700
+UMask=0077
+NoNewPrivileges=yes
+Nice=15
+LimitFSIZE=80M
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

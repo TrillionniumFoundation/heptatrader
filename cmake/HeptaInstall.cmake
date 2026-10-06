@@ -188,6 +188,24 @@ unset(_hepta_helper)
 # User-manager assets are data in the selected install prefix, never enabled
 # or copied to the system manager by installation.
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/user/"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-systemd" COMPONENT runtime)
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-systemd" COMPONENT runtime
+    PATTERN "heptatrader-cost-observer@.service" EXCLUDE)
 install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-user.conf"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-tmpfiles" COMPONENT runtime)
+
+# Optional standalone cost research. No automatic trading-driver replacement,
+# calibration activation or dependency that starts an execution service.
+set(_hepta_cost_research_helpers
+    hepta_cost_policy.py hepta_cost_capture.py hepta_cost_driver.py
+    hepta_cost_observer.py hepta_cost_replay.py hepta_cost_demo.py)
+foreach(_cost_helper IN LISTS _hepta_cost_research_helpers)
+    install(PROGRAMS "${PROJECT_SOURCE_DIR}/research/cost_aware/scripts/${_cost_helper}"
+        DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader/cost-aware"
+        COMPONENT CostResearch EXCLUDE_FROM_ALL)
+endforeach()
+install(FILES "${PROJECT_SOURCE_DIR}/systemd/user/heptatrader-cost-observer@.service"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-systemd"
+    COMPONENT CostResearch EXCLUDE_FROM_ALL)
+install(FILES "${PROJECT_SOURCE_DIR}/docs/technical/cost-aware-entry.md"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
+    COMPONENT CostResearch EXCLUDE_FROM_ALL)
