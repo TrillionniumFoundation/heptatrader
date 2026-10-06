@@ -1,6 +1,3 @@
-#include <atomic>
-#include <sys/types.h>
-namespace CoordinatorSyncFault { extern std::atomic<bool> armed; extern dev_t device; extern ino_t inode; }
 #pragma once
 
 #include <cstdlib>

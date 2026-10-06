@@ -304,7 +304,10 @@ def verify_source_reachability(root: Path, observed: dict[str, Any]) -> None:
         owner_for(path, modules)
         regular_repository_path(root, path)
         candidates.add(path)
-    missing = sorted(candidates - built - unbuilt)
+    # This executable directly includes the optional IB SDK. It is intentionally
+    # absent in the SDK-free developer profile, not forgotten by its CMake owner.
+    optional_ib = {"HeptaTrade/options/zero_dte_observer.cpp"} if observed["options"]["HEPTA_ENABLE_IBAPI"] == "OFF" else set()
+    missing = sorted(candidates - built - unbuilt - optional_ib)
     if missing:
         raise OwnershipError(
             "tracked production C/C++ source is absent from the selected live CMake graph "

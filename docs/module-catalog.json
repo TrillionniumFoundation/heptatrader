@@ -395,7 +395,6 @@
         "scripts/hepta_account_activity.py"
       ],
       "tests": [
-        "tests/python/test_documentation_control_plane.py",
         "tests/python/test_systemd_units.py",
         "tests/python/test_hepta_broker_egress_policy.py",
         "tests/python/test_self_hosted_ib_availability.py",
@@ -430,22 +429,15 @@
         "scripts/verify_exact_git_index.py",
         "scripts/run_python_tests.py",
         "scripts/render_protocol_reference.py",
-        "scripts/plan_owner_ruleset.py",
-        "scripts/verify_required_checks.py",
-        "scripts/source_json.py",
-        "scripts/ci_change_scope.py"
+        "scripts/source_json.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
-        "tests/python/test_documentation_control_plane.py",
         "tests/python/test_gap_register.py",
         "tests/python/test_qualification_trust_boundary.py",
-        "tests/python/test_documentation_structure.py",
         "tests/python/test_python_test_partition.py",
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_protocol_reference.py",
-        "tests/python/test_owner_ruleset_plan.py",
-        "tests/python/test_required_check_admission.py",
         "tests/python/test_source_workflow_commands.py",
         "tests/python/test_source_json.py"
       ],
@@ -463,6 +455,26 @@
         "tests/python/test_legacy_runtime_boundary.py",
         "tests/venue_capability_tests.cpp",
         "tests/python/test_legacy_retirement.py"
+      ],
+      "broker_mutation": "NONE",
+      "production_authorized": false
+    },
+    {
+      "id": "options-research",
+      "status": "EXPERIMENTAL",
+      "document": "docs/technical/native-zero-dte.md",
+      "implementation": [
+        "HeptaTrade/options",
+        "scripts/heptatrader_options_shadow.py"
+      ],
+      "tests": [
+        "tests/zero_dte_tests.cpp",
+        "tests/zero_dte_boundary_tests.cpp",
+        "tests/zero_dte_execution_fault_tests.cpp",
+        "tests/options_oms_economics_audit_tests.cpp",
+        "tests/snowball_option_feed_tests.cpp",
+        "tests/snowball_feed_trace_tests.cpp",
+        "tests/options_shadow_runner_tests.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

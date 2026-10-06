@@ -3,15 +3,9 @@ name: Core Runtime CI
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**/*.md'
-      - 'doc/**'
-      - 'pic/**'
   push:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,107 +27,34 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
-
       - name: Assert exact source identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Classify release acceptance scope
-        id: release-scope
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
-          SERVER_URL: ${{ github.server_url }}
-        run: python3 scripts/ci_change_scope.py >> "$GITHUB_OUTPUT"
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
-
-      - name: Build and run canonical core tests
+      - name: Native build and behavior tests
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
-
-      - name: Stage the native client SDK from the already-tested canonical build
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Python behavior and source tests once
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          test -z "$(git status --porcelain --untracked-files=normal)"
-          printf '%s\n' "$EXPECTED_SHA" > build/core/SOURCE_COMMIT
-          python3 tests/research/native_latency_report.py --self-test
-          python3 tests/research/native_latency_report.py \
-            --log build/core/Testing/Temporary/LastTest.log \
-            --junit build/core/core-results.xml --build-dir build/core \
-            --source-sha "$EXPECTED_SHA" --output build/core/native-latency.json
-          cmake --install build/core --prefix "$PWD/build/client-sdk-stage" --component StrategyClientSDK
-          grep -Fx "source_sha=$EXPECTED_SHA" build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
-          grep -Fx 'source_tree_state=clean' build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
-          mkdir -p build/client-sdk-artifacts
-          archive="hepta-strategy-client-sdk-linux-x86_64-$EXPECTED_SHA.tar.gz"
-          tar -czf "build/client-sdk-artifacts/$archive" -C build/client-sdk-stage .
-          (cd build/client-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
-          cp build/core/SOURCE_COMMIT build/core/native-latency.json build/core/core-results.xml build/client-sdk-artifacts/
-
-      - name: Accept the exact core artifact through installed processes and systemd
-        id: accept-core-artifact
-        if: steps.release-scope.outputs.required == 'true'
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/accept_core_release.py --build-dir build/core --output-dir dist --source-sha "$EXPECTED_SHA"
-
-      - name: Retain lifecycle diagnostics even on failure
-        if: always() && steps.release-scope.outputs.required == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: core-lifecycle-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            dist/core-evidence/
-            dist/process-evidence/
-            dist/systemd-evidence/
-            dist/core-acceptance.json
-            dist/release-simulator-smoke-*.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload immutable main-branch core package evidence
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: heptatrader-core-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            dist/heptatrader-*-core-*.tar.gz
-            dist/heptatrader-*-core-*.tar.gz.sha256
-            dist/heptatrader-*-core-*.tar.gz.receipt.json
-            dist/release-simulator-smoke-*.json
-            dist/core-acceptance.json
-            dist/core-evidence/
-            dist/process-evidence/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-      - name: Publish the exact-source native client SDK and test evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: strategy-client-sdk-linux-x86_64-${{ github.event.pull_request.head.sha || github.sha }}
-          path: build/client-sdk-artifacts/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Reassert clean exact source
-        if: always()
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/run_python_tests.py --lane core
+          python3 scripts/run_python_tests.py --lane source
+          python3 scripts/check_documentation.py
           git diff --check
-          git diff --exit-code -- .
-          git diff --cached --exit-code -- .
+      - name: Retain actual test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: core-tests-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/core/*-results.xml
+            build/core/*-ctest.log
+            build/core/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 7

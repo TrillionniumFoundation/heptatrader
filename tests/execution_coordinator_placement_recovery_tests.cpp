@@ -207,7 +207,8 @@ void TestDurableAuthoritativeCorrelationResolution()
 }
 
 void AppendUncertainCancel(OmsJournal& journal, const std::string& callId,
-                           long orderId)
+                           long orderId,
+                           const std::string& correlation = std::string())
 {
     OmsJournalEvent event;
     event.eventType = "cancel";
@@ -227,6 +228,7 @@ void AppendUncertainCancel(OmsJournal& journal, const std::string& callId,
     event.side = "BUY";
     event.status = "intent_recorded";
     event.requestHash = "sha256:cancel-" + callId;
+    event.venueCorrelationId = correlation;
     assert(journal.Append(event));
     event.eventType = "cancel_send_attempt";
     event.eventId = callId + ":cancel_send_attempt:attempt_recorded:" +

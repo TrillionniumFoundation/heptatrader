@@ -5,12 +5,11 @@ Status: CURRENT
 ## Development and documentation
 
 - `dev_core.sh` configures, builds, and runs the canonical core CTest label.
-- `check_documentation.py` validates module/capability truth and documentation links.
+- `check_documentation.py` checks local documentation links; header/catalog synchronization is not a development gate.
 - `source_json.py` is the shared bounded JSON reader for documentation, component/build ownership, gap and owner-Ruleset planning tools. It is development-only, not an installed privileged reader.
 - `check_component_coverage.py` derives the production file set from the exact Git index and assigns each path to the most-specific module implementation boundary. It does not consume a duplicate build graph.
 - `verify_build_ownership.py` observes the selected live CMake File API model, verifies canonical module ownership and proves every tracked owned C/C++ implementation source is built or explicitly declared `unbuilt`. `--report` can emit a diagnostic graph without making it repository source truth.
 - `check_gap_register.py` validates an extensible issue inventory; open work is allowed. `--release-profile core` or `ib-paper` additionally rejects explicitly scoped unresolved release blockers. It never grants Broker authority.
-- `verify_required_checks.py` backs the always-present canonical admission job. It selects the documentation-only or full exact-head evidence profile from the complete Git diff, accepts only GitHub Actions check runs bound to the declared workflow/job/source, follows every result page, and never turns a missing, skipped or failed check into success.
 - `resolve_hepta_config.py` and `verify_oms_journal_replay.py` support configuration and recovery checks where applicable.
 
 ## Release and preflight

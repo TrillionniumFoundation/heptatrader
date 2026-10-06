@@ -1,28 +1,3 @@
-#include <atomic>
-#include <cerrno>
-#include <sys/stat.h>
-#include <sys/syscall.h>
-
-// One exact-inode sync failure in this test executable only. No production
-// fault injection or alternate journal provider is introduced.
-namespace CoordinatorSyncFault {
-std::atomic<bool> armed{false};
-dev_t device = 0;
-ino_t inode = 0;
-}
-extern "C" int fdatasync(int fd) {
-    if (CoordinatorSyncFault::armed.load()) {
-        struct stat value;
-        if (::fstat(fd, &value) == 0 && value.st_dev == CoordinatorSyncFault::device &&
-            value.st_ino == CoordinatorSyncFault::inode && CoordinatorSyncFault::armed.exchange(false)) {
-            errno = EIO;
-            return -1;
-        }
-    }
-    return ::syscall(SYS_fdatasync, fd);
-}
-
-
 #include "execution_coordinator_test_support.h"
 
 #include <sys/syscall.h>

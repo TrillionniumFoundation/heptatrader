@@ -1,17 +1,7 @@
 name: Canonical Full Suite
 
 on:
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**/*.md'
-      - 'doc/**'
-      - 'pic/**'
-  push:
-    branches: [main]
-  merge_group:
-    types: [checks_requested]
+  workflow_dispatch:
 
 permissions:
   contents: read

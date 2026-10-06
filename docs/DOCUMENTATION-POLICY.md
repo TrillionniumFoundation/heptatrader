@@ -1,71 +1,25 @@
-# Documentation maintenance policy
+# Documentation maintenance
 
-Status: CURRENT
-Applies to: repository HEAD
-Implementation: `scripts/check_documentation.py`
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_structure.py`
+Update the owning contract when observable interfaces, persistent formats,
+authority boundaries or failure behavior change. A private rename or internal
+refactor does not require synchronized status tables or rewritten file lists.
 
-## Machine-verifiable facts
+`python3 scripts/check_documentation.py` checks local navigation links. It does
+not enforce module-header templates, generated indexes, keywords, paragraph
+counts or an arbitrary document size. `docs/index.md` is an ordinary maintained
+navigation page; `module-catalog.json` remains a directory ownership map used by
+Git/CMake source checks, not a second feature-completion register.
 
-`module-catalog.json` is the single manually maintained module/ownership index.
-Every entry has a unique ID, lifecycle status, document, implementation paths,
-test paths, mutation classification and authorization value. The checker
-validates those fields, existing paths, local links and capability consistency.
-`docs/index.md` is the canonical repository entry point. A root `README.md` may provide a short navigation entry without duplicating
-module or capability inventories. Its presence or absence is not a CI gate.
-The module table in `index.md` is generated with:
+Useful technical documents explain inputs, units, identities, state transitions,
+durability, failures and representative tests. Implemented, installed, qualified
+and experimentally profitable are different states; neither a label nor a code
+merge establishes the latter states.
 
-```bash
-python3 scripts/check_documentation.py --write-index
-```
+Historical HeptaDLL records are frozen provenance. Do not reopen retired runtime
+or ABI branches to update their dates. Corrections and broken-link repairs are
+allowed; new work belongs to current main. See [main convergence](technical/main-convergence-20261006.md).
 
-Normal validation never edits files. The historical development-index URL is a
-navigation redirect, not another manually maintained list of modules.
-`check_component_coverage.py` independently discovers tracked components,
-including previously unknown top-level runtime directories. Directory ownership
-is not evidence that every child component is explained or functionally tested.
-
-## Human-reviewed technical content
-
-A useful maintained contract explains concrete inputs/outputs, units, identities,
-state transitions, durability boundaries, concurrency, failures, compatibility
-and representative tests. Topics that genuinely do not apply can say so. A
-scaffold should explain what is absent rather than describe a future design as
-implemented. A legacy boundary document is not a claim of full legacy support.
-Stable module contracts may define required acceptance behavior, but exact SHAs,
-workflow-run outcomes and one-off convergence narratives belong to the associated
-pull request, run evidence or an explicitly historical record rather than being
-copied into every current module page.
-
-A document marked `Status: FROZEN HISTORICAL RECORD` preserves provenance rather
-than current product behavior. It may receive factual corrections, redaction or
-link repair, but it must not accumulate new feature contracts, current candidate
-SHAs, workflow outcomes or backlog. Put those facts in the owning current module
-or technical contract, the gap register, and the exact pull request or run.
-
-No byte, paragraph, keyword or heading-count score establishes design quality.
-Structural lint may pass a concise document; review must still determine whether
-a developer can change the behavior using its examples and implementation/test
-references. Known missing integration evidence belongs in the gap register.
-
-## Change discipline
-
-Update the owning contract when an observable interface, persistent format,
-authority boundary, failure behavior or operation changes. A private rename or
-behavior-preserving refactor does not require a prose-only ceremony. Update
-actual regression tests when behavior changes, not comments solely to satisfy a
-source-token scanner. Protocol reference tables may repeat stable wire facts,
-but runtime discovery and the owning serializer remain authoritative.
-
-EXPERIMENTAL, LEGACY and unavailable transports cannot acquire authority through
-a status edit. Source, lint, CI, review, receipts and host qualification are
-separate evidence domains. CTP/XT remain no-transport, IB PAPER remains externally
-qualification-gated, and LIVE remains unavailable.
-
-## CI responsibility
-
-`documentation-control-plane-exact-head` checks source structure and ownership.
-Core Runtime CI owns Python behavioral regressions, native tests, installation,
-packaging and installed simulator lifecycle. GCC/Clang own independent sanitizer
-builds. Preserve these nonempty job names when simplifying implementation; server
-required-check configuration is not changed by this policy.
+Ordinary CI executes actual native and Python tests once. Deep sanitizers and SDK
+relocation are manual workflows; release and Broker qualification keep their
+separate acceptance requirements. Exact run outcomes belong in run receipts,
+not copied into every current module page.

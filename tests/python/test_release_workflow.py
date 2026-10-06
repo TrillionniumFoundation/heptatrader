@@ -28,7 +28,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(checkouts[0]["with"]["ref"], "${{ github.sha }}")
         core = workflow("core-ci.yml")["jobs"]["core"]
         acceptance = step(self.job, "accept-core-artifact")
-        self.assertEqual(acceptance["run"], step(core, "accept-core-artifact")["run"])
+        self.assertFalse(any(s.get("id") == "accept-core-artifact" for s in core["steps"]))
+        self.assertIn("scripts/accept_core_release.py", acceptance["run"])
         self.assertEqual(acceptance["env"]["EXPECTED_SHA"], "${{ github.sha }}")
         positions = {s.get("id"): i for i, s in enumerate(self.job["steps"]) if "id" in s}
         self.assertLess(positions["check-release-tag"], positions["accept-core-artifact"])
@@ -54,7 +55,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, code == 0, "acceptance failure was swallowed")
 
     def test_each_real_workflow_invokes_driver_and_propagates_failure(self):
-        for name, job in (("core-ci.yml", "core"), ("release.yml", "release")):
+        for name, job in (("release.yml", "release"),):
             with self.subTest(workflow=name):
                 self.assert_acceptance_invocation(step(workflow(name)["jobs"][job], "accept-core-artifact")["run"])
 

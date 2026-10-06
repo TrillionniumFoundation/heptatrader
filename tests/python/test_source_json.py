@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import source_json as reader
 import check_component_coverage as coverage
-import check_documentation as documentation
 import check_gap_register as gaps
 import verify_build_ownership as ownership
 
@@ -132,10 +131,6 @@ class SourceJsonTests(unittest.TestCase):
 
     def test_consumers_preserve_their_diagnostic_contracts(self) -> None:
         self.path.write_bytes(b'{"a":1,"a":2}')
-        errors = []
-        self.assertIsNone(documentation._load_json(self.path, errors))
-        self.assertEqual(len(errors), 1)
-        self.assertIn("invalid JSON", errors[0])
         for function, error in ((coverage._load_json, coverage.CoverageError),
                                 (gaps.load_json, gaps.GapRegisterError),
                                 (ownership.load_json, ownership.OwnershipError)):

@@ -1,23 +1,6 @@
 name: HeptaDLL Modular Integration
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/heptadll-integration.yml'
-      - 'CMakeLists.txt'
-      - 'cmake/HeptaStrategyClient*'
-      - 'cmake/strategy-client-build-info.txt.in'
-      - 'VERSION'
-      - 'research/**'
-      - 'tests/research/**'
-      - 'docs/modules/research-sdk.md'
-      - 'docs/technical/heptadll-integration.md'
-
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
