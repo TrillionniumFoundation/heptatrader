@@ -23,7 +23,7 @@ from hepta_cost_policy import (CostError, DEFAULT_POLICY, FORECAST_VERSION, MODE
     dec, digest, validate_forecast, remote_entry_admission, risk_exit, remote_discretionary_exit)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
-BASE_DRIVER_SHA256 = "2bf7c6236ba510ba867eba0d0b5aeca1f585cd351b423ea860f298872cba8aa3"
+BASE_DRIVER_SHA256 = "de1903f45e4789ee61dd189b5e8564d61bafa0a6dde3c5b0e8606072b04d110f"
 BASE_COMMIT = "387a1ed0373e298d0c38c37999ddc3975f8dfc37"
 CANDIDATE_SCHEMA = {
     "type": "object", "required": ["action", "confidence", "rationale", "horizon_sec", "scenarios", "invalidation_price"],
@@ -63,7 +63,8 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
                 pass  # Learning export cannot block execution or a risk exit.
 
     original = {name: getattr(driver, name) for name in
-                ("prepare_send", "paper_cmd", "atomic_json", "native", "should_close", "inspect_pending", "model_decision")}
+                ("prepare_send", "paper_cmd", "atomic_json", "native", "should_close", "inspect_pending",
+                 "model_decision", "entry_candidate_allowed")}
     ctx = threading.local()
     capture, capture_problem = None, None
     lock = threading.Lock()
@@ -146,6 +147,20 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
             except Exception:
                 pass
         return result
+
+    def entry_candidate_allowed(decision):
+        """Cost-aware OPEN: direction reaches deterministic admission regardless of raw confidence.
+
+        Remote confidence is explicitly uncalibrated and has no authorization
+        effect. Full forecast schema/identity is still required. HOLD remains
+        non-entry. BTC remains BUY-only; EUR/USD remains BUY/SELL.
+        """
+        try:
+            validate_forecast(decision)
+        except Exception:
+            return False
+        actions = {"BUY"} if driver.INSTRUMENT == "BTC.USD" else {"BUY", "SELL"}
+        return decision["action"] in actions
 
     def prepare_send(state, path, binary, socket, token, outbox, kind, quote=None, side=None):
         if kind != "OPEN":
@@ -309,7 +324,8 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
 
     for name, value in {"native": native, "atomic_json": atomic_json, "prepare_send": prepare_send,
                         "paper_cmd": paper_cmd, "model_decision": model_decision,
-                        "should_close": should_close, "inspect_pending": inspect_pending}.items():
+                        "should_close": should_close, "inspect_pending": inspect_pending,
+                        "entry_candidate_allowed": entry_candidate_allowed}.items():
         setattr(driver, name, value)
 
     def close():

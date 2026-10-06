@@ -45,6 +45,9 @@ class Host:
         r=self.paper_cmd(binary,socket,token,outbox,'submit',[])
         state['pending']['send_state']='ACKNOWLEDGED' if r['application_status']=='ok' else 'DEFINITELY_REJECTED' if r['application_status']=='error' else 'POSSIBLY_SENT'
         self.atomic_json(path,state)
+    def entry_candidate_allowed(self,decision):
+        actions={"BUY"} if self.INSTRUMENT=="BTC.USD" else {"BUY","SELL"}
+        return bool(decision and decision.get("action") in actions and decision.get("confidence",-1)>=.62)
     def should_close(self,state,pos,quote,decision):
         reason=risk_exit(pos,state.get('entry_price'),quote,self.now,halt=state.get('halt_new_entries',False))
         if reason:return True,reason
@@ -70,6 +73,20 @@ class AdapterTests(unittest.TestCase):
     def tearDown(self):self.close()
     def open(self):self.host.prepare_send(self.state,Path('/not-written'),'b','s','t','o','OPEN',self.host.q,'BUY')
     def trusted_fixture(self):return contextlib.nullcontext()
+    def test_cost_aware_direction_bypasses_legacy_confidence_only(self):
+        low=forecast();low["confidence"]=0.01;validate_forecast(low)
+        self.assertTrue(self.host.entry_candidate_allowed(low))
+        hold=forecast(action="HOLD",move="0");hold["confidence"]=1.0;validate_forecast(hold)
+        self.assertFalse(self.host.entry_candidate_allowed(hold))
+
+    def test_low_confidence_direction_still_reaches_cost_gate(self):
+        low=forecast();low["confidence"]=0.01;validate_forecast(low)
+        self.state["last_decision"]=low
+        self.assertTrue(self.host.entry_candidate_allowed(low))
+        self.open()
+        self.assertTrue(self.state["cost_last_admission"]["allowed"])
+        self.assertIn("submit",self.host.calls)
+
     def test_missing_local_calibration_does_not_block_remote_cost_gate(self):
         # attach() receives a nonexistent compatibility path in setUp. Resident
         # remote-model admission must never read or require it.
@@ -142,6 +159,11 @@ class AdapterTests(unittest.TestCase):
         self.state['last_decision']=forecast(instrument='EUR.USD')
         with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
         self.assertFalse(self.host.calls)
+    def test_legacy_exit_confidence_semantics_are_not_relaxed(self):
+        self.state["position"]=1;self.state["entry_price"]=100
+        low=forecast(action="SELL",move="-20");low["confidence"]=0.01;validate_forecast(low)
+        self.assertEqual(self.host.should_close(self.state,1,quote(),low),(False,''))
+
     def test_inherited_position_retains_original_exit(self):
         self.state['position']=1;self.state['entry_price']=100
         self.assertEqual(self.host.should_close(self.state,1,quote(),forecast(action='SELL',move='-20')),(True,'MODEL_REVERSAL'))

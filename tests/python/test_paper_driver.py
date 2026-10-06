@@ -452,6 +452,11 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertTrue(state["halt_new_entries"])
         self.assertEqual(state["owner_fence_block_reason"],"SESSION_OWNER_FENCED")
 
+    def test_default_entry_candidate_keeps_legacy_confidence_threshold(self):
+        self.assertFalse(d.entry_candidate_allowed({"action":"BUY","confidence":0.61}))
+        self.assertTrue(d.entry_candidate_allowed({"action":"BUY","confidence":0.62}))
+        self.assertFalse(d.entry_candidate_allowed({"action":"HOLD","confidence":1.0}))
+
     def test_reversal_adverse_and_halt_are_reduce_only_triggers(self):
         state=self.state(); state["entry_price"]=1.0
         self.assertEqual(d.should_close(state,25000,{"bid":0.997,"ask":0.998},None)[1],

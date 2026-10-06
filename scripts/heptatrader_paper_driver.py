@@ -686,6 +686,17 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
 def rearm_session(state,path,cli,generation):
     raise DriverError("session flags cannot be rearmed directly; use audited recovery")
 
+def entry_candidate_allowed(decision):
+    """Legacy default: direction plus historical confidence threshold.
+
+    Cost-aware adapters may replace only this OPEN-candidate predicate. Exit,
+    risk, quote, session and command semantics are deliberately independent.
+    """
+    if not isinstance(decision,dict):
+        return False
+    actions={"BUY"} if INSTRUMENT=="BTC.USD" else {"BUY","SELL"}
+    return decision.get("action") in actions and decision.get("confidence",-1)>=CONF
+
 def should_close(state,pos,quote,decision):
     if state.get("halt_new_entries"): return True,"HALT_REDUCE_ONLY"
     entry=state.get("entry_price")
@@ -899,7 +910,7 @@ def main():
                 if close:
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-            elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in ({"BUY"} if INSTRUMENT=="BTC.USD" else {"BUY","SELL"}):
+            elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and entry_candidate_allowed(decision):
                 guard=run([cli,"paper-on"],10)
                 if guard.returncode!=0: raise DriverError("paper guard release failed")
                 prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
