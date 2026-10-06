@@ -705,4 +705,110 @@ class CryptoDriverPolicyTests(unittest.TestCase):
         self.assertEqual(state["lease_generation"],3);self.assertTrue(state["halt_new_entries"])
         self.assertTrue(state["lease_uncertain"]);self.assertEqual(state["lease_renewal_state"],"POSSIBLY_SENT")
 
+class CumulativeSettlementTests(unittest.TestCase):
+    def setUp(self):
+        self.globals=(d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE)
+        d.INSTRUMENT="BTC.USD";d.QTY=1.0;d.QUANTITY_TOLERANCE=1e-10
+    def tearDown(self):
+        d.INSTRUMENT,d.QTY,d.QUANTITY_TOLERANCE=self.globals
+    def fixture(self):
+        health={"execution_mode":"PAPER","gateway_ready":True,"remote_execution_ready":True,
+            "execution_service_epoch":"service-current","execution_service_fencing_generation":1,
+            "execution_authoritative_health":{"source":"IB","authoritative":True,"owner_fenced":False,
+                "owner_recovery_only":False,"startup_recovery_read_only":True,"mutation_blocked":True,
+                "mutation_ready":False,"mutation_reason":"IB_FX_CASH_ATTESTED_BALANCE_MISMATCH"}}
+        orders={"source":"IB","authoritative":True,"global_active_orders_complete":True,
+            "owner_projection_complete":True,"active_order_ids":[],"active_orders_connection_epoch":9,
+            "active_orders_generation":1,"owner_scope":{"account":"DU_TEST"},"recent_orders":[]}
+        physical={"source":"IB_REQ_POSITIONS","authoritative":True,"scope":"PHYSICAL_CRYPTO_ONLY",
+            "mutation_authorized":False,"account":"DU_TEST","execution_service_epoch":"service-current",
+            "connection_epoch":9,"position_generation":2,"active_orders_generation":1,"terminal_generation":1,
+            "sampled_at_ms":d.now_ms(),"positions":[{"instrument":"BTC.USD","quantity":.03313821}]}
+        portfolio={"source":"IB","authoritative":False,"positions":[],"settlement_observation":physical}
+        return health,orders,portfolio
+    def test_physical_snapshot_does_not_promote_cash_or_mutation_authority(self):
+        h,o,p=self.fixture();before=copy.deepcopy((h,o,p))
+        snap=d.physical_crypto_settlement_snapshot(h,o,p)
+        self.assertEqual(snap["position"],.03313821);self.assertTrue(snap["settlement_only"])
+        self.assertEqual((h,o,p),before);self.assertFalse(p["authoritative"])
+        self.assertFalse(h["execution_authoritative_health"]["mutation_ready"])
+    def test_physical_snapshot_rejects_false_empty_cash_account_epoch_or_authority(self):
+        from unittest.mock import patch
+        for kind in range(19):
+            h,o,p=self.fixture();x=p["settlement_observation"]
+            if kind==0:x["authoritative"]=False
+            elif kind==1:x["mutation_authorized"]=True
+            elif kind==2:x["account"]="OTHER"
+            elif kind==3:x["connection_epoch"]=8
+            elif kind==4:x["execution_service_epoch"]="old-service"
+            elif kind==5:x["position_generation"]=0
+            elif kind==6:x["active_orders_generation"]=2
+            elif kind==7:x["terminal_generation"]=0
+            elif kind==8:x["sampled_at_ms"]-=11000
+            elif kind==9:x["sampled_at_ms"]+=11000
+            elif kind==10:x["positions"]=[]
+            elif kind==11:x["positions"][0]["quantity"]=float("nan")
+            elif kind==12:x["positions"][0]["instrument"]="EUR.USD"
+            elif kind==13:o["active_order_ids"]=[159]
+            elif kind==14:o["owner_projection_complete"]=False
+            elif kind==15:h["execution_authoritative_health"]["mutation_blocked"]=False
+            elif kind==16:h["execution_authoritative_health"]["mutation_reason"]="OTHER_ERROR"
+            elif kind==17:p["authoritative"]=True
+            elif kind==18:x["scope"]="PAPER_BASELINE_DELTA"
+            with self.subTest(kind=kind),self.assertRaises(d.DriverError):
+                d.physical_crypto_settlement_snapshot(h,o,p)
+        h,o,p=self.fixture()
+        with patch.object(d,"INSTRUMENT","EUR.USD"),self.assertRaises(d.DriverError):
+            d.physical_crypto_settlement_snapshot(h,o,p)
+    def test_default_resident_snapshot_cannot_use_settlement_observation(self):
+        from unittest.mock import patch
+        h,o,p=self.fixture()
+        def native(_cli,tool,*fields):
+            return {"system.get_health":h,"orders.list":o,"portfolio.list_positions":p}[tool]
+        with patch.object(d,"native",native):
+            with self.assertRaises(d.DriverError):d.snapshot("cli",require_quote=False)
+            snap=d.snapshot("cli",require_quote=False,allow_settlement=True)
+            self.assertTrue(snap["settlement_only"])
+    def test_multiple_execution_receipts_adopt_once_without_realizing_pnl_or_resending(self):
+        from unittest.mock import patch
+        h,o,p=self.fixture();cmd="original-cumulative-command"
+        ids=["fixture.0001.01.01","fixture.0002.01.01"]
+        row=matched_fill(159,cmd,"BUY",.03313821,86437.099117)
+        row.update(status="Cancelled",economic_evidence_version=2,economic_evidence_complete=True,
+            broker_execution_ids=ids,broker_execution_id=ids[-1],broker_execution_observed_at_ms=123456)
+        o["recent_orders"]=[row]
+        snap=d.physical_crypto_settlement_snapshot(h,o,p)
+        state={"pending":{"kind":"OPEN","command_id":cmd,"broker_order_id":159,"side":"BUY",
+            "position_before_send":0.0,"quantity_mode":"CASH","cash_quantity":25000},"position":0.0,
+            "entries":5,"exits":5,"closed_trades":5,"gross_pnl":.93769834,"halt_new_entries":True}
+        operations=[];writes=[]
+        def inspect(_b,_s,_t,_o,op,extra):
+            operations.append(op);self.assertEqual(op,"inspect");self.assertIn(cmd,extra)
+            return {"ok":True,"result":{"payload":{"authoritative":True,"command_id":cmd,
+                "command_status":"accepted","order_id":159,"reason_code":""}}}
+        with patch.object(d,"paper_cmd",inspect),patch.object(d,"atomic_json",lambda p,v:writes.append(copy.deepcopy(v))):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
+        self.assertEqual(operations,["inspect"]);self.assertEqual(len(writes),1)
+        self.assertIsNone(state["pending"]);self.assertEqual(state["entries"],6)
+        self.assertEqual(state["exits"],5);self.assertEqual(state["gross_pnl"],.93769834)
+        self.assertEqual(state["entry_at_ms"],123456);self.assertEqual(state["entry_broker_execution_ids"],ids)
+        self.assertTrue(state["halt_new_entries"])
+        self.assertEqual(state["last_reconciliation"]["broker_status"],"Cancelled")
+        self.assertFalse(state["last_reconciliation"]["risk_authoritative"])
+        self.assertEqual(state["last_reconciliation"]["execution_ids"],ids)
+    def test_incomplete_or_conflicting_v2_cumulative_evidence_cannot_settle(self):
+        cmd="same-original";pending={"command_id":cmd,"broker_order_id":159}
+        base=matched_fill(159,cmd,"BUY",.03313821,86437.099117)
+        base.update(economic_evidence_version=2,economic_evidence_complete=True,
+            broker_execution_ids=[base["broker_execution_id"]])
+        for kind in range(6):
+            row=copy.deepcopy(base)
+            if kind==0:row["economic_evidence_complete"]=False
+            elif kind==1:row["broker_execution_ids"]=["other"]
+            elif kind==2:row["broker_execution_ids"]*=2
+            elif kind==3:row["broker_execution_ids"]=[]
+            elif kind==4:row["broker_execution_ambiguous"]=True
+            elif kind==5:row["broker_execution_ids"]=[False]
+            with self.subTest(kind=kind):self.assertIsNone(d.recent_fill({"recent_orders":[row]},pending,"BUY"))
+
 if __name__=="__main__": unittest.main()

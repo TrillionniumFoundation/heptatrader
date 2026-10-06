@@ -1,3 +1,4 @@
+#include "ib_crypto_settlement_observation.h"
 #include <sstream>
 #include "ib_admission_event_policy.h"
 #include "ib_gateway_adapter.h"
@@ -308,6 +309,30 @@ void HeptaIBGatewayAdapter::RefreshAuthoritativeFxCashPositions() {
 IBAuthoritativeRiskSnapshot HeptaIBGatewayAdapter::GetAuthoritativeRiskSnapshot() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     return m_riskSnapshot;
+}
+
+IBPhysicalCryptoPositionObservation
+HeptaIBGatewayAdapter::GetPhysicalCryptoPositionObservation() const {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    IBPhysicalCryptoPositionObservation result;
+    const auto snapshot = BuildRecoveryAuditSnapshotLocked();
+    if (m_cfg.authoritativeCryptoContracts.empty() ||
+        !CanObservePhysicalCryptoPositions(IsConnected(), IsEventStreamAuthoritative(),
+            m_connectionEpoch, snapshot)) return result;
+    for (const auto& configured : m_cfg.authoritativeCryptoContracts) {
+        if (configured.second.secType != "CRYPTO") return IBPhysicalCryptoPositionObservation();
+        double quantity=0.0; std::string reason;
+        if (!ResolveAuthoritativePositionQuantity(configured.first, configured.second, quantity, reason) ||
+            !std::isfinite(quantity)) return IBPhysicalCryptoPositionObservation();
+        result.positions[configured.first]=quantity;
+    }
+    result.complete=true;
+    result.account=m_cfg.account;
+    result.connectionEpoch=m_connectionEpoch;
+    result.positionGeneration=snapshot.risk.positionsGeneration;
+    result.activeGeneration=snapshot.active.generation;
+    result.terminalGeneration=snapshot.terminal.generation;
+    return result;
 }
 
 std::map<std::string, double>

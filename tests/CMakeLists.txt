@@ -220,6 +220,23 @@ hepta_register_core_test(hepta_ib_admission_event_policy_tests)
 add_executable(hepta_ib_startup_recovery_hold_tests ib_startup_recovery_hold_tests.cpp)
 hepta_register_core_test(hepta_ib_startup_recovery_hold_tests)
 
+add_executable(hepta_ib_callback_economics_tests ib_callback_economics_tests.cpp)
+target_link_libraries(hepta_ib_callback_economics_tests PRIVATE hepta_oms_journal)
+hepta_register_core_test(hepta_ib_callback_economics_tests)
+
+add_executable(hepta_ib_cumulative_execution_evidence_tests ib_cumulative_execution_evidence_tests.cpp)
+hepta_register_core_test(hepta_ib_cumulative_execution_evidence_tests)
+
+# Execute the real recent-order projection offline; the test never starts a
+# service or connects to IB. Keep the production source list as the single owner.
+get_target_property(_hepta_ib_replay_sources hepta_ib_executiond SOURCES)
+list(REMOVE_ITEM _hepta_ib_replay_sources execution/hepta_ib_executiond.cpp)
+list(TRANSFORM _hepta_ib_replay_sources PREPEND "${CMAKE_SOURCE_DIR}/HeptaTrade/")
+add_executable(hepta_ib_recent_order_replay_tests ib_recent_order_replay_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_recent_order_replay_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_recent_order_replay_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
         hepta_tool_gatewayd

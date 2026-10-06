@@ -283,3 +283,66 @@ flattening. Quote-free position checks and held-position lease continuation keep
 the original FX state managed until its market reopens. A failed mixed deployment
 can switch the version/configuration back only after accounting for all crypto
 pending/positions; it must not hide inventory from the old FX-only configuration.
+
+
+## Partial-fill accounting while FX cash is fenced
+
+A Broker execution ID identifies one execution, not the entire order. The
+legacy OMS `qty`/`price` on `execDetails` remain cumulative quantity and
+cumulative average price. Multiple distinct IDs on the same original
+command/correlation/client binding are not inherently ambiguous. The native
+recent-order projection retains a bounded set of IDs, chooses the greatest
+coherent cumulative observation and never sums cumulative quantities.
+Duplicate IDs are inert; conflicting replays, corrections, pending price
+revisions, non-finite values, incompatible terminal totals, binding conflicts
+and capacity exhaustion remain non-settleable. Local Accepted and owner
+terminalization cannot erase executions or relabel a partial IOC cancellation
+as a full fill. Version-2 read-model economic evidence carries completeness,
+all execution IDs and the original receipt time.
+
+Individual execution shares/prices, permanent order and contract IDs and
+commission reports are also retained additively in native OMS. This reuses the
+committed callback economics work from `740136c`; missing legacy fee fields
+remain unknown and do not become zero fees or net PnL.
+
+A cash-attestation discrepancy still blocks place/flatten/cancel and cash
+checkpoint advancement for the entire process. `portfolio.list_positions`
+remains non-authoritative for campaign risk. In user PAPER crypto scope it can
+add a separately labelled `settlement_observation`: physical crypto positions
+from a complete same-epoch position/open-order/terminal snapshot, with no active
+orders, no unabsorbed exposure or callback conflict, exact account binding and
+`mutation_authorized=false`. This is not FX cash exposure and does not release
+any trading gate.
+
+Only the explicit driver `--instrument BTC.USD --reconcile-only` operator mode
+may consume that observation. The ordinary resident loop cannot. It requires
+the original `.hsr` command status, exactly bound native cumulative execution
+and terminal evidence, matching current physical position delta, and matching
+service/connection/generation/account metadata. It updates entry accounting and
+an atomic `last_reconciliation` receipt once, preserves gross realized PnL on
+entry, retains all execution IDs, uses the original fill receipt time, and sets
+an owned settlement hold. It neither sends nor creates a replacement command.
+A still-pending result exits nonzero. A second reconciliation with no pending
+cannot silently overwrite a mismatched position. Resident trading requires an
+explicit later full-risk reconciliation to remove the owned hold.
+
+The FX cash discrepancy must be explained with actual dated, currency-specific
+cash transactions / statement evidence (cash report, interest, fees, transfers,
+and fills as applicable). Do not change HFXR1 expected cash, baseline or the
+campaign position merely to match a new balance. Accrued interest, a plausible
+calendar date, a current account snapshot, or empty historical execution queries
+are not evidence of a specific posted adjustment. Trading readiness remains
+false until this financial reconciliation is complete.
+
+Regression coverage: cumulative ID/adversarial tests, physical-only observation
+barriers, the production recent-order projector linked directly into an offline
+replay test (never calls Start or opens Broker connections), and driver tests
+for exact original-command one-shot accounting and continued trading fences.
+The production replay test can additionally read a private immutable OMS copy:
+
+```sh
+build/tests/hepta_ib_recent_order_replay_tests \
+  /absolute/private/oms-copy.jsonl ORIGINAL_COMMAND_ID
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s tests/python -p test_paper_driver.py -v
+```

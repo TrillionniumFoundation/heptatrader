@@ -434,7 +434,31 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << EscapeJson(it->first) << "\",\"quantity\":"
                    << it->second << "}";
         }
-        output << "]}";
+        output << ']';
+        if (m_config.profile.UsesUserCrypto() && m_startupFxCashMismatchReadOnly.load() &&
+            command.context.account == m_config.profile.account &&
+            command.context.executionDomain == "PAPER") {
+            const auto physical=m_adapter->GetPhysicalCryptoPositionObservation();
+            output << ",\"settlement_observation\":{\"source\":\"IB_REQ_POSITIONS\","
+                   << "\"authoritative\":" << (physical.complete ? "true" : "false")
+                   << ",\"scope\":\"PHYSICAL_CRYPTO_ONLY\",\"mutation_authorized\":false"
+                   << ",\"account\":\"" << EscapeJson(physical.account) << "\""
+                   << ",\"execution_service_epoch\":\"" << EscapeJson(m_serviceIdentity.serviceEpoch) << "\""
+                   << ",\"connection_epoch\":" << physical.connectionEpoch
+                   << ",\"position_generation\":" << physical.positionGeneration
+                   << ",\"active_orders_generation\":" << physical.activeGeneration
+                   << ",\"terminal_generation\":" << physical.terminalGeneration
+                   << ",\"sampled_at_ms\":" << NowEpochMs()
+                   << ",\"positions\":[";
+            std::size_t physicalCount=0;
+            for (const auto& position : physical.positions) {
+                if (physicalCount++) output << ',';
+                output << "{\"instrument\":\"" << EscapeJson(position.first)
+                       << "\",\"quantity\":" << position.second << '}';
+            }
+            output << "]}";
+        }
+        output << '}';
     }
     else if (command.query == "orders.list")
         output << OwnedOrdersJson(command.context, orders);

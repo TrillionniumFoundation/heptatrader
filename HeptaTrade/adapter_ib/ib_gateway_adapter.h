@@ -169,6 +169,14 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
     std::string reasonCode;
 };
 
+struct IBPhysicalCryptoPositionObservation {
+    bool complete = false;
+    std::string account;
+    std::uint64_t connectionEpoch = 0, positionGeneration = 0;
+    std::uint64_t activeGeneration = 0, terminalGeneration = 0;
+    std::map<std::string, double> positions;
+};
+
 struct IBFinalOrderSendContext {
     // Service-owned exact TIF selected by the qualified Execution profile.
     // Empty keeps adapter-only legacy calls DAY-only; production Execution
@@ -319,6 +327,7 @@ public:
     bool IsTerminalTransportDrainVerified() const;
     std::uint64_t TerminalCallbacksInFlight() const;
     std::map<std::string, double> GetAuthoritativePositionQuantities() const;
+    IBPhysicalCryptoPositionObservation GetPhysicalCryptoPositionObservation() const;
     std::map<std::string, double>
         GetAuthoritativeFxCashPositionQuantities() const;
     std::map<std::string, IBAuthoritativeFxCashExposure>

@@ -69,7 +69,47 @@ def native(cli,tool,*fields):
     if p.returncode!=0 or v.get("status")!="ok": raise DriverError("native rejected: "+str(v.get("reason_code")))
     return v.get("payload") or {}
 
-def snapshot(cli,state=None,path=None,require_quote=True):
+def physical_crypto_settlement_snapshot(h,orders,portfolio):
+    owner=h.get("execution_authoritative_health") or {}
+    physical=portfolio.get("settlement_observation") or {}
+    epoch=physical.get("connection_epoch"); sampled=physical.get("sampled_at_ms")
+    positive=lambda x:type(x) is int and x>0
+    valid=(INSTRUMENT=="BTC.USD" and h.get("execution_mode")=="PAPER" and
+        h.get("gateway_ready") is True and h.get("remote_execution_ready") is True and
+        owner.get("source")=="IB" and owner.get("authoritative") is True and
+        owner.get("startup_recovery_read_only") is True and owner.get("mutation_blocked") is True and
+        owner.get("mutation_ready") is False and
+        owner.get("mutation_reason")=="IB_FX_CASH_ATTESTED_BALANCE_MISMATCH" and
+        orders.get("source")=="IB" and orders.get("authoritative") is True and
+        orders.get("global_active_orders_complete") is True and orders.get("owner_projection_complete") is True and
+        orders.get("active_order_ids")==[] and portfolio.get("source")=="IB" and
+        portfolio.get("authoritative") is False and
+        physical.get("source")=="IB_REQ_POSITIONS" and physical.get("authoritative") is True and
+        physical.get("scope")=="PHYSICAL_CRYPTO_ONLY" and physical.get("mutation_authorized") is False and
+        isinstance(physical.get("account"),str) and bool(physical.get("account")) and
+        physical.get("account")==orders.get("owner_scope",{}).get("account") and
+        physical.get("execution_service_epoch")==h.get("execution_service_epoch") and
+        isinstance(h.get("execution_service_epoch"),str) and bool(h.get("execution_service_epoch")) and
+        positive(epoch) and epoch==orders.get("active_orders_connection_epoch") and
+        positive(physical.get("position_generation")) and positive(physical.get("terminal_generation")) and
+        positive(physical.get("active_orders_generation")) and
+        physical.get("active_orders_generation")==orders.get("active_orders_generation") and
+        positive(sampled) and 0<=now_ms()-sampled<=10000)
+    positions=physical.get("positions")
+    if (not valid or not isinstance(positions,list) or len(positions)!=1 or
+            not isinstance(positions[0],dict) or positions[0].get("instrument")!="BTC.USD" or
+            type(positions[0].get("quantity")) not in (int,float) or
+            not math.isfinite(positions[0]["quantity"])):
+        raise DriverError("physical crypto settlement observation incomplete; trading remains fenced")
+    quantity=float(positions[0]["quantity"])
+    return {"orders":orders,"quote":None,"position":quantity,"gross_position":abs(quantity),
+        "active":[],"owner_health":owner,"service_epoch":h["execution_service_epoch"],
+        "service_generation":h.get("execution_service_fencing_generation"),
+        "connection_epoch":epoch,"position_generation":physical["position_generation"],
+        "position_scope":"PHYSICAL_CRYPTO_ONLY","settlement_only":True}
+
+
+def snapshot(cli,state=None,path=None,require_quote=True,allow_settlement=False):
     h=native(cli,"system.get_health")
     owner=h.get("execution_authoritative_health")
     if (not isinstance(owner,dict) or owner.get("source")!="IB" or owner.get("authoritative") is not True or
@@ -80,6 +120,8 @@ def snapshot(cli,state=None,path=None,require_quote=True):
     if state is not None and (owner["owner_fenced"] or owner["owner_recovery_only"]):
         latch_owner_fence(state,path,owner.get("mutation_reason") or "SESSION_OWNER_FENCED")
     o=native(cli,"orders.list"); p=native(cli,"portfolio.list_positions")
+    if allow_settlement and not require_quote and p.get("authoritative") is False:
+        return physical_crypto_settlement_snapshot(h,o,p)
     q=native(cli,"market.get_quote","instrument="+INSTRUMENT) if require_quote else None
     l=native(cli,"risk.get_limits") if require_quote else None
     invalid=(h.get("execution_mode")!="PAPER" or not h.get("gateway_ready") or not h.get("remote_execution_ready")
@@ -120,11 +162,19 @@ def recent_fill(orders,pending,expected_side):
     if len(rows)!=1: return None
     row=rows[0]
     if row.get("broker_execution_ambiguous") is not False or not row.get("broker_execution_id"): return None
+    if row.get("economic_evidence_version") == 2 and row.get("economic_evidence_complete") is not True:
+        return None
+    execution_ids=row.get("broker_execution_ids",[row["broker_execution_id"]])
+    if (not isinstance(execution_ids,list) or not execution_ids or len(execution_ids)>128 or
+            any(not isinstance(x,str) or not x or len(x)>128 for x in execution_ids) or
+            len(set(execution_ids))!=len(execution_ids) or row["broker_execution_id"] not in execution_ids):
+        return None
     price=float(row.get("average_fill_price",0));qty=float(row.get("filled_quantity",0))
     if price<=0 or qty<=0 or not math.isfinite(price) or not math.isfinite(qty):return None
     return {"price":price,"quantity":qty,"terminal":row.get("terminal") is True,
         "side":expected_side,"venue_correlation_id":row["venue_correlation_id"],
-        "broker_execution_id":row["broker_execution_id"]}
+        "broker_execution_id":row["broker_execution_id"],"broker_execution_ids":list(execution_ids),
+        "observed_at_ms":row.get("broker_execution_observed_at_ms"),"broker_status":row.get("status","unknown")}
 
 
 def terminal_nonfill(orders,pending,expected_side):
@@ -146,6 +196,7 @@ def record_crypto_exit(state,pending,fill):
     rows=state.setdefault("crypto_exit_evidence",[])
     if any(x["command_id"]==pending["command_id"] for x in rows): return
     rows.append({"command_id":pending["command_id"],"execution_id":fill["broker_execution_id"],
+        "execution_ids":list(fill.get("broker_execution_ids",[fill["broker_execution_id"]])),
         "quantity":float(fill["quantity"]),"price":float(fill["price"])})
 
 def crypto_roundtrip_qualified(state):
@@ -319,11 +370,14 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         if INSTRUMENT=="BTC.USD":
             state.update(entry_command_id=p["command_id"],entry_quantity=float(fill["quantity"]),
                 entry_broker_execution_id=fill["broker_execution_id"],entry_venue_correlation_id=fill["venue_correlation_id"],
+                entry_broker_execution_ids=list(fill.get("broker_execution_ids",[fill["broker_execution_id"]])),
                 entry_cash_quantity=p.get("cash_quantity"),crypto_exit_evidence=[])
         state["position"]=pos; state["entries"]+=1
         state["entry_price"]=fill_price
         state["entry_price_basis"]="broker_average_fill_price" if fill else "unavailable"
-        state["entry_at_ms"]=now_ms(); state["pending"]=None
+        observed=fill.get("observed_at_ms") if fill else None
+        state["entry_at_ms"]=observed if type(observed) is int and 0<observed<=now_ms() else now_ms()
+        state["pending"]=None
         cash_sized=INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH"
         if (abs(pos)<QTY-QUANTITY_TOLERANCE and not cash_sized) or not fill or abs(pos)>QTY+QUANTITY_TOLERANCE:
             if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
@@ -377,6 +431,16 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
     else:
         state["last_error"]="original command awaiting correlation-bound Broker reconciliation"
+    if state.get("pending") is None and fill is not None:
+        state["last_reconciliation"]={"command_id":p["command_id"],"kind":p["kind"],
+            "broker_order_id":p.get("broker_order_id"),"venue_correlation_id":fill["venue_correlation_id"],
+            "execution_ids":list(fill.get("broker_execution_ids",[fill["broker_execution_id"]])),
+            "cumulative_filled_quantity":fill["quantity"],"average_fill_price":fill["price"],
+            "broker_status":fill.get("broker_status","unknown"),"position_after":state["position"],
+            "position_scope":snap.get("position_scope","PAPER_BASELINE_DELTA"),
+            "risk_authoritative":not snap.get("settlement_only",False),
+            "service_epoch":snap.get("service_epoch"),"connection_epoch":snap.get("connection_epoch"),
+            "position_generation":snap.get("position_generation"),"reconciled_at_ms":now_ms()}
     atomic_json(path,state)
 
 def openclaw_model_ref(model):
@@ -678,7 +742,8 @@ def main():
         if state.get("active_lease_continuation_supported"):
             state["halt_new_entries"]=True
         else: latch_owner_fence(state,state_path,"SESSION_RENEWAL_UNCERTAIN")
-    atomic_json(state_path,state); model_worker=None
+    if not args.reconcile_only: atomic_json(state_path,state)
+    model_worker=None
     if args.canary_roundtrip:
         try:return canary_roundtrip(state,state_path,cli,binary,socket,token,str(outbox))
         finally:os.close(lock)
@@ -692,12 +757,30 @@ def main():
         rearm_session(state,state_path,cli,args.rearm_session_generation)
         os.close(lock); return 0
     if args.reconcile_only:
-        snap=snapshot(cli,require_quote=False)
-        if state.get("pending"):
-            inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
-        else:
-            state["position"]=float(snap["position"]); atomic_json(state_path,state)
-        os.close(lock); return 0
+        try:
+            snap=snapshot(cli,require_quote=False,allow_settlement=crypto and state.get("pending") is not None)
+            if snap.get("settlement_only"):
+                if not state.get("settlement_hold_reason"):
+                    state["settlement_hold_owned_halt"]=not state.get("halt_new_entries",False)
+                state["settlement_hold_reason"]="IB_FX_CASH_ATTESTED_BALANCE_MISMATCH"
+                state["halt_new_entries"]=True
+            if state.get("pending"):
+                inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
+                if state.get("pending") is not None:
+                    raise DriverError("original command reconciliation remains pending")
+            else:
+                if abs(float(state.get("position",0))-float(snap["position"]))>QUANTITY_TOLERANCE:
+                    raise DriverError("position changed without an original pending command; audited evidence required")
+                if state.get("settlement_hold_reason") and snap["owner_health"].get("mutation_ready") is True:
+                    if (state.get("settlement_hold_owned_halt") and not state.get("risk_halt_reason") and
+                            not state.get("owner_fence_recovery_required") and not state.get("lease_uncertain")):
+                        state["halt_new_entries"]=False
+                    state["settlement_hold_reason"]="";state["settlement_hold_owned_halt"]=False
+                atomic_json(state_path,state)
+            return 0
+        finally:os.close(lock)
+    if state.get("settlement_hold_reason"):
+        raise DriverError("operator settlement hold requires full authoritative reconciliation before resident trading")
     if crypto and not crypto_roundtrip_qualified(state):
         raise DriverError("crypto resident driver requires a correlation-bound completed round trip")
     while not stop:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ib_cumulative_execution_evidence.h"
+
 #include "execution_runtime_observation.h"
 
 #include "execution_authority.h"
@@ -105,6 +107,7 @@ public:
     ExecutionEventHub& EventHub();
 
 private:
+    friend struct IbRecentBrokerOrderReplayAccess; // offline test only; no IPC/argv entry point
     bool PreparePrivateState(std::string& reason);
     bool LoadFxCashBaselines(std::string& reason);
     bool ValidateFxCashBaselineRecords(
@@ -443,6 +446,10 @@ private:
         bool brokerExecutionAmbiguous = false;
         double brokerExecutionQuantity = 0.0;
         double brokerExecutionPrice = 0.0;
+        IbCumulativeExecutionEvidence cumulativeExecutions;
+        bool terminalQuantityKnown = false;
+        double terminalFilledQuantity = 0.0;
+        double terminalAverageFillPrice = 0.0;
         std::string status;
         std::string reasonCode;
         std::string serviceEpoch;

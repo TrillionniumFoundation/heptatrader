@@ -1,4 +1,5 @@
 ﻿#include "ib_admission_event_policy.h"
+#include "ib_callback_economics.h"
 #include "ib_api_wrapper.h"
 
 #include <algorithm>
@@ -674,6 +675,7 @@ std::uint64_t IBMarketDataAdmissionState::Generation() const {
 #include "Order.h"
 #include "Decimal.h"
 #include "Execution.h"
+#include "CommissionReport.h"
 #include "OrderCancel.h"
 #include "OrderState.h"
 
@@ -1660,6 +1662,9 @@ public:
         executionEvent.requestId = requestId;
         executionEvent.brokerClientId = execution.clientId;
         executionEvent.contract = BuildContractLite(contract);
+        executionEvent.economics = CaptureIbExecutionEconomics(executionEvent.contract,
+            contract.conId, execution.permId, DecimalFunctions::decimalToDouble(execution.shares),
+            execution.price, cumQty, execution.avgPrice, execution.pendingPriceRevision);
         // Preserve the actual broker echo before consulting the send-bound
         // quantity. Rejected identities cannot consume another order's total.
         executionEvent.order.orderRef = execution.orderRef;
@@ -1701,6 +1706,13 @@ public:
             PushEvent(std::move(syntheticStatus));
         }
     }
+    void commissionReport(const CommissionReport& commission) override {
+        IBEvent event=MakeIBEvent(IBEventType::CommissionReport,-1,commission.execId,"",0.0);
+        event.connectionEpoch=m_connectionEpoch.load();
+        event.economics=CaptureIbCommissionEconomics(commission.commission,commission.currency,commission.realizedPNL);
+        PushEvent(std::move(event));
+    }
+
     void execDetailsEnd(int requestId) override {
         IBEvent event = MakeIBEvent(
             IBEventType::ExecutionDetailsEnd,

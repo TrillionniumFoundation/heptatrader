@@ -27,14 +27,15 @@ void IbPaperExecutionRuntimeComposition::ProjectAcceptedRecentBrokerOrder(
     const std::string key = RecentBrokerOrderKey(event, agentId);
     const std::map<std::string, RecentBrokerOrder>::const_iterator existing =
         m_recentBrokerOrders.find(key);
-    if (existing != m_recentBrokerOrders.end() &&
-        existing->second.agentId == agentId &&
-        existing->second.sessionId == event.traceId &&
-        existing->second.executionDomain == event.executionDomain &&
-        existing->second.serviceEpoch == event.brokerServiceEpoch &&
-        existing->second.connectionEpoch == event.brokerConnectionEpoch &&
-        existing->second.status != "Accepted")
+    if (existing != m_recentBrokerOrders.end()) {
+        // An acknowledgement is never stronger than retained executions or a
+        // terminal. Validate its binding but do not replace cumulative proof.
+        RecentBrokerOrder& retained=m_recentBrokerOrders[key];
+        const std::string status=retained.status;
+        ApplyRecentBrokerOrderIdentity(retained,event,agentId);
+        if (retained.economicFill || retained.terminal) retained.status=status;
         return;
+    }
     RecentBrokerOrder accepted;
     accepted.orderId = event.orderId;
     accepted.observedAtMs = event.tsMs > 0 ?
@@ -59,6 +60,17 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerOrderIdentity(
     RecentBrokerOrder& order, const OmsJournalEvent& event,
     const std::string& agentId)
 {
+    const std::string side = event.side == "BOT" ? "BUY" : event.side == "SLD" ? "SELL" : event.side;
+    if (order.brokerExecutionAmbiguous) return;
+    if ((!order.account.empty() && !event.account.empty() && order.account != event.account) ||
+        (!order.instrument.empty() && !event.instrument.empty() && order.instrument != event.instrument) ||
+        (!order.side.empty() && !side.empty() && order.side != side) ||
+        (order.brokerClientId >= 0 && event.brokerClientId >= 0 && order.brokerClientId != event.brokerClientId) ||
+        (order.orderId >= 0 && event.orderId >= 0 && order.orderId != event.orderId)) {
+        order.brokerExecutionAmbiguous = true;
+        order.reasonCode = "IB_RECENT_ORDER_BINDING_CONFLICT";
+        return;
+    }
     if (order.orderId >= 0 &&
         (order.agentId != agentId || order.sessionId != event.traceId ||
          order.executionDomain != event.executionDomain))
@@ -98,28 +110,30 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerOrderIdentity(
 void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerExecutionIdentity(
     RecentBrokerOrder& order, const OmsJournalEvent& event)
 {
-    if (event.eventType != "broker_execution" ||
-        event.brokerExecutionId.empty() || order.brokerExecutionAmbiguous)
+    if (event.eventType != "broker_execution" || order.brokerExecutionAmbiguous)
         return;
-    if (order.brokerExecutionId.empty())
-    {
-        order.brokerExecutionId = event.brokerExecutionId;
-        order.brokerExecutionQuantity = event.qty;
-        order.brokerExecutionPrice = event.price;
+    const auto& economic = event.brokerEconomics;
+    if (economic.version != 0 && (!economic.ValidShape() || !economic.valid ||
+        economic.kind != "EXECUTION" || economic.cumulativeQuantity != event.qty ||
+        economic.cumulativeAverage != event.price)) {
+        order.cumulativeExecutions.Reject("IB_EXECUTION_ECONOMICS_CONFLICT");
+    } else {
+        order.cumulativeExecutions.Observe(event.brokerExecutionId, event.qty,
+            event.price, event.tsMs > 0 ? static_cast<std::uint64_t>(event.tsMs) : 0,
+            economic.version != 0 && economic.priceRevisionPending);
+    }
+    if (order.cumulativeExecutions.Ambiguous()) {
+        order.brokerExecutionId.clear();
+        order.brokerExecutionAmbiguous = true;
+        order.reasonCode = order.cumulativeExecutions.Reason();
+        order.brokerExecutionQuantity = 0.0;
+        order.brokerExecutionPrice = 0.0;
         return;
     }
-    const bool conflictingReplay =
-        order.brokerExecutionId != event.brokerExecutionId ||
-        order.brokerExecutionQuantity != event.qty ||
-        order.brokerExecutionPrice != event.price;
-    if (!conflictingReplay) return;
-    // One recent_orders row cannot faithfully represent multiple executions
-    // or a conflicting replay under one execution id. Remove the usable id so
-    // performance accounting must fail closed instead of inventing a VWAP.
-    order.brokerExecutionId.clear();
-    order.brokerExecutionAmbiguous = true;
-    order.brokerExecutionQuantity = 0.0;
-    order.brokerExecutionPrice = 0.0;
+    order.brokerExecutionId = order.cumulativeExecutions.LatestId();
+    order.brokerExecutionQuantity = order.cumulativeExecutions.Latest().quantity;
+    order.brokerExecutionPrice = order.cumulativeExecutions.Latest().average;
+
 }
 
 bool IbPaperExecutionRuntimeComposition::HasPositiveEconomicEvidence(
@@ -133,13 +147,16 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerEconomicEvidence(
     RecentBrokerOrder& order, const OmsJournalEvent& event,
     bool positiveEconomicEvidence)
 {
-    const bool economicCallback = event.eventType == "broker_execution" ||
-        event.eventType == "broker_order_status";
-    if (!economicCallback || !positiveEconomicEvidence || order.brokerExecutionAmbiguous) return;
+    (void)event;
+    (void)positiveEconomicEvidence;
+    if (order.brokerExecutionAmbiguous || !order.cumulativeExecutions.HasEvidence()) return;
     order.economicFill = true;
-    order.filledQuantity = std::max(order.filledQuantity, event.qty);
-    order.averageFillPrice = event.price;
-    order.reasonCode.clear();
+    order.filledQuantity = order.cumulativeExecutions.Latest().quantity;
+    order.averageFillPrice = order.cumulativeExecutions.Latest().average;
+    // A terminal cancellation reason describes the unfilled remainder and is
+    // not erased merely because the order also has executions.
+    if (!order.terminal) order.reasonCode.clear();
+
 }
 
 void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
@@ -150,15 +167,27 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
     {
         order.terminal = true;
         order.remainingQuantity = 0.0;
-        if (order.economicFill)
-        {
-            order.status = "Filled";
-            order.reasonCode.clear();
-        }
+        // Owner terminalization is bookkeeping, not proof of a full fill.
+        // In particular preserve Cancelled after a partially filled IOC.
     }
     const bool explicitNonFillTerminal =
         event.status == "Cancelled" || event.status == "ApiCancelled" ||
         event.status == "Inactive" || event.status == "Rejected";
+    if (event.eventType == "broker_order_status" &&
+        (explicitNonFillTerminal || event.status == "Filled") &&
+        std::isfinite(event.qty) && event.qty >= 0.0 &&
+        std::isfinite(event.price) && event.price >= 0.0) {
+        if (order.terminalQuantityKnown &&
+            (order.terminalFilledQuantity != event.qty ||
+             order.terminalAverageFillPrice != event.price)) {
+            order.brokerExecutionAmbiguous = true;
+            order.reasonCode = "IB_TERMINAL_EXECUTION_TOTAL_CONFLICT";
+        } else {
+            order.terminalQuantityKnown = true;
+            order.terminalFilledQuantity = event.qty;
+            order.terminalAverageFillPrice = event.price;
+        }
+    }
     const bool economicTerminal = event.eventType == "broker_order_status" &&
         event.status == "Filled" && positiveEconomicEvidence;
     const bool errorTerminal = event.eventType == "broker_error" &&
@@ -247,6 +276,21 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                << order.brokerExecutionQuantity
                << ",\"broker_execution_price\":"
                << order.brokerExecutionPrice
+               << ",\"economic_evidence_version\":2"
+               << ",\"economic_evidence_complete\":"
+               << (!order.brokerExecutionAmbiguous && order.cumulativeExecutions.HasEvidence() &&
+                   (!order.terminal || (order.terminalQuantityKnown &&
+                    order.cumulativeExecutions.MatchesTerminal(order.terminalFilledQuantity,
+                        order.terminalAverageFillPrice))) ? "true" : "false")
+               << ",\"broker_execution_observed_at_ms\":"
+               << order.cumulativeExecutions.Latest().observedAtMs
+               << ",\"broker_execution_ids\":[";
+        std::size_t executionCount=0;
+        for (const auto& execution : order.cumulativeExecutions.Points()) {
+            if (executionCount++) output << ',';
+            output << '\"' << EscapeJson(execution.first) << '\"';
+        }
+        output << ']'
                << ",\"account\":\"" << EscapeJson(order.account) << "\""
                << ",\"execution_domain\":\""
                << EscapeJson(order.executionDomain) << "\""

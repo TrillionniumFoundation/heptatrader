@@ -1,3 +1,4 @@
+#include "../adapter_ib/ib_callback_economics.h"
 #include "ib_paper_execution_runtime_internal.h"
 #include "../adapter_ib/ib_market_data_farm.h"
 #include "../adapter_ib/ib_venue_correlation.h"
@@ -612,7 +613,7 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
     const IBEvent& event)
 {
     const long orderId = static_cast<long>(event.id);
-    bool ownerEligible = event.type != IBEventType::Error;
+    bool ownerEligible = event.type != IBEventType::Error && event.type != IBEventType::CommissionReport;
     if (event.type == IBEventType::Error)
     {
         int errorCode = 0;
@@ -763,10 +764,15 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
         record.brokerCallbackType = "execDetails";
         record.status = "ExecutionDetails";
         record.brokerExecutionId = event.key;
+        RetainIbCallbackEconomics(event,record);
         if (!event.value.empty()) record.side = event.value;
         record.qty = event.number2;
         record.brokerRemainingQuantity = event.number3;
         record.price = event.number;
+    }
+    else if (event.type == IBEventType::CommissionReport)
+    {
+        RetainIbCallbackEconomics(event,record);
     }
     else if (event.type == IBEventType::CompletedOrder)
     {
