@@ -176,3 +176,13 @@ before broker I/O until an official authorized quote transport exists.
 route with no market-data subscription. Feed and Broker epochs are independent;
 H0D2 records their separate normalized provenance. No source migration enables
 OPT, bypasses native Execution, or changes FX/BTC OMS state.
+
+### Options read-only audit and normalized trace
+
+The native OptionsAudit component contains `hepta-options-oms-audit` and
+`hepta-snowball-trace-replay`. Both produce diagnostics only; neither calls a
+Broker mutation or supplies an Execution permit. The first joins copied native
+OMS individual executions and unbound fees through original command identities;
+the second records/replays all normalized feed context, clocks, transitions and
+decisions. See native-zero-dte.md for completeness bounds, tests, unresolved
+Snowball access and the independent cash mismatch that keeps drivers paused.

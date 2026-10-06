@@ -287,3 +287,140 @@ CI acceptance. Raw private source probes, JUnit, service logs, before-state copi
 and the independent Broker audit are retained under operator-evidence/
 options-native-economics-20261005T235055Z on pocket4. No real options order was
 submitted. Existing OMS prefix and original driver pending identities are retained.
+
+## 2026-10-06 continuation: offline economic audit and complete normalized trace
+
+The newly implemented tools below remain read-only/offline qualifications. They
+are NOT the previously undelivered privileged EvidenceLedger/runtime bridge,
+are not connected to order permits, and are not a second authoritative OMS.
+No shared Execution binary, service config, pending command or cash attestation
+was changed by this continuation. FX/BTC drivers were already paused and remain
+paused. Snowball source remains configuration-blocked; no live frame was obtained.
+
+### Native OMS economics audit
+
+`hepta-options-oms-audit` reads an immutable private copy using O_RDONLY and the
+existing strict native OmsJournal::ParseJsonLine. It never calls OmsJournal::Init
+or Append on the input. It rejects unsafe ownership/modes, links, changed inputs,
+malformed records, oversize input and truncated tails; successful output binds an
+input SHA-256. Input size is bounded to 64 MiB / 65,536 records. Terminal receipts
+are indexed by correlation rather than scanned quadratically per command.
+
+The filter names an exact PAPER account, agent/session/client, canonical OCC and
+conId. It is explicitly CALLER_SUPPLIED_FILTER_ONLY, NOT fresh Broker qualification.
+Native send witnesses use the coordinator's actual agent.tool: source prefix;
+bound callback receipts use agent: or the documented unbound callback source.
+Cash amounts are joined through original command/requestHash/correlation and
+account/client/full contract fingerprint, never numeric order ID alone.
+
+Every individual fill and cumulative checkpoint must agree. Missing legacy
+individual evidence, source/owner mismatch, overfill, conflicting execution-ID
+replay, correction families, pending price revision, changed permanent order ID,
+unexplained repeated sends and missing/conflicting terminals make amounts unknown.
+Raw commissions join only through globally unambiguous execution IDs; fee-before-
+execution and exact later replay are accepted without double charging. Currency
+mismatch, missing/invalid fees and SDK sentinels never become zero commission.
+Globally unassigned commission IDs are reported separately, not assigned to an
+arbitrary order or account.
+
+Important callback boundary: the current native completedOrder projection stores
+Order.totalQuantity, NOT the executed quantity. The audit explicitly ignores that
+quantity. A 2-contract order with 1 fill and cancellation requires a matching
+orderStatus cumulative fill receipt; it cannot become a 2-contract execution from
+the completed-order total. The multiple-contract fixture is synthetic only and
+does not increase the one-contract PAPER canary limit.
+
+The result names execution cash flow and reported net contracts. It does NOT
+call a purchase cash outflow a realized trading loss. Realized PnL stays null,
+Broker position verification and roundtrip_proven stay false. Missing evidence
+also leaves net cash flow null; a zero-execution query is never zero-fill proof.
+A completed report is not permission to release cash/source/owner fences.
+
+The real copied 13,695,961-byte OMS contained 14,852 records, 2,183 broker_execution
+records, zero broker_commission records and zero IBOPT native sends. Running the
+actual CLI against the explicit option filter produced NO_MATCHING_NATIVE_SEND
+and unknown economics, not a fake empty-account or profitable-round-trip result.
+This is a prefix audit, not a claim that unseen history or Broker activity is zero.
+
+### Complete normalized Snowball event trace
+
+`SnowballFeedTrace` / `SnowballTraceWriter` add HSFT1, an INTERNAL normalized trace,
+not a guessed Snowball wire protocol. Unlike a single H0D2 evaluated snapshot,
+the trace contains BEGIN (rights context/session/epoch), FRAME (full identity,
+quotes, sizes, Greeks and all six independent source/receive/monotonic clocks),
+DISCONNECT, EVALUATE (policy, Broker binding/state, evaluation clock and reduce-
+only flag), and END. Failed operations are recorded with their refusal results.
+Every evaluation retains the deterministic action, reasons, estimated cost and
+entry/exit deadlines. This is gate/decision replay, not a newly invented strategy
+or an executed hypothetical exit price. The provider's raw payload transport and
+actual live shadow integration still need the official documented access.
+
+Records have a strict version, trace ID and contiguous sequence. Replay recomputes
+actual SnowballOptionFeed outcomes and rejects schema/value/decision drift, gaps,
+mixed traces and records after END. Replay failures do not partially advance the
+replay state. Encoding is independent of locale and preserves full double precision.
+These records are reproducibility evidence, not signed vendor-authenticity proof;
+matching replay always reports live_source_proven=false and API entitlement=false.
+
+The exclusive new-file writer is owner-private/no-follow, fsyncs the directory
+entry and each complete record, detects path replacement, and poisons itself after
+write/sync failure. The caller serializes the callback stream on one owner thread.
+File size is bounded to 16 MiB, record size 64 KiB and count 16,384. A crash without
+END remains incomplete even when all preceding records end with newlines. Neither
+writer nor reader silently truncates or repairs old evidence.
+
+A separate process CLI, hepta-snowball-trace-replay, successfully replayed a
+clearly labeled synthetic 12-record / 6-evaluation trace. Tests cover fresh data,
+source-clock expiry, missing API-use authority, each per-field clock, disconnect,
+new feed epoch, stale Broker qualification, requalification without feed retagging,
+New York date rollover, conflicting outcomes, duplicate/gapped frames, process
+crash, missing END, truncated final newline, unsafe files and locale changes.
+No synthetic accepted evaluation is counted as a real Snowball window.
+
+### Current money protection independently rechecked
+
+At 2026-10-06T01:13:56Z an independent exact-account reqAccountUpdatesMulti /
+reqPositionsMulti audit completed with matching account and request IDs and
+AccountReady=true. These separate subscriptions do not take over Execution's
+legacy account stream. An earlier group-All account summary was explicitly NOT
+accepted as an exact-account cash authority and was replaced by this scoped read.
+
+The persisted HFXR1 proof hash and baseline-plus-owned-quantity arithmetic are
+valid: baseline EUR -1,274,877.77 plus campaign quantity 25,000 equals attested
+cash EUR -1,249,877.77. The scoped Broker cash is EUR -1,253,310.35, leaving an
+unexplained EUR -3,432.58 difference. The cash-transaction cause is not verified;
+no fee/interest/cash-transfer explanation is assumed and no baseline is rebased.
+Broker BTC position remains 0.03313821; open orders are zero. The empty recent
+execution download cannot erase this holding or the original pending command.
+
+Execution is process-alive but still reports risk/account/position snapshots
+incomplete with IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE. The protected runtime
+has NOT recovered. A new option canary or three-line restart is not qualified.
+
+### Validation and installation boundaries
+
+Rebuilt local CTest: 59/59, with the two new native audit/trace suites; separately
+run FX/BTC driver suite: 43/43. The trace suite plus all its source/evaluator
+implementation was additionally compiled with AddressSanitizer and
+UndefinedBehaviorSanitizer and passed with leak detection enabled. These are
+local synthetic/source tests, not hosted CI or real provider acceptance.
+
+OptionsAudit is an explicitly installed optional CMake component containing only
+the offline CLI tools; it never replaces the trading or shadow current links.
+Examples use historical filters on a private copied journal, not permissions:
+
+```sh
+hepta-options-oms-audit --journal /private/copied-oms.jsonl \
+  --account DU_EXPLICIT --agent OWNER --session SESSION --client-id 701 \
+  --con-id 913173379 --occ 'XSP   261005C00775000'
+hepta-snowball-trace-replay --trace /private/normalized-trace.hsft1
+```
+
+Current five-stage ceiling: (1) zero real Snowball frames, official source/rights
+still missing; (2) callback capture plus offline economic audit implemented but
+privileged permits/settlement/runtime ledger still incomplete; (3) full normalized
+trace implemented, no live capture or strategy/exit-result validation; (4) no
+option PAPER orders; (5) synthetic recovery checks, no real Snowball reconnect or
+three-line trading restart acceptance. Cash protection additionally blocks new
+trading work. The official Snowball MCP page describes orders/assets functions;
+that alone does not verify the required option/index quote and Greeks service.
