@@ -45,6 +45,25 @@ class ObservationAccessTests(unittest.TestCase):
     def test_old_cycle_marker_rejected(self):
         a=self.access();self.marker.write_text(self.marker.read_text()+' ')
         with self.assertRaisesRegex(CostError,'RESET_CYCLE'):a.check()
+    def test_access_segment_token_and_lease_names_are_cycle_scoped(self):
+        root=self.path.parent
+        token=root/'BTC.USD.access-20261006T120000Z.watch.token'
+        lease=root/'BTC.USD.access-20261006T120000Z.watch-lease.json'
+        self.token.rename(token);self.lease.rename(lease)
+        self.profile['token_file']=str(token);self.profile['lease_file']=str(lease)
+        self.profile['watch_token_sha256']=hashlib.sha256(token.read_bytes()).hexdigest()
+        lease_value=json.loads(lease.read_text());lease_value['token_sha256']=self.profile['watch_token_sha256']
+        lease.write_text(json.dumps(lease_value));lease.chmod(0o600)
+        self.save_profile()
+        access=self.access()
+        self.assertEqual(access.profile['token_file'],str(token))
+        self.assertEqual(access.profile['lease_file'],str(lease))
+    def test_access_segment_paths_cannot_escape_or_cross_instrument(self):
+        root=self.path.parent
+        for token_name in ('EUR.USD.access-x.watch.token','other.secret'):
+            saved=copy.deepcopy(self.profile);self.profile['token_file']=str(root/token_name);self.save_profile()
+            with self.assertRaisesRegex(CostError,'PATH_MISMATCH'):self.access()
+            self.profile=saved
     def test_cannot_write_actual_driver_state(self):
         with self.assertRaisesRegex(CostError,'PATH_MISMATCH'):ObservationAccess(self.path,'BTC.USD',self.home/'.local/state/heptatrader/crypto-driver',home=self.home,clock_ms=lambda:self.now)
     def test_old_token_mtime_is_not_fresh_identity(self):
@@ -56,6 +75,20 @@ class ObservationAccessTests(unittest.TestCase):
     def test_profile_modification_requires_restart(self):
         a=self.access();self.path.write_text(self.path.read_text()+' ')
         with self.assertRaisesRegex(CostError,'PROFILE_CHANGED'):a.check()
+    def test_native_provision_may_precede_profile_write_by_bounded_interval(self):
+        # Real provisioning returns the accepted lease before the caller can
+        # persist the profile that binds it.
+        lease=json.loads(self.lease.read_text())
+        lease['issued_at_ms']=self.profile['created_at_ms']-5
+        lease['expires_at_ms']=lease['issued_at_ms']+600000
+        self.lease.write_text(json.dumps(lease));self.lease.chmod(0o600)
+        self.assertEqual(self.access().profile['session_id'],'unit-watch')
+    def test_profile_and_lease_created_too_far_apart_are_rejected(self):
+        lease=json.loads(self.lease.read_text())
+        lease['issued_at_ms']=self.profile['created_at_ms']-60001
+        lease['expires_at_ms']=lease['issued_at_ms']+600000
+        self.lease.write_text(json.dumps(lease));self.lease.chmod(0o600)
+        with self.assertRaisesRegex(CostError,'LEASE_UNVERIFIED'):self.access()
     def test_expired_lease_does_not_self_provision(self):
         a=self.access();self.now+=700000
         with patch('hepta_cost_observation_access.subprocess.run',side_effect=AssertionError('no requests')):

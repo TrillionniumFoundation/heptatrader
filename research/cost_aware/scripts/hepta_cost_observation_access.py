@@ -52,9 +52,21 @@ class ObservationAccess:
             raise CostError('OBSERVATION_PROFILE_SCOPE_INVALID')
         cycle=p['cycle_id'];base=self.home/'.config/heptatrader/observations'/cycle
         state=self.home/'.local/state/heptatrader/observations'/cycle/'cost'/instrument
+        token_path=Path(p.get('token_file',''))
+        lease_path=Path(p.get('lease_file',''))
+        # Access-segment rotation may change the private token/lease leaf name
+        # within the same reset cycle. The profile digest and token SHA bind the
+        # exact files; do not hard-code one historical canonical leaf.
+        scoped_files = (
+            token_path.is_absolute() and lease_path.is_absolute() and
+            token_path.parent == base and lease_path.parent == base and
+            token_path != lease_path and
+            token_path.name.startswith(instrument + '.') and
+            token_path.name.endswith('.watch.token') and
+            lease_path.name.startswith(instrument + '.') and
+            lease_path.name.endswith('.watch-lease.json'))
         if (self.path!=base/(instrument+'.json') or Path(state_dir)!=state or
-            p.get('state_dir')!=str(state) or p.get('token_file')!=str(base/(instrument+'.watch.token')) or
-            p.get('lease_file')!=str(base/(instrument+'.watch-lease.json'))):
+            p.get('state_dir')!=str(state) or not scoped_files):
             raise CostError('OBSERVATION_CYCLE_PATH_MISMATCH')
         runtime=Path('/run/user')/str(os.geteuid())/cycle
         if p.get('socket')!=str(runtime/'tools.sock') or p.get('supervisor_socket')!=str(runtime/'supervisor.sock'):
@@ -91,12 +103,17 @@ class ObservationAccess:
             if token_stat.st_mtime_ns//1000000<=reset_ms or hashlib.sha256(token).hexdigest()!=p.get('watch_token_sha256'):
                 raise CostError('OBSERVATION_STALE_OR_CHANGED_TOKEN')
             lease=read_private_json(p['lease_file'],max_bytes=65536)
+            lease_issued=lease.get('issued_at_ms')
+            profile_created=p.get('created_at_ms')
             if (lease.get('mode')!='WATCH' or lease.get('cycle_id')!=p['cycle_id'] or
                 lease.get('session_id')!=p['session_id'] or lease.get('token_sha256')!=p['watch_token_sha256'] or
                 type(lease.get('lease_generation')) is not int or lease['lease_generation']<=0 or
                 type(lease.get('expires_at_ms')) is not int or lease.get('accepted') is not True or
-                not p['created_at_ms']<=lease.get('issued_at_ms',0)<=now<lease['expires_at_ms'] or
-                lease['expires_at_ms']-lease['issued_at_ms']>86400000):
+                type(lease_issued) is not int or type(profile_created) is not int or
+                not reset_ms < lease_issued <= now < lease['expires_at_ms'] or
+                not reset_ms < profile_created <= now or
+                abs(profile_created-lease_issued)>60000 or
+                lease['expires_at_ms']-lease_issued>86400000):
                 raise CostError('OBSERVATION_WATCH_LEASE_UNVERIFIED_OR_EXPIRED')
             if allow_renew and lease['expires_at_ms']-now<120000:
                 # WATCH renewal changes only OS session lifetime, never Broker
