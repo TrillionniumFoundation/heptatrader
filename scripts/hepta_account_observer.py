@@ -24,6 +24,31 @@ from hepta_pnl_accounting import EvidenceError
 from hepta_pnl_report import (load_private, read_private, write_snapshot, now_ms, fingerprint, source_revision)
 
 
+class RejectedAccountDownload(EvidenceError):
+    """Completed raw input that failed valuation; never accepted NAV or an opening."""
+    def __init__(self, reason: str, raw: dict):
+        super().__init__(reason)
+        self.raw = raw
+
+
+def publish_unavailable(out: Path, error: Exception) -> dict:
+    """Invalidate current NAV before retaining bounded, explicitly rejected evidence."""
+    nav = {'schema': 'heptatrader.account-nav.v1', 'authoritative': False,
+           'mutation_authorized': False, 'observed_at_ms': now_ms(),
+           'reason_code': str(error) if isinstance(error, EvidenceError) else type(error).__name__}
+    # A diagnostics write failure must not leave a previously valid NAV published.
+    write_snapshot(out/'nav.json', nav)
+    if isinstance(error, RejectedAccountDownload):
+        # Preserve only the latest rejected raw download. It cannot occupy the
+        # successful raw-latest/first slots, certify an opening, or bypass checks.
+        write_snapshot(out/'rejected-raw.json', error.raw)
+        nav.update(rejected_raw_sha256=digest(error.raw),
+                   rejected_raw_file='rejected-raw.json',
+                   rejected_raw_is_accepted_nav=False)
+        write_snapshot(out/'nav.json', nav)
+    return nav
+
+
 class SendBoundary:
     def __init__(self, account: str, client_id: int, requests: dict):
         self.account, self.client_id, self.requests = account, client_id, requests
@@ -172,7 +197,11 @@ def collect_account(config: Path, period_path: Path, state_root: Path) -> tuple[
     if pf != fingerprint(period_path) or jf != fingerprint(journal):
         raise EvidenceError('ACCOUNT_COLLECTION_LEDGER_OR_PERIOD_CHANGED')
     raw.update(journal_fingerprint=list(jf), period_sha256=hashlib.sha256(raw_period).hexdigest(), producer_source_sha=source_revision())
-    return normalize_nav(raw, period), raw
+    try:
+        return normalize_nav(raw, period), raw
+    except (ValueError, KeyError, TypeError, ArithmeticError) as error:
+        reason = str(error) if isinstance(error, EvidenceError) else type(error).__name__
+        raise RejectedAccountDownload(reason, raw) from error
 
 
 def main(argv=None):
@@ -215,11 +244,8 @@ def main(argv=None):
             # Each completed observation is a bounded file, never overwrite a
             # reset baseline. Journal movement is checked again by the consumer.
             print(json.dumps({'nav_complete': True, 'observed_at_ms': nav['observed_at_ms']}), flush=True)
-        except (ValueError, OSError, KeyError) as error:
-            nav = {'schema': 'heptatrader.account-nav.v1', 'authoritative': False,
-                   'mutation_authorized': False, 'observed_at_ms': now_ms(),
-                   'reason_code': str(error) if isinstance(error, EvidenceError) else type(error).__name__}
-            write_snapshot(out/'nav.json', nav)
+        except (ValueError, OSError, KeyError, TypeError, ArithmeticError) as error:
+            nav = publish_unavailable(out, error)
             print(json.dumps({'nav_complete': False, 'reason': nav['reason_code']}), flush=True)
         if not args.watch: return 0 if nav.get('authoritative') else 2
         stopped.wait(max(.2, args.interval_sec-(time.monotonic()-start)))

@@ -148,6 +148,15 @@ expiry while the observer is stopped, and recovery without changing the period,
 trading binaries, pending commands or Broker orders. A passing deployment is not
 proof that missing historical financial documents exist.
 
+Completed account downloads that fail valuation are retained as a bounded private
+`rejected-raw.json`. The observer first invalidates `nav.json`, then records the
+rejected input and its digest in the unavailable result. It never substitutes the
+rejected observation for `raw-latest`, a first accepted observation, or a reset
+opening. Failed diagnostic persistence cannot preserve a formerly valid NAV.
+Transport failures without a completed download do not claim new raw evidence.
+The FX thresholds, normalization rules, Broker send allowlist and period are
+unchanged. This is diagnostic retention, not financial reconciliation acceptance.
+
 Primary references:
 - [IB currency/account prefix](https://www.interactivebrokers.com/docs/tws-api/doc/tws-settings/per-currency-account-value-prefix)
 - [Change in NAV](https://www.ibkrguides.com/reportingreference/reportguide/changeinnav_fq.htm)
