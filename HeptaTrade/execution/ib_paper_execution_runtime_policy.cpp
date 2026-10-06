@@ -193,8 +193,9 @@ IbPaperExecutionRuntimeComposition::PolicyPositionSnapshot(
         risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete && risk.connectionEpoch != 0 &&
         risk.positionsGeneration != 0 && !postFillPending;
-    result.reasonCode = postFillPending ?
-        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode;
+    result.reasonCode = m_startupRecoveryReadOnly.load() ?
+        StartupRecoveryReadOnlyReason() : (postFillPending ?
+        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode);
     if (!result.complete) return result;
     const std::map<std::string, InstrumentRef>::const_iterator contract =
         m_config.quoteContracts.find(instrument);
@@ -298,8 +299,9 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
     const IBAuthoritativeCorrelationSnapshot orders =
         m_adapter->GetAuthoritativeCorrelationSnapshot();
     const bool postFillPending = PostFillRiskRefreshPending();
-    const std::string riskReason = postFillPending ?
-        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode;
+    const std::string riskReason = m_startupRecoveryReadOnly.load() ?
+        StartupRecoveryReadOnlyReason() : (postFillPending ?
+        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode);
     std::ostringstream output;
     output.precision(17);
     if (command.query == "market.get_quote")
