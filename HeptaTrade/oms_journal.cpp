@@ -1355,7 +1355,8 @@ bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
     bool hasEconomicFields=false;
     for(const auto& field:fields) if(field.first.compare(0,12,"broker_econ_")==0) {
         bool known=false;for(const char* name:economicFields)if(field.first==name)known=true;
-        if(!known)return false;hasEconomicFields=true;
+        if (!known) return false;
+        hasEconomicFields = true;
     }
     if(hasEconomicFields) {
         for(const char* name:economicFields)if(!fields.count(name))return false;
