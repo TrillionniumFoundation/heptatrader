@@ -1,9 +1,10 @@
 # Pocket4 Neuron GPU learning sidecar
 
 This is an executed candidate-learning path, not a replacement trading driver.
-EUR/USD PAPER continues with its remote position-neutral forecast and deterministic
-cost admission, quote-TTL, original-command, owner and risk-exit rules. Raw remote
-confidence is recorded but no longer grants or denies cost-aware OPEN admission. The
+EUR/USD PAPER continues with its remote position-neutral forecast, but resident
+OPEN now follows the historical directional rule: BUY/SELL requires confidence
+>= 0.62. Deterministic cost arithmetic remains research/replay evidence only and
+no longer grants or vetoes resident PAPER entry. The
 student has its own model identity and no runtime consumer in the order path.
 BTC is not enabled by this installation.
 

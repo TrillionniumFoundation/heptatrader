@@ -135,43 +135,41 @@ class RealDriverIntegration(unittest.TestCase):
         pending = json.loads(self.path.read_text())['pending']
         self.assertEqual(pending['command_id'], 'test-original-command')
         self.assertEqual(pending['send_state'], 'ACKNOWLEDGED')
-        self.assertEqual(pending['cost_forecast'], forecast())
-        self.assertTrue(pending['cost_final_admission']['allowed'])
+        self.assertNotIn('cost_forecast', pending)
+        self.assertNotIn('cost_admission', pending)
+        self.assertNotIn('cost_final_admission', pending)
         self.assertEqual(pending['order_type'], 'MKT')
         self.assertEqual(pending['cash_quantity'], 25000.)
 
-    def test_missing_local_calibration_does_not_block_remote_entry(self):
+    def test_missing_local_calibration_has_no_resident_effect(self):
         self.calibration.unlink()
         self.open()
-        self.assertEqual(self.calls.count('prepare-crypto-open'), 1)
-        self.assertEqual(self.calls.count('submit'), 1)
-        self.assertFalse(self.state['cost_last_admission']['local_training_artifact_used'])
+        self.assertEqual(self.calls, ['prepare-crypto-open','submit'])
+        self.assertNotIn('cost_last_admission', self.state)
 
-    def test_synthetic_local_calibration_cannot_change_remote_entry(self):
+    def test_synthetic_local_calibration_has_no_resident_effect(self):
         self.calibration.write_text(json.dumps(test_artifact(synthetic=True)))
         self.open()
-        self.assertEqual(self.calls.count('prepare-crypto-open'), 1)
-        self.assertEqual(self.calls.count('submit'), 1)
-        self.assertIsNone(self.state['cost_last_admission']['calibration_id'])
+        self.assertEqual(self.calls, ['prepare-crypto-open','submit'])
+        self.assertNotIn('cost_last_admission', self.state)
 
-    def test_price_move_after_prepare_prevents_submit_keeps_command(self):
+    def test_price_move_after_prepare_is_not_a_cost_veto(self):
         self.after_prepare = lambda: self.q.update(bid='101000', ask='101000')
         self.open()
-        self.assertNotIn('submit', self.calls)
+        self.assertEqual(self.calls, ['prepare-crypto-open','submit'])
         self.assertEqual(self.state['pending']['command_id'], 'test-original-command')
-        self.assertEqual(self.state['pending']['send_state'], 'DEFINITELY_REJECTED')
-        self.assertEqual(json.loads(self.path.read_text())['pending']['command_id'], 'test-original-command')
+        self.assertEqual(self.state['pending']['send_state'], 'ACKNOWLEDGED')
 
-    def test_forecast_expiry_after_prepare_prevents_submit(self):
+    def test_forecast_expiry_after_prepare_is_not_a_cost_veto(self):
         self.after_prepare = lambda: setattr(self.d, 'now_ms', lambda: NOW + 2*86400000)
         self.open()
-        self.assertNotIn('submit', self.calls)
-        self.assertEqual(self.state['pending']['send_state'], 'DEFINITELY_REJECTED')
+        self.assertIn('submit', self.calls)
+        self.assertEqual(self.state['pending']['send_state'], 'ACKNOWLEDGED')
 
-    def test_readiness_change_after_prepare_prevents_submit(self):
+    def test_adapter_does_not_add_post_prepare_cost_readiness_veto(self):
         self.after_prepare = lambda: self.snap['owner_health'].update(mutation_ready=False)
         self.open()
-        self.assertNotIn('submit', self.calls)
+        self.assertIn('submit', self.calls)
         self.assertEqual(self.state['pending']['command_id'], 'test-original-command')
 
     def test_pending_command_cannot_be_replaced(self):
@@ -191,15 +189,10 @@ class RealDriverIntegration(unittest.TestCase):
         self.assertEqual(self.calls.count('submit'), 1)
         self.assertEqual(self.state['pending']['command_id'], 'test-original-command')
 
-    def test_capture_failure_blocks_only_new_entry(self):
+    def test_capture_failure_has_no_resident_entry_authority(self):
         self.record.fail = True
-        with self.assertRaises(self.d.DriverError):
-            self.open()
-        self.assertEqual(self.calls, [])
-        self.state['position'] = .25
-        self.state['entry_price'] = 100000.
-        self.d.prepare_send(self.state, self.path, 'b', 's', 't', str(self.root), 'CLOSE')
-        self.assertEqual(self.calls, ['prepare-crypto-close', 'submit'])
+        self.open()
+        self.assertEqual(self.calls, ['prepare-crypto-open', 'submit'])
 
     def test_missing_calibration_and_cooldown_do_not_block_risk_exit(self):
         self.calibration.unlink()
@@ -214,19 +207,11 @@ class RealDriverIntegration(unittest.TestCase):
         close, reason = self.d.should_close(self.state, .25, self.q, f)
         self.assertEqual((close, reason), (True, 'MODEL_REVERSAL'))
 
-    def test_definite_non_send_reconciles_only_unchanged_state(self):
-        self.after_prepare = lambda: self.q.update(bid='101000', ask='101000')
-        self.open()
-        self.d.inspect_pending(self.state, self.path, 'b', 's', 't', str(self.root),
-                               {'position': 0., 'active': [], 'orders': {}})
-        self.assertIsNone(self.state['pending'])
-        self.assertNotIn('submit', self.calls)
-
-    def test_stale_quote_refuses_before_prepare(self):
+    def test_cost_adapter_does_not_add_direct_prepare_quote_ttl_veto(self):
         self.q['stale_after_ms'] = NOW-1
-        with self.assertRaises(self.d.DriverError):
-            self.open()
-        self.assertEqual(self.calls, [])
+        self.open()
+        self.assertEqual(self.calls, ['prepare-crypto-open', 'submit'])
+
 
 
 if __name__ == '__main__':

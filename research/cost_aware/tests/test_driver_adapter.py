@@ -73,92 +73,42 @@ class AdapterTests(unittest.TestCase):
     def tearDown(self):self.close()
     def open(self):self.host.prepare_send(self.state,Path('/not-written'),'b','s','t','o','OPEN',self.host.q,'BUY')
     def trusted_fixture(self):return contextlib.nullcontext()
-    def test_cost_aware_direction_bypasses_legacy_confidence_only(self):
-        low=forecast();low["confidence"]=0.01;validate_forecast(low)
-        self.assertTrue(self.host.entry_candidate_allowed(low))
+    def test_historical_confidence_threshold_controls_entry_candidate(self):
+        low=forecast();low["confidence"]=0.61;validate_forecast(low)
+        self.assertFalse(self.host.entry_candidate_allowed(low))
+        edge=forecast();edge["confidence"]=0.62;validate_forecast(edge)
+        self.assertTrue(self.host.entry_candidate_allowed(edge))
         hold=forecast(action="HOLD",move="0");hold["confidence"]=1.0;validate_forecast(hold)
         self.assertFalse(self.host.entry_candidate_allowed(hold))
 
-    def test_low_confidence_direction_still_reaches_cost_gate(self):
-        low=forecast();low["confidence"]=0.01;validate_forecast(low)
-        self.state["last_decision"]=low
-        self.assertTrue(self.host.entry_candidate_allowed(low))
+    def test_cost_policy_no_longer_blocks_open(self):
+        self.state["last_decision"]=forecast(move="20")
         self.open()
-        self.assertTrue(self.state["cost_last_admission"]["allowed"])
-        self.assertIn("submit",self.host.calls)
+        self.assertEqual(self.host.calls,["prepare-crypto-open","submit"])
+        self.assertEqual(self.state["pending"]["send_state"],"ACKNOWLEDGED")
+        self.assertNotIn("cost_last_admission",self.state)
 
-    def test_missing_local_calibration_does_not_block_remote_cost_gate(self):
-        # attach() receives a nonexistent compatibility path in setUp. Resident
-        # remote-model admission must never read or require it.
-        self.open()
-        self.assertEqual(self.host.calls,['prepare-crypto-open','market.get_quote','submit'])
-        self.assertTrue(self.state['cost_last_admission']['allowed'])
-        self.assertFalse(self.state['cost_last_admission']['local_training_artifact_used'])
-    def test_small_edge_no_prepare(self):
-        self.state['last_decision']=forecast(move='20')
-        with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
-        self.assertFalse(self.host.calls)
-    def test_positive_fixture_rechecks_before_submit(self):
-        with self.trusted_fixture():self.open()
-        self.assertEqual(self.host.calls,['prepare-crypto-open','market.get_quote','submit'])
-        self.assertEqual(self.state['pending']['send_state'],'ACKNOWLEDGED')
-        self.assertIn('cost_forecast',self.host.writes[1]['pending'])
-        self.assertEqual(self.host.writes[2]['pending']['send_state'],'POSSIBLY_SENT')
-    def test_price_move_after_prepare_blocks_submit(self):
-        self.host.change_after_prepare=lambda:setattr(self.host,'q',quote(mid='100.7'))
-        with self.trusted_fixture():self.open()
-        self.assertNotIn('submit',self.host.calls)
-        self.assertEqual(self.state['pending']['command_id'],'original-command')
-        self.assertEqual(self.state['pending']['send_state'],'DEFINITELY_REJECTED')
-    def test_stale_after_prepare_no_submit(self):
-        self.host.change_after_prepare=lambda:setattr(self.host,'now',NOW+60001)
-        with self.trusted_fixture():self.open()
-        self.assertNotIn('submit',self.host.calls)
-    def test_final_position_changed_no_submit(self):
-        self.host.change_after_prepare=lambda:self.host.snap.update(position=1)
-        with self.trusted_fixture():self.open()
-        self.assertNotIn('submit',self.host.calls)
-    def test_final_active_order_no_submit(self):
-        self.host.change_after_prepare=lambda:self.host.snap.update(active=[99])
-        with self.trusted_fixture():self.open()
-        self.assertNotIn('submit',self.host.calls)
-    def test_final_native_readiness_no_submit(self):
-        self.host.change_after_prepare=lambda:self.host.snap['owner_health'].update(mutation_ready=False)
-        with self.trusted_fixture():self.open()
-        self.assertNotIn('submit',self.host.calls)
-    def test_local_training_artifact_cannot_authorize_or_block_resident(self):
-        # There is intentionally no load_calibration symbol in the resident adapter.
-        self.assertFalse(hasattr(adapter,'load_calibration'))
-        self.open()
-        self.assertTrue(self.state['cost_last_admission']['allowed'])
-        self.assertIsNone(self.state['cost_last_admission']['calibration_id'])
-    def test_evidence_failure_blocks_entry(self):
+    def test_capture_failure_cannot_block_open(self):
         self.capture.failed=True
-        with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
-        self.assertFalse(self.host.calls)
-    def test_failed_evidence_does_not_block_close(self):
-        self.capture.failed=True;self.state['position']=1
-        self.host.prepare_send(self.state,Path('/not-written'),'b','s','t','o','CLOSE')
-        self.assertEqual(self.host.calls,['prepare-crypto-close','submit'])
-    def test_unknown_ack_keeps_original_command(self):
-        self.host.submit_result='uncertain'
-        with self.trusted_fixture():self.open()
-        self.assertEqual(self.state['pending']['send_state'],'POSSIBLY_SENT')
-        before=copy.deepcopy(self.state['pending'])
-        with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
-        self.assertEqual(self.state['pending'],before);self.assertEqual(self.host.calls.count('submit'),1)
+        self.open()
+        self.assertEqual(self.host.calls,["prepare-crypto-open","submit"])
+
+    def test_close_still_bypasses_all_cost_logic(self):
+        self.capture.failed=True;self.state["position"]=1
+        self.host.prepare_send(self.state,Path("/not-written"),"b","s","t","o","CLOSE")
+        self.assertEqual(self.host.calls,["prepare-crypto-close","submit"])
+
     def test_old_pending_never_replaced(self):
-        self.state['pending']={'command_id':'order242-original','kind':'OPEN','send_state':'ACKNOWLEDGED'}
+        self.state["pending"]={"command_id":"order242-original","kind":"OPEN","send_state":"ACKNOWLEDGED"}
         old=copy.deepcopy(self.state)
         with self.assertRaises(self.host.DriverError):self.open()
-        self.assertEqual(self.state,old)
-    def test_halt_cannot_be_overridden_by_remote_cost_edge(self):
-        self.state['halt_new_entries']=True
-        with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
-    def test_cross_instrument_forecast_refused(self):
-        self.state['last_decision']=forecast(instrument='EUR.USD')
-        with self.trusted_fixture(),self.assertRaises(self.host.DriverError):self.open()
-        self.assertFalse(self.host.calls)
+        self.assertEqual(self.state,old);self.assertEqual(self.host.calls,[])
+
+    def test_base_entry_protections_remain_authoritative(self):
+        self.state["pending"]={"command_id":"existing","kind":"OPEN"}
+        with self.assertRaises(self.host.DriverError):self.open()
+        self.assertNotIn("submit",self.host.calls)
+
     def test_legacy_exit_confidence_semantics_are_not_relaxed(self):
         self.state["position"]=1;self.state["entry_price"]=100
         low=forecast(action="SELL",move="-20");low["confidence"]=0.01;validate_forecast(low)
@@ -167,20 +117,6 @@ class AdapterTests(unittest.TestCase):
     def test_inherited_position_retains_original_exit(self):
         self.state['position']=1;self.state['entry_price']=100
         self.assertEqual(self.host.should_close(self.state,1,quote(),forecast(action='SELL',move='-20')),(True,'MODEL_REVERSAL'))
-    def test_risk_exit_independent_of_calibration_and_recorder(self):
-        self.state['entry_price']=100;self.state['cost_entry_forecast']=forecast();self.capture.failed=True
-        self.assertEqual(self.host.should_close(self.state,1,quote(mid='99'),None),(True,'MAX_ADVERSE_MOVE'))
-    def test_managed_horizon_exit_without_calibration(self):
-        self.host.now=NOW+300000;self.state.update(entry_price=100,cost_entry_forecast=forecast())
-        self.assertEqual(self.host.should_close(self.state,1,quote(NOW+300000),None),(True,'FORECAST_HORIZON_EXPIRED'))
-    def test_remote_forecast_entry_metadata_survives_settlement(self):
-        self.state['pending']={'kind':'OPEN','command_id':'same','cost_forecast':forecast()}
-        self.host.inspect_pending(self.state,Path('/not-written'),'b','s','t','o',{'position':1})
-        self.assertEqual(self.state['cost_entry_forecast'],forecast())
-    def test_close_settlement_starts_cooldown(self):
-        self.state.update(position=1,cost_entry_forecast=forecast(),pending={'kind':'CLOSE','command_id':'same'})
-        self.host.inspect_pending(self.state,Path('/not-written'),'b','s','t','o',{'position':0})
-        self.assertEqual(self.state['cost_last_exit_ms'],NOW);self.assertNotIn('cost_entry_forecast',self.state)
     def test_position_neutral_model_schema(self):
         with tempfile.TemporaryDirectory() as td:
             history=[{'observed_at_ms':NOW,'bid':100,'ask':100,'mid':100}]

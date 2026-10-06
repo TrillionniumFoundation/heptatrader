@@ -26,28 +26,16 @@ class DurableTransitionTests(unittest.TestCase):
         self.cleanup = adapter.attach(self.host, '/no-live-calibration', capture_factory=lambda *a, **k: self.capture)
     def tearDown(self):
         self.cleanup()
-    def test_first_settlement_write_contains_entry_thesis(self):
-        state = {'position': 0, 'pending': {'kind': 'OPEN', 'command_id': 'original', 'cost_forecast': forecast()}}
+    def test_settlement_commit_remains_atomic_without_cost_metadata(self):
+        state = {'position': 0, 'pending': {'kind': 'OPEN', 'command_id': 'original'}}
         self.host.inspect_pending(state, '/unused', 'b', 's', 't', 'o', {'position': 1})
         self.assertEqual(len(self.host.writes), 1)
         self.assertIsNone(self.host.writes[0]['pending'])
-        self.assertEqual(self.host.writes[0]['cost_entry_forecast'], forecast())
-    def test_first_flat_settlement_write_contains_cooldown(self):
-        state = {'position': 1, 'cost_entry_forecast': forecast(), 'pending': {'kind': 'CLOSE', 'command_id': 'original'}}
-        self.host.inspect_pending(state, '/unused', 'b', 's', 't', 'o', {'position': 0})
-        self.assertEqual(len(self.host.writes), 1)
-        self.assertEqual(self.host.writes[0]['cost_last_exit_ms'], NOW)
         self.assertNotIn('cost_entry_forecast', self.host.writes[0])
-    def test_partial_exit_does_not_create_flat_cooldown(self):
-        state = {'position': 1, 'cost_entry_forecast': forecast(), 'pending': {'kind': 'CLOSE', 'command_id': 'original'}}
-        self.host.inspect_pending(state, '/unused', 'b', 's', 't', 'o', {'position': .5})
-        self.assertNotIn('cost_last_exit_ms', self.host.writes[0])
-        self.assertIn('cost_entry_forecast', self.host.writes[0])
     def test_recorder_failure_after_settlement_does_not_undo_commit(self):
         self.capture.failed = True
         state = {'position': 1, 'pending': {'kind': 'CLOSE', 'command_id': 'original'}}
         self.host.inspect_pending(state, '/unused', 'b', 's', 't', 'o', {'position': 0})
-        self.assertEqual(self.host.writes[0]['cost_last_exit_ms'], NOW)
         self.assertEqual(state['position'], 0)
     def test_model_failure_is_recorded_without_output_secrets(self):
         with tempfile.TemporaryDirectory() as td:

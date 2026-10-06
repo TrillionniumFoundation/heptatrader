@@ -19,8 +19,8 @@ from pathlib import Path
 import stat
 import sys
 import threading
-from hepta_cost_policy import (CostError, DEFAULT_POLICY, FORECAST_VERSION, MODEL_ID, HORIZONS,
-    dec, digest, validate_forecast, remote_entry_admission, risk_exit, remote_discretionary_exit)
+from hepta_cost_policy import (CostError, FORECAST_VERSION, MODEL_ID, HORIZONS,
+    dec, digest, validate_forecast)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
 BASE_DRIVER_SHA256 = "2a047583b092bde6c3112581b61ca18f826d5c52485bbc8f9a02f1971747bfbb"
@@ -65,7 +65,6 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
     original = {name: getattr(driver, name) for name in
                 ("prepare_send", "paper_cmd", "atomic_json", "native", "should_close", "inspect_pending",
                  "model_decision", "entry_candidate_allowed")}
-    ctx = threading.local()
     capture, capture_problem = None, None
     lock = threading.Lock()
 
@@ -92,53 +91,7 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
             learn("QUOTE", {key: value.get(key) for key in QUOTE_FIELDS})
         return value
 
-    def check(state, quote, side):
-        lifecycle_check()
-        forecast = state.get("last_decision")
-        size = driver.crypto_market_cash_budget(quote["ask"]) if driver.INSTRUMENT == "BTC.USD" else driver.QTY
-        result = remote_entry_admission(
-            forecast, quote, size, driver.now_ms(),
-            last_exit_ms=state.get("cost_last_exit_ms", 0))
-        if not isinstance(forecast, dict) or forecast.get("instrument") != driver.INSTRUMENT or forecast.get("action") != side:
-            result["allowed"] = False
-            result["reasons"].append("COST_FORECAST_ORDER_SCOPE_MISMATCH")
-        if state.get("halt_new_entries") or state.get("owner_fence_recovery_required") or state.get("lease_uncertain"):
-            result["allowed"] = False
-            result["reasons"].append("EXISTING_ENTRY_PROTECTION")
-        if abs(float(state.get("position", 0))) > driver.QUANTITY_TOLERANCE:
-            result["allowed"] = False
-            result["reasons"].append("COST_ENTRY_REQUIRES_FLAT")
-        if not recorder("ENTRY_CHECK", {"forecast": forecast, "quote": quote, "result": result}):
-            result["allowed"] = False
-            result["reasons"].append("COST_EVIDENCE_WRITE_FAILED")
-        state["cost_last_admission"] = result
-        state["cost_capture_error"] = capture_problem
-        return result
-
     def atomic_json(path, value):
-        context = getattr(ctx, "opening", None)
-        pending = value.get("pending")
-        if context and pending and pending.get("kind") == "OPEN":
-            pending.setdefault("cost_forecast", copy.deepcopy(context["forecast"]))
-            pending.setdefault("cost_admission", copy.deepcopy(context["admission"]))
-        reconciled = getattr(ctx, "reconciling", None)
-        if reconciled and pending is None:
-            before = reconciled["pending"]
-            receipt = value.get("last_reconciliation") or {}
-            # The first durable write that clears the original pending command
-            # must also save its horizon/invalidation or close-cooldown metadata.
-            # A second post-return save would leave a crash gap with new inventory
-            # but no new-entry thesis. Monetary fields remain original-owned.
-            if receipt.get("command_id") == before.get("command_id"):
-                position = float(value.get("position", 0))
-                if before.get("kind") == "OPEN" and abs(position) > driver.QUANTITY_TOLERANCE:
-                    if before.get("cost_forecast"):
-                        value["cost_entry_forecast"] = copy.deepcopy(before["cost_forecast"])
-                elif (before.get("kind") == "CLOSE" and
-                      abs(reconciled["position_before"]) > driver.QUANTITY_TOLERANCE and
-                      abs(position) <= driver.QUANTITY_TOLERANCE):
-                    value["cost_last_exit_ms"] = driver.now_ms()
-                    value.pop("cost_entry_forecast", None)
         result = original["atomic_json"](path, value)
         if learning_export is not None:
             try:
@@ -149,66 +102,33 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
         return result
 
     def entry_candidate_allowed(decision):
-        """Cost-aware OPEN: direction reaches deterministic admission regardless of raw confidence.
+        """Resident PAPER entry uses the historical directional confidence rule.
 
-        Remote confidence is explicitly uncalibrated and has no authorization
-        effect. Full forecast schema/identity is still required. HOLD remains
-        non-entry. BTC remains BUY-only; EUR/USD remains BUY/SELL.
+        The remote forecast remains schema/identity checked and position-neutral,
+        but cost arithmetic has no authorization effect. HOLD stays non-entry and
+        the base driver's historical CONF=0.62 threshold remains authoritative.
         """
         try:
             validate_forecast(decision)
         except Exception:
             return False
-        actions = {"BUY"} if driver.INSTRUMENT == "BTC.USD" else {"BUY", "SELL"}
-        return decision["action"] in actions
+        return original["entry_candidate_allowed"](decision)
 
     def prepare_send(state, path, binary, socket, token, outbox, kind, quote=None, side=None):
-        if kind != "OPEN":
-            # Costs, missing files, capture failures and cooldown cannot block this.
-            return original["prepare_send"](state, path, binary, socket, token, outbox, kind, quote, side)
-        if state.get("pending") is not None:
-            raise driver.DriverError("original command pending; cost adapter cannot replace it")
-        admission = check(state, quote, side)
-        original["atomic_json"](path, state)
-        if admission["allowed"] is not True:
-            raise driver.DriverError("COST_ENTRY_REJECTED:" + ",".join(admission["reasons"]))
-        # Native readiness is still authoritative. The local cost result is not a permit.
-        ctx.opening = {"state": state, "path": path, "side": side,
-                       "forecast": copy.deepcopy(state["last_decision"]), "admission": admission}
-        try:
-            return original["prepare_send"](state, path, binary, socket, token, outbox, kind, quote, side)
-        finally:
-            ctx.opening = None
+        """Historical PAPER strategy plus lifecycle fencing; no resident cost gate."""
+        if kind == "OPEN":
+            lifecycle_check()
+        return original["prepare_send"](state, path, binary, socket, token, outbox, kind, quote, side)
 
     def paper_cmd(binary, socket, token, outbox, operation, extra):
-        context = getattr(ctx, "opening", None)
-        if operation == "submit" and context:
-            # This hook is after native prepare and immediately BEFORE the original
-            # submit transport. The original durable POSSIBLY_SENT marker is kept.
-            # A local final rejection returns a definite non-send result through
-            # the original driver's normal reconciliation path; pending isn't erased.
+        if operation == "submit":
             try:
                 lifecycle_check()
-                cli = str(Path.home() / ".local/bin/heptatrader")
-                snap = driver.snapshot(cli, require_quote=False)
-                if (snap["active"] or abs(float(snap["position"])) > driver.QUANTITY_TOLERANCE or
-                        snap["owner_health"].get("mutation_ready") is not True):
-                    raise CostError("COST_FINAL_AUTHORITATIVE_FLATNESS_UNPROVEN")
-                quote = driver.native(cli, "market.get_quote", "instrument=" + driver.INSTRUMENT)
-                # Recompute against the original candidate, even if state receives
-                # other observational fields while the native prepare call runs.
-                state = context["state"]
-                if state.get("last_decision") != context["forecast"]:
-                    raise CostError("COST_CANDIDATE_CHANGED_DURING_PREPARE")
-                final = check(state, quote, context["side"])
-                state["pending"]["cost_final_admission"] = final
-                original["atomic_json"](context["path"], state)
-                if final["allowed"] is not True:
-                    raise CostError("COST_FINAL_CHECK:" + ",".join(final["reasons"]))
             except Exception as exc:
                 return {"ok": False, "transport_ok": True, "application_status": "error",
-                        "application_reason": "COST_FINAL_NON_SEND:" + str(exc),
-                        "result": {"status": "error", "order_id": -1, "reason_code": "COST_FINAL_NON_SEND"}}
+                        "application_reason": "LIFECYCLE_FINAL_NON_SEND:" + type(exc).__name__,
+                        "result": {"status": "error", "order_id": -1,
+                                   "reason_code": "LIFECYCLE_FINAL_NON_SEND"}}
         return original["paper_cmd"](binary, socket, token, outbox, operation, extra)
 
     def build_model_candidate(openclaw, state_dir, history, _position):
@@ -284,31 +204,11 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
             raise
 
     def should_close(state, position, quote, decision):
-        original_safety = original["should_close"](state, position, quote, None)
-        if original_safety[0]:
-            return original_safety
-        forecast = state.get("cost_entry_forecast")
-        why = risk_exit(position, state.get("entry_price"), quote, driver.now_ms(), entry_forecast=forecast,
-                        max_adverse=str(driver.MAX_ADVERSE))
-        if why:
-            return True, why
-        if not forecast:
-            # A pre-upgrade position keeps its original exit behavior. Do not
-            # invent an entry thesis or make an inherited holding wait for fees.
-            return original["should_close"](state, position, quote, decision)
-        result = remote_discretionary_exit(
-            decision, quote, position, driver.now_ms())
-        recorder("EXIT_CHECK", {"forecast": decision, "position": position, "close": result[0], "reason": result[1]})
-        return result
+        return original["should_close"](state, position, quote, decision)
 
     def inspect_pending(state, path, binary, socket, token, outbox, snap):
         before = copy.deepcopy(state.get("pending"))
-        old_position = float(state.get("position", 0))
-        ctx.reconciling = {"pending": before, "position_before": old_position} if before else None
-        try:
-            result = original["inspect_pending"](state, path, binary, socket, token, outbox, snap)
-        finally:
-            ctx.reconciling = None
+        result = original["inspect_pending"](state, path, binary, socket, token, outbox, snap)
         if before and state.get("pending") is None:
             reconciliation = state.get("last_reconciliation") or {}
             if reconciliation.get("command_id") == before.get("command_id"):
