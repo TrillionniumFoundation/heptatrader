@@ -548,6 +548,9 @@ private:
     std::map<std::string, InstrumentRef> m_authoritativePositionContracts;
     std::map<std::string, std::string> m_fxInstrumentByBaseCurrency;
     std::map<std::string, double> m_pendingFxCashBalances;
+    // Failed startup account-download observations, used ONLY to recognize
+    // exact duplicate pushes. Never a campaign baseline or cash authority.
+    std::map<std::string, double> m_rejectedFxCashObservationBalances;
     std::map<std::string, double> m_authoritativeFxCashBalances;
     std::map<std::string, double> m_authoritativeFxPositionQuantities;
     std::map<std::string, IBAuthoritativeFxCashExposure>

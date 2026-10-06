@@ -293,6 +293,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_pendingPositionQuantities.clear(); m_pendingPositionContracts.clear();
     m_authoritativePositionQuantities.clear(); m_authoritativePositionContracts.clear();
     m_pendingFxCashBalances.clear();
+    m_rejectedFxCashObservationBalances.clear();
     m_authoritativeFxCashBalances.clear();
     m_authoritativeFxPositionQuantities.clear();
     m_authoritativeFxCashExposures.clear();
@@ -680,6 +681,7 @@ bool HeptaIBGatewayAdapter::ReqAccountSummary() {
     m_accountReady = false;
     m_fxCashRefreshConflict = false;
     m_pendingFxCashBalances.clear();
+    m_rejectedFxCashObservationBalances.clear();
     m_riskSnapshot.connectionEpoch = m_connectionEpoch;
     m_riskSnapshot.generation = m_riskGeneration;
     m_riskSnapshot.accountGeneration = m_riskGeneration;

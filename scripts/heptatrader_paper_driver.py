@@ -90,6 +90,7 @@ def physical_crypto_settlement_snapshot(h,orders,portfolio):
         physical.get("account")==orders.get("owner_scope",{}).get("account") and
         physical.get("execution_service_epoch")==h.get("execution_service_epoch") and
         isinstance(h.get("execution_service_epoch"),str) and bool(h.get("execution_service_epoch")) and
+        positive(h.get("execution_service_fencing_generation")) and
         positive(epoch) and epoch==orders.get("active_orders_connection_epoch") and
         positive(physical.get("position_generation")) and positive(physical.get("terminal_generation")) and
         positive(physical.get("active_orders_generation")) and
@@ -343,6 +344,17 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
     payload=inspected["result"].get("payload") or {}
     if (payload.get("authoritative") is not True or payload.get("command_id")!=p["command_id"]):
         p["last_status"]={"at_ms":now_ms(),"reason_code":"ORIGINAL_COMMAND_STATUS_UNAVAILABLE"}
+        atomic_json(path,state); return
+    # Original-command status is another IPC round trip. A restart between
+    # snapshot and inspect must not splice two service authorities into a fill.
+    if snap.get("settlement_only") and (
+            not isinstance(snap.get("service_epoch"),str) or not snap["service_epoch"] or
+            payload.get("execution_service_epoch")!=snap["service_epoch"] or
+            type(snap.get("service_generation")) is not int or snap["service_generation"]<=0 or
+            type(payload.get("execution_service_fencing_generation")) is not int or
+            payload["execution_service_fencing_generation"]!=snap["service_generation"]):
+        p["last_status"]={"at_ms":now_ms(),"reason_code":"ORIGINAL_COMMAND_SNAPSHOT_MISMATCH"}
+        state["last_error"]="original command snapshot changed; settlement remains pending"
         atomic_json(path,state); return
     if type(payload.get("order_id")) is int and payload["order_id"]>=0:
         p["broker_order_id"]=payload["order_id"]

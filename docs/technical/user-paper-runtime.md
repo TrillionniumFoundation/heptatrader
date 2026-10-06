@@ -346,3 +346,20 @@ build/tests/hepta_ib_recent_order_replay_tests \
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s tests/python -p test_paper_driver.py -v
 ```
+
+The settlement snapshot and the subsequent original-command inspection are
+separate IPC reads. Their nonempty service epoch and strictly positive integer
+fencing generation must match before accounting can consume the fill. A
+restart, missing identity or boolean/invalid generation preserves the original
+pending command and reports `ORIGINAL_COMMAND_SNAPSHOT_MISMATCH`; local
+acceptance from a newer service cannot validate an older physical snapshot.
+This check does not release the account cash hold or authorize any Broker send.
+
+A failed initial FX cash attestation retains a separate, non-authoritative copy
+of that completed account download solely to recognize exact duplicate
+CashBalance pushes. Such duplicates preserve the rejected-cash reason and the
+independently completed physical crypto observation; they do not create cash
+exposure or advance the attestation. Any changed balance (including a return
+to the old expected value), malformed value, AccountReady=false, disconnect,
+new account refresh or other risk invalidation discards this duplicate-only
+memory. Delayed old pushes cannot recreate position authority after invalidation.

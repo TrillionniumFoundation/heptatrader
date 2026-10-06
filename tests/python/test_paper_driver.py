@@ -760,6 +760,12 @@ class CumulativeSettlementTests(unittest.TestCase):
         h,o,p=self.fixture()
         with patch.object(d,"INSTRUMENT","EUR.USD"),self.assertRaises(d.DriverError):
             d.physical_crypto_settlement_snapshot(h,o,p)
+    def test_physical_snapshot_requires_positive_typed_service_generation(self):
+        for generation in (None, True, False, 0, -1, 1.0, "1"):
+            h,o,p=self.fixture();h["execution_service_fencing_generation"]=generation
+            with self.subTest(generation=generation),self.assertRaises(d.DriverError):
+                d.physical_crypto_settlement_snapshot(h,o,p)
+
     def test_default_resident_snapshot_cannot_use_settlement_observation(self):
         from unittest.mock import patch
         h,o,p=self.fixture()
@@ -785,7 +791,9 @@ class CumulativeSettlementTests(unittest.TestCase):
         def inspect(_b,_s,_t,_o,op,extra):
             operations.append(op);self.assertEqual(op,"inspect");self.assertIn(cmd,extra)
             return {"ok":True,"result":{"payload":{"authoritative":True,"command_id":cmd,
-                "command_status":"accepted","order_id":159,"reason_code":""}}}
+                "command_status":"accepted","order_id":159,"reason_code":"",
+                "execution_service_epoch":snap["service_epoch"],
+                "execution_service_fencing_generation":snap["service_generation"]}}}
         with patch.object(d,"paper_cmd",inspect),patch.object(d,"atomic_json",lambda p,v:writes.append(copy.deepcopy(v))):
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
         self.assertEqual(operations,["inspect"]);self.assertEqual(len(writes),1)
@@ -796,6 +804,41 @@ class CumulativeSettlementTests(unittest.TestCase):
         self.assertEqual(state["last_reconciliation"]["broker_status"],"Cancelled")
         self.assertFalse(state["last_reconciliation"]["risk_authoritative"])
         self.assertEqual(state["last_reconciliation"]["execution_ids"],ids)
+    def test_settlement_command_snapshot_identity_must_match_before_accounting(self):
+        from unittest.mock import patch
+        cmd="original-cumulative-command"
+        for variant in ("epoch", "missing_epoch", "generation", "missing_generation", "bool_generation"):
+            h,o,p=self.fixture()
+            row=matched_fill(159,cmd,"BUY",.03313821,86437.099117)
+            row.update(status="Cancelled",economic_evidence_version=2,economic_evidence_complete=True)
+            o["recent_orders"]=[row]
+            snap=d.physical_crypto_settlement_snapshot(h,o,p)
+            pending={"kind":"OPEN","command_id":cmd,"broker_order_id":159,"side":"BUY",
+                "position_before_send":0.0,"quantity_mode":"CASH","cash_quantity":25000}
+            state={"pending":copy.deepcopy(pending),"position":0.0,"entries":5,"exits":5,
+                "closed_trades":5,"gross_pnl":.93769834,"halt_new_entries":True}
+            payload={"authoritative":True,"command_id":cmd,"command_status":"accepted","order_id":159,
+                "execution_service_epoch":snap["service_epoch"],
+                "execution_service_fencing_generation":snap["service_generation"]}
+            if variant=="epoch":payload["execution_service_epoch"]="other-service-epoch"
+            elif variant=="missing_epoch":payload.pop("execution_service_epoch")
+            elif variant=="generation":payload["execution_service_fencing_generation"]+=1
+            elif variant=="missing_generation":payload.pop("execution_service_fencing_generation")
+            elif variant=="bool_generation":payload["execution_service_fencing_generation"]=True
+            operations=[]
+            def inspect(_b,_s,_t,_o,op,extra):
+                operations.append(op)
+                return {"ok":True,"result":{"payload":payload}}
+            with self.subTest(variant=variant),patch.object(d,"paper_cmd",inspect),patch.object(d,"atomic_json",lambda *_:None):
+                d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
+                self.assertIsNotNone(state["pending"])
+                self.assertEqual(state["pending"]["command_id"],cmd)
+                self.assertEqual(state["position"],0.0)
+                self.assertEqual(state["entries"],5)
+                self.assertEqual(state["gross_pnl"],.93769834)
+                self.assertNotIn("last_reconciliation",state)
+                self.assertEqual(operations,["inspect"])
+
     def test_incomplete_or_conflicting_v2_cumulative_evidence_cannot_settle(self):
         cmd="same-original";pending={"command_id":cmd,"broker_order_id":159}
         base=matched_fill(159,cmd,"BUY",.03313821,86437.099117)

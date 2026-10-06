@@ -123,7 +123,7 @@ public:
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
-    Fixture(bool finishBootstrap=true, bool cryptoScope=false):broker(new Broker()),adapter(
+    Fixture(bool finishBootstrap=true, bool cryptoScope=false, bool cashScope=false):broker(new Broker()),adapter(
         std::unique_ptr<IIBApiWrapper>(broker), [this]() {
             broker=new Broker();return std::unique_ptr<IIBApiWrapper>(broker);
         }) {
@@ -133,6 +133,12 @@ struct Fixture {
         if(cryptoScope) {
             IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
             cfg.authoritativeCryptoContracts["BTC.USD"]=c;
+        }
+        if(cashScope) {
+            InstrumentRef c;c.symbol="EUR";c.secType="CASH";c.exchange="IDEALPRO";c.currency="USD";
+            cfg.authoritativeCashFxContracts["EUR.USD"]=c;
+            cfg.authoritativeCashFxBaselines["EUR.USD"]=-100000;
+            cfg.authoritativeCashFxStartupObservedBalances["EUR.USD"]=-75000;
         }
         assert(adapter.Init(cfg));assert(adapter.Connect());Bootstrap(finishBootstrap);
     }
@@ -179,6 +185,51 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
+    // All observations below are synthetic. No broker connection or sends.
+    for(int invalidation=0;invalidation<6;++invalidation) {
+        Fixture f(true,true,true);
+        assert(f.adapter.ReqRiskRefresh());
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value="-75100";f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        auto position=f.Event(IBEventType::Position);position.key="BTC.USD";position.number=.02;
+        position.contract.symbol="BTC";position.contract.secType="CRYPTO";
+        position.contract.exchange="PAXOS";position.contract.currency="USD";f.Push(position);
+        f.Push(f.Event(IBEventType::PositionEnd));
+        const auto before=f.adapter.GetPhysicalCryptoPositionObservation();
+        assert(before.complete && before.positions.at("BTC.USD")==.02);
+        for(int repeat=0;repeat<5;++repeat) {
+            f.Push(value);
+            const auto risk=f.adapter.GetAuthoritativeRiskSnapshot();
+            assert(!risk.complete && !risk.accountComplete && !risk.fxCashComplete);
+            assert(risk.reasonCode=="IB_FX_CASH_ATTESTED_BALANCE_MISMATCH");
+            const auto observed=f.adapter.GetPhysicalCryptoPositionObservation();
+            assert(observed.complete && observed.positions==before.positions);
+            assert(observed.positionGeneration==before.positionGeneration);
+            assert(!f.adapter.GetAuthoritativePositionQuantities().count("EUR.USD"));
+        }
+        // Only identical pushes can be no-ops. A real change, return to the
+        // old checkpoint, malformed value, loss of readiness, disconnect or
+        // a new request/end generation invalidates the observation.
+        auto changed=value;
+        if(invalidation==0)changed.value="-75101";
+        else if(invalidation==1)changed.value="-75000";
+        else if(invalidation==2)changed.value="nan";
+        else if(invalidation==3){changed.key="AccountReady:";changed.value="false";}
+        if(invalidation==4)f.adapter.Disconnect();
+        else if(invalidation==5)assert(f.adapter.ReqAccountSummary());
+        else f.Push(changed);
+        assert(!f.adapter.GetPhysicalCryptoPositionObservation().complete);
+        f.Push(value); // A delayed old duplicate cannot resurrect authority.
+        assert(!f.adapter.GetPhysicalCryptoPositionObservation().complete);
+        assert(!f.adapter.GetAuthoritativeRiskSnapshot().complete);
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
     for(int mode=0;mode<5;++mode) {
         Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
@@ -744,6 +795,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
     TestTypedFlattenCapturesResultAtSendBoundary();

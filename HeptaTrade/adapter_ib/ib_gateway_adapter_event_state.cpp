@@ -236,6 +236,7 @@ void HeptaIBGatewayAdapter::InvalidateRiskSnapshot(const std::string& reason) {
     m_pendingPositionQuantities.clear(); m_pendingPositionContracts.clear();
     m_authoritativePositionQuantities.clear(); m_authoritativePositionContracts.clear();
     m_pendingFxCashBalances.clear();
+    m_rejectedFxCashObservationBalances.clear();
     m_authoritativeFxCashBalances.clear();
     m_authoritativeFxPositionQuantities.clear();
     m_authoritativeFxCashExposures.clear();
@@ -950,6 +951,17 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
     // snapshot boundary and can be delayed by IB. Never let them directly
     // mutate the authoritative campaign exposure; however, a changed value is
     // proof that the committed snapshot is stale, so invalidate fail-closed.
+    // A rejected startup cash snapshot remains rejected. Repeating precisely
+    // the same observed balance carries no new information and must not erase
+    // an independently completed physical crypto positions download. A changed
+    // balance (including a return to the expected checkpoint) still invalidates
+    // all risk/settlement observations below. No cash value is promoted here.
+    if (!m_riskSnapshot.accountComplete && !m_riskSnapshot.fxCashComplete &&
+        m_riskSnapshot.reasonCode == "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH") {
+        const auto rejected = m_rejectedFxCashObservationBalances.find(currency);
+        if (rejected != m_rejectedFxCashObservationBalances.end() &&
+            rejected->second == parsed) return true;
+    }
     const std::map<std::string, double>::const_iterator committed =
         m_authoritativeFxCashBalances.find(currency);
     if (committed == m_authoritativeFxCashBalances.end() ||
@@ -1004,6 +1016,7 @@ bool HeptaIBGatewayAdapter::InitialFxCashAttestationMatches() const {
 }
 
 void HeptaIBGatewayAdapter::CommitAccountRiskRefresh() {
+    m_rejectedFxCashObservationBalances.clear();
     m_riskSnapshot.accountComplete = true;
     m_riskSnapshot.fxCashComplete = true;
     m_riskSnapshot.fxCashGeneration = m_riskSnapshot.accountGeneration;
@@ -1016,6 +1029,7 @@ void HeptaIBGatewayAdapter::CommitAccountRiskRefresh() {
 
 void HeptaIBGatewayAdapter::RejectAccountRiskRefresh(
     bool initialAttestationMatches) {
+    m_rejectedFxCashObservationBalances.clear();
     m_riskSnapshot.accountComplete = false;
     m_riskSnapshot.fxCashComplete = m_fxInstrumentByBaseCurrency.empty();
     m_authoritativeFxCashBalances.clear();
@@ -1032,6 +1046,7 @@ void HeptaIBGatewayAdapter::RejectAccountRiskRefresh(
         m_riskSnapshot.reasonCode = "IB_ACCOUNT_NOT_READY";
     else if (!initialAttestationMatches) {
         m_riskSnapshot.reasonCode = "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH";
+        m_rejectedFxCashObservationBalances = m_pendingFxCashBalances;
         for (const auto& item : m_cfg.authoritativeCashFxContracts) {
             const auto expected = m_cfg.authoritativeCashFxStartupObservedBalances.find(item.first);
             const auto observed = m_pendingFxCashBalances.find(item.second.symbol);
