@@ -432,6 +432,37 @@ add_library(hepta_risk_engine STATIC
     risk/portfolio_risk_snapshot_builder.cpp)
 target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_library(hepta_options_core STATIC
+    options/zero_dte.cpp options/zero_dte_observation.cpp options/snowball_option_feed.cpp options/snowball_feed_trace.cpp)
+target_include_directories(hepta_options_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(hepta_options_core PUBLIC cxx_std_11)
+add_executable(hepta_snowball_trace_replay options/snowball_feed_trace_main.cpp)
+set_target_properties(hepta_snowball_trace_replay PROPERTIES OUTPUT_NAME "hepta-snowball-trace-replay")
+target_link_libraries(hepta_snowball_trace_replay PRIVATE hepta_options_core)
+install(TARGETS hepta_snowball_trace_replay RUNTIME DESTINATION bin COMPONENT OptionsAudit EXCLUDE_FROM_ALL)
+
+add_library(hepta_options_oms_audit STATIC options/oms_economics_audit.cpp)
+target_compile_features(hepta_options_oms_audit PUBLIC cxx_std_11)
+target_link_libraries(hepta_options_oms_audit PUBLIC hepta_options_core hepta_oms_journal OpenSSL::Crypto)
+add_executable(hepta_options_oms_audit_cli options/oms_economics_audit_main.cpp)
+set_target_properties(hepta_options_oms_audit_cli PROPERTIES OUTPUT_NAME "hepta-options-oms-audit")
+target_link_libraries(hepta_options_oms_audit_cli PRIVATE hepta_options_oms_audit)
+install(TARGETS hepta_options_oms_audit_cli RUNTIME DESTINATION bin COMPONENT OptionsAudit EXCLUDE_FROM_ALL)
+
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_options_observer options/zero_dte_observer.cpp)
+    set_target_properties(hepta_options_observer PROPERTIES OUTPUT_NAME "hepta-options-observer")
+    target_compile_features(hepta_options_observer PRIVATE cxx_std_11)
+    target_link_libraries(hepta_options_observer PRIVATE hepta_options_core hepta_ibapi_client Threads::Threads)
+    install(TARGETS hepta_options_observer RUNTIME DESTINATION bin COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(PROGRAMS ../scripts/heptatrader_options_shadow.py
+        DESTINATION libexec/heptatrader COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(FILES ../docs/technical/native-zero-dte.md
+        DESTINATION share/doc/heptatrader COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+    install(FILES ../systemd/user/heptatrader-options-shadow.service
+        DESTINATION share/heptatrader/user-systemd COMPONENT OptionsShadow EXCLUDE_FROM_ALL)
+endif()
+
 add_library(hepta_ib_order_state STATIC
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp)

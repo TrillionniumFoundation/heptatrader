@@ -314,7 +314,7 @@ private:
     void ProjectRecentBrokerOrder(const OmsJournalEvent& event);
     void ProjectAcceptedRecentBrokerOrder(
         const OmsJournalEvent& event, const std::string& agentId);
-    void ApplyRecentBrokerOrderIdentity(
+    static void ApplyRecentBrokerOrderIdentity(
         RecentBrokerOrder& order, const OmsJournalEvent& event,
         const std::string& agentId);
     static void ApplyRecentBrokerExecutionIdentity(
@@ -429,6 +429,7 @@ private:
     std::chrono::steady_clock::time_point m_brokerReconnectRefreshStartedAt;
     OmsLatencySummary m_brokerReconnectLatency;
     OmsLatencySummary m_brokerReconnectRefreshLatency;
+    friend class IbRecentOrderProjectionTestAccess;
     struct RecentBrokerOrder
     {
         long orderId = -1;

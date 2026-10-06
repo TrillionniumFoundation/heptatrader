@@ -31,10 +31,17 @@ public:
     // evidence only; actual base quantity must come from Broker executions.
     static PreparedOrder MarketCrypto(double cashQuantity, double referencePrice,
                                       std::int64_t expiresAtMs);
+    // A one-contract long option proposal with complete metadata. The broker
+    // conId is bound into the canonical instrument IBOPT:<conId>; a future
+    // Execution registry must independently qualify that conId and metadata.
+    // This factory neither enables OPT in the PAPER profile nor issues a permit.
+    static PreparedOrder MarketOption(std::int64_t conId, const InstrumentRef& contract,
+        int contracts, double referencePrice, std::int64_t expiresAtMs);
     TradingToolHostRequest PreviewRequest(const std::string& previewCallId) const;
     TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId,
                                              const std::string& previewPermit) const;
 private:
+    PreparedOrder() = default;
     TradingToolCall call_;
 };
 

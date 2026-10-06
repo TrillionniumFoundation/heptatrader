@@ -1,0 +1,24 @@
+[Unit]
+Description=HeptaTrader Snowball options shadow (blocked without official feed; NO order authority)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=HEPTA_OPTIONS_MARKET_DATA_SOURCE=SNOWBALL
+EnvironmentFile=%h/.config/heptatrader/options-shadow.env
+ExecStart=%h/.local/share/heptatrader/options-shadow/current/libexec/heptatrader/heptatrader_options_shadow.py --observer %h/.local/share/heptatrader/options-shadow/current/bin/hepta-options-observer --account ${HEPTA_OPTIONS_PAPER_ACCOUNT} --state-dir %h/.local/state/heptatrader/options-shadow --duration-sec 300 --client-id 8665 --market-data-source ${HEPTA_OPTIONS_MARKET_DATA_SOURCE}
+Restart=always
+RestartPreventExitStatus=78
+RestartSec=30
+TimeoutStopSec=20
+KillMode=control-group
+Nice=10
+UMask=0077
+LimitFSIZE=16M
+RuntimeMaxSec=480
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=default.target

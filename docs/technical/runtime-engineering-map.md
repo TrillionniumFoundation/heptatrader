@@ -159,3 +159,30 @@ Historical HeptaDLL inventory consistency belongs only to the Python source
 partition. It is not repeated in native/sanitizer CTest and no longer requires
 particular English explanation phrases. Canonical old-record decoding, retired
 interface rejection and unprivileged-client boundary tests remain native behavior.
+
+## 0DTE options development
+
+The optional native options observer, risk/economic evidence core, MKT proposal
+codec and acceptance boundaries are documented in [Native 0DTE](native-zero-dte.md).
+This is shadow delivery only; it does not enable OPT in the current PAPER profile.
+
+### Options source correction: Snowball / IB authority split
+
+See [native options source and acceptance contract](native-zero-dte.md).
+SnowballOptionFeed is the native normalized input/cache layer, not an implemented
+Snowball network transport. Default shadow selection is SNOWBALL and blocks
+before broker I/O until an official authorized quote transport exists.
+`hepta-options-observer --qualify-occ` is a separate actual IB contract-only
+route with no market-data subscription. Feed and Broker epochs are independent;
+H0D2 records their separate normalized provenance. No source migration enables
+OPT, bypasses native Execution, or changes FX/BTC OMS state.
+
+### Options read-only audit and normalized trace
+
+The native OptionsAudit component contains `hepta-options-oms-audit` and
+`hepta-snowball-trace-replay`. Both produce diagnostics only; neither calls a
+Broker mutation or supplies an Execution permit. The first joins copied native
+OMS individual executions and unbound fees through original command identities;
+the second records/replays all normalized feed context, clocks, transitions and
+decisions. See native-zero-dte.md for completeness bounds, tests, unresolved
+Snowball access and the independent cash mismatch that keeps drivers paused.
