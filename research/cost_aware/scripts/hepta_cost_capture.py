@@ -100,9 +100,13 @@ def read_capture(path):
 
 
 class Capture:
-    def __init__(self, path, instrument, *, source_kind="IB_CAPTURE", min_free_bytes=4 * 1024 ** 3):
+    def __init__(self, path, instrument, *, source_kind="IB_CAPTURE", min_free_bytes=4 * 1024 ** 3, observation_context=None):
         if source_kind not in ("IB_CAPTURE", "SYNTHETIC") or instrument not in ("BTC.USD", "EUR.USD"):
             raise CostError("CAPTURE_SOURCE_KIND_INVALID")
+        if observation_context is not None and (not isinstance(observation_context,dict) or
+                observation_context.get("mode")!="WATCH" or observation_context.get("broker_mutation_authorized") is not False):
+            raise CostError("CAPTURE_OBSERVATION_CONTEXT_INVALID")
+        self.observation_context=observation_context
         self._thread_lock = threading.RLock()
         self.path = Path(path)
         private_directory(self.path.parent)
@@ -118,13 +122,17 @@ class Capture:
             if info.st_size:
                 old = read_capture(self.path)
                 header = old["events"][0]["data"]
+                if header.get("observation_context") != observation_context:
+                    raise CostError("CAPTURE_RESET_CYCLE_MISMATCH")
                 if header.get("instrument") != instrument or header.get("source_kind") != source_kind:
                     raise CostError("CAPTURE_SCOPE_CHANGED")
                 end = old["events"][-1]
                 self.sequence, self.previous, self.last_time = end["sequence"] + 1, end["sha256"], end["at_ms"]
             else:
-                self.append("HEADER", {"instrument": instrument, "source_kind": source_kind,
-                            "policy_version": POLICY_VERSION, "position_neutral_forecasts_required": True}, at_ms=1)
+                header={"instrument": instrument, "source_kind": source_kind,
+                        "policy_version": POLICY_VERSION, "position_neutral_forecasts_required": True}
+                if observation_context is not None:header["observation_context"]=observation_context
+                self.append("HEADER",header,at_ms=1)
                 parent = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
                 try:
                     os.fsync(parent)

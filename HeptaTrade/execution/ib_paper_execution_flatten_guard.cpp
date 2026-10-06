@@ -95,6 +95,7 @@ bool IbPaperExecutionGuard::AllowFlatten(
     std::int64_t nowMs,
     std::string& reason)
 {
+    if (m_config.observationOnly) { reason="IB_OBSERVATION_ONLY"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!FlattenContextMatches(command, m_config, nowMs))
     {

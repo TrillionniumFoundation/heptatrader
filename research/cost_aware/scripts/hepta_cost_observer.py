@@ -14,6 +14,7 @@ import time
 import json
 import signal
 import re
+from hepta_cost_observation_access import ObservationAccess
 from hepta_cost_driver import load_pinned_driver, attach
 from hepta_cost_policy import CostError, quote_values, DEFAULT_POLICY
 from hepta_cost_capture import Capture, private_directory, QUOTE_FIELDS, ResetHold, require_no_reset_hold
@@ -85,6 +86,7 @@ class Sampler:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-driver', type=Path, required=True)
+    parser.add_argument('--observation-profile', type=Path)
     parser.add_argument('--instrument', choices=('BTC.USD', 'EUR.USD'), required=True)
     parser.add_argument('--state-dir', type=Path, required=True)
     parser.add_argument('--duration-sec', type=int, default=900)
@@ -92,8 +94,11 @@ def main():
     args = parser.parse_args()
     if os.geteuid() == 0 or not args.state_dir.is_absolute() or not 60 <= args.duration_sec <= 86400:
         parser.error('requires unprivileged owner, absolute independent state directory and bounded 60..86400 second duration')
-    # Before driver import, state creation, capture, credentials, model or API I/O.
-    require_no_reset_hold()
+    # An explicit new-cycle WATCH profile is allowed to observe while the global
+    # trading reset remains engaged. The trading driver has no such exception.
+    access=ObservationAccess(args.observation_profile,args.instrument,args.state_dir) if args.observation_profile else None
+    lifecycle_guard=access.check if access is not None else require_no_reset_hold
+    lifecycle_guard()
     home = Path.home()
     forbidden_dirs = [home/'.local/state/heptatrader'/name for name in ('paper-driver','crypto-driver')]
     state_dir = args.state_dir.resolve()
@@ -102,26 +107,28 @@ def main():
     private_directory(state_dir)
     driver = load_pinned_driver(args.base_driver)
     driver.INSTRUMENT = args.instrument
-    if args.instrument == 'BTC.USD':
+    if access is not None:
+        driver.NATIVE_ENDPOINT=list(access.endpoint)
+    elif args.instrument == 'BTC.USD':
         driver.NATIVE_ENDPOINT = [str(home/'.local/share/heptatrader/current/bin/heptactl'), '--socket',
                                  f'/run/user/{os.geteuid()}/heptatrader/tools.sock', '--token-file',
                                  str(home/'.config/heptatrader/crypto.token')]
     # A missing/revoked profile must not create a COLLECTING capture made only of
     # transport errors. The first genuine quote is required before opening it.
-    require_no_reset_hold()
+    lifecycle_guard()
     cli = str(home/'.local/bin/heptatrader')
     try:
         first_quote = driver.native(cli, 'market.get_quote', 'instrument=' + args.instrument)
         quote_values(first_quote, args.instrument, driver.now_ms())
     except Exception as exc:
         raise CostError('COST_FIRST_AUTHORITATIVE_QUOTE_UNAVAILABLE') from exc
-    require_no_reset_hold()
-    writer = Capture(state_dir/'cost-observations.jsonl', args.instrument)
+    lifecycle_guard()
+    writer = Capture(state_dir/'cost-observations.jsonl', args.instrument, observation_context=access.context if access else None)
     writer.append('QUOTE', {key: first_quote.get(key) for key in QUOTE_FIELDS})
     original_read = driver.native
-    close_adapter = attach(driver, state_dir/'unused-calibration.json', capture_factory=lambda *_a, **_k: writer, lifecycle_guard=require_no_reset_hold)
+    close_adapter = attach(driver, state_dir/'unused-calibration.json', capture_factory=lambda *_a, **_k: writer, lifecycle_guard=lifecycle_guard)
     def only_quote(cli, tool, *fields):
-        require_no_reset_hold()
+        lifecycle_guard()
         if tool != 'market.get_quote':
             raise CostError('READ_ONLY_COST_OBSERVER_TOOL_FORBIDDEN')
         value = original_read(cli, tool, *fields)
@@ -130,7 +137,7 @@ def main():
     driver.native = only_quote
     for name in ('main', 'prepare_send', 'paper_cmd', 'inspect_pending', 'recover_owner', 'canary_roundtrip'):
         setattr(driver, name, forbidden)
-    sampler = Sampler(driver, cli, state_dir, writer, lifecycle_guard=require_no_reset_hold)
+    sampler = Sampler(driver, cli, state_dir, writer, lifecycle_guard=lifecycle_guard)
     sampler.samples = 1  # Include the actual pre-capture readiness quote.
     stopped = False
     def stop(*_):
@@ -141,6 +148,8 @@ def main():
     def status(state):
         return {'schema': 'heptatrader.cost-observer-status.v1', 'state': state,
                 'observed_at_ms': driver.now_ms(), 'instrument': args.instrument,
+                'observation_cycle': access.profile['cycle_id'] if access else None,
+                'access_mode': 'WATCH' if access else 'LEGACY',
                 'sample_sec': args.sample_sec, 'feature_sample_sec': 10, 'model_slot_sec': 120,
                 'quote_samples': sampler.samples, 'quote_failures': sampler.failures,
                 'quote_failure_reasons': dict(sampler.failure_reasons),
@@ -167,7 +176,7 @@ def main():
             sampler.worker._thread.join(timeout=155)
         close_adapter()
         writer.close()
-    require_no_reset_hold()
+    lifecycle_guard()
     result = {'mode':'INDEPENDENT_READ_ONLY_COST_OBSERVATIONS', 'quote_samples':sampler.samples,
               'quote_failures':sampler.failures, 'forecast_requests':sampler.forecasts_started,
               'skipped_forecast_slots':sampler.slots_skipped, 'broker_order_submissions':0,

@@ -205,6 +205,7 @@ private:
     void FinishBrokerReconnectObservation(
         std::chrono::steady_clock::time_point now) noexcept;
     const char* StartupRecoveryReadOnlyReason() const noexcept {
+        if (m_config.profile.observationOnly) return "IB_OBSERVATION_ONLY";
         return m_startupFxCashMismatchReadOnly.load() ?
             "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH" :
             "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";

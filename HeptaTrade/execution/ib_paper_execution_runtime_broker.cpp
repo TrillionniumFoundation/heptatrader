@@ -356,6 +356,13 @@ bool IbPaperExecutionRuntimeComposition::ReconnectAuthoritativeStateReady(
         recovery.terminal;
     const IBAuthoritativeQuoteSubscriptionHealth quotes =
         m_quoteSubscriptions->GetHealth();
+    if (m_config.profile.observationOnly) {
+        const bool ready=connectionEpoch!=0 && risk.connectionEpoch==connectionEpoch &&
+            risk.accountComplete && risk.accountGeneration &&
+            quotes.connectionEpoch==connectionEpoch && quotes.ReadyForOperations();
+        reason=ready ? "" : "IB_OBSERVATION_RECONNECT_NOT_READY";
+        return ready;
+    }
     const bool complete = connectionEpoch != 0 &&
         risk.connectionEpoch == connectionEpoch &&
         risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
@@ -568,15 +575,15 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
         }
         if (ReconnectAuthoritativeStateReady(reason))
         {
-            if (!PersistFxCashRestartCheckpoint(reason))
+            if (!m_config.profile.observationOnly && !PersistFxCashRestartCheckpoint(reason))
                 return FailBrokerReconnect(reason, reason.empty() ?
                     "IB_PAPER_BROKER_RECONNECT_CHECKPOINT_FAILED" : reason);
             std::size_t affected = 0;
-            if (!m_policyAuthority->ReconcileAuthoritativeState(
+            if (!m_config.profile.observationOnly && (!m_policyAuthority->ReconcileAuthoritativeState(
                     affected, reason) ||
                 !RebuildRecentBrokerOrders(reason) ||
                 !m_coordinator->EndBrokerReconnectFence(reason) ||
-                m_coordinator->IsMutationBlocked(&reason))
+                m_coordinator->IsMutationBlocked(&reason)))
             {
                 if (reason.empty())
                     reason = "IB_PAPER_BROKER_RECONNECT_RECONCILIATION_FAILED";

@@ -425,8 +425,8 @@ bool IbPaperExecutionRuntimeComposition::PrepareExecutionFoundation(
 {
     if (!m_config.profile.VerifyAuthorizationCredential(reason) ||
         !PreparePrivateState(reason) || !LoadPaperTerminalLatch(reason) ||
-        (!m_terminalLatchPresent && !LoadFxCashBaselines(reason)) ||
-        (!m_terminalLatchPresent && !LoadFxCashRestartCheckpoint(reason)) ||
+        (!m_terminalLatchPresent && !m_config.profile.observationOnly && !LoadFxCashBaselines(reason)) ||
+        (!m_terminalLatchPresent && !m_config.profile.observationOnly && !LoadFxCashRestartCheckpoint(reason)) ||
         !LoadFenceCredential(reason))
     { CloseUnconsumedListenFds(); return false; }
     if (m_terminalLatchPresent &&
@@ -454,7 +454,7 @@ bool IbPaperExecutionRuntimeComposition::PrepareExecutionFoundation(
     // exact user-owned durable outcomes: fills move cash, proven zero-fill
     // cancellations do not. The Broker startup attestation must still match
     // this derived expectation before any authority is ready.
-    if (!CatchUpFxCashRestartCheckpointFromJournal(reason))
+    if (!m_config.profile.observationOnly && !CatchUpFxCashRestartCheckpointFromJournal(reason))
     { CloseUnconsumedListenFds(); return false; }
     if (!RebuildRecentBrokerOrders(reason))
     { CloseUnconsumedListenFds(); return false; }
@@ -523,6 +523,7 @@ bool IbPaperExecutionRuntimeComposition::StartIpcAndPublishReady(
 bool IbPaperExecutionRuntimeComposition::Start(std::string& reason)
 {
     if (StartupCancellationRequested(reason)) return false;
+    if (m_config.profile.observationOnly) m_startupRecoveryReadOnly.store(true);
     if (!ValidateStartupContract(reason) ||
         !PrepareExecutionFoundation(reason))
         return false;
@@ -594,7 +595,7 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         const auto now = std::chrono::steady_clock::now();
         std::string pendingReason;
         if (m_startupRecoveryReadOnly.load()) {
-            if (now >= nextPendingOpenOrderRead && !PostFillRiskRefreshPending()) {
+            if (!m_config.profile.observationOnly && now >= nextPendingOpenOrderRead && !PostFillRiskRefreshPending()) {
                 nextPendingOpenOrderRead = now + std::chrono::seconds(15);
                 m_adapter->ReqAuthoritativeOpenOrders();
             }

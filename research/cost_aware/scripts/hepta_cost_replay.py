@@ -96,6 +96,7 @@ def capture_to_tape(capture):
         raise CostError("NO_QUOTE_TAPE_AVAILABLE")
     return validate_tape({"schema": "heptatrader.cost-tape.v1", "instrument": instrument,
                           "source_kind": capture["source_kind"], "input_sha256": capture["input_sha256"],
+                          "observation_context": capture["events"][0]["data"].get("observation_context"),
                           "evaluation_alignment": "NEXT_FRESH_OBSERVED_QUOTE_NO_BACKDATING", "rows": rows})
 
 

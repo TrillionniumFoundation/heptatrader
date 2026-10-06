@@ -29,7 +29,7 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     adapterConfig.port = m_config.profile.port;
     adapterConfig.clientId = m_config.profile.clientId;
     adapterConfig.account = m_config.profile.account;
-    adapterConfig.readOnly = false;
+    adapterConfig.readOnly = m_config.profile.observationOnly;
     adapterConfig.observabilityLogPath =
         m_config.stateDirectory + "/ib-observability.jsonl";
     for (std::map<std::string, InstrumentRef>::const_iterator it =
@@ -37,7 +37,7 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
          it != m_config.quoteContracts.end(); ++it) {
         if (it->second.secType == "CRYPTO")
         { adapterConfig.authoritativeCryptoContracts[it->first] = it->second; continue; }
-        if (it->second.secType != "CASH") continue;
+        if (it->second.secType != "CASH" || m_config.profile.observationOnly) continue;
         const std::map<std::string, IbPaperFxCashBaseline>::const_iterator
             baseline = m_config.fxCashBaselines.find(it->first);
         if (baseline == m_config.fxCashBaselines.end()) {
@@ -50,7 +50,7 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
         adapterConfig.authoritativeCashFxStartupObservedBalances[it->first] =
             baseline->second.observedCashBalance;
     }
-    adapterConfig.risk.enableOrderSubmission = true;
+    adapterConfig.risk.enableOrderSubmission = !m_config.profile.observationOnly;
     adapterConfig.risk.maxOrderQuantity = m_config.profile.maxOrderQuantity;
     adapterConfig.risk.maxDailyOrders = 100000;
     adapterConfig.risk.maxPriceDeviationBps = 0.0;
@@ -171,6 +171,35 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
     catch (...) {
         reason = "IB_PAPER_QUOTE_ADMISSION_EXCEPTION";
         return CleanupStartupSnapshotFailure(reason, reason);
+    }
+    if (m_config.profile.observationOnly) {
+        // Obtain the configured account's real download and the existing quote
+        // subscription witnesses. Do not require or fabricate a financial NAV,
+        // original order history or FX cash checkpoint for a read-only reader.
+        if (!m_adapter->ReqAccountSummary())
+            return CleanupStartupSnapshotFailure(reason, "IB_OBSERVATION_ACCOUNT_READ_FAILED");
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (StartupCancellationRequested(reason))
+                return CleanupStartupSnapshotFailure(reason, reason);
+            DrainAdapterEvents(10);
+            if (HasFatalRuntimeError(&reason))
+                return CleanupStartupSnapshotFailure(reason, reason);
+            const auto risk=m_adapter->GetAuthoritativeRiskSnapshot();
+            bool ready=false;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                ready=m_quoteSubscriptions && m_quoteSubscriptions->GetHealth().ReadyForOperations();
+            }
+            if (m_adapter->IsConnected() && m_adapter->IsEventStreamAuthoritative() &&
+                risk.accountComplete && risk.accountGeneration &&
+                risk.connectionEpoch==startupConnectionEpoch && ready) {
+                m_startupRecoveryReadOnly.store(true);
+                m_recoveryReason="IB_OBSERVATION_ONLY";
+                reason.clear(); return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return CleanupStartupSnapshotFailure(reason,"IB_OBSERVATION_QUOTE_OR_ACCOUNT_NOT_READY");
     }
     if (!m_adapter->ReqAuthoritativeOpenOrders() ||
         !m_adapter->ReqTerminalCorrelations())

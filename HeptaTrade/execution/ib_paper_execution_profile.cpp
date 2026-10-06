@@ -372,7 +372,7 @@ bool IbPaperExecutionProfileConfig::FromEnvironment(
     IbPaperExecutionProfileConfig& config, std::string& reason)
 {
     static const char* keys[] = {
-        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_CRYPTO_AGENT_ID", "HEPTA_IB_PAPER_CRYPTO_SESSION_ID", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
+        "HEPTA_IB_PAPER_OBSERVATION_ONLY", "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_CRYPTO_AGENT_ID", "HEPTA_IB_PAPER_CRYPTO_SESSION_ID", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
         "HEPTA_IB_PAPER_HOST", "HEPTA_IB_PAPER_PORT",
         "HEPTA_IB_PAPER_CLIENT_ID", "HEPTA_IB_PAPER_MAX_ORDER_QTY",
         "HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL",
@@ -402,7 +402,7 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
 {
     if (!enabled)
     {
-        if (userScope || !userQuoteContracts.empty() || !userPrimaryQuoteInstrument.empty() ||
+        if (observationOnly || userScope || !userQuoteContracts.empty() || !userPrimaryQuoteInstrument.empty() ||
             userQuoteMaxAgeMs != 0 || orderMode != IbPaperOrderMode::LocalMarketDay ||
             externalQuoteMaxAgeMs != 0 ||
             !qualificationQuoteContracts.empty() ||
@@ -414,6 +414,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         reason.clear();
         return true;
     }
+    if (observationOnly && (UsesExternalLimitDay() || !userCryptoAgentId.empty() || !userCryptoSessionId.empty()))
+    { reason = "IB_OBSERVATION_PROFILE_CANNOT_BIND_TRADING_OWNER"; return false; }
     if (userScope && (::geteuid() == 0 || ::getegid() == 0 ||
         UsesExternalQualificationLimitDay() || maxOrderQuantity > 25000.0 ||
         maxOrderNotional > 35000.0 || maxGrossPosition > 25000.0 ||
@@ -577,6 +579,10 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     const char* profileVersion = userScope ? "user-1" : UsesExternalQualificationLimitDay() ? "5" :
         (UsesExternalLimitDay() ? "4" : "3");
     AppendCanonicalField(canonical, "profile_version", profileVersion);
+    if (observationOnly) {
+        AppendCanonicalField(canonical, "authority", "OBSERVATION_ONLY_NO_MUTATION");
+        AppendCanonicalField(canonical, "observation_state_directory", stateDirectory);
+    }
     AppendCanonicalField(canonical, "account", account);
     AppendCanonicalField(canonical, "host", host);
     AppendCanonicalField(canonical, "port", std::to_string(port));
@@ -629,7 +635,7 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
         reason = "IB_PAPER_AUTHORIZATION_PROFILE_HASH_FAILED";
         return false;
     }
-    const char* prefix = userScope ? "PAPER-USER-V1:sha256:" : UsesExternalQualificationLimitDay() ?
+    const char* prefix = observationOnly ? "PAPER-OBSERVATION-V1:sha256:" : userScope ? "PAPER-USER-V1:sha256:" : UsesExternalQualificationLimitDay() ?
         "PAPER-V5:sha256:" :
         (UsesExternalLimitDay() ? "PAPER-V4:sha256:" :
          "PAPER-V3:sha256:");
@@ -644,6 +650,12 @@ bool IbPaperExecutionProfileConfig::FromValues(
 {
     config = IbPaperExecutionProfileConfig();
     const std::string mode = Read(values, "HEPTA_IB_EXECUTION_MODE");
+    const std::string observation = Read(values, "HEPTA_IB_PAPER_OBSERVATION_ONLY");
+    if (!observation.empty() && observation != "0" && observation != "1")
+    { reason = "IB_OBSERVATION_FLAG_INVALID"; return false; }
+    config.observationOnly = observation == "1";
+    if (config.observationOnly && mode != "PAPER")
+    { reason = "IB_OBSERVATION_REQUIRES_PAPER"; return false; }
     const std::string userScope = Read(values, "HEPTA_IB_PAPER_USER_SCOPE");
     if (!userScope.empty() && userScope != "0" && userScope != "1")
     { reason = "IB_PAPER_USER_SCOPE_INVALID"; return false; }
@@ -829,6 +841,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     std::int64_t nowMs, std::string& reason)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_config.observationOnly) { reason="IB_OBSERVATION_ONLY"; return false; }
     if (!m_config.enabled)
     {
         reason = "IB_PAPER_PROFILE_DISABLED";
@@ -996,6 +1009,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
 bool IbPaperExecutionGuard::AllowCancel(
     const IbCancelOrderCommand& command, std::string& reason) const
 {
+    if (m_config.observationOnly) { reason="IB_OBSERVATION_ONLY"; return false; }
     if (!m_config.enabled || command.context.account != m_config.account ||
         command.context.venue != "IB" ||
         !PaperExecutionDomain(command.context.executionDomain) ||

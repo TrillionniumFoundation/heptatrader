@@ -200,7 +200,8 @@ install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-user.conf"
 # calibration activation or dependency that starts an execution service.
 set(_hepta_cost_research_helpers
     hepta_cost_policy.py hepta_cost_capture.py hepta_cost_driver.py
-    hepta_cost_observer.py hepta_cost_replay.py hepta_cost_demo.py)
+    hepta_cost_observer.py hepta_cost_replay.py hepta_cost_demo.py
+    hepta_cost_observation_access.py)
 foreach(_cost_helper IN LISTS _hepta_cost_research_helpers)
     install(PROGRAMS "${PROJECT_SOURCE_DIR}/research/cost_aware/scripts/${_cost_helper}"
         DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader/cost-aware"

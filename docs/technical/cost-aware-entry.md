@@ -244,3 +244,48 @@ and proves no live MKT execution quality or profitability. Exact source/account/
 cycle, native paper qualification, operational readiness and controlled rollout
 remain separate decisions. Ordinary source CI is not conditioned on meeting
 these financial sample counts; tests use synthetic inputs to exercise behavior.
+
+
+## A new-cycle native WATCH path after an accounting reset
+
+A global RESET-STOPPED marker continues to stop trading and all legacy launch
+paths. The read-only collector alone accepts an explicit `--observation-profile`
+whose identity is bound to the unchanged reset digest/account, a newly created
+WATCH token and lease, one instrument, new private cycle directories and pinned
+native client executables. The trading adapter has no equivalent bypass option.
+A new or changed reset marker, changed profile/token, expired/unknown lease or
+failed native authority check stops observation; none is repaired by clearing a
+reset, importing old credentials or promoting a calibration.
+
+The same native IB runtime now has `HEPTA_IB_PAPER_OBSERVATION_ONLY=1`. It uses
+its original callback/quote-subscription engine and Broker account handshake,
+but the wrapper is read-only, order submission is disabled and native place,
+cancel and flatten guards reject independently. Its credential prefix is
+`PAPER-OBSERVATION-V1` and is separately bound to the observation state directory;
+it cannot be reused as a trading profile credential. This mode does not load,
+create or refresh financial FX checkpoints, and publishes a permanently
+mutation-blocked `IB_OBSERVATION_ONLY` health reason. Quotes/account-download
+readiness is not financial account readiness, NAV acceptance or trading permission.
+
+The Gateway is configured with `HEPTA_TOOL_ALLOW_TRADE=0` and only the `watch`
+template. Exact BTC/PAXOS/USD and EUR/IDEALPRO/USD can be read in the same WATCH
+universe without defining a crypto trading session. WATCH caps omit risk.preview,
+trade.place, trade.cancel and trade.flatten. Native session provisioning and
+renewal, not a JSON assertion, establish access. The collector uses only
+`market.get_quote`; its fixed WATCH lease renewal cannot call paper-resume.
+
+Observation config and state live below `observations/<cycle>/`; they never
+replace execution.env/gateway.env or the live trading release. Credential cleanup
+retains only metadata/digests as evidence, not plaintext secret backups. IB login,
+model authentication, unrelated SSH credentials and separately collected new
+financial baseline evidence are not part of that deletion scope.
+
+A capture header records its reset/cycle/account/agent/session/source identity.
+The writer refuses old unscoped captures and a different observation cycle.
+Same-cycle process restart can append to a verified hash chain, but Gateway
+restart invalidates native WATCH sessions: it requires successful new WATCH
+provisioning rather than treating an on-disk lease as restored authority.
+The original 5-second quote freshness and source-clock checks, 2-second capture,
+10-second features, 120-second model cadence, nonoverlap/date calibration minima
+and cost acceptance remain in effect. Enabling read-only observation never
+activates a calibration, unmasks a trading driver or asserts profitability.

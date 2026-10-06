@@ -1297,7 +1297,7 @@ public:
                 "IB_MARKET_DATA_REQUEST_CONNECTION_LOST", 0.0));
         };
         if (!m_connected.load(std::memory_order_acquire) ||
-            !m_client.isSocketOK() || m_params.readOnly)
+            !m_client.isSocketOK())
             return false;
         const bool cashContract = c.secType == "CASH";
         const std::uint64_t requestEpoch =
@@ -1415,7 +1415,7 @@ public:
     }
 
     bool CancelMktData(int reqId) override {
-        if (!m_connected || m_params.readOnly) return false;
+        if (!m_connected) return false; // cancel subscription, not an order
         m_client.cancelMktData(reqId);
         return true;
     }

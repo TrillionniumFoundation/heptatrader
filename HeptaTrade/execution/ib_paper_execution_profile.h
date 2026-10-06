@@ -37,6 +37,9 @@ enum class IbPaperOrderMode
 struct IbPaperExecutionProfileConfig
 {
     bool enabled = false;
+    // Explicit local Broker-observation profile: no order, cancel, flatten or
+    // financial checkpoint authority. Bound into its distinct credential.
+    bool observationOnly = false;
     // Explicit single-operator PAPER deployment. Not multi-UID isolation and
     // never an external-qualification or LIVE profile.
     bool userScope = false;

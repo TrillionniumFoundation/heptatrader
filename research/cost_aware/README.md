@@ -13,3 +13,9 @@ any live I/O. Use the existing replay tool's `--holdout-decision-end-ms` togethe
 with `--fit-cutoff-ms` for frozen training / heldout decisions / quote-only outcome
 evaluation. It does not promote calibration or authorize a driver. See the
 technical contract for field completeness, time boundaries and limits.
+
+After a deliberate accounting reset, observation may use a separately provisioned
+native WATCH-only cycle through `--observation-profile`. Legacy launch paths and
+the trading driver still honor RESET-STOPPED without exception. The seventh
+optional helper validates this observation access and renews only an existing
+WATCH lease; it has no trading or account-period management interface.

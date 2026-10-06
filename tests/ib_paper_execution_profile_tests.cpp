@@ -1114,8 +1114,44 @@ void TestConfiguredUserOwnerResumeScopesAreIndependent()
     assert(mutations==0);::unlink(path);
 }
 
+
+void TestObservationProfileCannotBorrowTradingAuthority()
+{
+    if (::geteuid()==0 || ::getegid()==0) return;
+    auto normal=MixedCryptoProfileForTest();
+    std::string reason, tradeCredential, observeCredential;
+    assert(normal.BuildAuthorizationCredential(tradeCredential,reason));
+    auto observation=normal;observation.observationOnly=true;
+    assert(observation.Validate(reason));
+    assert(observation.BuildAuthorizationCredential(observeCredential,reason));
+    assert(observeCredential.find("PAPER-OBSERVATION-V1:sha256:")==0);
+    assert(observeCredential!=tradeCredential);
+    auto other=observation;other.stateDirectory+="-another-cycle";
+    std::string otherCredential;assert(other.BuildAuthorizationCredential(otherCredential,reason));
+    assert(otherCredential!=observeCredential);
+    other=observation;other.userCryptoAgentId="trade-owner";other.userCryptoSessionId="trade-session";
+    assert(!other.Validate(reason));
+    std::shared_ptr<IbPaperKillSwitchReader> disarmed(new FixedKillSwitchReader(IbPaperKillSwitchState::Disarmed));
+    IbPaperExecutionGuard guard(observation,disarmed);
+    IbPaperAuthoritativeRiskSnapshot risk;risk.complete=true;
+    IbPlaceOrderCommand place;IbCancelOrderCommand cancel;
+    FlattenPositionCommand flatten;AuthoritativeFlattenPlan plan;
+    assert(!guard.AllowPlace(place,risk,1000,reason)&&reason=="IB_OBSERVATION_ONLY");
+    assert(!guard.AllowPlaceAtAuthoritativePrice(place,risk,100,1000,reason)&&reason=="IB_OBSERVATION_ONLY");
+    assert(!guard.AllowCancel(cancel,reason)&&reason=="IB_OBSERVATION_ONLY");
+    assert(!guard.AllowFlatten(flatten,plan,risk,1000,reason)&&reason=="IB_OBSERVATION_ONLY");
+    auto values=QualificationValues();values["HEPTA_IB_PAPER_OBSERVATION_ONLY"]="true";
+    IbPaperExecutionProfileConfig invalid;
+    assert(!IbPaperExecutionProfileConfig::FromValues(values,invalid,reason));
+    values["HEPTA_IB_PAPER_OBSERVATION_ONLY"]="1";
+    assert(!IbPaperExecutionProfileConfig::FromValues(values,invalid,reason)); // no external-canary combination
+    values["HEPTA_IB_EXECUTION_MODE"]="DISABLED";
+    assert(!IbPaperExecutionProfileConfig::FromValues(values,invalid,reason));
+}
+
 int main()
 {
+    TestObservationProfileCannotBorrowTradingAuthority();
     TestFxCashRestartCatchUpZeroFillApiCancellation();
     TestFxCashRestartCatchUpBindsReusedOrderIdToPostCheckpointSend();
     TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence();

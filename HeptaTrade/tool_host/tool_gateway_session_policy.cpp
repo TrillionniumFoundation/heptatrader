@@ -314,10 +314,11 @@ bool ToolGatewaySessionPolicy::FromValues(
     {
         if (!agentOs.userPaperScope || execution.mode != ExecutionGatewayMode::Paper ||
             bindings != "BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD" ||
-            !CanonicalInstrument(cryptoSession) || cryptoSession.size() > 64 ||
-            !policy.m_paperEnabled)
+            (policy.m_paperEnabled && (!CanonicalInstrument(cryptoSession) || cryptoSession.size() > 64)) ||
+            (!policy.m_paperEnabled && !cryptoSession.empty()))
         { reason = "TOOL_GATEWAY_CRYPTO_SESSION_BINDING_INVALID"; return false; }
-        policy.m_cryptoSessionId = cryptoSession;
+        // WATCH has one read-only contract universe, never a crypto trade owner.
+        policy.m_cryptoSessionId = policy.m_paperEnabled ? cryptoSession : "";
     }
     else if (!cryptoSession.empty())
     { reason = "TOOL_GATEWAY_CRYPTO_SCOPE_RESIDUAL"; return false; }

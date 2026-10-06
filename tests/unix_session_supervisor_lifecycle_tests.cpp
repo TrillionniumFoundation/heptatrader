@@ -41,6 +41,26 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
     auto invalid=values;invalid.erase("HEPTA_TOOL_CRYPTO_SESSION_ID");
     assert(!ToolGatewaySessionPolicy::FromValues(invalid,execution,agent,policy,reason));
+    // Observation credentials may read both exact contracts without declaring
+    // a crypto trading owner or enabling a PAPER session template.
+    execution.mutationToolsEnabled=false;
+    invalid["HEPTA_TOOL_SESSION_TEMPLATES"]="watch";
+    assert(ToolGatewaySessionPolicy::FromValues(invalid,execution,agent,policy,reason));
+    request.templateId="watch";request.sessionId="new-cycle-watch";request.token="synthetic-watch-token";
+    TradingToolHostSessionBinding watch;
+    assert(policy.Resolve(request,watch,reason));
+    assert(watch.session.environment=="WATCH" && watch.allowedInstruments.size()==2);
+    assert(watch.maxOrderQuantity==0 && watch.maxTradeCallsPerMinute==0);
+    assert(watch.session.capabilities.count("market.read"));
+    for (const char* cap : {"risk.preview","trade.place","trade.cancel","trade.flatten"})
+        assert(!watch.session.capabilities.count(cap));
+    assert(policy.Authorize("hepta.os.bootstrap",watch,reason));
+    auto escalated=watch;escalated.session.capabilities.insert("trade.place");
+    assert(!policy.Authorize("hepta.os.bootstrap",escalated,reason));
+    request.templateId="paper";
+    assert(!policy.Resolve(request,watch,reason));
+    invalid["HEPTA_TOOL_CRYPTO_SESSION_ID"]="stale-trading-owner";
+    assert(!ToolGatewaySessionPolicy::FromValues(invalid,execution,agent,policy,reason));
 }
 
 
