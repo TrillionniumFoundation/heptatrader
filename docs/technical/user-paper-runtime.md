@@ -272,11 +272,19 @@ realized PnL is not carried over into the crypto ledger.
 
 `--instrument BTC.USD --canary-roundtrip` runs a bounded native entry/exit
 qualification, without calling the model or sending through another Broker
-client. It first proves its BTC position flat and global active orders empty,
-persists the original request, submits once, reconciles the economic fill, and
-flattens through the same native permit path. Unknown outcomes remain pending;
-no fresh command is manufactured to replace them. An IOC non-fill is not a
-successful trading qualification.
+client. The user PAPER crypto adapter permits only BTC/PAXOS/USD BUY MKT/IOC
+cash sizing, so this canary uses that same production envelope with a separate
+qualification cap of at most USD 150 and a 0.0005 BTC reference-size ceiling;
+post-fill evidence must remain at or below 0.001 BTC / USD 150 and any violation
+is flattened before the canary fails. The resident crypto path keeps its exact
+USD 25,000 default and is not resized by this qualification limit. The canary
+first proves its BTC position flat and global active orders empty, persists the
+original request, submits once, reconciles the economic fill, and flattens through
+the same native permit path. A bare prequalification halt may be cleared only
+after this flat round trip; risk, settlement, owner-fence and uncertain-lease
+halts remain non-bypassable. Unknown outcomes remain pending; no fresh command
+is manufactured to replace them. An IOC non-fill is not a successful trading
+qualification.
 
 A missing weekend FX quote does not stop crypto quote processing or force FX
 flattening. Quote-free position checks and held-position lease continuation keep

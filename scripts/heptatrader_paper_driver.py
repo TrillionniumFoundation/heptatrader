@@ -253,18 +253,26 @@ def latch_owner_fence(state,path,reason):
     state["last_error"]="owner fence recovery required: "+reason
     atomic_json(path,state)
 
-def crypto_market_cash_budget(ask):
+def crypto_market_cash_budget(ask, *, cash_limit=25000.0, base_limit=1.0, allow_smaller=False):
     ask=float(ask)
     if not math.isfinite(ask) or ask<=0:
         raise DriverError("invalid crypto ask")
     # Cash limits requested spend, not the eventual base quantity. Round DOWN
     # to cents and let Execution recheck against its own fresh Broker quote.
-    cash=25000.0
-    if cash<25000.0 or cash>25000.0 or cash/ask>QTY:
+    cash_limit=float(cash_limit);base_limit=float(base_limit)
+    if (not math.isfinite(cash_limit) or not math.isfinite(base_limit) or
+            cash_limit<=0 or base_limit<=0 or base_limit>QTY):
+        raise DriverError("crypto market cash limit invalid")
+    # The resident path keeps its exact $25k policy through defaults. Canary
+    # callers may select a strictly smaller cash/base envelope without changing
+    # the production crypto profile. Round DOWN to cents so neither cap grows.
+    cash=(math.floor(min(cash_limit, ask*base_limit)*100.0)/100.0 if allow_smaller
+          else cash_limit)
+    if cash<=0 or cash>cash_limit or cash/ask>base_limit+1e-15:
         raise DriverError("crypto market cash budget unavailable")
     return cash
 
-def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None):
+def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None,*,crypto_cash_limit=25000.0,crypto_base_limit=1.0):
     if state.get("pending") is not None:
         raise DriverError("original command pending; replacement preparation forbidden")
     preview=cid("driver-preview")
@@ -273,7 +281,8 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
         ref=float(quote["ask"] if side=="BUY" else quote["bid"])
         if INSTRUMENT=="BTC.USD":
             if side!="BUY": raise DriverError("crypto short entries are not supported")
-            cash=crypto_market_cash_budget(ref)
+            cash=crypto_market_cash_budget(ref,cash_limit=crypto_cash_limit,base_limit=crypto_base_limit,
+                allow_smaller=(crypto_cash_limit!=25000.0 or crypto_base_limit!=1.0))
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-open",
                 ["--call-id",preview,"--price",format(ref,".17g"),"--cash-quantity",format(cash,".17g"),"--expiry",str(now_ms()+45000)])
         else:
@@ -692,18 +701,35 @@ def should_close(state,pos,quote,decision):
 def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
     if INSTRUMENT!="BTC.USD":raise DriverError("bounded canary is crypto-only")
     snap=snapshot(cli,state,path)
+    bare_prequalification_halt=(state.get("halt_new_entries") is True and
+        not state.get("risk_halt_reason") and not state.get("settlement_hold_reason") and
+        not state.get("owner_fence_recovery_required") and not state.get("lease_uncertain") and
+        not state.get("lease_renewal_owned_halt") and not state.get("owner_fence_owned_halt"))
     if (state.get("pending") is not None or state.get("position")!=0 or snap["position"]!=0 or
-            snap["active"] or state.get("halt_new_entries") or state.get("owner_fence_recovery_required")):
+            snap["active"] or state.get("owner_fence_recovery_required") or
+            (state.get("halt_new_entries") and not bare_prequalification_halt)):
         raise DriverError("canary requires its own authoritative flat/order-free unblocked state")
     guard=run([cli,"paper-on"],10)
     if guard.returncode:raise DriverError("local PAPER guard not ready")
-    prepare_send(state,path,binary,socket,token,outbox,"OPEN",snap["quote"],"BUY")
+    # Qualification is deliberately tiny and independent of the resident $25k
+    # crypto policy: <= $150 cash and <= 0.0005 BTC at the observed ask.  The
+    # lower base cap gives substantial headroom against price movement before
+    # a MKT/IOC fill while remaining below the requested 0.001 BTC ceiling.
+    prepare_send(state,path,binary,socket,token,outbox,"OPEN",snap["quote"],"BUY",
+        crypto_cash_limit=150.0,crypto_base_limit=0.0005)
     deadline=time.monotonic()+65
     while state.get("pending") is not None and time.monotonic()<deadline:
         inspect_pending(state,path,binary,socket,token,outbox,snapshot(cli,state,path,False))
         if state.get("pending") is not None:time.sleep(1)
     if state.get("pending") is not None:raise DriverError("canary pending preserved; no resubmission")
     if state.get("position",0)<=0:raise DriverError("canary entry did not produce a proved crypto fill")
+    canary_violation=""
+    filled_quantity=float(state.get("position",0))
+    fill_price=float(state.get("entry_price") or 0)
+    if filled_quantity>0.001+QUANTITY_TOLERANCE:
+        canary_violation="canary fill exceeded 0.001 BTC"
+    elif fill_price>0 and filled_quantity*fill_price>150.01:
+        canary_violation="canary fill exceeded $150 notional"
     snap=snapshot(cli,state,path)
     prepare_send(state,path,binary,socket,token,outbox,"CLOSE")
     deadline=time.monotonic()+65
@@ -712,6 +738,11 @@ def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
         if state.get("pending") is not None:time.sleep(1)
     if state.get("pending") is not None or state.get("position")!=0:
         raise DriverError("canary exit incomplete; original state retained")
+    if canary_violation:
+        raise DriverError(canary_violation+"; position was flattened")
+    if bare_prequalification_halt and not state.get("risk_halt_reason"):
+        state["halt_new_entries"]=False
+        atomic_json(path,state)
     return 0
 
 def main():
