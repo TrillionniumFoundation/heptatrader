@@ -377,6 +377,123 @@ def stress_compare(tape, artifacts=(), **kwargs):
             for name, fee, slip in cases}
 
 
+def sampling_quality(capture, *, cutoff_ms=None, expected_cycle_id=None, expected_reset_sha256=None):
+    """Diagnose a verified immutable capture prefix without changing its samples.
+
+    Repeated reads are not independent ticks or statistical samples. A cached
+    value is usable only until its original TTL; errors/holes are never backfilled.
+    The capture's hash chain is integrity evidence, NOT vendor authentication.
+    """
+    from datetime import datetime, timezone
+    from hepta_cost_policy import calibration_key
+    if (not isinstance(capture,dict) or capture.get('complete_prefix') is not True or
+            not isinstance(capture.get('events'),list) or not capture['events'] or
+            capture['events'][0].get('event')!='HEADER'):
+        raise CostError('QUALITY_REQUIRES_VERIFIED_CAPTURE_PREFIX')
+    header=capture['events'][0]['data'];context=header.get('observation_context')
+    if expected_cycle_id is not None and (not isinstance(context,dict) or context.get('cycle_id')!=expected_cycle_id):
+        raise CostError('QUALITY_OBSERVATION_CYCLE_MISMATCH')
+    if expected_reset_sha256 is not None and (not isinstance(context,dict) or context.get('reset_sha256')!=expected_reset_sha256):
+        raise CostError('QUALITY_RESET_DIGEST_MISMATCH')
+    if cutoff_ms is None:cutoff_ms=capture['events'][-1]['at_ms']
+    if type(cutoff_ms) is not int or cutoff_ms<=1:
+        raise CostError('QUALITY_CUTOFF_INVALID')
+    events=[event for event in capture['events'] if event['at_ms']<=cutoff_ms]
+    if len(events)<2:raise CostError('QUALITY_NO_OBSERVED_WINDOW')
+    selected={**capture,'events':events}
+    start=events[1]['at_ms'];end=events[-1]['at_ms'];instrument=header['instrument']
+    counts=Counter(e['event'] for e in events)
+    failures=Counter(e['data'].get('reason_code','UNSPECIFIED') for e in events if e['event']=='SAMPLING_FAILURE')
+    valid=[];invalid=[];intervals=[];identities={};source_values={};conflicts=[]
+    for event in events:
+        if event['event']!='QUOTE':continue
+        q=event['data'];at=event['at_ms']
+        try:quote_values(q,instrument,at)
+        except (CostError,KeyError,ValueError,TypeError) as exc:
+            invalid.append({'captured_at_ms':at,'reason':str(exc)});continue
+        identity=(q['subscription_id'],q['observed_at_ms'])
+        value=(dec(q['bid']),dec(q['ask']))
+        if identity in source_values and source_values[identity]!=value:
+            conflicts.append({'captured_at_ms':at,'subscription_id':identity[0],'quote_observed_at_ms':identity[1]})
+        source_values[identity]=value
+        identities.setdefault(identity,at)
+        valid.append(event)
+        intervals.append((at,min(end,q['stale_after_ms'],q['observed_at_ms']+DEFAULT_POLICY.quote_ttl_ms)))
+    covered=0;merged=[]
+    for a,b in sorted(intervals):
+        if b<=a:continue
+        if merged and a<=merged[-1][1]:merged[-1]=(merged[-1][0],max(merged[-1][1],b))
+        else:merged.append((a,b))
+    for a,b in merged:covered+=b-a
+    holes=[];cursor=start
+    for a,b in merged:
+        if a>cursor:holes.append({'start_ms':cursor,'end_ms':a,'duration_ms':a-cursor})
+        cursor=max(cursor,b)
+    if end>cursor:holes.append({'start_ms':cursor,'end_ms':end,'duration_ms':end-cursor})
+    arrivals=[e['at_ms'] for e in valid];sources=sorted({e['data']['observed_at_ms'] for e in valid})
+    source_gaps=[{'start_ms':a,'end_ms':b,'duration_ms':b-a} for a,b in zip(sources,sources[1:]) if b-a>30000]
+    def quantiles(values):
+        values=sorted(values)
+        if not values:return {'count':0,'min':None,'p50':None,'p95':None,'max':None}
+        import math
+        return {'count':len(values),'min':values[0],'p50':values[max(0,math.ceil(.5*len(values))-1)],
+                'p95':values[max(0,math.ceil(.95*len(values))-1)],'max':values[-1]}
+    candidates=[e for e in events if e['event']=='CANDIDATE']
+    latencies=[e['at_ms']-e['data']['forecast']['issued_at_ms'] for e in candidates]
+    outcomes=[];exclusions=[];cohort_counts={};fit_error=None;artifact=None
+    if conflicts:
+        fit_error="QUALITY_CONFLICTING_QUOTE_OBSERVATION"
+    elif valid:
+        tape=capture_to_tape(selected)
+        try:
+            fitted=fit_from_tape(tape,cutoff_ms)
+            artifact=fitted['artifact'];outcomes=fitted['candidate_outcomes'];exclusions=fitted['calibration_sample_exclusions']
+            excluded={x['candidate_id'] for x in exclusions};last={}
+            for item in sorted(outcomes,key=lambda x:x['forecast']['issued_at_ms']):
+                f=item['forecast'];key=calibration_key(f)
+                stat=cohort_counts.setdefault(key,{'action':f['action'],'horizon_sec':f['horizon_sec'],
+                    'candidates':0,'usable_before_nonoverlap_purge':0,'overlap_exclusions':0,'independent_samples':0,'utc_dates':set()})
+                stat['candidates']+=1
+                if item['candidate_id'] in excluded:continue
+                stat['usable_before_nonoverlap_purge']+=1
+                if f['issued_at_ms']<=last.get(key,0):stat['overlap_exclusions']+=1;continue
+                last[key]=item['label_observed_at_ms'];stat['independent_samples']+=1
+                stat['utc_dates'].add(datetime.fromtimestamp(f['issued_at_ms']/1000,timezone.utc).date().isoformat())
+            for key,stat in cohort_counts.items():
+                stat['utc_dates']=sorted(stat['utc_dates'])
+                stat['eligible_training_cohort']=key in artifact['cohorts']
+                stat['sample_shortfall']=max(0,DEFAULT_POLICY.min_calibration_samples-stat['independent_samples'])
+                stat['date_shortfall']=max(0,DEFAULT_POLICY.min_calibration_days-len(stat['utc_dates']))
+        except CostError as exc:
+            # No attempt to repair a conflicting source history.
+            fit_error=str(exc)
+    duration=max(0,end-start)
+    poll_observations=counts['QUOTE']+counts['SAMPLING_FAILURE']
+    return {'schema':'heptatrader.cost-sampling-quality.v1','diagnostic_only':True,
+        'source_kind':capture['source_kind'],'input_sha256':capture['input_sha256'],'input_bytes':capture['bytes'],
+        'integrity_verified':True,'vendor_signature_verified':False,'instrument':instrument,'observation_context':context,
+        'window_start_ms':start,'window_end_ms':end,'cutoff_ms':cutoff_ms,'window_duration_ms':duration,
+        'quote_utc_dates':sorted({datetime.fromtimestamp(e['data']['observed_at_ms']/1000,timezone.utc).date().isoformat() for e in valid}),
+        'event_counts':dict(counts),'sampling_failure_reasons':dict(failures),'valid_quote_reads':len(valid),
+        'invalid_quote_records':invalid,'distinct_quote_observations':len(identities),'repeated_valid_quote_reads':len(valid)-len(identities),
+        'quote_conflicts':conflicts,'record_level_valid_fraction':None if not poll_observations else len(valid)/poll_observations,
+        'record_fraction_not_exchange_delivery_probability':True,
+        'source_age_ms':quantiles([e['at_ms']-e['data']['observed_at_ms'] for e in valid]),
+        'quote_read_spacing_ms':quantiles([b-a for a,b in zip(arrivals,arrivals[1:])]),
+        'usable_quote_coverage_ms':covered,'usable_quote_coverage_fraction':None if not duration else covered/duration,
+        'uncovered_intervals':holes,'source_gaps_over_30s':source_gaps,
+        'model_completion_latency_ms':quantiles(latencies),
+        'forecasts_after_entry_ttl':sum(x>DEFAULT_POLICY.forecast_entry_ttl_ms for x in latencies),
+        'candidate_actions':dict(Counter(e['data']['forecast']['action'] for e in candidates)),
+        'candidate_outcomes':dict(Counter(x['reason'] for x in outcomes)),
+        'calibration_exclusion_reasons':dict(Counter(x['reason'] for x in exclusions)),
+        'cohort_counts':cohort_counts,'eligible_training_cohorts':len(artifact['cohorts']) if artifact is not None else 0,
+        'calibration_evaluation_error':fit_error,'calibration_artifact':artifact,
+        'next_action':'COLLECT_REAL_PAST_ONLY_SAMPLES' if not artifact or not artifact['cohorts'] else 'RUN_PREDECLARED_CHRONOLOGICAL_HOLDOUT',
+        'authorization_effect':'NONE','calibration_activated':False,'strategy_accepted':False,
+        'trading_driver_switched':False,'broker_orders_sent':0,'live_profitability_proven':False}
+
+
 def chronological_assessment(tape, fit_cutoff_ms, decision_end_ms, *, size="25000",
                             capital="100000", max_drawdown_usd=None, policy=DEFAULT_POLICY):
     """Fixed-prefix training, later decisions, then quote-only outcome tail.
@@ -516,6 +633,9 @@ def main():
     parser.add_argument("--calibration", type=Path, action="append", default=[])
     parser.add_argument("--fit-cutoff-ms", type=int)
     parser.add_argument("--stress", action="store_true")
+    parser.add_argument("--quality", action="store_true", help="diagnose an immutable capture without promotion or orders")
+    parser.add_argument("--expected-cycle-id")
+    parser.add_argument("--expected-reset-sha256")
     parser.add_argument("--holdout-decision-end-ms", type=int)
     parser.add_argument("--max-drawdown-usd")
     parser.add_argument("--output", type=Path, required=True)
@@ -524,16 +644,25 @@ def main():
         parser.error("holdout requires --fit-cutoff-ms and its own past-only fit; no supplied calibration/stress switch")
     if args.max_drawdown_usd is not None and args.holdout_decision_end_ms is None:
         parser.error("drawdown budget belongs to an explicit holdout assessment")
+    if args.quality and (not args.capture or args.calibration or args.stress or args.holdout_decision_end_ms is not None):
+        parser.error("quality requires --capture and cannot be combined with strategy/calibration inputs")
+    if (args.expected_cycle_id or args.expected_reset_sha256) and not args.quality:
+        parser.error("expected cycle identity applies to --quality capture diagnostics")
     if args.output.exists():
         parser.error("output already exists; never overwrite source/evidence")
     if args.capture:
-        tape = capture_to_tape(read_capture(args.capture))
+        capture = read_capture(args.capture)
+        tape = None if args.quality else capture_to_tape(capture)
     else:
         if args.tape.stat().st_size > 64 * 1024 * 1024:
             raise CostError("TAPE_TOO_LARGE")
         tape = validate_tape(strict_loads(args.tape.read_text()))
     artifacts = [strict_loads(path.read_text()) for path in args.calibration]
-    if args.holdout_decision_end_ms is not None:
+    if args.quality:
+        report = sampling_quality(capture, cutoff_ms=args.fit_cutoff_ms,
+                                  expected_cycle_id=args.expected_cycle_id,
+                                  expected_reset_sha256=args.expected_reset_sha256)
+    elif args.holdout_decision_end_ms is not None:
         report = chronological_assessment(tape, args.fit_cutoff_ms, args.holdout_decision_end_ms,
                                           max_drawdown_usd=args.max_drawdown_usd)
     elif args.fit_cutoff_ms is not None:

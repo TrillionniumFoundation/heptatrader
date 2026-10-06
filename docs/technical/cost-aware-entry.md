@@ -289,3 +289,53 @@ The original 5-second quote freshness and source-clock checks, 2-second capture,
 10-second features, 120-second model cadence, nonoverlap/date calibration minima
 and cost acceptance remain in effect. Enabling read-only observation never
 activates a calibration, unmasks a trading driver or asserts profitability.
+
+
+## Sampling quality and restart freshness (2026-10-06)
+
+The replay tool can diagnose a complete immutable capture prefix without placing
+orders, selecting a strategy, changing TTLs or activating calibration:
+
+```bash
+python3 research/cost_aware/scripts/hepta_cost_replay.py \
+  --capture /private/current-cycle/frozen-prefix.jsonl --quality \
+  --expected-cycle-id "$CURRENT_OBSERVATION_CYCLE" \
+  --expected-reset-sha256 "$CURRENT_RESET_DIGEST" \
+  --output /private/current-cycle/quality.json
+```
+
+This reports valid reads separately from distinct subscription/timestamp updates,
+repeated cached reads, the union of genuinely usable quote-time intervals,
+source-age and model-latency quantiles, 30-second source gaps, forward outcomes,
+per-candidate calibration exclusions and nonoverlapping cohort/date shortfalls.
+A repeated read never extends the original source TTL or becomes an independent
+calibration sample. Failure events and uncovered time remain visible. The
+record-level valid fraction is not a claimed exchange delivery probability.
+Conflicting same-subscription/timestamp prices prevent fitting that history.
+Expected cycle/reset identities are checked; an integrity hash is not a vendor
+signature. All reports have authorization_effect=NONE and never promote a model.
+
+A real collector restart exposed a startup race: the first read could be stale
+although the next genuine quote was about to arrive. Previously this was treated
+as permanent configuration failure (exit 2). The observer now retries only the
+explicit native/source stale-quote codes, at most ten attempts with two-second
+spacing and a twenty-second pre-attempt retry budget. Existing native I/O timeouts
+remain; an already in-flight read may finish after that retry budget. Exhaustion
+uses temporary exit 75 for the existing thirty-second systemd retry policy.
+Wrong identity, missing permissions, bad data and reset holds do not enter this
+retry path. No capture is opened and no COLLECTING status is published before a
+real authoritative, within-TTL quote passes. Tests verify both finite retries and
+no retry after credential/authority/reset failures.
+
+Startup attempts and retained stale reasons are recorded in collector status,
+with the actual observer implementation SHA256. A failed/late restart is still a
+real gap; historical capture bytes are never removed or backfilled to pass a
+path-continuity check. Original WATCH native endpoint identity in the header is
+not confused with the updated Python collector implementation.
+
+These diagnostics and retry fixes do not complete financial-cycle readiness,
+training, chronological holdout, live execution quality or a trading rollout.
+The existing 30 nonoverlapping samples and two UTC dates per cohort remain an
+engineering minimum, and the holdout/risk/cost tests remain separate. BTC remains
+spot-long-only for new entries; a SELL forecast may be useful as observational
+or exit evidence but cannot authorize a new short position.

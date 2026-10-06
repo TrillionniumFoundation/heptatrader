@@ -14,6 +14,7 @@ import time
 import json
 import signal
 import re
+import hashlib
 from hepta_cost_observation_access import ObservationAccess
 from hepta_cost_driver import load_pinned_driver, attach
 from hepta_cost_policy import CostError, quote_values, DEFAULT_POLICY
@@ -22,6 +23,43 @@ from hepta_cost_capture import Capture, private_directory, QUOTE_FIELDS, ResetHo
 
 def forbidden(*_args, **_kwargs):
     raise CostError('READ_ONLY_COST_OBSERVER_MUTATION_FORBIDDEN')
+
+
+class QuoteReadinessUnavailable(CostError):
+    """Temporary, finite fresh-quote warmup exhaustion. No capture is ready."""
+
+
+def first_authoritative_quote(driver, cli, instrument, lifecycle_guard, *,
+                              monotonic=time.monotonic, sleep=time.sleep,
+                              max_attempts=10, retry_sec=2, budget_sec=20):
+    """Retry only genuine stale-quote responses, never credentials or authority.
+
+    Each native read already has its original I/O timeout. The retry budget is
+    checked before another attempt; one in-flight native timeout may complete
+    later. No catch-up burst, source timestamp rewrite or synthetic quote.
+    """
+    start=monotonic();deadline=start+budget_sec;failures=[]
+    if type(max_attempts) is not int or max_attempts<1 or retry_sec<=0 or budget_sec<=0:
+        raise ValueError('INVALID_QUOTE_WARMUP_BUDGET')
+    for attempt in range(1,max_attempts+1):
+        lifecycle_guard()
+        try:
+            value=driver.native(cli,'market.get_quote','instrument='+instrument)
+            quote_values(value,instrument,driver.now_ms())
+        except Exception as exc:
+            reason=str(exc).removeprefix('native rejected: ')
+            if reason not in ('AUTHORITATIVE_QUOTE_STALE','COST_QUOTE_STALE'):
+                raise CostError('COST_FIRST_AUTHORITATIVE_QUOTE_UNAVAILABLE') from exc
+            failures.append({'reason_code':reason,'observed_at_ms':driver.now_ms()})
+            if attempt>=max_attempts or monotonic()>=deadline:
+                raise QuoteReadinessUnavailable('COST_FIRST_FRESH_QUOTE_RETRY_EXHAUSTED') from exc
+            sleep(min(retry_sec,max(0,deadline-monotonic())))
+            continue
+        lifecycle_guard()
+        return value, {'attempts':attempt,'stale_rejections':failures,
+                       'wait_monotonic_ms':int((monotonic()-start)*1000),
+                       'source_clock_rewritten':False,'quote_ttl_ms':DEFAULT_POLICY.quote_ttl_ms}
+    raise QuoteReadinessUnavailable('COST_FIRST_FRESH_QUOTE_RETRY_EXHAUSTED')
 
 
 class Sampler:
@@ -117,11 +155,7 @@ def main():
     # transport errors. The first genuine quote is required before opening it.
     lifecycle_guard()
     cli = str(home/'.local/bin/heptatrader')
-    try:
-        first_quote = driver.native(cli, 'market.get_quote', 'instrument=' + args.instrument)
-        quote_values(first_quote, args.instrument, driver.now_ms())
-    except Exception as exc:
-        raise CostError('COST_FIRST_AUTHORITATIVE_QUOTE_UNAVAILABLE') from exc
+    first_quote, warmup = first_authoritative_quote(driver, cli, args.instrument, lifecycle_guard)
     lifecycle_guard()
     writer = Capture(state_dir/'cost-observations.jsonl', args.instrument, observation_context=access.context if access else None)
     writer.append('QUOTE', {key: first_quote.get(key) for key in QUOTE_FIELDS})
@@ -145,11 +179,14 @@ def main():
         stopped = True
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    implementation_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     def status(state):
         return {'schema': 'heptatrader.cost-observer-status.v1', 'state': state,
                 'observed_at_ms': driver.now_ms(), 'instrument': args.instrument,
                 'observation_cycle': access.profile['cycle_id'] if access else None,
                 'access_mode': 'WATCH' if access else 'LEGACY',
+                'observer_implementation_sha256': implementation_sha256,
+                'first_quote_warmup': warmup,
                 'sample_sec': args.sample_sec, 'feature_sample_sec': 10, 'model_slot_sec': 120,
                 'quote_samples': sampler.samples, 'quote_failures': sampler.failures,
                 'quote_failure_reasons': dict(sampler.failure_reasons),
@@ -190,6 +227,10 @@ def main():
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
+    except QuoteReadinessUnavailable as exc:
+        print(json.dumps({'state': 'WAITING_FOR_FRESH_QUOTE', 'reason': str(exc),
+                          'broker_order_submissions': 0, 'calibration_activated': False}), file=sys.stderr)
+        raise SystemExit(75)
     except ResetHold as exc:
         print(json.dumps({'state': 'RESET_HOLD', 'reason': str(exc),
                           'broker_order_submissions': 0, 'calibration_activated': False}), file=sys.stderr)
