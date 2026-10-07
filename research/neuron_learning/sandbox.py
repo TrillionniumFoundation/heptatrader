@@ -45,6 +45,11 @@ def enter(config):
               Path('/proc/self'),Path('/proc/cpuinfo'),Path('/proc/meminfo'),Path('/proc/sys'),
               source,Path(config['period_path']),Path(config['legacy_capture']),Path(config['oms_path']),
               Path(config['export_dir'])]
+    for extra in config.get('read_only_paths',[]):
+        path=Path(extra)
+        if not path.is_absolute() or path==Path('/'):
+            raise RuntimeError('SANDBOX_EXTRA_PATH_INVALID')
+        readonly.append(path)
     readwrite=[Path(config['output_dir']),Path('/dev/kfd'),Path('/dev/dri'),Path('/dev/null'),
                Path('/dev/urandom'),Path('/dev/random')]
     try:
