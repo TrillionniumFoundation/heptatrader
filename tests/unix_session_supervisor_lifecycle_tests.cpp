@@ -13,7 +13,7 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
     std::map<std::string,std::string> values{
         {"HEPTA_TOOL_AGENT_ID","pocket4-paper"},{"HEPTA_TOOL_ACCOUNT","DU123"},
         {"HEPTA_EXECUTION_DOMAIN_ID","PAPER"},{"HEPTA_TOOL_SESSION_TEMPLATES","watch,paper"},
-        {"HEPTA_TOOL_MAX_ORDER_QTY","25000"},{"HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN","2"},
+        {"HEPTA_TOOL_MAX_ORDER_QTY","100000"},{"HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN","2"},
         {"HEPTA_TOOL_CRYPTO_SESSION_ID","pocket4-user-crypto-20261003"},
         {"HEPTA_TOOL_CONTRACT_BINDINGS","BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD"}};
     ToolGatewaySessionPolicy policy;std::string reason;
@@ -25,7 +25,7 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
     TradingToolHostSessionBinding fx,btc;
     assert(policy.Resolve(request,fx,reason));
     assert(fx.allowedInstruments.size()==1 && fx.allowedInstruments.count("EUR.USD"));
-    assert(fx.maxOrderQuantity==25000 && policy.Authorize("hepta.os.bootstrap",fx,reason));
+    assert(fx.maxOrderQuantity==100000 && policy.Authorize("hepta.os.bootstrap",fx,reason));
     request.sessionId=values["HEPTA_TOOL_CRYPTO_SESSION_ID"];request.token="test-crypto-token";
     assert(policy.Resolve(request,btc,reason));
     assert(btc.allowedInstruments.size()==1 && btc.allowedInstruments.count("BTC.USD"));
@@ -33,12 +33,14 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
     auto changed=btc;changed.allowedInstruments.insert("EUR.USD");
     changed.instrumentContracts["EUR.USD"]=fx.instrumentContracts.at("EUR.USD");
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
-    changed=btc;changed.maxOrderQuantity=25000;
+    changed=btc;changed.maxOrderQuantity=100000;
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
     changed=btc;changed.session.executionContext.sessionId=fx.session.executionContext.sessionId;
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
     changed=fx;changed.session.executionContext.sessionId=btc.session.executionContext.sessionId;
     assert(!policy.Authorize("hepta.os.bootstrap",changed,reason));
+    auto excessive=values;excessive["HEPTA_TOOL_MAX_ORDER_QTY"]="100001";
+    assert(!ToolGatewaySessionPolicy::FromValues(excessive,execution,agent,policy,reason));
     auto invalid=values;invalid.erase("HEPTA_TOOL_CRYPTO_SESSION_ID");
     assert(!ToolGatewaySessionPolicy::FromValues(invalid,execution,agent,policy,reason));
     // Observation credentials may read both exact contracts without declaring

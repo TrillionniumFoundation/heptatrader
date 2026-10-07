@@ -25,3 +25,5 @@ two-opens/hour limit and two-signal confirmation.
 At roughly EUR/USD 1.12, a new order is approximately 89,000 EUR and close to
 USD100,000 notional. This reduces the percentage impact of the $2/order minimum
 commission; it does not guarantee lower all-in cost or positive PnL.
+
+The Tool Gateway PAPER session ceiling is also 100,000 EUR. This matches the Execution profile; values above 100,000 remain rejected before a session is provisioned. BTC retains its dedicated 1 BTC / USD25,000 policy despite the shared gateway ceiling.

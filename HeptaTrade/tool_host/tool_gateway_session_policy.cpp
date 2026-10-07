@@ -268,7 +268,7 @@ bool ToolGatewaySessionPolicy::FromValues(
     {
         if (!ParsePositiveDouble(Read(values, "HEPTA_TOOL_MAX_ORDER_QTY"),
                                  policy.m_maxOrderQuantity) ||
-            policy.m_maxOrderQuantity > 25000.0 ||
+            policy.m_maxOrderQuantity > 100000.0 ||
             !ParseUnsigned(Read(values, "HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN"),
                            1, 100000, parsed))
         {

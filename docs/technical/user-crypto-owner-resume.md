@@ -16,7 +16,7 @@ when the same configured agent/account/domain is used and the Gateway session
 binding contains exactly one reviewed contract:
 
 - BTC owner: `BTC.USD|BTC|CRYPTO|PAXOS|USD`, max session quantity 1 BTC.
-- FX owner: `EUR.USD|EUR|CASH|IDEALPRO|USD`, max session quantity 25,000 EUR.
+- FX owner: `EUR.USD|EUR|CASH|IDEALPRO|USD`, max session quantity 100,000 EUR.
 
 The Gateway/ToolHost repeats this contract-scope proof when consuming a scoped
 owner audit. A scoped result cannot be replayed against the other asset or an
@@ -66,7 +66,7 @@ proofs. Ordinary renewal does not promote a recovery-only lease.
 
 Regression coverage includes both directions:
 
-- zero BTC with retained -25,000 EUR permits only the BTC owner scoped resume;
+- zero BTC with retained -100,000 EUR permits only the BTC owner scoped resume;
 - zero EUR with retained BTC permits only the FX owner scoped resume;
 - global recovery remains rejected while either asset is nonzero;
 - wrong agent/session/account, wrong contract binding, incomplete or mismatched
