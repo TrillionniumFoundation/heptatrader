@@ -749,6 +749,38 @@ void TestHostileEvidenceCannotPromoteFill() {
     f.Push(f.Execution());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
 }
+void TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation() {
+    Fixture f(false);
+    const std::string correlation =
+        "hepta-v1-sha256:" + std::string(64, 'a');
+    const long id = f.Place(correlation);
+
+    auto completed = f.Event(IBEventType::CompletedOrder);
+    completed.id = 0;
+    completed.key = "Filled";
+    completed.number = 0.0001;
+    completed.number2 = 0.0;
+    completed.order.orderRef = f.broker->submitted.orderRef;
+    f.Push(completed);
+
+    auto execution = f.Execution();
+    execution.id = id;
+    execution.requestId = f.broker->executionsRequest;
+    execution.key = "historical-execution-id";
+    execution.order.orderRef = f.broker->submitted.orderRef;
+    f.Push(execution);
+    f.FinishBootstrap();
+
+    const auto snapshot =
+        f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+    assert(snapshot.complete);
+    assert(snapshot.terminalStatusesByCorrelation.at(correlation) == "Filled");
+    assert(snapshot.terminalOrderIdsByCorrelation.at(correlation) == id);
+    assert(snapshot.executionCorrelations.count(correlation) == 1);
+    assert(snapshot.executionOrderIds.count(id) == 1);
+    assert(snapshot.HasEconomicTerminal(correlation, id, f.broker->epoch));
+}
+
 void TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId() {
     Fixture f(false);
     const std::string currentCorrelation =
@@ -838,6 +870,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
