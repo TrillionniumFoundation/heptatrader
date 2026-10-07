@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import torch
 from .integrity import ContractError,read_json,sha_file,digest
-from .resident_store import write_once
-from .resident_data import collect,forecast_input
+from .resident_store import write_once,atomic
+from .resident_data import read_quotes,forecast_input
 from .dataset import encode_rows
 from .model import load_verified_laya
 from .resident_model import ResidentDecisionCell
@@ -21,6 +21,9 @@ from .resident_train import validate_parent
 def predict(config,plan_path,slot):
  from safetensors.torch import load_file
  plan=read_json(plan_path);candidate_dir=Path(plan['candidate_directory']);parent_dir=Path(plan['parent_directory'])
+ timing={'process_started_at_ms':int(time.time()*1000),'phase':'VALIDATE_AND_LOAD'}
+ stage=plan_path.parent/f'phase-{slot:03}.json'
+ atomic(stage,timing)
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
@@ -32,16 +35,34 @@ def predict(config,plan_path,slot):
  cell=ResidentDecisionCell(raw,base_id)
  cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True);parent_tensors=cell.trainable_state()
  candidate_tensors=load_file(str(candidate_dir/'adapter.safetensors'))
+ cell.eval()
+ timing.update(model_ready_at_ms=int(time.time()*1000),phase='WAIT_FOR_FIXED_SLOT_INPUT')
+ atomic(stage,timing)
+ last_input_error=None
  while True:
   now=int(time.time()*1000)
-  if now>late:raise ContractError('NO_FRESH_INPUT_IN_RESERVED_SLOT')
-  _,_,_,quotes=collect(config,now)
+  if now>late:raise ContractError('INPUT_SLOT_EXPIRED:'+str(last_input_error or 'MODEL_LOAD_OR_SCHEDULING_LATE'))
+  if now<due_start:time.sleep(min(1,(due_start-now)/1000));continue
+  read_begin=time.monotonic()
+  quotes,prefixes=read_quotes(config,now)
+  now=int(time.time()*1000)
+  timing['last_quote_read_ms']=round((time.monotonic()-read_begin)*1000,3)
+  if now>late:raise ContractError('INPUT_SLOT_EXPIRED:DURING_QUOTE_READ')
   try:
    sample,row=forecast_input(config,quotes,now)
    if sample['anchor_ms']<due_start:raise ContractError('QUOTE_PRECEDES_SLOT')
    break
-  except ContractError:time.sleep(1)
+  except ContractError as exc:
+   last_input_error=str(exc);time.sleep(.5)
  anchor=sample['anchor_ms']
+ timing.update(input_selected_at_ms=int(time.time()*1000),anchor_ms=anchor,phase='INFERENCE',
+  input_quote_age_ms=int(time.time()*1000)-anchor,contiguous_history_reset=sample.get('contiguous_history_reset_at_gap',False))
+ atomic(stage,timing)
+ input_record={'schema':'heptatrader.laya-committed-input.v1','plan_id':plan['plan_id'],'slot':slot,
+  'candidate_id':candidate['candidate_id'],'input_id':digest(row['state']),'sample':sample,'state':row['state'],
+  'source_prefixes':prefixes,'committed_at_ms':int(time.time()*1000)}
+ input_path=plan_path.parent/f'input-{slot:03}.json'
+ write_once(input_path,input_record)
  if candidate['created_at_ms']>=anchor or candidate['trained_until_ms']>anchor:
   raise ContractError('CANDIDATE_NOT_FROZEN_BEFORE_INPUT')
  bootstrap_root=Path(config['baseline_directory']);freeze=read_json(bootstrap_root/'freeze-manifest.json',16*1024**2)
@@ -68,7 +89,11 @@ def predict(config,plan_path,slot):
   'bootstrap_model_id':bootstrap['model_id'],'bootstrap_point_bps':point,'horizon_sec':300,
   'action_head_is_trade_permission':False,'remote_comparison':'NO_IDENTICAL_EXPORTED_INPUT_NO_EXTRA_MODEL_CALL',
   'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),'broker_orders_sent':0}
+ result['input_receipt_sha256']=sha_file(input_path)
+ timing.update(prediction_committed_at_ms=available,phase='COMPLETE')
+ result['timing']=timing
  destination=plan_path.parent/f'prediction-{slot:03}.json';write_once(destination,result)
+ atomic(stage,timing)
  print(json.dumps({'prediction':str(destination),'candidate_id':candidate['candidate_id'],'slot':slot,'anchor_ms':anchor,'broker_orders_sent':0}),flush=True)
  return result
 

@@ -9,8 +9,7 @@ from .shadow_source import read_source
 from .dataset import rows_for_training
 
 
-def collect(config,now_ms):
- from data import make_sample,label
+def read_quotes(config,now_ms):
  if sha_file(Path(config['period_path']))!=config['period_sha256']:raise ContractError('RESIDENT_PERIOD_CHANGED')
  paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
  # Completed historical probes are training material only for later candidates,
@@ -18,7 +17,7 @@ def collect(config,now_ms):
  paths += [Path(x) for x in config.get('completed_history_sources',[])]
  paths=list(dict.fromkeys(paths))
  if len(paths)>128:raise ContractError('RESIDENT_SEGMENT_BOUND_NO_HISTORY_DELETION')
- quotes={};prefixes=[];exclusions=[];scope=config['period_sha256']+':EUR.USD'
+ quotes={};prefixes=[]
  for path in paths:
   header,records,prefix=read_source(path)
   if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
@@ -29,13 +28,19 @@ def collect(config,now_ms):
    if old and (Decimal(str(old['bid']))!=Decimal(str(q['bid'])) or Decimal(str(old['ask']))!=Decimal(str(q['ask']))):
     raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
    if old is None or q['known_at_ms']<old['known_at_ms']:quotes[q['t']]=q
- ordered=[quotes[t] for t in sorted(quotes)]
- times=[q['t'] for q in ordered]
+ ordered=[{**quotes[t],"bid":float(quotes[t]["bid"]),"ask":float(quotes[t]["ask"])} for t in sorted(quotes)]
+ return ordered,prefixes
+
+
+def collect(config,now_ms):
+ from data import make_sample,label
+ ordered,prefixes=read_quotes(config,now_ms)
+ times=[q['t'] for q in ordered];exclusions=[];scope=config['period_sha256']+':EUR.USD'
  sampled=[]
  for q in ordered:
   if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
  samples=[]
- for i in range(5,len(sampled)):
+ for i in range(max(5,len(sampled)-512),len(sampled)):
   history=sampled[max(0,i-23):i+1]
   s=make_sample(history,history[-1]['known_at_ms'],scope,'CAUSAL_QUOTE_WINDOW')
   samples.append(label(s,ordered,times,now_ms))
@@ -59,14 +64,27 @@ def collect(config,now_ms):
   'window':window},ordered
 
 
+def contiguous_history(quotes,now_ms):
+ """Use only the latest contiguous causal suffix; never cross a recorded gap."""
+ chosen=[];previous=None;reset=False
+ for q in reversed(quotes):
+  if q['known_at_ms']>now_ms or q['t']>now_ms:continue
+  if previous is not None and previous-q['t']>30000:
+   reset=True;break
+  previous=q['t']
+  if not chosen or chosen[-1]['t']-q['t']>=10000:chosen.append(q)
+  if len(chosen)>=24:break
+ return list(reversed(chosen)),reset
+
+
 def forecast_input(config,quotes,now_ms):
  from data import make_sample
  from .dataset import causal_state,question
- chosen=[]
- for q in reversed(quotes):
-  if q['known_at_ms']<=now_ms and (not chosen or chosen[-1]['t']-q['t']>=10000):chosen.append(q)
- history=list(reversed(chosen[:24]))
- if len(history)<6 or now_ms-history[-1]['t']>5000:raise ContractError('CURRENT_SHADOW_INPUT_NOT_FRESH')
+ history,reset=contiguous_history(quotes,now_ms)
+ history=[{**q,"bid":float(q["bid"]),"ask":float(q["ask"])} for q in history]
+ if len(history)<6:raise ContractError('INSUFFICIENT_CONTIGUOUS_INPUT_HISTORY')
+ if not 0<=now_ms-history[-1]['t']<=5000:raise ContractError('CURRENT_SHADOW_INPUT_NOT_FRESH')
  if any(b['t']-a['t']>30000 for a,b in zip(history,history[1:])):raise ContractError('SHADOW_HISTORY_GAP')
  sample=make_sample(history,now_ms,config['period_sha256']+':EUR.USD','CAUSAL_QUOTE_WINDOW')
+ sample['contiguous_history_reset_at_gap']=reset
  return sample,{'state':causal_state(sample,'EUR.USD',300),'question':question(300)}

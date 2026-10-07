@@ -49,6 +49,8 @@ class Supervisor:
   state={'schema':'heptatrader.laya-resident-status.v1','at_ms':int(time.time()*1000),'job_counts':stats,
     'last_candidate_id':get_meta(self.db,'last_completed_candidate'),'historical_confirmed_pnl_rewards':self.db.execute('SELECT count(*) FROM rewards').fetchone()[0],
     'active_pnl_reward_count':len(get_meta(self.db,'active_reward_ids',[])),
+    'active_execution_reward_count':len(get_meta(self.db,'active_execution_reward_ids',[])),
+    'execution_reward_is_not_model_credit':True,
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
     'broker_orders_sent':0,**extra}
@@ -78,7 +80,7 @@ class Supervisor:
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
    'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(RULE['slots']-1)*RULE['slot_spacing_ms']+RULE['input_grace_ms']+RULE['horizon_ms']+5000,
    'trial':trial,'rule':RULE,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
-   'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py')},
+   'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json')}
   plan['plan_id']=digest(plan);write_once(path,plan)
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -106,6 +108,13 @@ class Supervisor:
     if stored and stored[0]!=canonical(r).decode():raise ContractError('REWARD_ID_CONFLICT')
     self.db.execute('INSERT OR IGNORE INTO rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
   with self.db:put_meta(self.db,'active_reward_ids',[r['reward_id'] for r in rewards['rewards']])
+  with self.db:
+   for r in rewards.get('execution_rewards',[]):
+    previous=self.db.execute('SELECT payload FROM execution_rewards WHERE id=?',(r['reward_id'],)).fetchone()
+    if previous and previous[0]!=canonical(r).decode():raise ContractError('EXECUTION_REWARD_ID_CONFLICT')
+    write_once(self.root/'execution-rewards'/(r['reward_id']+'.json'),r)
+    self.db.execute('INSERT OR IGNORE INTO execution_rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
+   put_meta(self.db,'active_execution_reward_ids',[r['reward_id'] for r in rewards.get('execution_rewards',[])])
   pending=sum(not (p.parent/'qualification.json').exists() for p in Path(self.c['evaluation_directory']).glob('*/plan.json'))
   dataset,rows,quality,_=collect(self.c,now)
   new=[]

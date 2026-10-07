@@ -9,7 +9,7 @@ from bisect import bisect_left,bisect_right
 from pathlib import Path
 from .integrity import ContractError,read_json,digest,sha_file
 from .resident_store import write_once,atomic
-from .resident_data import collect
+from .resident_data import read_quotes
 from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess
 
@@ -50,33 +50,55 @@ def measure(plan,slot,prediction,quotes,now_ms):
 class Evaluator:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=read_json(self.path);self.root=Path(self.c['evaluation_directory'])
-  self.root.mkdir(mode=0o700,parents=True,exist_ok=True);self.stop=False;self.child=None;self.last_log_ms=0
+  self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
+  self.stop=False;self.tasks={};self.last_log_ms=0
  def signal(self,*_):
   self.stop=True
-  if self.child and self.child.poll() is None:self.child.terminate()
+  for p,stream,started in self.tasks.values():
+   if p.poll() is None:p.terminate()
+ def launch(self,path,slot):
+  key=(str(path),slot)
+  stream=(path.parent/f'prediction-{slot:03}.log').open('a')
+  p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot)],stdout=stream,stderr=stream)
+  self.tasks[key]=(p,stream,time.monotonic())
+ def reap(self):
+  for key,(p,stream,started) in list(self.tasks.items()):
+   expired=time.monotonic()-started>240
+   if p.poll() is None and not expired:continue
+   if p.poll() is None:p.terminate()
+   try:rc=p.wait(timeout=5)
+   except subprocess.TimeoutExpired:p.kill();rc=p.wait(timeout=5)
+   stream.close();del self.tasks[key]
+   path=Path(key[0]);slot=key[1]
+   if (path.parent/f'prediction-{slot:03}.json').exists():continue
+   phase_path=path.parent/f'phase-{slot:03}.json'
+   phase=read_json(phase_path) if phase_path.exists() else {'phase':'STARTUP'}
+   log=(path.parent/f'prediction-{slot:03}.log').read_text()[-1500:].strip().splitlines()
+   reason=log[-1][:240] if log else 'NO_PROCESS_DIAGNOSTIC'
+   if expired:reason='WORKER_BUDGET_EXCEEDED'
+   failure={'schema':'heptatrader.laya-worker-failure.v1','slot':slot,'at_ms':int(time.time()*1000),
+    'exit_code':rc,'reason':reason,'phase':phase,'predicted':False}
+   write_once(path.parent/f'failure-{slot:03}.json',failure)
  def step(self):
-  now=int(time.time()*1000)
+  self.reap();now=int(time.time()*1000)
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('EVAL_PERIOD_CHANGED')
-  _,_,quality,quotes=collect(self.c,now)
+  quotes,prefixes=read_quotes(self.c,now)
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};new_predictions=0
+  counts={};observed=0;censored=0;worker_errors={}
   for path in plans:
    plan=read_json(path)
    if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) or plan['rule']!=RULE:
     raise ContractError('REGISTERED_PLAN_CHANGED')
-   pins=plan.get('evaluation_runtime_sha256')
-   runtime=Path(self.c.get('runtime_directory',''))
-   source_ok=isinstance(pins,dict) and bool(pins) and all(expected and sha_file(runtime/rel)==expected for rel,expected in pins.items())
+   if plan.get('scope')!=self.c['period_sha256']:raise ContractError('EVALUATION_PERIOD_SCOPE')
+   pins=plan.get('evaluation_runtime_sha256');runtime=Path(self.c.get('runtime_directory',''))
+   source_ok=isinstance(pins,dict) and bool(pins) and all(v and sha_file(runtime/k)==v for k,v in pins.items())
    if not source_ok:
-    # Old pre-deployment experiments stay recorded; do not silently assess them
-    # with a changed evaluator and do not rewrite their reserved window.
     decision={'state':'REJECTED','candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],
       'reasons':['EVALUATOR_SOURCE_UNPINNED_OR_CHANGED'],'promotion_performed':False,
       'canonical_owner_admitted':False,'automatic_execution_selection':False}
     if not (path.parent/'qualification.json').exists():write_once(path.parent/'qualification.json',decision)
-    counts['REJECTED']=counts.get('REJECTED',0)+1
-    continue
+    counts['REJECTED']=counts.get('REJECTED',0)+1;continue
    if (path.parent/'qualification.json').exists():
     q=read_json(path.parent/'qualification.json');counts[q['state']]=counts.get(q['state'],0)+1;continue
    for slot in range(RULE['slots']):
@@ -84,35 +106,39 @@ class Evaluator:
     if output.exists():continue
     start=plan['start_ms']+slot*RULE['slot_spacing_ms'];end=start+RULE['input_grace_ms']
     if not prediction.exists():
+     key=(str(path),slot);failure=path.parent/f'failure-{slot:03}.json'
+     if key in self.tasks:continue
+     if failure.exists():
+      failed=read_json(failure);reason=failed['reason'];worker_errors[reason]=worker_errors.get(reason,0)+1
+      write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
+       'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now});continue
      if now>end:
       write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
-        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now});continue
-     if now<start:continue
-     with (path.parent/f'prediction-{slot:03}.log').open('a') as log:
-      self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot)],stdout=log,stderr=log)
-      try:rc=self.child.wait(timeout=150)
-      except subprocess.TimeoutExpired:self.child.terminate();self.child.wait(timeout=15);rc=-1
-      self.child=None
-     now=int(time.time()*1000)
-     if not prediction.exists():
-      write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED','reason':'PREDICTION_PROCESS_FAILED','exit_code':rc,'evaluated_at_ms':now});continue
-     new_predictions+=1
+       'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now});continue
+     # Cold model preparation occurs before, not inside, the fixed input slot.
+     if now<start-90000 or len(self.tasks)>=2:continue
+     self.launch(path,slot);continue
     pred=read_json(prediction)
     if now<pred['anchor_ms']+RULE['horizon_ms']:continue
-    result=measure(plan,slot,pred,quotes,now)
-    if result is not None:write_once(output,result)
+    # A snapshot collected before a long GPU call must never decide maturity.
+    quote_clock=int(time.time()*1000);fresh_quotes,fresh_prefixes=read_quotes(self.c,quote_clock)
+    result=measure(plan,slot,pred,fresh_quotes,quote_clock)
+    if result is not None:
+     result['source_prefixes']=fresh_prefixes;result['prediction_file_sha256']=sha_file(prediction)
+     write_once(output,result)
    results=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
-   assessment=assess(plan,results,now)
+   observed+=sum(r['status']=='OBSERVED' for r in results);censored+=sum(r['status']=='CENSORED' for r in results)
+   assessment=assess(plan,results,int(time.time()*1000))
    if assessment['state']!='PENDING':write_once(path.parent/'qualification.json',assessment)
    else:atomic(path.parent/'progress.json',assessment)
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
-  status={'schema':'heptatrader.laya-resident-evaluation-status.v1','at_ms':now,'plans':len(plans),'counts':counts,
-   'new_forward_predictions':new_predictions,'latest_quote_ms':quality['latest_quote_ms'],
-   'statistical_rule':RULE,'automatic_trading':False,'canonical_owner_connected':False,
-   'promotion_performed':False,'broker_orders_sent':0}
+  status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
+   'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
+   'prediction_prewarm_ms':90000,'worker_failure_details':worker_errors,
+   'latest_quote_ms':quotes[-1]['t'] if quotes else None,'statistical_rule':RULE,
+   'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}
   atomic(self.root/'status.json',status)
-  if now-self.last_log_ms>=30000 or new_predictions:
-   print(json.dumps(status),flush=True);self.last_log_ms=now
+  if now-self.last_log_ms>=30000:print(json.dumps(status),flush=True);self.last_log_ms=now
   return status
 
 def main():
