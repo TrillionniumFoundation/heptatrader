@@ -125,7 +125,7 @@ it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
 The user-owned runtime may enable `heptatrader-paper-driver.service`. It restores
 only the behavior loop from the historical local AI PAPER agent: 10-second quote
 sampling, 120-second `gpt-6-luna` direction decisions, 0.62 reversal threshold,
-25,000-unit EUR.USD MKT entries, 0.2% adverse-move reduce-only exits, and continuous
+EUR.USD MKT entries dynamically sized to at most USD100,000 reference notional, 0.2% adverse-move reduce-only exits, and continuous
 restart recovery. The model process has no HeptaTrader MCP server and cannot send
 orders; it emits only BUY/SELL/HOLD JSON. All mutations use the existing
 `hepta-paper-command` / `NativeStrategyClient` / HSR1 / Tool Gateway / Execution

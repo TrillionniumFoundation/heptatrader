@@ -82,7 +82,7 @@ PreparedOrder PreparedOrder::MarketCash(const std::string& instrument,
     double reference, std::int64_t expiry) {
     if (contract.secType != "CASH" || contract.exchange != "IDEALPRO" ||
         contract.symbol != "EUR" || contract.currency != "USD" ||
-        instrument != "EUR.USD" || quantity > 25000.0)
+        instrument != "EUR.USD" || quantity > 100000.0)
         throw std::invalid_argument("RESEARCH_PAPER_MARKET_CASH_SCOPE_INVALID");
     PreparedOrder result(instrument, contract, side, quantity, reference, reference, expiry);
     result.call_.ibOrder.orderType = "MKT";

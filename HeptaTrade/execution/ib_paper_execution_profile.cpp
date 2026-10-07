@@ -21,7 +21,7 @@ namespace
 // qualification-only profile has a separate absolute ceiling so a touch
 // LMT can exceed one displayed top-of-book size without becoming an
 // unbounded market order.
-const double kMaximumOrderQuantity = 25000.0;
+const double kMaximumOrderQuantity = 100000.0;
 const double kMaximumOrderNotional = 250000.0;
 const std::size_t kMaximumOrdersPerMinute = 30;
 const std::size_t kMaximumActiveOrders = 50;
@@ -417,8 +417,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     if (observationOnly && (UsesExternalLimitDay() || !userCryptoAgentId.empty() || !userCryptoSessionId.empty()))
     { reason = "IB_OBSERVATION_PROFILE_CANNOT_BIND_TRADING_OWNER"; return false; }
     if (userScope && (::geteuid() == 0 || ::getegid() == 0 ||
-        UsesExternalQualificationLimitDay() || maxOrderQuantity > 25000.0 ||
-        maxOrderNotional > 35000.0 || maxGrossPosition > 25000.0 ||
+        UsesExternalQualificationLimitDay() || maxOrderQuantity > 100000.0 ||
+        maxOrderNotional > 100000.0 || maxGrossPosition > 100000.0 ||
         maxActiveOrders != 1 || maxOrdersPerMinute > 2 ||
         !UserContractBinding(userQuoteContracts, userPrimaryQuoteInstrument) ||
         userQuoteMaxAgeMs < 100 || userQuoteMaxAgeMs > 5000))

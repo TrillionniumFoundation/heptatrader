@@ -16,7 +16,7 @@ The utility cannot establish PAPER mode by its executable name. A caller must
 verify the selected runtime and scope before scheduling any operation.
 
 The explicit `PreparedOrder::MarketCash` factory is restricted to EUR.USD CASH
-on IDEALPRO, BUY/SELL, DAY, positive quantity at most 25,000, a finite positive
+on IDEALPRO, BUY/SELL, DAY, positive quantity at most 100,000 EUR, a finite positive
 reference price and a positive expiry. It does not change the prior LMT-only
 constructor or futures mapping. Copies of requests do not mutate the proposal.
 

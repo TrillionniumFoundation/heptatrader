@@ -4,6 +4,8 @@ import argparse,fcntl,json,math,os,signal,stat,subprocess,tempfile,threading,tim
 from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
+FX_TARGET_NOTIONAL_USD=100000.0
+FX_MAX_QUANTITY=100000.0
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
 NATIVE_ENDPOINT=None
 QUANTITY_TOLERANCE=1e-9
@@ -253,6 +255,15 @@ def latch_owner_fence(state,path,reason):
     state["last_error"]="owner fence recovery required: "+reason
     atomic_json(path,state)
 
+def fx_order_quantity(reference):
+    reference=float(reference)
+    if not math.isfinite(reference) or reference<=0:
+        raise DriverError("invalid FX reference price")
+    quantity=min(FX_MAX_QUANTITY,float(math.floor(FX_TARGET_NOTIONAL_USD/reference)))
+    if quantity<=0 or quantity>FX_MAX_QUANTITY or quantity*reference>FX_TARGET_NOTIONAL_USD+1e-9:
+        raise DriverError("FX notional budget unavailable")
+    return quantity
+
 def crypto_market_cash_budget(ask, *, cash_limit=25000.0, base_limit=1.0, allow_smaller=False):
     ask=float(ask)
     if not math.isfinite(ask) or ask<=0:
@@ -288,8 +299,10 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
                 "prepare-crypto-canary-open" if canary_scope else "prepare-crypto-open",
                 ["--call-id",preview,"--price",format(ref,".17g"),"--cash-quantity",format(cash,".17g"),"--expiry",str(now_ms()+45000)])
         else:
+            quantity=fx_order_quantity(ref)
             prepared=paper_cmd(binary,socket,token,outbox,"prepare-open",
-                ["--call-id",preview,"--side",side,"--price",format(ref,".17g"),"--expiry",str(now_ms()+45000)])
+                ["--call-id",preview,"--side",side,"--quantity",format(quantity,".17g"),
+                 "--price",format(ref,".17g"),"--expiry",str(now_ms()+45000)])
     else:
         ref=None; prepared=paper_cmd(binary,socket,token,outbox,"prepare-crypto-close" if INSTRUMENT=="BTC.USD" else "prepare-close",["--call-id",preview])
     if not prepared.get("ok") or not prepared.get("command_id"):
@@ -301,6 +314,9 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
         "position_before_send":float(state.get("position",0.0))}
     if cash is not None:
         pending.update(quantity_mode="CASH",cash_quantity=cash,order_type="MKT",tif="IOC")
+    elif kind=="OPEN":
+        pending.update(quantity_mode="BASE_NOTIONAL_TARGET",order_quantity=quantity,
+            target_notional_usd=FX_TARGET_NOTIONAL_USD,order_type="MKT",tif="DAY")
     if INSTRUMENT=="BTC.USD" and kind=="CLOSE":
         pending["parent_entry_command_id"]=state.get("entry_command_id")
     state["pending"]=pending; atomic_json(path,state)
@@ -385,8 +401,10 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             atomic_json(path,state);return
     p["last_status"]={"at_ms":now_ms(),"command_status":payload.get("command_status"),"reason_code":payload.get("reason_code","")}
     expected_sign=1.0 if p.get("side")=="BUY" else -1.0 if p.get("side")=="SELL" else 0.0
+    expected_open_quantity=(float(p.get("order_quantity",QTY))
+        if p["kind"]=="OPEN" and INSTRUMENT!="BTC.USD" else QTY)
     open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>QUANTITY_TOLERANCE and
-        (abs(pos)<=QTY+QUANTITY_TOLERANCE or (INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH")) and
+        (abs(pos)<=expected_open_quantity+QUANTITY_TOLERANCE or (INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH")) and
         expected_sign*pos>0 and fill is not None and
         payload.get("command_status")=="accepted")
     if open_position_matches:
@@ -402,7 +420,8 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["entry_at_ms"]=observed if type(observed) is int and 0<observed<=now_ms() else now_ms()
         state["pending"]=None
         cash_sized=INSTRUMENT=="BTC.USD" and p.get("quantity_mode")=="CASH"
-        if (abs(pos)<QTY-QUANTITY_TOLERANCE and not cash_sized) or not fill or abs(pos)>QTY+QUANTITY_TOLERANCE:
+        expected_entry_quantity=(float(p.get("order_quantity",QTY)) if not cash_sized else QTY)
+        if (abs(pos)<expected_entry_quantity-QUANTITY_TOLERANCE and not cash_sized) or not fill or abs(pos)>expected_entry_quantity+QUANTITY_TOLERANCE:
             if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
                 state["crypto_partial_owned_halt"]=True
             state["halt_new_entries"]=True
@@ -667,7 +686,7 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
     if INSTRUMENT=="BTC.USD":
         fields.extend(["symbol=BTC","sec_type=CRYPTO","exchange=PAXOS","currency=USD",
             "cash_quantity="+format(crypto_market_cash_budget(snap["quote"]["ask"]),".17g")])
-    else: fields.append("quantity="+format(QTY,".17g"))
+    else: fields.append("quantity="+format(fx_order_quantity(float(snap["quote"]["ask"])),".17g"))
     preview=native(cli,"risk.preview_order",*fields)
     if (preview.get("approved") is not True or not preview.get("preview_permit") or
             preview.get("service_epoch")!=snap["service_epoch"] or
@@ -771,7 +790,7 @@ def main():
         raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
     INSTRUMENT=args.instrument;crypto=INSTRUMENT=="BTC.USD"
-    QTY=1.0 if crypto else 25000.0;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
+    QTY=1.0 if crypto else FX_MAX_QUANTITY;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
     home=Path.home(); state_dir=home/".local/state/heptatrader"/("crypto-driver" if crypto else "paper-driver"); private_dir(state_dir)
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

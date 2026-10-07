@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
         const std::string op(argv[1]);
         std::set<std::string> required{"--socket", "--token-file", "--directory"};
         if (op == "prepare-open") {
-            for (const auto* name : {"--call-id", "--side", "--price", "--expiry"}) required.insert(name);
+            for (const auto* name : {"--call-id", "--side", "--quantity", "--price", "--expiry"}) required.insert(name);
         } else if (op == "prepare-crypto-open" || op == "prepare-crypto-canary-open") {
             for (const auto* name : {"--call-id", "--price", "--expiry", "--cash-quantity"}) required.insert(name);
         } else if (op == "prepare-close" || op == "prepare-crypto-close") required.insert("--call-id");
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
         if (op == "prepare-open") {
             InstrumentRef c; c.symbol="EUR"; c.secType="CASH"; c.exchange="IDEALPRO"; c.currency="USD";
             const double price=number<double>(args.at("--price"));
-            const auto order=PreparedOrder::MarketCash("EUR.USD",c,args.at("--side"),25000.0,price,
+            const auto order=PreparedOrder::MarketCash("EUR.USD",c,args.at("--side"),number<double>(args.at("--quantity")),price,
                 number<std::int64_t>(args.at("--expiry")));
             if (!client.Prepare(order,args.at("--call-id"),prepared,result,reason))
                 return emit(false,prepared.CommandId(),reason,result);

@@ -23,7 +23,7 @@ class PaperCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); token=root/"token"; token.write_text("synthetic-test-token"); token.chmod(0o600)
             common=["prepare-open","--socket","/dev/null/impossible","--token-file",str(token),"--directory",str(root),
-                    "--call-id","paper-preview-001"]
+                    "--call-id","paper-preview-001","--quantity","90000"]
             for side,price,expiry in (("HOLD","1.1","1900000000000"),("BUY","-1","1900000000000"),
                                       ("BUY","nan","1900000000000"),("BUY","1.1","0")):
                 result=self.call(*common,"--side",side,"--price",price,"--expiry",expiry)

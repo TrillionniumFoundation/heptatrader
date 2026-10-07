@@ -263,20 +263,20 @@ void MarketCashProposalTests() {
     const std::string id="paper-test-command-001", permit="sha256:"+std::string(64,'a');
     const std::int64_t expiry=1900000000000LL;
     for (const std::string side : {"BUY", "SELL"}) {
-        auto proposal=PreparedOrder::MarketCash("EUR.USD",contract,side,25000,1.12,expiry);
+        auto proposal=PreparedOrder::MarketCash("EUR.USD",contract,side,100000,1.0,expiry);
         auto preview=proposal.PreviewRequest("paper-test-preview-001");
         Check(preview.call.ibOrder.orderType=="MKT" && preview.call.ibOrder.lmtPrice==0 &&
-              preview.call.ibOrder.totalQuantity==25000 && preview.call.timeInForce=="DAY" &&
+              preview.call.ibOrder.totalQuantity==100000 && preview.call.timeInForce=="DAY" &&
               preview.call.ibOrder.action==side, "market CASH proposal widened fields");
         auto request=proposal.SubmissionRequest(id,permit);
         Check(request.call.name=="trade.place_order" && request.toolCallId==id &&
               request.call.previewPermit==permit, "market CASH binding changed");
         Check(!Wire(request).empty(), "market CASH codec round trip");
         preview.call.ibOrder.totalQuantity=999999;
-        Check(proposal.PreviewRequest("paper-test-preview-002").call.ibOrder.totalQuantity==25000,
+        Check(proposal.PreviewRequest("paper-test-preview-002").call.ibOrder.totalQuantity==100000,
               "returned copy mutated market proposal");
     }
-    for (double quantity : {0.0, -1.0, 25001.0, std::numeric_limits<double>::infinity(),
+    for (double quantity : {0.0, -1.0, 100001.0, std::numeric_limits<double>::infinity(),
                             std::numeric_limits<double>::quiet_NaN()})
         Throws([&] { PreparedOrder::MarketCash("EUR.USD",contract,"BUY",quantity,1.12,expiry); });
     for (double price : {0.0, -1.0, std::numeric_limits<double>::infinity(),

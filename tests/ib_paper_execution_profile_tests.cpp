@@ -353,9 +353,9 @@ void TestUserPaperCustodyIsExplicitAndBounded()
     values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
     values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
     values["HEPTA_IB_PAPER_USER_SCOPE"] = "1";
-    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "25000";
-    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"] = "35000";
-    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "25000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "100000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"] = "100000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "100000";
     values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"] = "2";
     values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"] = IbPaperExecutionProfileConfig::UserControlDirectoryPath();
     IbPaperExecutionProfileConfig profile;
@@ -380,9 +380,9 @@ void TestUserPaperCustodyIsExplicitAndBounded()
         {"HEPTA_IB_PAPER_CONTROL_DIRECTORY", "/run/user/1/heptatrader/control"},
         {"HEPTA_IB_PAPER_MAX_ACTIVE_ORDERS", "2"},
         {"HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE", "3"},
-        {"HEPTA_IB_PAPER_MAX_ORDER_QTY", "25001"},
-        {"HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL", "35001"},
-        {"HEPTA_IB_PAPER_MAX_GROSS_POSITION", "25001"},
+        {"HEPTA_IB_PAPER_MAX_ORDER_QTY", "100001"},
+        {"HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL", "100001"},
+        {"HEPTA_IB_PAPER_MAX_GROSS_POSITION", "100001"},
         {"HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS", "5001"},
         {"HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT", "GBP.USD"}};
     for (const auto& item : bad)

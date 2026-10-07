@@ -540,10 +540,10 @@ class CryptoDriverPolicyTests(unittest.TestCase):
             self.assertIn("instrument=EUR.USD",fields)
             self.assertIn("order_type=MKT",fields)
             self.assertIn("tif=DAY",fields)
-            self.assertIn("quantity=25000",fields)
+            self.assertIn("quantity=89015",fields)
             self.assertFalse(any(f.startswith("cash_quantity=") for f in fields))
             return {"approved":True,"preview_permit":"test-only-permit","service_epoch":"native-epoch","service_fencing_generation":3}
-        with patch.object(d,"INSTRUMENT","EUR.USD"),patch.object(d,"QTY",25000.0),             patch.object(d,"QUANTITY_TOLERANCE",1e-9),patch.object(d,"snapshot",snap),             patch.object(d,"run",run),patch.object(d,"native",preview),             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
+        with patch.object(d,"INSTRUMENT","EUR.USD"),patch.object(d,"QTY",100000.0),             patch.object(d,"QUANTITY_TOLERANCE",1e-9),patch.object(d,"snapshot",snap),             patch.object(d,"run",run),patch.object(d,"native",preview),             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
             d.latch_owner_fence(state,Path("/unused"),"SESSION_RECOVERY_ONLY")
             self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","sessionctl","socket","token",1000))
         self.assertEqual(state["lease_generation"],2)
