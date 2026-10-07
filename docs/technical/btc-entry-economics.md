@@ -103,3 +103,47 @@ service status, active profile, same period and observed future candidates.
 No historical re-evaluation of an old direction-only forecast is allowed to
 invent its missing expected_move_bps. Lower realised fees and higher net PnL must
 be measured prospectively; deployment itself does not establish either.
+
+
+## Deployment hardening and fee-report repair (2026-10-07)
+
+The economic forecast extension is now **flat-BTC opening only**. While BTC is
+exposed, `model_decision` delegates to the unchanged legacy position-aware model
+prompt/decoder; missing `expected_move_bps` can therefore never suppress an
+otherwise valid model reversal. `should_close`, partial CLOSE continuation and
+all underlying native code remain byte-identical. There is no cost/cooldown veto
+on CLOSE, and no extra re-entry confirmation is silently imposed.
+
+OPEN rechecks reset-period identity, native PAPER source/authority/readiness and
+non-recovery mode. PREPARED captures the exact forecast/profile; final admission
+verifies those identities plus original command, CASH size, side, flatness and
+halt state. It cannot swap in a newer favorable forecast after preparation.
+The installer holds the existing `crypto-driver/driver.lock` during precheck and
+immutable file installation, refuses concurrent state/period changes, releases
+that lock only before starting the service, and checks the process actually stays
+active. No FX, Execution, Gateway or learning unit is restarted by this installer.
+
+During the read-only fee audit, a bare IB `orderStatus` for order 300 had its exact
+correlation/account/client/order but no instrument or side enrichment after
+reconnect. The PnL checker previously rejected it before reading its independently
+complete `execDetails`. The new read-only replay defers ONLY this exact callback
+shape until a fully validated execution for the same original command,
+correlation, order id, service epoch and Broker connection epoch exists. Any
+nonempty conflicting identity still rejects; a missing execution still rejects;
+terminal totals and commission identity are still checked. The report emits
+`status_subject_witnesses` so the inference is visible. No original journal row,
+actual commission, driver pending, balance or native authority is changed.
+
+Source callback field reference:
+https://www.interactivebrokers.com/docs/tws-api/protobuf/order-status
+An orderStatus does not carry contract/side like execDetails does. The repair
+uses independent execution evidence, never only a reused numeric order id.
+Remaining archival `settlement_pending_command_ids` stay visible even when
+position and fee valuation are complete; accounting is not a grant to trade.
+
+The 30-minute intervals, two-open rolling-hour cap, 2bps slippage reserve and
+2bps residual edge are explicit PAPER engineering choices, not statistically
+optimized parameters. They do not prove the remote's predicted return is valid
+and do not promise profit. Fee tiers/1%-cap refunds require actual separate receipt;
+this change does not change IBKR's tariff, route to a different venue, increase
+position size, modify FX or start LIVE trading.

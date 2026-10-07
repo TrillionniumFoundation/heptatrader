@@ -79,7 +79,7 @@ class DriverIntegrationTests(unittest.TestCase):
   self.t=tempfile.TemporaryDirectory();self.addCleanup(self.t.cleanup);self.path=Path(self.t.name)/'state.json'
   self.m=w.load_base(ROOT/'scripts/heptatrader_paper_driver.py');self.m.INSTRUMENT='BTC.USD';self.m.QTY=1.;self.m.QUANTITY_TOLERANCE=1e-10;self.m.now_ms=lambda:NOW
   self.calls=[];self.quotes=[quote(),quote()];self.submit_kind='ok';self.fail_period=False
-  self.health={'execution_mode':'PAPER','execution_authoritative_health':{'mutation_ready':True,'owner_fenced':False}}
+  self.health={'execution_mode':'PAPER','execution_authoritative_health':{'mutation_ready':True,'owner_fenced':False,'owner_recovery_only':False,'source':'IB','authoritative':True,'startup_recovery_read_only':False}}
   self.m.native=self.native;self.m.paper_cmd=self.transport
   self.original_exit=self.m.should_close
   self.state={'schema':'heptatrader.paper-driver.v1','position':0.,'pending':None,'halt_new_entries':False,'last_decision':forecast()}
@@ -167,6 +167,32 @@ class DriverIntegrationTests(unittest.TestCase):
      self.m.inspect_pending(self.state,self.path,'b','s','t','o',{'active':[],'position':0.})
      self.assertIsNone(self.state['pending']);self.assertNotIn('submit',self.calls)
      self.assertEqual(self.state['btc_entry_control']['open_reservations'][0]['command_id'],'original-command')
+ def test_exposed_btc_uses_original_model_without_entry_schema(self):
+     from types import SimpleNamespace
+     result={'action':'SELL','confidence':.65,'rationale':'existing-position reversal'}
+     calls=[]
+     self.m.run=lambda argv,*a,**k:(calls.append(argv) or SimpleNamespace(returncode=0,stdout=json.dumps({'ok':True,'outputs':[{'text':json.dumps(result)}]})))
+     history=[{'observed_at_ms':NOW-1000,'bid':99999.5,'ask':100000.5,'mid':100000}]
+     actual=self.m.model_decision('model',self.path.parent,history,.1)
+     self.assertEqual(actual,result)
+     self.assertNotIn('expected_move_bps',calls[0][calls[0].index('--prompt')+1])
+ def test_read_only_or_unattributed_owner_cannot_open(self):
+     for key,value in (('owner_recovery_only',True),('source','other'),('authoritative',False),('startup_recovery_read_only',True)):
+         owner=copy.deepcopy(self.health['execution_authoritative_health']);self.health['execution_authoritative_health'][key]=value
+         with self.assertRaises(p.PolicyError):self.open()
+         self.health['execution_authoritative_health']=owner
+     self.assertNotIn('submit',self.calls)
+ def test_final_admission_cannot_replace_forecast_of_original_command(self):
+     write=self.m.atomic_json
+     def alter(path,value):
+         result=write(path,value)
+         if (value.get('pending') or {}).get('send_state')=='POSSIBLY_SENT':
+             value['last_decision']={**value['last_decision'],'expected_move_bps':100}
+         return result
+     self.m.atomic_json=alter;self.open()
+     self.assertNotIn('submit',self.calls)
+     self.assertEqual(self.state['pending']['command_id'],'original-command')
+     self.assertEqual(self.state['pending']['send_state'],'DEFINITELY_REJECTED')
  def test_model_direction_without_magnitude_is_rejected(self):
      from types import SimpleNamespace
      raw={'action':'BUY','confidence':.99,'rationale':'no numeric forecast'}

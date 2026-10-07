@@ -95,6 +95,52 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(result['realized_net_pnl'], '8')
         self.assertEqual(result['unrealized_net_pnl'], '-21')
 
+    def subjectless(self, f):
+        return dict(terminal(f), instrument='', side='', req_id='', trace_id='', source='ib-api-callback')
+
+    def test_subjectless_status_requires_validated_exact_execution_witness(self):
+        rows=basic(); rows[2]=self.subjectless(rows[1])
+        out=self.row(rows)
+        self.assertTrue(out['ledger_complete']);self.assertTrue(out['fees_complete'])
+        self.assertEqual(out['net_total_pnl'],self.row()['net_total_pnl'])
+        self.assertEqual(out['status_subject_witnesses_total'],1)
+        self.assertEqual(out['status_subject_witnesses'][0]['execution_id'],'e1.1')
+
+    def test_subjectless_status_without_fill_never_proves_nonfill(self):
+        s=send(); status=self.subjectless(fill(s));status.update(status='Cancelled',qty=0,price=0)
+        out=self.row([s,status],observation(0))
+        self.assertFalse(out['ledger_complete'])
+        self.assertIn('ORDER_STATUS_SUBJECT_REQUIRES_SAME_EPOCH_EXECUTION',out['reason_codes'])
+
+    def test_subjectless_status_other_epoch_does_not_borrow_execution(self):
+        for key,value in [('broker_service_epoch','other'),('broker_connection_epoch',4)]:
+            rows=basic();rows[2]=dict(self.subjectless(rows[1]),**{key:value})
+            out=self.row(rows)
+            self.assertIn('ORDER_STATUS_SUBJECT_REQUIRES_SAME_EPOCH_EXECUTION',out['reason_codes'])
+
+    def test_subjectless_status_foreign_binding_still_fails(self):
+        for key,value in [('account','OTHER'),('broker_client_id',702),('execution_domain','LIVE'),
+                           ('order_id',99),('req_id','other-command'),('trace_id','other-owner')]:
+            rows=basic();rows[2]=dict(self.subjectless(rows[1]),**{key:value})
+            self.assertIn('BROKER_EXECUTION_BINDING_CONFLICT',self.row(rows)['reason_codes'])
+
+    def test_subjectless_status_never_covers_a_nonempty_subject_conflict(self):
+        for key,value in [('instrument','EUR.USD'),('side','SELL'),('source','foreign')]:
+            rows=basic();rows[2]=dict(self.subjectless(rows[1]),**{key:value})
+            self.assertFalse(self.row(rows)['ledger_complete'])
+
+    def test_subjectless_status_totals_must_match_independent_fill(self):
+        rows=basic();rows[2]=dict(self.subjectless(rows[1]),qty=2)
+        self.assertIn('TERMINAL_EXECUTION_TOTAL_CONFLICT',self.row(rows)['reason_codes'])
+
+    def test_missing_fill_contract_cannot_be_repaired_by_status(self):
+        rows=basic();rows[2]=self.subjectless(rows[1]);rows[1]['instrument']=''
+        self.assertIn('BROKER_EXECUTION_BINDING_CONFLICT',self.row(rows)['reason_codes'])
+
+    def test_subjectless_status_dedup_and_order_independence(self):
+        rows=basic();rows[2]=self.subjectless(rows[1])
+        self.assertEqual(self.row(rows),self.row(list(reversed(rows))*3))
+
     def test_long_marks_bid_short_marks_ask(self):
         self.assertEqual(self.row()['mark_price'], '90')
         s = send(direction='SELL'); f = fill(s)

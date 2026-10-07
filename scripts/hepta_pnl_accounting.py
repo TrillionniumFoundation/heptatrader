@@ -258,6 +258,7 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
         by_correlation[correlation] = event
     fills: dict[str, Fill] = {}
     statuses: dict[str, list[dict]] = {c: [] for c in sends}
+    subjectless_statuses: list[tuple[dict, dict]] = []
     for event in events:
         if event.get("event") not in ("broker_execution", "broker_order_status"):
             continue
@@ -282,9 +283,20 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                 if correlation not in old_correlations and not historical_execution:
                     raise EvidenceError("UNBOUND_OWN_EXECUTION")
             continue
+        # Native orderStatus carries order/quantity fields, not contract/side.
+        # After reconnect an otherwise exact callback may lack enrichment. It
+        # is NOT a fill and never gets a subject from a numeric order id alone.
+        # Defer this narrow case until fully validated same-epoch execDetails
+        # independently witnesses the original command/correlation binding.
+        subjectless_status = (
+            event.get("event") == "broker_order_status" and
+            event.get("broker_callback_type") == "orderStatus" and
+            event.get("source") == "ib-api-callback" and
+            event.get("instrument") in (None, "") and event.get("side") in (None, ""))
         if (event.get("account") != period["account"] or event.get("execution_domain") != "PAPER" or
-                event.get("instrument") != instrument or event.get("broker_client_id") != owner["broker_client_id"] or
-                event.get("order_id") != sent["order_id"] or side(event.get("side")) != side(sent["side"]) or
+                event.get("broker_client_id") != owner["broker_client_id"] or
+                event.get("order_id") != sent["order_id"] or
+                (not subjectless_status and (event.get("instrument") != instrument or side(event.get("side")) != side(sent["side"]))) or
                 event.get("req_id") not in (None, "", sent["req_id"]) or
                 event.get("trace_id") not in (None, "", owner["session_id"])):
             raise EvidenceError("BROKER_EXECUTION_BINDING_CONFLICT")
@@ -293,7 +305,9 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                 not positive_int(event.get("broker_connection_epoch"))):
             raise EvidenceError("BROKER_EXECUTION_EPOCH_OR_TIME_INVALID")
         if event["event"] == "broker_order_status":
-            if event.get("broker_callback_type") == "orderStatus":
+            if subjectless_status:
+                subjectless_statuses.append((event, sent))
+            elif event.get("broker_callback_type") == "orderStatus":
                 statuses[sent["req_id"]].append(event)
             continue
         if event.get("broker_callback_type") != "execDetails":
@@ -344,6 +358,26 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                 collisions.add(fill.execution_id)
     if collisions:
         raise EvidenceError("CROSS_SUBJECT_EXECUTION_ID_COLLISION")
+    # Require a validated full-subject execution from the very same service
+    # and Broker connection epoch. Missing or contradictory execution identity
+    # still fails above; a status cannot stand in for zero-fill/economic proof.
+    execution_witnesses = {}
+    for fill in sorted(fills.values(), key=lambda f: f.execution_id):
+        for epoch in fill.epochs:
+            key = (fill.command, fill.correlation, fill.order_id, epoch)
+            execution_witnesses.setdefault(key, fill.execution_id)
+    recovered_status_witnesses = {}
+    for event, sent in subjectless_statuses:
+        epoch = (event["broker_service_epoch"], event["broker_connection_epoch"])
+        key = (sent["req_id"], event["venue_correlation_id"], event["order_id"], epoch)
+        witness = execution_witnesses.get(key)
+        if witness is None:
+            raise EvidenceError("ORDER_STATUS_SUBJECT_REQUIRES_SAME_EPOCH_EXECUTION")
+        statuses[sent["req_id"]].append(event)
+        recovered_status_witnesses[key] = {"command_id": sent["req_id"], "order_id": event["order_id"],
+            "venue_correlation_id": event["venue_correlation_id"], "execution_id": witness,
+            "service_epoch": epoch[0], "connection_epoch": epoch[1],
+            "basis": "VALIDATED_SAME_EPOCH_EXEC_DETAILS_NOT_NUMERIC_ORDER_ID"}
     fees: dict[str, tuple[Decimal, str]] = {}
     fee_conflicts: set[str] = set()
     for event in events:
@@ -428,7 +462,9 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
             "fee_conflicting_execution_ids": sorted(fee_conflicts),
             "fees_known_by_currency": {c: amount(v) for c, v in sorted(fee_currencies.items())},
             "settlement_pending_command_ids": unsettled, "executions": executions,
-            "command_count": len(sends), "execution_count": len(fills)}
+            "command_count": len(sends), "execution_count": len(fills),
+            "status_subject_witnesses_total": len(recovered_status_witnesses),
+            "status_subject_witnesses": [recovered_status_witnesses[k] for k in sorted(recovered_status_witnesses)][:128]}
 
 
 def instrument_report(events: list[dict], period: dict, instrument: str, observation: dict, now_ms: int,

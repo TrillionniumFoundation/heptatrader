@@ -35,6 +35,7 @@ def attach(driver,config,*,period_check=None):
  cli=str(Path.home()/'.local/bin/heptatrader')
  def check_period():
   if period_check is not None:period_check();return
+  if (Path.home()/'.local/state/heptatrader/RESET-STOPPED.json').exists():raise PolicyError('BTC_OPERATOR_RESET_HOLD')
   p=Path.home()/'.config/heptatrader/pnl-period.json';raw=p.read_bytes();period=json.loads(raw)
   if hashlib.sha256(raw).hexdigest()!=config['period_sha256'] or period.get('execution_domain')!='PAPER':raise PolicyError('BTC_ACCOUNTING_PERIOD_CHANGED')
  def control(state):
@@ -59,7 +60,10 @@ def attach(driver,config,*,period_check=None):
     state['btc_entry_control_error']=type(exc).__name__
   return original['atomic_json'](path,state)
  def model_decision(openclaw,state_dir,history,position):
-  if driver.INSTRUMENT!='BTC.USD':return original['model_decision'](openclaw,state_dir,history,position)
+  if driver.INSTRUMENT!='BTC.USD' or number(position)!=0:
+   # While exposed, use the exact legacy position-aware prompt and decoder.
+   # Missing opening-edge forecasts must never suppress a model/risk exit.
+   return original['model_decision'](openclaw,state_dir,history,position)
   compact=[{'t':x['observed_at_ms'],'bid':x['bid'],'ask':x['ask'],'mid':x['mid']} for x in history[-24:]]
   if not compact:raise driver.DriverError('BTC_NO_MODEL_HISTORY')
   prompt=('Return exactly one JSON object matching '+canonical(SCHEMA)+'. This is a PAPER BTC/USD forecast, not permission to trade. '
@@ -80,14 +84,16 @@ def attach(driver,config,*,period_check=None):
    validate_forecast(f)
    return f
   except (PolicyError,ValueError,KeyError,TypeError,IndexError) as exc:raise driver.DriverError('BTC_FORECAST_INVALID:'+type(exc).__name__) from exc
- def entry_check(state,ignore=None):
+ def entry_check(state,ignore=None,forecast=None):
   check_period()
   fresh=driver.native(cli,'market.get_quote','instrument=BTC.USD')
   health=driver.native(cli,'system.get_health')
   owner=health.get('execution_authoritative_health') or {}
-  if health.get('execution_mode')!='PAPER' or owner.get('mutation_ready') is not True or owner.get('owner_fenced') is True:
+  if (health.get('execution_mode')!='PAPER' or owner.get('source')!='IB' or owner.get('authoritative') is not True
+      or owner.get('mutation_ready') is not True or owner.get('owner_fenced') is not False
+      or owner.get('owner_recovery_only') is not False or owner.get('startup_recovery_read_only') is True):
    raise PolicyError('BTC_PAPER_MUTATION_NOT_READY')
-  result=evaluate(state.get('last_decision'),fresh,control(state),driver.now_ms(),ignore_command=ignore)
+  result=evaluate(state.get('last_decision') if forecast is None else forecast,fresh,control(state),driver.now_ms(),ignore_command=ignore)
   state['btc_last_entry_check']=result
   return result,fresh
  def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None,**kwargs):
@@ -108,7 +114,13 @@ def attach(driver,config,*,period_check=None):
   if operation=='submit' and pending.get('kind')=='OPEN':
    try:
     if extra!=['--command-id',pending['command_id']]:raise PolicyError('BTC_ORIGINAL_SUBMIT_ID_CHANGED')
-    result,_=entry_check(state,pending['command_id'])
+    captured=pending.get('btc_entry_forecast')
+    if (pending.get('btc_entry_profile_sha256')!=digest(PROFILE) or not captured
+        or digest(captured)!=digest(state.get('last_decision'))):raise PolicyError('BTC_PREPARED_FORECAST_CHANGED')
+    if (pending.get('instrument')!='BTC.USD' or pending.get('side')!='BUY'
+        or pending.get('quantity_mode')!='CASH' or number(pending.get('cash_quantity'))!=number(PROFILE['max_cash_usd'])
+        or state.get('halt_new_entries') or number(state.get('position',0))!=0):raise PolicyError('BTC_PREPARED_STATE_CHANGED')
+    result,_=entry_check(state,pending['command_id'],captured)
     state['btc_last_final_entry_check']=copy.deepcopy(result);original['atomic_json'](context['path'],state)
     if not result['allowed']:raise PolicyError('BTC_FINAL_ECONOMICS_REJECTED')
    except Exception as exc:

@@ -27,6 +27,10 @@ def main():
  remote=subprocess.check_output(['git','-C',str(repo),'ls-remote','origin','refs/heads/main'],text=True).split()[0]
  if remote!=head:raise SystemExit('REVIEWED_MAIN_NOT_MATCHED')
  if show('heptatrader-crypto-driver.service')['MainPID']!='0':raise SystemExit('STOP_FLAT_BTC_DRIVER_BEFORE_DEPLOY')
+ # Same per-instrument lock as the resident base through precheck/installation.
+ lock_path=h/'.local/state/heptatrader/crypto-driver/driver.lock'
+ lock_fd=os.open(lock_path,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
+ fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
  state_root=h/'.local/state/heptatrader';state_path=state_root/'crypto-driver/state.json';period_path=h/'.config/heptatrader/pnl-period.json'
  if (state_root/'RESET-STOPPED.json').exists():raise SystemExit('RESET_HOLD')
  state_raw=state_path.read_bytes();s=json.loads(state_raw);period_raw=period_path.read_bytes();period=json.loads(period_raw)
@@ -85,8 +89,17 @@ def main():
  with drop.open('x') as out:out.write(text)
  drop.chmod(0o600)
  subprocess.run(['systemctl','--user','daemon-reload'],check=True)
+ if state_path.read_bytes()!=state_raw or period_path.read_bytes()!=period_raw:
+  drop.unlink();subprocess.run(['systemctl','--user','daemon-reload'],check=True)
+  raise SystemExit('CONCURRENT_PERIOD_OR_STATE_CHANGE_NO_START')
+ os.close(lock_fd)
  try:
-  if a.start:subprocess.run(['systemctl','--user','start','heptatrader-crypto-driver.service'],check=True)
+  if a.start:
+   subprocess.run(['systemctl','--user','start','heptatrader-crypto-driver.service'],check=True)
+   time.sleep(2)
+   ready=show('heptatrader-crypto-driver.service')
+   if ready.get('ActiveState')!='active' or ready.get('MainPID') in (None,'0'):
+    raise RuntimeError('BTC_WRAPPER_STARTUP_FAILED')
  except Exception:
   subprocess.run(['systemctl','--user','stop','heptatrader-crypto-driver.service'])
   drop.unlink();subprocess.run(['systemctl','--user','daemon-reload'])
