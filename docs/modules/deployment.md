@@ -93,3 +93,11 @@ not start trading, settle pending or create cash/position authority. See the
 
 The independent account NAV observer and raw-backed evidence consumers belong
 to deployment reporting, not trading authority. See [account PnL operations](../technical/account-pnl.md).
+
+## Exact decision attribution
+
+The optional observation launcher, private journal and scoped installer are owned
+by this module. They reuse the existing PAPER base/economics code byte-for-byte
+and do not grant trading authority. See `docs/technical/exact-decision-attribution.md`
+for request/response/original-command identity, failure isolation and recovery
+boundaries. The original execution authority remains unchanged.
