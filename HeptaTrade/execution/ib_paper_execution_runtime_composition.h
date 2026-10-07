@@ -328,6 +328,9 @@ private:
     static void ApplyRecentBrokerTerminalEvidence(
         RecentBrokerOrder& order, const OmsJournalEvent& event,
         bool reconciledTerminal, bool positiveEconomicEvidence);
+    static bool TerminalSnapshotCompletesRecentBrokerOrder(
+        const RecentBrokerOrder& order,
+        const IBAuthoritativeTerminalCorrelationSnapshot& terminal);
     void TrimRecentBrokerOrders();
     std::string RecentBrokerOrderKey(
         const OmsJournalEvent& event, const std::string& agentId) const;
