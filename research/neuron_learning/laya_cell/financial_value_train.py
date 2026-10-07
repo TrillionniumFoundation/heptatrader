@@ -65,6 +65,11 @@ def run(config):
  # profitable JSON. Preserve earlier labels only if still currently valid.
  current=snapshot(config,int(time.time()*1000));by_id={r['row_id']:r for r in current['rows']}
  rows=data['rows']
+ scopes={(r['behavior_model_id'],r['reward']['input_attribution']['producer_manifest_sha256']) for r in rows}
+ if len(scopes)!=1:raise ContractError('MIXED_BEHAVIOR_POLICIES_NEED_SEPARATE_VALUE_HEADS')
+ expected_scope={'instrument':'EUR.USD','behavior_model_id':rows[0]['behavior_model_id'],
+  'producer_manifest_sha256':rows[0]['reward']['input_attribution']['producer_manifest_sha256'],'quantity':25000,'currency':'USD'}
+ if config.get('behavior_scope',expected_scope)!=expected_scope:raise ContractError('VALUE_BEHAVIOR_SCOPE_CHANGED')
  if any(r.get('row_id') not in by_id or r!=by_id[r['row_id']] for r in rows):raise ContractError('VALUE_REWARD_REVOKED_OR_CHANGED')
  for r in rows:
   if to_row(r['reward'])!=r:raise ContractError('VALUE_EXACT_ROW_CHANGED')
@@ -100,6 +105,10 @@ def run(config):
   'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),'torch_version':torch.__version__,'rocm':torch.version.hip,
   'wall_seconds':time.monotonic()-begin,'max_gpu_allocated_bytes':torch.cuda.max_memory_allocated(),
   'automatic_trading':False,'broker_orders_sent':0}
+ record['behavior_scope']=config.get('behavior_scope',{'instrument':'EUR.USD','behavior_model_id':rows[0]['behavior_model_id'],
+  'producer_manifest_sha256':rows[0]['reward']['input_attribution']['producer_manifest_sha256'],'quantity':25000,'currency':'USD'})
+ record['source_python_sha256']={p.name:sha_file(p) for p in (Path(__file__),Path(__file__).with_name('financial_value_data.py'))}
+ record['config_digest']=digest(config)
  record['candidate_id']=digest(record)
  with (out/'candidate.json').open('xb') as f:f.write(canonical(record)+b'\n');f.flush();os.fsync(f.fileno())
  (out/'candidate.json').chmod(0o400)
