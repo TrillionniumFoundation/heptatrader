@@ -173,7 +173,8 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
     sends: dict[str, dict] = {}
     old_correlations: set[str] = set()
     old_execution_ids: set[str] = set()
-    intents: set[str] = set()
+    intents: dict[str, dict] = {}
+    reliable_rejects: dict[str, dict] = {}
     # IB completed-execution downloads can replay an execution after a new
     # accounting boundary.  Baseline the exact pre-period execution identity,
     # never merely its numeric order id or later download timestamp.
@@ -193,7 +194,7 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
         if not _owns(event, period, instrument):
             continue
         kind = event.get("event")
-        if kind not in ("order_intent", "flatten_intent", "place_sent", "flatten_sent"):
+        if kind not in ("order_intent", "flatten_intent", "place_sent", "flatten_sent", "reject"):
             continue
         if not positive_int(event.get("ts_ms")) or event["ts_ms"] > now_ms:
             raise EvidenceError("COMMAND_TIME_INVALID")
@@ -205,7 +206,26 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
         if not isinstance(command, str) or not command or event.get("client_req_id") != command:
             raise EvidenceError("ORIGINAL_COMMAND_IDENTITY_INVALID")
         if kind in ("order_intent", "flatten_intent"):
-            intents.add(command)
+            previous_intent = intents.get(command)
+            if previous_intent and _binding(previous_intent) != _binding(event):
+                raise EvidenceError("ORIGINAL_INTENT_BINDING_CONFLICT")
+            if not previous_intent or event["ts_ms"] < previous_intent["ts_ms"]:
+                intents[command] = event
+            continue
+        if kind == "reject":
+            # ExecutionCoordinator emits IB_PLACE_REJECT only for an explicit,
+            # reliable VenuePlaceResult::Rejected outcome.  Uncertain dispatches
+            # use place_outcome_uncertain and must remain unresolved.
+            if (event.get("risk_code") == "IB_PLACE_REJECT" and
+                    event.get("status") == "rejected" and
+                    type(event.get("order_id")) is int and event["order_id"] == -1 and
+                    CORRELATION.fullmatch(str(event.get("venue_correlation_id", ""))) and
+                    isinstance(event.get("reason"), str) and event["reason"]):
+                previous_reject = reliable_rejects.get(command)
+                if previous_reject and _binding(previous_reject) != _binding(event):
+                    raise EvidenceError("ORIGINAL_REJECT_BINDING_CONFLICT")
+                if not previous_reject or event["ts_ms"] < previous_reject["ts_ms"]:
+                    reliable_rejects[command] = event
             continue
         if (not CORRELATION.fullmatch(str(event.get("venue_correlation_id", ""))) or
                 type(event.get("order_id")) is not int or event["order_id"] < 0):
@@ -215,8 +235,20 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
             raise EvidenceError("ORIGINAL_SEND_BINDING_CONFLICT")
         if not previous or event["ts_ms"] < previous["ts_ms"]:
             sends[command] = event
-    # Unproven lost/uncertain sends must not disappear because the account is flat.
-    if intents - sends.keys():
+    # A durable intent can close without a Broker send only through the exact
+    # coordinator reliable-rejection path.  Do not confuse a send attempt,
+    # uncertain outcome, missing receipt or foreign rejection with proven zero-send.
+    proven_rejects: set[str] = set()
+    for command, rejected in reliable_rejects.items():
+        intent = intents.get(command)
+        if not intent:
+            continue
+        if _binding(intent) != _binding(rejected):
+            raise EvidenceError("ORIGINAL_REJECT_BINDING_CONFLICT")
+        if command in sends:
+            raise EvidenceError("ORIGINAL_SEND_AND_REJECT_CONFLICT")
+        proven_rejects.add(command)
+    if set(intents) - sends.keys() - proven_rejects:
         raise EvidenceError("ORIGINAL_SEND_OUTCOME_UNPROVEN")
     by_correlation: dict[str, dict] = {}
     for event in sends.values():
