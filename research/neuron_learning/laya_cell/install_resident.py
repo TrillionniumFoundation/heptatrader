@@ -9,7 +9,7 @@ from pathlib import Path
 from .integrity import ContractError,canonical,digest,read_json,sha_file
 
 
-def install(config_path,start,update_owned=False):
+def install(config_path,start,update_owned=False,only=None):
  h=Path.home();source=Path(__file__).resolve().parent;learn=source.parent;repo=learn.parent.parent
  c=read_json(config_path)
  if os.geteuid()==0 or c.get('automatic_trading') is not False:raise ContractError('USER_ONLY_NO_TRADE_AUTHORITY')
@@ -18,6 +18,7 @@ def install(config_path,start,update_owned=False):
  for name in ('data.py','sandbox.py'):files['learn/'+name]=learn/name
  # Existing authoritative accounting replay is pinned with this release.
  files['scripts/hepta_pnl_accounting.py']=repo/'scripts/hepta_pnl_accounting.py'
+ files['scripts/hepta_decision_attribution.py']=repo/'scripts/hepta_decision_attribution.py'
  files['bin/hepta-trader-neuron-native']=Path(c['native_binary'])
  inventory={name:sha_file(path) for name,path in files.items()};release_id=digest(inventory)
  release=h/'.local/share/heptatrader/laya-resident/releases'/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -41,6 +42,7 @@ def install(config_path,start,update_owned=False):
   ('heptatrader-laya-feed.service','resident_feed','/usr/bin/python3','256M','20%','Read-only quote source for Laya candidates'),
   ('heptatrader-laya-trainer.service','resident',c['python'],'6G','150%','Bounded resident Laya candidate training on Radeon 890M'),
   ('heptatrader-laya-evaluator.service','resident_evaluate',c['python'],'6G','150%','Independent Laya future evaluation; no self-promotion')):
+  if only is not None and name!='heptatrader-laya-'+only+'.service':continue
   unit=h/'.config/systemd/user'/name
   text=f'''[Unit]
 Description=HeptaTrader {description}
@@ -98,5 +100,5 @@ WantedBy=default.target
  print(json.dumps(receipt,indent=2));return receipt
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--start',action='store_true');p.add_argument('--update-owned',action='store_true');a=p.parse_args();os.umask(0o077);install(a.config,a.start,a.update_owned)
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--start',action='store_true');p.add_argument('--update-owned',action='store_true');p.add_argument('--only',choices=['trainer','feed','evaluator']);a=p.parse_args();os.umask(0o077);install(a.config,a.start,a.update_owned,a.only)
 if __name__=='__main__':main()

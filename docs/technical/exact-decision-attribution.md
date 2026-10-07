@@ -1,0 +1,102 @@
+# Exact decision input attribution: facts, limits and runtime integration
+
+## Historical records are not silently reconstructed
+
+A real closed execution plus commission is an economic fact. It is not proof of
+which model input produced the opening command. Price/time proximity, the same
+confidence, a repeated BUY response, current history, and a reused broker order
+number do not supply the missing link. Existing unbound episodes remain in
+`execution_rewards` with explicit learning exclusions. No historical PnL is
+rewritten and no missing model input is invented.
+
+The inspected OpenClaw global store had no diagnostic event, capture session,
+capture event or command-log payload carrying the actual request. The search of
+post-period session/trajectory files did not find the literal trading request.
+Further internal-cache inspection was blocked by the execution platform and was
+not bypassed. This is a scoped search limitation, not proof that no copy exists
+anywhere. Existing model-input hashes alone are not reversible input records.
+
+## New producer: original callsite, not inferred matching
+
+`heptatrader_attributed_driver.py` loads byte-identical preexisting PAPER base
+code. For BTC it composes the unchanged economics adapter and profile first.
+The outer `Capture` is purely observational and makes no trading decision.
+
+1. At the actual `infer model run` call, capture the literal CLI prompt, model
+   selection and thinking controls, exact supplied quote-history snapshot,
+   instrument, position and current period. Authentication headers, environment,
+   token files, arbitrary process arguments and stderr are not captured.
+2. Retain the original response envelope and the exact decoded decision returned
+   by the unmodified model function. There must be one request, one successful
+   response and the original decision value.
+3. At the original successful durable PREPARED write, bind the native command ID
+   to the *same returned Python object*. Equal copies and modified decisions do
+   not qualify. No metadata is inserted into the strategy decision or state.
+4. Append those observations to a private, hash-chained journal with bounded
+   queue/storage. The trading thread never waits for the journal writer. Loss,
+   overflow, malformed records or failed writes deny attribution, not risk exit.
+
+`captured_at_ms` is the callsite observation and `written_at_ms` is actual journal
+persistence. This does not falsely claim the asynchronous record was fsynced
+before a submit. A PREPARED binding states that the original state write had
+already succeeded. The request/response/decision/binding DAG order, original
+command creation time and record hashes must all agree before credit is emitted.
+
+The scope is the exact local infer CLI request and controls. Unobserved provider
+internal system context, server-side routing or hidden model state is not claimed
+to have been captured. The raw response can preserve any provider run identity
+actually returned. The local request ID is not renamed as a provider-issued ID.
+
+## Consumer, economics and local learning credit
+
+Each producer has an immutable manifest containing the exact installed source
+hashes, original base/profile hashes, period and output scope. The learning
+configuration must explicitly register that manifest's hash. A journal header
+claiming PAPER/source authority by itself is not sufficient.
+
+The importer requires the exact request -> response -> decoded decision ->
+original command graph. It independently checks the output-envelope relationship,
+command direction/instrument, chronology, current period, complete chain, private
+files and producer loss health. Conflicts remove that command's attribution;
+there is no fallback to an earlier favorable match. Missing and malformed
+attribution does not erase a separately valid financial observation.
+
+After joining the registered exact binding to the accounting replay, a closed,
+fee-complete and terminally reconciled episode may enter `rewards` as a
+BEHAVIOR_BOUND_VALUE_TARGET_ONLY. The `input_attribution` field retains original
+request/manifest/prompt identities and source-prefix witnesses. All actual fees,
+negative returns and original execution IDs remain intact.
+
+This is not a canonical Agentd owner acknowledgement, not Laya on-policy reward,
+not a PPO behavior propensity, not an action-policy gradient and not evidence
+that a financial critic has been trained. It supplies the previously missing
+input attribution required before such independently specified learning work.
+
+## Deployment and verification
+
+`install_decision_attribution.py` requires a clean committed source, PAPER mode
+on port 4002, no operator reset hold, a flat/no-pending/unfenced target lane and an
+authoritative read-only snapshot. It copies the currently executed base and BTC
+profile byte-for-byte into an immutable release. Only the chosen PAPER driver is
+stopped and restarted. A startup failure restores its prior unit; native
+Execution/Gateway are never restarted. No canary or validation order is sent.
+
+The observation launcher keeps HOLD, the historical 0.62 predicate, BTC fees and
+cooldowns, cash sizing, fresh quotes, native risk, original-command recovery and
+all risk exits unchanged. Restarts cannot claim a preexisting reconstructed
+`last_decision` as an in-memory original object; the next actual inference creates
+new exact provenance. Old pending commands must resolve under the original
+runtime rather than being overwritten by installation.
+
+Only the Laya trainer/reader needs new registration and code. The resident
+installer's optional `--only trainer` updates that service without interrupting
+feed or existing future evaluation. The scheduling ledger and candidates remain
+in the same period directory, with their existing cadence and consumption state.
+
+Tests include exact-body retention, no environment-secret collection, clone and
+mutation rejection, lost journals, period/source/file conflicts, native pending
+identity, unchanged state writes and the entire BTC economics invariant suite
+with provenance outside the original adapter. Synthetic test outcomes are not
+presented as real trading rewards. Live receipts distinguish INPUT_CAPTURED,
+COMMAND_BOUND, CLOSED_AND_ATTRIBUTED and VALUE_MODEL_TRAINED; these stages are not
+interchangeable.

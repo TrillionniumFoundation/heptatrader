@@ -37,6 +37,8 @@ def financial_episodes(report,bindings,period_id,instrument):
   unresolved=sorted(set(commands)&pending)
   if unresolved:reasons.append('ORIGINAL_COMMAND_SETTLEMENT_UNCONFIRMED')
   if binding is None:reasons.append('ORIGINAL_OPEN_COMMAND_INPUT_UNBOUND')
+  if binding is not None and (binding.get('instrument',instrument)!=instrument or binding.get('side',cycle[0]['side'])!=cycle[0]['side']):
+   reasons.append('ORIGINAL_COMMAND_INPUT_SUBJECT_CONFLICT');binding=None
   payload={'schema':'heptatrader.observed-execution-reward.v2','period_id':period_id,'instrument':instrument,'currency':'USD',
    'open_command_id':opening,'command_ids':commands,'execution_ids':[x['execution_id'] for x in cycle],
    'executions':cycle,'flat_to_flat_executed_quantity':True,'realized_gross_usd':str(cash),
@@ -49,6 +51,8 @@ def financial_episodes(report,bindings,period_id,instrument):
    'reward_scope':'CLOSED_EXECUTED_QUANTITY_AFTER_REPORTED_USD_COMMISSIONS',
    'excluded_costs':['financing','tax','unreported_non_execution_charges'],
    'laya_on_policy':False,'policy_gradient_allowed':False,'effect_authority':False}
+  if binding is not None:
+   payload['input_attribution']={k:binding[k] for k in ('binding_basis','request_id','prompt_sha256','producer_manifest_sha256','source_prefixes','attribution_scope') if k in binding}
   payload['episode_id']=digest({'period':period_id,'instrument':instrument,'commands':commands})
   payload['reward_id']=digest(payload);out.append(payload)
   cash=Decimal(0);fees=Decimal(0);cycle=[];fee_missing=False
@@ -69,10 +73,19 @@ def assemble(report,bindings,period_id,instrument='EUR.USD'):
 
 def source_bindings(config,instrument,now_ms):
  from data import exports
+ from hepta_decision_attribution import verified_bindings
+ exact={};exact_issues=[]
+ for registration in config.get('decision_attribution_registrations',{}).get(instrument,[]):
+  found,issues=verified_bindings(registration,instrument,config['period_sha256'])
+  for command,value in found.items():
+   if command in exact and exact[command]!=value:raise ContractError('MULTIPLE_EXACT_ATTRIBUTIONS')
+   exact[command]=value
+  exact_issues.extend(issues)
  directory=config.get('export_directories',{}).get(instrument)
  if directory is None:
   directory=config.get('export_directory') if instrument=='EUR.USD' else ''
- if not directory or not Path(directory).exists():return {},[{'reason':'NO_EXACT_INPUT_EXPORT','instrument':instrument}]
+ if not directory or not Path(directory).exists():
+  return exact,exact_issues+([] if exact else [{'reason':'NO_EXACT_INPUT_EXPORT','instrument':instrument}])
  records,_,excluded=exports(directory,config['period_sha256'],now_ms)
  inputs={};forecasts={};bindings={}
  for r in records:
@@ -88,7 +101,11 @@ def source_bindings(config,instrument,now_ms):
   b={'input_id':f['input_id'],'forecast_id':f['candidate_id'],'model_id':f['forecast']['model_id']}
   if cmd in bindings and bindings[cmd]!=b:raise ContractError('COMMAND_FORECAST_CONFLICT')
   bindings[cmd]=b
- return bindings,excluded
+ for command,value in exact.items():
+  if command in bindings and any(bindings[command][k]!=value[k] for k in ('input_id','forecast_id','model_id')):
+   raise ContractError('LEGACY_VS_EXACT_ATTRIBUTION_CONFLICT')
+  bindings[command]=value
+ return bindings,excluded+exact_issues
 
 
 def current(config,now_ms):
@@ -109,7 +126,9 @@ def current(config,now_ms):
    try:
     if Decimal(str(period['instruments'][instrument]['opening_quantity']))!=0:raise ContractError('NONZERO_OPENING_POSITION_UNALLOCATED')
     report=accounting.replay(events,period,instrument,now_ms)
-    bindings,exclusions=source_bindings(config,instrument,now_ms)
+    try:bindings,exclusions=source_bindings(config,instrument,now_ms)
+    except (ContractError,ValueError,KeyError,TypeError,OSError) as exc:
+     bindings={};exclusions=[{'reason':'ATTRIBUTION_UNAVAILABLE:'+str(exc),'instrument':instrument}]
     observed,blocked=financial_episodes(report,bindings,period['period_id'],instrument)
     eligible=[r for r in observed if r['learning_eligible']]
     result['execution_rewards'].extend(observed);result['rewards'].extend(eligible)
