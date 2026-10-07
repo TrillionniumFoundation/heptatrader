@@ -168,7 +168,7 @@ class Capture:
      self.emit('UNBOUND_COMMAND',{'command_id':pending.get('command_id'),'instrument':d.INSTRUMENT,
                                 'reason':'NO_IDENTICAL_RETURNED_DECISION_OBJECT'});return result
     command={k:copy.deepcopy(pending[k]) for k in ('command_id','kind','created_at_ms','instrument','side','position_before_send',
-             'reference_price','quantity_mode','cash_quantity','order_type','tif') if k in pending}
+             'reference_price','quantity_mode','cash_quantity','order_quantity','target_notional_usd','order_type','tif') if k in pending}
     self.emit('COMMAND_BINDING',{'command':command,'request_id':entry[1]['request_id'],
       'request_sha256':entry[1]['request_sha256'],'response_sha256':entry[1]['response_sha256'],
       'decision_sha256':entry[1]['decision_sha256'],'decision_available_at_ms':entry[1]['available_at_ms'],

@@ -68,7 +68,9 @@ def install(instrument,evidence):
   'execution_domain':'PAPER','period_path':str(period_path),'period_sha256':period_hash,'runtime_sha256':hashes,
   'btc_profile_sha256':sha(release/'profile.json') if btc_profile else None,
   'journal_directory':str(h/'.local/state/heptatrader/neuron-learning/attribution'/period_hash/instrument),
-  'actor_scope':'EXISTING_LOCAL_DRIVER','created_at_ms':int(time.time()*1000),'trading_behavior_changed':False}
+  'actor_scope':'EXISTING_LOCAL_DRIVER','created_at_ms':int(time.time()*1000),
+  'trading_behavior_changed': instrument=='EUR.USD',
+  'behavior_profile':('EURUSD_ORIGINAL_ENTRY_CONF_0.62_USD100K_REFERENCE_NOTIONAL' if instrument=='EUR.USD' else 'BTC_EXISTING_POLICY_UNCHANGED')}
  manifest_path=release/'manifest.json';private_write(manifest_path,(canonical(manifest)+'\n').encode())
  drop=h/'.config/systemd/user'/(unit+'.d')/'70-exact-attribution.conf'
  if drop.exists():raise RuntimeError('EXISTING_DROPIN_NO_OVERWRITE')
