@@ -108,6 +108,12 @@ class ProvenanceTests(unittest.TestCase):
   d=host.model_decision('model',self.root,self.history,0);s={'pending':None,'last_decision':d};host.prepare_send(s,self.root)
   j.close();rs=[json.loads(line) for p in (self.root/'second').glob('*.jsonl') for line in p.read_bytes().splitlines()]
   self.assertFalse(any(r['kind']=='COMMAND_BINDING' for r in rs))
+ def test_later_requests_do_not_rewrite_original_attribution_witness(self):
+  state=self.trade();self.journal.q.join()
+  original,_=a.verified_bindings(self.reg,'EUR.USD','1'*64)
+  self.decision();self.journal.q.join()
+  later,_=self.read()
+  self.assertEqual(original[state['pending']['command_id']],later[state['pending']['command_id']])
  def test_original_state_writes_unchanged(self):
   self.trade();self.assertEqual([s['pending']['send_state'] for s in self.host.writes],['PREPARED','POSSIBLY_SENT','ACKNOWLEDGED'])
   self.assertTrue(all('input_id' not in s['pending'] for s in self.host.writes))

@@ -85,7 +85,7 @@ def source_bindings(config,instrument,now_ms):
  if directory is None:
   directory=config.get('export_directory') if instrument=='EUR.USD' else ''
  if not directory or not Path(directory).exists():
-  return exact,exact_issues+([] if exact else [{'reason':'NO_EXACT_INPUT_EXPORT','instrument':instrument}])
+  return exact,exact_issues+([] if exact else [{'reason':('REGISTERED_PRODUCER_NO_BOUND_OPEN_YET' if config.get('decision_attribution_registrations',{}).get(instrument) else 'NO_EXACT_INPUT_EXPORT'),'instrument':instrument}])
  records,_,excluded=exports(directory,config['period_sha256'],now_ms)
  inputs={};forecasts={};bindings={}
  for r in records:

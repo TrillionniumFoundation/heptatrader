@@ -32,7 +32,8 @@ def install(config_path,start,update_owned=False,only=None):
  c.update(runtime_directory=str(release),runtime_sha256=inventory,require_worker_sandbox=True,
           native_binary=str(release/'bin/hepta-trader-neuron-native'))
  cfgdir=h/'.config/heptatrader-laya-resident';cfgdir.mkdir(mode=0o700,parents=True,exist_ok=True)
- cfg=cfgdir/(release_id+'.json');raw=canonical(c)+b'\n'
+ config_id=digest({'release_id':release_id,'configuration':c})
+ cfg=cfgdir/(config_id+'.json');raw=canonical(c)+b'\n'
  if cfg.exists() and cfg.read_bytes()!=raw:raise ContractError('IMMUTABLE_CONFIGURATION_CHANGED')
  if not cfg.exists():cfg.write_bytes(raw);cfg.chmod(0o400)
  for k in ('control_directory','feed_directory','evaluation_directory','candidate_directory'):
@@ -94,7 +95,7 @@ WantedBy=default.target
   'runtime_sha256':inventory,'configuration':str(cfg),'configuration_sha256':sha_file(cfg),'units':units,
   'start_requested':start,'paper_services_changed':False,'automatic_trading':False,'worker_sandbox_required':True,
   'canonical_agentd_owner_connected':False,'promotion_mode':'STATISTICAL_QUALIFICATION_THEN_WAIT_FOR_CANONICAL_OWNER'}
- out=cfgdir/(release_id+'.install.json')
+ out=cfgdir/(config_id+'.install.json')
  if out.exists() and out.read_bytes()!=canonical(receipt)+b'\n':raise ContractError('INSTALL_RECEIPT_CHANGED')
  if not out.exists():out.write_bytes(canonical(receipt)+b'\n');out.chmod(0o400)
  print(json.dumps(receipt,indent=2));return receipt

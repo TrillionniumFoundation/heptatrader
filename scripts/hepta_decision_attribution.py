@@ -194,15 +194,23 @@ def verified_bindings(registration,instrument,period_sha256):
   raise ValueError('PRODUCER_SCOPE')
  files=sorted(Path(m['journal_directory']).glob('*.jsonl'))
  if len(files)>128:raise ValueError('PRODUCER_FILE_BOUND')
- groups={};issues=[];prefixes=[]
+ groups={};issues=[];prefixes=[];completed_prefixes={};witnesses={}
  for p in files:
   blob=read_private(p);blob=blob[:blob.rfind(b'\n')+1]
-  prefixes.append({'path':str(p),'bytes':len(blob),'sha256':hashlib.sha256(blob).hexdigest()})
-  for line in blob.splitlines():
+  full_prefix={'path':str(p),'bytes':len(blob),'sha256':hashlib.sha256(blob).hexdigest()}
+  prefixes.append(full_prefix);running_hash=hashlib.sha256();offset=0;file_producer=None
+  for line in blob.splitlines(keepends=True):
    if len(line)>MAX_RECORD:raise ValueError('ATTRIBUTION_RECORD_BOUND')
-   r=strict(line)
+   running_hash.update(line);offset+=len(line);r=strict(line)
    if r.get('schema')!=SCHEMA or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'}):raise ValueError('ATTRIBUTION_HASH')
-   groups.setdefault(r['producer_id'],[]).append(r)
+   producer=r['producer_id']
+   if file_producer is not None and file_producer!=producer:raise ValueError('MIXED_PRODUCERS_IN_SEGMENT')
+   file_producer=producer
+   if r.get('kind')=='COMMAND_BINDING':
+    witnesses[(producer,r['sequence'])]=list(completed_prefixes.get(producer,[]))+[
+       {'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}]
+   groups.setdefault(producer,[]).append(r)
+  if file_producer is not None:completed_prefixes.setdefault(file_producer,[]).append(full_prefix)
  bindings={};invalid_commands=set()
  for producer,records in groups.items():
   records.sort(key=lambda r:r['sequence']);previous='0'*64;requests={};responses={};decisions={};commands=[];bad=False;order={'REQUEST':{},'RESPONSE':{},'DECISION':{}}
@@ -252,7 +260,7 @@ def verified_bindings(registration,instrument,period_sha256):
     cid=cmd['command_id'];value={'input_id':digest(request),'forecast_id':b['decision_sha256'],'model_id':request['model_id'],
      'instrument':instrument,'side':cmd['side'],'binding_basis':b['basis'],'request_id':rid,
      'prompt_sha256':request['prompt_sha256'],'producer_manifest_sha256':registration['sha256'],
-     'source_prefixes':prefixes,'attribution_scope':request['input_scope']}
+     'source_prefixes':witnesses[(producer,binding_sequence)],'attribution_scope':request['input_scope']}
     if cid in bindings and bindings[cid]!=value:raise ValueError('COMMAND_MULTIPLE_INPUTS')
     bindings[cid]=value
    except (ValueError,KeyError,TypeError) as exc:

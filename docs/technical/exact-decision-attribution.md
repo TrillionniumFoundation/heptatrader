@@ -100,3 +100,10 @@ with provenance outside the original adapter. Synthetic test outcomes are not
 presented as real trading rewards. Live receipts distinguish INPUT_CAPTURED,
 COMMAND_BOUND, CLOSED_AND_ATTRIBUTED and VALUE_MODEL_TRAINED; these stages are not
 interchangeable.
+
+
+Attribution source witnesses stop at the original COMMAND_BINDING byte offset.
+Later prompts or responses do not extend that witness or create spurious reward
+versions. Runtime releases and configurations are independently content-addressed,
+so adding a verified FX producer to an already registered BTC producer never
+requires overwriting a prior immutable configuration.
