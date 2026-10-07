@@ -166,12 +166,21 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
         return;
     }
     for (const auto& execution : m_pendingExecutionIdsByCorrelation) {
-        const auto order=m_pendingTerminalOrderIds.find(execution.first);
+        auto order=m_pendingTerminalOrderIds.find(execution.first);
         if (order!=m_pendingTerminalOrderIds.end() && order->second>0 && order->second!=execution.second) {
             InvalidateTerminalCorrelationSnapshot("IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT");
             InvalidateRiskSnapshot("IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT");
             return;
         }
+        // IB completedOrder() may omit its connection-scoped numeric order id
+        // (reported as 0) while retaining our durable orderRef correlation.
+        // The paired reqExecutions() refresh is account/client scoped and, after
+        // its End barrier, carries the exact positive numeric id for that same
+        // correlation. Promote only this unknown-id case; a positive mismatch
+        // above remains fatal and a correlation mismatch cannot reach this row.
+        if (order!=m_pendingTerminalOrderIds.end() && order->second==0 &&
+            execution.second>0)
+            order->second=execution.second;
     }
     for (std::map<std::string, std::string>::iterator status =
              m_pendingTerminalStatuses.begin();
