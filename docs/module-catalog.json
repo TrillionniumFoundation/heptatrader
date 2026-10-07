@@ -396,7 +396,10 @@
         "scripts/hepta_pnl_report.py",
         "scripts/hepta_account_pnl.py",
         "scripts/hepta_account_observer.py",
-        "scripts/hepta_account_activity.py"
+        "scripts/hepta_account_activity.py",
+        "scripts/hepta_btc_entry_policy.py",
+        "scripts/heptatrader_btc_economics_driver.py",
+        "scripts/install_btc_entry_runtime.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -412,7 +415,8 @@
         "tests/python/test_paper_driver.py",
         "tests/python/test_pnl_accounting.py",
         "tests/python/test_pnl_cli.py",
-        "tests/python/test_account_pnl.py"
+        "tests/python/test_account_pnl.py",
+        "tests/python/test_btc_entry_economics.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

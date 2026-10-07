@@ -455,3 +455,12 @@ Account-wide valuation and source-covered returns are separate from strategy
 PnL. See [account NAV and net-return operations](account-pnl.md) for read-only
 deployment, same-reset evidence, statement import, unknown fields and estimated
 liquidation costs.
+
+
+## BTC-only fee-aware new-entry profile
+
+The opt-in, independently pinned BTC wrapper retains 0.62 and all original exit
+semantics while adding explicit expected-move economics and anti-churn controls
+for new BTC longs only. It does not alter FX or slow partial risk liquidation.
+See [BTC entry economics](btc-entry-economics.md) for exact assumptions,
+original-command persistence, deployment conditions and evidence limitations.
