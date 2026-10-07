@@ -55,8 +55,7 @@ def install(laya_config_path,fusion_candidate,start=False,update_owned=False):
    "candidate_id":candidate["candidate_id"],"laya_candidate_id":candidate["laya_candidate_id"],"period_sha256":c["period_sha256"],
    "rule":RULE,"runtime_sha256":hashes,"training_row_ids":candidate["train_row_ids"],"internal_holdout_row_ids":candidate["internal_holdout_row_ids"],
    "automatic_selection":False,"trade_permission":False}
-  plan["plan_id"]=digest(plan);write_once(plan_path,canonical(plan)+b"
-")
+  plan["plan_id"]=digest(plan);write_once(plan_path,canonical(plan)+b"\n")
  config={**c,"profile":PROFILE,"fusion_candidate_directory":str(fusion_candidate),"laya_candidate_directory":str(laya_dir),
   "shadow_root":str(shadow),"runtime_directory":str(release),"runtime_sha256":hashes,"plan_id":plan["plan_id"]}
  cfgdir=h/".config/heptatrader-temporal-fusion";cfgdir.mkdir(mode=0o700,parents=True,exist_ok=True)
