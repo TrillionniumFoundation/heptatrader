@@ -402,7 +402,9 @@
         "scripts/install_btc_entry_runtime.py",
         "scripts/hepta_decision_attribution.py",
         "scripts/heptatrader_attributed_driver.py",
-        "scripts/install_decision_attribution.py"
+        "scripts/install_decision_attribution.py",
+        "scripts/hepta_fx_churn.py",
+        "scripts/install_fx_churn.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -420,7 +422,8 @@
         "tests/python/test_pnl_cli.py",
         "tests/python/test_account_pnl.py",
         "tests/python/test_btc_entry_economics.py",
-        "tests/python/test_decision_attribution.py"
+        "tests/python/test_decision_attribution.py",
+        "tests/python/test_fx_churn.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
