@@ -32,6 +32,19 @@ struct IbRecentBrokerOrderReplayAccess {
         assert(found->cumulativeExecutions.MatchesTerminal(found->terminalFilledQuantity,
             found->terminalAverageFillPrice));
     }
+    static bool TerminalSnapshotComplete(
+        const IbPaperExecutionRuntimeComposition& runtime,
+        const std::string& command,
+        const IBAuthoritativeTerminalCorrelationSnapshot& terminal) {
+        const IbPaperExecutionRuntimeComposition::RecentBrokerOrder* found=nullptr;
+        for (const auto& item:runtime.m_recentBrokerOrders)
+            if (item.second.commandId==command && !item.second.venueCorrelationId.empty()) {
+                assert(found==nullptr);found=&item.second;
+            }
+        assert(found!=nullptr);
+        return IbPaperExecutionRuntimeComposition::
+            TerminalSnapshotCompletesRecentBrokerOrder(*found,terminal);
+    }
 };
 
 OmsJournalEvent Base() {
@@ -61,6 +74,40 @@ int main(int argc,char** argv) {
         if(context.agentId.empty())throw std::runtime_error("original send binding missing");
         std::cout<<IbRecentBrokerOrderReplayAccess::Json(runtime,context)<<'\n';
         std::cerr<<"OFFLINE_PRODUCTION_REPLAY_ROWS="<<count<<'\n';return 0;
+    }
+    {
+        IbPaperExecutionRuntimeComposition runtime(config);
+        auto base=Base();IbRecentBrokerOrderReplayAccess::Project(runtime,base);
+        auto execution=base;execution.eventType="broker_execution";
+        execution.status="ExecutionDetails";execution.brokerCallbackType="execDetails";
+        execution.brokerExecutionId="fixture-terminal-refresh-exec";
+        execution.brokerClientId=701;execution.brokerConnectionEpoch=3;
+        execution.brokerServiceEpoch="service-a";execution.side="BOT";
+        execution.qty=.00049993;execution.price=85611.5;execution.tsMs=20;
+        IbRecentBrokerOrderReplayAccess::Project(runtime,execution);
+        auto owner=base;owner.eventType="order_owner_reconciled_terminal";
+        owner.reqId="owner-audit";owner.qty=0;owner.price=0;
+        owner.status="terminal";owner.tsMs=30;
+        IbRecentBrokerOrderReplayAccess::Project(runtime,owner);
+
+        IBAuthoritativeTerminalCorrelationSnapshot terminal;
+        terminal.complete=true;terminal.connectionEpoch=9;terminal.generation=4;
+        terminal.terminalOrderIdsByCorrelation[base.venueCorrelationId]=base.orderId;
+        terminal.terminalStatusesByCorrelation[base.venueCorrelationId]="Filled";
+        terminal.executionCorrelations.insert(base.venueCorrelationId);
+        assert(IbRecentBrokerOrderReplayAccess::TerminalSnapshotComplete(
+            runtime,base.reqId,terminal));
+
+        auto wrong=terminal;
+        wrong.terminalOrderIdsByCorrelation[base.venueCorrelationId]=base.orderId+1;
+        assert(!IbRecentBrokerOrderReplayAccess::TerminalSnapshotComplete(
+            runtime,base.reqId,wrong));
+        wrong=terminal;wrong.executionCorrelations.clear();
+        assert(!IbRecentBrokerOrderReplayAccess::TerminalSnapshotComplete(
+            runtime,base.reqId,wrong));
+        wrong=terminal;wrong.complete=false;
+        assert(!IbRecentBrokerOrderReplayAccess::TerminalSnapshotComplete(
+            runtime,base.reqId,wrong));
     }
     for(int reverse=0;reverse<2;++reverse) {
         IbPaperExecutionRuntimeComposition runtime(config);
