@@ -323,6 +323,55 @@ class AccountingTests(unittest.TestCase):
         s = send(); s['event'] = 'order_intent'
         self.assertFalse(self.row([s], observation(0))['ledger_complete'])
 
+    def test_explicit_reliable_place_reject_proves_zero_send(self):
+        intent = send('rejected-before-broker'); intent.update(
+            event='order_intent', order_id=-1, status='intent_recorded')
+        rejected = dict(intent, event='reject', status='rejected',
+                        risk_code='IB_PLACE_REJECT',
+                        reason='IB_CRYPTO_EXPOSURE_LIMIT_EXCEEDED')
+        result = self.row([intent, rejected], observation(0))
+        self.assertTrue(result['ledger_complete'])
+        self.assertTrue(result['valuation_complete'])
+        self.assertEqual(result['execution_count'], 0)
+        self.assertEqual(result['gross_total_pnl'], '0')
+
+    def test_uncertain_or_unqualified_reject_never_proves_zero_send(self):
+        for variant in ('uncertain', 'wrong_code', 'empty_reason'):
+            intent = send('ambiguous-'+variant); intent.update(
+                event='order_intent', order_id=-1, status='intent_recorded')
+            if variant == 'uncertain':
+                outcome = dict(intent, event='place_outcome_uncertain',
+                               status='uncertain',
+                               risk_code='IB_PLACE_OUTCOME_UNCERTAIN',
+                               reason='transport outcome unknown')
+            else:
+                outcome = dict(intent, event='reject', status='rejected',
+                               risk_code='OTHER_REJECT' if variant == 'wrong_code' else 'IB_PLACE_REJECT',
+                               reason='' if variant == 'empty_reason' else 'not coordinator reliable reject')
+            with self.subTest(variant=variant):
+                result = self.row([intent, outcome], observation(0))
+                self.assertFalse(result['ledger_complete'])
+                self.assertIn('ORIGINAL_SEND_OUTCOME_UNPROVEN', result['reason_codes'])
+
+    def test_reliable_reject_must_match_original_durable_binding(self):
+        intent = send('reject-binding'); intent.update(
+            event='order_intent', order_id=-1, status='intent_recorded')
+        rejected = dict(intent, event='reject', status='rejected',
+                        risk_code='IB_PLACE_REJECT', reason='explicit reliable rejection',
+                        venue_correlation_id='hepta-v1-sha256:' + 'b'*64)
+        result = self.row([intent, rejected], observation(0))
+        self.assertFalse(result['ledger_complete'])
+        self.assertIn('ORIGINAL_REJECT_BINDING_CONFLICT', result['reason_codes'])
+
+    def test_same_command_cannot_be_both_sent_and_reliably_rejected(self):
+        sent = send('send-reject-conflict')
+        intent = dict(sent, event='order_intent', order_id=-1, status='intent_recorded')
+        rejected = dict(intent, event='reject', status='rejected',
+                        risk_code='IB_PLACE_REJECT', reason='explicit reliable rejection')
+        result = self.row([intent, sent, rejected], observation(1))
+        self.assertFalse(result['ledger_complete'])
+        self.assertIn('ORIGINAL_SEND_AND_REJECT_CONFLICT', result['reason_codes'])
+
     def test_cross_subject_same_execution_id_collision_rejected(self):
         rows = basic(); foreign = dict(rows[1], account='DU_OTHER', venue_correlation_id='foreign')
         self.assertFalse(self.row(rows + [foreign])['ledger_complete'])
