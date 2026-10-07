@@ -318,9 +318,13 @@ checkpoint advancement for the entire process. `portfolio.list_positions`
 remains non-authoritative for campaign risk. In user PAPER crypto scope it can
 add a separately labelled `settlement_observation`: physical crypto positions
 from a complete same-epoch position/open-order/terminal snapshot, with no active
-orders, no unabsorbed exposure or callback conflict, exact account binding and
-`mutation_authorized=false`. This is not FX cash exposure and does not release
-any trading gate.
+orders, terminal exposure exactly caught up to the current exposure generation,
+no callback conflict, exact account binding and `mutation_authorized=false`.
+The coherent account-risk refresh may remain deliberately unabsorbed because
+the FX cash attestation failed; that lag is not promoted or rewritten by this
+read-only path. A risk-absorbed generation ahead of current exposure is rejected.
+This is not FX cash exposure, does not advance the recovery barrier and does not
+release any trading gate.
 
 Only the explicit driver `--instrument BTC.USD --reconcile-only` operator mode
 may consume that observation. The ordinary resident loop cannot. It requires
