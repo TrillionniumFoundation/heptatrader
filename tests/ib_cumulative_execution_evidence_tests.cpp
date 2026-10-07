@@ -44,17 +44,30 @@ int main() {
     for (std::size_t i=1;i<=IbCumulativeExecutionEvidence::Capacity();++i)
         assert(capacity.Observe("execution-"+std::to_string(i),double(i),100,100+i));
     assert(!capacity.Observe("overflow",129,100,1000));
+
     IBAuthoritativeRecoveryAuditSnapshot s;
     s.risk.connectionEpoch=9;s.risk.positionsComplete=true;s.risk.positionsGeneration=2;
     s.active.complete=true;s.active.generation=1;s.active.connectionEpoch=9;
     s.terminal.complete=true;s.terminal.generation=1;s.terminal.connectionEpoch=9;
     assert(CanObservePhysicalCryptoPositions(true,true,9,s));
     assert(!s.risk.complete && !s.risk.accountComplete && !s.risk.fxCashComplete);
+
+    // Real cash-fenced post-fill shape: account risk cannot absorb the
+    // generation, but terminal evidence and the fresh physical position have
+    // caught up. This is read-only settlement evidence, never mutation authority.
+    s.exposureGeneration=1;
+    s.terminalExposureGeneration=1;
+    s.riskAbsorbedExposureGeneration=0;
+    assert(CanObservePhysicalCryptoPositions(true,true,9,s));
+    assert(s.riskAbsorbedExposureGeneration==0);
+    assert(!s.risk.complete);
+
     assert(!CanObservePhysicalCryptoPositions(false,true,9,s));
     assert(!CanObservePhysicalCryptoPositions(true,false,9,s));
     assert(!CanObservePhysicalCryptoPositions(true,true,0,s));
+
     const auto valid=s;
-    for (int i=0;i<15;++i) {
+    for (int i=0;i<17;++i) {
         s=valid;
         switch(i) {
         case 0:s.risk.positionsComplete=false;break;
@@ -68,10 +81,12 @@ int main() {
         case 8:s.terminal.complete=false;break;
         case 9:s.terminal.generation=0;break;
         case 10:s.terminal.connectionEpoch=8;break;
-        case 11:s.exposureGeneration=1;break;
-        case 12:s.terminalExposureGeneration=1;break;
-        case 13:s.callbackConflictCount=1;break;
-        case 14:s.newConnectionEpochRequired=true;break;
+        case 11:s.exposureGeneration=2;break; // terminal has not caught up
+        case 12:s.terminalExposureGeneration=2;break; // terminal cannot be ahead
+        case 13:s.riskAbsorbedExposureGeneration=2;break; // risk cannot be ahead
+        case 14:s.callbackConflictCount=1;break;
+        case 15:s.callbackConflictMetricsSaturated=true;break;
+        case 16:s.newConnectionEpochRequired=true;break;
         }
         assert(!CanObservePhysicalCryptoPositions(true,true,9,s));
     }
