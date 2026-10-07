@@ -21,7 +21,7 @@ def show(name):
  raw=subprocess.check_output(["systemctl","--user","show",name,"-p","MainPID","-p","ActiveState","-p","NRestarts"],text=True)
  return dict(x.split("=",1) for x in raw.splitlines() if "=" in x)
 
-def install(laya_config_path,fusion_candidate,start=False):
+def install(laya_config_path,fusion_candidate,start=False,update_owned=False):
  h=Path.home();src=Path(__file__).resolve().parent;learn=src.parent
  c=read_json(laya_config_path);candidate=read_json(fusion_candidate/"candidate.json")
  if candidate["profile"]!=PROFILE or sha_file(fusion_candidate/"fusion.safetensors")!=candidate["fusion_sha256"]:raise ContractError("FUSION_CANDIDATE_CHANGED")
@@ -42,13 +42,21 @@ def install(laya_config_path,fusion_candidate,start=False):
  for name,path in files.items():write_once(release/name,path.read_bytes())
  shadow=h/".local/state/heptatrader/neuron-learning/temporal-fusion"/c["period_sha256"]/candidate["candidate_id"]
  shadow.mkdir(mode=0o700,parents=True,exist_ok=True)
- registered=int(time.time()*1000);start_ms=registered+60000
- end_ms=start_ms+(RULE["slots"]-1)*RULE["slot_spacing_ms"]+RULE["input_grace_ms"]+RULE["horizon_ms"]+15000
- plan={"schema":"heptatrader.temporal-laya-fusion-plan.v1","registered_at_ms":registered,"start_ms":start_ms,"end_ms":end_ms,
-  "candidate_id":candidate["candidate_id"],"laya_candidate_id":candidate["laya_candidate_id"],"period_sha256":c["period_sha256"],
-  "rule":RULE,"runtime_sha256":hashes,"training_row_ids":candidate["train_row_ids"],"internal_holdout_row_ids":candidate["internal_holdout_row_ids"],
-  "automatic_selection":False,"trade_permission":False}
- plan["plan_id"]=digest(plan);write_once(shadow/"plan.json",canonical(plan)+b"\n")
+ plan_path=shadow/"plan.json"
+ if plan_path.exists():
+  plan=read_json(plan_path)
+  if (plan.get("candidate_id")!=candidate["candidate_id"] or plan.get("laya_candidate_id")!=candidate["laya_candidate_id"] or
+      plan.get("period_sha256")!=c["period_sha256"] or plan.get("rule")!=RULE):
+   raise ContractError("EXISTING_FUSION_PLAN_SCOPE")
+ else:
+  registered=int(time.time()*1000);start_ms=registered+60000
+  end_ms=start_ms+(RULE["slots"]-1)*RULE["slot_spacing_ms"]+RULE["input_grace_ms"]+RULE["horizon_ms"]+15000
+  plan={"schema":"heptatrader.temporal-laya-fusion-plan.v1","registered_at_ms":registered,"start_ms":start_ms,"end_ms":end_ms,
+   "candidate_id":candidate["candidate_id"],"laya_candidate_id":candidate["laya_candidate_id"],"period_sha256":c["period_sha256"],
+   "rule":RULE,"runtime_sha256":hashes,"training_row_ids":candidate["train_row_ids"],"internal_holdout_row_ids":candidate["internal_holdout_row_ids"],
+   "automatic_selection":False,"trade_permission":False}
+  plan["plan_id"]=digest(plan);write_once(plan_path,canonical(plan)+b"
+")
  config={**c,"profile":PROFILE,"fusion_candidate_directory":str(fusion_candidate),"laya_candidate_directory":str(laya_dir),
   "shadow_root":str(shadow),"runtime_directory":str(release),"runtime_sha256":hashes,"plan_id":plan["plan_id"]}
  cfgdir=h/".config/heptatrader-temporal-fusion";cfgdir.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -89,8 +97,12 @@ TimeoutStopSec=20
 [Install]
 WantedBy=default.target
 """
-  if unit.exists() and unit.read_text()!=text:raise ContractError("EXISTING_FUSION_UNIT_DIFFERS")
-  if not unit.exists():write_once(unit,text.encode(),0o600)
+  if unit.exists() and unit.read_text()!=text:
+   if not update_owned or "temporal+Laya fusion" not in unit.read_text():raise ContractError("EXISTING_FUSION_UNIT_DIFFERS")
+   subprocess.run(["systemctl","--user","stop",name],check=True)
+   backup=cfgdir/(name+"."+sha_file(unit)+".before");write_once(backup,unit.read_bytes())
+   tmp=unit.with_suffix(".next");tmp.write_text(text);tmp.chmod(0o600);os.replace(tmp,unit)
+  elif not unit.exists():write_once(unit,text.encode(),0o600)
   units[mode]=name
  subprocess.run(["systemctl","--user","daemon-reload"],check=True)
  if start:subprocess.run(["systemctl","--user","enable","--now",*units.values()],check=True)
@@ -103,5 +115,5 @@ WantedBy=default.target
  print(json.dumps(receipt,indent=2));return receipt
 
 def main():
- p=argparse.ArgumentParser();p.add_argument("--laya-config",type=Path,required=True);p.add_argument("--fusion-candidate",type=Path,required=True);p.add_argument("--start",action="store_true");a=p.parse_args();os.umask(0o077);install(a.laya_config,a.fusion_candidate,a.start)
+ p=argparse.ArgumentParser();p.add_argument("--laya-config",type=Path,required=True);p.add_argument("--fusion-candidate",type=Path,required=True);p.add_argument("--start",action="store_true");p.add_argument("--update-owned",action="store_true");a=p.parse_args();os.umask(0o077);install(a.laya_config,a.fusion_candidate,a.start,a.update_owned)
 if __name__=="__main__":main()

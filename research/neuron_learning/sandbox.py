@@ -30,6 +30,12 @@ def enter(config):
     os.environ["TMPDIR"]=str(workspace)
     os.environ["AMD_COMGR_CACHE_DIR"]=str(workspace/"comgr-cache")
     os.environ["XDG_CACHE_HOME"]=str(workspace/"cache")
+    # MIOpen otherwise falls back to ~/.cache/miopen, intentionally unwritable
+    # after Landlock. Keep all GPU compilation/database state inside the job root.
+    miopen_db=workspace/"miopen-db";miopen_cache=workspace/"miopen-cache"
+    miopen_db.mkdir(mode=0o700,exist_ok=True);miopen_cache.mkdir(mode=0o700,exist_ok=True)
+    os.environ["MIOPEN_USER_DB_PATH"]=str(miopen_db)
+    os.environ["MIOPEN_CUSTOM_CACHE_DIR"]=str(miopen_cache)
     libc=C.CDLL(None,use_errno=True);libc.syscall.restype=C.c_long
     abi=libc.syscall(C.c_long(444),C.c_void_p(),C.c_size_t(0),C.c_uint(1))
     if abi<6:raise RuntimeError('LANDLOCK_ABI_6_REQUIRED_NO_UNSANDBOXED_FALLBACK')
