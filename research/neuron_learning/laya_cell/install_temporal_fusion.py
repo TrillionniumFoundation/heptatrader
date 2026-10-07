@@ -40,7 +40,7 @@ def install(laya_config_path,fusion_candidate,start=False,update_owned=False):
  hashes={name:sha_file(path) for name,path in files.items()};release_id=digest(hashes)
  release=h/".local/share/heptatrader/temporal-fusion/releases"/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
  for name,path in files.items():write_once(release/name,path.read_bytes())
- shadow=h/".local/state/heptatrader/neuron-learning/temporal-fusion"/c["period_sha256"]/candidate["candidate_id"]
+ shadow=h/".local/state/heptatrader/neuron-learning/temporal-fusion"/c["period_sha256"]/candidate["candidate_id"]/release_id
  shadow.mkdir(mode=0o700,parents=True,exist_ok=True)
  plan_path=shadow/"plan.json"
  if plan_path.exists():
