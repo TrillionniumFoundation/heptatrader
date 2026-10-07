@@ -202,6 +202,21 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerTerminalEvidence(
     order.reasonCode = "IB_FILLED_ECONOMIC_EVIDENCE_REQUIRED";
 }
 
+bool IbPaperExecutionRuntimeComposition::TerminalSnapshotCompletesRecentBrokerOrder(
+    const RecentBrokerOrder& order,
+    const IBAuthoritativeTerminalCorrelationSnapshot& terminal)
+{
+    // The journal owns the durable execution identity/quantities. The current
+    // Broker refresh supplies only the missing terminal boundary. Both sides
+    // must agree on the durable correlation and positive numeric order id.
+    return !order.brokerExecutionAmbiguous &&
+        order.cumulativeExecutions.HasEvidence() &&
+        order.orderId > 0 && !order.venueCorrelationId.empty() &&
+        terminal.complete && terminal.connectionEpoch != 0 &&
+        terminal.HasEconomicTerminal(
+            order.venueCorrelationId, order.orderId, terminal.connectionEpoch);
+}
+
 void IbPaperExecutionRuntimeComposition::TrimRecentBrokerOrders()
 {
     while (m_recentBrokerOrders.size() > 256)
@@ -238,6 +253,11 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                 return left.observedAtMs > right.observedAtMs;
             return left.orderId > right.orderId;
         });
+    // Snapshot after releasing the recent-order mutex. The adapter snapshot is
+    // independently generation/End-barrier protected and cannot mutate OMS.
+    IBAuthoritativeTerminalCorrelationSnapshot terminalSnapshot;
+    if (m_adapter)
+        terminalSnapshot = m_adapter->GetAuthoritativeTerminalCorrelationSnapshot();
     // HEX control/result framing is capped at 32768 bytes. Reserve space for
     // active-order/owner metadata and framing instead of overflowing the client.
     const std::size_t recentByteBudget = 24576;
@@ -249,13 +269,33 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
         std::ostringstream output;
         output.precision(17);
         const RecentBrokerOrder& order = matching[i];
+        const bool brokerTerminal =
+            TerminalSnapshotCompletesRecentBrokerOrder(order, terminalSnapshot);
+        const bool effectiveTerminal = order.terminal || brokerTerminal;
+        std::string effectiveStatus = order.status;
+        if (brokerTerminal) {
+            const auto status = terminalSnapshot.terminalStatusesByCorrelation.find(
+                order.venueCorrelationId);
+            if (status != terminalSnapshot.terminalStatusesByCorrelation.end())
+                effectiveStatus = status->second;
+        }
+        const bool economicEvidenceComplete =
+            !order.brokerExecutionAmbiguous &&
+            order.cumulativeExecutions.HasEvidence() &&
+            (!effectiveTerminal ||
+             (order.terminalQuantityKnown &&
+              order.cumulativeExecutions.MatchesTerminal(
+                  order.terminalFilledQuantity,
+                  order.terminalAverageFillPrice)) ||
+             brokerTerminal);
         output << "{\"order_id\":" << order.orderId
-               << ",\"status\":\"" << EscapeJson(order.status) << "\""
-               << ",\"terminal\":" << (order.terminal ? "true" : "false")
+               << ",\"status\":\"" << EscapeJson(effectiveStatus) << "\""
+               << ",\"terminal\":" << (effectiveTerminal ? "true" : "false")
                << ",\"economic_fill\":"
                << (order.economicFill ? "true" : "false")
                << ",\"filled_quantity\":" << order.filledQuantity
-               << ",\"remaining_quantity\":" << order.remainingQuantity
+               << ",\"remaining_quantity\":"
+               << (brokerTerminal ? 0.0 : order.remainingQuantity)
                << ",\"average_fill_price\":" << order.averageFillPrice
                << ",\"reason_code\":\""
                << EscapeJson(order.reasonCode) << "\""
@@ -278,10 +318,7 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                << order.brokerExecutionPrice
                << ",\"economic_evidence_version\":2"
                << ",\"economic_evidence_complete\":"
-               << (!order.brokerExecutionAmbiguous && order.cumulativeExecutions.HasEvidence() &&
-                   (!order.terminal || (order.terminalQuantityKnown &&
-                    order.cumulativeExecutions.MatchesTerminal(order.terminalFilledQuantity,
-                        order.terminalAverageFillPrice))) ? "true" : "false")
+               << (economicEvidenceComplete ? "true" : "false")
                << ",\"broker_execution_observed_at_ms\":"
                << order.cumulativeExecutions.Latest().observedAtMs
                << ",\"broker_execution_ids\":[";
