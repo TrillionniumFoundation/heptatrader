@@ -79,3 +79,41 @@ obtained, a mismatching account currency/BASE NAV remains rejected under the
 original USD 1.00 threshold. The compiled native recovery patch must also
 be installed and observed through real feed outage/reconnect and order-send
 counter checks before any FX recovery acceptance is claimed.
+
+
+## Subsequent CASH-farm refusal handling (isolated candidate 2026-10-08)
+
+The real IB wrapper requires a current-epoch positive CASH-farm 2104 before
+calling the SDK reqMktData; a 2103/lost lease can therefore cause a **definite
+pre-SDK, no-send** result during secondary EUR renewal. A single refusal must
+not terminate an otherwise healthy mixed BTC-primary PAPER runtime or strand
+EUR in an unrenewable missing state.
+
+For an unchanged, connected, ingress-healthy epoch, record the unissued EUR
+request ID as refused; leave the EUR quote Missing and allow a **new** request
+ID after the existing 15-second cooldown. The replacement cancels only a
+previously sent market-data request, never an unissued ID, and never alters
+BTC's request identity. An SDK exception, uncertain cancellation, ingress
+fault, or changed/disconnected broker epoch remains fatal to this local
+renewal pathway; these conditions are not interpreted as safe no-send.
+
+A recovering CASH-farm 2104 only permits a new market-data request: EUR
+cannot become fresh until positive, un-crossed new BID/ASK arrive on its own
+request ID in that epoch. Delayed/old-ID callbacks remain ignored. No broker
+order-send, order-cancel, or trader restart is included in this patch.
+
+Regression uses a Debug native test with assertions enabled to exercise two
+successive no-send refusals, cooldown, missing-state preservation, independent
+BTC identity, old-ID rejection, fresh dual-leg revival, and epoch refusal.
+The native IB SDK executable and loopback probe build/test are separate from
+production deployment. Before approving FX recovery, require a controlled real
+farm-down/up and reconnect with unchanged order send counters and reconciled
+existing broker order/position identity.
+
+**NAV remains independent**: the observer's all-End callback cohort is a
+transport-receipt proof, not a Broker source-valuation timestamp. If currency
+translation and BASE do not reconcile under the unchanged USD 1.00 threshold,
+even after consistent repeated cohorts, NAV must remain rejected. Only a
+Broker-issued common timestamp/basis covering every currency and BASE could
+support the requested true same-valuation-time certificate; callback arrival
+times and quote midpoints cannot fabricate it.

@@ -70,20 +70,54 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
             item.first, epoch, health.generation, nowMs,
             m_config.quoteMaxAgeMs, 15000);
         if (!plan.accepted) continue;
-        if (plan.cancelRequestIds.size() != 1 ||
-            plan.subscriptions.size() != 1 ||
-            !m_adapter->CancelMktData(plan.cancelRequestIds[0]))
+        if (plan.cancelRequestIds.size() > 1 ||
+            plan.subscriptions.size() != 1)
         {
-            reason = "IB_PAPER_STALE_CASH_REFRESH_CANCEL_FAILED";
+            reason = "IB_PAPER_STALE_CASH_REFRESH_PLAN_INVALID";
             return false;
         }
         const auto& renewed = plan.subscriptions[0];
-        if (!m_adapter->ReqMktData(renewed.requestId, renewed.contract) ||
-            !m_quoteSubscriptions->RecordDispatchResult(
-                plan.generation, renewed.requestId, true))
+        bool cancelled = true;
+        bool sent = false;
+        bool sdkThrew = false;
+        try
         {
-            reason = "IB_PAPER_STALE_CASH_REFRESH_DISPATCH_FAILED";
+            if (!plan.cancelRequestIds.empty())
+                cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0]);
+            if (cancelled)
+                sent = m_adapter->ReqMktData(renewed.requestId, renewed.contract);
+        }
+        catch (...)
+        {
+            // A throwing SDK call has uncertain send/cancel effects.
+            // Never retry on an unknown transport outcome.
+            sdkThrew = true;
+        }
+        const bool recorded = m_quoteSubscriptions->RecordDispatchResult(
+            plan.generation, renewed.requestId, sent);
+        if (!cancelled || sdkThrew || !recorded)
+        {
+            reason = "IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE";
             return false;
+        }
+        if (!sent)
+        {
+            // Deferral applies only to a healthy, unchanged broker transport.
+            // An ingress fault or epoch change requires normal fail-closed
+            // reconnect handling, never another renewal on this socket.
+            if (!m_adapter->IsConnected() ||
+                m_adapter->GetConnectionEpoch() != epoch ||
+                m_adapter->EventIngressAdmissionFailed())
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_TRANSPORT_UNSAFE";
+                return false;
+            }
+            // The IB adapter returns false only before reqMktData reaches
+            // the SDK (for example after CASH-farm 2103). Keep EUR
+            // unavailable and retry with a different ID after 15 seconds.
+            // This never submits/cancels or replays a trading order.
+            NotifyTestStage("stale_cash_quote_deferred_no_send");
+            continue;
         }
         NotifyTestStage("stale_cash_quote_resubscribed");
     }

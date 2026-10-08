@@ -218,6 +218,83 @@ void TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote()
     assert(set.GetHealth().connectionEpoch==18);
 }
 
+
+void TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest()
+{
+    IBContractLite btc;btc.symbol="BTC";btc.secType="CRYPTO";
+    btc.exchange="PAXOS";btc.currency="USD";
+    IBContractLite eur;eur.symbol="EUR";eur.secType="CASH";
+    eur.exchange="IDEALPRO";eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet quotes(store);
+    std::string reason;
+    assert(quotes.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},
+                            "BTC.USD",reason,false,true));
+    const auto initial=quotes.BeginCycle(17,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& sub:initial.subscriptions) {
+        assert(quotes.RecordDispatchResult(1,sub.requestId,true));
+        if(sub.instrument=="BTC.USD") btcId=sub.requestId;
+        if(sub.instrument=="EUR.USD") eurId=sub.requestId;
+    }
+    assert(btcId>0 && eurId>0);
+    auto tick=[&](int id,const char* field,double price,
+                  std::uint64_t when,std::uint64_t epoch=17) {
+        IBEvent e;e.type=IBEventType::TickPrice;e.id=id;e.key=field;
+        e.number=price;e.connectionEpoch=epoch;
+        return quotes.ConsumeTick(e,when);
+    };
+    tick(btcId,"1",85000,1001);tick(btcId,"2",85001,1002);
+    assert(quotes.GetHealth().ReadyForOperations());
+    // The initial EUR ticker was sent, but its CASH farm subsequently
+    // disappeared before BID/ASK arrived.
+    const auto first=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,17000,5000,15000);
+    assert(first.accepted && first.cancelRequestIds.size()==1);
+    assert(first.cancelRequestIds[0]==eurId && first.subscriptions.size()==1);
+    const int refused1=first.subscriptions[0].requestId;
+    assert(quotes.RecordDispatchResult(1,refused1,false));
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,17001,5000,15000).accepted);
+    // After 15s, an unsent request may be replaced WITHOUT cancelling the
+    // unsent ID or reusing it. A prolonged farm outage can refuse twice.
+    const auto second=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,32000,5000,15000);
+    assert(second.accepted && second.cancelRequestIds.empty());
+    assert(second.subscriptions.size()==1);
+    const int refused2=second.subscriptions[0].requestId;
+    assert(refused2!=refused1 && refused2!=eurId);
+    assert(quotes.RecordDispatchResult(1,refused2,false));
+    assert(tick(eurId,"1",1.12,32001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(refused1,"2",1.13,32002).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    // Only a new positive CASH-farm witness allows the SDK to send the third
+    // renewal. Its two fresh actual BID/ASK callbacks are mandatory.
+    const auto restored=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,47000,5000,15000);
+    assert(restored.accepted && restored.cancelRequestIds.empty());
+    assert(restored.subscriptions.size()==1);
+    const int current=restored.subscriptions[0].requestId;
+    assert(current!=eurId && current!=refused1 && current!=refused2);
+    assert(quotes.RecordDispatchResult(1,current,true));
+    tick(current,"1",1.127,47001);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"2",1.128,47002);
+    assert(quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(quotes.GetHealth().contracts.at("EUR.USD").requestId==current);
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",18,1,65000,5000,15000).accepted);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "BTC.USD",17,1,65000,5000,15000).accepted);
+}
+
 void TestMissingStaleAndStrictValidation()
 {
     AuthoritativeTradingSnapshotStore store;
@@ -504,6 +581,7 @@ int main()
 {
     TestCryptoIdentityAndIndependentClosedFxQuotes();
     TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote();
+    TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest();
     TestMissingStaleAndStrictValidation();
     TestAtomicReplaceAndKnownEmpty();
     TestQuoteInvalidationPreservesRecordsButRevokesCompleteness();

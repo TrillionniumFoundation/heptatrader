@@ -193,7 +193,8 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
         return plan;
     }
     const auto found = m_quotesByRequestId.find(request->second);
-    if (found == m_quotesByRequestId.end() || !found->second.dispatchAccepted)
+    if (found == m_quotesByRequestId.end() ||
+        (!found->second.dispatchAccepted && !found->second.renewalRequest))
     {
         plan.reasonCode = "QUOTE_REFRESH_SUBSCRIPTION_NOT_DISPATCHED";
         return plan;
@@ -218,12 +219,16 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
     QuoteState renewed;
     renewed.instrument = instrument;
     renewed.contract = previous.contract;
+    renewed.renewalRequest = true;
     renewed.requestStartedAtMs = observedAtMs;
     m_quotesByRequestId.erase(found);
     m_quotesByRequestId[newRequestId] = renewed;
     m_requestIdByInstrument[instrument] = newRequestId;
     m_complete = false;
-    plan.cancelRequestIds.push_back(previousRequestId);
+    // A locally refused previous renewal never crossed the SDK send
+    // boundary. Cancelling that unissued ID would be a spurious request.
+    if (previous.dispatchAccepted)
+        plan.cancelRequestIds.push_back(previousRequestId);
     IBAuthoritativeQuoteSubscription toSend;
     toSend.requestId = newRequestId;
     toSend.instrument = instrument;
