@@ -48,6 +48,8 @@ def slot_action(anchor,now,claimed,finished):
 def final_assessment(items):
     """Only after ALL slots finalize. Small day blocks do not prove IID data."""
     import numpy as np
+    from .campaign_integrity import validate_final_items
+    validate_final_items(items)
     observed=[x for x in items if x['state']=='OBSERVED']
     if len(items)!=24 or any(x['state'] not in ('OBSERVED','CENSORED') for x in items):
         raise EvidenceError('NO_INTERIM_EFFICACY_TEST')
@@ -93,10 +95,11 @@ def summarize(root,plan):
         item={'anchor':anchor,'state':record['state'],'reason':record.get('reason'),'receipt_sha256':sha(final)}
         if item['state']=='OBSERVED':
             verify_child_slot(plan,anchor,read(base/'proof/plan.json'))
-            proof=audit(base/'proof',root/'candidate.json')
+            from .campaign_integrity import audit_observed
+            proof=audit_observed(root,plan,anchor)
             raw=read(base/'proof/result.json')
             if sha(base/'proof/result.json')!=record['result_sha256']:raise EvidenceError('SLOT_RESULT_CHANGED')
-            item.update(brier=proof['brier'],label=proof['label'],train_prior_brier=raw['train_prior_brier'],uniform_brier=raw['uniform_brier'])
+            item.update(brier=proof['brier'],label=proof['label'],train_prior_brier=proof['train_prior_brier'],uniform_brier=proof['uniform_brier'])
         items.append(item)
     closed=sum(x['state'] in ('OBSERVED','CENSORED') for x in items)
     status={'schema':'heptatrader.frozen-multiwindow-status.v1','at_ms':int(time.time()*1000),'campaign_id':plan['campaign_id'],
@@ -148,7 +151,8 @@ def tick(config):
                 try:
                     result=run(root/'candidate.json',root/'history.json',Path(config['health_path']),base/'proof',anchor_seconds=anchor)
                     if result['outcome_count']==1:
-                        proof=audit(base/'proof',root/'candidate.json');write_once(base/'audit.json',proof)
+                        from .campaign_integrity import audit_observed
+                        proof=audit_observed(root,plan,anchor);write_once(base/'audit.json',proof)
                         record.update(state='OBSERVED',reason=None,result_sha256=sha(base/'proof/result.json'),audit_sha256=sha(base/'audit.json'))
                     else:record['reason']=result.get('reason','CENSORED_COLLECTOR')
                 except Exception as exc:record['reason']=type(exc).__name__+': '+str(exc)
@@ -161,7 +165,12 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--status-only',action='store_true');a=p.parse_args()
     c=read(a.config)
     if a.status_only:
-        root,plan=validate_runtime(c);r=summarize(root,plan)
+        root,plan=validate_runtime(c)
+        fd=os.open(root/'campaign.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+        try:
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            r=summarize(root,plan)
+        finally:os.close(fd)
     else:r=tick(c)
     print(json.dumps({k:v for k,v in r.items() if k not in ('slots','assessment')}),flush=True)
 if __name__=='__main__':main()
