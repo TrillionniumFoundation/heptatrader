@@ -228,6 +228,10 @@ public:
                                                     const std::string& source);
     AuthoritativeSnapshotWriteResult InvalidateQuotes(std::uint64_t observedAtMs,
                                                        const std::string& source);
+    // An instrument-only lease reset must not discard another active market.
+    AuthoritativeSnapshotWriteResult InvalidateQuote(const std::string& instrument,
+                                                      std::uint64_t observedAtMs,
+                                                      const std::string& source);
     AuthoritativeSnapshotWriteResult ReplaceAccounts(const std::vector<AuthoritativeAccount>& accounts,
                                                       std::uint64_t observedAtMs,
                                                       const std::string& source);

@@ -100,6 +100,50 @@ void TestCryptoIdentityAndIndependentClosedFxQuotes()
     assert(tick(bid,"1",90000,1006,2).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
     assert(quotes.GetQuote("BTC.USD").bid==85000);
     tick(fid,"1",1.1,1007);tick(fid,"2",1.1001,1008);assert(quotes.IsComplete());
+    // Same-epoch secondary FX renewal revokes only FX. A stale/late callback
+    // for the old request ID cannot regain authority; BTC stays usable.
+    const auto failedEpoch=quotes.BeginInstrumentRenewal("EUR.USD",2,1009);
+    assert(!failedEpoch.accepted && quotes.IsComplete());
+    const auto renewed=quotes.BeginInstrumentRenewal("EUR.USD",1,1010);
+    assert(renewed.accepted && renewed.cancelRequestIds.size()==1);
+    assert(renewed.cancelRequestIds[0]==fid && renewed.subscriptions.size()==1);
+    const int renewedId=renewed.subscriptions[0].requestId;
+    assert(renewedId!=fid && renewed.subscriptions[0].instrument=="EUR.USD");
+    assert(quotes.GetHealth().ReadyForOperations() && !quotes.IsComplete());
+    assert(store.GetQuote("BTC.USD",1010,100).state.availability==
+        AuthoritativeSnapshotAvailability::Fresh);
+    assert(store.GetQuote("EUR.USD",1010,100).state.availability==
+        AuthoritativeSnapshotAvailability::Missing);
+    assert(!quotes.RecordDispatchResult(1,fid,true));
+    assert(tick(fid,"1",1.2,1011).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(quotes.RecordDispatchResult(1,renewedId,true));
+    // No new price arrived: a second bounded attempt can renew the already
+    // witnessed instrument without using the old lease or affecting BTC.
+    const auto retried=quotes.BeginInstrumentRenewal("EUR.USD",1,1012);
+    assert(retried.accepted && retried.cancelRequestIds.size()==1);
+    assert(retried.cancelRequestIds[0]==renewedId);
+    const int retriedId=retried.subscriptions[0].requestId;
+    assert(retriedId!=renewedId);
+    assert(tick(renewedId,"1",1.2,1013).status==
+        IBAuthoritativeQuoteConsumeStatus::Ignored);
+    // A broker pre-send refusal is not a live quote; a later cooldown retry
+    // remains legal only because of the previously witnessed FX subscription.
+    assert(quotes.RecordDispatchResult(1,retriedId,false));
+    const auto retriedAfterRefusal=quotes.BeginInstrumentRenewal("EUR.USD",1,1014);
+    assert(retriedAfterRefusal.accepted);
+    assert(retriedAfterRefusal.cancelRequestIds[0]==retriedId);
+    const int finalId=retriedAfterRefusal.subscriptions[0].requestId;
+    assert(finalId!=retriedId);
+    assert(tick(retriedId,"2",1.2001,1015).status==
+        IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(quotes.RecordDispatchResult(1,finalId,true));
+    tick(finalId,"1",1.1002,1016);
+    assert(store.GetQuote("EUR.USD",1016,100).state.availability==
+        AuthoritativeSnapshotAvailability::Missing);
+    assert(tick(finalId,"2",1.1003,1017).write.accepted);
+    assert(store.GetQuote("EUR.USD",1017,100).state.availability==
+        AuthoritativeSnapshotAvailability::Fresh);
+    assert(quotes.IsComplete() && quotes.GetHealth().ReadyForOperations());
     auto restarted=quotes.BeginCycle(2,2,1100);assert(restarted.accepted);
     assert(!quotes.GetHealth().ReadyForOperations());
     assert(tick(bid,"1",85001,1101).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
