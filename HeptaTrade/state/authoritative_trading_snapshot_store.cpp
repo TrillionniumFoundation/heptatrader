@@ -588,6 +588,34 @@ AuthoritativeSnapshotWriteResult AuthoritativeTradingSnapshotStore::InvalidateQu
     return result;
 }
 
+AuthoritativeSnapshotWriteResult AuthoritativeTradingSnapshotStore::InvalidateQuote(
+    const std::string& instrument, std::uint64_t observedAtMs,
+    const std::string& source)
+{
+    std::string reason;
+    if (instrument.empty() || !ValidateObservation(observedAtMs, source, reason))
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return RejectLocked(instrument.empty() ? "QUOTE_INSTRUMENT_REQUIRED" : reason);
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_quotesDomain.touched && observedAtMs < m_quotesDomain.lastUpdatedAtMs)
+        return RejectLocked("OBSERVATION_TIME_REGRESSION");
+    // A renewal awaiting its first Broker BID/ASK has no quote entry. A
+    // further bounded renewal is still a safe instrument-only invalidation.
+    if (m_quotes.find(instrument) == m_quotes.end() && !m_quotesDomain.touched)
+        return RejectLocked("QUOTE_INSTRUMENT_NOT_PRESENT");
+    std::uint64_t version = 0;
+    if (!NextVersionLocked(version, reason)) return RejectLocked(reason);
+    m_quotes.erase(instrument);
+    m_snapshotVersion = version;
+    TouchDomain(m_quotesDomain, observedAtMs, version, false);
+    AuthoritativeSnapshotWriteResult result;
+    result.accepted = true;
+    result.snapshotVersion = version;
+    return result;
+}
+
 AuthoritativeSnapshotWriteResult AuthoritativeTradingSnapshotStore::ReplaceAccounts(
     const std::vector<AuthoritativeAccount>& accounts,
     std::uint64_t observedAtMs,
