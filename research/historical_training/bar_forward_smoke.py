@@ -69,12 +69,18 @@ class WindowGuard:
         self.issued.add(rid);self.last=monotonic
 
 
-def run(candidate_path,history_config,health_path,output):
+def run(candidate_path,history_config,health_path,output,*,anchor_seconds=None):
     out=Path(output)
     if out.exists():raise EvidenceError('FORWARD_PROOF_EXISTS_NO_REPEAT')
     out.mkdir(mode=0o700)
     c=read(candidate_path);config=read(history_config);candidate_sha=sha(candidate_path)
-    now=time.time();anchor=math.ceil((now+90)/300)*300;check_frozen(c,int(now*1000),anchor)
+    now=time.time()
+    if anchor_seconds is not None:
+        if type(anchor_seconds) is not int or anchor_seconds%300 or not 5<anchor_seconds-now<=90:
+            raise EvidenceError('PREDECLARED_ANCHOR_START_DEADLINE')
+        anchor=anchor_seconds
+    else:anchor=math.ceil((now+90)/300)*300
+    check_frozen(c,int(now*1000),anchor)
     health=read(health_path)
     if (now*1000-health['at_ms']>120000 or health.get('usable',0)<20 or health.get('unusable',25)>4):raise EvidenceError('EXISTING_SOURCE_REVIEW_GATE_NOT_READY')
     sdk=Path(config['sdk_root'])
@@ -104,7 +110,10 @@ def run(candidate_path,history_config,health_path,output):
             return EClient.sendMsg(self,msg)
         def nextValidId(self,orderId):self.ready.set()
         def managedAccounts(self,accountsList):
-            xs=[x for x in accountsList.split(',') if x];self.paper=bool(xs) and all(x.startswith('DU') for x in xs);self.accounts.set()
+            xs=[x for x in accountsList.split(',') if x]
+            expected=config.get('expected_paper_account')
+            self.paper=bool(xs) and all(x.startswith('DU') for x in xs) and (expected is None or expected in xs)
+            self.accounts.set()
         def error(self,reqId,errorCode,errorString,advancedOrderRejectJson=''):
             self.errors.append({'request_id':reqId,'code':errorCode,'message':errorString})
             if reqId in self.events:self.events[reqId].set()
