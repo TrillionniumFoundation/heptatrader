@@ -558,6 +558,10 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
+    // Bounded same-epoch re-subscription of an independently stale FX ticker.
+    // No quote timestamp is refreshed without new Broker BID/ASK callbacks.
+    auto nextFxQuoteRenewal = nextPendingReconcile + std::chrono::seconds(15);
+    unsigned fxQuoteRenewalAttempts = 0;
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -574,6 +578,9 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
+            fxQuoteRenewalAttempts = 0;
+            nextFxQuoteRenewal = std::chrono::steady_clock::now() +
+                std::chrono::seconds(15);
         }
         if (m_recoveryAuditReconnectRequested.load())
         {
@@ -593,6 +600,95 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         // client for open-order evidence and reconcile existing commands.
         // No place/cancel mutation or replacement command is issued here.
         const auto now = std::chrono::steady_clock::now();
+        if (m_config.profile.UsesUserCrypto() &&
+            m_config.primaryQuoteInstrument == "BTC.USD" &&
+            !m_startupRecoveryReadOnly.load() &&
+            now >= nextFxQuoteRenewal &&
+            m_adapter && m_adapter->IsConnected() &&
+            m_adapter->IsEventStreamAuthoritative() &&
+            !m_adapter->EventIngressAdmissionFailed() &&
+            !PostFillRiskRefreshPending())
+        {
+            nextFxQuoteRenewal = now + std::chrono::seconds(30);
+            IBAuthoritativeQuoteSubscriptionHealth quoteHealth;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                if (m_quoteSubscriptions)
+                    quoteHealth = m_quoteSubscriptions->GetHealth();
+            }
+            const auto fx = quoteHealth.contracts.find("EUR.USD");
+            if (quoteHealth.independentQuotes &&
+                quoteHealth.connectionEpoch == m_adapter->GetConnectionEpoch() &&
+                fx != quoteHealth.contracts.end() && fx->second.active &&
+                (fx->second.dispatchAccepted || fxQuoteRenewalAttempts > 0) &&
+                fx->second.requestId > 0)
+            {
+                const std::uint64_t latest =
+                    fx->second.quote.LivenessObservedAtMs();
+                const std::uint64_t wall = ib_paper_execution_runtime_internal::NowEpochMs();
+                const bool fresh = latest != 0 && wall >= latest &&
+                    wall - latest <= m_config.quoteMaxAgeMs;
+                if (fresh)
+                    fxQuoteRenewalAttempts = 0;
+                const bool expired = latest != 0 && wall > latest &&
+                    wall - latest >= std::max<std::uint64_t>(
+                        15000, 3 * m_config.quoteMaxAgeMs);
+                const bool awaitingReopenedQuote =
+                    latest == 0 && fxQuoteRenewalAttempts > 0;
+                if (!fresh && fxQuoteRenewalAttempts < 3 &&
+                    (expired || awaitingReopenedQuote))
+                {
+                    IBAuthoritativeQuoteSubscriptionPlan renewal;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                        if (m_quoteSubscriptions)
+                            renewal = m_quoteSubscriptions->BeginInstrumentRenewal(
+                                "EUR.USD", quoteHealth.connectionEpoch, wall);
+                    }
+                    if (renewal.accepted && renewal.cancelRequestIds.size() == 1 &&
+                        renewal.subscriptions.size() == 1)
+                    {
+                        // The old FX quote has already been invalidated. The
+                        // unrelated BTC quote remains authoritative and live.
+                        bool cancelled = false;
+                        bool sent = false;
+                        bool sdkThrew = false;
+                        try {
+                            cancelled = m_adapter->CancelMktData(
+                                renewal.cancelRequestIds[0]);
+                            if (cancelled)
+                                sent = m_adapter->ReqMktData(
+                                    renewal.subscriptions[0].requestId,
+                                    renewal.subscriptions[0].contract);
+                        } catch (...) {
+                            sdkThrew = true;
+                        }
+                        bool recorded = false;
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                            recorded = m_quoteSubscriptions &&
+                                m_quoteSubscriptions->RecordDispatchResult(
+                                    renewal.generation,
+                                    renewal.subscriptions[0].requestId, sent);
+                        }
+                        if (!cancelled || !recorded || sdkThrew) {
+                            // Uncertain cancellation/exception is an ownership
+                            // fault, not evidence permitting another request.
+                            MarkFatalRuntimeError(
+                                "IB_PAPER_SECONDARY_FX_QUOTE_RENEWAL_UNSAFE");
+                            break;
+                        }
+                        ++fxQuoteRenewalAttempts;
+                        // A definite no-send leaves only EUR unready; bounded
+                        // retry can recover when the CASH farm becomes ready.
+                        // It must never restart healthy BTC as a side effect.
+                        NotifyTestStage(sent ?
+                            "secondary_fx_quote_subscription_renewed" :
+                            "secondary_fx_quote_renewal_send_rejected");
+                    }
+                }
+            }
+        }
         std::string pendingReason;
         if (m_startupRecoveryReadOnly.load()) {
             if (!m_config.profile.observationOnly && now >= nextPendingOpenOrderRead && !PostFillRiskRefreshPending()) {

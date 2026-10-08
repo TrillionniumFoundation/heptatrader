@@ -63,7 +63,7 @@ class RejectedDownloadTests(unittest.TestCase):
         ex=self.rejected()
         with patch.object(observer,'write_snapshot',side_effect=capture):
             nav=observer.publish_unavailable(self.out,ex)
-        self.assertEqual(order,[('nav.json',False),('rejected-raw.json',None),('nav.json',False)])
+        self.assertEqual(order,[('nav.json',False),('rejected-raw.json',None),('rejected-fx-diagnostic.json',False),('nav.json',False)])
         self.assertFalse(nav['authoritative']);self.assertFalse(nav['mutation_authorized'])
         self.assertFalse(nav['rejected_raw_is_accepted_nav'])
         self.assertEqual(nav['rejected_raw_sha256'],account.digest(ex.raw))
@@ -92,8 +92,61 @@ class RejectedDownloadTests(unittest.TestCase):
         ex=self.rejected();observer.publish_unavailable(self.out,ex)
         ex.raw['connection_id']='second-rejected-read'
         observer.publish_unavailable(self.out,ex)
-        self.assertEqual(len(list(self.out.glob('rejected-*'))),1)
+        self.assertEqual(sorted(x.name for x in self.out.glob('rejected-*')),['rejected-fx-diagnostic.json','rejected-raw.json'])
         self.assertEqual(report.load_private(self.out/'rejected-raw.json')['connection_id'],'second-rejected-read')
+
+    def test_rejected_fx_diagnostic_is_bound_and_cannot_authorize_nav(self):
+        previous=raw_snapshot()
+        report.write_snapshot(self.out/'raw-latest.json',previous)
+        ex=self.rejected()
+        nav=observer.publish_unavailable(self.out,ex)
+        diag=report.load_private(self.out/'rejected-fx-diagnostic.json')
+        self.assertFalse(diag['authoritative'])
+        self.assertFalse(diag['mutation_authorized'])
+        self.assertFalse(diag['within_existing_bound'])
+        self.assertEqual(diag['fixed_acceptance_bound_usd'],'1.00')
+        self.assertEqual(diag['raw_sha256'],account.digest(ex.raw))
+        self.assertIn('EUR',diag['algebraic_implied_fx_rate']['currency'])
+        self.assertEqual(nav['rejected_fx_diagnostic_file'],'rejected-fx-diagnostic.json')
+        self.assertEqual((self.out/'rejected-fx-diagnostic.json').stat().st_mode & 0o777,0o600)
+        with self.assertRaises(EvidenceError):
+            account.validate_nav(nav,period(),nav['observed_at_ms'])
+
+    def test_malformed_diagnostic_cannot_turn_bad_account_into_accepted_nav(self):
+        ex=self.rejected()
+        ex.raw['rows'][0]['account']='DU_WRONG'
+        nav=observer.publish_unavailable(self.out,ex)
+        self.assertFalse(nav['authoritative'])
+        self.assertNotIn('rejected_fx_diagnostic_file',nav)
+
+    def test_rejected_rate_diagnostic_does_not_consume_previous_raw(self):
+        previous=raw_snapshot()
+        report.write_snapshot(self.out/'raw-latest.json',previous)
+        before=(self.out/'raw-latest.json').read_bytes()
+        observer.publish_unavailable(self.out,self.rejected())
+        self.assertEqual((self.out/'raw-latest.json').read_bytes(),before)
+        self.assertEqual(report.load_private(self.out/'rejected-fx-diagnostic.json')['period_id'],
+                         previous['period_id'])
+
+    def test_only_same_period_fx_skew_retries_then_accepts_real_quote(self):
+        from test_account_temporal_fx_quote import stale_rate_with_fresh_witness
+        recovered=stale_rate_with_fresh_witness()
+        with patch.object(observer, 'acquire', side_effect=[
+                copy.deepcopy(self.raw), recovered]) as get:
+            nav, raw=observer.collect_account(self.cfg,self.pp,self.root)
+        self.assertEqual(get.call_count,2)
+        self.assertEqual(raw['fx_quote_witness']['account'],'DU_TEST')
+        self.assertTrue(nav['authoritative'])
+        self.assertEqual(nav['fx_reconciliation_bound_usd'],'1.00')
+
+    def test_repeated_fx_skew_is_terminal_after_three_read_only_attempts(self):
+        with patch.object(observer, 'acquire', side_effect=[
+                copy.deepcopy(self.raw) for _ in range(3)]) as get:
+            with self.assertRaises(observer.RejectedAccountDownload) as got:
+                observer.collect_account(self.cfg,self.pp,self.root)
+        self.assertEqual(str(got.exception),'ACCOUNT_NAV_FX_RECONCILIATION_FAILED')
+        self.assertEqual(get.call_count,3)
+        self.assertFalse((self.out/'nav.json').exists())
 
     def test_transport_error_does_not_claim_a_new_raw_download(self):
         nav=observer.publish_unavailable(self.out,EvidenceError('ACCOUNT_DOWNLOAD_END_TIMEOUT'))

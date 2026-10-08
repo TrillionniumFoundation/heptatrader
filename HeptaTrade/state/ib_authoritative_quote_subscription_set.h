@@ -118,6 +118,11 @@ public:
     IBAuthoritativeQuoteSubscriptionPlan BeginCycle(std::uint64_t connectionEpoch,
                                                     std::uint64_t generation,
                                                     std::uint64_t observedAtMs);
+    // Replaces only an already witnessed active ticker in the same Broker
+    // epoch. No broker I/O occurs here; the caller cancels then re-requests.
+    IBAuthoritativeQuoteSubscriptionPlan BeginInstrumentRenewal(
+        const std::string& instrument, std::uint64_t connectionEpoch,
+        std::uint64_t observedAtMs);
     bool RecordDispatchResult(std::uint64_t generation, int requestId, bool accepted);
     std::vector<int> AbortCycle(std::uint64_t generation);
     IBAuthoritativeQuoteConsumeResult ConsumeTick(const IBEvent& event,
@@ -138,6 +143,7 @@ private:
         std::string instrument;
         IBContractLite contract;
         bool dispatchAccepted = false;
+        bool hadLiveQuoteInEpoch = false;
         IBAuthoritativeQuoteSnapshot quote;
     };
 
