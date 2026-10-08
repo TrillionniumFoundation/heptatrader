@@ -150,3 +150,26 @@ To stop the research campaign, disable its own timer and stop its own service.
 Stopping an in-flight window censors it. It never authorizes a replay or affects
 existing FX/BTC strategy ownership. Keep all original snapshots and negative
 results; no source/strategy/model can be promoted by this finite campaign alone.
+
+
+## Fixed64 implementation correction during offload recovery
+
+The first admitted qian-qi encoder completed multilingual forward passes, then
+failed at the projection call: the existing current100k helper accepts ONLY 256
+coordinates while this matched experiment had declared 64. No paired feature
+file, readout or score was produced. The exception and resource receipt are
+retained separately; it was a software contract error, not another OOM.
+
+A dedicated `matched_projection` now implements the originally intended seeded
+CPU float32 projection with fixed destination 64. The old 256-coordinate helper
+is not weakened or modified. The caller validates the dimensions before encoder
+work and durably retains completed raw encoder vectors before projecting. Actual
+CPU tensor tests verify shape, normalization, deterministic seed, changed-seed
+behavior, nonfinite refusal and exact agreement with the declared matrix formula.
+
+A new implementation-attempt plan retains the original input bytes, model hashes,
+role times, projection seed/width, hyperparameter grids and costs. Its parent plan
+and failed attempt are hash-bound; only the implementation source pin and the
+explicit failure amendment differ. Both backbones run under the corrected same
+implementation, and no previously computed outcome/score influenced the change.
+The frozen prospective candidate and campaign plan remain byte-identical.

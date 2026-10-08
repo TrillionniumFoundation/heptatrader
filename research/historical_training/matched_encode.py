@@ -31,7 +31,8 @@ def encode(config,config_path):
     from safetensors.torch import load_file,save_file
     from laya.common import build_model
     from transformers import AutoTokenizer
-    from paired_net_100k_preflight.core import project_fixed_cpu
+    from .matched_projection import project_fixed64,validate_projection
+    for arm in ('mmbert','english'):validate_projection(plan['assets'][arm]['hidden_size'],plan['projection_width'])
     torch.set_num_threads(2);torch.set_num_interop_threads(1)
     tensors={};info={}
     for arm in ('mmbert','english'):
@@ -53,7 +54,16 @@ def encode(config,config_path):
                 vec=F.normalize((hidden*mask).sum(1)/mask.sum(1),dim=-1)
             vectors.append(vec.cpu())
             if index%128==0:print(json.dumps({'arm':arm,'encoded':index+2,'total':len(texts),'device':'cpu'}),flush=True)
-        raw=torch.cat(vectors,0).contiguous();projected=project_fixed_cpu(raw,plan['projection_seed'],plan['projection_width'])
+        raw=torch.cat(vectors,0).contiguous()
+        # Preserve raw completed encoding before projection for auditable recovery.
+        raw_path=out/(arm+'-raw.safetensors')
+        if raw_path.exists():raise EvidenceError('RAW_ENCODER_ARTIFACT_ALREADY_EXISTS_NO_OVERWRITE')
+        save_file({'features':raw},str(raw_path));raw_path.chmod(0o400)
+        write_once(out/(arm+'-raw-receipt.json'),{'plan_sha256':sha(out/'plan.json'),
+            'input_sha256':sha(out/'input.json'),'raw_sha256':sha(raw_path),
+            'text_hashes_sha256':hashlib.sha256(json.dumps(plan['text_sha256']).encode()).hexdigest(),
+            'asset':plan['assets'][arm],'rows':len(texts),'width':int(raw.shape[1]),'trained':False})
+        projected=project_fixed64(raw,plan['projection_seed'],plan['projection_width'])
         if not torch.isfinite(projected).all():raise EvidenceError('NONFINITE_FROZEN_FEATURES')
         tensors[arm]=projected
         info[arm]={'rows':len(texts),'tokens_min':min(lengths),'tokens_max':max(lengths),'wall_seconds':time.monotonic()-started,
