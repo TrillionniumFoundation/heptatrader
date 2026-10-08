@@ -1,6 +1,7 @@
 """Append-only feed prefixes -> mature frozen Laya datasets, separate from orders."""
 from __future__ import annotations
 from collections import Counter
+from bisect import bisect_right
 from decimal import Decimal
 from pathlib import Path
 import json,time
@@ -41,8 +42,16 @@ def collect(config,now_ms):
   if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
  samples=[]
  for i in range(max(5,len(sampled)-512),len(sampled)):
-  history=sampled[max(0,i-23):i+1]
-  s=make_sample(history,history[-1]['known_at_ms'],scope,'CAUSAL_QUOTE_WINDOW')
+  anchor=sampled[i]
+  # Training and forward inference share one causal history selector. Later
+  # arrivals and timestamps cannot repair an earlier unavailable input.
+  history,reset=contiguous_history(ordered[:bisect_right(times,anchor['t'])],anchor['known_at_ms'])
+  if len(history)<6:
+   exclusions.append({'anchor_ms':anchor['t'],'reason':'INSUFFICIENT_CONTIGUOUS_INPUT_HISTORY'})
+   continue
+  s=make_sample(history,anchor['known_at_ms'],scope,'CAUSAL_QUOTE_WINDOW')
+  s['history_selection_version']='CONTIGUOUS_SELECTED_SUFFIX_V2'
+  s['contiguous_history_reset_at_gap']=reset
   samples.append(label(s,ordered,times,now_ms))
  samples=samples[-512:]
  seed=read_json(Path(config['seed_dataset']),64*1024**2)
@@ -72,6 +81,11 @@ def contiguous_history(quotes,now_ms):
   if previous is not None and previous-q['t']>30000:
    reset=True;break
   previous=q['t']
+  if chosen and chosen[-1]['t']-q['t']>30000:
+   # Raw quotes may be continuous while 10s thinning creates a >30s selected
+   # gap. Keep only the supported recent suffix; never expand the gap limit,
+   # interpolate a point, duplicate a quote, or rewrite its time.
+   reset=True;break
   if not chosen or chosen[-1]['t']-q['t']>=10000:chosen.append(q)
   if len(chosen)>=24:break
  return list(reversed(chosen)),reset
@@ -87,4 +101,5 @@ def forecast_input(config,quotes,now_ms):
  if any(b['t']-a['t']>30000 for a,b in zip(history,history[1:])):raise ContractError('SHADOW_HISTORY_GAP')
  sample=make_sample(history,now_ms,config['period_sha256']+':EUR.USD','CAUSAL_QUOTE_WINDOW')
  sample['contiguous_history_reset_at_gap']=reset
+ sample['history_selection_version']='CONTIGUOUS_SELECTED_SUFFIX_V2'
  return sample,{'state':causal_state(sample,'EUR.USD',300),'question':question(300)}

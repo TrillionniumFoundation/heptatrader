@@ -95,7 +95,7 @@ WantedBy=default.target
   'runtime_sha256':inventory,'configuration':str(cfg),'configuration_sha256':sha_file(cfg),'units':units,
   'start_requested':start,'paper_services_changed':False,'automatic_trading':False,'worker_sandbox_required':True,
   'canonical_agentd_owner_connected':False,'promotion_mode':'STATISTICAL_QUALIFICATION_THEN_WAIT_FOR_CANONICAL_OWNER'}
- out=cfgdir/(config_id+'.install.json')
+ out=cfgdir/(config_id+('.'+only if only else '')+'.install.json')
  if out.exists() and out.read_bytes()!=canonical(receipt)+b'\n':raise ContractError('INSTALL_RECEIPT_CHANGED')
  if not out.exists():out.write_bytes(canonical(receipt)+b'\n');out.chmod(0o400)
  print(json.dumps(receipt,indent=2));return receipt

@@ -11,6 +11,7 @@ from .resident_data import collect
 from .resident_rewards import current as rewards_current
 from .resident_store import database,write_once,atomic,get_meta,put_meta,admit_job,complete_job
 from .promotion import RULE
+from .resident_budget import policy as budget_policy,inspect as inspect_storage
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
@@ -26,6 +27,7 @@ def config_check(config):
  for rel,expected in config.get('runtime_sha256',{}).items():
   if Path(rel).is_absolute() or '..' in Path(rel).parts:raise ContractError('RUNTIME_PATH_ESCAPE')
   if sha_file(Path(config['runtime_directory'])/rel)!=expected:raise ContractError('RUNTIME_CHANGED:'+rel)
+ budget_policy(config)
  return config
 
 
@@ -40,7 +42,7 @@ class Supervisor:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=config_check(read_json(self.path));self.root=Path(self.c['control_directory'])
   self.root.mkdir(parents=True,mode=0o700,exist_ok=True);self.db=database(self.root/'scheduler.sqlite')
-  self.stop=False;self.child=None
+  self.stop=False;self.child=None;self.storage=None
  def stop_signal(self,*_):
   self.stop=True
   if self.child and self.child.poll() is None:self.child.terminate()
@@ -53,7 +55,7 @@ class Supervisor:
     'execution_reward_is_not_model_credit':True,
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
-    'broker_orders_sent':0,**extra}
+    'broker_orders_sent':0,'storage':self.storage,**extra}
   atomic(self.root/'status.json',state);print(json.dumps(state),flush=True);return state
  def candidate_done(self,row):
   job=json.loads(row['payload']);path=Path(job['output_directory'])/'candidate.json'
@@ -99,8 +101,8 @@ class Supervisor:
    write_once(self.root/'failures'/(row['id']+'.json'),{'reason':'INTERRUPTED_JOB_NO_COMMITTED_CANDIDATE','job_id':row['id'],'rows_remain_consumed':True})
  def step(self):
   now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()
-  if sum(p.stat().st_size for p in Path(self.c['state_root']).rglob('*') if p.is_file())>self.c['state_max_bytes']:
-   raise ContractError('STATE_BUDGET_FULL_NO_EVIDENCE_PRUNING')
+  self.storage=inspect_storage(self.c)
+  if not self.storage['admission_ready']:raise ContractError(self.storage['blocked_reason'])
   rewards=rewards_current(self.c,now);atomic(self.root/'rewards-status.json',rewards)
   with self.db:
    for r in rewards['rewards']:
