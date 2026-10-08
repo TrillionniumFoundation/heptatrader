@@ -93,8 +93,11 @@ class Gate:
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
             if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
+            from .resident_live_source import refresh
+            source,proof=refresh(read(self.c['original_config']),read(self.c['source_health_path']),int(time.time()*1000))
             report=assess(parse_meminfo(Path('/proc/meminfo').read_text()),parse_full_psi(Path('/proc/pressure/memory').read_text()),
-                read(self.c['source_health_path']),int(time.time()*1000),self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                source,int(time.time()*1000),self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+            report['original_live_source_evidence']=proof
         except (OSError,ValueError,TypeError,KeyError) as exc:
             report={'schema':'heptatrader.resident-resource-admission.v1','at_ms':int(time.time()*1000),
                 'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}

@@ -183,3 +183,7 @@ Example independent result audit (read-only source, new immutable receipt):
 /path/to/pinned/venv/bin/python -B -m historical_training.audit_offline \
   --config /private/original-experiment.json --output /private/audit-new.json
 ```
+
+## Controlled training resumption
+
+See [2026-10-09 training resumption](TRAINING_RESUME_20261009.md) for original-source freshness repair, real value-head learning, the archived Neuron256 trial, preserved failures, resource evidence and remaining future/native acceptance boundaries.

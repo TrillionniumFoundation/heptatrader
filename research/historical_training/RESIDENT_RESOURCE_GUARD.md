@@ -116,3 +116,7 @@ The finite frozen campaign remains installed with its original schedule, model,
 thresholds and previous observed/censored records. Failed source admission stays
 censored; no slot is retried at a more favorable time. Matched English/multilingual
 results and BTC terminal/NAV evidence remain separate research/account scopes.
+
+## Verified live freshness without a wider TTL
+
+The source continuity decision remains the original cached 24-probe judgment. `resident_live_source.py` verifies an extension of an original not-ended feed prefix and uses the original quote timestamps for the unchanged five-second freshness requirement. Cached decision time, period, missing-window limits and statistical scope are not rewritten. Closed recovery segments are excluded; mtime selects a search candidate only. See [the actual resumption record](TRAINING_RESUME_20261009.md).
