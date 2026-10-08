@@ -163,6 +163,71 @@ bool IBAuthoritativeQuoteSubscriptionSet::SameContract(
         left.localSymbol == right.localSymbol;
 }
 
+IBAuthoritativeQuoteSubscriptionPlan
+IBAuthoritativeQuoteSubscriptionSet::BeginInstrumentRenewal(
+    const std::string& instrument, std::uint64_t connectionEpoch,
+    std::uint64_t observedAtMs)
+{
+    IBAuthoritativeQuoteSubscriptionPlan plan;
+    plan.connectionEpoch = connectionEpoch;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    plan.generation = m_generation;
+    if (!m_independentQuotes || m_generation == 0 ||
+        connectionEpoch == 0 || connectionEpoch != m_connectionEpoch ||
+        observedAtMs == 0)
+    {
+        plan.reasonCode = "QUOTE_RENEWAL_EPOCH_OR_MODE_INVALID";
+        return plan;
+    }
+    const auto original = m_requestIdByInstrument.find(instrument);
+    if (original == m_requestIdByInstrument.end())
+    {
+        plan.reasonCode = "QUOTE_RENEWAL_INSTRUMENT_MISSING";
+        return plan;
+    }
+    const auto prior = m_quotesByRequestId.find(original->second);
+    // A rejected follow-up SDK request is still retryable only if this exact
+    // instrument had real positive Broker BID/ASK in the current epoch.
+    if (prior == m_quotesByRequestId.end() ||
+        !prior->second.hadLiveQuoteInEpoch)
+    {
+        plan.reasonCode = "QUOTE_RENEWAL_REQUIRES_PREVIOUS_REAL_QUOTE";
+        return plan;
+    }
+    if (m_nextRequestId <= 0 || m_nextRequestId > std::numeric_limits<int>::max())
+    {
+        plan.reasonCode = "QUOTE_REQUEST_ID_EXHAUSTED";
+        return plan;
+    }
+    const AuthoritativeSnapshotWriteResult invalidated = m_store.InvalidateQuote(
+        instrument, observedAtMs, "ib.instrument_quote_renewal");
+    if (!invalidated.accepted)
+    {
+        plan.reasonCode = invalidated.reasonCode;
+        return plan;
+    }
+    const int oldId = original->second;
+    const int nextId = static_cast<int>(m_nextRequestId++);
+    const IBContractLite contract = prior->second.contract;
+    const bool witnessed = prior->second.hadLiveQuoteInEpoch;
+    m_quotesByRequestId.erase(prior);
+    QuoteState fresh;
+    fresh.instrument = instrument;
+    fresh.contract = contract;
+    fresh.hadLiveQuoteInEpoch = witnessed;
+    m_quotesByRequestId[nextId] = fresh;
+    m_requestIdByInstrument[instrument] = nextId;
+    m_complete = false;
+    plan.cancelRequestIds.push_back(oldId);
+    IBAuthoritativeQuoteSubscription subscription;
+    subscription.requestId = nextId;
+    subscription.instrument = instrument;
+    subscription.contract = contract;
+    plan.subscriptions.push_back(subscription);
+    plan.accepted = true;
+    return plan;
+}
+
 bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(
     std::uint64_t generation,
     int requestId,
@@ -231,6 +296,8 @@ IBAuthoritativeQuoteConsumeResult IBAuthoritativeQuoteSubscriptionSet::ConsumeTi
         state.quote.hasLast = true;
         state.quote.lastObservedAtMs = observedAtMs;
     }
+    if (state.quote.HasQuote() && state.quote.bid > 0.0 && state.quote.ask > 0.0)
+        state.hadLiveQuoteInEpoch = true;
 
     if (m_independentQuotes)
     {
