@@ -177,6 +177,45 @@ void TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote()
     assert(set.GetQuote("EUR.USD").HasQuote());
     assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
     assert(set.GetHealth().ReadyForOperations());
+    // Another stale interval must renew the same secondary instrument again,
+    // without ever reusing a previous request ID or borrowing BTC's BID/ASK.
+    const auto again=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,41000,5000,15000);
+    assert(again.accepted && again.cancelRequestIds.size()==1);
+    assert(again.cancelRequestIds[0]==newEurId);
+    assert(again.subscriptions.size()==1);
+    const int thirdEurId=again.subscriptions[0].requestId;
+    assert(thirdEurId!=newEurId && thirdEurId!=eurId);
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(tick(newEurId,"1",1.2,41001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(set.RecordDispatchResult(1,thirdEurId,true));
+    tick(thirdEurId,"1",1.125,41002);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(thirdEurId,"2",1.126,41003);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    // Full broker reconnect: all old-epoch BID/ASK and request IDs are
+    // untrusted, and both instruments need fresh callbacks.
+    const auto reconnect=set.BeginCycle(18,2,50000);
+    assert(reconnect.accepted && reconnect.subscriptions.size()==2);
+    assert(tick(thirdEurId,"1",1.25,50001,17).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(btcId,"2",86000,50002,17).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    int nextBtcId=0,nextEurId=0;
+    for(const auto& item:reconnect.subscriptions) {
+        assert(set.RecordDispatchResult(2,item.requestId,true));
+        if(item.instrument=="BTC.USD") nextBtcId=item.requestId;
+        else nextEurId=item.requestId;
+    }
+    assert(nextEurId!=thirdEurId && nextBtcId!=btcId);
+    assert(!set.GetHealth().ReadyForOperations());
+    tick(nextBtcId,"1",85900,50003,18);
+    assert(!set.GetHealth().ReadyForOperations());
+    tick(nextBtcId,"2",85901,50004,18);
+    assert(set.GetHealth().ReadyForOperations());
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(nextEurId,"1",1.127,50005,18);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(nextEurId,"2",1.128,50006,18);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().connectionEpoch==18);
 }
 
 void TestMissingStaleAndStrictValidation()

@@ -122,6 +122,24 @@ class SendBoundary:
         return code
 
 
+class ObserverReconnectBudget:
+    """Cap retries when the Broker handshake is unavailable (monotonic clock)."""
+    def __init__(self):
+        self.failures = 0
+        self.next_connect_at = 0.0
+
+    def blocked(self, now: float) -> bool:
+        return now < self.next_connect_at
+
+    def failed(self, now: float) -> None:
+        self.failures = min(self.failures + 1, 5)
+        self.next_connect_at = now + min(120.0, 10.0 * (2 ** (self.failures - 1)))
+
+    def recovered(self) -> None:
+        self.failures = 0
+        self.next_connect_at = 0.0
+
+
 def load_sdk(path: Path):
     resolved = path.resolve(strict=True)
     if not (resolved / 'ibapi/client.py').is_file(): raise EvidenceError('IBAPI_SDK_NOT_INSTALLED')
@@ -137,7 +155,7 @@ def acquire(period: dict, sdk_path: Path, client_id: int, timeout: int = 12, ses
     if not positive_int(client_id) or client_id in {x['broker_client_id'] for x in period['instruments'].values()}:
         raise EvidenceError('OBSERVER_CLIENT_COLLIDES_WITH_TRADER')
     return _acquire_account(period['account'], sdk_path, client_id, timeout,
-        'period_id', period['period_id'], 'heptatrader.account-download.v2', session=session)
+        'period_id', period['period_id'], 'heptatrader.account-download.v3', session=session)
 
 
 def acquire_preflight(scope: dict, sdk_path: Path, client_id: int, timeout: int = 12, session: dict | None = None) -> dict:
@@ -212,6 +230,10 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
                               'value': value, 'currency': currency, 'observed_at_ms': now_ms()})
         def accountUpdateMultiEnd(self, req):
             if req in (self.requests['ledger'], self.requests['account']):
+                if req in self.ends:
+                    self.errors.append({'code': 'DUPLICATE_ACCOUNT_END', 'request_id': req})
+                    self.finished.set()
+                    return
                 self.ends.add(req)
                 self.end_observed_at_ms[req] = now_ms()
             if set(self.requests.values()).issubset(self.ends): self.finished.set()
@@ -221,9 +243,14 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
                 self.errors.append({'code': 'POSITION_BOUND'}); self.finished.set(); return
             self.positions.append({'request_id': req, 'account': account, 'model': model,
                 'conid': contract.conId, 'symbol': contract.symbol, 'sec_type': contract.secType,
-                'currency': contract.currency, 'quantity': str(position), 'average_cost': str(cost)})
+                'currency': contract.currency, 'quantity': str(position), 'average_cost': str(cost),
+                'observed_at_ms': now_ms()})
         def positionMultiEnd(self, req):
             if req == self.requests['positions']:
+                if req in self.ends:
+                    self.errors.append({'code': 'DUPLICATE_POSITION_END', 'request_id': req})
+                    self.finished.set()
+                    return
                 self.ends.add(req)
                 self.end_observed_at_ms[req] = now_ms()
             if set(self.requests.values()).issubset(self.ends): self.finished.set()
@@ -239,6 +266,7 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
         client.rows, client.positions, client.errors, client.informational = [], [], [], []
         client.ends = set()
         client.end_observed_at_ms = {}
+    complete_healthy_download = False
     try:
         if worker is None:
             client.connect('127.0.0.1', 4002, client_id)
@@ -257,6 +285,10 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
         client.reqAccountUpdatesMulti(requests['account'], account, '', False)
         client.reqPositionsMulti(requests['positions'], account, '')
         if not client.finished.wait(timeout): raise EvidenceError('ACCOUNT_DOWNLOAD_END_TIMEOUT')
+        # finished can also be set by a row/position cap: only three exact
+        # End callbacks and an error-free socket make a reusable session safe.
+        complete_healthy_download = (set(requests.values()) == client.ends and
+                                     not client.errors and not client.lost)
         captured = now_ms()
         result = {'schema': raw_schema, 'account': account,
                   identity_key: identity, 'started_at_ms': started, 'observed_at_ms': captured,
@@ -276,18 +308,35 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
                       'time_basis': 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK'}}
         return result
     finally:
-        # Cancel only owned read subscriptions, never orders or another client.
-        if client.isConnected():
-            for key in ('ledger', 'account'):
-                if (76, requests[key]) in boundary.subscribed: client.cancelAccountUpdatesMulti(requests[key])
-            if (74, requests['positions']) in boundary.subscribed: client.cancelPositionsMulti(requests['positions'])
-        if (session is None or session.get('client') is not client or
-                client.lost or not client.isConnected() or not worker or not worker.is_alive()):
-            client.intentional_disconnect = True
-            client.disconnect()
-            if worker: worker.join(2)
-            if session is not None:
-                session.clear()
+        # Cancellation is a best-effort cleanup of THIS request-ID cohort.
+        # A failed cancel must close the potentially poisoned socket even
+        # if the SDK raises before ordinary disconnect bookkeeping.
+        cancellation_failed = False
+        try:
+            if client.isConnected():
+                for key in ('ledger', 'account'):
+                    if (76, requests[key]) in boundary.subscribed:
+                        try: client.cancelAccountUpdatesMulti(requests[key])
+                        except Exception:
+                            cancellation_failed = True
+                if (74, requests['positions']) in boundary.subscribed:
+                    try: client.cancelPositionsMulti(requests['positions'])
+                    except Exception:
+                        cancellation_failed = True
+        finally:
+            if (session is None or session.get('client') is not client or
+                    not complete_healthy_download or cancellation_failed or
+                    client.lost or client.errors or not client.isConnected() or
+                    not worker or not worker.is_alive()):
+                try:
+                    client.intentional_disconnect = True
+                    client.disconnect()
+                    if worker: worker.join(2)
+                finally:
+                    if session is not None:
+                        session.clear()
+        if cancellation_failed:
+            raise EvidenceError('ACCOUNT_OBSERVER_READ_SUBSCRIPTION_CANCEL_FAILED')
 
 
 def collect_account(config: Path, period_path: Path, state_root: Path, *, session: dict | None = None) -> tuple[dict, dict]:
@@ -405,10 +454,14 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     session = {} if args.watch else None
+    reconnect_budget = ObserverReconnectBudget()
     try:
         while not stopped.is_set():
             start = time.monotonic()
             try:
+                if (session is not None and not session.get('client') and
+                        reconnect_budget.blocked(start)):
+                    raise EvidenceError('ACCOUNT_OBSERVER_RECONNECT_COOLDOWN')
                 if scope is not None:
                     nav, raw = collect_preflight(args.config, args.preflight_scope, args.state_root,
                                                  expected_scope_sha256=scope_sha, session=session)
@@ -431,6 +484,8 @@ def main(argv=None):
                             # not a later value relabelled with its timestamp.
                             recovered = normalize_nav(load_private(first_raw), load_private(args.period))
                             write_snapshot(first, recovered, exclusive=True)
+                if session is not None and session.get('client') is not None:
+                    reconnect_budget.recovered()
                 # Each completed observation is a bounded file, never overwrite a
                 # reset baseline. Journal movement is checked again by the consumer.
                 status = {'nav_complete': True, 'observed_at_ms': nav['observed_at_ms']}
@@ -438,6 +493,11 @@ def main(argv=None):
                     status.update(reporting_scope='PREFLIGHT_NOT_ACCOUNTING_PERIOD', opening_nav_eligible=False)
                 print(json.dumps(status), flush=True)
             except (ValueError, OSError, KeyError, TypeError, ArithmeticError) as error:
+                if session is not None:
+                    if session.get('client') is not None:
+                        reconnect_budget.recovered()
+                    elif str(error) != 'ACCOUNT_OBSERVER_RECONNECT_COOLDOWN':
+                        reconnect_budget.failed(time.monotonic())
                 nav = publish_unavailable(out, error, scope)
                 if scope is not None and isinstance(error, RejectedAccountDownload):
                     try:

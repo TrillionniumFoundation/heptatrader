@@ -28,6 +28,117 @@ def near(left: Decimal, right: Decimal, tolerance: Decimal = Decimal("0.05")) ->
     return abs(left - right) <= tolerance
 
 
+def compare_rejected_fx_cohorts(raw: dict, prior: dict | None) -> dict:
+    """Read-only evidence of updates between two complete broker callback cohorts.
+
+    Does not prove one Broker valuation instant even if every value matches.
+    Requires identical account/period, forward time, distinct request IDs and
+    complete transport barriers before comparing per-currency and BASE fields.
+    """
+    result = {'status': 'NOT_COMPARABLE', 'same_broker_valuation_time_proven': False,
+              'field_changes': [], 'currency_set_changed': False}
+    if not isinstance(prior, dict) or any(
+            raw.get(k) != prior.get(k) for k in ('account', 'period_id', 'client_id')):
+        return result
+    if (raw.get('schema') not in ('heptatrader.account-download.v2', 'heptatrader.account-download.v3')
+            or prior.get('schema') not in ('heptatrader.account-download.v2', 'heptatrader.account-download.v3')
+            or type(prior.get('observed_at_ms')) is not int
+            or type(raw.get('started_at_ms')) is not int
+            or prior['observed_at_ms'] >= raw['started_at_ms']):
+        return result
+    def projection(source):
+        req = source.get('request_ids', {})
+        ends = source.get('ends', [])
+        cohort = source.get('capture_cohort', {})
+        if (not isinstance(req, dict)
+                or set(req) != {'ledger', 'account', 'positions'}
+                or any(type(v) is not int or v <= 0 for v in req.values())
+                or len(set(req.values())) != 3 or
+                not isinstance(ends, list)
+                or any(type(v) is not int for v in ends)
+                or set(ends) != set(req.values())
+                or len(ends) != 3 or
+                not isinstance(cohort, dict) or
+                cohort.get('broker_valuation_tick_attested') is not False or
+                not isinstance(cohort.get('request_end_at_ms'), dict) or
+                set(cohort['request_end_at_ms']) != set(req) or
+                source.get('transport_errors') or
+                source.get('connection_lost_during_download') is not False):
+            return None
+        values = {}
+        currencies = set()
+        relevant = set(NAV_KEYS + ASSET_KEYS + ('AccountOrGroup', 'RealCurrency'))
+        aggregate = {'AccountCode', 'AccountReady', 'NetLiquidation',
+                     'AccruedDividend', 'NLVAndMarginInReview'}
+        for row in source.get('rows', []):
+            request_id = row.get('request_id')
+            if request_id not in (req['ledger'], req['account']) or row.get('account') != source['account'] or row.get('model') != '':
+                return None
+            key = row.get('key')
+            if not isinstance(key, str): return None
+            key = key.removeprefix('$LEDGER-')
+            cc = row.get('currency')
+            if request_id == req['ledger']:
+                if key not in relevant: continue
+                currencies.add(cc)
+                identity = ('ledger', cc, key)
+            else:
+                if key not in aggregate: continue
+                identity = ('account', cc, key)
+            value = row.get('value')
+            if not isinstance(value, str) or (identity in values and values[identity] != value):
+                return None
+            values[identity] = value
+        required = set(NAV_KEYS + ASSET_KEYS + ('AccountOrGroup', 'RealCurrency'))
+        if ('BASE' not in currencies or 'USD' not in currencies or
+                any({key for kind, currency, key in values if kind == 'ledger' and currency == cc} != required
+                    for cc in currencies)):
+            return None
+        positions = source.get('positions', [])
+        if not isinstance(positions, list): return None
+        pos = sorted((p.get('conid'), p.get('currency'), p.get('quantity'), p.get('average_cost'))
+                     for p in positions if p.get('account') == source['account'] and
+                     p.get('request_id') == req['positions'] and p.get('model') == '')
+        if len(pos) != len(positions): return None
+        return values, currencies, pos
+
+    # The transport may reuse a socket, never reuse any of the three request
+    # IDs: an old End or callback must not be counted as a current generation.
+    old_req, new_req = prior.get('request_ids', {}), raw.get('request_ids', {})
+    if (not isinstance(old_req, dict) or not isinstance(new_req, dict) or
+            set(old_req.values()) & set(new_req.values())):
+        return result
+    left, right = projection(prior), projection(raw)
+    if left is None or right is None: return result
+    before, before_currencies, before_positions = left
+    after, after_currencies, after_positions = right
+    changed = sorted(set(before) ^ set(after) | {
+        k for k in set(before) & set(after) if before[k] != after[k]})
+    # All compared valuation changes are carried in the bounded diagnostic.
+    # Truncating a difference list would hide evidence of a failed match.
+    result['field_changes'] = [
+        '.'.join(str(x) for x in k) for k in changed]
+    result['field_change_count'] = len(changed)
+    result['currency_set_changed'] = before_currencies != after_currencies
+    result['positions_changed'] = before_positions != after_positions
+    base_changed = any(k[0] == 'ledger' and k[1] == 'BASE' for k in changed)
+    currency_rates_changed = sorted({
+        k[1] for k in changed if k[0] == 'ledger' and
+        k[2] == 'ExchangeRate' and k[1] != 'BASE'})
+    result['base_values_changed'] = base_changed
+    result['currency_rates_changed'] = currency_rates_changed
+    # A timing hypothesis is never a valuation or even a causal diagnosis:
+    # the broker provides no common source tick to prove one against the other.
+    result['timing_hypothesis'] = (
+        'BROKER_UPDATE_ORDERING_POSSIBLE_NO_COMMON_MARK' if
+        base_changed and not currency_rates_changed else
+        'COMMON_BROKER_MARK_NEEDED_TO_CLASSIFY_DIFFERENCE')
+    result['status'] = ('VALUES_CHANGED_BETWEEN_COHORTS'
+        if changed or result['positions_changed'] or result['currency_set_changed']
+        else 'STABLE_VALUES_BUT_BROKER_TIME_UNATTESTED')
+    return result
+
+
 def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
     """Read-only explanation of a rejected multi-currency NAV.
 
@@ -37,7 +148,7 @@ def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
     """
     requests = raw.get("request_ids", {})
     rows = raw.get("rows", [])
-    if (raw.get("schema") not in ("heptatrader.account-download.v1", "heptatrader.account-download.v2") or
+    if (raw.get("schema") not in ("heptatrader.account-download.v1", "heptatrader.account-download.v2", "heptatrader.account-download.v3") or
             raw.get("read_only") is not True or
             not isinstance(raw.get("account"), str) or
             not isinstance(rows, list) or len(rows) > 4096 or
@@ -109,6 +220,7 @@ def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
                             and before.get(c) == f["ExchangeRate"])
     selected = [t for (c, k), t in stamps.items()
                 if k in ("NetLiquidationByCurrency", "CashBalance", "ExchangeRate")]
+    cohort_comparison = compare_rejected_fx_cohorts(raw, prior)
     return {"schema": "heptatrader.nav-fx-rejection-diagnostic.v1",
             "status": "DIAGNOSTIC_ONLY_NOT_ACCEPTED_NAV",
             "authoritative": False, "mutation_authorized": False,
@@ -125,6 +237,7 @@ def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
             "prior_raw_sha256": prior_hash,
             "unchanged_reported_fx_rates": rate_unchanged,
             "algebraic_implied_fx_rate": implied,
+            "cohort_comparison": cohort_comparison,
             "reconciliation_claim": "NONE_REQUIRES_SAME_BASIS_BROKER_EVIDENCE"}
 
 
@@ -157,7 +270,7 @@ def normalize_nav(raw: dict, period: dict) -> dict:
     validate_period(period)
     if "observation_scope_id" in raw:
         raise EvidenceError("PREFLIGHT_IS_NOT_ACCOUNTING_PERIOD_EVIDENCE")
-    return _normalize_account_download(raw, period, "period_id", ("heptatrader.account-download.v1", "heptatrader.account-download.v2"),
+    return _normalize_account_download(raw, period, "period_id", ("heptatrader.account-download.v1", "heptatrader.account-download.v2", "heptatrader.account-download.v3"),
         "heptatrader.account-nav.v1", {x["broker_client_id"] for x in period["instruments"].values()})
 
 
@@ -201,6 +314,12 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
              not {requests["ledger"], requests["account"]}.issubset(set(raw["ends"]))) or
             raw.get("transport_errors") or raw.get("connection_lost_during_download") is not False):
         raise EvidenceError("ACCOUNT_DOWNLOAD_IDENTITY_OR_BARRIER_INVALID")
+    # v1/v2 are immutable historical formats. New v3 requires the positions
+    # End as well as both account End callbacks; a partial position snapshot
+    # is not a complete valuation cohort, regardless of its FX arithmetic.
+    v3 = raw.get('schema') == 'heptatrader.account-download.v3'
+    if v3 and (len(raw['ends']) != 3 or set(raw['ends']) != set(requests.values())):
+        raise EvidenceError('ACCOUNT_CAPTURE_ALL_THREE_ENDS_REQUIRED')
     rows = raw.get("rows")
     if not isinstance(rows, list) or not rows or len(rows) > 4096:
         raise EvidenceError("ACCOUNT_DOWNLOAD_ROWS_INVALID")
@@ -210,7 +329,7 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     cohort = raw.get('capture_cohort')
     # V2 collector receipts must carry a verified transport cohort. Keep V1
     # accepted only for immutable, pre-upgrade opening NAV replay.
-    if raw.get('schema') == 'heptatrader.account-download.v2' and cohort is None:
+    if raw.get('schema') in ('heptatrader.account-download.v2', 'heptatrader.account-download.v3') and cohort is None:
         raise EvidenceError('ACCOUNT_CAPTURE_COHORT_REQUIRED')
     if cohort is not None:
         if (not isinstance(cohort, dict) or set(cohort) != {
@@ -340,7 +459,10 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     for p in positions:
         if (p.get("account") != period["account"] or p.get("model") != "" or
                 p.get("request_id") != requests["positions"] or not positive_int(p.get("conid")) or
-                p["conid"] in position_ids):
+                p["conid"] in position_ids or
+            (v3 and (type(p.get('observed_at_ms')) is not int or
+                     not first <= p['observed_at_ms'] <=
+                         cohort['request_end_at_ms']['positions']))):
             raise EvidenceError("ACCOUNT_POSITION_IDENTITY_INVALID")
         number(p.get("quantity")); number(p.get("average_cost")); position_ids.add(p["conid"])
     return {"schema": nav_schema, "account": period["account"], "currency": base_currency,

@@ -41,3 +41,41 @@ Consecutive rejected downloads are compared to the previous rejected cohort
 when its period matches and observation time advances. Unchanged reported FX
 rates under a changing BASE aggregate are provenance diagnostics, **not** a
 common Broker valuation-time proof and never authorize NAV.
+
+
+## Follow-up: NAV receipt v3 and callback cohort comparison (2026-10-08)
+
+The observer's heptatrader.account-download.v3 generation preserves v1/v2
+historical receipts without relabeling them. New v3 fresh observations require
+all three exact account/ledger/positions End callbacks, position callback
+timestamps no later than the positions End, complete request-ID scope, an
+error-free connection, and the existing bounded receipt span. An incomplete,
+overflowed, or cancellation-poisoned session is closed; a capped 10/20/40/80/120
+second backoff prevents recurring failed handshakes on every 10-second poll.
+
+Rejected rejected-raw.json remains NOT accepted NAV. The diagnostic's
+cohort_comparison checks all required currency and BASE fields, positions,
+distinct request-ID cohorts, exact account/client/period, completed end
+barriers and independent receipt windows. Every compared field difference is
+retained. BASE changing while rates remain unchanged is categorized only as
+BROKER_UPDATE_ORDERING_POSSIBLE_NO_COMMON_MARK. This is a hypothesis, NOT an
+assertion of true causality or a common source valuation timestamp. Repeated
+identical values are likewise NOT a common Broker-time certificate. The USD
+1.00 reconciliation threshold remains unchanged; failures are not published
+as accepted NAV and cannot become the opening reset baseline.
+
+Native regression covers second successive stale secondary CASH renewal,
+full broker connection-epoch transition, late old-epoch callback rejection,
+and independent new BID/ASK for BTC and EUR. This proves only deterministic
+source behavior, not a live disconnect or order-safety qualification.
+
+Release blocker: IB's account/ledger/positions multi-request initial-download
+End callbacks do not carry the underlying source valuation timestamp. Genuine
+common Broker-time proof for every currency plus BASE cannot be constructed
+from locally received callbacks or an executable FX midquote. An independent
+Broker source with explicit common valuation time/basis and matching currency
+coverage is required for the requested strict same-time certificate. Until
+obtained, a mismatching account currency/BASE NAV remains rejected under the
+original USD 1.00 threshold. The compiled native recovery patch must also
+be installed and observed through real feed outage/reconnect and order-send
+counter checks before any FX recovery acceptance is claimed.
