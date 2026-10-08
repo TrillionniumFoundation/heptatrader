@@ -216,10 +216,17 @@ struct Fixture {
         IbPaperFxCashBaseline baseline;baseline.account=c.profile.account;baseline.currency="EUR";baseline.instrument="EUR.USD";
         baseline.baselineCashBalance=1000;baseline.observedCashBalance=seeded?1025:1000;baseline.campaignExecutionDelta=seeded?25:0;
         baseline.observedAtMs=ms();baseline.proof="sha256:"+std::string(64,'e');c.fxCashBaselines["EUR.USD"]=baseline;
+        // Existing fixture commands precede the *original* synthetic cash
+        // checkpoint by construction. Using ms() a second time here made
+        // their classification depend on whether a slow CI worker crossed
+        // a millisecond boundary (rather than testing post-checkpoint fills).
+        const std::int64_t historicalEventTsMs =
+            static_cast<std::int64_t>(baseline.observedAtMs) - 1000;
+        check(historicalEventTsMs > 0, "synthetic historical command timestamp");
         std::string reason,auth;check(c.profile.BuildAuthorizationCredential(auth,reason),"auth fixture: "+reason);
         writePrivate(c.authorizationCredentialPath,auth+"\n");writePrivate(c.fenceCredentialPath,"HFC1\nfencing_token=912\ngeneration=5\n");
         if(seeded){OmsJournal j;check(j.Init(c.journalPath),"seed journal");for(int i=0;i<2;++i){
-            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=ms();e.reqId=i?"original-btc":"original-eur";
+            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=historicalEventTsMs;e.reqId=i?"original-btc":"original-eur";
             e.clientReqId=e.reqId;e.traceId=i?"session-btc":"session-eur";e.eventId=e.reqId+":intent";e.source=i?"agent.tool:fixture-btc":"agent.tool:fixture-fx";
             e.account=c.profile.account;e.venue="IB";e.executionDomain="PAPER";e.instrument=i?"BTC.USD":"EUR.USD";e.side="BUY";
             e.qty=i?.01:25;e.price=i?80000:1.12;e.status="intent_recorded";e.requestHash="sha256:"+std::string(64,i?'c':'d');
@@ -229,7 +236,7 @@ struct Fixture {
         }}
         if(unknown){
             OmsJournal j;check(j.Init(c.journalPath),"unknown original journal");
-            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=ms();e.reqId="original-unknown";
+            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=historicalEventTsMs;e.reqId="original-unknown";
             e.clientReqId=e.reqId;e.traceId="session-unknown";e.eventId="unknown:intent";e.source="agent.tool:fixture-fx";
             e.account=c.profile.account;e.venue="IB";e.executionDomain="PAPER";e.instrument="EUR.USD";e.side="BUY";
             e.qty=25;e.price=1.12;e.status="intent_recorded";e.requestHash="sha256:"+std::string(64,'7');
