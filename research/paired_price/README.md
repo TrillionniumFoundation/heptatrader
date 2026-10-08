@@ -71,3 +71,19 @@ Future directions are conditional: distributional value requires adequate
 independent outcomes and tail calibration; IQL/CQL or SPIBB requires real
 behavior-policy coverage and distinct effect authority. Meta never sends orders,
 and canonical Agentd admission is a separate product path.
+
+## Independent reconstruction of the live fixed window
+
+`paired_price.independent_audit` is a separately invoked **read-only** reviewer.
+It verifies the frozen candidate/plan and runtime file digests, each prediction
+against its immutable prefix, the actual source quote path and future endpoint,
+and every saved per-arm Brier against a fresh calculation. Its 24-slot denominator
+also retains slots not yet due, missed slots, recorded input failures and pending
+outcomes. It never modifies source forecasts, the original assessor or trader.
+
+An audit before window maturity must report `WAIT_FIXED_OUTCOMES_NO_ADVANTAGE_CLAIM`.
+Its sign screen remains exploratory with serially dependent prices; no independent
+canonical owner, production selection or model effect is implied. Tests include
+actual first-slot replay against the verified source and tampered copies of
+plans, predictions, stored Brier and source prefixes. The sandboxed resident
+services continue to own only their original experiment artifacts.
