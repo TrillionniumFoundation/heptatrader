@@ -28,3 +28,11 @@ legacy no-cohort path. Older v1 receipts remain verifiable for historical
 reset-opening NAV; they do **not** attest a same-tick Broker valuation. Neither
 schema is an external Activity/Flex confirmation or a substitute for a
 Broker-issued valuation timestamp.
+
+## Rejected-source diagnostics
+
+When current FX/BASE translation fails, write `rejected-raw.json` and a
+separate `rejected-fx-diagnostic.json` bound to its SHA256. The report tracks
+original rate/BASE differences and callback timing without being an accepted
+NAV, a substitute quote, a new order or a widened limit. Diagnostic algebraic
+implied FX rates are circular and never qualify the original account mark.

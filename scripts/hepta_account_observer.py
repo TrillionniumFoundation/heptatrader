@@ -20,7 +20,8 @@ import time
 import uuid
 
 from hepta_account_pnl import (normalize_nav, validate_period, positive_int, digest,
-                               normalize_preflight_nav, validate_preflight_scope)
+                               normalize_preflight_nav, validate_preflight_scope,
+                               diagnose_rejected_fx_download)
 from hepta_pnl_accounting import EvidenceError
 from hepta_pnl_report import (load_private, read_private, write_snapshot, now_ms, fingerprint, source_revision)
 
@@ -50,6 +51,16 @@ def publish_unavailable(out: Path, error: Exception, preflight_scope: dict | Non
         nav.update(rejected_raw_sha256=digest(error.raw),
                    rejected_raw_file='rejected-raw.json',
                    rejected_raw_is_accepted_nav=False)
+        if str(error) == 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED':
+            try:
+                prior_file = out/'raw-latest.json'
+                prior = load_private(prior_file) if prior_file.exists() else None
+                diagnostics = diagnose_rejected_fx_download(error.raw, prior)
+                write_snapshot(out/'rejected-fx-diagnostic.json', diagnostics)
+                nav['rejected_fx_diagnostic_file'] = 'rejected-fx-diagnostic.json'
+            except (EvidenceError, OSError, ValueError, KeyError, TypeError):
+                # Diagnostics cannot authorize or prevent fail-closed NAV.
+                pass
         write_snapshot(out/'nav.json', nav)
     return nav
 

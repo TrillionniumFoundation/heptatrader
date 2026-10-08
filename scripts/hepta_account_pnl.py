@@ -28,6 +28,98 @@ def near(left: Decimal, right: Decimal, tolerance: Decimal = Decimal("0.05")) ->
     return abs(left - right) <= tolerance
 
 
+def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
+    """Read-only explanation of a rejected multi-currency NAV.
+
+    This is NEVER a valuation source and does not change the original $1
+    admission envelope. The implied conversion rate is algebraic/circular,
+    not an independently observed FX quote.
+    """
+    requests = raw.get("request_ids", {})
+    rows = raw.get("rows", [])
+    if (raw.get("schema") not in ("heptatrader.account-download.v1", "heptatrader.account-download.v2") or
+            raw.get("read_only") is not True or
+            not isinstance(raw.get("account"), str) or
+            not isinstance(rows, list) or len(rows) > 4096 or
+            type(requests.get("ledger")) is not int or
+            type(raw.get("started_at_ms")) is not int or
+            type(raw.get("observed_at_ms")) is not int):
+        raise EvidenceError("NAV_DIAGNOSTIC_RAW_SCOPE_INVALID")
+    ledgers, stamps = {}, {}
+    for row in rows:
+        if row.get("request_id") != requests["ledger"]:
+            continue
+        if (row.get("account") != raw["account"] or row.get("model") != "" or
+                type(row.get("observed_at_ms")) is not int or
+                not raw["started_at_ms"] <= row["observed_at_ms"] <= raw["observed_at_ms"]):
+            raise EvidenceError("NAV_DIAGNOSTIC_ROW_SCOPE_INVALID")
+        name = row.get("key")
+        if not isinstance(name, str):
+            raise EvidenceError("NAV_DIAGNOSTIC_FIELD_INVALID")
+        name = name.removeprefix("$LEDGER-")
+        if name not in ("NetLiquidationByCurrency", "AccruedCash",
+                        "CashBalance", "ExchangeRate"):
+            continue
+        ccy, value = row.get("currency"), row.get("value")
+        if not isinstance(ccy, str) or not isinstance(value, str):
+            raise EvidenceError("NAV_DIAGNOSTIC_FIELD_INVALID")
+        fields = ledgers.setdefault(ccy, {})
+        if name in fields and fields[name] != value:
+            raise EvidenceError("NAV_DIAGNOSTIC_DUPLICATE_CONFLICT")
+        fields[name] = value
+        stamps[ccy, name] = row["observed_at_ms"]
+    required = ("NetLiquidationByCurrency", "AccruedCash",
+                "CashBalance", "ExchangeRate")
+    if "BASE" not in ledgers or "USD" not in ledgers or any(
+            set(required) - set(v) for v in ledgers.values()):
+        raise EvidenceError("NAV_DIAGNOSTIC_FIELDS_MISSING")
+    with localcontext() as ctx:
+        ctx.prec = 40
+        translated = sum(((number(f["NetLiquidationByCurrency"]) -
+                           number(f["AccruedCash"])) * number(f["ExchangeRate"])
+                          for c, f in ledgers.items() if c != "BASE"), ZERO)
+        base_non_accrual = (number(ledgers["BASE"]["NetLiquidationByCurrency"]) -
+                            number(ledgers["BASE"]["AccruedCash"]))
+        difference = translated - base_non_accrual
+        implied = None
+        active = [(c, number(f["CashBalance"])) for c, f in ledgers.items()
+                  if c not in ("BASE", "USD") and abs(number(f["CashBalance"]) * number(f["ExchangeRate"])) >= Decimal("0.01")]
+        if len(active) == 1:
+            ccy, exposure = active[0]
+            other = sum((number(f["CashBalance"]) * number(f["ExchangeRate"])
+                         for c, f in ledgers.items() if c not in ("BASE", ccy)), ZERO)
+            implied = {"currency": ccy, "rate": amount(
+                (number(ledgers["BASE"]["CashBalance"]) - other) / exposure),
+                "basis": "ALGEBRAIC_FROM_BASE_CASH_NOT_INDEPENDENT_PRICE"}
+    before = {}
+    if (isinstance(prior, dict) and prior.get("account") == raw["account"] and
+            prior.get("period_id") == raw.get("period_id")):
+        prior_ledger = prior.get("request_ids", {}).get("ledger")
+        for row in prior.get("rows", []):
+            if (row.get("request_id") == prior_ledger and
+                    row.get("key", "").removeprefix("$LEDGER-") == "ExchangeRate"):
+                before[row.get("currency")] = row.get("value")
+    rate_unchanged = sorted(c for c, f in ledgers.items() if c not in ("BASE", "USD")
+                            and before.get(c) == f["ExchangeRate"])
+    selected = [t for (c, k), t in stamps.items()
+                if k in ("NetLiquidationByCurrency", "CashBalance", "ExchangeRate")]
+    return {"schema": "heptatrader.nav-fx-rejection-diagnostic.v1",
+            "status": "DIAGNOSTIC_ONLY_NOT_ACCEPTED_NAV",
+            "authoritative": False, "mutation_authorized": False,
+            "reason_code": "ACCOUNT_NAV_FX_RECONCILIATION_FAILED",
+            "account": raw["account"], "period_id": raw.get("period_id"),
+            "raw_sha256": digest(raw), "observed_at_ms": raw["observed_at_ms"],
+            "translated_non_accrual_usd": amount(translated),
+            "broker_base_non_accrual_usd": amount(base_non_accrual),
+            "difference_usd": amount(difference),
+            "fixed_acceptance_bound_usd": "1.00",
+            "within_existing_bound": near(difference, ZERO, Decimal("1.00")),
+            "callback_span_ms": max(selected) - min(selected) if selected else None,
+            "unchanged_reported_fx_rates": rate_unchanged,
+            "algebraic_implied_fx_rate": implied,
+            "reconciliation_claim": "NONE_REQUIRES_SAME_BASIS_BROKER_EVIDENCE"}
+
+
 def rounding_bound(value: str) -> Decimal:
     # Quantization bound for reported decimal precision, NOT a business tolerance.
     x = number(value)
