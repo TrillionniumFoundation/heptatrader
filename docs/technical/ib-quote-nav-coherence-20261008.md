@@ -184,3 +184,51 @@ Subsequent independent PAPER API tests narrowed the earlier negative probe:
 Every probe instance has a distinct 20000..30000 client ID, checked against the live trader and NAV observer; its send boundary admits no order API. Quote callback freshness uses the existing 5-second limit. It never restamps an unchanged BID or ASK and never publishes NAV.
 
 **Release scope remains unchanged:** read-only successes cannot qualify production Execution's real farm-down/up and reconnect state machine, nor prove zero duplicate order sends across those events. Its candidate binary is not installed. The NAV v3 multi-request End receipt likewise does not carry an atomic Broker valuation time, so a USD >1 discrepancy remains rejected.
+
+
+## Same-window live FX and rejected NAV comparison (2026-10-08, read-only)
+
+A fresh owner-isolated EUR/USD probe on the running PAPER Gateway and the
+unchanged deployed NAV v3 observer were sampled concurrently. This is only
+a source-provenance comparison and **not** a common Broker valuation mark.
+
+- The reconnect probe completed three independent sessions using a distinct
+  order-incapable client. All returned CASH-farm readiness, market mode 1,
+  and 29 / 44 / 29 price callbacks, but 5-second two-leg readiness at the
+  **end** was false / true / false. The failing windows ended with stale
+  ASK ages 8747 and 7999 ms while BID ages were 1603 and 2279 ms. Thus
+  valid live callbacks exist, but updating only BID must not re-stamp ASK.
+- The concurrently collected 20-second probe returned LIVE_BID_ASK with
+  81 live tickPrice callbacks. Four distinct
+  v3 account receipts within the window showed EUR ledger ExchangeRate
+  1.12026 and the same independently calculated, explicitly
+  *non-authoritative* implied rate 1.119060038967355797198729135901910771021.
+- At the nearest account receipt, 795 ms
+  from the most recent quote-leg callback, the observed live EUR BID/ASK
+  were 1.1191899999999999/1.1192. The algebraic implied rate
+  lies outside that spread. The unchanged original reconciliation residual
+  was -107.262056686 USD against the existing
+  USD 1.00 absolute threshold. Inserting an observed midpoint or an implied
+  price is **not** a justified replacement for Broker's source valuation.
+- This comparison observes local callback arrival, not proof that the BASE,
+  currency ledger, and market quote share one underlying Broker valuation
+  time. An unchanged account cohort may simply reflect IB's periodic
+  account-update scheduling. Do not classify the discrepancy as purely a
+  sequencing error, do not promote rejected raw, and do not relax the USD 1.
+- Both probes sent no broker orders. Account/FX driver and Execution were
+  not restarted; these receipts therefore do not qualify the candidate
+  production FX re-subscription path or its post-restart no-duplicate-order gate.
+
+Local private machine receipts:
+`/tmp/heptatrader-fx-nav-temporal-comparison-20261008.json`
+(SHA256 `f130f8f521eda51635ab838c6545c87f8c977c63563242458ea17a3130944c89`) and
+`/tmp/heptatrader-fxnav-live-reconnect-20261008-1404.jsonl`
+(SHA256 `06089fe63481a54584f6bf15aaf07b0367dcdff8f288b6e5ffb19131498be9de`). Neither file is an accepted NAV input.
+
+Potential next isolated read-only evidence lane:
+IB `reqTickByTickData(..., "BidAsk", 0, False)` reports both legs with
+one Broker *quote-tick* timestamp; it must be independently qualified under
+its market-data quota and per-instrument 15-second re-request restriction.
+Even this quote timestamp would **not** certify the account's common
+per-currency/BASE NAV valuation instant. No production TBT substitution
+or market-data admission change is authorized by this document.
