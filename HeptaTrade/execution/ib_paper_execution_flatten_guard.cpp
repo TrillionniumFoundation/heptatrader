@@ -193,8 +193,17 @@ bool IbPaperExecutionGuard::AllowFlatten(
         reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
         return false;
     }
+    // A pre-existing CASH position can cross the original USD order-notional
+    // ceiling solely because its FX mark moved. Do not strand an exact,
+    // authoritative, opposite-side LOCAL MKT/DAY full reduction as a result.
+    // Partial orders remain subject to the original per-order ceiling, while
+    // new entries retain the original admission guard and 100k budget.
+    const bool exactLocalCashLiquidation =
+        !externalLimitDay && !crypto && validLocalOrder &&
+        quantity == std::fabs(plan.expectedPositionQuantity);
     if (!crypto && plan.referencePrice >
-        m_config.maxOrderNotional / quantity)
+            m_config.maxOrderNotional / quantity &&
+        !exactLocalCashLiquidation)
     {
         reason = "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
         return false;

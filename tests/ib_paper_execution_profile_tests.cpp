@@ -939,6 +939,55 @@ void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
     assert(mixedCredential!=oldCredential && !single.UsesUserCrypto());
 }
 
+void TestLocalFxFullReductionAboveStaleNotionalCap()
+{
+    if (::geteuid()==0 || ::getegid()==0) return;
+    // User PAPER mixed-quote profile: max order notional 35k, max FX qty 25k.
+    // An originally compliant EUR short may mark above 35k without any new
+    // intent. Only the exactly broker-sized opposing full close is exempt.
+    const auto config=MixedCryptoProfileForTest();
+    std::shared_ptr<IbPaperKillSwitchReader> engaged(
+        new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionGuard guard(config,engaged);
+    FlattenPositionCommand cmd;
+    cmd.context.account=config.account;cmd.context.venue="IB";
+    cmd.context.executionDomain="PAPER";cmd.instrument="EUR.USD";
+    AuthoritativeFlattenPlan plan;
+    plan.instrument="EUR.USD";plan.contract.symbol="EUR";
+    plan.contract.secType="CASH";plan.contract.exchange="IDEALPRO";
+    plan.contract.currency="USD";
+    plan.timeInForce="DAY";plan.expectedPositionQuantity=-25000;
+    plan.positionConnectionEpoch=3;plan.positionGeneration=11;
+    plan.order.action="BUY";plan.order.orderType="MKT";
+    plan.order.totalQuantity=25000;plan.order.lmtPrice=0;
+    plan.referencePrice=1.52; // $38k, exceeds original $35k entry ceiling
+    plan.quoteBid=1.5199;plan.quoteAsk=1.52;
+    plan.quoteSubscriptionId="broker-cash-current";
+    plan.quoteObservedAtMs=1900;plan.quoteStaleAfterMs=6900;
+    IbPaperAuthoritativeRiskSnapshot risk;
+    risk.complete=true;risk.activeOrderCount=0;
+    std::string reason;
+    assert(guard.AllowFlatten(cmd,plan,risk,2000,reason));
+    assert(reason.empty());
+    auto partial=plan;partial.order.totalQuantity=24000; // $36,480
+    assert(!guard.AllowFlatten(cmd,partial,risk,2000,reason));
+    assert(reason=="IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED");
+    auto within=plan;within.order.totalQuantity=23000; // $34,960
+    assert(guard.AllowFlatten(cmd,within,risk,2000,reason));
+    auto overshoot=plan;overshoot.order.totalQuantity=25000.01;
+    assert(!guard.AllowFlatten(cmd,overshoot,risk,2000,reason));
+    assert(reason=="IB_PAPER_FLATTEN_NOT_EXACT_REDUCE_ONLY");
+    auto wrongSide=plan;wrongSide.order.action="SELL";
+    assert(!guard.AllowFlatten(cmd,wrongSide,risk,2000,reason));
+    auto wrongType=plan;wrongType.order.orderType="LMT";
+    assert(!guard.AllowFlatten(cmd,wrongType,risk,2000,reason));
+    auto invalidPrice=plan;invalidPrice.referencePrice=0;
+    assert(!guard.AllowFlatten(cmd,invalidPrice,risk,2000,reason));
+    auto active=risk;active.activeOrderCount=1;
+    assert(!guard.AllowFlatten(cmd,plan,active,2000,reason));
+    assert(reason=="IB_PAPER_FLATTEN_ACTIVE_ORDERS_PRESENT");
+}
+
 void TestCryptoFlattenIsExactOwnedLongAndMarketIOC()
 {
     if (::geteuid()==0 || ::getegid()==0)return;
@@ -1172,6 +1221,7 @@ int main()
     TestMixedCryptoRuntimeParsesRealEnvironmentFields();
     TestCryptoGuardHasIndependentUnitsAndNoSpotShorts();
     TestCryptoFlattenIsExactOwnedLongAndMarketIOC();
+    TestLocalFxFullReductionAboveStaleNotionalCap();
     TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence();
     TestConfiguredUserOwnerResumeScopesAreIndependent();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
