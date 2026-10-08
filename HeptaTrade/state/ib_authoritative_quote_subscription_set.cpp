@@ -194,9 +194,12 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
     }
     const auto found = m_quotesByRequestId.find(request->second);
     if (found == m_quotesByRequestId.end() ||
-        (!found->second.dispatchAccepted && !found->second.renewalRequest))
+        !found->second.dispatchResultRecorded)
     {
-        plan.reasonCode = "QUOTE_REFRESH_SUBSCRIPTION_NOT_DISPATCHED";
+        // A first-cycle optional secondary CASH request is retryable only
+        // AFTER RecordDispatchResult(false) certifies it never crossed the
+        // SDK send boundary. A pending/unknown request must not be replaced.
+        plan.reasonCode = "QUOTE_REFRESH_DISPATCH_OUTCOME_UNAVAILABLE";
         return plan;
     }
     const int previousRequestId = request->second;
@@ -219,7 +222,6 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
     QuoteState renewed;
     renewed.instrument = instrument;
     renewed.contract = previous.contract;
-    renewed.renewalRequest = true;
     renewed.requestStartedAtMs = observedAtMs;
     m_quotesByRequestId.erase(found);
     m_quotesByRequestId[newRequestId] = renewed;
@@ -246,8 +248,10 @@ bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(
     std::lock_guard<std::mutex> lock(m_mutex);
     if (generation == 0 || generation != m_generation) return false;
     std::map<int, QuoteState>::iterator found = m_quotesByRequestId.find(requestId);
-    if (found == m_quotesByRequestId.end()) return false;
+    if (found == m_quotesByRequestId.end() ||
+        found->second.dispatchResultRecorded) return false;
     found->second.dispatchAccepted = accepted;
+    found->second.dispatchResultRecorded = true;
     return true;
 }
 

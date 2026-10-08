@@ -144,10 +144,10 @@ private:
         std::string instrument;
         IBContractLite contract;
         bool dispatchAccepted = false;
-        // True only for market-data-only secondary renewal requests. A
-        // definite pre-SDK no-send can retry after cooldown without
-        // cancelling an ID that was never subscribed.
-        bool renewalRequest = false;
+        // Distinguish an initial/pending SDK dispatch from a positively
+        // established pre-SDK refusal. Only the latter may be retried
+        // without cancelling an unissued market-data request.
+        bool dispatchResultRecorded = false;
         std::uint64_t requestStartedAtMs = 0;
         IBAuthoritativeQuoteSnapshot quote;
     };
