@@ -295,6 +295,80 @@ void TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest()
         "BTC.USD",17,1,65000,5000,15000).accepted);
 }
 
+
+void TestInitiallyUnsentSecondaryCashRequiresRecordedNoSendForRetry()
+{
+    // The BTC.USD primary was sent successfully, while the CASH farm
+    // rejected the initial optional EUR.USD request before any SDK send.
+    IBContractLite btc; btc.symbol="BTC"; btc.secType="CRYPTO";
+    btc.exchange="PAXOS"; btc.currency="USD";
+    IBContractLite eur; eur.symbol="EUR"; eur.secType="CASH";
+    eur.exchange="IDEALPRO"; eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet quotes(store);
+    std::string reason;
+    assert(quotes.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},
+                            "BTC.USD",reason,false,true));
+    const auto initial=quotes.BeginCycle(31,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& sub:initial.subscriptions) {
+        if(sub.instrument=="BTC.USD") {
+            btcId=sub.requestId;
+            assert(quotes.RecordDispatchResult(1,btcId,true));
+        } else {
+            eurId=sub.requestId;
+            // Simulate a pending SDK outcome: not yet a *known* refusal.
+            assert(!quotes.BeginStaleSecondaryCashRefresh(
+                "EUR.USD",31,1,16000,5000,15000).accepted);
+            assert(quotes.RecordDispatchResult(1,eurId,false));
+        }
+    }
+    assert(btcId>0 && eurId>0);
+    auto tick=[&](int id,const char* field,double price,std::uint64_t at) {
+        IBEvent ev; ev.type=IBEventType::TickPrice; ev.id=id;
+        ev.key=field; ev.number=price; ev.connectionEpoch=31;
+        return quotes.ConsumeTick(ev,at);
+    };
+    tick(btcId,"1",85000,1001); tick(btcId,"2",85001,1002);
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,15999,5000,15000).accepted);
+    const auto retry=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,16000,5000,15000);
+    assert(retry.accepted && retry.cancelRequestIds.empty());
+    assert(retry.subscriptions.size()==1);
+    const int retryId=retry.subscriptions[0].requestId;
+    assert(retryId!=eurId && retryId!=btcId);
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(tick(eurId,"1",1.15,16001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,31000,5000,15000).accepted);
+    assert(quotes.RecordDispatchResult(1,retryId,false));
+    const auto recovered=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,31000,5000,15000);
+    assert(recovered.accepted && recovered.cancelRequestIds.empty());
+    assert(recovered.subscriptions.size()==1);
+    const int current=recovered.subscriptions[0].requestId;
+    assert(current!=eurId && current!=retryId && current!=btcId);
+    assert(quotes.RecordDispatchResult(1,current,true));
+    assert(!quotes.RecordDispatchResult(1,current,true));
+    assert(tick(retryId,"2",1.14,31001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"1",1.1198,31002);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"2",1.1200,31003);
+    assert(quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",32,1,47000,5000,15000).accepted);
+}
+
 void TestMissingStaleAndStrictValidation()
 {
     AuthoritativeTradingSnapshotStore store;
@@ -582,6 +656,7 @@ int main()
     TestCryptoIdentityAndIndependentClosedFxQuotes();
     TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote();
     TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest();
+    TestInitiallyUnsentSecondaryCashRequiresRecordedNoSendForRetry();
     TestMissingStaleAndStrictValidation();
     TestAtomicReplaceAndKnownEmpty();
     TestQuoteInvalidationPreservesRecordsButRevokesCompleteness();
