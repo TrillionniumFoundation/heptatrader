@@ -126,3 +126,60 @@ improvement over the new numeric baseline. These artifacts remain unpromoted.
 The current100k consumer is independent; BTC missing terminal evidence, broker
 valuation timestamps, account-period opening NAV/flows, legacy numeric parity,
 and future unseen efficacy remain separate acceptance requirements.
+
+
+## Follow-through verification (2026-10-08)
+
+The original PR #181 exact-head CI failed in the existing cost reset fixture:
+its first-quote-failure test mocked UID 1000 instead of the actual temporary
+fixture owner. Only that fixture now uses `st_uid`; production ownership
+validation has not been weakened. A default-core test bridge now discovers
+all historical research tests, rather than requiring a manual extra command.
+
+The history boundary now validates serialized SDK request IDs, contract,
+request kind/cutoff/duration, no-streaming mode, cancellation ownership and
+single dispatch, with minimum pacing enforced at actual egress. A request
+is marked issued before transport: an unknown outcome never permits replay.
+An actual pinned-SDK serialization sink checked all 27 original planned
+requests and rejected direct foreign cancellation without a socket. A real
+subsequent extension used only START_API and four history requests.
+
+Calendar qualification uses the union of the actual returned calendar header
+intervals. A shortened per-chunk header at a weekend is NOT automatically
+coverage failure when another observed overlapping header covers that tail;
+nor may the missing tail be assumed. Missing calendar extent or fractional
+bar timestamps cannot silently become qualified complete coverage. The
+original 180-day bar bytes still qualify, and remain unchanged.
+
+A separate 210-day version reuses 27 hash-verified chunk receipts and downloads
+only four new requests. The fully closed, calendar-covered dataset contains
+42,716 paired timestamps; chronological purged groups are 24,266 training,
+8,074 validation and 8,079 test, with 2,250 gapped examples excluded and 32
+boundary rows purged. These names describe a temporal partition only:
+repartitioning a larger historical dataset DOES NOT make previously inspected
+test periods unseen. No new efficacy trial or model is created by this export.
+
+`audit_offline` independently reconstructs the existing fitted readouts from
+the declared training features, train-only normalization and validation-only
+selection, checks saved predictions/Brier and every recorded cost result, and
+reports fixed-trade adverse cost stress without changing trade identities.
+It checks frozen-feature hashes but does not independently rerun encoders.
+Two diagnostic baselines were added AFTER the original test was seen: uniform
+Brier 0.6666666667 and training-class-prior Brier 0.6656494141. The original
+numeric result is 0.6767533955 and does not beat either. These extra comparisons
+are diagnostic, not a new independent holdout or multiplicity-adjusted proof.
+Original result files, semantic losses, and rejected live windows are retained.
+
+Local follow-through tests: 1,280 Core / 106 Source, including 65 historical
+research cases. Remote CI must be checked on the new exact commit; the old
+failed run is retained as evidence. No production quote/NAV/strategy service
+is switched by this research branch. PR #178 remains the separate native
+source/NAV candidate, and its live acceptance and strict valuation proof are
+not supplied by this work.
+
+Example independent result audit (read-only source, new immutable receipt):
+
+```sh
+/path/to/pinned/venv/bin/python -B -m historical_training.audit_offline \
+  --config /private/original-experiment.json --output /private/audit-new.json
+```

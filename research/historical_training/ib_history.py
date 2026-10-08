@@ -8,6 +8,7 @@ import argparse,collections,fcntl,json,os,sys,threading,time
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,atomic,write_once
+from .egress import HistoryGuard
 
 ALLOWED=frozenset((71,20,25,87,90))
 CONTRACT={'conId':12087792,'symbol':'EUR','secType':'CASH','exchange':'IDEALPRO','currency':'USD'}
@@ -37,11 +38,13 @@ def make_app(c):
             self.ready=threading.Event();self.account_event=threading.Event();self.paper=False
             self.events={};self.rows={};self.ends={};self.errors=[];self.heads={};self.schedules={}
             self.sent=collections.Counter();self.own=set();self.active=set();self.dead=False
+            self.guard=HistoryGuard(c['client_id'],c['spacing_sec'])
         def sendMsg(self,msg):
             fields=msg.split('\0');code=int(fields[0])
             if code not in ALLOWED:raise EvidenceError('NON_HISTORY_MESSAGE_REFUSED:'+str(code))
             if code!=71 and not self.paper:raise EvidenceError('PAPER_NOT_VERIFIED')
-            if sum(self.sent.values())>80:raise EvidenceError('OUTBOUND_MESSAGE_CAP')
+            if sum(self.sent.values())>=80:raise EvidenceError('OUTBOUND_MESSAGE_CAP')
+            self.guard.check(msg,self.paper,self.serverVersion())
             self.sent[code]+=1
             return EClient.sendMsg(self,msg)
         def nextValidId(self,orderId):self.ready.set()
@@ -54,16 +57,20 @@ def make_app(c):
             if reqId in self.events:self.events[reqId].set()
             if errorCode in (1100,1300,326,502,504):self.dead=True
         def historicalData(self,reqId,bar):
+            self.guard.check_response(reqId,'bars')
             if reqId not in self.active:raise EvidenceError('UNREGISTERED_RESPONSE')
             if len(self.rows[reqId])>=20000:raise EvidenceError('BAR_CAPACITY')
             self.rows[reqId].append({'time':str(bar.date),'open':str(bar.open),'high':str(bar.high),
                 'low':str(bar.low),'close':str(bar.close),'volume':str(bar.volume),
                 'wap':str(bar.wap),'bar_count':bar.barCount})
         def historicalDataEnd(self,reqId,start,end):
+            self.guard.check_response(reqId,'bars')
             self.ends[reqId]={'start':start,'end':end};self.events[reqId].set()
         def headTimestamp(self,reqId,headTimestamp):
+            self.guard.check_response(reqId,'head')
             self.heads[reqId]=headTimestamp;self.events[reqId].set()
         def historicalSchedule(self,reqId,startDateTime,endDateTime,timeZone,sessions):
+            self.guard.check_response(reqId,'schedule')
             self.schedules[reqId]={'start':startDateTime,'end':endDateTime,'timezone':timeZone,
                 'sessions':[{'start':x.startDateTime,'end':x.endDateTime,'reference_date':x.refDate} for x in sessions]}
             self.events[reqId].set()
@@ -110,9 +117,10 @@ def run(c):
                 results.append({'request_key':key,'state':r['state'],'resumed':True,'rows':r.get('rows',0)})
                 continue
             if app.dead:raise EvidenceError('BROKER_DISCONNECTED_NO_RECONNECT_LOOP')
-            elapsed=time.monotonic()-last
+            elapsed=time.monotonic()-(app.guard.last if app.guard.last is not None else last)
             if elapsed<c['spacing_sec']:time.sleep(c['spacing_sec']-elapsed)
             rid=7800+index;app.own.add(rid);app.active.add(rid)
+            app.guard.register(rid,plan)
             app.events[rid]=threading.Event();app.rows[rid]=[]
             directory.mkdir(mode=0o700,parents=True,exist_ok=True)
             write_once(directory/'request.json',plan)
@@ -156,5 +164,5 @@ def run(c):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);a=p.parse_args()
     os.umask(0o077);r=run(read(a.config));print(json.dumps({k:v for k,v in r.items() if k not in ('results','errors')}))
-    if r.get('exception'):raise SystemExit(1)
+    if r.get('exception') or not r.get('results') or any(x['state']!='RECEIVED' for x in r['results']):raise SystemExit(1)
 if __name__=='__main__':main()

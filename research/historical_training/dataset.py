@@ -12,7 +12,10 @@ from .common import EvidenceError,read,sha,digest,write_once
 FIELDS=('open','high','low','close')
 
 def checked_bar(row):
-    t=int(row['time']);v={k:Decimal(str(row[k])) for k in FIELDS}
+    raw_time=row['time']
+    if isinstance(raw_time,bool) or not (type(raw_time) is int or (isinstance(raw_time,str) and raw_time.isascii() and raw_time.isdecimal())):
+        raise EvidenceError('NONINTEGER_BAR_TIME')
+    t=int(raw_time);v={k:Decimal(str(row[k])) for k in FIELDS}
     if t<=0 or t%300 or not all(x.is_finite() and x>0 for x in v.values()):
         raise EvidenceError('BAR_TIME_OR_NUMERIC')
     if not v['low']<=min(v['open'],v['close'])<=max(v['open'],v['close'])<=v['high']:
@@ -34,11 +37,32 @@ def parse_session(value,zone):
         return int(aware.timestamp())
     raise EvidenceError('UNRECOGNIZED_BROKER_SESSION_TIME:'+value)
 
+def interval_epoch(value):
+    try:
+        stamp=datetime.fromisoformat(value)
+    except (TypeError,ValueError) as exc:
+        raise EvidenceError('INVALID_REQUEST_INTERVAL') from exc
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        raise EvidenceError('REQUEST_INTERVAL_TIMEZONE_REQUIRED')
+    return stamp.timestamp()
+
+def schedule_extent(schedule,request):
+    """Prove the calendar RESPONSE covers the REQUEST, not just its bar subset."""
+    if not schedule.get('start') or not schedule.get('end'):
+        return None
+    a=parse_session(schedule['start'],schedule['timezone'])
+    b=parse_session(schedule['end'],schedule['timezone'])
+    start=interval_epoch(request['requested_start_utc'])
+    end=interval_epoch(request['requested_end_utc'])
+    if b<=a or a>start or b<end:
+        return None
+    return (start,end)
+
 def collect(root):
     root=Path(root);plan=read(root/'plan.json');series={k:{} for k in ('MIDPOINT','BID','ASK')}
-    duplicate=collections.Counter();partial=collections.Counter();outside=collections.Counter();sources=[];schedules=[];errors=[];heads={}
-    target_start=min(datetime.fromisoformat(p['requested_start_utc']).timestamp() for p in plan['requests'] if p['kind']=='bars')
-    target_end=max(datetime.fromisoformat(p['requested_end_utc']).timestamp() for p in plan['requests'] if p['kind']=='bars')
+    duplicate=collections.Counter();partial=collections.Counter();outside=collections.Counter();sources=[];schedules=[];errors=[];heads={};calendar_ranges=[];calendar_issues=[]
+    target_start=min(interval_epoch(p['requested_start_utc']) for p in plan['requests'] if p['kind']=='bars')
+    target_end=max(interval_epoch(p['requested_end_utc']) for p in plan['requests'] if p['kind']=='bars')
     wanted={digest({'contract':plan['config']['contract'],**p}):p for p in plan['requests']}
     for key,request in wanted.items():
         directory=root/'chunks'/key
@@ -56,7 +80,16 @@ def collect(root):
         if kind=='schedule':
             schedule=response['schedule']
             if not schedule:raise EvidenceError('SCHEDULE_END_WITHOUT_PAYLOAD')
+            extent=schedule_extent(schedule,request)
+            if extent is None:calendar_issues.append({'request_key':key,'reason':'CALENDAR_RESPONSE_INTERVAL_NOT_PROVEN'})
             zone=schedule['timezone']
+            # Partial per-request ranges may still cover the FULL target jointly.
+            # Never discard valid calendar extent just because that one response
+            # stops at a weekend boundary; never invent the missing tail either.
+            if schedule.get('start') and schedule.get('end'):
+                a=parse_session(schedule['start'],zone);b=parse_session(schedule['end'],zone)
+                if b<=a:raise EvidenceError('CALENDAR_HEADER_ORDER')
+                calendar_ranges.append((a,b))
             for s in schedule['sessions']:
                 start=parse_session(s['start'],zone);end=parse_session(s['end'],zone)
                 if end<=start:raise EvidenceError('SESSION_ORDER')
@@ -67,7 +100,7 @@ def collect(root):
             t,row=checked_bar(raw)
             if previous is not None and t<=previous:raise EvidenceError('NONINCREASING_CHUNK')
             previous=t
-            if t+300>datetime.fromisoformat(request['requested_end_utc']).timestamp():
+            if t+300>interval_epoch(request['requested_end_utc']):
                 partial[what]+=1;continue
             if t<target_start or t+300>target_end:
                 outside[what]+=1;continue
@@ -83,11 +116,16 @@ def collect(root):
             crossed.append(t);continue
         joined.append(row)
     if not joined:raise EvidenceError('NO_VALID_PAIRED_BARS')
-    start=min(datetime.fromisoformat(p['requested_start_utc']).timestamp() for p in plan['requests'] if p['kind']=='bars')
-    end=max(datetime.fromisoformat(p['requested_end_utc']).timestamp() for p in plan['requests'] if p['kind']=='bars')
+    start=min(interval_epoch(p['requested_start_utc']) for p in plan['requests'] if p['kind']=='bars')
+    end=max(interval_epoch(p['requested_end_utc']) for p in plan['requests'] if p['kind']=='bars')
     expected=set()
     for a,b in sorted(set(schedules)):
         expected.update(t for t in range(((a+299)//300)*300,b,300) if start<=t and t+300<=end)
+    covered_until=start
+    for a,b in sorted(calendar_ranges):
+        if a>covered_until:break
+        covered_until=max(covered_until,b)
+    calendar_complete=covered_until>=end
     actual={r['time'] for r in joined};missing=sorted(expected-actual)
     all_times=sorted(set.union(*(set(x) for x in series.values())))
     unpaired=sorted(set(all_times)-set(stamps))
@@ -104,10 +142,12 @@ def collect(root):
         'outside_target_bars_excluded':dict(outside),'coverage_scope':'FULLY_CLOSED_5MIN_BARS_IN_REQUESTED_INTERVAL','crossed_open_or_close':len(crossed),
         'unpaired_timestamps':len(unpaired),'broker_head_timestamps':heads,
         'schedule_sessions':len(set(schedules)),'scheduled_bars':len(expected),
+        'calendar_response_interval_complete':calendar_complete,'calendar_response_issues':calendar_issues,
+        'calendar_coverage_rule':'UNION_OF_ACTUAL_RETURNED_HEADER_INTERVALS_NO_ASSUMED_TAIL',
         'scheduled_missing_count':len(missing),'scheduled_missing_first_100':missing[:100],
         'bars_outside_returned_schedule':len(actual-expected) if expected else None,
         'gap_intervals':gaps,'request_errors':errors,'gap_fill_performed':False,
-        'full_requested_coverage_proven':bool(expected) and not missing and not errors and not unpaired and not crossed and not (actual-expected),
+        'full_requested_coverage_proven':calendar_complete and bool(expected) and not missing and not errors and not unpaired and not crossed and not (actual-expected),
         'revised_historical_data_not_contemporaneous':True}
     dataset={'schema':'heptatrader.historical-paired-bars.v1','source_plan_sha256':sha(root/'plan.json'),
         'sources':sources,'bars':joined,'coverage':coverage,'trade_authority':False,

@@ -24,7 +24,7 @@ class CollectionTests(unittest.TestCase):
                 duplicate=copy.deepcopy(bars[-1]);duplicate['close']=duplicate['low']='1.1'
                 until=start+899 if partial else start+901
                 pairs.append((request('bars',what,until),{'bars':[duplicate],'head':None,'schedule':None,'errors':[]}))
-        schedule={'timezone':'UTC','sessions':[{'start':'20261006-12:00:00','end':'20261006-12:15:00','reference_date':'20261006'}]}
+        schedule={'start':'20261006-12:00:00','end':'20261006-12:15:01','timezone':'UTC','sessions':[{'start':'20261006-12:00:00','end':'20261006-12:15:00','reference_date':'20261006'}]}
         pairs.append((request('schedule','SCHEDULE',start+900),{'bars':[],'head':None,'schedule':schedule,'errors':[]}))
         config={'contract':{'symbol':'EUR'}}
         write_once(root/'plan.json',{'config':config,'requests':[r for r,_ in pairs]})

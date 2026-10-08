@@ -60,7 +60,8 @@ class ResetHoldTests(unittest.TestCase):
         self.assertFalse(json.loads(result.getvalue())['driver_started'])
     def test_first_quote_failure_never_opens_capture(self):
         f=Fake();f.fail=True;output=self.home/'observation'
-        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=1000), \
+        owner=self.home.stat().st_uid
+        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=owner), \
              patch.object(observer,'load_pinned_driver',return_value=f), \
              patch.object(observer,'Capture',side_effect=AssertionError('no empty live capture')), \
              patch('sys.argv',['observer','--base-driver','/fake','--instrument','BTC.USD','--state-dir',str(output)]):
