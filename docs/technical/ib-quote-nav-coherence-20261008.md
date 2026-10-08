@@ -319,3 +319,40 @@ The code change in this candidate adds only observation fields; this
 incident is documented separately as non-authorizing forensic evidence.
 It does **not** widen NAV's USD 1.00 threshold or authorize
 a rejected account valuation.
+
+
+## Intermittent numeric NAV success is not same-source-time proof (14:43–14:45 UTC+8)
+
+During the same verified, unchanged deployed NAV v3 observer, the Broker's
+account values changed without any new same-source valuation certificate.
+A 14:43:07 rejected account cohort had **-9.835326686 USD**
+non-accrual FX/BASE residual, exceeding the original 1.00 USD threshold.
+This rejected raw remains present as a distinct diagnostic and is **not**
+an accepted NAV or reset opening.
+
+Later full **new** v3 receipts were source-bound to their own `raw_sha256`,
+had all three request Ends, independent callback arrival windows, and no
+transport errors. One accepted 14:44+ receipt had **-0.895112486 USD**
+non-accrual FX/BASE residual, so it passed the **existing** financial
+test without relaxing the 1.00 USD threshold. The original full-currency
+NLV difference **-1.665279095 USD** remains explicitly present in
+`fx_reconciliation_difference`: this includes accrued cash translated
+at current ledger FX even though Broker BASE accrued cash is reported on
+its own daily/transaction-rate basis. It is **not** the original
+non-accrual $1 financial acceptance comparison and is not discarded.
+
+The accepted receipt and previously rejected receipt have distinct
+raw SHA256 digests and distinct request-ID cohorts. This is not a
+promotion of rejected raw. A later standalone account observation may
+fail again if Broker values move or if the OMS journal changes during
+read-only capture; neither `nav_complete=true` nor a run of
+arithmetically coherent cohorts provides a common **Broker source
+valuation tick**. Every observed v3 cohort still explicitly carries
+`broker_valuation_tick_attested=false`.
+
+**Do not claim common NAV valuation-time qualification** from this
+intermittent numeric reconciliation. Keep two independent acceptance
+dimensions in operator reporting: exact transport + original fixed-bound
+financial reconciliation, and separately independently established
+Broker valuation timestamp/basis for all material currencies and BASE.
+The latter remains missing and is a release blocker.
