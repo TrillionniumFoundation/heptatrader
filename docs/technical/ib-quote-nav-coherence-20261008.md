@@ -184,3 +184,38 @@ Subsequent independent PAPER API tests narrowed the earlier negative probe:
 Every probe instance has a distinct 20000..30000 client ID, checked against the live trader and NAV observer; its send boundary admits no order API. Quote callback freshness uses the existing 5-second limit. It never restamps an unchanged BID or ASK and never publishes NAV.
 
 **Release scope remains unchanged:** read-only successes cannot qualify production Execution's real farm-down/up and reconnect state machine, nor prove zero duplicate order sends across those events. Its candidate binary is not installed. The NAV v3 multi-request End receipt likewise does not carry an atomic Broker valuation time, so a USD >1 discrepancy remains rejected.
+
+## Initial optional CASH quote no-send: independent source fix (2026-10-08)
+
+The first mixed BTC-primary/EUR-secondary quote plan can legally accept a
+locally refused optional EUR `ReqMktData` while continuing the fresh BTC
+ticker. The previous renewal guard required `dispatchAccepted` or an
+existing *renewal* flag; therefore a first-cycle definite no-send never
+became retryable. In a Debug regression this path failed at
+`retry.accepted && retry.cancelRequestIds.empty()` before the fix.
+
+The revised quote state records `dispatchResultRecorded` separately from
+`dispatchAccepted`. Pending or unknown dispatch outcomes **cannot** be
+replaced, even after 15 seconds. Both initial and renewed EUR subscriptions
+with an explicit `RecordDispatchResult(false)` may be retried after the
+unchanged 15-second cooldown with a distinct request ID and **without**
+cancelling the never-sent ID. An SDK exception, missed dispatch receipt,
+unhealthy ingress, farm warning or connection-epoch change retains its
+existing fail-closed behavior. A duplicate dispatch receipt is rejected.
+
+The new deterministic test drives initial unissued EUR, a pending renewal,
+a second pre-SDK refusal, and farm recovery; it rejects old-ID ticks, demands
+two real new BID/ASK legs to restore EUR, preserves the primary BTC ID and
+rejects cross-epoch renewals. The identical test was red before this change
+and green after it, with C++ assertions enabled. No OMS or order sends are
+part of this code path.
+
+Independent read-only PAPER proof on client ID 29571 subsequently obtained
+two complete live EUR/USD BID/ASK pairs in separate 20-second windows,
+with `marketDataType=1`, stable scoped `cashfarm` receipt and exactly one
+pinned subscription/cancel per cycle, no order opcodes. This shows the
+Broker CAN supply fresh EUR data to an isolated client; it does **not**
+qualify native Execution's own reconnect nor certify a Broker NAV mark.
+
+The original fixed USD 1.00 NAV threshold is unchanged; rejected raw remains
+ineligible for account NAV, closing PnL or a new opening.
