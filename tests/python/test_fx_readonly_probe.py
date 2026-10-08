@@ -55,6 +55,22 @@ class QuoteWireTests(unittest.TestCase):
             gate.check(wire(["2","2","4"]))
 
 
+class CashFarmTests(unittest.TestCase):
+    def test_exact_cash_farm_ack_and_loss(self):
+        f=probe.CashFarmLease()
+        f.observe(2104,"Market data farm connection is OK:usfarm")
+        self.assertFalse(f.ready.is_set())
+        f.observe(2104,"Market data farm connection is OK:hfarm")
+        self.assertTrue(f.wait_stable(0,0.05))
+        self.assertEqual(f.farm_id,"hfarm")
+        f.observe(2119,"Broker farm warning:hfarm")
+        self.assertFalse(f.ready.is_set())
+        f.observe(2104,"Market data farm connection is OK:cashfarm")
+        self.assertTrue(f.ready.is_set())
+        f.observe(2103,"Broker farm disconnected:cashfarm")
+        self.assertFalse(f.ready.is_set())
+
+
 class FreshQuoteTests(unittest.TestCase):
     def test_both_fresh_live_bid_and_ask_mandatory(self):
         q=probe.LiveQuoteState()
@@ -65,6 +81,10 @@ class FreshQuoteTests(unittest.TestCase):
         self.assertIsNone(q.evidence(1003))
         q.price(2,1.121,1004)
         self.assertEqual(q.evidence(1005)["bid"],"1.1200000000000001")
+        self.assertGreaterEqual(q.valid_pair_tick_events,1)
+        self.assertEqual(q.last_valid_pair_at_ms,1004)
+        self.assertEqual(q.leg_ages(1005),
+                         {"bid_age_ms":3,"ask_age_ms":1})
         self.assertIsNone(q.evidence(6003))
         self.assertIsNone(q.evidence(1003))  # future ask cannot be backdated
         q.market_type(3)
@@ -103,6 +123,8 @@ class FakeClient:
         self.sendMsg(wire(["71","2",str(client_id)]))
         if type(self).mode!="handshake_timeout":
             self.nextValidId(123)
+            if type(self).mode!="farm_missing":
+                self.error(-1,2104,"Market data farm connection is OK:cashfarm")
     def run(self):
         self._stopped.wait(1)
     def disconnect(self):
@@ -127,6 +149,8 @@ class FakeClient:
             self.marketDataType(req,1)
         self.tickPrice(req,1,1.12,None)
         self.tickPrice(req,2,1.121,None)
+        if type(self).mode=="farm_loss":
+            self.error(-1,2103,"Market data farm connection is broken:cashfarm")
     def cancelMktData(self,req):
         self.sendMsg(wire(["2","2",str(req)]))
 
@@ -161,7 +185,8 @@ class SyntheticBrokerTests(unittest.TestCase):
         with patch.object(probe,"read_sdk",return_value=(
                 FakeClient,FakeWrapper,FakeContract)):
             return probe.capture_one(29554,pathlib.Path("/unused"),
-                                     window_sec=0.01,handshake_sec=0.01)
+                                     window_sec=0.01,handshake_sec=0.01,
+                                     farm_stability_sec=0)
     def test_live_quote_recovers_with_fresh_two_legs(self):
         result=self.exercise("live")
         self.assertEqual(result["status"],"LIVE_BID_ASK")
@@ -175,6 +200,15 @@ class SyntheticBrokerTests(unittest.TestCase):
                 result=self.exercise(mode)
                 self.assertEqual(result["status"],"NO_LIVE_BID_ASK")
                 self.assertEqual(result["order_send_count"],0)
+    def test_no_cash_farm_or_farm_loss_cannot_publish_live_quote(self):
+        missing=self.exercise("farm_missing")
+        self.assertEqual(missing["status"],"CASH_FARM_UNATTESTED")
+        self.assertNotIn("1",missing["allowed_send_counts"])
+        lost=self.exercise("farm_loss")
+        self.assertEqual(lost["status"],"CASH_FARM_LOST")
+        self.assertIsNone(lost["live_quote"])
+        self.assertEqual(lost["order_send_count"],0)
+
     def test_unexpected_sdk_message_denied(self):
         result=self.exercise("unsafe")
         self.assertEqual(result["status"],"PROBE_UNSAFE_SEND")

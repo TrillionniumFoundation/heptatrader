@@ -169,3 +169,18 @@ The Broker's Web API ledger `timestamp` is documented as data retrieval
 time, not one underlying valuation time for all currencies and BASE. A
 10-second WebSocket ledger topic can contain blank (unchanged) currencies.
 Neither is a justified substitute for a source-proven atomic NAV mark.
+
+## Broker CASH-farm scoped reproduction and live quote recovery
+
+Subsequent independent PAPER API tests narrowed the earlier negative probe:
+
+- Contract details: the exact EUR/CASH/IDEALPRO/USD contract resolved to a Broker conId on an order-incapable diagnostic client. A malformed contract is not supported by this evidence.
+- In the original two-cycle experiment the diagnostic sent `reqMktData` before proving a scoped CASH-farm 2104. It received no per-ticker callbacks. These early samples cannot establish absent FX entitlements.
+- A separate diagnostic request for type 3 led the Broker to respond with `marketDataType=1` and real BID/ASK callbacks (fields 1 and 2). Delayed mode must never be substituted in the native production quote path; this was diagnostic evidence that live data can be delivered.
+- The read-only probe now waits for a 2104 whose trailing farm identifier is exactly `cashfarm` or `hfarm`, maintains a bounded stability interval, rejects 2103/2119 losses, and then requests **mode 1** and the pinned EUR ticker. Informational 2104 for unrelated farms cannot authorize the request.
+- Under this scoped-farm sequence an 8-second probe returned `LIVE_BID_ASK`, bid 1.12021, ask 1.12023, oldest leg age 93 ms, market mode 1 and 13 price callbacks. A later 20-second window also returned `LIVE_BID_ASK`, with last bid/ask leg ages 1470 ms and 29 events at which both legs satisfied the existing 5-second limit.
+- A separate two-cycle 8-second reconnect observation received the scoped CASH farm and market mode 1 in both cycles, and had 15 / 9 price callbacks, but neither window finished with a simultaneously fresh pair. This is intermittent current freshness, not an entitlement diagnosis or a steady-state recovery proof.
+
+Every probe instance has a distinct 20000..30000 client ID, checked against the live trader and NAV observer; its send boundary admits no order API. Quote callback freshness uses the existing 5-second limit. It never restamps an unchanged BID or ASK and never publishes NAV.
+
+**Release scope remains unchanged:** read-only successes cannot qualify production Execution's real farm-down/up and reconnect state machine, nor prove zero duplicate order sends across those events. Its candidate binary is not installed. The NAV v3 multi-request End receipt likewise does not carry an atomic Broker valuation time, so a USD >1 discrepancy remains rejected.

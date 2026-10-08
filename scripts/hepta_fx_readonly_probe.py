@@ -76,6 +76,9 @@ class LiveQuoteState:
         self.ask: tuple[float, int] | None = None
         self.tick_count = 0
         self.invalid_tick_count = 0
+        self.tick_fields: dict[int, int] = {}
+        self.valid_pair_tick_events = 0
+        self.last_valid_pair_at_ms: int | None = None
 
     def market_type(self, value: int) -> None:
         self.data_type = value
@@ -85,6 +88,7 @@ class LiveQuoteState:
 
     def price(self, field: int, value: float, at_ms: int) -> None:
         self.tick_count += 1
+        self.tick_fields[field] = self.tick_fields.get(field, 0) + 1
         if (self.data_type != 1 or field not in (1, 2) or
                 not isinstance(value, (int, float)) or
                 not math.isfinite(value) or value <= 0 or
@@ -95,6 +99,15 @@ class LiveQuoteState:
             self.bid = (float(value), at_ms)
         else:
             self.ask = (float(value), at_ms)
+        if self.evidence(at_ms) is not None:
+            self.valid_pair_tick_events += 1
+            self.last_valid_pair_at_ms = at_ms
+
+    def leg_ages(self, now_ms: int) -> dict:
+        return {
+            "bid_age_ms": now_ms - self.bid[1] if self.bid else None,
+            "ask_age_ms": now_ms - self.ask[1] if self.ask else None,
+        }
 
     def evidence(self, now_ms: int, max_age_ms: int = 5000) -> dict | None:
         if self.data_type != 1 or self.bid is None or self.ask is None:
@@ -111,6 +124,34 @@ class LiveQuoteState:
         }
 
 
+class CashFarmLease:
+    """Only a scoped current-session CASH-farm 2104 opens the quote probe."""
+    def __init__(self):
+        self.ready = threading.Event()
+        self.farm_id: str | None = None
+        self.ready_since = 0.0
+
+    def observe(self, code: int, message: str) -> None:
+        farm = message.rsplit(":", 1)[-1].strip().lower()
+        if farm not in ("cashfarm", "hfarm"):
+            return  # Other farms' 2104 do not authorize CASH market data.
+        if code == 2104:
+            self.farm_id = farm
+            self.ready_since = time.monotonic()
+            self.ready.set()
+        elif code in (2103, 2119):
+            self.ready.clear()
+            self.ready_since = 0.0
+
+    def wait_stable(self, stable_sec: float, timeout_sec: float) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.ready.is_set() and time.monotonic() - self.ready_since >= stable_sec:
+                return True
+            time.sleep(0.02)
+        return False
+
+
 def read_sdk(path: Path):
     path = path.resolve(strict=True)
     if not (path / "ibapi/client.py").is_file():
@@ -123,10 +164,11 @@ def read_sdk(path: Path):
 
 
 def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
-                handshake_sec: float = 8.0) -> dict:
+                handshake_sec: float = 8.0, farm_stability_sec: float = 0.5) -> dict:
     EClient, EWrapper, Contract = read_sdk(sdk)
     gate = QuoteWireGate(client_id)
     quotes = LiveQuoteState()
+    farm = CashFarmLease()
     errors: list[dict] = []
     ready = threading.Event()
 
@@ -143,6 +185,8 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
             ready.set()
 
         def error(self, request_id, code, message, *args):
+            if request_id == -1:
+                farm.observe(code, message)
             if len(errors) < 32:
                 errors.append({"request_id": request_id, "code": code})
 
@@ -180,25 +224,32 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
         worker.start()
         if not ready.wait(handshake_sec):
             result["status"] = "HANDSHAKE_TIMEOUT"
+        elif not farm.wait_stable(farm_stability_sec, handshake_sec):
+            result["status"] = "CASH_FARM_UNATTESTED"
+        elif client.lost or not client.isConnected() or not farm.ready.is_set():
+            result["status"] = "CONNECTION_LOST"
         else:
             contract = Contract()
             contract.symbol = "EUR"
             contract.secType = "CASH"
             contract.exchange = "IDEALPRO"
             contract.currency = "USD"
+            # Read-only request after the scoped farm witness stabilizes.
+            # A 2104 acknowledgment itself never becomes a quote.
             client.reqMarketDataType(1)
             client.reqMktData(REQUEST_ID, contract, "", False, False, [])
-            # Sample the entire specified window; a prior valid quote is never
-            # treated as refreshed by the passage of local time.
             deadline = time.monotonic() + window_sec
             while time.monotonic() < deadline:
-                if client.lost or not client.isConnected():
+                if client.lost or not client.isConnected() or not farm.ready.is_set():
                     break
                 time.sleep(max(0.0, min(0.1, deadline - time.monotonic())))
             result["live_quote"] = quotes.evidence(time.time_ns() // 1_000_000)
-            result["status"] = ("LIVE_BID_ASK" if result["live_quote"] is not None
-                                else "CONNECTION_LOST" if client.lost
+            result["status"] = ("CONNECTION_LOST" if client.lost or not client.isConnected()
+                                else "CASH_FARM_LOST" if not farm.ready.is_set()
+                                else "LIVE_BID_ASK" if result["live_quote"] is not None
                                 else "NO_LIVE_BID_ASK")
+            if result["status"] != "LIVE_BID_ASK":
+                result["live_quote"] = None
     except (OSError, ValueError, ProbeViolation) as error:
         result["status"] = ("PROBE_UNSAFE_SEND" if isinstance(error, ProbeViolation)
                             else "PROBE_TRANSPORT_FAILURE")
@@ -215,9 +266,16 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
             result["disconnect_error"] = "PROBE_DISCONNECT_FAILED"
         if worker is not None:
             worker.join(2)
+        result["cash_farm_attested_at_end"] = farm.ready.is_set()
+        result["cash_farm_id"] = farm.farm_id
         result["market_data_type"] = quotes.data_type
         result["tick_callbacks"] = quotes.tick_count
+        result["tick_field_counts"] = quotes.tick_fields
         result["invalid_tick_callbacks"] = quotes.invalid_tick_count
+        result["valid_pair_tick_events"] = quotes.valid_pair_tick_events
+        result["last_valid_pair_at_ms"] = quotes.last_valid_pair_at_ms
+        result["leg_ages_at_end_ms"] = quotes.leg_ages(
+            time.time_ns() // 1_000_000)
         result["error_codes"] = errors
         result["allowed_send_counts"] = gate.counts
         result["order_send_count"] = 0  # wire allowlist denies every order opcode
