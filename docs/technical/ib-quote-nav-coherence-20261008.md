@@ -277,3 +277,45 @@ The concurrently deployed 10-second NAV observer and original USD 1.00
 FX/BASE reconciliation are **unchanged**; rejected records remain rejected.
 No TWS market-data quote timestamp can substitute for the independently
 attested common Broker account valuation time.
+
+
+## Existing production Execution reconnect failure (2026-10-08 14:32 CST)
+
+During this separate candidate's **read-only test period**, the still-installed
+**old** production Execution (binary SHA256
+`a7f08557daff9e07eac0b3c8cad2644bdf5710c274fbfae97f4900e28d7d5172`)
+experienced an independent Broker reconnect. The relevant systemd/journal
+facts (UTC+8) are:
+
+- 14:31:26: risk snapshot connection epoch 5 -> 6, connected=false,
+  `IB_RISK_CONNECTION_CHANGED`, risk/coherence temporarily incomplete.
+- 14:31:56: Broker connection epoch 7 connected=true, risk still incomplete.
+- 14:32:06: risk/coherence and recovery barrier observations returned complete.
+- **14:32:14**: old Execution exited fail-closed with
+  `IB_PAPER_BROKER_RECONNECT_SNAPSHOTS_UNREADY`, systemd exit status 9.
+  This generic reason does not by itself prove which recovery leg remained
+  incomplete; a visible complete risk projection is not equivalent to
+  the full terminal/active/order/exposure/quote readiness conjunction.
+- **14:32:45**: systemd automatic restart, old installed binary.
+  **14:32:52**: reported runtime ready. New service and Broker epoch
+  identities are distinct from the previous process; no source code
+  candidate was deployed to produce this recovery.
+- Read-only sample after restart had connected=true,
+  event_stream_authoritative=true, coherent_risk_complete=true,
+  zero active orders and fresh BTC primary quote age in recent samples.
+  OMS journal accumulated `place_sent=25` and `flatten_sent=31`,
+  **with no new send records since 14:20**, including the restart interval.
+
+This is **not** a passed native candidate fault-injection result and not a
+guarantee against future duplicate broker commands. A fail-closed crash
+followed by automatic restart is a distinct production-reliability concern;
+the candidate must preserve its own command/owner/position identities
+and verify new EUR BID/ASK request epochs under controlled Broker feed-loss,
+farm restoration, connection loss, and later reconnect. Do not dismiss
+unresolved terminal/active/exposure barriers merely because the
+read-only risk summary becomes complete.
+
+The code change in this candidate adds only observation fields; this
+incident is documented separately as non-authorizing forensic evidence.
+It does **not** widen NAV's USD 1.00 threshold or authorize
+a rejected account valuation.
