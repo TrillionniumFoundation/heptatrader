@@ -1,0 +1,73 @@
+# Prospective independent Numeric × Laya price test
+
+This source tree is experimental, has no trading or model-selection API, and
+never mutates the pre-existing FX/BTC PAPER trader, Execution, Gateway, Laya
+candidate scheduler or previously rejected temporal fusion trial.
+
+## Causal training
+
+The registered 300-second target is the existing seven-bin future EUR/USD MID
+return. Each training input comes from an immutable source prefix and is
+available before its recorded label. Only source-authoritative quote histories
+are used. No remote strategy prediction, PnL, future fee, HOLD label or future
+outcome is a training input.
+
+A fresh numeric GRU and a separate 768-to-7 head on a frozen, *full pretrained*
+Laya encoder are fitted independently on 256 mature rows. Their parameters
+are then frozen. A new learned probability gate is fitted on 64 chronologically
+later rows. The last expert outcome is known more than 305 seconds before the
+first gate input; sample and outcome IDs are disjoint. This fits the gate;
+it is NOT unbiased validation on those same 64 rows.
+
+Five immutable forward arms: independent numeric-only, semantic/Laya-only,
+fixed 50/50 average, learned gate, and the original frozen numeric baseline
+from the earlier rejected experiment. The original numeric comparator is
+included because weakening a newly trained numeric is not proof that fusion
+improved over the strongest existing simple expert.
+
+The gate can consume compressed 32D features projected deterministically from
+full 768D encoder hidden representations, not merely seven class probabilities.
+It still does NOT prove semantic complementarity. All trained models remain
+frozen throughout future evaluation.
+
+## Prospective experiment
+
+A separate plan registers 24 future slots six minutes apart with a five-minute
+label horizon. It is created only after the full model and code are immutable.
+Each slot must commit one complete five-arm forecast within the original 60s
+input grace. The independent evaluator imports no torch or optimizer and uses
+original actual source timestamps, anchor prices and max-30s path continuity,
+with a five-second future endpoint tolerance. Late inference and missing quotes
+remain censored.
+
+The research screen requires at least 20 observed slots, at most four censored,
+two target classes, at least eight samples per time half, positive mean Brier
+improvement and a one-sided exact sign screen at 0.0125 against each of four
+comparators. Because market labels are serially dependent, this naive sign
+screen is an exploratory filter, **not time-dependence robust canonical
+qualification**. It never promotes, selects or trades even if all checks pass.
+
+The previous candidate's 10 observed/2 censored REJECTED assessment is retained
+and is not counted or amended as an observation for the new candidate.
+
+## Remaining financial A/B blocker
+
+Laya-English and Laya-mmBERT official full checkpoints already passed
+identical-source-input, strict state-dict and ROCm engineering checks. That is
+not predictive gain. The USD100k policy currently has zero independently
+settled closed net-USD rewards with exact original-command attribution. The
+currently open short cannot be used as a training target. Earlier 25k/churn
+behavior rewards are not re-labelled as the USD100k policy.
+
+A separate pair of USD monetary readouts must train on the *same exact closed
+episodes*, budget known at request time, freeze before a future 14-day+1-day
+net-PnL window, seal both before original PREPARED, and score actual realized net
+USD including all reported commissions with the identical original-command
+denominator. The later PREPARED integer EUR quantity/reference price are only
+verification evidence; they cannot enter an earlier model-request input.
+This current price trial does not solve or bypass that blockade.
+
+Future directions are conditional: distributional value requires adequate
+independent outcomes and tail calibration; IQL/CQL or SPIBB requires real
+behavior-policy coverage and distinct effect authority. Meta never sends orders,
+and canonical Agentd admission is a separate product path.
