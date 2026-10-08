@@ -1210,6 +1210,8 @@ void HeptaIBGatewayAdapter::CompleteCoherentRiskRefreshIfReady() {
     }
     const bool recoveryBarrierComplete = complete &&
         m_coherentRiskRefreshForRecoveryAudit &&
+        (m_recoveryAuditMinimumConnectionEpoch == 0 ||
+         m_connectionEpoch >= m_recoveryAuditMinimumConnectionEpoch) &&
         m_correlationSnapshot.complete &&
         m_terminalCorrelationSnapshot.complete &&
         m_correlationSnapshot.connectionEpoch == m_connectionEpoch &&

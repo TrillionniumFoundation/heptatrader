@@ -509,7 +509,11 @@ HeptaIBGatewayAdapter::BuildRecoveryAuditSnapshotLocked() const {
     snapshot.barrierComplete = m_recoveryAuditBarrierComplete &&
         m_recoveryAuditBarrierConnectionEpoch == m_connectionEpoch &&
         m_recoveryAuditBarrierMutationGeneration ==
-            m_brokerMutationGeneration;
+            m_brokerMutationGeneration &&
+        // A prior BeginRecoveryAuditBarrier may require a *new* connection
+        // epoch. A same-epoch refresh cannot promote this stale boundary.
+        (m_recoveryAuditMinimumConnectionEpoch == 0 ||
+         m_connectionEpoch >= m_recoveryAuditMinimumConnectionEpoch);
     snapshot.reasonCode = snapshot.barrierComplete ? std::string() :
         (m_recoveryAuditBarrierReason.empty() ?
             "IB_RECOVERY_AUDIT_BARRIER_NOT_COMPLETE" :
@@ -749,6 +753,15 @@ bool HeptaIBGatewayAdapter::ReqRiskRefresh() {
 
 bool HeptaIBGatewayAdapter::ReqRecoveryAuditRiskRefresh() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // The owner audit already fenced this transport and demanded a new
+    // epoch. Even a complete account/position End from this old connection
+    // cannot close that fence; do not issue a misleading audit refresh.
+    if (m_recoveryAuditMinimumConnectionEpoch != 0 &&
+        m_connectionEpoch < m_recoveryAuditMinimumConnectionEpoch) {
+        m_lastRejectReason =
+            "IB_RECOVERY_AUDIT_NEW_CONNECTION_EPOCH_REQUIRED";
+        return false;
+    }
     if (!m_correlationSnapshot.complete ||
         !m_terminalCorrelationSnapshot.complete ||
         m_correlationSnapshot.connectionEpoch != m_connectionEpoch ||

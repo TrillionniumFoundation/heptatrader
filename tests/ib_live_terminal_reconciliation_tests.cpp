@@ -230,6 +230,67 @@ void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     }
 }
 
+void TestCashOutsideGenerationCannotBorrowOrdinaryRiskFreshness() {
+    // Reproduce the live 2026-10-09 cash epoch mismatch with a socket-free
+    // synthetic Broker; this is not a live recovery, order or login.
+    Fixture f(true,false,true);
+    const auto finishRisk = [&](const char* cash) {
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value=cash;f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    finishRisk("-75000");
+    const auto initial=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(initial.barrierComplete && initial.risk.coherentRefreshComplete);
+    // Outside any account request/end cohort. This negative observation
+    // invalidates the broker audit even if prices and terminal data are fresh.
+    auto changed=f.Event(IBEventType::AccountValue);
+    changed.key="CashBalance:EUR";changed.value="-75001";
+    f.Push(changed);
+    auto invalid=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!invalid.barrierComplete && !invalid.risk.complete);
+    assert(invalid.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    // Ordinary coherent account+positions refresh is never a recovery audit.
+    assert(f.adapter.ReqRiskRefresh());
+    finishRisk("-75001");
+    const auto ordinary=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(ordinary.risk.complete && ordinary.risk.coherentRefreshComplete);
+    assert(ordinary.risk.fxCashComplete);
+    assert(!ordinary.barrierComplete);
+    assert(ordinary.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    // A real owner audit must require the *next* API connection epoch. A
+    // direct same-epoch risk refresh cannot forge that required boundary.
+    const auto request=f.adapter.BeginRecoveryAuditBarrier();
+    assert(request.newConnectionEpochRequired && !request.barrierComplete);
+    assert(request.reasonCode=="IB_RECOVERY_AUDIT_NEW_CONNECTION_EPOCH_REQUIRED");
+    assert(!f.adapter.ReqRecoveryAuditRiskRefresh());
+    assert(f.adapter.GetLastRejectReason() ==
+           "IB_RECOVERY_AUDIT_NEW_CONNECTION_EPOCH_REQUIRED");
+    const auto sameEpoch=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(sameEpoch.risk.coherentRefreshComplete);
+    assert(!sameEpoch.barrierComplete);
+    const auto stillNeeded=f.adapter.BeginRecoveryAuditBarrier();
+    assert(stillNeeded.newConnectionEpochRequired);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    // Only a genuine next transport epoch and new correlation, terminal,
+    // account and position End can establish a fresh recovery audit.
+    f.adapter.Disconnect();
+    assert(f.adapter.Connect());
+    f.Bootstrap();
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    finishRisk("-75000");
+    const auto recovered=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(recovered.barrierComplete);
+    assert(recovered.risk.coherentRefreshComplete);
+    assert(recovered.risk.fxCashComplete);
+    assert(recovered.active.connectionEpoch == recovered.risk.connectionEpoch);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
 void TestCryptoCashBaselineUsesSharedResidentAndCanaryEnvelope() {
     Fixture f(true,true);assert(f.adapter.ReqRiskRefresh());f.FinishRiskRefresh();
     IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
@@ -855,6 +916,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 int main() {
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
+    TestCashOutsideGenerationCannotBorrowOrdinaryRiskFreshness();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
     TestTypedFlattenCapturesResultAtSendBoundary();
