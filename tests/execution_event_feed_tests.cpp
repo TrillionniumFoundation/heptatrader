@@ -515,6 +515,52 @@ void TestEventFeedPeerCredentialRejection()
     ::unlink(clientRejectPath.c_str());
 }
 
+void TestActivatedBacklogBeforeReadinessRejectsWithoutSourceRead()
+{
+    const std::string socketPath = "/tmp/hepta-events-unready-backlog-" +
+        std::to_string(::getpid()) + ".sock";
+    const int managerFd = ActivatedSocket(socketPath);
+    const std::set<std::uint32_t> uid{
+        static_cast<std::uint32_t>(::geteuid())};
+    const ExecutionServiceIdentity oldIdentity = Identity("backlog-old", 30);
+    const ExecutionServiceIdentity currentIdentity = Identity("backlog-current", 31);
+    CountingSource source(8, currentIdentity.serviceEpoch);
+    source.Publish(Event("unready-backlog", 903));
+    std::string body;
+    std::string reason;
+    assert(ExecutionEventFeedProtocol::EncodeRequest(
+        Request(oldIdentity, "unready-backlog"), body, reason));
+    const int queuedFd = ConnectSocket(socketPath);
+    WriteFrame(queuedFd, body);
+    const std::shared_ptr<ExecutionServiceLifecycleGate> gate(
+        new ExecutionServiceLifecycleGate());
+    UnixExecutionEventFeedServer server(source, currentIdentity, gate);
+    assert(server.StartFromFd(::dup(managerFd), uid, reason, 8192, 500, 1, 4));
+    // Keep readiness false until a real response arrives. No sleeps or widened
+    // accepted-status set conceal either the not-ready or stale-identity branch.
+    std::string responseBody;
+    assert(ReadFrameWithTimeout(queuedFd, responseBody));
+    ExecutionEventReadResult beforeReady;
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        responseBody, beforeReady, reason));
+    assert(beforeReady.status == ExecutionEventReadStatus::ServiceNotReady);
+    assert(SameIdentity(beforeReady.serviceIdentity, currentIdentity));
+    assert(source.ReadsFor("unready-backlog") == 0);
+    assert(source.Pending("unready-backlog") == 1);
+    ::close(queuedFd);
+
+    gate->ready.store(true);
+    UnixExecutionEventFeedClient client(socketPath, 500, 32768, uid);
+    const auto afterReady = client.Wait(Request(oldIdentity, "unready-backlog"));
+    assert(afterReady.status == ExecutionEventReadStatus::ServiceIdentityMismatch);
+    assert(SameIdentity(afterReady.serviceIdentity, currentIdentity));
+    assert(source.ReadsFor("unready-backlog") == 0);
+    assert(source.Pending("unready-backlog") == 1);
+    server.Stop();
+    ::close(managerFd);
+    ::unlink(socketPath.c_str());
+}
+
 void TestActivatedBacklogAndNotReadyNeverReadSource()
 {
     const std::string socketPath = "/tmp/hepta-events-activated-backlog-" +
@@ -543,11 +589,12 @@ void TestActivatedBacklogAndNotReadyNeverReadSource()
     const ExecutionServiceIdentity secondIdentity = Identity("event-service-b", 21);
     CountingSource secondSource(8, secondIdentity.serviceEpoch);
     secondSource.Publish(Event("activated-stale", 901));
-    const std::shared_ptr<ExecutionServiceLifecycleGate> secondGate(
-        new ExecutionServiceLifecycleGate());
+    // This branch tests identity rejection AFTER readiness. Publish readiness
+    // before worker startup: a queued request must not race a later store and
+    // correctly return ServiceNotReady instead of the intended identity verdict.
+    const std::shared_ptr<ExecutionServiceLifecycleGate> secondGate = ReadyGate();
     UnixExecutionEventFeedServer second(secondSource, secondIdentity, secondGate);
     assert(second.StartFromFd(::dup(managerFd), uid, reason, 8192, 500, 1, 4));
-    secondGate->ready.store(true);
 
     std::string responseBody;
     assert(ReadFrameWithTimeout(queuedFd, responseBody));
@@ -751,6 +798,7 @@ int main()
     TestUnixFeedIsolationGapIdentityAndWorkers();
     TestRepeatedIdleWorkerShutdown();
     TestEventFeedPeerCredentialRejection();
+    TestActivatedBacklogBeforeReadinessRejectsWithoutSourceRead();
     TestActivatedBacklogAndNotReadyNeverReadSource();
     TestStopRejectsAcceptedWorkerBacklog();
     TestRelayIdentityMismatchAndResyncLatch();
