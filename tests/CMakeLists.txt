@@ -287,6 +287,15 @@ target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_quote_recovery_component_tests)
 
+# Full runtime startup, recovery coordinator, durable OMS and real local IPC.
+# Broker wrapper is socket-free; no production state or credentials are used.
+add_executable(hepta_ib_full_runtime_recovery_tests
+    ib_full_runtime_recovery_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_full_runtime_recovery_tests)
+
 # Deliberate local operator target only: no ordinary ctest, no installation,
 # no default build, and no direct gateway access from the CLI. The runner
 # pins this SDK-linked binary and places an exact frame allowlist in front.

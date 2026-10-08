@@ -185,3 +185,7 @@ Socket-free production-component regressions additionally distinguish
 cycle (transport only), foreign epoch, secondary vs primary CASH scope,
 unknown cancel, false cancel, admission fault and SDK exceptions.
 The authenticated common Broker NAV basis remains independently unavailable.
+
+## Full runtime and ownership follow-through
+
+See [full runtime recovery and ownership evidence](pr178-full-runtime-ownership-20261008.md) for the native full-Start/reconnect/reconstruction regressions and the independent exact-account Broker/OMS identity reader. Both retain explicit live-qualification ceilings; neither authorizes cutover.

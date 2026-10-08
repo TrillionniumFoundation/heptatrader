@@ -1,0 +1,361 @@
+// Full Runtime::Start -> real polling/reconnect/OMS/IPC -> Stop. Socket-free
+// injected broker transport only. Synthetic fixtures, NOT live qualification.
+#include "execution/ib_paper_execution_runtime_composition.h"
+#include "execution/execution_coordinator.h"
+#include "adapter_ib/ib_venue_correlation.h"
+#include "adapter_ib/ib_callback_economics.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstddef>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <linux/audit.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+
+static void check(bool value,const std::string& message) {
+    if(!value)throw std::runtime_error(message);
+}
+static std::uint64_t ms() {return OmsJournal::NowEpochMs();}
+static void prohibitNetworkAndExec() {
+#if defined(__x86_64__)
+    constexpr unsigned arch=AUDIT_ARCH_X86_64;
+#elif defined(__aarch64__)
+    constexpr unsigned arch=AUDIT_ARCH_AARCH64;
+#else
+#error Unsupported architecture for the full-runtime isolation fixture
+#endif
+    // Kernel enforced, not a fake-wrapper claim. Only AF_UNIX socket creation
+    // is permitted; no child executable can replace this isolated test.
+    sock_filter code[]={
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(seccomp_data,arch)),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,arch,1,0),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(seccomp_data,nr)),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_execve,4,0),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_execveat,3,0),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,__NR_socket,0,3),
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(seccomp_data,args[0])),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,AF_UNIX,1,0),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|EPERM),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)
+    };
+    sock_fprog program{static_cast<unsigned short>(sizeof(code)/sizeof(code[0])),code};
+    check(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)==0,"no_new_privs");
+    check(prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&program)==0,"kernel network isolation");
+    check(::socket(AF_INET,SOCK_STREAM,0)==-1&&errno==EPERM,"IPv4 socket denied by kernel");
+    check(::socket(AF_INET6,SOCK_STREAM,0)==-1&&errno==EPERM,"IPv6 socket denied by kernel");
+}
+static IBContractLite contract(bool btc) {
+    IBContractLite c;c.symbol=btc?"BTC":"EUR";c.secType=btc?"CRYPTO":"CASH";
+    c.exchange=btc?"PAXOS":"IDEALPRO";c.currency="USD";return c;
+}
+struct Shared {
+    std::mutex mutex;
+    std::deque<int> controls;
+    std::map<std::string,unsigned> stages;
+    std::atomic<unsigned> connectCount{0},orderCalls{0},accountCalls{0},positionCalls{0},openCalls{0},terminalCalls{0},execCalls{0};
+    std::atomic<int> reconnectCode{1101};
+    std::atomic<bool> omitPositions{false};
+    std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
+    bool seeded=false;
+    void signal(int code){std::lock_guard<std::mutex> lock(mutex);controls.push_back(code);}
+    void stage(const char* name){std::lock_guard<std::mutex> lock(mutex);++stages[name];}
+    unsigned count(const char* name){std::lock_guard<std::mutex> lock(mutex);return stages[name];}
+};
+class NeverEnableTrading final:public IbPaperKillSwitchReader {
+public:IbPaperKillSwitchObservation Observe()const override {
+    IbPaperKillSwitchObservation x;x.state=IbPaperKillSwitchState::Engaged;x.reasonCode="OFFLINE_FIXTURE_NO_TRADING";return x;
+}};
+class FullBroker final:public IIBApiWrapper {
+    std::shared_ptr<Shared> s;
+    bool connected=false,cashReady=true;
+    std::uint64_t epoch=0,lastTicks=0;
+    std::deque<IBEvent> events;
+    std::map<int,IBContractLite> quotes;
+    IBCashFarmAdmissionMarker farm;
+    std::uint64_t sequence=0;
+    IBEvent make(IBEventType type)const {
+        IBEvent e;e.type=type;e.connectionEpoch=epoch;e.account="DU90001";e.brokerClientId=701;return e;
+    }
+    void control(int code) {
+        auto e=make(IBEventType::Error);e.id=-1;e.key=std::to_string(code);
+        e.value=(code==2103||code==2104)?"Market data farm:cashfarm":"Synthetic transport control";
+        if(code==2103){cashReady=false;s->farmAcknowledged=false;farm.ObserveWarning(epoch,++sequence);}
+        if(code==2104){cashReady=true;s->farmAcknowledged=true;farm.ObserveReady(epoch,++sequence);}
+        events.push_back(e);
+    }
+public:
+    explicit FullBroker(std::shared_ptr<Shared> v):s(v){}
+    void SetConnectionEpoch(std::uint64_t e)override{epoch=e;farm.Reset(e);}
+    std::uint64_t GetConnectionEpoch()const override{return epoch;}
+    bool Connect(const IBConnectParams&)override {
+        connected=true;++s->connectCount;control(2104);
+        if(s->connectCount>1)control(s->reconnectCode.load());
+        return true;
+    }
+    void Disconnect()override{connected=false;quotes.clear();events.clear();}
+    bool IsConnected()const override{return connected;}
+    const char* GetStatusString()const override{return "SYNTHETIC_FULL_RUNTIME_NO_SOCKET";}
+    bool ReqAccountSummary()override {
+        ++s->accountCalls;
+        for(const auto& row:std::map<std::string,std::string>{{"AccountReady:","true"},{"NetLiquidation:USD","1000000"},{"CashBalance:EUR",s->seeded?"1025":"1000"}}) {
+            auto e=make(IBEventType::AccountValue);e.key=row.first;e.value=row.second;events.push_back(e);
+        }
+        events.push_back(make(IBEventType::AccountSummaryEnd));return true;
+    }
+    bool ReqPositions()override {
+        ++s->positionCalls;
+        if(s->seeded){auto e=make(IBEventType::Position);e.key="BTC.USD";e.contract=contract(true);e.number=.01;events.push_back(e);}
+        if(!s->omitPositions)events.push_back(make(IBEventType::PositionEnd));return true;
+    }
+    bool ReqAllOpenOrders()override{
+        ++s->openCalls;
+        if(s->activeOnReconnect&&s->connectCount>1){
+            auto e=make(IBEventType::OpenOrder);e.id=999;e.contract=contract(false);
+            e.order.action="BUY";e.order.orderType="MKT";e.order.totalQuantity=1;e.number=1;e.value="Submitted";
+            std::string reason;check(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'f'),e.order.orderRef,reason),"active correlation fixture");
+            events.push_back(e);
+        }
+        events.push_back(make(IBEventType::OpenOrderEnd));return true;
+    }
+    bool ReqCompletedOrders()override {
+        ++s->terminalCalls;
+        if(s->seeded)for(int i=0;i<2;++i) {
+            auto e=make(IBEventType::CompletedOrder);e.id=801+i;e.contract=contract(i==1);
+            e.order.action="BUY";e.order.totalQuantity=i?.01:25;e.order.orderType="MKT";
+            std::string reason;check(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,i?'b':'a'),e.order.orderRef,reason),"encode synthetic correlation");
+            e.key="Filled";e.number=i?80000:1.12;e.number2=e.order.totalQuantity;
+            events.push_back(e);
+        }
+        events.push_back(make(IBEventType::CompletedOrdersEnd));return true;
+    }
+    bool ReqExecutions(int rid)override {
+        ++s->execCalls;
+        if(s->seeded)for(int i=0;i<2;++i) {
+            auto e=make(IBEventType::ExecutionDetails);e.id=801+i;e.requestId=rid;e.key=i?"SYNTH-BTC-EXEC":"SYNTH-EUR-EXEC";
+            e.value="BOT";e.contract=contract(i==1);e.number=i?80000:1.12;e.number2=i?.01:25;e.number3=0;
+            e.remainingQuantityKnown=false;
+            e.economics=CaptureIbExecutionEconomics(e.contract,i?222:111,900801+i,
+                e.number2,e.number,e.number2,e.number,false);
+            std::string reason;check(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,i?'b':'a'),e.order.orderRef,reason),"encode historical execution");
+            events.push_back(e);
+        }
+        auto e=make(IBEventType::ExecutionDetailsEnd);e.requestId=rid;events.push_back(e);return true;
+    }
+    bool ReqMktData(int id,const IBContractLite& c)override {
+        if(c.secType=="CASH"&&!cashReady)return false;
+        check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;return true;
+    }
+    bool CancelMktData(int id)override {check(quotes.erase(id)==1,"cancel owned quote only");return true;}
+    bool PlaceOrder(long,const IBContractLite&,const IBOrderLite&)override {++s->orderCalls;throw std::runtime_error("NO_ORDER_TRANSPORT");}
+    bool CancelOrder(long)override {++s->orderCalls;throw std::runtime_error("NO_CANCEL_TRANSPORT");}
+    bool PollOnce(int)override {
+        if(ms()-lastTicks>80) {
+            lastTicks=ms();
+            for(const auto& q:quotes)if(q.second.secType!="CASH"||cashReady)for(int leg=1;leg<=2;++leg){
+                auto e=make(IBEventType::TickPrice);e.id=q.first;e.key=std::to_string(leg);
+                e.number=q.second.secType=="CASH"?(leg==1?1.12:1.1201):(leg==1?80000:80001);events.push_back(e);
+            }
+        }
+        {std::lock_guard<std::mutex> lock(s->mutex);while(!s->controls.empty()){control(s->controls.front());s->controls.pop_front();}}
+        return true;
+    }
+    bool TryDequeueEvent(IBEvent& e)override {if(events.empty())return false;e=events.front();events.pop_front();return true;}
+    long GetLastValidOrderId()const override{return 900;}
+};
+static int listener(const std::string& path) {
+    int fd=::socket(AF_UNIX,SOCK_STREAM,0);check(fd>=0,"unix fixture socket");sockaddr_un a{};a.sun_family=AF_UNIX;
+    check(path.size()<sizeof(a.sun_path),"unix path length");std::strcpy(a.sun_path,path.c_str());
+    check(::bind(fd,reinterpret_cast<sockaddr*>(&a),sizeof(a))==0&&::listen(fd,8)==0,"unix fixture listen");return fd;
+}
+static void writePrivate(const std::string& path,const std::string& text){std::ofstream f(path);f<<text;f.close();check(::chmod(path.c_str(),0400)==0,"credential mode");}
+struct Fixture {
+    std::string dir;std::shared_ptr<Shared> shared=std::make_shared<Shared>();
+    std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
+    IbPaperExecutionRuntimeConfig savedConfig;
+    explicit Fixture(bool seeded=false,bool unknown=false) {
+        char tmpl[]="/tmp/hepta-full-XXXXXX";auto p=::mkdtemp(tmpl);check(p,"private fixture directory");dir=p;
+        check(::mkdir((dir+"/state").c_str(),0700)==0 && ::mkdir((dir+"/cred").c_str(),0700)==0,"fixture dirs");shared->seeded=seeded;
+        IbPaperExecutionRuntimeConfig c;c.mode=IbPaperExecutionRuntimeMode::Paper;c.profile.enabled=true;c.profile.userScope=true;c.profile.observationOnly=false;
+        c.profile.account="DU90001";c.profile.host="127.0.0.1";c.profile.port=4002;c.profile.clientId=701;
+        c.profile.stateDirectory=c.stateDirectory=dir+"/state";c.journalPath=c.stateDirectory+"/oms-journal.jsonl";
+        c.profile.controlDirectory=c.controlDirectory=IbPaperExecutionProfileConfig::UserControlDirectoryPath();
+        c.profile.authorizationCredentialPath=c.authorizationCredentialPath=dir+"/cred/"+IbPaperExecutionProfileConfig::AuthorizationCredentialName();
+        c.fenceCredentialPath=dir+"/cred/"+IbPaperExecutionRuntimeConfig::FenceCredentialName();
+        c.fxCashBaselineCredentialPath=dir+"/cred/"+IbPaperExecutionRuntimeConfig::FxCashBaselineCredentialName();
+        c.profile.userQuoteContracts="BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
+        c.primaryQuoteInstrument=c.profile.userPrimaryQuoteInstrument="BTC.USD";
+        c.profile.userCryptoAgentId="fixture-btc";c.profile.userCryptoSessionId="session-btc";
+        c.profile.userQuoteMaxAgeMs=c.quoteMaxAgeMs=5000;c.profile.maxOrderQuantity=100000;c.profile.maxOrderNotional=100000;
+        c.profile.maxGrossPosition=100000;c.profile.maxActiveOrders=1;c.profile.maxOrdersPerMinute=2;
+        for(bool btc:{false,true}){auto v=contract(btc);InstrumentRef q;q.symbol=v.symbol;q.secType=v.secType;q.exchange=v.exchange;q.currency=v.currency;c.quoteContracts[btc?"BTC.USD":"EUR.USD"]=q;}
+        c.allowedGatewayUids.insert(::geteuid());c.gatewayContextBinding.agentId="fixture-fx";c.gatewayContextBinding.account=c.profile.account;
+        c.gatewayContextBinding.venue="IB";c.gatewayContextBinding.executionDomain="PAPER";
+        c.listenFd=listener(dir+"/rpc");c.eventListenFd=listener(dir+"/events");
+        c.readinessTimeoutMs=1000;c.initialConnectTimeoutMs=1000;c.reconnectTimeoutMs=3000;
+        IbPaperFxCashBaseline baseline;baseline.account=c.profile.account;baseline.currency="EUR";baseline.instrument="EUR.USD";
+        baseline.baselineCashBalance=1000;baseline.observedCashBalance=seeded?1025:1000;baseline.campaignExecutionDelta=seeded?25:0;
+        baseline.observedAtMs=ms();baseline.proof="sha256:"+std::string(64,'e');c.fxCashBaselines["EUR.USD"]=baseline;
+        std::string reason,auth;check(c.profile.BuildAuthorizationCredential(auth,reason),"auth fixture: "+reason);
+        writePrivate(c.authorizationCredentialPath,auth+"\n");writePrivate(c.fenceCredentialPath,"HFC1\nfencing_token=912\ngeneration=5\n");
+        if(seeded){OmsJournal j;check(j.Init(c.journalPath),"seed journal");for(int i=0;i<2;++i){
+            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=ms();e.reqId=i?"original-btc":"original-eur";
+            e.clientReqId=e.reqId;e.traceId=i?"session-btc":"session-eur";e.eventId=e.reqId+":intent";e.source=i?"agent.tool:fixture-btc":"agent.tool:fixture-fx";
+            e.account=c.profile.account;e.venue="IB";e.executionDomain="PAPER";e.instrument=i?"BTC.USD":"EUR.USD";e.side="BUY";
+            e.qty=i?.01:25;e.price=i?80000:1.12;e.status="intent_recorded";e.requestHash="sha256:"+std::string(64,i?'c':'d');
+            e.venueCorrelationId="hepta-v1-sha256:"+std::string(64,i?'b':'a');check(j.Append(e),"intent");
+            e.eventType="place_send_attempt";e.eventId=e.reqId+":attempt";e.status="send_attempt";check(j.Append(e),"attempt");
+            e.eventType="place_sent";e.eventId=e.reqId+":sent";e.status="submitted";e.orderId=801+i;check(j.Append(e),"sent");
+        }}
+        if(unknown){
+            OmsJournal j;check(j.Init(c.journalPath),"unknown original journal");
+            OmsJournalEvent e;e.schemaVersion=4;e.eventType="order_intent";e.tsMs=ms();e.reqId="original-unknown";
+            e.clientReqId=e.reqId;e.traceId="session-unknown";e.eventId="unknown:intent";e.source="agent.tool:fixture-fx";
+            e.account=c.profile.account;e.venue="IB";e.executionDomain="PAPER";e.instrument="EUR.USD";e.side="BUY";
+            e.qty=25;e.price=1.12;e.status="intent_recorded";e.requestHash="sha256:"+std::string(64,'7');
+            e.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'8');check(j.Append(e),"unknown original intent");
+            e.eventType="place_send_attempt";e.eventId="unknown:attempt";e.status="send_attempt";check(j.Append(e),"unknown original attempt");
+        }
+        savedConfig=c;start(c);
+    }
+    void start(const IbPaperExecutionRuntimeConfig& c) {
+        std::shared_ptr<Shared> state=shared;
+        IbPaperExecutionRuntimeTestHooks hooks;hooks.onStage=[state](const char* name){state->stage(name);};
+        hooks.reconnectApiFactory=[state](){return std::unique_ptr<IIBApiWrapper>(new FullBroker(state));};
+        runtime.reset(new IbPaperExecutionRuntimeComposition(c,std::unique_ptr<IIBApiWrapper>(new FullBroker(shared)),hooks,std::make_shared<NeverEnableTrading>()));
+        std::string reason;const bool started=runtime->Start(reason);
+        check(started,"FULL_RUNTIME_START: "+reason);
+        check(runtime->IsRunning(),"real IPC/poller ready");
+    }
+    ~Fixture(){if(runtime)runtime->Stop();}
+    std::vector<std::pair<int,long>> originalCommands() {
+        std::vector<std::pair<int,long>> statuses;
+        for(int i=0;i<2;++i){ExecutionCommandResult status;
+            check(runtime->Coordinator().GetCommandStatus(i?"fixture-btc":"fixture-fx",i?"session-btc":"session-eur",i?"original-btc":"original-eur",status),"original command/owner present");
+            check(status.orderId==801+i,"original order number retained");
+            statuses.push_back({static_cast<int>(status.status),status.orderId});
+        }
+        return statuses;
+    }
+    void restartSameJournal() {
+        const auto prior=originalCommands();const auto oldService=runtime->ServiceEpoch();
+        runtime->Stop();runtime.reset();
+        ::unlink((dir+"/rpc").c_str());::unlink((dir+"/events").c_str());
+        auto c=savedConfig;c.listenFd=listener(dir+"/rpc");c.eventListenFd=listener(dir+"/events");
+        start(c);
+        check(runtime->ServiceEpoch()!=oldService,"new runtime service epoch");
+        check(originalCommands()==prior,"same original command statuses after full reconstruction");
+        const auto pos=runtime->Adapter().GetAuthoritativePositionQuantities();
+        check(pos.at("EUR.USD")==25&&pos.at("BTC.USD")==.01,"positions survive full runtime reconstruction");
+        check(shared->orderCalls==0,"no order methods during reconstruction");
+        std::ifstream input(savedConfig.journalPath);std::string line;unsigned intents=0,sends=0,attempts=0;
+        std::map<std::string,long> permanent;
+        while(std::getline(input,line)){OmsJournalEvent e;check(OmsJournal::ParseJsonLine(line,e),"durable journal parse");
+            intents+=e.eventType=="order_intent";sends+=e.eventType=="place_sent";attempts+=e.eventType=="place_send_attempt";
+            if(e.eventType=="broker_execution"){
+                check(e.brokerEconomics.valid==1&&e.brokerEconomics.ValidShape(),"retained exact economic callback");
+                const long perm=e.brokerEconomics.permanentOrderId;
+                check(perm==(e.brokerExecutionId=="SYNTH-BTC-EXEC"?900802:900801),"permanent broker identity retained");
+                auto found=permanent.find(e.brokerExecutionId);
+                check(found==permanent.end()||found->second==perm,"replayed execution cannot change permanent ID");
+                permanent[e.brokerExecutionId]=perm;
+            }
+        }
+        check(intents==2&&sends==2&&attempts==2,"reconstruction cannot create new sends or intents");
+        check(permanent.size()==2,"both original execution identities retained after restart");
+    }
+    void unknownOutcomeSurvivesReconstruction() {
+        for(int pass=0;pass<2;++pass){
+            ExecutionCommandResult status;
+            check(runtime->Coordinator().GetCommandStatus("fixture-fx","session-unknown","original-unknown",status),"unknown command retained under original owner");
+            check(status.status==ExecutionCommandStatus::Uncertain&&runtime->Coordinator().IsMutationBlocked(),"missing execution is not proof of zero-fill");
+            check(shared->orderCalls==0,"no blind resend for uncertain original");
+            if(pass==0){runtime->Stop();runtime.reset();::unlink((dir+"/rpc").c_str());::unlink((dir+"/events").c_str());
+                auto c=savedConfig;c.listenFd=listener(dir+"/rpc");c.eventListenFd=listener(dir+"/events");start(c);}
+        }
+        std::ifstream input(savedConfig.journalPath);std::string line;unsigned intents=0,attempts=0,sent=0;
+        while(std::getline(input,line)){OmsJournalEvent e;check(OmsJournal::ParseJsonLine(line,e),"unknown journal parse");
+            intents+=e.eventType=="order_intent";attempts+=e.eventType=="place_send_attempt";sent+=e.eventType=="place_sent";}
+        check(intents==1&&attempts==1&&sent==0,"uncertain restart may not invent sends or replacement commands");
+    }
+    void activeOrderFailsClosed() {
+        shared->activeOnReconnect=true;shared->signal(1100);const auto deadline=ms()+6000;
+        while(ms()<deadline&&!runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;check(runtime->HasFatalRuntimeError(&reason),"active broker order blocks recovery");
+        check(reason=="IB_PAPER_BROKER_RECONNECT_ACTIVE_ORDERS_UNSAFE","active order exact recovery gate: "+reason);
+        check(!runtime->IsRunning()&&shared->orderCalls==0,"active order not cancelled or overwritten to pass");
+    }
+    void missingPositionsFailsClosed() {
+        const unsigned completed=shared->count("broker_reconnect_complete");
+        shared->omitPositions=true;shared->signal(1100);
+        const auto deadline=ms()+6000;
+        while(ms()<deadline&&!runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;check(runtime->HasFatalRuntimeError(&reason),"missing positions must remain fatal/unready");
+        check(!runtime->IsRunning()&&shared->count("broker_reconnect_complete")==completed,"incomplete barrier cannot publish reconnect complete");
+        check(shared->orderCalls==0,"missing positions cannot trigger orders");
+        std::cout<<"FULL_RUNTIME_MISSING_POSITIONS_FAIL_CLOSED "<<reason<<std::endl;
+    }
+    void secondaryFarmRecovery() {
+        const auto epoch=runtime->Adapter().GetConnectionEpoch();
+        const int primary=runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId;
+        shared->signal(2103);auto deadline=ms()+1000;
+        while(shared->farmAcknowledged&&ms()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(!shared->farmAcknowledged,"real poll consumed synthetic farm loss");
+        std::this_thread::sleep_for(std::chrono::milliseconds(5200));
+        auto before=runtime->QuoteHealthForObservation();const auto& eq=before.contracts.at("EUR.USD").quote;
+        check(!eq.HasQuote()||ms()-eq.bidObservedAtMs>5000||ms()-eq.askObservedAtMs>5000,"lost farm EUR remains unready");
+        check(runtime->IsRunning()&&!runtime->HasFatalRuntimeError(),"secondary farm must not kill primary runtime");
+        shared->signal(2104);deadline=ms()+1500;bool restored=false;
+        while(ms()<deadline){auto current=runtime->QuoteHealthForObservation();const auto& q=current.contracts.at("EUR.USD").quote;
+            restored=q.HasQuote()&&q.bidObservedAtMs>eq.bidObservedAtMs&&q.askObservedAtMs>eq.askObservedAtMs&&ms()-q.bidObservedAtMs<=5000&&ms()-q.askObservedAtMs<=5000;
+            if(restored)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+        check(restored,"farm restoration needs two newer legs");
+        check(runtime->Adapter().GetConnectionEpoch()==epoch&&runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId==primary,"unrelated BTC ownership survives secondary farm loss");
+        check(shared->orderCalls==0,"farm recovery never orders");
+    }
+    void reconnect(int restore) {
+        auto oldEpoch=runtime->Adapter().GetConnectionEpoch();auto count=shared->count("broker_reconnect_complete");
+        shared->reconnectCode=restore;shared->signal(1100);
+        const auto until=ms()+6000;while(ms()<until&&shared->count("broker_reconnect_complete")==count&&!runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;runtime->HasFatalRuntimeError(&reason);
+        check(shared->count("broker_reconnect_complete")==count+1,"FULL_RECONNECT_FAILED: "+reason);
+        check(runtime->Adapter().GetConnectionEpoch()>oldEpoch,"full adapter epoch advanced");
+        check(shared->orderCalls==0,"reconnect has no order methods");
+        const auto audit=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(audit.barrierComplete&&audit.risk.accountComplete&&audit.risk.positionsComplete&&audit.risk.fxCashComplete&&audit.active.complete&&audit.terminal.complete,"ALL_RECOVERY_BARRIERS");
+    }
+};
+int main(){try{
+    check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
+    {Fixture f(true);const auto originals=f.originalCommands();f.reconnect(1101);
+        check(f.originalCommands()==originals,"original commands and owners preserved through full reconnect");
+        auto pos=f.runtime->Adapter().GetAuthoritativePositionQuantities();check(pos.at("BTC.USD")==.01&&pos.at("EUR.USD")==25,"NONZERO_FX_BTC_POSITIONS_PRESERVED");
+        f.restartSameJournal();}
+    {Fixture f;f.missingPositionsFailsClosed();}
+    {Fixture f;f.secondaryFarmRecovery();}
+    {Fixture f;f.activeOrderFailsClosed();}
+    {Fixture f(false,true);f.unknownOutcomeSurvivesReconstruction();}
+    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"live_recovery_qualified\":false,\"scenarios\":8}"<<std::endl;
+    return 0;
+}catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}
