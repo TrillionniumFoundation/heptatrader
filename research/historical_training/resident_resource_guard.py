@@ -1,0 +1,193 @@
+"""External admission wrapper for the pinned resident research supervisors.
+No model/trading code is replaced. Original slot dates, outcome rules, source
+hashes and scheduler state remain authoritative. A global nonblocking lease
+serializes NEW heavyweight training/prediction; existing children are not killed.
+"""
+from __future__ import annotations
+import argparse,fcntl,hashlib,json,math,os,signal,stat,sys,time
+from pathlib import Path
+from .common import EvidenceError,read,sha,atomic,write_once,digest
+
+GIB=1024**3
+SOURCE_RULE={'input_probes':24,'minimum_usable':20,'maximum_missing':4,'source_ttl_ms':5000,
+             'endpoint_tolerance_ms':5000,'path_gap_max_ms':30000}
+RESOURCE_RULE={'min_available_bytes':8*GIB,'min_swap_free_bytes':GIB,'max_full_psi_avg10':1.,'max_full_psi_avg60':.1}
+
+
+def parse_meminfo(text):
+    out={}
+    for line in text.splitlines():
+        key,sep,value=line.partition(':')
+        if key not in ('MemTotal','MemAvailable','SwapTotal','SwapFree'):continue
+        fields=value.split()
+        if not sep or len(fields)!=2 or fields[1]!='kB' or not fields[0].isdecimal() or key in out:
+            raise EvidenceError('MEMINFO_INVALID')
+        out[key]=int(fields[0])*1024
+    if set(out)!={'MemTotal','MemAvailable','SwapTotal','SwapFree'} or out['MemAvailable']>out['MemTotal'] or out['SwapFree']>out['SwapTotal']:
+        raise EvidenceError('MEMINFO_SCOPE')
+    return out
+
+
+def parse_full_psi(text):
+    lines=[s for s in text.splitlines() if s.startswith('full ')]
+    if len(lines)!=1:raise EvidenceError('FULL_PSI_MISSING')
+    pairs={}
+    for item in lines[0].split()[1:]:
+        key,value=item.split('=',1)
+        if key in pairs:raise EvidenceError('DUPLICATE_PSI_FIELD')
+        pairs[key]=value
+    out={}
+    for key in ('avg10','avg60'):
+        v=float(pairs[key])
+        if not math.isfinite(v) or not 0<=v<=100:raise EvidenceError('PSI_NONFINITE_OR_RANGE')
+        out[key]=v
+    return out
+
+
+def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
+    reasons=[]
+    if type(manual_hold) is not bool or manual_hold:reasons.append('OPERATOR_RESOURCE_HOLD')
+    if memory['MemAvailable']<RESOURCE_RULE['min_available_bytes']:reasons.append('HOST_AVAILABLE_MEMORY_BELOW_8GIB')
+    if memory['SwapFree']<RESOURCE_RULE['min_swap_free_bytes']:reasons.append('HOST_SWAP_RESERVE_BELOW_1GIB')
+    if pressure['avg10']>1 or pressure['avg60']>.1:reasons.append('HOST_FULL_MEMORY_PSI_PRESSURE')
+    try:
+        fields=('at_ms','latest_source_quote_ms','usable','unusable')
+        if any(type(source[k]) is not int for k in fields):raise ValueError('typed source')
+        if source.get('schema')!='heptatrader.quote-readiness-status.v1' or source.get('period_sha256')!=period_sha256:
+            reasons.append('SOURCE_PERIOD_OR_SCHEMA_UNBOUND')
+        if any(source.get('rule',{}).get(k)!=v for k,v in SOURCE_RULE.items()):reasons.append('SOURCE_RULE_CHANGED')
+        if not 0<=now_ms-source['at_ms']<=120000:reasons.append('SOURCE_STATUS_STALE_OR_FUTURE')
+        if not 0<=now_ms-source['latest_source_quote_ms']<=5000:reasons.append('LATEST_SOURCE_QUOTE_NOT_FRESH')
+        if (not 20<=source['usable']<=24 or not 0<=source['unusable']<=4
+            or source['usable']+source['unusable']!=24 or source.get('state')!='READY_FOR_REVIEW_NOT_AUTHORIZATION'):
+            reasons.append('SOURCE_CONTINUITY_NOT_READY')
+    except (KeyError,TypeError,ValueError):reasons.append('SOURCE_READINESS_INVALID')
+    return {'schema':'heptatrader.resident-resource-admission.v1','at_ms':now_ms,'admit_new_worker':not reasons,
+        'reasons':list(dict.fromkeys(reasons)),'memory_bytes':memory,'full_memory_psi':pressure,
+        'max_new_heavy_workers_across_roles':1,'existing_workers_interrupted':False,
+        'automatic_trading':False,'statistical_rule_changed':False}
+
+
+class Lease:
+    def __init__(self,path):self.path=Path(path);self.fd=None
+    def acquire(self):
+        if self.fd is not None:return True
+        self.path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        fd=os.open(self.path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+        info=os.fstat(fd)
+        if info.st_uid!=os.geteuid() or not stat.S_ISREG(info.st_mode) or info.st_mode&0o077:
+            os.close(fd);raise EvidenceError('LEASE_OWNER_OR_MODE')
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:os.close(fd);return False
+        self.fd=fd;return True
+    def release(self):
+        if self.fd is not None:os.close(self.fd);self.fd=None
+
+
+class Gate:
+    def __init__(self,config,role):
+        if role not in ('trainer','evaluator'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
+        self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
+        self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
+    def check(self):
+        try:
+            if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
+            if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
+            report=assess(parse_meminfo(Path('/proc/meminfo').read_text()),parse_full_psi(Path('/proc/pressure/memory').read_text()),
+                read(self.c['source_health_path']),int(time.time()*1000),self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+        except (OSError,ValueError,TypeError,KeyError) as exc:
+            report={'schema':'heptatrader.resident-resource-admission.v1','at_ms':int(time.time()*1000),
+                'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}
+        if self.draining:
+            report['admit_new_worker']=False;report['reasons'].append('SUPERVISOR_DRAIN_REQUESTED')
+        report['role']=self.role;atomic(self.root/(self.role+'-admission.json'),report);return report
+    def acquire(self,subject):
+        report=self.check()
+        if report['admit_new_worker'] and not self.lease.acquire():
+            report['admit_new_worker']=False;report['reasons']=['OTHER_RESEARCH_WORKER_ACTIVE']
+        # Recheck after taking the lease, closing competing admission and source-change windows.
+        if report['admit_new_worker']:
+            report=self.check()
+            if report['admit_new_worker']:return True
+            self.lease.release()
+        name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')
+        if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
+        return False
+    def release(self):self.lease.release()
+
+
+def guarded_evaluator_class(base,gate):
+    class GuardedEvaluator(base):
+        def launch(self,path,slot):
+            if self.tasks or not gate.acquire({'plan':str(path),'slot':slot}):return
+            try:super().launch(path,slot)
+            except Exception:gate.release();raise
+        def reap(self):
+            super().reap()
+            if not self.tasks:gate.release()
+    return GuardedEvaluator
+
+
+def guarded_trainer_class(base,gate):
+    class GuardedTrainer(base):
+        def step(self):
+            if not gate.acquire({'role':'trainer'}):
+                return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',resource_admission=gate.check())
+            try:return super().step()
+            finally:gate.release()
+    return GuardedTrainer
+
+
+def verify_config(c):
+    if c.get('schema')!='heptatrader.resident-admission-wrapper-config.v1' or c.get('trade_authority') is not False:
+        raise EvidenceError('GUARD_CONFIG_SCOPE')
+    if c.get('resource_rule')!=RESOURCE_RULE or c.get('max_heavy_workers')!=1:raise EvidenceError('RESOURCE_RULE_CHANGED')
+    if sha(c['original_config'])!=c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
+    original=read(c['original_config'])
+    if original['automatic_trading'] is not False or original['period_sha256']!=c['period_sha256']:
+        raise EvidenceError('ORIGINAL_RESEARCH_SCOPE')
+    for name,wanted in original['runtime_sha256'].items():
+        relative=Path(name)
+        if relative.is_absolute() or '..' in relative.parts or sha(Path(original['runtime_directory'])/name)!=wanted:
+            raise EvidenceError('PINNED_ORIGINAL_RUNTIME_CHANGED')
+    for name,wanted in c['guard_files_sha256'].items():
+        if Path(name).name!=name or sha(Path(__file__).parent/name)!=wanted:raise EvidenceError('GUARD_RUNTIME_CHANGED')
+    return original
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--role',choices=['trainer','evaluator'],required=True)
+    p.add_argument('--check-only',action='store_true');a=p.parse_args();os.umask(0o077)
+    c=read(a.config);original=verify_config(c);gate=Gate(c,a.role)
+    if a.check_only:
+        report=gate.check();print(json.dumps(report),flush=True)
+        raise SystemExit(0 if report['admit_new_worker'] else 1)
+    runtime=Path(original['runtime_directory']);sys.path[:0]=[str(runtime/'learn'),str(runtime/'scripts')]
+    if a.role=='trainer':
+        from laya_cell.resident import Supervisor
+        base=guarded_trainer_class(Supervisor,gate);directory=Path(original['control_directory']);lockname='scheduler.lock'
+    else:
+        from laya_cell.resident_evaluate import Evaluator
+        base=guarded_evaluator_class(Evaluator,gate);directory=Path(original['evaluation_directory']);lockname='evaluator.lock'
+    fd=os.open(directory/lockname,os.O_WRONLY|os.O_CREAT|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
+    fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    service=base(Path(c['original_config']))
+    signal.signal(signal.SIGTERM,service.stop_signal if a.role=='trainer' else service.signal)
+    signal.signal(signal.SIGINT,service.stop_signal if a.role=='trainer' else service.signal)
+    def request_drain(*_):gate.draining=True
+    signal.signal(signal.SIGUSR1,request_drain)
+    try:
+        if a.role=='trainer':service.recover()
+        while not service.stop:
+            try:service.step()
+            except Exception as exc:
+                atomic(gate.root/(a.role+'-error.json'),{'at_ms':int(time.time()*1000),'error':str(exc),'orders_sent':0})
+            if gate.draining and (a.role=='trainer' or not service.tasks):break
+            for _ in range(30 if a.role=='trainer' else 2):
+                if service.stop:break
+                time.sleep(1)
+    finally:
+        gate.release()
+        if a.role=='trainer':service.db.close()
+        os.close(fd)
+if __name__=='__main__':main()
