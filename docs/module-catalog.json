@@ -236,7 +236,8 @@
         "scripts/hepta_fx_readonly_probe.py",
         "scripts/hepta_fx_tick_by_tick_probe.py",
         "scripts/hepta_fx_tbt_midpoint_control.py",
-        "scripts/hepta_fx_source_evidence.py"
+        "scripts/hepta_fx_source_evidence.py",
+        "scripts/hepta_native_quote_gate.py"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
@@ -261,7 +262,9 @@
         "tests/ib_quote_recovery_component_tests.cpp",
         "tests/python/test_fx_readonly_probe.py",
         "tests/python/test_fx_tbt_probe.py",
-        "tests/python/test_fx_source_evidence.py"
+        "tests/python/test_fx_source_evidence.py",
+        "tests/ib_quote_recovery_live_probe.cpp",
+        "tests/python/test_native_quote_gate.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false

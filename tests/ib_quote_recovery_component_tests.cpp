@@ -18,7 +18,7 @@ struct Counters {
 class SocketFreeApi final : public IIBApiWrapper {
 public:
     enum Outcome { Good, NoSend, ThrowBefore, ThrowAfter } outcome=Good;
-    bool connected=false, failCancel=false;
+    bool connected=false, failCancel=false, refuseCancel=false;
     std::uint64_t epoch=0, sequence=0;
     IBCashFarmAdmissionMarker farm;
     IBMarketDataAdmissionState admission;
@@ -50,6 +50,7 @@ public:
         return true;
     }
     bool CancelMktData(int id) override {
+        if (refuseCancel) return false;
         if (failCancel) throw std::runtime_error("CANCEL_OUTCOME_UNKNOWN");
         require(issued.erase(id)==1, "cancel only actually issued request"); ++counts->cancels; return true;
     }
@@ -76,6 +77,11 @@ struct IbQuoteRecoveryFixture {
         config.profile.observationOnly=false; // DO NOT bypass the production mixed-user branch.
         config.profile.userQuoteContracts="BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
         config.quoteMaxAgeMs=5000;
+        InstrumentRef btcContract, eurContract;
+        btcContract.symbol="BTC";btcContract.secType="CRYPTO";btcContract.exchange="PAXOS";btcContract.currency="USD";
+        eurContract.symbol="EUR";eurContract.secType="CASH";eurContract.exchange="IDEALPRO";eurContract.currency="USD";
+        config.quoteContracts={{"BTC.USD",btcContract},{"EUR.USD",eurContract}};
+        config.primaryQuoteInstrument="BTC.USD";
         require(config.profile.UsesUserCrypto(), "exact production mixed-user branch");
         IbPaperExecutionRuntimeTestHooks hooks;
         hooks.quoteClockMs=[this] { return clock; };
@@ -137,9 +143,64 @@ struct IbQuoteRecoveryFixture {
         require(!refresh(reason) && reason=="IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE", "uncertain cancellation refuses");
         noOrders();
     }
+    void testCancelFalseAndAdmissionFault(bool cancelFalse) {
+        std::string reason;clock+=15000;const auto requests=counts->requests;
+        if(cancelFalse)api->refuseCancel=true;
+        else api->admission.MarkFault();
+        require(!refresh(reason),"cancellation/admission failure must fail closed");
+        require(counts->requests==requests,"no replacement request on cancellation/admission failure");
+        require(reason==(cancelFalse?"IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE":"IB_PAPER_STALE_CASH_REFRESH_STREAM_UNSAFE"),"exact failing gate");
+        noOrders();
+    }
     void testSdkException(SocketFreeApi::Outcome outcome) {
         std::string reason;clock+=15000;api->outcome=outcome;
         require(!refresh(reason) && reason=="IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE", "unknown SDK outcome fatal");
+        noOrders();
+    }
+    IBEvent control(int code, const std::string& message, std::uint64_t epoch=0) {
+        IBEvent e;e.type=IBEventType::Error;e.id=-1;e.key=std::to_string(code);
+        e.value=message;e.connectionEpoch=epoch?epoch:api->epoch;return e;
+    }
+    void testMaintainedDataDoesNotResubscribeOrRestamp() {
+        tick(fxId,"1",1.12);tick(fxId,"2",1.1201);
+        const auto before=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        const auto sent=counts->requests, cancelled=counts->cancels;
+        runtime->m_reconnectPending.store(true);
+        runtime->m_reconnectUpstreamUnavailable.store(true);
+        clock+=10000;
+        auto action=runtime->HandleAdapterControlEvent(control(1102,"Connectivity restored - data maintained"));
+        require(action==Runtime::AdapterControlAction::Consumed,"production 1102 routing");
+        require(runtime->m_reconnectUpstreamRestored.load() && !runtime->m_reconnectUpstreamUnavailable.load(),"1102 upstream restored");
+        const auto after=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        require(before.bidObservedAtMs==after.bidObservedAtMs && before.askObservedAtMs==after.askObservedAtMs,"1102 must not restamp legs");
+        require(sent==counts->requests && cancelled==counts->cancels && currentFx()==fxId,"1102 does not replace issued ticker");
+        require(!runtime->HasFatalRuntimeError(),"maintained data must not fatal");
+        noOrders();
+    }
+    void testLostDataBeforeQuotesAndOldEpochIsolation() {
+        runtime->m_reconnectPending.store(true);
+        const auto sent=counts->requests;
+        auto stale=control(1101,"Connectivity restored - data lost",api->epoch+1);
+        auto action=runtime->HandleAdapterControlEvent(stale);
+        require(action==Runtime::AdapterControlAction::Route && !runtime->m_reconnectUpstreamRestored.load(),"foreign epoch cannot restore");
+        const auto h=runtime->m_quoteSubscriptions->GetHealth();
+        for(const auto& item:h.contracts) if(item.second.dispatchAccepted)
+            require(runtime->m_adapter->CancelMktData(item.second.requestId),"cancel issued fixture ticker");
+        runtime->m_quoteSubscriptions->AbortCycle(h.generation);
+        action=runtime->HandleAdapterControlEvent(control(1101,"Connectivity restored - data lost"));
+        require(action==Runtime::AdapterControlAction::Consumed && runtime->m_reconnectUpstreamRestored.load(),"1101 before quote cycle restores transport only");
+        require(!runtime->m_quoteSubscriptions->GetHealth().ReadyForOperations(),"1101 cannot invent quote readiness");
+        require(counts->requests==sent && !runtime->HasFatalRuntimeError(),"no implicit order or quote retry");
+        noOrders();
+    }
+    void testSecondaryFarmLossDoesNotKillPrimary() {
+        runtime->m_reconnectPending.store(true);
+        api->lostFarm();
+        auto action=runtime->HandleAdapterControlEvent(control(2103,"Market data farm disconnected:cashfarm"));
+        require(action==Runtime::AdapterControlAction::Route,"secondary farm is instrument scoped");
+        require(!runtime->HasFatalRuntimeError(),"secondary CASH loss cannot invalidate healthy BTC");
+        require(runtime->m_quoteSubscriptions->GetHealth().contracts.at("BTC.USD").requestId==btcId,"primary identity preserved");
+        require(runtime->m_quoteSubscriptions->GetHealth().ReadyForOperations(),"primary still present");
         noOrders();
     }
     void testRealAdapterEpochBoundary() {
@@ -167,7 +228,12 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowBefore); }
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowAfter); }
         { IbQuoteRecoveryFixture f;f.testRealAdapterEpochBoundary(); }
-        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":5}\n";
+        { IbQuoteRecoveryFixture f;f.testMaintainedDataDoesNotResubscribeOrRestamp(); }
+        { IbQuoteRecoveryFixture f;f.testLostDataBeforeQuotesAndOldEpochIsolation(); }
+        { IbQuoteRecoveryFixture f;f.testSecondaryFarmLossDoesNotKillPrimary(); }
+        { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(true); }
+        { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(false); }
+        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":10}\n";
         return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }

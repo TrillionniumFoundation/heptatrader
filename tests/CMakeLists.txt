@@ -287,6 +287,17 @@ target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_quote_recovery_component_tests)
 
+# Deliberate local operator target only: no ordinary ctest, no installation,
+# no default build, and no direct gateway access from the CLI. The runner
+# pins this SDK-linked binary and places an exact frame allowlist in front.
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_ib_quote_recovery_live_probe EXCLUDE_FROM_ALL
+        ib_quote_recovery_live_probe.cpp ${_hepta_ib_replay_sources})
+    target_link_libraries(hepta_ib_quote_recovery_live_probe PRIVATE
+        hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+        hepta_authoritative_state hepta_risk_engine)
+endif()
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
         hepta_tool_gatewayd

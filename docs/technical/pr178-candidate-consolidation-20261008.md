@@ -130,3 +130,58 @@ receipt must name the same exact candidate HEAD and SDK/binary hashes.
   command, never flatten/reopen to hide identity loss.
 
 **Disposition: Draft; no production cutover; no strict NAV qualification.**
+
+## Native live component follow-through (same PR, no production cutover)
+
+The opt-in `hepta_ib_quote_recovery_live_probe` target is SDK-only, excluded
+from default builds, not installed, and not registered in ordinary ctest.
+It uses the real `RefreshStaleSecondaryCashQuote`,
+`HandleNonPersistentAdapterEvent`, adapter, subscription set, and SDK.
+The mixed BTC-primary/EUR-secondary profile keeps `observationOnly=false`;
+the actual adapter is explicitly read-only with order submission disabled.
+It deliberately does not call the full Execution `Start`, account/position/
+order methods, or the full OMS reconnect coordinator. Consequently its
+receipt always says `full_runtime_qualification=false`.
+
+The [frame gate](../../scripts/hepta_native_quote_gate.py) allows only the
+SDK handshake and exact opcodes 71 (StartApi), 8 (reqIds, ignored for order
+authority), 59 (live mode 1), 1 (pinned EUR/CASH/IDEALPRO/USD or
+BTC/CRYPTO/PAXOS/USD streaming request), and 2 (own market-data cancel).
+A complete length-delimited frame is checked before any bytes are forwarded
+to loopback PAPER port 4002. Order/account/position/TBT/global-cancel and
+foreign-contract messages are denied. Fragmented/coalesced frames, duplicate
+IDs, delayed type, malformed scope and ownership collision are tested.
+No Broker raw account message is logged. The native code can connect only to
+a bounded local relay port, and has no gateway-4002 argument path.
+
+The runner requires one clean exact candidate SHA and a pinned executable
+SHA256. Its shared advisory quote-validation lock prevents other cooperating
+validation runs, not arbitrary external TWS users. A pre-launch process and
+quota check remains mandatory. It creates an immutable plan before connection,
+private raw native/egress logs, and hash-bound final receipts. An operator stop
+closes only the validation connection and terminates its child; it never
+restarts Gateway, Execution, NAV or a strategy driver.
+
+The predeclared long window is 1800 seconds, with **only the isolated relay
+sockets** closed at seconds 600 and 1200. Actual IB callback times, connection
+epochs, replacement IDs and per-leg ages are recorded. Any new live connection
+requires new quote IDs and real BID+ASK. Renewal invokes the production method;
+reconnecting the quote-only probe uses the real adapter factory but **not**
+the full production `DriveBrokerReconnect` and OMS recovery pipeline.
+This may prove live component behavior, not full runtime/order idempotency.
+It does not simulate a Broker farm loss or claim natural farm events that
+did not occur. Samples are observed points, not interpolated continuous proof.
+TOP and TBT are never combined; this probe requests no EUR TBT data.
+
+Before the long window, a 30-second no-disconnect framing smoke may be used
+only to reject an incompatible protocol. It is never counted as the required
+30-minute observation. Exit zero means the declared collection completed and
+received both symbols at least once; it does not approve source replacement
+or assert any undisclosed availability threshold. Full runtime, source-choice,
+strict NAV and production-cutover gates stay explicit false.
+
+Socket-free production-component regressions additionally distinguish
+1102 maintained data (no re-stamp/re-subscription), 1101 before an active quote
+cycle (transport only), foreign epoch, secondary vs primary CASH scope,
+unknown cancel, false cancel, admission fault and SDK exceptions.
+The authenticated common Broker NAV basis remains independently unavailable.

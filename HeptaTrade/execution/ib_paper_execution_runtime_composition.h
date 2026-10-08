@@ -111,6 +111,7 @@ public:
 private:
     friend struct IbRecentBrokerOrderReplayAccess; // offline test only; no IPC/argv entry point
     friend struct IbQuoteRecoveryFixture; // same runtime path, socket-free egress spy
+    friend struct IbQuoteRecoveryLiveFixture; // opt-in quote-only probe through an order-denying relay
     bool PreparePrivateState(std::string& reason);
     bool LoadFxCashBaselines(std::string& reason);
     bool ValidateFxCashBaselineRecords(
