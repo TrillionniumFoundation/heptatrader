@@ -558,7 +558,7 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
-    auto nextStaleCashQuoteCheck = nextPendingReconcile + std::chrono::seconds(5);
+    auto nextStaleCashQuoteCheck = nextPendingReconcile + std::chrono::seconds(1);
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -596,7 +596,7 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         const auto now = std::chrono::steady_clock::now();
         if (now >= nextStaleCashQuoteCheck && !m_reconnectPending.load())
         {
-            nextStaleCashQuoteCheck = now + std::chrono::seconds(5);
+            nextStaleCashQuoteCheck = now + std::chrono::seconds(1);
             std::string quoteReason;
             if (!RefreshStaleSecondaryCashQuote(quoteReason))
             {

@@ -52,6 +52,9 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
         reason = "IB_PAPER_STALE_CASH_REFRESH_STREAM_UNSAFE";
         return false;
     }
+    if (m_secondaryCashFarmUnavailableEpoch.load() ==
+            m_adapter->GetConnectionEpoch())
+        return true; // Old prices remain stale; await original scoped farm recovery.
     // Serialize the exact subscription-id replacement with normal quote
     // reads and all other market-data request sends. This is market-data only:
     // it never places, modifies or cancels an ORDER.
@@ -67,9 +70,14 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
     {
         if (item.first == health.primaryInstrument ||
             item.second.contract.secType != "CASH") continue;
+        // Renewal schedules real callbacks; it never widens quote validity.
+        // Reserve two seconds for this 1s poll and actual BID/ASK delivery so a
+        // 5s valid quote does not become a >5s gap while waiting for renewal.
+        // Bound replacements to one send/cancel pair per 3s for this secondary.
+        const std::uint64_t renewAfterMs = m_config.quoteMaxAgeMs > 2000 ?
+            m_config.quoteMaxAgeMs - 2000 : m_config.quoteMaxAgeMs;
         const auto plan = m_quoteSubscriptions->BeginStaleSecondaryCashRefresh(
-            item.first, epoch, health.generation, nowMs,
-            m_config.quoteMaxAgeMs, 15000);
+            item.first, epoch, health.generation, nowMs, renewAfterMs, 3000);
         if (!plan.accepted) continue;
         if (plan.cancelRequestIds.size() > 1 ||
             plan.subscriptions.size() != 1)
@@ -115,7 +123,7 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
             }
             // The IB adapter returns false only before reqMktData reaches
             // the SDK (for example after CASH-farm 2103). Keep EUR
-            // unavailable and retry with a different ID after 15 seconds.
+            // unavailable and retry with a different ID after the bounded cooldown.
             // This never submits/cancels or replays a trading order.
             NotifyTestStage("stale_cash_quote_deferred_no_send");
             continue;

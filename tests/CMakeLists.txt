@@ -287,6 +287,18 @@ target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_quote_recovery_component_tests)
 
+add_executable(hepta_ib_cancel_notice_tests ib_cancel_notice_tests.cpp)
+target_link_libraries(hepta_ib_cancel_notice_tests PRIVATE hepta_ib_adapter_runtime)
+hepta_register_core_test(hepta_ib_cancel_notice_tests)
+
+# Same native post-fill methods; synthetic events, no production broker or state.
+add_executable(hepta_ib_postfill_reconciliation_tests
+    ib_postfill_reconciliation_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_postfill_reconciliation_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_postfill_reconciliation_tests)
+
 # Full runtime startup, recovery coordinator, durable OMS and real local IPC.
 # Broker wrapper is socket-free; no production state or credentials are used.
 add_executable(hepta_ib_full_runtime_recovery_tests

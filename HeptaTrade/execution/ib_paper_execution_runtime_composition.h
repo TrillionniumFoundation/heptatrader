@@ -109,6 +109,7 @@ public:
     ExecutionEventHub& EventHub();
 
 private:
+    friend struct IbPostFillReconciliationFixture; // offline exact-event regression only
     friend struct IbRecentBrokerOrderReplayAccess; // offline test only; no IPC/argv entry point
     friend struct IbQuoteRecoveryFixture; // same runtime path, socket-free egress spy
     friend struct IbQuoteRecoveryLiveFixture; // opt-in quote-only probe through an order-denying relay
@@ -391,6 +392,8 @@ private:
     std::atomic<bool> m_startupWaitingForUpstream;
     std::atomic<bool> m_startupUpstreamUnavailable;
     std::atomic<bool> m_startupUpstreamRestored;
+    // A known secondary CASH farm outage suppresses renewal; old prices stay stale.
+    std::atomic<std::uint64_t> m_secondaryCashFarmUnavailableEpoch{0};
     std::atomic<bool> m_startupMarketDataFarmWaiting;
     std::atomic<bool> m_startupMarketDataFarmRestored;
     // Epoch of the positive CASH-farm 2104 witness.  A readiness bit without

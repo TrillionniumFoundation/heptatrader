@@ -1,5 +1,6 @@
 ﻿#include "ib_admission_event_policy.h"
 #include "ib_callback_economics.h"
+#include "ib_local_cancel_notice.h"
 #include "ib_api_wrapper.h"
 
 #include <algorithm>
@@ -962,6 +963,7 @@ public:
             m_connectionEpoch.load(std::memory_order_acquire));
         m_params = p;
         m_orderQuantities.Reset(m_connectionEpoch.load(), p.clientId, p.account);
+        m_cancelNoticeWitness.Reset(m_connectionEpoch.load(), p.clientId, p.account);
         m_gotNextValidId = false;
         m_lastValidOrderId = -1;
         m_status = "IB_CONNECTING";
@@ -1090,6 +1092,7 @@ public:
         m_gotNextValidId = false;
         m_lastValidOrderId = -1;
         m_orderQuantities.Reset(0, -1, std::string());
+        m_cancelNoticeWitness.Reset(0, -1, std::string());
         m_eventIngressAdmissionActive.store(false,
             std::memory_order_release);
         m_eventIngressFenceHeld.store(false,
@@ -1529,6 +1532,7 @@ public:
 
         Trace(BuildOrderTrace(localOrderId, ct, od));
         m_orderQuantities.Record(localOrderId, c, o);
+        m_cancelNoticeWitness.Record(localOrderId, o);
         m_client.placeOrder(localOrderId, ct, od);
         return true;
     }
@@ -1966,6 +1970,11 @@ private:
         else if (IsCashFarmReadyEvent(e))
             m_eventIngressFarmMarker.ObserveReady(
                 e.connectionEpoch, callbackSequence);
+        m_cancelNoticeWitness.ObserveNativeStatus(e);
+        // A same-epoch, locally submitted, natively Cancelled order may emit
+        // 202 afterwards. This is not an idle quote-transport failure. It still
+        // blocks OPEN/RESERVED admission and remains in the normal OMS/risk path.
+        const bool corroboratedCancel = m_cancelNoticeWitness.Corroborates(e);
         const bool blocking = IsAdmissionBlockingEvent(e);
         if (blocking && !staleEpoch) {
             // A callback never waits for the sender.  The state CAS is the
@@ -1974,7 +1983,7 @@ private:
             // the callback makes that reservation permanently bad so the
             // runtime must clean it up and fail closed.
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
-                m_eventIngressAdmissionState.ObserveBlockingCallback();
+                m_eventIngressAdmissionState.ObserveBlockingCallback(!corroboratedCancel);
             (void)disposition;
         } else if (cashFarmWarning && !staleEpoch) {
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
@@ -2161,6 +2170,7 @@ private:
     bool m_positionsInitialDownloadPending = false;
     IBPositionsRequestFence m_positionsRequestFence;
     IBSubmittedOrderQuantityTracker m_orderQuantities;
+    IBLocalCancelNoticeWitness m_cancelNoticeWitness;
 };
 
 #else

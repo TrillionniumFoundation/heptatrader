@@ -190,8 +190,12 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         return;
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
-    const IBAuthoritativeRiskSnapshot risk =
-        m_adapter->GetAuthoritativeRiskSnapshot();
+    // One adapter-lock observation binds completed risk to the latest exposure.
+    // A refresh started after a partial fill can finish after the final fill:
+    // its positions may already match while its captured exposure is still old.
+    const IBAuthoritativeRecoveryAuditSnapshot observed =
+        m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+    const IBAuthoritativeRiskSnapshot& risk = observed.risk;
     double position = 0.0;
     std::string reason;
     const std::map<std::string, InstrumentRef>::const_iterator contract =
@@ -206,6 +210,10 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         if (m_postFillExecutionComplete) m_postFillTerminalObserved = true;
     }
     const bool coherent = m_postFillExecutionComplete &&
+        risk.complete && risk.coherentRefreshComplete &&
+        risk.connectionEpoch != 0 &&
+        risk.connectionEpoch == m_adapter->GetConnectionEpoch() &&
+        risk.riskAbsorbedExposureGeneration == observed.exposureGeneration &&
         risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete &&
         risk.positionsGeneration > m_postFillBaselinePositionGeneration &&
@@ -386,6 +394,15 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
             event.value);
     const bool currentBrokerEpoch =
         IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch);
+    if (brokerControlError && currentBrokerEpoch && cashMarketDataFarm) {
+        if (controlErrorCode == 2103 || controlErrorCode == 2119)
+            m_secondaryCashFarmUnavailableEpoch.store(event.connectionEpoch);
+        else if (controlErrorCode == 2104)
+            m_secondaryCashFarmUnavailableEpoch.store(0);
+        // This never marks a quote fresh or admits a trade. Keep existing
+        // subscriptions during a known outage so real recovery callbacks can
+        // resume them without a needless cancel/failed-resubscribe cooldown.
+    }
     if (brokerControlError && currentBrokerEpoch &&
         (m_startupBrokerPhase.load() || m_reconnectPending.load())) {
         // A generic 2104 is diagnostic only.  It never authorizes a CASH

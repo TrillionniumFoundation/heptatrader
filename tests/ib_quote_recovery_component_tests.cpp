@@ -138,6 +138,24 @@ struct IbQuoteRecoveryFixture {
         require(runtime->m_quoteSubscriptions->GetHealth().contracts.at("BTC.USD").requestId==btcId, "BTC ID unchanged");
         noOrders();
     }
+    void testQuietCashRefreshPrecedesOriginalFiveSecondExpiry() {
+        tick(fxId,"1",1.12);tick(fxId,"2",1.1201);
+        const auto original=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        const auto requests=counts->requests;std::string reason;
+        clock+=3000;require(refresh(reason)&&counts->requests==requests,"renewal trigger boundary remains rate-limited");
+        ++clock;require(refresh(reason),"bounded renewal reserves native callback latency");
+        require(counts->requests==requests+1,"renewal starts before original five-second validity expires");
+        const int fresh=currentFx();require(fresh!=fxId,"new subscription identity");
+        require(!runtime->m_quoteSubscriptions->GetQuote("EUR.USD").HasQuote(),"new request does not fabricate price");
+        tick(fxId,"1",1.2);tick(fxId,"2",1.21);
+        require(!runtime->m_quoteSubscriptions->GetQuote("EUR.USD").HasQuote(),"old callbacks cannot heal missing current pair");
+        tick(fresh,"1",1.12);tick(fresh,"2",1.1201);
+        const auto actual=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        require(actual.HasQuote()&&actual.bidObservedAtMs==clock&&actual.askObservedAtMs==clock,"only new broker callbacks restore original TTL");
+        clock+=2999;require(refresh(reason)&&counts->requests==requests+1,"renewal rate remains bounded");
+        require(runtime->m_quoteSubscriptions->GetHealth().contracts.at("BTC.USD").requestId==btcId,"primary identity unchanged");
+        noOrders();
+    }
     void testDefiniteCancelAndUnknownFailures() {
         std::string reason;clock+=15000;api->failCancel=true;
         require(!refresh(reason) && reason=="IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE", "uncertain cancellation refuses");
@@ -224,6 +242,7 @@ struct IbQuoteRecoveryFixture {
 int main() {
     try {
         { IbQuoteRecoveryFixture f(true);f.testUnsentAndFarmRecovery(); }
+        { IbQuoteRecoveryFixture f;f.testQuietCashRefreshPrecedesOriginalFiveSecondExpiry(); }
         { IbQuoteRecoveryFixture f;f.testDefiniteCancelAndUnknownFailures(); }
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowBefore); }
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowAfter); }
@@ -233,7 +252,7 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testSecondaryFarmLossDoesNotKillPrimary(); }
         { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(true); }
         { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(false); }
-        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":10}\n";
+        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":11}\n";
         return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }
