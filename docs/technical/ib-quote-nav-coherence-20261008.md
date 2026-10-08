@@ -117,3 +117,55 @@ even after consistent repeated cohorts, NAV must remain rejected. Only a
 Broker-issued common timestamp/basis covering every currency and BASE could
 support the requested true same-valuation-time certificate; callback arrival
 times and quote midpoints cannot fabricate it.
+
+## Read-only independent CASH quote witness (2026-10-08)
+
+The diagnostic entrypoint `scripts/hepta_fx_readonly_probe.py` runs in a
+**separate isolated client ID 20000..30000**. It rejects IDs owned by the
+current PAPER period or NAV observer, uses the pinned Python SDK and local
+IB Gateway PAPER port 4002 only, and permits just `startApi`,
+`reqMarketDataType(1)`, the exact `EUR/CASH/IDEALPRO/USD`
+`reqMktData` wire and cancellation of its own ticker ID. Every order,
+foreign market data, account read, and global cancellation send is forbidden.
+No source or output is written to NAV/OMS state. Responses contain no account
+ID, credentials or Broker message text.
+
+Example (diagnostic ONLY, not a production acceptance declaration):
+
+```bash
+python3 -B scripts/hepta_fx_readonly_probe.py \
+  --sdk "$HOME/.local/share/heptatrader/vendor/ibapi-reset-check" \
+  --client-id 29555 --cycles 2 --window-sec 8 --reconnect-delay-sec 12
+```
+
+The test requires two distinct fresh positive BID/ASK tickPrice callbacks
+with the instrument's current request ID and a Broker
+`marketDataType(reqId, 1)` witness. A 2104 market-data farm connected
+callback is **not** per-instrument quote proof. Delayed/other data modes
+cannot authorize quotes. The only output is a diagnostic; it never
+certifies a common NAV valuation timestamp.
+
+Real read-only execution on the running PAPER Gateway: both connections
+handshook, both sent exactly one streaming EUR.USD subscription and cancelled
+it, but across two separate 8-second windows received **zero**
+`marketDataType` and **zero** `tickPrice` callbacks.
+Both had informational farm 2104/2107/2158 codes and no request-specific
+Broker error callback. This is a **FAILED real quote recovery gate**, not
+evidence that farm 2104 restored live FX quotes. No broker order mutation was
+sent. A live entitlement / paper market-data sharing problem, a per-symbol
+Broker routing problem, or terminal-side quote delivery fault remains
+unresolved; no diagnosis of which cause is final without further Broker
+evidence. Do not restart the trading owner or permit stale quotes to trade
+to paper over this.
+
+The real FX outage + reconnect qualification requires evidence from the
+*candidate native execution* in addition to this independent read-only
+witness: observe quote request IDs across farm loss/restoration, new live
+BID/ASK, quote freshness continuity, current order/position ownership and
+**unchanged broker/OMS send counters**. The production Execution binary
+continues to run the previous release until these gates pass.
+
+The Broker's Web API ledger `timestamp` is documented as data retrieval
+time, not one underlying valuation time for all currencies and BASE. A
+10-second WebSocket ledger topic can contain blank (unchanged) currencies.
+Neither is a justified substitute for a source-proven atomic NAV mark.
