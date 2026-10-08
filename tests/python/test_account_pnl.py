@@ -503,4 +503,53 @@ class SourceBackedDeploymentTests(unittest.TestCase):
         writes=[l for l in text.splitlines() if l.startswith('ReadWritePaths=')]
         self.assertEqual(writes,['ReadWritePaths=%h/.local/state/heptatrader/pnl/account'])
 
+class AccountCaptureCohortTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = raw_snapshot()
+        start, end = self.raw['started_at_ms'], self.raw['observed_at_ms']
+        self.raw['capture_cohort'] = {
+            'schema': 'heptatrader.account-capture-cohort.v1',
+            'request_end_at_ms': {'ledger': end, 'account': end, 'positions': end},
+            'first_row_callback_at_ms': start+1,
+            'last_row_callback_at_ms': start+1,
+            'broker_valuation_tick_attested': False,
+            'time_basis': 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK'}
+
+    def test_exact_request_cohort_reconciles_without_claiming_atomic_broker_tick(self):
+        result = a.normalize_nav(self.raw, period())
+        self.assertEqual(result['capture_cohort'], self.raw['capture_cohort'])
+        self.assertFalse(result['fx_translation_atomic_tick'])
+        self.assertFalse(result['capture_cohort']['broker_valuation_tick_attested'])
+
+    def test_missing_request_end_or_false_tick_attestation_cannot_pass(self):
+        cohort = self.raw['capture_cohort']
+        for key, value in [('request_end_at_ms', {'ledger':T+120,'account':T+120}),
+                           ('broker_valuation_tick_attested',True),
+                           ('time_basis','BROKER_ATOMIC')]:
+            with self.subTest(key=key):
+                original = copy.deepcopy(cohort[key])
+                cohort[key] = value
+                with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+                    a.normalize_nav(self.raw,period())
+                cohort[key] = original
+
+    def test_late_cross_request_row_and_forged_timestamp_rejected(self):
+        self.raw['capture_cohort']['request_end_at_ms']['ledger']=T+100
+        with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+            a.normalize_nav(self.raw,period())
+        self.raw['capture_cohort']['request_end_at_ms']['ledger']=T+120
+        self.raw['rows'][0]['observed_at_ms']=T+101
+        self.raw['capture_cohort']['last_row_callback_at_ms']=T+102
+        with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+            a.normalize_nav(self.raw,period())
+
+    def test_capture_cohort_cannot_widen_fx_dollar_limit(self):
+        for row in self.raw['rows']:
+            if row['key']=='CashBalance' and row['currency']=='EUR':row['value']='104'
+            if row['key']=='TotalCashBalance' and row['currency']=='EUR':row['value']='104'
+            if row['key']=='NetLiquidationByCurrency' and row['currency']=='EUR':row['value']='103'
+        with self.assertRaisesRegex(EvidenceError,'ACCOUNT_NAV_FX_RECONCILIATION_FAILED'):
+            a.normalize_nav(self.raw,period())
+
+
 if __name__=='__main__':unittest.main()

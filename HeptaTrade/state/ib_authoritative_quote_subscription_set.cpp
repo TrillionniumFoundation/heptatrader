@@ -138,6 +138,7 @@ IBAuthoritativeQuoteSubscriptionPlan IBAuthoritativeQuoteSubscriptionSet::BeginC
         QuoteState state;
         state.instrument = it->first;
         state.contract = it->second;
+        state.requestStartedAtMs = observedAtMs;
         m_quotesByRequestId[requestId] = state;
         m_requestIdByInstrument[it->first] = requestId;
         IBAuthoritativeQuoteSubscription subscription;
@@ -161,6 +162,75 @@ bool IBAuthoritativeQuoteSubscriptionSet::SameContract(
         left.right == right.right && left.strike == right.strike &&
         left.multiplier == right.multiplier && left.tradingClass == right.tradingClass &&
         left.localSymbol == right.localSymbol;
+}
+
+IBAuthoritativeQuoteSubscriptionPlan
+IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
+    const std::string& instrument, std::uint64_t connectionEpoch,
+    std::uint64_t generation, std::uint64_t observedAtMs,
+    std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs)
+{
+    IBAuthoritativeQuoteSubscriptionPlan plan;
+    plan.connectionEpoch = connectionEpoch;
+    plan.generation = generation;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    // No new exchange subscription can turn an old or missing quote into a
+    // tradeable price. Only fresh BID and ASK callbacks can do that.
+    if (!m_independentQuotes || !connectionEpoch || !generation ||
+        connectionEpoch != m_connectionEpoch || generation != m_generation ||
+        instrument == m_primaryInstrument || observedAtMs == 0 ||
+        quoteMaxAgeMs == 0 || minRetryMs == 0)
+    {
+        plan.reasonCode = "QUOTE_REFRESH_NOT_AUTHORIZED";
+        return plan;
+    }
+    const auto desired = m_desiredContracts.find(instrument);
+    const auto request = m_requestIdByInstrument.find(instrument);
+    if (desired == m_desiredContracts.end() || desired->second.secType != "CASH" ||
+        request == m_requestIdByInstrument.end())
+    {
+        plan.reasonCode = "QUOTE_REFRESH_NOT_CASH_SECONDARY";
+        return plan;
+    }
+    const auto found = m_quotesByRequestId.find(request->second);
+    if (found == m_quotesByRequestId.end() || !found->second.dispatchAccepted)
+    {
+        plan.reasonCode = "QUOTE_REFRESH_SUBSCRIPTION_NOT_DISPATCHED";
+        return plan;
+    }
+    const int previousRequestId = request->second;
+    const QuoteState previous = found->second;
+    const auto lastCompositeAt = previous.quote.CompositeObservedAtMs();
+    if (observedAtMs < previous.requestStartedAtMs ||
+        observedAtMs - previous.requestStartedAtMs < minRetryMs ||
+        (lastCompositeAt != 0 && observedAtMs >= lastCompositeAt &&
+         observedAtMs - lastCompositeAt <= quoteMaxAgeMs))
+    {
+        plan.reasonCode = "QUOTE_REFRESH_NOT_DUE";
+        return plan;
+    }
+    if (m_nextRequestId > std::numeric_limits<int>::max())
+    {
+        plan.reasonCode = "QUOTE_REQUEST_ID_EXHAUSTED";
+        return plan;
+    }
+    const int newRequestId = static_cast<int>(m_nextRequestId++);
+    QuoteState renewed;
+    renewed.instrument = instrument;
+    renewed.contract = previous.contract;
+    renewed.requestStartedAtMs = observedAtMs;
+    m_quotesByRequestId.erase(found);
+    m_quotesByRequestId[newRequestId] = renewed;
+    m_requestIdByInstrument[instrument] = newRequestId;
+    m_complete = false;
+    plan.cancelRequestIds.push_back(previousRequestId);
+    IBAuthoritativeQuoteSubscription toSend;
+    toSend.requestId = newRequestId;
+    toSend.instrument = instrument;
+    toSend.contract = renewed.contract;
+    plan.subscriptions.push_back(toSend);
+    plan.accepted = true;
+    return plan;
 }
 
 bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(

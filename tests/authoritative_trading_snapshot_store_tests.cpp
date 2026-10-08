@@ -133,6 +133,52 @@ void TestCryptoIdentityAndIndependentClosedFxQuotes()
     contracts["BTC.USD"]=other;assert(!strict.Configure(contracts,"BTC.USD",reason));
 }
 
+void TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote()
+{
+    IBContractLite btc;btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
+    IBContractLite eur;eur.symbol="EUR";eur.secType="CASH";eur.exchange="IDEALPRO";eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet set(store);
+    std::string reason;
+    assert(set.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},"BTC.USD",reason,false,true));
+    const auto initial=set.BeginCycle(17,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& item:initial.subscriptions) {
+        assert(set.RecordDispatchResult(1,item.requestId,true));
+        if(item.instrument=="BTC.USD") btcId=item.requestId;
+        else eurId=item.requestId;
+    }
+    auto tick=[&](int id,const char* field,double value,std::uint64_t at,std::uint64_t epoch=17) {
+        IBEvent event;event.type=IBEventType::TickPrice;event.id=id;
+        event.key=field;event.number=value;event.connectionEpoch=epoch;
+        return set.ConsumeTick(event,at);
+    };
+    tick(btcId,"1",85000,1001);tick(btcId,"2",85001,1002);
+    tick(eurId,"1",1.12,1003);tick(eurId,"2",1.121,1004);
+    assert(set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,7000,5000,15000).accepted==false);
+    assert(set.BeginStaleSecondaryCashRefresh("BTC.USD",17,1,22000,5000,15000).accepted==false);
+    assert(set.BeginStaleSecondaryCashRefresh("EUR.USD",18,1,22000,5000,15000).accepted==false);
+    tick(btcId,"1",85100,20000);tick(btcId,"2",85101,20001);
+    const auto refresh=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22000,5000,15000);
+    assert(refresh.accepted && refresh.cancelRequestIds.size()==1);
+    assert(refresh.cancelRequestIds[0]==eurId && refresh.subscriptions.size()==1);
+    const int newEurId=refresh.subscriptions[0].requestId;
+    assert(newEurId!=eurId && newEurId!=btcId);
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==newEurId);
+    assert(tick(eurId,"1",1.130,22001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(!set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22002,5000,15000).accepted);
+    assert(set.RecordDispatchResult(1,newEurId,true));
+    tick(newEurId,"1",1.122,22003);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(tick(newEurId,"2",1.123,22004).write.accepted);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(set.GetHealth().ReadyForOperations());
+}
+
 void TestMissingStaleAndStrictValidation()
 {
     AuthoritativeTradingSnapshotStore store;
@@ -418,6 +464,7 @@ void TestAtomicReplaceDuringConcurrentReads()
 int main()
 {
     TestCryptoIdentityAndIndependentClosedFxQuotes();
+    TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote();
     TestMissingStaleAndStrictValidation();
     TestAtomicReplaceAndKnownEmpty();
     TestQuoteInvalidationPreservesRecordsButRevokesCompleteness();

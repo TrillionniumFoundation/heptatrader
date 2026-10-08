@@ -39,6 +39,57 @@ private:
     std::unique_lock<std::recursive_mutex> m_lock;
     bool m_open = true;
 };
+bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
+    std::string& reason)
+{
+    reason.clear();
+    if (!m_config.profile.UsesUserCrypto() || !m_adapter ||
+        m_reconnectPending.load() || !m_adapter->IsConnected())
+        return true;
+    if (!m_adapter->IsEventStreamAuthoritative() ||
+        m_adapter->EventIngressAdmissionFailed())
+    {
+        reason = "IB_PAPER_STALE_CASH_REFRESH_STREAM_UNSAFE";
+        return false;
+    }
+    // Serialize the exact subscription-id replacement with normal quote
+    // reads and all other market-data request sends. This is market-data only:
+    // it never places, modifies or cancels an ORDER.
+    std::lock_guard<std::recursive_mutex> quoteLock(m_authoritativeQuoteSendMutex);
+    if (!m_quoteSubscriptions) return true;
+    const auto health = m_quoteSubscriptions->GetHealth();
+    const auto nowMs = NowEpochMs();
+    const auto epoch = m_adapter->GetConnectionEpoch();
+    if (health.connectionEpoch != epoch || !epoch || !health.generation)
+        return true;
+    for (const auto& item : health.contracts)
+    {
+        if (item.first == health.primaryInstrument ||
+            item.second.contract.secType != "CASH") continue;
+        const auto plan = m_quoteSubscriptions->BeginStaleSecondaryCashRefresh(
+            item.first, epoch, health.generation, nowMs,
+            m_config.quoteMaxAgeMs, 15000);
+        if (!plan.accepted) continue;
+        if (plan.cancelRequestIds.size() != 1 ||
+            plan.subscriptions.size() != 1 ||
+            !m_adapter->CancelMktData(plan.cancelRequestIds[0]))
+        {
+            reason = "IB_PAPER_STALE_CASH_REFRESH_CANCEL_FAILED";
+            return false;
+        }
+        const auto& renewed = plan.subscriptions[0];
+        if (!m_adapter->ReqMktData(renewed.requestId, renewed.contract) ||
+            !m_quoteSubscriptions->RecordDispatchResult(
+                plan.generation, renewed.requestId, true))
+        {
+            reason = "IB_PAPER_STALE_CASH_REFRESH_DISPATCH_FAILED";
+            return false;
+        }
+        NotifyTestStage("stale_cash_quote_resubscribed");
+    }
+    return true;
+}
+
 bool IbPaperExecutionRuntimeComposition::PrepareQuoteSubscriptionPlan(
     std::unique_ptr<IBAuthoritativeQuoteSubscriptionSet>& subscriptions,
     IBAuthoritativeQuoteSubscriptionPlan& plan,

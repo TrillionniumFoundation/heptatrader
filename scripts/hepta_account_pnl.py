@@ -104,6 +104,32 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     rows = raw.get("rows")
     if not isinstance(rows, list) or not rows or len(rows) > 4096:
         raise EvidenceError("ACCOUNT_DOWNLOAD_ROWS_INVALID")
+    # IB initial update-end callbacks are transport barriers, not a common
+    # Broker valuation timestamp. Bind every new read to one request-ID cohort;
+    # do not label local callback arrival as a simultaneous account mark.
+    cohort = raw.get('capture_cohort')
+    if cohort is not None:
+        if (not isinstance(cohort, dict) or set(cohort) != {
+                'schema', 'request_end_at_ms', 'first_row_callback_at_ms',
+                'last_row_callback_at_ms', 'broker_valuation_tick_attested', 'time_basis'} or
+                cohort.get('schema') != 'heptatrader.account-capture-cohort.v1' or
+                cohort.get('broker_valuation_tick_attested') is not False or
+                cohort.get('time_basis') != 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK' or
+                type(cohort.get('request_end_at_ms')) is not dict or
+                set(cohort['request_end_at_ms']) != set(requests) or
+                any(type(t) is not int or not first <= t <= completed
+                    for t in cohort['request_end_at_ms'].values()) or
+                type(cohort.get('first_row_callback_at_ms')) is not int or
+                type(cohort.get('last_row_callback_at_ms')) is not int or
+                not first <= cohort['first_row_callback_at_ms'] <=
+                    cohort['last_row_callback_at_ms'] <= completed or
+                cohort['last_row_callback_at_ms'] - cohort['first_row_callback_at_ms'] > 2000 or
+                cohort['first_row_callback_at_ms'] != min(r.get('observed_at_ms', 0) for r in rows) or
+                cohort['last_row_callback_at_ms'] != max(r.get('observed_at_ms', 0) for r in rows) or
+                any(r.get('observed_at_ms', 0) > cohort['request_end_at_ms'][key]
+                    for key in ('ledger', 'account')
+                    for r in rows if r.get('request_id') == requests[key])):
+            raise EvidenceError('ACCOUNT_CAPTURE_COHORT_TIME_OR_IDENTITY_INVALID')
     ledgers: dict[str, dict] = {}
     aggregate = {}
     aggregate_keys = {"AccountCode", "AccountReady", "NetLiquidation", "AccruedDividend", "NLVAndMarginInReview"}
@@ -229,6 +255,7 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
             "fx_reconciliation_acceptance_basis": "CURRENT_RATE_NON_ACCRUAL_PLUS_BROKER_BASE_ACCRUED_CASH",
             "fx_reconciliation_bound_usd": amount(bound), "fx_reported_precision_bound_usd": amount(precision_bound),
             "fx_translation_atomic_tick": False, "ledgers": {c: {k: amount(v) for k, v in x.items()} for c, x in values.items()},
+            **({"capture_cohort": cohort} if cohort is not None else {}),
             "positions": positions, "positions_complete": requests["positions"] in raw.get("ends", []),
             "observed_at_ms": completed, "started_at_ms": first, "valid_until_ms": first + 30000,
             "connection_id": raw["connection_id"], "client_id": raw["client_id"],

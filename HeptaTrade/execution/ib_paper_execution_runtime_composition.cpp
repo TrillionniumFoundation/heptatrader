@@ -558,6 +558,7 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
+    auto nextStaleCashQuoteCheck = nextPendingReconcile + std::chrono::seconds(5);
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -593,6 +594,17 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
         // client for open-order evidence and reconcile existing commands.
         // No place/cancel mutation or replacement command is issued here.
         const auto now = std::chrono::steady_clock::now();
+        if (now >= nextStaleCashQuoteCheck && !m_reconnectPending.load())
+        {
+            nextStaleCashQuoteCheck = now + std::chrono::seconds(5);
+            std::string quoteReason;
+            if (!RefreshStaleSecondaryCashQuote(quoteReason))
+            {
+                MarkFatalRuntimeError(quoteReason.empty() ?
+                    "IB_PAPER_STALE_CASH_REFRESH_FAILED" : quoteReason);
+                break;
+            }
+        }
         std::string pendingReason;
         if (m_startupRecoveryReadOnly.load()) {
             if (!m_config.profile.observationOnly && now >= nextPendingOpenOrderRead && !PostFillRiskRefreshPending()) {
