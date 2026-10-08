@@ -5,6 +5,16 @@ from pathlib import Path
 from .common import EvidenceError,read,sha,write_once
 
 
+def verify_role_order(groups):
+    from .matched_data import SIZES
+    if set(groups)!=set(SIZES) or any(not groups[k] for k in SIZES):
+        raise EvidenceError('MATCHED_ROLE_SET')
+    ordered=[groups[k] for k in SIZES]
+    if any(max(r['outcome_end'] for r in a)>=min(r['history_start'] for r in b)
+           for a,b in zip(ordered,ordered[1:])):
+        raise EvidenceError('MATCHED_ROLE_OVERLAP')
+
+
 def audit(config):
     import numpy as np
     from safetensors.numpy import load_file
@@ -16,8 +26,7 @@ def audit(config):
     rows=sum((inputs['groups'][k] for k in SIZES),[])
     if {k:[r['time'] for r in v] for k,v in inputs['groups'].items()}!=plan['times']:raise EvidenceError('TIME_SELECTION_CHANGED')
     if [hashlib.sha256(text(r).encode()).hexdigest() for r in rows]!=plan['text_sha256']:raise EvidenceError('TEXT_CHANGED')
-    groups=list(inputs['groups'].values())
-    if any(max(r['outcome_end'] for r in a)>=min(r['history_start'] for r in b) for a,b in zip(groups,groups[1:])):raise EvidenceError('MATCHED_ROLE_OVERLAP')
+    verify_role_order(inputs['groups'])
     n=SIZES['fit'];nt=n+SIZES['tune'];nc=nt+SIZES['calibration'];labels=np.asarray([r['class'] for r in rows],int)
     arrays={k:v.astype(float) for k,v in load_file(root/'features.safetensors').items()}
     arrays['numeric']=np.asarray([[round(float(x),6) for x in r['features']] for r in rows])
