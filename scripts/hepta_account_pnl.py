@@ -92,8 +92,14 @@ def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
                 (number(ledgers["BASE"]["CashBalance"]) - other) / exposure),
                 "basis": "ALGEBRAIC_FROM_BASE_CASH_NOT_INDEPENDENT_PRICE"}
     before = {}
+    prior_hash = None
+    prior_at_ms = None
     if (isinstance(prior, dict) and prior.get("account") == raw["account"] and
-            prior.get("period_id") == raw.get("period_id")):
+            prior.get("period_id") == raw.get("period_id") and
+            type(prior.get("observed_at_ms")) is int and
+            prior["observed_at_ms"] < raw["observed_at_ms"]):
+        prior_hash = digest(prior)
+        prior_at_ms = prior["observed_at_ms"]
         prior_ledger = prior.get("request_ids", {}).get("ledger")
         for row in prior.get("rows", []):
             if (row.get("request_id") == prior_ledger and
@@ -115,6 +121,8 @@ def diagnose_rejected_fx_download(raw: dict, prior: dict | None = None) -> dict:
             "fixed_acceptance_bound_usd": "1.00",
             "within_existing_bound": near(difference, ZERO, Decimal("1.00")),
             "callback_span_ms": max(selected) - min(selected) if selected else None,
+            "prior_observed_at_ms": prior_at_ms,
+            "prior_raw_sha256": prior_hash,
             "unchanged_reported_fx_rates": rate_unchanged,
             "algebraic_implied_fx_rate": implied,
             "reconciliation_claim": "NONE_REQUIRES_SAME_BASIS_BROKER_EVIDENCE"}

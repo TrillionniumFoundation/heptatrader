@@ -45,6 +45,22 @@ def publish_unavailable(out: Path, error: Exception, preflight_scope: dict | Non
     # A diagnostics write failure must not leave a previously valid NAV published.
     write_snapshot(out/'nav.json', nav)
     if isinstance(error, RejectedAccountDownload):
+        # The previous rejected callback cohort (when available) is the most
+        # relevant read-only basis for identifying a stationary Broker FX rate
+        # while BASE NAV changes. Read it BEFORE replacing rejected-raw.
+        prior = None
+        if str(error) == 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED':
+            for name in ('rejected-raw.json', 'raw-latest.json'):
+                try:
+                    candidate = load_private(out/name)
+                    if (candidate.get('account') == error.raw.get('account') and
+                            candidate.get('period_id') == error.raw.get('period_id') and
+                            type(candidate.get('observed_at_ms')) is int and
+                            candidate['observed_at_ms'] < error.raw.get('observed_at_ms', 0)):
+                        prior = candidate
+                        break
+                except (EvidenceError, OSError, ValueError, KeyError, TypeError):
+                    continue
         # Preserve only the latest rejected raw download. It cannot occupy the
         # successful raw-latest/first slots, certify an opening, or bypass checks.
         write_snapshot(out/'rejected-raw.json', error.raw)
@@ -53,8 +69,6 @@ def publish_unavailable(out: Path, error: Exception, preflight_scope: dict | Non
                    rejected_raw_is_accepted_nav=False)
         if str(error) == 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED':
             try:
-                prior_file = out/'raw-latest.json'
-                prior = load_private(prior_file) if prior_file.exists() else None
                 diagnostics = diagnose_rejected_fx_download(error.raw, prior)
                 write_snapshot(out/'rejected-fx-diagnostic.json', diagnostics)
                 nav['rejected_fx_diagnostic_file'] = 'rejected-fx-diagnostic.json'

@@ -147,6 +147,27 @@ class RejectedDownloadTests(unittest.TestCase):
         self.assertFalse(nav['authoritative'])
         self.assertFalse(nav['rejected_raw_is_accepted_nav'])
 
+    def test_consecutive_rejected_cohorts_preserve_previous_rate_basis(self):
+        original = self.rejected()
+        first_raw = copy.deepcopy(original.raw)
+        observer.publish_unavailable(self.out, original)
+        next_raw = copy.deepcopy(original.raw)
+        next_raw['started_at_ms'] += 1000
+        next_raw['observed_at_ms'] += 1000
+        next_raw['connection_id'] = 'next-rejected-connection'
+        for row in next_raw['rows']:
+            row['observed_at_ms'] += 1000
+        nav = observer.publish_unavailable(self.out,
+            observer.RejectedAccountDownload('ACCOUNT_NAV_FX_RECONCILIATION_FAILED', next_raw))
+        diag = report.load_private(self.out/'rejected-fx-diagnostic.json')
+        self.assertEqual(diag['prior_raw_sha256'], account.digest(first_raw))
+        self.assertEqual(diag['prior_observed_at_ms'], first_raw['observed_at_ms'])
+        self.assertIn('EUR', diag['unchanged_reported_fx_rates'])
+        self.assertEqual(diag['raw_sha256'], account.digest(next_raw))
+        self.assertFalse(diag['authoritative'])
+        self.assertFalse(nav['authoritative'])
+        self.assertEqual(report.load_private(self.out/'rejected-raw.json'), next_raw)
+
     def test_transport_error_does_not_claim_a_new_raw_download(self):
         nav=observer.publish_unavailable(self.out,EvidenceError('ACCOUNT_DOWNLOAD_END_TIMEOUT'))
         self.assertNotIn('rejected_raw_sha256',nav)

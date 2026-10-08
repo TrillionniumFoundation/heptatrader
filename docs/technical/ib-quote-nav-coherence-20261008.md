@@ -36,3 +36,8 @@ separate `rejected-fx-diagnostic.json` bound to its SHA256. The report tracks
 original rate/BASE differences and callback timing without being an accepted
 NAV, a substitute quote, a new order or a widened limit. Diagnostic algebraic
 implied FX rates are circular and never qualify the original account mark.
+
+Consecutive rejected downloads are compared to the previous rejected cohort
+when its period matches and observation time advances. Unchanged reported FX
+rates under a changing BASE aggregate are provenance diagnostics, **not** a
+common Broker valuation-time proof and never authorize NAV.
