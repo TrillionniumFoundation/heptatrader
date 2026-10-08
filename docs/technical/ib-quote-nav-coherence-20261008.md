@@ -184,3 +184,50 @@ Subsequent independent PAPER API tests narrowed the earlier negative probe:
 Every probe instance has a distinct 20000..30000 client ID, checked against the live trader and NAV observer; its send boundary admits no order API. Quote callback freshness uses the existing 5-second limit. It never restamps an unchanged BID or ASK and never publishes NAV.
 
 **Release scope remains unchanged:** read-only successes cannot qualify production Execution's real farm-down/up and reconnect state machine, nor prove zero duplicate order sends across those events. Its candidate binary is not installed. The NAV v3 multi-request End receipt likewise does not carry an atomic Broker valuation time, so a USD >1 discrepancy remains rejected.
+
+
+## Sampled, source-bound FX quote continuity (2026-10-08)
+
+The read-only EUR/CASH/IDEALPRO/USD probe now measures a bounded 100-ms
+sampling window independently of the callback counters. Each sample requires
+**both** last-arriving current-request BID and ASK to be individually within
+the original 5-second freshness policy, market-data type 1, an uncrossed
+positive pair, and the scoped CASH-farm lease still present. Samples never
+re-stamp a leg. The resulting `freshness_window` receipt includes the exact
+sample numerator/denominator, first and last fresh sample times, time lacking
+a fresh pair **after** its first appearance, its longest consecutive missing
+streak, and farm-down samples. It never claims a Broker NAV valuation mark,
+production recovery, or future quote availability.
+
+Real IB PAPER isolated client ID 29567, THREE distinct 20-second streaming
+subscriptions, disconnected between cycles (12-second gaps), on 2026-10-08:
+
+| Cycle | Result | Quote callbacks | Fresh pair samples | Integer-floored coverage | Longest post-first missing |
+|--|--|--:|--:|--:|--:|
+| 1 | LIVE_BID_ASK | 50 | 165/201 | 82% | 3,104 ms |
+| 2 | LIVE_BID_ASK | 36 | 196/201 | 97% | 0 ms |
+| 3 | LIVE_BID_ASK | 46 | 182/201 | 90% | 901 ms |
+
+The exact Broker trace is retained OUTSIDE NAV and OMS state as immutable
+operator evidence under
+`~/.local/state/heptatrader/operator-evidence/fxnav-freshness-window-20261008/`,
+SHA256
+`dfde97edff1362e8ea6ff1b96a86a9989c24b81c41cd3ee65370390b85dac47a`.
+All cycles received scoped CASH farm readiness, Broker marketDataType=1 and
+positive live legs. The wire allowlist counted one each of startApi (71),
+market-data-type (59), exact reqMktData (1) and owned cancelMktData (2)
+PER cycle, with zero trading send opcodes. The independent OMS journal
+place_sent=25/flatten_sent=31 remained unchanged across this test.
+
+**What this supports:** separate, order-incapable API connections can observe
+real quotes after reconnection. Partial gaps and intermittent missing/stale
+samples are real and are not discarded. The longest *sampled consecutive
+missing duration* in these three windows was below 5 seconds; this is NOT
+equivalent to 'every quote remained under 5 seconds old' or uninterrupted
+market-data service.
+
+**What it does not support:** a farm-down/up fault injected into the native
+Execution owner, automatic native renewal/new request-ID validation under
+that fault, continuous future quote coverage, zero native replay sends after
+a real owner reconnect, or a same-valuation-time cross-currency NAV proof.
+All original fail-closed admission, expiry, and USD 1 NAV gates remain.

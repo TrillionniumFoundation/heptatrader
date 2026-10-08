@@ -104,6 +104,54 @@ class FreshQuoteTests(unittest.TestCase):
         self.assertIsNone(q.evidence(1106))
 
 
+class SampledContinuityTests(unittest.TestCase):
+    def test_long_unavailable_window_is_retained_even_after_recovery(self):
+        q=probe.LiveQuoteState()
+        c=probe.QuoteContinuity()
+        self.assertFalse(c.sample(q,1000,True))
+        q.market_type(1)
+        q.price(1,1.12,1001)
+        q.price(2,1.121,1002)
+        self.assertTrue(c.sample(q,1003,True))
+        self.assertFalse(c.sample(q,6003,True))  # old bid + ask
+        self.assertFalse(c.sample(q,12004,True))
+        q.price(1,1.122,12005)
+        q.price(2,1.123,12006)
+        self.assertTrue(c.sample(q,12007,True))
+        receipt=c.receipt()
+        self.assertEqual(receipt["sample_count"],5)
+        self.assertEqual(receipt["fresh_pair_sample_count"],2)
+        self.assertEqual(receipt["missing_after_first_pair_samples"],2)
+        self.assertEqual(receipt["longest_sampled_missing_after_first_pair_ms"],6001)
+        self.assertTrue(receipt["sampled_post_first_gap_over_limit"])
+        self.assertFalse(receipt["production_recovery_qualified"])
+        self.assertFalse(receipt["synchronous_broker_valuation_time_proven"])
+
+    def test_cash_farm_loss_blocks_sampled_quote_without_restamping(self):
+        q=probe.LiveQuoteState()
+        q.market_type(1)
+        q.price(1,1.12,1000)
+        q.price(2,1.121,1001)
+        c=probe.QuoteContinuity()
+        self.assertTrue(c.sample(q,1002,True))
+        self.assertFalse(c.sample(q,1003,False))
+        self.assertTrue(c.sample(q,1004,True))
+        r=c.receipt()
+        self.assertEqual(r["farm_unavailable_sample_count"],1)
+        self.assertEqual(r["missing_after_first_pair_samples"],1)
+        self.assertEqual(q.leg_ages(1004),{"bid_age_ms":4,"ask_age_ms":3})
+
+    def test_no_samples_and_regressing_time_fail_closed(self):
+        c=probe.QuoteContinuity()
+        self.assertEqual(c.receipt()["status"],"NO_SAMPLES")
+        q=probe.LiveQuoteState()
+        c.sample(q,1000,False)
+        with self.assertRaisesRegex(probe.ProbeViolation,"SAMPLE_TIME_INVALID"):
+            c.sample(q,1000,False)
+        with self.assertRaisesRegex(probe.ProbeViolation,"SAMPLE_TIME_INVALID"):
+            c.sample(q,999,False)
+
+
 class FakeContract:
     pass
 
@@ -193,6 +241,9 @@ class SyntheticBrokerTests(unittest.TestCase):
         self.assertEqual(result["allowed_send_counts"],
                          {"71":1,"59":1,"1":1,"2":1})
         self.assertFalse(result["live_quote"]["broker_valuation_time_proven"])
+        self.assertGreater(result["freshness_window"]["sample_count"],0)
+        self.assertGreater(result["freshness_window"]["fresh_pair_sample_count"],0)
+        self.assertFalse(result["freshness_window"]["production_recovery_qualified"])
         self.assertEqual(result["order_send_count"],0)
     def test_missing_or_delayed_stays_unavailable(self):
         for mode in ("no_quote","delayed"):

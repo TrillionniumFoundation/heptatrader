@@ -124,6 +124,77 @@ class LiveQuoteState:
         }
 
 
+class QuoteContinuity:
+    """Sampled freshness evidence, separate from broker tick/valuation time.
+
+    The observer checks BOTH market-data legs and the CASH-farm lease on
+    each bounded sample. No callback is backdated or re-stamped by sampling.
+    A finite read-only window never proves future continuous availability.
+    """
+
+    def __init__(self):
+        self.samples = 0
+        self.fresh_samples = 0
+        self.after_first_missing_samples = 0
+        self.first_fresh_at_ms = None
+        self.last_fresh_at_ms = None
+        self.first_sample_at_ms = None
+        self.last_sample_at_ms = None
+        self.missing_run_since_ms = None
+        self.longest_post_first_missing_ms = 0
+        self.farm_missing_samples = 0
+
+    def sample(self, quote: LiveQuoteState, at_ms: int, farm_ready: bool) -> bool:
+        if (type(at_ms) is not int or at_ms <= 0 or
+                self.last_sample_at_ms is not None and
+                at_ms <= self.last_sample_at_ms):
+            raise ProbeViolation("PROBE_SAMPLE_TIME_INVALID")
+        if self.first_sample_at_ms is None:
+            self.first_sample_at_ms = at_ms
+        self.last_sample_at_ms = at_ms
+        self.samples += 1
+        if not farm_ready:
+            self.farm_missing_samples += 1
+        fresh = farm_ready and quote.evidence(at_ms) is not None
+        if fresh:
+            self.fresh_samples += 1
+            if self.first_fresh_at_ms is None:
+                self.first_fresh_at_ms = at_ms
+            self.last_fresh_at_ms = at_ms
+            self.missing_run_since_ms = None
+        elif self.first_fresh_at_ms is not None:
+            self.after_first_missing_samples += 1
+            if self.missing_run_since_ms is None:
+                self.missing_run_since_ms = at_ms
+            self.longest_post_first_missing_ms = max(
+                self.longest_post_first_missing_ms,
+                at_ms - self.missing_run_since_ms)
+        return fresh
+
+    def receipt(self) -> dict:
+        return {
+            "schema": "heptatrader.fx-freshness-window.v1",
+            "status": "OBSERVED" if self.samples else "NO_SAMPLES",
+            "sample_count": self.samples,
+            "fresh_pair_sample_count": self.fresh_samples,
+            "fresh_pair_sample_percent": (
+                100 * self.fresh_samples // self.samples if self.samples else 0),
+            "first_fresh_pair_sample_at_ms": self.first_fresh_at_ms,
+            "last_fresh_pair_sample_at_ms": self.last_fresh_at_ms,
+            "first_sample_at_ms": self.first_sample_at_ms,
+            "last_sample_at_ms": self.last_sample_at_ms,
+            "missing_after_first_pair_samples": self.after_first_missing_samples,
+            "longest_sampled_missing_after_first_pair_ms":
+                self.longest_post_first_missing_ms,
+            "farm_unavailable_sample_count": self.farm_missing_samples,
+            "original_quote_freshness_limit_ms": 5000,
+            "sampled_post_first_gap_over_limit": (
+                self.longest_post_first_missing_ms > 5000),
+            "synchronous_broker_valuation_time_proven": False,
+            "production_recovery_qualified": False,
+        }
+
+
 class CashFarmLease:
     """Only a scoped current-session CASH-farm 2104 opens the quote probe."""
     def __init__(self):
@@ -169,6 +240,7 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
     gate = QuoteWireGate(client_id)
     quotes = LiveQuoteState()
     farm = CashFarmLease()
+    continuity = QuoteContinuity()
     errors: list[dict] = []
     ready = threading.Event()
 
@@ -239,10 +311,14 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
             client.reqMarketDataType(1)
             client.reqMktData(REQUEST_ID, contract, "", False, False, [])
             deadline = time.monotonic() + window_sec
+            continuity.sample(quotes, time.time_ns() // 1_000_000,
+                              farm.ready.is_set())
             while time.monotonic() < deadline:
                 if client.lost or not client.isConnected() or not farm.ready.is_set():
                     break
                 time.sleep(max(0.0, min(0.1, deadline - time.monotonic())))
+                continuity.sample(quotes, time.time_ns() // 1_000_000,
+                                  farm.ready.is_set())
             result["live_quote"] = quotes.evidence(time.time_ns() // 1_000_000)
             result["status"] = ("CONNECTION_LOST" if client.lost or not client.isConnected()
                                 else "CASH_FARM_LOST" if not farm.ready.is_set()
@@ -274,6 +350,7 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 8.0,
         result["invalid_tick_callbacks"] = quotes.invalid_tick_count
         result["valid_pair_tick_events"] = quotes.valid_pair_tick_events
         result["last_valid_pair_at_ms"] = quotes.last_valid_pair_at_ms
+        result["freshness_window"] = continuity.receipt()
         result["leg_ages_at_end_ms"] = quotes.leg_ages(
             time.time_ns() // 1_000_000)
         result["error_codes"] = errors
