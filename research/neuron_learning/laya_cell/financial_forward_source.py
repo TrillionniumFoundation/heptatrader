@@ -33,14 +33,18 @@ def ingress(registration,period_sha256):
   health=Path(m['journal_directory'])/(producer+'.health.json')
   if health.exists():
    status=strict(read_private(health,65536));invalid=bool(status.get('dropped') or status.get('error'))
+  headers=[x['data'] for x in rs if x.get('kind')=='HEADER'];owners={x.get('manifest_sha256') for x in headers}
+  if len(owners)!=1 or not headers or any(not isinstance(x,str) or len(x)!=64 for x in owners):raise ContractError('FORWARD_PRODUCER_MANIFEST_MIXED')
+  producer_manifest=next(iter(owners))
   for i,r in enumerate(rs):
    if r['sequence']!=i or r['previous']!=previous:raise ContractError('FORWARD_CHAIN_DISCONTINUITY')
    previous=r['sha256'];invalid|=bool(r.get('dropped_total'));v=r['data']
    if r['kind']=='HEADER':
-    if (v.get('manifest_sha256')!=registration['sha256'] or v.get('period_sha256')!=period_sha256 or v.get('trading_authority') is not False
+    if (v.get('manifest_sha256')!=producer_manifest or v.get('period_sha256')!=period_sha256 or v.get('trading_authority') is not False
         or v.get('instrument')!='EUR.USD' or v.get('execution_domain')!='PAPER' or v.get('source_kind')!='PINNED_DRIVER_CALLSITE'):
      raise ContractError('FORWARD_SOURCE_HEADER')
    elif i==0:raise ContractError('FORWARD_SOURCE_HEADER_MISSING')
+  if producer_manifest!=registration['sha256']:continue
   if invalid:issues.append({'producer_id':producer,'reason':'PRODUCER_GAP_OR_LOSS'});continue
   for r in rs:
    v=r['data']

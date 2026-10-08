@@ -217,13 +217,18 @@ def verified_bindings(registration,instrument,period_sha256):
   health=Path(m['journal_directory'])/(producer+'.health.json')
   if health.exists():
    h=strict(read_private(health,65536));bad=bool(h.get('dropped') or h.get('error'))
+  headers=[x['data'] for x in records if x.get('kind')=='HEADER']
+  owners={x.get('manifest_sha256') for x in headers}
+  if len(owners)!=1 or not headers or any(not isinstance(v,str) or len(v)!=64 for v in owners):
+   raise ValueError('PRODUCER_MANIFEST_MIXED_OR_MISSING')
+  producer_manifest=next(iter(owners))
   for i,r in enumerate(records):
    if r['sequence']!=i or r['previous']!=previous:raise ValueError('ATTRIBUTION_CHAIN_GAP')
    previous=r['sha256'];bad|=bool(r.get('dropped_total'))
    if type(r.get('captured_at_ms'))is not int or r['captured_at_ms']>int(time.time()*1000):raise ValueError('ATTRIBUTION_CLOCK')
    v=r['data'];kind=r['kind']
    if kind=='HEADER':
-    if (v.get('manifest_sha256')!=registration['sha256'] or v.get('instrument')!=instrument
+    if (v.get('manifest_sha256')!=producer_manifest or v.get('instrument')!=instrument
         or v.get('period_sha256')!=period_sha256 or v.get('execution_domain')!='PAPER'
         or v.get('source_kind')!='PINNED_DRIVER_CALLSITE' or v.get('trading_authority') is not False):
      raise ValueError('ATTRIBUTION_HEADER_SCOPE')
@@ -233,6 +238,11 @@ def verified_bindings(registration,instrument,period_sha256):
     if key in target and target[key]!=v:raise ValueError('CONFLICTING_REQUEST_RECORD')
     target[key]=v;order[kind].setdefault(key,i)
    elif kind=='COMMAND_BINDING':commands.append((v,i))
+  # One instrument/period directory may retain multiple immutable behavior
+  # producers. Verify every producer chain, then attribute ONLY the registered
+  # identity. Never relabel old25k decisions as newUSD100k, and reject a producer
+  # changing its own manifest midstream.
+  if producer_manifest!=registration['sha256']:continue
   if bad:
    issues.append({'producer_id':producer,'reason':'DROPPED_OR_FAILED_PRODUCER_NO_CREDIT'});continue
   for b,binding_sequence in commands:
