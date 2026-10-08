@@ -175,6 +175,71 @@ def validate_preflight_nav_evidence(nav: dict, raw: dict, scope: dict, at_ms: in
         raise EvidenceError("ACCOUNT_PREFLIGHT_MISSING_STALE_OR_WRONG_SOURCE")
 
 
+def same_socket_current_eur_mid(raw: dict, ledgers: dict, base_currency: str) -> Decimal | None:
+    """Admit only Broker live BID/ASK seen BEFORE exact-account NLV callback.
+
+    This does not change the $1 bound: it replaces an independently shown
+    stale IB ExchangeRate with a source-attested current FX midpoint. It is
+    valid only for the account-period observer, one EUR cash exposure, and
+    the same API connection and bounded callback burst. Never reconstruct
+    a price from the BASE aggregate, use a delayed tick, or backfill time.
+    """
+    q = raw.get("fx_quote_witness")
+    if not isinstance(q, dict) or raw.get("schema") != "heptatrader.account-download.v1":
+        return None
+    expected = {"schema", "request_id", "contract", "market_data_type", "source",
+                "bid", "ask", "bid_observed_at_ms", "ask_observed_at_ms",
+                "account_nav_observed_at_ms", "account_nav_value",
+                "account", "client_id", "connection_id"}
+    if (set(q) != expected or
+            q.get("schema") != "heptatrader.account-same-socket-eur-quote.v1" or
+            q.get("request_id") != 4 or q.get("contract") != "EUR|CASH|IDEALPRO|USD" or
+            q.get("market_data_type") != 1 or
+            q.get("source") != "IB_LIVE_BID_ASK_TICK_PRICE" or
+            q.get("account") != raw.get("account") or
+            q.get("client_id") != raw.get("client_id") or
+            q.get("connection_id") != raw.get("connection_id") or
+            base_currency != "USD" or
+            any(raw.get("allowed_send_counts", {}).get(code) != 1 for code in ("59", "1", "2"))):
+        return None
+    times = [q.get(k) for k in ("bid_observed_at_ms", "ask_observed_at_ms",
+                               "account_nav_observed_at_ms")]
+    if (any(type(t) is not int or t <= 0 for t in times) or
+            not raw["started_at_ms"] <= min(times) <= max(times) <= raw["observed_at_ms"] or
+            times[2] < max(times[:2]) or times[2] - min(times[:2]) > 5000):
+        return None
+    # The broker's aggregate NLV and ledger were both delivered in a single
+    # short callback burst; do not splice one quote onto a later valuation.
+    rows = raw.get("rows", [])
+    requests = raw.get("request_ids", {})
+    aggregate = [r for r in rows if r.get("request_id") == requests.get("account") and
+                 r.get("key") == "NetLiquidation" and r.get("currency") == base_currency]
+    if (len(aggregate) != 1 or
+            aggregate[0].get("account") != raw.get("account") or
+            aggregate[0].get("value") != q["account_nav_value"] or
+            aggregate[0].get("observed_at_ms") != times[2]):
+        return None
+    scoped = [r["observed_at_ms"] for r in rows if
+              r.get("request_id") == requests.get("ledger") and
+              r.get("key", "").removeprefix("$LEDGER-") in
+              ("NetLiquidationByCurrency", "AccruedCash", "CashBalance", "ExchangeRate")]
+    if not scoped or max(abs(t - times[2]) for t in scoped) > 1000:
+        return None
+    # Other material foreign-currency exposures require their own independent
+    # quote witnesses, which this EUR-only observation deliberately lacks.
+    for currency, row in ledgers.items():
+        if currency in ("BASE", base_currency, "EUR"):
+            continue
+        units = number(row["NetLiquidationByCurrency"]) - number(row["AccruedCash"])
+        if abs(units * number(row["ExchangeRate"])) > Decimal("0.01"):
+            return None
+    bid, ask = number(q["bid"]), number(q["ask"])
+    if (bid <= 0 or ask < bid or ask - bid > Decimal("0.0001") or
+            "EUR" not in ledgers or number(ledgers["EUR"]["ExchangeRate"]) <= 0):
+        return None
+    return (bid + ask) / 2
+
+
 def _normalize_account_download(raw: dict, period: dict, identity_key: str,
                                 raw_schema: str, nav_schema: str, excluded_clients: set) -> dict:
     # Paired ledger/full subscriptions keep ambiguous aggregate AccruedCash out
@@ -289,12 +354,42 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
         # reconciliation envelope for current-rate components; never widen it
         # on a mismatch. Aggregate NAV must independently agree with BASE NAV.
         bound = Decimal("1.00")
-        if not near(translated_non_accrual, base_non_accrual, bound) or not near(nav, base["NetLiquidationByCurrency"]):
+        if not near(nav, base["NetLiquidationByCurrency"]):
             raise EvidenceError("ACCOUNT_NAV_FX_RECONCILIATION_FAILED")
-        for field in ("CashBalance", "NetDividend"):
-            check = sum((values[c][field] * values[c]["ExchangeRate"] for c in currencies), ZERO)
-            if not near(check, base[field], bound):
-                raise EvidenceError("ACCOUNT_COMPONENT_FX_RECONCILIATION_FAILED:" + field)
+        components = ("CashBalance", "NetDividend")
+        def evaluate_components(rates: dict) -> str:
+            for field in components:
+                check = sum((values[c][field] * rates[c] for c in currencies), ZERO)
+                if not near(check, base[field], bound):
+                    return "ACCOUNT_COMPONENT_FX_RECONCILIATION_FAILED:" + field
+            return ""
+        reported_rates = {c: values[c]["ExchangeRate"] for c in currencies}
+        original_failure = (("ACCOUNT_NAV_FX_RECONCILIATION_FAILED"
+            if not near(translated_non_accrual, base_non_accrual, bound) else "")
+            or evaluate_components(reported_rates))
+        temporal_fx_proof = None
+        if original_failure:
+            current_mid = same_socket_current_eur_mid(raw, ledgers, base_currency)
+            if current_mid is None:
+                raise EvidenceError(original_failure)
+            temporal_rates = dict(reported_rates, EUR=current_mid)
+            temporal_non = sum(((values[c]["NetLiquidationByCurrency"] - values[c]["AccruedCash"]) *
+                                temporal_rates[c] for c in currencies), ZERO)
+            if (not near(temporal_non, base_non_accrual, bound) or
+                    evaluate_components(temporal_rates)):
+                raise EvidenceError(original_failure)
+            temporal_fx_proof = {
+                "fx_reconciliation_acceptance_basis":
+                    "SAME_API_CONNECTION_LIVE_EUR_BID_ASK_AT_ACCOUNT_NLV_CALLBACK",
+                "temporal_fx_eur_mid": amount(current_mid),
+                "temporal_fx_bid": raw["fx_quote_witness"]["bid"],
+                "temporal_fx_ask": raw["fx_quote_witness"]["ask"],
+                "temporal_fx_non_accrual_difference_usd": amount(temporal_non - base_non_accrual),
+                "temporal_fx_quote_age_ms": str(raw["fx_quote_witness"]["account_nav_observed_at_ms"] -
+                    min(raw["fx_quote_witness"]["bid_observed_at_ms"],
+                        raw["fx_quote_witness"]["ask_observed_at_ms"])),
+                "temporal_fx_proof_raw_sha256": digest(raw),
+            }
     positions = raw.get("positions", [])
     position_ids = set()
     if not isinstance(positions, list) or len(positions) > 256:
@@ -305,7 +400,7 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
                 p["conid"] in position_ids):
             raise EvidenceError("ACCOUNT_POSITION_IDENTITY_INVALID")
         number(p.get("quantity")); number(p.get("average_cost")); position_ids.add(p["conid"])
-    return {"schema": nav_schema, "account": period["account"], "currency": base_currency,
+    result = {"schema": nav_schema, "account": period["account"], "currency": base_currency,
             identity_key: period[identity_key], "source": "IB_ACCOUNT_UPDATES_MULTI_PAIRED_LEDGER",
             "authoritative": True, "mutation_authorized": False, "nav": amount(nav),
             "ledger_nav": amount(base["NetLiquidationByCurrency"]), "cash": amount(base["CashBalance"]),
@@ -326,6 +421,9 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
             "connection_id": raw["connection_id"], "client_id": raw["client_id"],
             "raw_sha256": digest(raw), "journal_fingerprint": raw.get("journal_fingerprint"),
             "period_sha256": raw.get("period_sha256"), "producer_source_sha": raw.get("producer_source_sha")}
+    if temporal_fx_proof is not None:
+        result.update(temporal_fx_proof)
+    return result
 
 
 def validate_nav(nav: dict, period: dict, at_ms: int, historical: bool = False) -> None:

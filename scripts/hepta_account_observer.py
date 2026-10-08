@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Isolated IB PAPER account observer. Broker transport is read-only by construction.
 
-Only startApi, exact-account account/position subscriptions, and cancellation
+Only startApi, exact-account account/position subscriptions, one live EUR/USD ticker, and cancellation
 of this observer's own subscriptions can cross the send boundary. No trading
 service is started, restarted, recovered or modified. SDK is operator-installed.
 """
@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import signal
@@ -66,8 +67,9 @@ def publish_unavailable(out: Path, error: Exception, preflight_scope: dict | Non
 
 
 class SendBoundary:
-    def __init__(self, account: str, client_id: int, requests: dict):
+    def __init__(self, account: str, client_id: int, requests: dict, allow_fx_quote: bool = False):
         self.account, self.client_id, self.requests = account, client_id, requests
+        self.allow_fx_quote = allow_fx_quote
         self.counts = {}
         self.started = False
         self.subscribed = set()
@@ -90,6 +92,16 @@ class SendBoundary:
             valid = len(fields) == 3 and fields[1] == '1' and fields[2] in [str(self.requests[x]) for x in ('account', 'ledger')]
         elif code == 75:
             valid = len(fields) == 3 and fields[1:] == ['1', str(self.requests['positions'])]
+        elif code == 59:
+            valid = self.allow_fx_quote and fields == ['59', '1', '1']
+        elif code == 1:
+            # Pinned IBAPI wire request: one exact EUR/USD streaming ticker,
+            # no generic ticks, delayed-data requests or regulatory snapshots.
+            valid = (self.allow_fx_quote and fields ==
+                ['1', '11', '4', '0', 'EUR', 'CASH', '', '0.0', '', '',
+                 'IDEALPRO', '', 'USD', '', '', '0', '', '0', '0'])
+        elif code == 2:
+            valid = self.allow_fx_quote and fields == ['2', '2', '4']
         else:
             valid = False
         if not valid: raise EvidenceError('ACCOUNT_OBSERVER_MUTATING_OR_FOREIGN_SEND_FORBIDDEN')
@@ -98,12 +110,14 @@ class SendBoundary:
             self.started = True
         elif not self.started:
             raise EvidenceError('OBSERVER_HANDSHAKE_REQUIRED')
-        elif code in (74, 76):
+        elif code in (74, 76, 1):
             identity = code, int(fields[2])
             if identity in self.subscribed: raise EvidenceError('OBSERVER_SUBSCRIPTION_DUPLICATE')
             self.subscribed.add(identity)
-        elif (76 if code == 77 else 74, int(fields[2])) not in self.subscribed:
-            raise EvidenceError('OBSERVER_CANCEL_UNOWNED_SUBSCRIPTION')
+        elif code in (77, 75, 2):
+            owned_code = {77: 76, 75: 74, 2: 1}[code]
+            if (owned_code, int(fields[2])) not in self.subscribed:
+                raise EvidenceError('OBSERVER_CANCEL_UNOWNED_SUBSCRIPTION')
         self.counts[str(code)] = self.counts.get(str(code), 0) + 1
         return code
 
@@ -123,7 +137,7 @@ def acquire(period: dict, sdk_path: Path, client_id: int, timeout: int = 12) -> 
     if not positive_int(client_id) or client_id in {x['broker_client_id'] for x in period['instruments'].values()}:
         raise EvidenceError('OBSERVER_CLIENT_COLLIDES_WITH_TRADER')
     return _acquire_account(period['account'], sdk_path, client_id, timeout,
-        'period_id', period['period_id'], 'heptatrader.account-download.v1')
+        'period_id', period['period_id'], 'heptatrader.account-download.v1', fx_quote=True)
 
 
 def acquire_preflight(scope: dict, sdk_path: Path, client_id: int, timeout: int = 12) -> dict:
@@ -135,11 +149,11 @@ def acquire_preflight(scope: dict, sdk_path: Path, client_id: int, timeout: int 
 
 
 def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
-                     identity_key: str, identity: str, raw_schema: str) -> dict:
+                     identity_key: str, identity: str, raw_schema: str, fx_quote: bool = False) -> dict:
     EClient, EWrapper = load_sdk(sdk_path)
     requests = {'ledger': 1, 'account': 2, 'positions': 3}
     started = now_ms()
-    boundary = SendBoundary(account, client_id, requests)
+    boundary = SendBoundary(account, client_id, requests, allow_fx_quote=fx_quote)
     class AccountReader(EWrapper, EClient):
         def __init__(self):
             EClient.__init__(self, self)
@@ -147,6 +161,10 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
             self.rows, self.positions, self.errors, self.informational = [], [], [], []
             self.accounts, self.ends = set(), set()
             self.lost, self.intentional_disconnect = False, False
+            self.fx_bid, self.fx_ask = None, None
+            self.fx_ready = threading.Event()
+            self.fx_at_account_nav, self.fx_quote_errors = None, []
+            self.fx_data_type = None  # require Broker marketDataType(reqId, 1) callback
         def sendMsg(self, msg):
             boundary.check(msg)
             return EClient.sendMsg(self, msg)
@@ -160,14 +178,48 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
         def error(self, req, code, message, *args):
             # Keep exact numeric diagnostics, without broker message/account disclosure.
             event = {'request_id': req, 'code': code}
-            if req == -1 and code in (2104, 2106, 2107, 2108, 2158, 2172): self.informational.append(event)
-            else: self.errors.append(event)
+            if fx_quote and req == 4:
+                self.fx_quote_errors.append(event)
+                self.fx_data_type = None
+            elif req == -1 and code in (2104, 2106, 2107, 2108, 2158, 2172):
+                self.informational.append(event)
+            else:
+                self.errors.append(event)
+        def marketDataType(self, req, market_data_type):
+            if fx_quote and req == 4:
+                self.fx_data_type = market_data_type if market_data_type == 1 else None
+        def tickPrice(self, req, field, price, attrib):
+            if not fx_quote or req != 4 or self.fx_data_type != 1: return
+            if field not in (1, 2) or not math.isfinite(price) or price <= 0: return
+            observed = now_ms()
+            if field == 1: self.fx_bid = (format(price, '.17g'), observed)
+            else: self.fx_ask = (format(price, '.17g'), observed)
+            if self.fx_bid and self.fx_ask and float(self.fx_ask[0]) >= float(self.fx_bid[0]):
+                self.fx_ready.set()
         def accountUpdateMulti(self, req, account, model, key, value, currency):
             if req not in (requests['ledger'], requests['account']) or req in self.ends: return
             if len(self.rows) >= 4096:
                 self.errors.append({'code': 'ROW_BOUND'}); self.finished.set(); return
+            observed = now_ms()
             self.rows.append({'request_id': req, 'account': account, 'model': model, 'key': key,
-                              'value': value, 'currency': currency, 'observed_at_ms': now_ms()})
+                              'value': value, 'currency': currency, 'observed_at_ms': observed})
+            # Snapshot both FX legs at the precise callback of exact-account
+            # aggregate NLV. Quotes that arrived AFTER that callback are never
+            # retroactively used to certify an earlier account valuation.
+            if (fx_quote and req == requests['account'] and
+                    key == 'NetLiquidation' and currency == 'USD' and
+                    account == boundary.account and model == '' and
+                    self.fx_data_type == 1 and not self.fx_quote_errors and
+                    self.fx_bid and self.fx_ask):
+                self.fx_at_account_nav = {
+                    'schema': 'heptatrader.account-same-socket-eur-quote.v1',
+                    'request_id': 4, 'contract': 'EUR|CASH|IDEALPRO|USD',
+                    'market_data_type': 1, 'source': 'IB_LIVE_BID_ASK_TICK_PRICE',
+                    'bid': self.fx_bid[0], 'ask': self.fx_ask[0],
+                    'bid_observed_at_ms': self.fx_bid[1],
+                    'ask_observed_at_ms': self.fx_ask[1],
+                    'account_nav_observed_at_ms': observed,
+                    'account_nav_value': value}
         def accountUpdateMultiEnd(self, req):
             if req in (requests['ledger'], requests['account']): self.ends.add(req)
             if set(requests.values()).issubset(self.ends): self.finished.set()
@@ -190,6 +242,15 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
         deadline = time.monotonic() + 2
         while account not in client.accounts and time.monotonic() < deadline: time.sleep(.02)
         if account not in client.accounts: raise EvidenceError('EXACT_PAPER_ACCOUNT_NOT_AVAILABLE')
+        if fx_quote:
+            from ibapi.contract import Contract
+            ct = Contract()
+            ct.symbol, ct.secType, ct.exchange, ct.currency = 'EUR', 'CASH', 'IDEALPRO', 'USD'
+            client.reqMarketDataType(1)
+            client.reqMktData(4, ct, '', False, False, [])
+            # This is a bounded read-only warm-up, not an invented tick or
+            # an extension of the financial valuation's admission time.
+            client.fx_ready.wait(2)
         client.reqAccountUpdatesMulti(requests['ledger'], account, '', True)
         client.reqAccountUpdatesMulti(requests['account'], account, '', False)
         client.reqPositionsMulti(requests['positions'], account, '')
@@ -202,6 +263,9 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
                   'ends': sorted(client.ends), 'connection_lost_during_download': client.lost,
                   'transport_errors': list(client.errors), 'informational_events': list(client.informational),
                   'server_version': client.serverVersion(), 'allowed_send_counts': boundary.counts}
+        if fx_quote and client.fx_data_type == 1 and client.fx_at_account_nav and not client.fx_quote_errors:
+            result['fx_quote_witness'] = dict(client.fx_at_account_nav,
+                account=account, client_id=client_id, connection_id=result['connection_id'])
         return result
     finally:
         # Cancel only owned read subscriptions, never orders or another client.
@@ -209,6 +273,7 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
             for key in ('ledger', 'account'):
                 if (76, requests[key]) in boundary.subscribed: client.cancelAccountUpdatesMulti(requests[key])
             if (74, requests['positions']) in boundary.subscribed: client.cancelPositionsMulti(requests['positions'])
+            if fx_quote and (1, 4) in boundary.subscribed: client.cancelMktData(4)
         client.intentional_disconnect = True
         client.disconnect()
         if worker: worker.join(2)
@@ -223,15 +288,25 @@ def collect_account(config: Path, period_path: Path, state_root: Path) -> tuple[
     validate_period(period)
     journal = state_root / 'execution/oms-journal.jsonl'
     jf = fingerprint(journal)
-    raw = acquire(period, Path(settings['sdk_path']), settings['client_id'])
-    if pf != fingerprint(period_path) or jf != fingerprint(journal):
-        raise EvidenceError('ACCOUNT_COLLECTION_LEDGER_OR_PERIOD_CHANGED')
-    raw.update(journal_fingerprint=list(jf), period_sha256=hashlib.sha256(raw_period).hexdigest(), producer_source_sha=source_revision())
-    try:
-        return normalize_nav(raw, period), raw
-    except (ValueError, KeyError, TypeError, ArithmeticError) as error:
-        reason = str(error) if isinstance(error, EvidenceError) else type(error).__name__
-        raise RejectedAccountDownload(reason, raw) from error
+    # IB account ledger ExchangeRate may be older than BASE NLV. Retry only
+    # a demonstrable FX valuation skew, never an identity/risk/period error.
+    # Every attempt is a new exact-account + same-socket live EUR observation.
+    for attempt in range(3):
+        raw = acquire(period, Path(settings['sdk_path']), settings['client_id'])
+        if pf != fingerprint(period_path) or jf != fingerprint(journal):
+            raise EvidenceError('ACCOUNT_COLLECTION_LEDGER_OR_PERIOD_CHANGED')
+        raw.update(journal_fingerprint=list(jf),
+            period_sha256=hashlib.sha256(raw_period).hexdigest(),
+            producer_source_sha=source_revision())
+        try:
+            return normalize_nav(raw, period), raw
+        except (ValueError, KeyError, TypeError, ArithmeticError) as error:
+            reason = str(error) if isinstance(error, EvidenceError) else type(error).__name__
+            if reason != 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED' or attempt == 2:
+                raise RejectedAccountDownload(reason, raw) from error
+            # No clock stretching, partial-state reuse, quote re-stamping or
+            # fallback to a different period. The next attempt is read-only.
+    raise EvidenceError('ACCOUNT_OBSERVER_UNREACHABLE_RETRY_STATE')
 
 
 
