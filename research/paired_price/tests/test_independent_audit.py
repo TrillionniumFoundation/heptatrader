@@ -27,7 +27,13 @@ class IndependentReviewTests(unittest.TestCase):
  def test_actual_first_slot_replays_without_forging_later_outcomes(self):
   report=inspect(self.config)
   self.assertGreaterEqual(report['observed'],1)
-  self.assertEqual(report['state'],'WAIT_FIXED_OUTCOMES_NO_ADVANTAGE_CLAIM')
+  # The test copies only the first original observation. It may run
+  # before or after the 24-slot window ends. Later absent slots must never
+  # become invented successes, regardless of wall-clock date.
+  self.assertIn(report['state'],('WAIT_FIXED_OUTCOMES_NO_ADVANTAGE_CLAIM',
+                                'COMPLETE_INDEPENDENT_REPLAY_REQUIRES_SCOPE_REVIEW'))
+  self.assertEqual(report['observed'],1)
+  self.assertTrue(all(x['status']!='OBSERVED' for x in report['slot_records'][1:]))
   self.assertEqual(report['slot_records'][0]['status'],'OBSERVED')
   self.assertFalse(report['canonical_owner_admitted'])
  def test_changed_stored_gate_brier_refused(self):

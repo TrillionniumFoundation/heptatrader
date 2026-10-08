@@ -87,3 +87,24 @@ canonical owner, production selection or model effect is implied. Tests include
 actual first-slot replay against the verified source and tampered copies of
 plans, predictions, stored Brier and source prefixes. The sandboxed resident
 services continue to own only their original experiment artifacts.
+
+
+## Fail-closed source-quality gate for later trial registration
+
+`paired_price.install` now refuses to register **any new candidate trial** unless
+an independently recomputed source-health check of the *current* immutable quote
+prefixes passes the original operational screen: 24 fixed matured one-minute
+probes, at least 20 usable, at most four missing, latest source quote under the
+existing five-second TTL, all 30-second path and five-second endpoint bounds
+unchanged. It validates exact accounting-period identity, fixed probe chronology,
+nonfuture observations, real-prefix digest and NO trade/effect authority; it does
+not trust a caller-supplied `READY` status file. The quality snapshot is sealed
+into any future trial plan, but is not an independent future-efficacy result.
+
+A previously registered candidate cannot start another prospective plan, even
+if its original outcome was rejected; a substantively changed/frozen candidate
+with its own identity and multiplicity accounting is required. The original
+24-slot plan, its 17 observed/7 censored and negative numeric-only/fixed-mix
+comparisons are immutable. On insufficient source quality, the installer fails
+before creating a new release, new plan or systemd unit, and never alters IB
+source timestamps or restarts any execution/Gateway service.

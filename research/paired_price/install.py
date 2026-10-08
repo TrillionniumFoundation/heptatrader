@@ -4,6 +4,7 @@ import argparse,hashlib,json,os,subprocess,time
 from pathlib import Path
 from laya_cell.integrity import ContractError,canonical,digest,read_json,sha_file
 from .common import PROFILE,RULE,check_candidate,check_plan,require,utc_ms,immutable_json
+from .source_gate import require_unused_candidate,require_live_quality
 
 def snapshot(name):
  data=subprocess.check_output(['systemctl','--user','show',name,'-p','MainPID','-p','ActiveState','-p','NRestarts'],text=True)
@@ -15,6 +16,11 @@ def install(input_config,candidate_dir,start):
  require(candidate['period_sha256']==c['period_sha256'],'CANDIDATE_DIFFERENT_PERIOD')
  for name,sha in candidate['source_sha256'].items():
   require(sha_file(src/name)==sha,'TRAINING_SOURCE_CHANGED:'+name)
+ # Reject repeats of an already registered (including REJECTED) candidate.
+ require_unused_candidate(home,c['period_sha256'],candidate['candidate_id'])
+ # Re-read source prefixes against the original five-second and thirty-second
+ # limits right now; a stale status.json cannot grant new window admission.
+ source_admission=require_live_quality(c)
  require(candidate['trained_until_ms']<=candidate['created_at_ms']<=utc_ms(),'CANDIDATE_NOT_FROZEN')
  before_names=('heptatrader-paper-driver.service','heptatrader-crypto-driver.service','heptatrader-execution.service',
   'heptatrader-gateway.service','heptatrader-temporal-fusion-predictor.service','heptatrader-temporal-fusion-evaluator.service',
@@ -43,6 +49,7 @@ def install(input_config,candidate_dir,start):
   'training_expert_ids':candidate['expert_row_ids'],'training_gate_ids':candidate['gate_row_ids'],
   'numeric_independent':True,'legacy_numeric_frozen_comparator':candidate['legacy_numeric_id'],
   'candidate_model_sha256':candidate['trained_model_sha256'],
+  'source_admission':source_admission,
   'effect_authority':False,'automatic_selection':False}
  plan['plan_id']=digest(plan);check_plan(plan);immutable_json(state/'plan.json',plan)
  config={**c,'shadow_root':str(state),'runtime_directory':str(release),'runtime_sha256':hashes,
