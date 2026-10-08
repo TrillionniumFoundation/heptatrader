@@ -22,7 +22,10 @@ IbRuntimeObservationSupplement BuildIbRuntimeObservationSupplement(
         runtime.QuoteHealthForObservation();
     const std::map<std::string, IBAuthoritativeQuoteContractHealth>::const_iterator
         primary = quotes.contracts.find(quotes.primaryInstrument);
-    if (quotes.complete && primary != quotes.contracts.end())
+    // In independent-quote mode a stale secondary CASH ticker must not
+    // erase valid BTC primary age telemetry. The age is still measured
+    // from the original callback, never treated as a new quote.
+    if (quotes.ReadyForOperations() && primary != quotes.contracts.end())
     {
         const std::uint64_t observed =
             primary->second.quote.LivenessObservedAtMs();
@@ -31,6 +34,49 @@ IbRuntimeObservationSupplement BuildIbRuntimeObservationSupplement(
             out.primaryQuoteAgeValid = true;
             out.primaryQuoteAgeMs = observedAtMs - observed;
         }
+    }
+
+    // Read the immutable quote-health copy once. Report exactly one secondary
+    // CASH instrument without treating a fresh BID as proof of a fresh ASK.
+    // Multiple secondaries are intentionally unselected, not silently hidden
+    // behind an arbitrary chosen ticker.
+    const IBAuthoritativeQuoteContractHealth* secondary = nullptr;
+    for (const auto& entry : quotes.contracts)
+    {
+        if (entry.first == quotes.primaryInstrument ||
+            entry.second.contract.secType != "CASH") continue;
+        ++out.secondaryCashQuoteCount;
+        secondary = &entry.second;
+        out.secondaryCashQuoteInstrument = entry.first;
+    }
+    if (out.secondaryCashQuoteCount == 1 && secondary)
+    {
+        out.secondaryCashQuoteMetricsPresent = true;
+        if (secondary->requestId > 0)
+            out.secondaryCashQuoteRequestId =
+                static_cast<std::uint64_t>(secondary->requestId);
+        out.secondaryCashQuoteDispatchAccepted =
+            secondary->active && secondary->dispatchAccepted;
+        const auto& q = secondary->quote;
+        if (out.secondaryCashQuoteDispatchAccepted)
+        {
+            if (q.hasBid && q.bid > 0.0 && q.bidObservedAtMs != 0 &&
+                q.bidObservedAtMs <= observedAtMs)
+            {
+                out.secondaryCashBidAgeValid = true;
+                out.secondaryCashBidAgeMs = observedAtMs - q.bidObservedAtMs;
+            }
+            if (q.hasAsk && q.ask > 0.0 && q.askObservedAtMs != 0 &&
+                q.askObservedAtMs <= observedAtMs)
+            {
+                out.secondaryCashAskAgeValid = true;
+                out.secondaryCashAskAgeMs = observedAtMs - q.askObservedAtMs;
+            }
+        }
+    }
+    else
+    {
+        out.secondaryCashQuoteInstrument.clear();
     }
 
     out.snapshotAgeMetricsPresent = true;

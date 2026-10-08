@@ -63,6 +63,17 @@ struct IbRuntimeObservationSnapshot
     bool quoteAgeMetricsPresent = false;
     bool primaryQuoteAgeValid = false;
     std::uint64_t primaryQuoteAgeMs = 0;
+    // Exactly one non-primary CASH subscription. Request ID is a market-data
+    // ticker identifier, not a broker order or trading command identifier.
+    std::uint64_t secondaryCashQuoteCount = 0;
+    bool secondaryCashQuoteMetricsPresent = false;
+    std::string secondaryCashQuoteInstrument;
+    std::uint64_t secondaryCashQuoteRequestId = 0;
+    bool secondaryCashQuoteDispatchAccepted = false;
+    bool secondaryCashBidAgeValid = false;
+    std::uint64_t secondaryCashBidAgeMs = 0;
+    bool secondaryCashAskAgeValid = false;
+    std::uint64_t secondaryCashAskAgeMs = 0;
     bool snapshotAgeMetricsPresent = false;
     bool authoritativeSnapshotAgeValid = false;
     std::uint64_t authoritativeSnapshotAgeMs = 0;
@@ -78,6 +89,17 @@ struct IbRuntimeObservationSupplement
     bool quoteAgeMetricsPresent = false;
     bool primaryQuoteAgeValid = false;
     std::uint64_t primaryQuoteAgeMs = 0;
+    // Exactly one non-primary CASH subscription. Request ID is a market-data
+    // ticker identifier, not a broker order or trading command identifier.
+    std::uint64_t secondaryCashQuoteCount = 0;
+    bool secondaryCashQuoteMetricsPresent = false;
+    std::string secondaryCashQuoteInstrument;
+    std::uint64_t secondaryCashQuoteRequestId = 0;
+    bool secondaryCashQuoteDispatchAccepted = false;
+    bool secondaryCashBidAgeValid = false;
+    std::uint64_t secondaryCashBidAgeMs = 0;
+    bool secondaryCashAskAgeValid = false;
+    std::uint64_t secondaryCashAskAgeMs = 0;
     bool snapshotAgeMetricsPresent = false;
     bool authoritativeSnapshotAgeValid = false;
     std::uint64_t authoritativeSnapshotAgeMs = 0;
@@ -158,6 +180,15 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     out.quoteAgeMetricsPresent = supplement.quoteAgeMetricsPresent;
     out.primaryQuoteAgeValid = supplement.primaryQuoteAgeValid;
     out.primaryQuoteAgeMs = supplement.primaryQuoteAgeMs;
+    out.secondaryCashQuoteCount = supplement.secondaryCashQuoteCount;
+    out.secondaryCashQuoteMetricsPresent = supplement.secondaryCashQuoteMetricsPresent;
+    out.secondaryCashQuoteInstrument = supplement.secondaryCashQuoteInstrument;
+    out.secondaryCashQuoteRequestId = supplement.secondaryCashQuoteRequestId;
+    out.secondaryCashQuoteDispatchAccepted = supplement.secondaryCashQuoteDispatchAccepted;
+    out.secondaryCashBidAgeValid = supplement.secondaryCashBidAgeValid;
+    out.secondaryCashBidAgeMs = supplement.secondaryCashBidAgeMs;
+    out.secondaryCashAskAgeValid = supplement.secondaryCashAskAgeValid;
+    out.secondaryCashAskAgeMs = supplement.secondaryCashAskAgeMs;
     out.snapshotAgeMetricsPresent = supplement.snapshotAgeMetricsPresent;
     out.authoritativeSnapshotAgeValid =
         supplement.authoritativeSnapshotAgeValid;
@@ -268,6 +299,20 @@ inline std::string SerializeIbRuntimeObservation(
         << ",\"primary_quote_age_valid\":"
         << (value.primaryQuoteAgeValid ? "true" : "false")
         << ",\"primary_quote_age_ms\":" << value.primaryQuoteAgeMs
+        << ",\"secondary_cash_quote_count\":" << value.secondaryCashQuoteCount
+        << ",\"secondary_cash_quote_metrics_present\":"
+        << (value.secondaryCashQuoteMetricsPresent ? "true" : "false")
+        << ",\"secondary_cash_quote_instrument\":\""
+        << EscapeIbRuntimeObservationJson(value.secondaryCashQuoteInstrument) << "\""
+        << ",\"secondary_cash_quote_request_id\":" << value.secondaryCashQuoteRequestId
+        << ",\"secondary_cash_quote_dispatch_accepted\":"
+        << (value.secondaryCashQuoteDispatchAccepted ? "true" : "false")
+        << ",\"secondary_cash_bid_age_valid\":"
+        << (value.secondaryCashBidAgeValid ? "true" : "false")
+        << ",\"secondary_cash_bid_age_ms\":" << value.secondaryCashBidAgeMs
+        << ",\"secondary_cash_ask_age_valid\":"
+        << (value.secondaryCashAskAgeValid ? "true" : "false")
+        << ",\"secondary_cash_ask_age_ms\":" << value.secondaryCashAskAgeMs
         << ",\"snapshot_age_metrics_present\":"
         << (value.snapshotAgeMetricsPresent ? "true" : "false")
         << ",\"authoritative_snapshot_age_valid\":"

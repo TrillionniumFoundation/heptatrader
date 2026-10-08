@@ -133,6 +133,39 @@ def validate(sample: Any) -> dict[str, Any]:
             uint(sample.get(age))
             if not sample[valid] and sample[age] != 0:
                 raise ValueError("unknown IB age cannot carry a value")
+    # New fixed-cardinality quote provenance is optional for old observations.
+    # Absence may not be silently reinterpreted as a healthy zero-age ASK.
+    secondary_fields = (
+        "secondary_cash_quote_count", "secondary_cash_quote_metrics_present",
+        "secondary_cash_quote_instrument", "secondary_cash_quote_request_id",
+        "secondary_cash_quote_dispatch_accepted", "secondary_cash_bid_age_valid",
+        "secondary_cash_bid_age_ms", "secondary_cash_ask_age_valid",
+        "secondary_cash_ask_age_ms",
+    )
+    if any(key in sample for key in secondary_fields):
+        if any(key not in sample for key in secondary_fields):
+            raise ValueError("partial secondary CASH quote observation")
+        count = uint(sample["secondary_cash_quote_count"])
+        present = sample["secondary_cash_quote_metrics_present"]
+        if type(present) is not bool or present != (count == 1):
+            raise ValueError("ambiguous secondary CASH quote scope")
+        instrument = sample["secondary_cash_quote_instrument"]
+        if not isinstance(instrument, str) or (
+            present and re.fullmatch(r"[A-Z]{3}\.[A-Z]{3}", instrument) is None
+        ) or (not present and instrument):
+            raise ValueError("invalid secondary CASH instrument")
+        req_id = uint(sample["secondary_cash_quote_request_id"])
+        dispatched = sample["secondary_cash_quote_dispatch_accepted"]
+        if type(dispatched) is not bool:
+            raise ValueError("invalid secondary CASH dispatch state")
+        if (not present and (req_id != 0 or dispatched)) or (dispatched and req_id == 0):
+            raise ValueError("unsupported secondary CASH request identity")
+        for leg in ("bid", "ask"):
+            valid = sample["secondary_cash_" + leg + "_age_valid"]
+            age = uint(sample["secondary_cash_" + leg + "_age_ms"])
+            if type(valid) is not bool or (not valid and age != 0) or (
+                    valid and (not present or not dispatched)):
+                raise ValueError("unproven secondary CASH quote leg")
     reconciliation_present = sample.get(
         "broker_reconciliation_duration_metrics_present", False)
     if type(reconciliation_present) is not bool:
@@ -238,6 +271,17 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     terminal_drain_pending_ms = observed_condition_duration_ms(
         samples, lambda sample: sample["terminal_transport_halted"] and
         sample["terminal_callbacks_in_flight"] > 0)
+    # Lower bound over retained samples, scoped to the original connection
+    # epoch. The fixed 5s price age is observational only: it does not renew
+    # a quote, stretch a cached callback or authorize any order.
+    secondary_unfresh_ms = observed_condition_duration_ms(
+        samples, lambda sample:
+        sample.get("secondary_cash_quote_metrics_present", False) and (
+            not sample["secondary_cash_quote_dispatch_accepted"] or
+            not sample["secondary_cash_bid_age_valid"] or
+            not sample["secondary_cash_ask_age_valid"] or
+            sample["secondary_cash_bid_age_ms"] > 5000 or
+            sample["secondary_cash_ask_age_ms"] > 5000))
     alerts: list[dict[str, str]] = []
     def alert(rule: str, severity: str = "P2") -> None:
         if not any(item["rule_id"] == rule for item in alerts):
@@ -265,6 +309,7 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "post_fill_reconciliation_pending_observed_ms": post_fill_pending_ms,
         "authoritative_snapshot_incomplete_observed_ms": snapshot_incomplete_ms,
         "terminal_callback_drain_pending_observed_ms": terminal_drain_pending_ms,
+        "secondary_cash_quote_unfresh_observed_ms": secondary_unfresh_ms,
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],
@@ -312,6 +357,8 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_post_fill_reconciliation_pending_observed_ms": summary["post_fill_reconciliation_pending_observed_ms"],
         "hepta_ib_authoritative_snapshot_incomplete_observed_ms": summary["authoritative_snapshot_incomplete_observed_ms"],
         "hepta_ib_terminal_callback_drain_pending_observed_ms": summary["terminal_callback_drain_pending_observed_ms"],
+        "hepta_ib_secondary_cash_quote_unfresh_observed_ms":
+            summary["secondary_cash_quote_unfresh_observed_ms"],
         "hepta_ib_exposure_generation": latest["exposure_generation"],
         "hepta_ib_recovery_barrier_complete": int(latest["recovery_barrier_complete"]),
         "hepta_ib_new_connection_epoch_required": int(latest["new_connection_epoch_required"]),
@@ -368,6 +415,29 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
             lines.append(
                 "hepta_ib_primary_quote_age_ms " +
                 str(latest["primary_quote_age_ms"]))
+    if "secondary_cash_quote_metrics_present" in latest:
+        lines.append(
+            "hepta_ib_secondary_cash_quote_count " +
+            str(latest["secondary_cash_quote_count"]))
+        lines.append(
+            "hepta_ib_secondary_cash_quote_metrics_present " +
+            str(int(latest["secondary_cash_quote_metrics_present"])))
+        if latest["secondary_cash_quote_metrics_present"]:
+            lines.append(
+                "hepta_ib_secondary_cash_quote_request_id " +
+                str(latest["secondary_cash_quote_request_id"]))
+            lines.append(
+                "hepta_ib_secondary_cash_quote_dispatch_accepted " +
+                str(int(latest["secondary_cash_quote_dispatch_accepted"])))
+            for leg in ("bid", "ask"):
+                valid = latest["secondary_cash_" + leg + "_age_valid"]
+                lines.append(
+                    "hepta_ib_secondary_cash_" + leg + "_age_valid " +
+                    str(int(valid)))
+                if valid:
+                    lines.append(
+                        "hepta_ib_secondary_cash_" + leg + "_age_ms " +
+                        str(latest["secondary_cash_" + leg + "_age_ms"]))
     if latest.get("snapshot_age_metrics_present", False):
         lines.append(
             "hepta_ib_authoritative_snapshot_age_valid " +

@@ -232,3 +232,48 @@ its market-data quota and per-instrument 15-second re-request restriction.
 Even this quote timestamp would **not** certify the account's common
 per-currency/BASE NAV valuation instant. No production TBT substitution
 or market-data admission change is authorized by this document.
+
+
+## Fixed-cardinality secondary CASH bid/ask freshness telemetry (2026-10-08)
+
+New candidate Execution **observation only** now projects a bounded
+`secondary_cash_quote_count` and, if exactly one secondary CASH instrument
+exists, its instrument identity, the current IB market-data request ID,
+`dispatch_accepted`, and independently time-stamped BID / ASK ages.
+
+- This is copied from one immutable quote-health record and never sends an
+  IB request or trading command. The primary quote-age telemetry remains
+  observable when the unrelated secondary FX is Missing; it never fabricates
+  a fresher primary or secondary callback.
+- A BID update does **not** reset the ASK age; a missing/invalid BID or ASK
+  has `*_age_valid=false` and `*_age_ms=0` **only as an absent field marker**.
+  The strict telemetry consumer suppresses absent ages and rejects
+  claimed valid ages with missing dispatch provenance.
+- If no or multiple secondary CASH contracts exist, no ticker is selected:
+  `secondary_cash_quote_metrics_present=false` with the explicit count.
+  No arbitrary FX symbol is published as representative of all secondaries.
+- The `secondary_cash_quote_unfresh_observed_ms` metric is only a
+  **conservative lower bound** on consecutive retained 5-second-cadence
+  observations where the FX request was not dispatched, or a BID/ASK leg
+  was absent, or one leg was older than 5000 ms. It resets after actual fresh
+  callbacks, a service-epoch change, a broker connection-epoch change, or
+  missing records. It never claims continuous coverage outside the
+  sampled interval.
+- Fixed-cardinality metrics contain no account, order, command, connection
+  credential or market price. They have no authority over sending orders,
+  existing quote admission, the original five-second freshness budget or NAV
+  authorization. Historical telemetry with all secondary fields absent
+  remains valid. Partially present new fields are rejected rather than
+  implicitly interpreted as fresh.
+- Native C++ serializer/Python report validation exercises both present
+  and absent legs, request IDs, scope mismatch, and multi-sample age
+  streaks across connection boundaries. A successful build or test does
+  **not** attest actual Broker farm-down/up on the candidate binary.
+  Deployment of the new Execution binary remains blocked until a controlled
+  maintenance window can preserve live FX/BTC order/position ownership and
+  demonstrate zero new command send counters.
+
+The concurrently deployed 10-second NAV observer and original USD 1.00
+FX/BASE reconciliation are **unchanged**; rejected records remain rejected.
+No TWS market-data quote timestamp can substitute for the independently
+attested common Broker account valuation time.
