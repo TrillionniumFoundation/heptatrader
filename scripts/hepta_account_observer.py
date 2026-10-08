@@ -112,7 +112,7 @@ def acquire(period: dict, sdk_path: Path, client_id: int, timeout: int = 12, ses
     if not positive_int(client_id) or client_id in {x['broker_client_id'] for x in period['instruments'].values()}:
         raise EvidenceError('OBSERVER_CLIENT_COLLIDES_WITH_TRADER')
     return _acquire_account(period['account'], sdk_path, client_id, timeout,
-        'period_id', period['period_id'], 'heptatrader.account-download.v1', session=session)
+        'period_id', period['period_id'], 'heptatrader.account-download.v2', session=session)
 
 
 def acquire_preflight(scope: dict, sdk_path: Path, client_id: int, timeout: int = 12, session: dict | None = None) -> dict:

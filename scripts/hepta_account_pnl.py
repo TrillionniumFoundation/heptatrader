@@ -57,7 +57,7 @@ def normalize_nav(raw: dict, period: dict) -> dict:
     validate_period(period)
     if "observation_scope_id" in raw:
         raise EvidenceError("PREFLIGHT_IS_NOT_ACCOUNTING_PERIOD_EVIDENCE")
-    return _normalize_account_download(raw, period, "period_id", "heptatrader.account-download.v1",
+    return _normalize_account_download(raw, period, "period_id", ("heptatrader.account-download.v1", "heptatrader.account-download.v2"),
         "heptatrader.account-nav.v1", {x["broker_client_id"] for x in period["instruments"].values()})
 
 
@@ -89,7 +89,7 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     # of currency ledgers. All existing component and FX comparisons are shared.
     requests = raw.get("request_ids", {})
     first, completed = raw.get("started_at_ms"), raw.get("observed_at_ms")
-    if (raw.get("schema") != raw_schema or raw.get("read_only") is not True or
+    if (raw.get("schema") not in ((raw_schema,) if isinstance(raw_schema, str) else raw_schema) or raw.get("read_only") is not True or
             raw.get("account") != period["account"] or raw.get(identity_key) != period[identity_key] or
             not positive_int(first) or not positive_int(completed) or not 0 <= completed - first <= 15000 or
             not isinstance(raw.get("connection_id"), str) or not raw["connection_id"] or
@@ -108,6 +108,10 @@ def _normalize_account_download(raw: dict, period: dict, identity_key: str,
     # Broker valuation timestamp. Bind every new read to one request-ID cohort;
     # do not label local callback arrival as a simultaneous account mark.
     cohort = raw.get('capture_cohort')
+    # V2 collector receipts must carry a verified transport cohort. Keep V1
+    # accepted only for immutable, pre-upgrade opening NAV replay.
+    if raw.get('schema') == 'heptatrader.account-download.v2' and cohort is None:
+        raise EvidenceError('ACCOUNT_CAPTURE_COHORT_REQUIRED')
     if cohort is not None:
         if (not isinstance(cohort, dict) or set(cohort) != {
                 'schema', 'request_end_at_ms', 'first_row_callback_at_ms',

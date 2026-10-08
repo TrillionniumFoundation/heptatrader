@@ -552,4 +552,56 @@ class AccountCaptureCohortTests(unittest.TestCase):
             a.normalize_nav(self.raw,period())
 
 
+class AccountCaptureV2FailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = raw_snapshot()
+        self.raw['schema'] = 'heptatrader.account-download.v2'
+        start, end = self.raw['started_at_ms'], self.raw['observed_at_ms']
+        self.cohort = {
+            'schema': 'heptatrader.account-capture-cohort.v1',
+            'request_end_at_ms': {'ledger': end, 'account': end, 'positions': end},
+            'first_row_callback_at_ms': start + 1,
+            'last_row_callback_at_ms': start + 1,
+            'broker_valuation_tick_attested': False,
+            'time_basis': 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK'}
+
+    def test_current_download_requires_cohort(self):
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT_REQUIRED'):
+            a.normalize_nav(self.raw, period())
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        result = a.normalize_nav(self.raw, period())
+        self.assertEqual(result['capture_cohort'], self.cohort)
+        self.assertFalse(result['fx_translation_atomic_tick'])
+        self.assertFalse(result['capture_cohort']['broker_valuation_tick_attested'])
+        del self.raw['capture_cohort']
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT_REQUIRED'):
+            a.normalize_nav(self.raw, period())
+
+    def test_late_end_and_fake_atomic_tick_rejected(self):
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        self.raw['capture_cohort']['request_end_at_ms']['ledger'] = self.raw['started_at_ms']
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT'):
+            a.normalize_nav(self.raw, period())
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        self.raw['capture_cohort']['broker_valuation_tick_attested'] = True
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT'):
+            a.normalize_nav(self.raw, period())
+
+    def test_historical_v1_opening_replay_survives_schema_upgrade(self):
+        self.raw['schema'] = 'heptatrader.account-download.v1'
+        first = a.normalize_nav(self.raw, period())
+        self.assertEqual(first['nav'], '1203.90')
+        self.assertNotIn('capture_cohort', first)
+
+    def test_v2_reconciliation_bound_remains_one_usd(self):
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        for row in self.raw['rows']:
+            if row['currency'] == 'EUR' and row['key'] in ('CashBalance', 'TotalCashBalance'):
+                row['value'] = '104'
+            if row['currency'] == 'EUR' and row['key'] == 'NetLiquidationByCurrency':
+                row['value'] = '103'
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED'):
+            a.normalize_nav(self.raw, period())
+
+
 if __name__=='__main__':unittest.main()

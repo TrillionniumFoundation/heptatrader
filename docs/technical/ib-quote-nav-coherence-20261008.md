@@ -18,3 +18,13 @@
 - Quote recovery: per-instrument refresh only after the cooldown, same connection epoch and appropriate stale state; wrong epoch/primary instrument refusal; distinct replacement request IDs; old tick ignored; primary BTC subscription unchanged; new BID and ASK required to restore the FX quote.
 - NAV: reuse one read-only session over multiple cycles; each cycle has different request IDs and a complete bounded download; all callback timestamps lie inside its receipt barrier; forged common-tick attestation is rejected; unresolved cross-currency differences still fail under USD 1.
 - Deployment remains a separate qualification: pinned real IB SDK build, all relevant native/Python regressions, a broker-order and ownership check before maintenance, and real repeated observations of the new release. Passing pure unit tests alone is not a release certificate.
+
+## Mandatory current receipt and historical replay
+
+The observer now emits `heptatrader.account-download.v2`, in which `capture_cohort`
+is mandatory. Dropping its end/arrival timestamps or claiming an atomic Broker
+valuation tick fails validation, rather than silently falling back to the
+legacy no-cohort path. Older v1 receipts remain verifiable for historical
+reset-opening NAV; they do **not** attest a same-tick Broker valuation. Neither
+schema is an external Activity/Flex confirmation or a substitute for a
+Broker-issued valuation timestamp.
