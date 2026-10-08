@@ -133,6 +133,242 @@ void TestCryptoIdentityAndIndependentClosedFxQuotes()
     contracts["BTC.USD"]=other;assert(!strict.Configure(contracts,"BTC.USD",reason));
 }
 
+void TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote()
+{
+    IBContractLite btc;btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
+    IBContractLite eur;eur.symbol="EUR";eur.secType="CASH";eur.exchange="IDEALPRO";eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet set(store);
+    std::string reason;
+    assert(set.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},"BTC.USD",reason,false,true));
+    const auto initial=set.BeginCycle(17,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& item:initial.subscriptions) {
+        assert(set.RecordDispatchResult(1,item.requestId,true));
+        if(item.instrument=="BTC.USD") btcId=item.requestId;
+        else eurId=item.requestId;
+    }
+    auto tick=[&](int id,const char* field,double value,std::uint64_t at,std::uint64_t epoch=17) {
+        IBEvent event;event.type=IBEventType::TickPrice;event.id=id;
+        event.key=field;event.number=value;event.connectionEpoch=epoch;
+        return set.ConsumeTick(event,at);
+    };
+    tick(btcId,"1",85000,1001);tick(btcId,"2",85001,1002);
+    tick(eurId,"1",1.12,1003);tick(eurId,"2",1.121,1004);
+    assert(set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,7000,5000,15000).accepted==false);
+    assert(set.BeginStaleSecondaryCashRefresh("BTC.USD",17,1,22000,5000,15000).accepted==false);
+    assert(set.BeginStaleSecondaryCashRefresh("EUR.USD",18,1,22000,5000,15000).accepted==false);
+    tick(btcId,"1",85100,20000);tick(btcId,"2",85101,20001);
+    const auto refresh=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22000,5000,15000);
+    assert(refresh.accepted && refresh.cancelRequestIds.size()==1);
+    assert(refresh.cancelRequestIds[0]==eurId && refresh.subscriptions.size()==1);
+    const int newEurId=refresh.subscriptions[0].requestId;
+    assert(newEurId!=eurId && newEurId!=btcId);
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==newEurId);
+    assert(tick(eurId,"1",1.130,22001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(!set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22002,5000,15000).accepted);
+    assert(set.RecordDispatchResult(1,newEurId,true));
+    tick(newEurId,"1",1.122,22003);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(tick(newEurId,"2",1.123,22004).write.accepted);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(set.GetHealth().ReadyForOperations());
+    // Another stale interval must renew the same secondary instrument again,
+    // without ever reusing a previous request ID or borrowing BTC's BID/ASK.
+    const auto again=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,41000,5000,15000);
+    assert(again.accepted && again.cancelRequestIds.size()==1);
+    assert(again.cancelRequestIds[0]==newEurId);
+    assert(again.subscriptions.size()==1);
+    const int thirdEurId=again.subscriptions[0].requestId;
+    assert(thirdEurId!=newEurId && thirdEurId!=eurId);
+    assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(tick(newEurId,"1",1.2,41001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(set.RecordDispatchResult(1,thirdEurId,true));
+    tick(thirdEurId,"1",1.125,41002);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(thirdEurId,"2",1.126,41003);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    // Full broker reconnect: all old-epoch BID/ASK and request IDs are
+    // untrusted, and both instruments need fresh callbacks.
+    const auto reconnect=set.BeginCycle(18,2,50000);
+    assert(reconnect.accepted && reconnect.subscriptions.size()==2);
+    assert(tick(thirdEurId,"1",1.25,50001,17).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(btcId,"2",86000,50002,17).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    int nextBtcId=0,nextEurId=0;
+    for(const auto& item:reconnect.subscriptions) {
+        assert(set.RecordDispatchResult(2,item.requestId,true));
+        if(item.instrument=="BTC.USD") nextBtcId=item.requestId;
+        else nextEurId=item.requestId;
+    }
+    assert(nextEurId!=thirdEurId && nextBtcId!=btcId);
+    assert(!set.GetHealth().ReadyForOperations());
+    tick(nextBtcId,"1",85900,50003,18);
+    assert(!set.GetHealth().ReadyForOperations());
+    tick(nextBtcId,"2",85901,50004,18);
+    assert(set.GetHealth().ReadyForOperations());
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(nextEurId,"1",1.127,50005,18);
+    assert(!set.GetQuote("EUR.USD").HasQuote());
+    tick(nextEurId,"2",1.128,50006,18);
+    assert(set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().connectionEpoch==18);
+}
+
+
+void TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest()
+{
+    IBContractLite btc;btc.symbol="BTC";btc.secType="CRYPTO";
+    btc.exchange="PAXOS";btc.currency="USD";
+    IBContractLite eur;eur.symbol="EUR";eur.secType="CASH";
+    eur.exchange="IDEALPRO";eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet quotes(store);
+    std::string reason;
+    assert(quotes.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},
+                            "BTC.USD",reason,false,true));
+    const auto initial=quotes.BeginCycle(17,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& sub:initial.subscriptions) {
+        assert(quotes.RecordDispatchResult(1,sub.requestId,true));
+        if(sub.instrument=="BTC.USD") btcId=sub.requestId;
+        if(sub.instrument=="EUR.USD") eurId=sub.requestId;
+    }
+    assert(btcId>0 && eurId>0);
+    auto tick=[&](int id,const char* field,double price,
+                  std::uint64_t when,std::uint64_t epoch=17) {
+        IBEvent e;e.type=IBEventType::TickPrice;e.id=id;e.key=field;
+        e.number=price;e.connectionEpoch=epoch;
+        return quotes.ConsumeTick(e,when);
+    };
+    tick(btcId,"1",85000,1001);tick(btcId,"2",85001,1002);
+    assert(quotes.GetHealth().ReadyForOperations());
+    // The initial EUR ticker was sent, but its CASH farm subsequently
+    // disappeared before BID/ASK arrived.
+    const auto first=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,17000,5000,15000);
+    assert(first.accepted && first.cancelRequestIds.size()==1);
+    assert(first.cancelRequestIds[0]==eurId && first.subscriptions.size()==1);
+    const int refused1=first.subscriptions[0].requestId;
+    assert(quotes.RecordDispatchResult(1,refused1,false));
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,17001,5000,15000).accepted);
+    // After 15s, an unsent request may be replaced WITHOUT cancelling the
+    // unsent ID or reusing it. A prolonged farm outage can refuse twice.
+    const auto second=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,32000,5000,15000);
+    assert(second.accepted && second.cancelRequestIds.empty());
+    assert(second.subscriptions.size()==1);
+    const int refused2=second.subscriptions[0].requestId;
+    assert(refused2!=refused1 && refused2!=eurId);
+    assert(quotes.RecordDispatchResult(1,refused2,false));
+    assert(tick(eurId,"1",1.12,32001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(refused1,"2",1.13,32002).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    // Only a new positive CASH-farm witness allows the SDK to send the third
+    // renewal. Its two fresh actual BID/ASK callbacks are mandatory.
+    const auto restored=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",17,1,47000,5000,15000);
+    assert(restored.accepted && restored.cancelRequestIds.empty());
+    assert(restored.subscriptions.size()==1);
+    const int current=restored.subscriptions[0].requestId;
+    assert(current!=eurId && current!=refused1 && current!=refused2);
+    assert(quotes.RecordDispatchResult(1,current,true));
+    tick(current,"1",1.127,47001);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"2",1.128,47002);
+    assert(quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(quotes.GetHealth().contracts.at("EUR.USD").requestId==current);
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",18,1,65000,5000,15000).accepted);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "BTC.USD",17,1,65000,5000,15000).accepted);
+}
+
+
+void TestInitiallyUnsentSecondaryCashRequiresRecordedNoSendForRetry()
+{
+    // The BTC.USD primary was sent successfully, while the CASH farm
+    // rejected the initial optional EUR.USD request before any SDK send.
+    IBContractLite btc; btc.symbol="BTC"; btc.secType="CRYPTO";
+    btc.exchange="PAXOS"; btc.currency="USD";
+    IBContractLite eur; eur.symbol="EUR"; eur.secType="CASH";
+    eur.exchange="IDEALPRO"; eur.currency="USD";
+    AuthoritativeTradingSnapshotStore store;
+    IBAuthoritativeQuoteSubscriptionSet quotes(store);
+    std::string reason;
+    assert(quotes.Configure({{"BTC.USD",btc},{"EUR.USD",eur}},
+                            "BTC.USD",reason,false,true));
+    const auto initial=quotes.BeginCycle(31,1,1000);
+    assert(initial.accepted && initial.subscriptions.size()==2);
+    int btcId=0, eurId=0;
+    for(const auto& sub:initial.subscriptions) {
+        if(sub.instrument=="BTC.USD") {
+            btcId=sub.requestId;
+            assert(quotes.RecordDispatchResult(1,btcId,true));
+        } else {
+            eurId=sub.requestId;
+            // Simulate a pending SDK outcome: not yet a *known* refusal.
+            assert(!quotes.BeginStaleSecondaryCashRefresh(
+                "EUR.USD",31,1,16000,5000,15000).accepted);
+            assert(quotes.RecordDispatchResult(1,eurId,false));
+        }
+    }
+    assert(btcId>0 && eurId>0);
+    auto tick=[&](int id,const char* field,double price,std::uint64_t at) {
+        IBEvent ev; ev.type=IBEventType::TickPrice; ev.id=id;
+        ev.key=field; ev.number=price; ev.connectionEpoch=31;
+        return quotes.ConsumeTick(ev,at);
+    };
+    tick(btcId,"1",85000,1001); tick(btcId,"2",85001,1002);
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,15999,5000,15000).accepted);
+    const auto retry=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,16000,5000,15000);
+    assert(retry.accepted && retry.cancelRequestIds.empty());
+    assert(retry.subscriptions.size()==1);
+    const int retryId=retry.subscriptions[0].requestId;
+    assert(retryId!=eurId && retryId!=btcId);
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(tick(eurId,"1",1.15,16001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,31000,5000,15000).accepted);
+    assert(quotes.RecordDispatchResult(1,retryId,false));
+    const auto recovered=quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",31,1,31000,5000,15000);
+    assert(recovered.accepted && recovered.cancelRequestIds.empty());
+    assert(recovered.subscriptions.size()==1);
+    const int current=recovered.subscriptions[0].requestId;
+    assert(current!=eurId && current!=retryId && current!=btcId);
+    assert(quotes.RecordDispatchResult(1,current,true));
+    assert(!quotes.RecordDispatchResult(1,current,true));
+    assert(tick(retryId,"2",1.14,31001).status==
+           IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"1",1.1198,31002);
+    assert(!quotes.GetQuote("EUR.USD").HasQuote());
+    tick(current,"2",1.1200,31003);
+    assert(quotes.GetQuote("EUR.USD").HasQuote());
+    assert(quotes.GetHealth().ReadyForOperations());
+    assert(quotes.GetHealth().contracts.at("BTC.USD").requestId==btcId);
+    assert(!quotes.BeginStaleSecondaryCashRefresh(
+        "EUR.USD",32,1,47000,5000,15000).accepted);
+}
+
 void TestMissingStaleAndStrictValidation()
 {
     AuthoritativeTradingSnapshotStore store;
@@ -418,6 +654,9 @@ void TestAtomicReplaceDuringConcurrentReads()
 int main()
 {
     TestCryptoIdentityAndIndependentClosedFxQuotes();
+    TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote();
+    TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest();
+    TestInitiallyUnsentSecondaryCashRequiresRecordedNoSendForRetry();
     TestMissingStaleAndStrictValidation();
     TestAtomicReplaceAndKnownEmpty();
     TestQuoteInvalidationPreservesRecordsButRevokesCompleteness();

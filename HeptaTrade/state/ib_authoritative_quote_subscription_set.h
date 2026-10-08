@@ -118,6 +118,12 @@ public:
     IBAuthoritativeQuoteSubscriptionPlan BeginCycle(std::uint64_t connectionEpoch,
                                                     std::uint64_t generation,
                                                     std::uint64_t observedAtMs);
+    // Market-data only: refresh a stale secondary CASH ticker in place without
+    // changing the primary ticker or its trading authority.
+    IBAuthoritativeQuoteSubscriptionPlan BeginStaleSecondaryCashRefresh(
+        const std::string& instrument, std::uint64_t connectionEpoch,
+        std::uint64_t generation, std::uint64_t observedAtMs,
+        std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs);
     bool RecordDispatchResult(std::uint64_t generation, int requestId, bool accepted);
     std::vector<int> AbortCycle(std::uint64_t generation);
     IBAuthoritativeQuoteConsumeResult ConsumeTick(const IBEvent& event,
@@ -138,6 +144,11 @@ private:
         std::string instrument;
         IBContractLite contract;
         bool dispatchAccepted = false;
+        // Distinguish an initial/pending SDK dispatch from a positively
+        // established pre-SDK refusal. Only the latter may be retried
+        // without cancelling an unissued market-data request.
+        bool dispatchResultRecorded = false;
+        std::uint64_t requestStartedAtMs = 0;
         IBAuthoritativeQuoteSnapshot quote;
     };
 
