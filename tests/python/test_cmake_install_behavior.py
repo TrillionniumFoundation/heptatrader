@@ -20,6 +20,7 @@ HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
+    "scripts/hepta_nav_assurance.py",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
     "scripts/run_release_simulator_smoke.py",
@@ -62,6 +63,7 @@ def installed_fixture(*, readme: bool = False):
                 "scripts/hepta_pnl_report.py",
                 "scripts/hepta_account_pnl.py",
                 "scripts/hepta_account_observer.py",
+                "scripts/hepta_nav_assurance.py",
                 "scripts/hepta_account_activity.py",
             }:
                 target = source / helper
@@ -130,7 +132,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:
-            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py"):
+            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
                 p=prefix/"libexec/heptatrader"/name
                 self.assertTrue(p.is_file())
                 self.assertTrue(os.access(p,os.X_OK))
@@ -150,6 +152,19 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
                 result=subprocess.run([sys.executable,"-B",str(prefix/"libexec/heptatrader"/helper),"--help"],
                     capture_output=True,text=True,timeout=5)
                 self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_installed_nav_assurance_keeps_unsupported_source_ineligible(self) -> None:
+        with installed_fixture() as tree:
+            helpers = tree / "libexec/heptatrader"
+            script = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                      "from hepta_nav_assurance import assess_nav_assurance; "
+                      "x=assess_nav_assurance(None,None,{},1); "
+                      "assert x['strict_nav_eligible'] is False; "
+                      "assert x['valuation_basis_attested'] is False; "
+                      "assert x['arithmetic_reconciled'] is False")
+            completed = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(helpers)],
+                                       capture_output=True, text=True, timeout=10)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_private_namespace_and_mode_from_real_install(self) -> None:
         with installed_fixture() as tree:

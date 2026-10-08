@@ -278,3 +278,7 @@ quote admission are separate. Only the explicitly mixed user profile opts into
 independent publication. Each order still requires its own current-epoch positive
 bid/ask and freshness check. PAXOS crypto uses the configured currency-qualified
 identity; other venues cannot alias the same inventory.
+
+The FX/NAV candidate and its non-authorizing probe/assurance components are tracked in
+[PR #178 consolidation](../technical/pr178-candidate-consolidation-20261008.md).
+Source ownership does not approve Broker deployment or strict NAV.

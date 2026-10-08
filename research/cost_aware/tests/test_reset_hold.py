@@ -45,22 +45,31 @@ class ResetHoldTests(unittest.TestCase):
         self.assertEqual(len(f.calls),1);self.assertEqual(writer.events,before)
     def test_observer_launcher_does_not_import_or_create_state(self):
         self.mark();output=self.home/'should-not-exist'
-        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=1000), \
+        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=self.home.stat().st_uid), \
              patch.object(observer,'load_pinned_driver',side_effect=AssertionError('base import must not occur')), \
              patch('sys.argv',['observer','--base-driver','/unread-base','--instrument','BTC.USD','--state-dir',str(output)]):
             with self.assertRaises(ResetHold):observer.main()
         self.assertFalse(output.exists())
     def test_driver_launcher_does_not_import_or_start(self):
         self.mark()
-        with patch.object(Path,'home',return_value=self.home),patch.object(adapter.os,'geteuid',return_value=1000), \
+        with patch.object(Path,'home',return_value=self.home),patch.object(adapter.os,'geteuid',return_value=self.home.stat().st_uid), \
              patch.object(adapter,'load_pinned_driver',side_effect=AssertionError('no import')), \
              patch('sys.argv',['driver','--enable-paper-hooks','--base-driver','/unread-base']), \
              contextlib.redirect_stderr(io.StringIO()) as result:
             self.assertEqual(adapter.main(),78)
         self.assertFalse(json.loads(result.getvalue())['driver_started'])
+    def test_private_directory_owner_is_not_assumed_to_be_1000(self):
+        from hepta_cost_capture import private_directory
+        import os
+        with patch.object(os, 'geteuid', return_value=self.home.stat().st_uid + 1):
+            with self.assertRaisesRegex(CostError, 'CAPTURE_DIRECTORY_UNSAFE'):
+                private_directory(self.home)
+        # Real current owner works regardless of the numeric UID allocated by CI.
+        private_directory(self.home)
+
     def test_first_quote_failure_never_opens_capture(self):
         f=Fake();f.fail=True;output=self.home/'observation'
-        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=1000), \
+        with patch.object(Path,'home',return_value=self.home),patch.object(observer.os,'geteuid',return_value=self.home.stat().st_uid), \
              patch.object(observer,'load_pinned_driver',return_value=f), \
              patch.object(observer,'Capture',side_effect=AssertionError('no empty live capture')), \
              patch('sys.argv',['observer','--base-driver','/fake','--instrument','BTC.USD','--state-dir',str(output)]):

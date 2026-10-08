@@ -57,32 +57,65 @@ class TickWireGate:
 
 
 class TimedBidAsk:
-    """BID and ASK are bound to one Broker source tick, never re-stamped."""
-    def __init__(self):
+    """Broker-dated pairs with a persistent per-connection source watermark."""
+    def __init__(self, connection_epoch: int = 1):
+        if type(connection_epoch) is not int or connection_epoch <= 0:
+            raise ValueError("positive connection epoch required")
         self.lock = threading.Lock()
+        self.connection_epoch = connection_epoch
         self.last: tuple[int, float, float, int] | None = None
-        self.callbacks = 0
-        self.accepted = 0
-        self.rejected = 0
-        self.source_regressions = 0
+        self.high_source_seconds = 0
+        self.high_received_ms = 0
+        self.seen_in_source_second: set[tuple[float, float]] = set()
+        self.callbacks = self.accepted = self.rejected = 0
+        self.source_regressions = self.duplicate_callbacks = 0
+        self.old_epoch_callbacks = 0
         self.source_delay_samples: list[int] = []
 
-    def receive(self, source_seconds: int, bid: float, ask: float, received_ms: int) -> None:
+    def reset_connection(self, connection_epoch: int) -> None:
+        with self.lock:
+            if type(connection_epoch) is not int or connection_epoch <= self.connection_epoch:
+                raise ValueError("connection epoch must advance")
+            self.connection_epoch = connection_epoch
+            self.last = None
+            self.high_source_seconds = self.high_received_ms = 0
+            self.seen_in_source_second.clear()
+
+    def receive(self, source_seconds: int, bid: float, ask: float, received_ms: int,
+                *, connection_epoch: int | None = None) -> None:
         with self.lock:
             self.callbacks += 1
-            delay = received_ms - 1000 * source_seconds if type(source_seconds) is int else 999999
-            valid = (
-                type(source_seconds) is int and source_seconds > 0 and
-                math.isfinite(bid) and math.isfinite(ask) and 0 < bid <= ask and
-                -1000 <= delay <= 5000
-            )
-            if self.last is not None and source_seconds < self.last[0]:
+            if connection_epoch is not None and connection_epoch != self.connection_epoch:
+                self.old_epoch_callbacks += 1
+                self.rejected += 1
+                return  # A late old-socket callback cannot alter a new quote.
+            valid = (type(source_seconds) is int and source_seconds > 0 and
+                     type(received_ms) is int and received_ms > 0 and
+                     type(bid) in (float, int) and type(ask) in (float, int) and
+                     math.isfinite(bid) and math.isfinite(ask) and 0 < bid <= ask)
+            delay = received_ms - 1000 * source_seconds if valid else -1
+            valid = valid and 0 <= delay <= 5000 and received_ms >= self.high_received_ms
+            if type(source_seconds) is int and source_seconds < self.high_source_seconds:
                 self.source_regressions += 1
                 valid = False
             if not valid:
                 self.rejected += 1
                 self.last = None
+                # Never erase either watermark on an invalid callback.
                 return
+            if source_seconds > self.high_source_seconds:
+                self.seen_in_source_second.clear()
+            identity = (float(bid), float(ask))
+            if identity in self.seen_in_source_second:
+                self.duplicate_callbacks += 1
+                return  # Never re-stamp an identical source-second/price pair.
+            if len(self.seen_in_source_second) >= 4096:
+                self.rejected += 1
+                self.last = None
+                return
+            self.seen_in_source_second.add(identity)
+            self.high_source_seconds = source_seconds
+            self.high_received_ms = received_ms
             self.accepted += 1
             self.last = source_seconds, float(bid), float(ask), received_ms
             if len(self.source_delay_samples) < 1024:
@@ -90,7 +123,8 @@ class TimedBidAsk:
 
     def fresh(self, now_ms: int, age_limit_ms: int = 5000) -> dict | None:
         with self.lock:
-            if self.last is None:
+            if (self.last is None or type(now_ms) is not int or
+                    type(age_limit_ms) is not int or not 0 < age_limit_ms <= 5000):
                 return None
             source_seconds, bid, ask, received_ms = self.last
             source_age = now_ms - 1000 * source_seconds
@@ -99,9 +133,9 @@ class TimedBidAsk:
                 return None
             return {
                 "bid": format(bid, ".17g"), "ask": format(ask, ".17g"),
-                "broker_tick_seconds": source_seconds,
-                "received_at_ms": received_ms,
+                "broker_tick_seconds": source_seconds, "received_at_ms": received_ms,
                 "source_age_ms": source_age, "receipt_age_ms": receipt_age,
+                "connection_epoch": self.connection_epoch,
                 "account_valuation_time_proven": False,
             }
 
@@ -225,6 +259,8 @@ def capture_one(client_id: int, sdk: Path, window_sec: float = 30.0) -> dict:
             accepted_callbacks=quote.accepted,
             rejected_callbacks=quote.rejected,
             source_time_regressions=quote.source_regressions,
+            duplicate_callbacks=quote.duplicate_callbacks,
+            old_epoch_callbacks=quote.old_epoch_callbacks,
             source_delay_ms_min=min(quote.source_delay_samples) if quote.source_delay_samples else None,
             source_delay_ms_max=max(quote.source_delay_samples) if quote.source_delay_samples else None,
             fresh_samples=fresh_samples, observed_samples=sample_count,

@@ -76,6 +76,43 @@ class TickTimeTests(unittest.TestCase):
         self.assertIsNone(q.fresh(t * 1000 + 600))
         self.assertGreaterEqual(q.rejected, 3)
 
+    def test_repeated_backwards_ticks_never_reset_source_watermark(self):
+        q = probe.TimedBidAsk()
+        t = 1791439407
+        q.receive(t, 1.1, 1.2, t * 1000 + 100)
+        for offset in (1, 2, 3):
+            q.receive(t - offset, 1.1, 1.2, t * 1000 + 200)
+            self.assertIsNone(q.fresh(t * 1000 + 200))
+        self.assertEqual(q.high_source_seconds, t)
+        self.assertEqual(q.source_regressions, 3)
+        self.assertEqual(q.accepted, 1)
+
+    def test_same_second_duplicates_and_future_ticks_do_not_refresh(self):
+        q = probe.TimedBidAsk()
+        t = 1791439407
+        q.receive(t, 1.1, 1.2, t * 1000 + 100)
+        q.receive(t, 1.1, 1.2, t * 1000 + 800)
+        self.assertEqual(q.fresh(t * 1000 + 900)["received_at_ms"], t * 1000 + 100)
+        self.assertEqual(q.duplicate_callbacks, 1)
+        q.receive(t, 1.11, 1.21, t * 1000 + 901)
+        self.assertEqual(q.accepted, 2)  # Changed price in the same second is distinct.
+        q.receive(t + 1, 1.11, 1.21, t * 1000 + 950)
+        self.assertIsNone(q.fresh(t * 1000 + 950))
+        self.assertEqual(q.high_source_seconds, t)
+
+    def test_epoch_reset_only_after_advance_ignores_old_callbacks(self):
+        q = probe.TimedBidAsk(connection_epoch=7)
+        t = 1791439407
+        q.receive(t, 1.1, 1.2, t * 1000 + 100, connection_epoch=7)
+        with self.assertRaises(ValueError):
+            q.reset_connection(7)
+        q.reset_connection(8)
+        self.assertIsNone(q.fresh(t * 1000 + 200))
+        q.receive(t, 1.11, 1.21, t * 1000 + 300, connection_epoch=8)
+        q.receive(t + 100, 1.5, 1.6, t * 1000 + 400, connection_epoch=7)
+        self.assertEqual(q.fresh(t * 1000 + 400)["connection_epoch"], 8)
+        self.assertEqual(q.old_epoch_callbacks, 1)
+
     def test_missing_and_nonfinite_fail_closed(self):
         q = probe.TimedBidAsk()
         self.assertIsNone(q.fresh(1234))

@@ -41,6 +41,8 @@ struct IbPaperAuthoritativePositionSnapshot;
 struct IbPaperExecutionRuntimeTestHooks
 {
     std::function<void(const char*)> onStage;
+    // Offline injected clock only; no environment or IPC entrypoint.
+    std::function<std::uint64_t()> quoteClockMs;
     std::function<bool(const std::string&,
                        std::shared_ptr<IbPaperKillSwitchReader>&,
                        std::string&)> openKillSwitch;
@@ -108,6 +110,7 @@ public:
 
 private:
     friend struct IbRecentBrokerOrderReplayAccess; // offline test only; no IPC/argv entry point
+    friend struct IbQuoteRecoveryFixture; // same runtime path, socket-free egress spy
     bool PreparePrivateState(std::string& reason);
     bool LoadFxCashBaselines(std::string& reason);
     bool ValidateFxCashBaselineRecords(

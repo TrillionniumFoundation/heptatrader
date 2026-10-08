@@ -176,6 +176,28 @@ class IbRuntimeObservationTests(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 report.validate(altered)
 
+    def test_secondary_span_breaks_on_gap_request_change_and_clock(self) -> None:
+        earlier = copy.deepcopy(self.sample)
+        earlier["secondary_cash_ask_age_ms"] = 7000
+        earlier["monotonic_ms"] = 1000
+        later = copy.deepcopy(earlier)
+        later["monotonic_ms"] = 61000
+        later["observed_at_ms"] += 60000
+        summary = report.report([earlier, later], later["observed_at_ms"])
+        self.assertEqual(summary["secondary_cash_quote_unfresh_sample_span_ms"], 0)
+        self.assertFalse(summary["sample_span_is_continuous_proof"])
+        for delta in (0, -1000, 6001):
+            changed = copy.deepcopy(later)
+            changed["monotonic_ms"] = earlier["monotonic_ms"] + delta
+            self.assertEqual(report.report([earlier, changed], changed["observed_at_ms"])[
+                "secondary_cash_quote_unfresh_observed_ms"], 0)
+        later["monotonic_ms"] = 6000
+        self.assertEqual(report.report([earlier, later], later["observed_at_ms"])[
+            "secondary_cash_quote_unfresh_observed_ms"], 5000)
+        later["secondary_cash_quote_request_id"] += 1
+        self.assertEqual(report.report([earlier, later], later["observed_at_ms"])[
+            "secondary_cash_quote_unfresh_observed_ms"], 0)
+
     def test_secondary_cash_stale_streak_resets_with_real_freshness_and_epoch(self) -> None:
         samples = []
         for observed, monotonic, ask_age in (

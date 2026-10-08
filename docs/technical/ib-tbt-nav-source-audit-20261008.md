@@ -1,5 +1,10 @@
 # IB PAPER quote-time / account-valuation-time source audit — 2026-10-08
 
+> Historical running notes. Current candidate status and corrected independent-source
+> interpretation: [PR #178 consolidation](pr178-candidate-consolidation-20261008.md).
+> Earlier zero-callback windows do not negate later positive TBT receipts.
+
+
 ## Scope and immutable separation
 
 This is a **read-only, non-authorizing** source-provenance experiment. It

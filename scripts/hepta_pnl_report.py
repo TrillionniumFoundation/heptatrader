@@ -361,11 +361,17 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
             issues.append("ACCOUNT_OPTIONAL_INPUT_INVALID:" + path.name)
             return None
     nav = optional(root / "nav.json")
+    public_nav = nav
+    if nav and nav.get("schema") == "heptatrader.account-nav.v2":
+        nav = optional(root / "arithmetic-latest.json")
     raw_nav = optional(root / "raw-latest.json")
     if nav:
         try:
             if raw_nav is None: raise EvidenceError("ACCOUNT_NAV_RAW_SOURCE_MISSING")
             validate_nav_evidence(nav, raw_nav, period, now_ms())
+            if (public_nav and public_nav.get("schema") == "heptatrader.account-nav.v2" and
+                    public_nav.get("raw_sha256") != nav.get("raw_sha256")):
+                raise EvidenceError("ACCOUNT_NAV_PUBLIC_ARITHMETIC_SOURCE_MISMATCH")
         except (ValueError, KeyError, TypeError) as error:
             issues.append(str(error) if isinstance(error, EvidenceError) else "ACCOUNT_NAV_SOURCE_INVALID")
             nav = None
@@ -393,6 +399,10 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
     model = optional(config / "exit-cost-model.json")
     result = account_report(period, nav, activity, model, first, now_ms())
     result["reason_codes"].extend(issues)
+    from hepta_nav_assurance import assess_nav_assurance, enforce_strict_account_report
+    assurance = assess_nav_assurance(nav, raw_nav, period, now_ms())
+    result = enforce_strict_account_report(result, assurance, nav)
+
     inputs = optional(root / "return-inputs.json")
     opening_proven = False
     flow_coverage_proven = False
@@ -454,8 +464,12 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
                 "evidence_path": str(path) if path is not None else None}
     result["evidence_status"] = {
         "current_nav": status(result["nav_complete"], "NO_FRESH_SOURCE_VERIFIED_ACCOUNT_NAV", root / "nav.json"),
-        "opening_nav_at_reset": status(opening_proven,
-            "EXACT_RESET_OPENING_FULL_NAV_NOT_PROVEN", root / "return-inputs.json"),
+        "opening_nav_at_reset": status(False,
+            "BROKER_OPENING_VALUATION_BASIS_UNATTESTED", root / "return-inputs.json"),
+        "opening_arithmetic_observation_at_reset": status(opening_proven,
+            "EXACT_RESET_OPENING_ARITHMETIC_SOURCE_NOT_PROVEN", root / "return-inputs.json"),
+        "current_arithmetic_observation": status(result["arithmetic_reconciled"],
+            "NO_FRESH_SOURCE_VERIFIED_ARITHMETIC_OBSERVATION", root / "arithmetic-latest.json"),
         "external_cash_and_asset_flows": status(flow_coverage_proven or result.get("reported_account_complete") is True,
             "RESET_TO_CURRENT_EXTERNAL_FLOW_COVERAGE_NOT_PROVEN", root / "statement-sources"),
         "posted_financing_in_period": status(result.get("posted_financing") is not None,
@@ -483,7 +497,8 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
 def render_account(account: dict) -> str:
     def money(value): return "UNKNOWN" if value is None else f"{number(value):+.2f}"
     lines = ["ACCOUNT | USD | " + str(account.get("period_id")),
-             "Broker NAV (includes reported accruals)=" + money(account.get("nav")),
+             "Strict Broker NAV=" + money(account.get("nav")),
+             "Arithmetic-only observation (NOT strict NAV)=" + money(account.get("arithmetic_nav")),
              "  Cash=" + money(account.get("cash")) + "; marked assets=" + money(account.get("marked_assets")) +
              "; accrued interest=" + money(account.get("accrued_interest")) + "; dividend accruals=" + money(account.get("dividend_accruals")),
              "Funding-adjusted account return=" + money(account.get("broker_reported_account_net_pnl")) +

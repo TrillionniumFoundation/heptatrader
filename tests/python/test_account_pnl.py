@@ -438,11 +438,24 @@ class SourceBackedDeploymentTests(unittest.TestCase):
         with patch.object(report,'now_ms',lambda:T+130):
             return report.attach_account({'complete':True,'totals':{'net_total_pnl':'-5'}},self.pp,self.state,self.cfg)
     def test_current_nav_and_every_missing_prerequisite_are_separate(self):
-        x=self.attach();self.assertEqual(x['totals']['net_total_pnl'],'-5');self.assertTrue(x['account']['nav_complete'])
-        e=x['account']['evidence_status'];self.assertEqual(e['current_nav']['status'],'KNOWN')
+        x=self.attach();self.assertEqual(x['totals']['net_total_pnl'],'-5');self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled'])
+        e=x['account']['evidence_status'];self.assertEqual(e['current_nav']['status'],'UNKNOWN');self.assertEqual(e['current_arithmetic_observation']['status'],'KNOWN')
         for k in ('opening_nav_at_reset','external_cash_and_asset_flows','posted_taxes_in_period','outside_nav_liabilities'):
             self.assertEqual(e[k]['status'],'UNKNOWN')
         self.assertIsNone(x['all_in_account_net_pnl'])
+    def test_new_public_v2_and_legacy_cache_cannot_bypass_strict_consumer(self):
+        from hepta_nav_assurance import publish_arithmetic_observation
+        public = publish_arithmetic_observation(self.out, self.nav, self.raw, period(), T+130)
+        public['strict_nav_eligible'] = True  # Forged public flags are ignored.
+        public['valuation_basis_attested'] = True
+        self.save('nav.json', public)
+        x = self.attach()
+        self.assertTrue(x['account']['arithmetic_reconciled'])
+        self.assertFalse(x['account']['strict_nav_eligible'])
+        self.assertIsNone(x['account_nav'])
+        self.assertFalse(x['account_complete'])
+        self.assertEqual(x['account']['arithmetic_nav'], self.nav['nav'])
+
     def test_nav_without_raw_download_cannot_self_certify(self):
         (self.out/'raw-latest.json').unlink();x=self.attach();self.assertIsNone(x['account_nav'])
         self.assertIn('ACCOUNT_NAV_RAW_SOURCE_MISSING',x['account']['reason_codes'])
@@ -455,14 +468,14 @@ class SourceBackedDeploymentTests(unittest.TestCase):
     def test_activity_index_cannot_invent_source_coverage(self):
         x=activity.parse_flex(xml_fixture(),'DU_TEST','USD','UTC',T+2*86400000)
         self.save('activity.json',x);r=self.attach()
-        self.assertTrue(r['account']['nav_complete']);self.assertIsNone(r['account']['broker_reported_account_net_pnl'])
+        self.assertFalse(r['account']['nav_complete']);self.assertTrue(r['account']['arithmetic_reconciled']);self.assertIsNone(r['account']['broker_reported_account_net_pnl'])
     def test_invalid_cost_model_does_not_hide_valid_nav(self):
         p=self.cfg/'exit-cost-model.json';p.write_text('{bad');p.chmod(0o600)
-        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+        x=self.attach();self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled']);self.assertFalse(x['account']['future_exit_costs']['complete'])
     def test_failing_cost_model_keeps_current_nav_not_previous_scenarios(self):
         m=model();m['BTC.USD']['rate']='-1'
         p=self.cfg/'exit-cost-model.json';p.write_text(json.dumps(m));p.chmod(0o600)
-        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+        x=self.attach();self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled']);self.assertFalse(x['account']['future_exit_costs']['complete'])
     def test_late_first_observation_without_raw_is_not_profit_or_opening(self):
         name='first-'+hashlib.sha256(period()['period_id'].encode()).hexdigest()[:16]+'.json'
         self.save(name,self.nav);x=self.attach()
@@ -474,7 +487,7 @@ class SourceBackedDeploymentTests(unittest.TestCase):
     def test_verified_opening_is_known_even_when_funding_sources_are_missing(self):
         self.save('return-inputs.json',{'opening_nav_raw':raw_snapshot(T-20,T)})
         x=self.attach()['account']
-        self.assertEqual(x['evidence_status']['opening_nav_at_reset']['status'],'KNOWN')
+        self.assertEqual(x['evidence_status']['opening_nav_at_reset']['status'],'UNKNOWN');self.assertEqual(x['evidence_status']['opening_arithmetic_observation_at_reset']['status'],'KNOWN')
         self.assertEqual(x['evidence_status']['external_cash_and_asset_flows']['status'],'UNKNOWN')
         self.assertIsNone(x['broker_reported_account_net_pnl'])
     def test_consumer_has_no_ledger_or_period_writes(self):

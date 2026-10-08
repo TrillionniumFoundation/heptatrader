@@ -229,27 +229,34 @@ def read_samples(path: Path) -> list[dict[str, Any]]:
 
 def observed_condition_duration_ms(
         samples: list[dict[str, Any]],
-        predicate: Callable[[dict[str, Any]], bool]) -> int:
-    """Return a conservative continuous-duration lower bound from recent samples.
+        predicate: Callable[[dict[str, Any]], bool], *,
+        max_sample_gap_ms: int = 6000,
+        identity_keys: tuple[str, ...] = ()) -> int:
+    """Return a bounded span of adjacent matching samples, NOT continuous proof.
 
-    A service or connection epoch boundary resets the interval. Monotonic clock
-    regression also resets it rather than manufacturing negative or cross-process
-    duration. The result is zero when the latest sample does not satisfy the
-    condition; it never claims time before the oldest retained matching sample.
+    The default gap budget is the 5s telemetry cadence plus 1s scheduling
+    allowance, unrelated to quote freshness. Missing samples, clock regressions,
+    service/connection changes or selected request-identity changes break the
+    span. The historical metric name is retained for compatibility only.
     """
+    uint(max_sample_gap_ms)
+    if max_sample_gap_ms == 0:
+        raise ValueError("positive sample gap required")
     if not samples or not predicate(samples[-1]):
         return 0
     latest = samples[-1]
+    if any(key not in latest for key in identity_keys):
+        return 0
     latest_mono = uint(latest["monotonic_ms"])
-    earliest = latest_mono
-    previous = latest_mono
+    earliest = previous = latest_mono
     for sample in reversed(samples[:-1]):
         if (sample["service_epoch"] != latest["service_epoch"] or
                 sample["connection_epoch"] != latest["connection_epoch"] or
-                not predicate(sample)):
+                any(key not in sample or sample[key] != latest[key]
+                    for key in identity_keys) or not predicate(sample)):
             break
         current = uint(sample["monotonic_ms"])
-        if current > previous:
+        if current >= previous or previous - current > max_sample_gap_ms:
             break
         earliest = current
         previous = current
@@ -271,9 +278,9 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     terminal_drain_pending_ms = observed_condition_duration_ms(
         samples, lambda sample: sample["terminal_transport_halted"] and
         sample["terminal_callbacks_in_flight"] > 0)
-    # Lower bound over retained samples, scoped to the original connection
-    # epoch. The fixed 5s price age is observational only: it does not renew
-    # a quote, stretch a cached callback or authorize any order.
+    # Adjacent sampled span, not proof of continuous bad state between samples.
+    # Request identity and service/connection epochs cannot be spliced.
+    # The fixed 5s price age is unchanged and authorizes no order.
     secondary_unfresh_ms = observed_condition_duration_ms(
         samples, lambda sample:
         sample.get("secondary_cash_quote_metrics_present", False) and (
@@ -281,7 +288,8 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
             not sample["secondary_cash_bid_age_valid"] or
             not sample["secondary_cash_ask_age_valid"] or
             sample["secondary_cash_bid_age_ms"] > 5000 or
-            sample["secondary_cash_ask_age_ms"] > 5000))
+            sample["secondary_cash_ask_age_ms"] > 5000),
+        identity_keys=("secondary_cash_quote_instrument", "secondary_cash_quote_request_id"))
     alerts: list[dict[str, str]] = []
     def alert(rule: str, severity: str = "P2") -> None:
         if not any(item["rule_id"] == rule for item in alerts):
@@ -310,6 +318,9 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "authoritative_snapshot_incomplete_observed_ms": snapshot_incomplete_ms,
         "terminal_callback_drain_pending_observed_ms": terminal_drain_pending_ms,
         "secondary_cash_quote_unfresh_observed_ms": secondary_unfresh_ms,
+        "secondary_cash_quote_unfresh_sample_span_ms": secondary_unfresh_ms,
+        "sample_span_is_continuous_proof": False,
+        "sample_gap_budget_ms": 6000,
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],

@@ -58,7 +58,8 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
     std::lock_guard<std::recursive_mutex> quoteLock(m_authoritativeQuoteSendMutex);
     if (!m_quoteSubscriptions) return true;
     const auto health = m_quoteSubscriptions->GetHealth();
-    const auto nowMs = NowEpochMs();
+    const auto nowMs = m_testHooks.quoteClockMs ?
+        m_testHooks.quoteClockMs() : NowEpochMs();
     const auto epoch = m_adapter->GetConnectionEpoch();
     if (health.connectionEpoch != epoch || !epoch || !health.generation)
         return true;

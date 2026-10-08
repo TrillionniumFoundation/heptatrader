@@ -278,6 +278,15 @@ target_link_libraries(hepta_ib_recent_order_replay_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_recent_order_replay_tests)
 
+# The same production runtime source list and adapter/subscription/admission
+# objects; an injected wrapper has no socket and throws on every order method.
+add_executable(hepta_ib_quote_recovery_component_tests
+    ib_quote_recovery_component_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_quote_recovery_component_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
         hepta_tool_gatewayd

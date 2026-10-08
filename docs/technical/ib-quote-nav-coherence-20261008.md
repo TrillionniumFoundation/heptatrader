@@ -1,5 +1,10 @@
 # IBKR PAPER FX quote recovery and NAV coherence
 
+> Historical running notes. Current candidate status and corrected independent-source
+> interpretation: [PR #178 consolidation](pr178-candidate-consolidation-20261008.md).
+> Earlier zero-callback windows do not negate later positive TBT receipts.
+
+
 ## Current owner and acceptance scope
 
 - The mixed user scope has BTC.USD as the primary PAXOS contract and EUR.USD as a secondary IDEALPRO/CASH market-data contract. Reconnecting the execution owner, restarting a trading driver, extending quote lifetime or writing an order are **not** market-data recovery mechanisms.
