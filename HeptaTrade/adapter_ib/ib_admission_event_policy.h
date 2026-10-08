@@ -13,8 +13,19 @@ inline bool IsIbGlobalUpgradeNotice(const IBEvent& event) {
         event.advancedOrderRejectJson.empty();
 }
 
+// An unscoped 2105 reports historical-market-data farm loss, not a live
+// quote-send result. Retain its original Broker error for diagnostics and
+// never interpret it as a positive market-data readiness witness. A scoped
+// order/request/account 2105 remains unsafe, as do 1100/1101/2110.
+inline bool IsIbUnscopedHistoricalFarmDisconnect(const IBEvent& event) {
+    return event.type == IBEventType::Error && event.key == "2105" &&
+        event.id == -1 && event.account.empty() &&
+        event.order.orderRef.empty() && event.advancedOrderRejectJson.empty();
+}
+
 inline bool IbAdmissionBlockingEvent(const IBEvent& event) {
-        if (IsIbGlobalUpgradeNotice(event)) return false;
+        if (IsIbGlobalUpgradeNotice(event) ||
+            IsIbUnscopedHistoricalFarmDisconnect(event)) return false;
         if (event.type == IBEventType::ConnectionClosed ||
             event.type == IBEventType::EventQueueOverflow)
             return true;

@@ -97,6 +97,15 @@ class RecoveryReadGate:
         return name
 
 
+
+def unscoped_historical_farm_disconnect(request_id: int, code: int) -> bool:
+    """Historical-data farm 2105 is a warning for this order/account reader.
+
+    Never treat a scoped error or missing request End as successful recovery.
+    """
+    return type(request_id) is int and request_id == -1 and type(code) is int and code == 2105
+
+
 def contract_row(c):
     return {k:getattr(c,k,None) for k in ('conId','symbol','secType','exchange','currency','localSymbol')}
 
@@ -108,7 +117,7 @@ def capture(sdk: Path, client_id: int, period: dict, budget_sec: float=15) -> di
     account=period['account']; owners={k:v['broker_client_id'] for k,v in period['instruments'].items()}
     gate=RecoveryReadGate(client_id,account,owners);ready=threading.Event();lock=threading.RLock()
     expected={'open','completed','positions','ledger','aggregate','EUR.USD','BTC.USD'}
-    ends={};events=[];late=[];errors=[];foreign=Counter();lost=threading.Event()
+    ends={};events=[];late=[];errors=[];notifications=[];foreign=Counter();lost=threading.Event()
     request_names={7301:'positions',7302:'ledger',7303:'aggregate',7401:'EUR.USD',7402:'BTC.USD'}
     def record(kind, data, group=None):
         with lock:
@@ -134,7 +143,12 @@ def capture(sdk: Path, client_id: int, period: dict, budget_sec: float=15) -> di
             gate.check(msg);return EClient.sendMsg(self,msg)
         def nextValidId(self,_):ready.set()
         def error(self,rid,code,message,*args):
-            if code not in (2104,2106,2107,2108,2158,2172):
+            if unscoped_historical_farm_disconnect(rid,code):
+                # Preserve the negative HMDS connection signal separately.
+                # This does not establish any order, position or account End.
+                with lock:
+                    if len(notifications)<32:notifications.append({'request_id':rid,'code':code})
+            elif code not in (2104,2106,2107,2108,2158,2172):
                 with lock:errors.append({'request_id':rid,'code':code})
         def connectionClosed(self):lost.set()
         def openOrder(self,oid,c,o,s):
@@ -208,7 +222,8 @@ def capture(sdk: Path, client_id: int, period: dict, budget_sec: float=15) -> di
     return dict(schema='heptatrader.broker-recovery-download.v1',started_at_ms=started,
         observed_at_ms=now_ms(),account=account,observer_client_id=client_id,owner_clients=owners,
         transport_complete=all_ends and failure is None,ends=ends,events=events,late_events=late,
-        foreign_callback_counts=dict(foreign),errors=errors,failure=failure,wire_counts=dict(gate.counts),
+        foreign_callback_counts=dict(foreign),errors=errors,
+        broker_status_notifications=notifications,failure=failure,wire_counts=dict(gate.counts),
         requested_groups=sorted(gate.seen),order_sends=0,quote_subscriptions=0,
         full_execution_started=False,broker_history_complete=False,strict_nav_eligible=False,
         broker_valuation_time_attested=False,execution_history_scope='API_AVAILABLE_CURRENT_DAY_NOT_ALL_HISTORY')

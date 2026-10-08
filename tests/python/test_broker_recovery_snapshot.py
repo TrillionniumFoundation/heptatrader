@@ -35,6 +35,13 @@ class GateTests(unittest.TestCase):
         for cid in (0,True,701,30000):
             with self.assertRaises(ValueError):reader.RecoveryReadGate(cid,'DU123',{'EUR.USD':701,'BTC.USD':701})
         with self.assertRaises(ValueError):reader.RecoveryReadGate(29891,'DU123',{'EUR.USD':29891,'BTC.USD':701})
+    def test_historical_farm_2105_is_only_unscoped_status_not_approval(self):
+        self.assertTrue(reader.unscoped_historical_farm_disconnect(-1,2105))
+        for rid, code in ((7302,2105),(7401,2105),(0,2105),
+                          (True,2105),(-1,2110),(-1,1100),(-1,2103)):
+            with self.subTest(request_id=rid,code=code):
+                self.assertFalse(reader.unscoped_historical_farm_disconnect(rid,code))
+
     def test_private_snapshot_rejects_links_and_open_permissions(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'data';p.write_bytes(b'{}');p.chmod(0o600)
