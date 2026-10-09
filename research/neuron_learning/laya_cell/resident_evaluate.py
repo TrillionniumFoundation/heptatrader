@@ -11,7 +11,7 @@ from .integrity import ContractError,read_json,digest,sha_file
 from .resident_store import write_once,atomic
 from .resident_data import read_quotes
 from .dataset import BIN_EDGES_BPS
-from .promotion import RULE,assess
+from .promotion import RULE,assess,validate_plan_rule
 
 
 def measure(plan,slot,prediction,quotes,now_ms):
@@ -88,9 +88,19 @@ class Evaluator:
   counts={};observed=0;censored=0;worker_errors={}
   for path in plans:
    plan=read_json(path)
-   if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) or plan['rule']!=RULE:
+   if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
     raise ContractError('REGISTERED_PLAN_CHANGED')
+   rule=validate_plan_rule(plan)
    if plan.get('scope')!=self.c['period_sha256']:raise ContractError('EVALUATION_PERIOD_SCOPE')
+   # A closed v1 plan remains bound to its original result, never re-evaluated
+   # against replacement source bytes or re-registered as a new experiment.
+   if (path.parent/'qualification.json').exists():
+    q=read_json(path.parent/'qualification.json')
+    if q.get('candidate_id')!=plan['candidate_id'] or q.get('plan_id')!=plan['plan_id']:
+     raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
+    counts[q['state']]=counts.get(q['state'],0)+1
+    observed+=q.get('observed',0);censored+=q.get('censored',0)
+    continue
    pins=plan.get('evaluation_runtime_sha256');runtime=Path(self.c.get('runtime_directory',''))
    source_ok=isinstance(pins,dict) and bool(pins) and all(v and sha_file(runtime/k)==v for k,v in pins.items())
    if not source_ok:
@@ -101,10 +111,10 @@ class Evaluator:
     counts['REJECTED']=counts.get('REJECTED',0)+1;continue
    if (path.parent/'qualification.json').exists():
     q=read_json(path.parent/'qualification.json');counts[q['state']]=counts.get(q['state'],0)+1;continue
-   for slot in range(RULE['slots']):
+   for slot in range(rule['slots']):
     output=path.parent/f'outcome-{slot:03}.json';prediction=path.parent/f'prediction-{slot:03}.json'
     if output.exists():continue
-    start=plan['start_ms']+slot*RULE['slot_spacing_ms'];end=start+RULE['input_grace_ms']
+    start=plan['start_ms']+slot*rule['slot_spacing_ms'];end=start+rule['input_grace_ms']
     if not prediction.exists():
      key=(str(path),slot);failure=path.parent/f'failure-{slot:03}.json'
      if key in self.tasks:continue
@@ -119,7 +129,7 @@ class Evaluator:
      if now<start-90000 or len(self.tasks)>=2:continue
      self.launch(path,slot);continue
     pred=read_json(prediction)
-    if now<pred['anchor_ms']+RULE['horizon_ms']:continue
+    if now<pred['anchor_ms']+rule['horizon_ms']:continue
     # A snapshot collected before a long GPU call must never decide maturity.
     quote_clock=int(time.time()*1000);fresh_quotes,fresh_prefixes=read_quotes(self.c,quote_clock)
     result=measure(plan,slot,pred,fresh_quotes,quote_clock)
@@ -135,7 +145,8 @@ class Evaluator:
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
    'prediction_prewarm_ms':90000,'worker_failure_details':worker_errors,
-   'latest_quote_ms':quotes[-1]['t'] if quotes else None,'statistical_rule':RULE,
+   'latest_quote_ms':quotes[-1]['t'] if quotes else None,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
+   'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
    'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}
   atomic(self.root/'status.json',status)
   if now-self.last_log_ms>=30000:print(json.dumps(status),flush=True);self.last_log_ms=now

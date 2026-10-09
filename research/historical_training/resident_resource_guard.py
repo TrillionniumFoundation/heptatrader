@@ -182,9 +182,21 @@ def main():
     try:
         if a.role=='trainer':service.recover()
         while not service.stop:
-            try:service.step()
+            try:
+                service.step()
+                error_path=gate.root/(a.role+'-error.json')
+                if error_path.exists():
+                    previous=read(error_path)
+                    if previous.get('active') is not False:
+                        atomic(error_path,{**previous,'active':False,'resolved_at_ms':int(time.time()*1000)})
             except Exception as exc:
-                atomic(gate.root/(a.role+'-error.json'),{'at_ms':int(time.time()*1000),'error':str(exc),'orders_sent':0})
+                failed_at=int(time.time()*1000)
+                atomic(gate.root/(a.role+'-error.json'),{'at_ms':failed_at,'error':str(exc),'orders_sent':0,'active':True})
+                if a.role=='trainer':
+                    service.write_status(state='LEARNING_UNAVAILABLE_NO_TRADE_EFFECT',reason=str(exc))
+                else:
+                    atomic(service.root/'status.json',{'at_ms':failed_at,'state':'INDEPENDENT_EVALUATION_UNAVAILABLE',
+                        'reason':str(exc),'promotion_performed':False,'broker_orders_sent':0})
             if gate.draining and (a.role=='trainer' or not service.tasks):break
             for _ in range(30 if a.role=='trainer' else 2):
                 if service.stop:break
