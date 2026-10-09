@@ -5,10 +5,47 @@ lock through tensor destruction. Missing/late requests remain missed. Evaluation
 uses the original authoritative replay and independently signed role receipts.
 """
 from __future__ import annotations
-import argparse, fcntl, gc, json, os, sys, time
+import argparse, fcntl, gc, json, os, sys, time, traceback
 from pathlib import Path
 from .integrity import ContractError, read_json, sha_file, digest
-from .resident_store import atomic
+from .resident_store import atomic, write_once
+
+
+def request_record(c,root,plan,rid,item,now,state,reason,final=False):
+ """Keep actual failed attempts; only expiration permanently misses a request."""
+ folder=root/'plans'/plan['plan_id']/'predictions'/rid
+ record={'schema':'heptatrader.current100k-forward-request-attempt.v1','plan_id':plan['plan_id'],
+  'candidate_id':plan['candidate_id'],'request_id':rid,'request_sha256':item['request_sha256'],
+  'request_started_at_ms':item['request']['started_at_ms'],'request_source_prefix':item['source_prefix'],
+  'observed_at_ms':now,'state':state,'reason':reason,'worker_runtime_inventory_digest':c['worker_runtime_inventory_digest'],
+  'prediction_backdated':False,'broker_orders_sent':0}
+ if final:
+  record['schema']='heptatrader.current100k-forward-request-failure.v1'
+  destination=folder/'failure.json'
+ else:
+  record['attempt_id']=digest(record);destination=folder/'attempts'/(record['attempt_id']+'.json')
+ if not destination.exists():write_once(destination,record)
+
+
+def prediction_evidence(root):
+ failures=list(root.glob('plans/*/predictions/*/failure.json'))
+ attempts=list(root.glob('plans/*/predictions/*/attempts/*.json'))
+ records=[read_json(p) for p in failures+attempts]
+ last=max(records,key=lambda x:x['observed_at_ms'],default=None)
+ return {'sealed_predictions':len(list(root.glob('plans/*/predictions/*/commit.json'))),
+  'failed_or_missed_requests':len(failures),'retained_failed_or_held_attempts':len(attempts),
+  'last_retained_request_issue':None if last is None else {k:last[k] for k in ('request_id','observed_at_ms','reason')}}
+
+
+def clear_exception_frames(exc):
+ # An inference traceback retains its frame's self/tensors after del worker.
+ # Clear completed frames before releasing the shared GPU lease, including causes.
+ pending=[exc];seen=set()
+ while pending:
+  current=pending.pop()
+  if id(current) in seen:continue
+  seen.add(id(current));traceback.clear_frames(current.__traceback__)
+  pending.extend(x for x in (current.__cause__,current.__context__) if x is not None)
 
 
 def validate_runtime(c):
@@ -38,28 +75,31 @@ def run(c,mode):
  if now<plan['input_start_ms']:
   status={'at_ms':now,'state':'WAIT_FIXED_FUTURE_START','input_start_ms':plan['input_start_ms'],'broker_orders_sent':0}
   atomic(status_path,status);return status
- if mode=='predict' and now>=plan['input_end_ms']:
-  status={'at_ms':now,'state':'FIXED_INPUT_WINDOW_CLOSED_NO_MODEL_LOAD','broker_orders_sent':0}
-  atomic(status_path,status);return status
- gate=None;worker=None
+ gate=None;worker=None;fresh=[];requests={}
  try:
   if mode=='predict':
    from .financial_forward_source import ingress
    _,requests,_,issues=ingress(plan['producer_registration'],c['period_sha256'])
    if issues:raise ContractError('CURRENT100K_SOURCE_PROVENANCE_UNAVAILABLE')
-   fresh=[]
    for rid,item in requests.items():
     if Path(rid).name!=rid:raise ContractError('REQUEST_PATH_ESCAPE')
     request=item['request'];folder=root/'plans'/plan['plan_id']/'predictions'/rid
-    if (plan['input_start_ms']<=request['started_at_ms']<=now and now-request['started_at_ms']<=60000
-        and request['position_at_request']==0 and not (folder/'commit.json').exists() and not (folder/'failure.json').exists()):fresh.append(rid)
+    if (plan['input_start_ms']<=request['started_at_ms']<plan['input_end_ms'] and request['started_at_ms']<=now
+        and request['position_at_request']==0 and not (folder/'commit.json').exists() and not (folder/'failure.json').exists()):
+     if now-request['started_at_ms']>60000 or now>=plan['input_end_ms']:
+      request_record(c,root,plan,rid,item,now,'MISSED_ORIGINAL_REQUEST','REQUEST_ALREADY_OLD_NO_BACKDATING',final=True)
+     else:fresh.append(rid)
+   if now>=plan['input_end_ms']:
+    status={'at_ms':now,'state':'FIXED_INPUT_WINDOW_CLOSED_NO_MODEL_LOAD',**prediction_evidence(root),'broker_orders_sent':0}
+    atomic(status_path,status);return status
    if not fresh:
-    status={'at_ms':now,'state':'WAIT_FRESH_ORIGINAL_REQUEST','sealed_predictions':len(list((root/'plans'/plan['plan_id']/'predictions').glob('*/commit.json'))),'broker_orders_sent':0}
+    status={'at_ms':now,'state':'WAIT_FRESH_ORIGINAL_REQUEST',**prediction_evidence(root),'broker_orders_sent':0}
     atomic(status_path,status);return status
    from historical_training.resident_resource_guard import Gate,verify_config
    guard=read_json(Path(c['guard_config']));verify_config(guard);gate=Gate(guard,'value-predictor')
    if not gate.acquire({'plan_id':plan['plan_id'],'requests':fresh}):
-    status={'at_ms':now,'state':'HOLD_SHARED_RESOURCE_OR_SOURCE','broker_orders_sent':0}
+    for rid in fresh:request_record(c,root,plan,rid,requests[rid],int(time.time()*1000),'HOLD_SHARED_RESOURCE_OR_SOURCE','HOLD_SHARED_RESOURCE_OR_SOURCE')
+    status={'at_ms':now,'state':'HOLD_SHARED_RESOURCE_OR_SOURCE',**prediction_evidence(root),'broker_orders_sent':0}
     atomic(status_path,status);return status
   from sandbox import enter
   enter({'output_dir':str(root),'period_path':c['period_path'],'legacy_capture':plan['training_dataset_path'],
@@ -74,14 +114,24 @@ def run(c,mode):
   else:
    from .financial_forward_evaluate import Evaluator
    worker=Evaluator(c)
-  return worker.step()
+  result=worker.step()
+  if mode=='predict':
+   result={**result,**prediction_evidence(root)};atomic(status_path,result)
+  return result
+ except BaseException as exc:
+  try:
+   if mode=='predict':
+    for rid in fresh:request_record(c,root,plan,rid,requests[rid],int(time.time()*1000),'UNAVAILABLE_NO_SELECTION',str(exc)[:220] or type(exc).__name__)
+  finally:clear_exception_frames(exc)
+  raise
  finally:
   try:
    if mode=='predict' and worker is not None:
     del worker;gc.collect()
     if 'torch' in sys.modules:
      import torch
-     torch.cuda.synchronize();torch.cuda.empty_cache()
+     try:torch.cuda.synchronize()
+     finally:torch.cuda.empty_cache()
   finally:
    if gate is not None:gate.release()
 
@@ -96,6 +146,7 @@ def main():
   try:print(json.dumps(run(c,a.mode)),flush=True)
   except Exception as exc:
    status={'at_ms':int(time.time()*1000),'state':'UNAVAILABLE_NO_SELECTION','reason':str(exc)[:220],'broker_orders_sent':0,'actor_updated':False}
+   if a.mode=='predict':status.update(prediction_evidence(root))
    atomic(root/('predictor-status.json' if a.mode=='predict' else 'evaluator-status.json'),status)
    print(json.dumps(status),flush=True);raise
  finally:os.close(fd)

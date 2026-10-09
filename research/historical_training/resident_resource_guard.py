@@ -86,7 +86,7 @@ class Lease:
 
 class Gate:
     def __init__(self,config,role):
-        if role not in ('trainer','evaluator'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
+        if role not in ('trainer','evaluator','value-predictor'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
         self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
     def check(self):
