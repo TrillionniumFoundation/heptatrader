@@ -59,3 +59,7 @@ assumptions, require positive out-of-fit calibrated expected net and retain
 ABSTAIN when it fails. Report all frozen-policy trades including losses and
 fixed-trade cost stress. Do not reduce costs or thresholds to admit this model.
 Neither hypothesis is a positive result, promotion, or permission to trade.
+
+## Canonical CPU source continuation (2026-10-09)
+
+See [Neuron256 canonical CPU custody](NEURON256_CANONICAL_CPU_20261009.md) for original-CPU-to-ROCm parity, source pinning and remaining deployment gates. No market efficacy or trading qualification is claimed.
