@@ -65,6 +65,11 @@ def validate_registration(config,path,plan):
  c=validate_candidate(Path(plan['candidate_directory']))
  if c['candidate_id']!=plan['candidate_id'] or sha_file(Path(plan['candidate_directory'])/'candidate.json')!=plan['candidate_manifest_sha256']:
   raise ContractError('CANDIDATE_SUBSTITUTION')
+ if (c.get('schema')=='heptatrader.current100k-value-candidate.v1')!=(plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1'):
+  raise ContractError('VALUE_CANDIDATE_AND_PLAN_BEHAVIOR_MISMATCH')
+ if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
+  from .current100k_forward import validate_bound_plan
+  validate_bound_plan(plan,c)
  return c
 
 
@@ -102,6 +107,9 @@ class Evaluator:
     except Exception as exc:issues.append({'command_id':cmd,'reason':'PREDICTION_REVOKED:'+str(exc)[:160]})
     times=[fill_times[x['execution_id']] for x in (known or {}).get('executions',[]) if x['command_id']==cmd and x['execution_id'] in fill_times]
     first=min(times) if times else command_fills.get(cmd)
+    if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
+     from .current100k_forward import verify_scored_row
+     verify_scored_row(plan,b,prediction,reward,requests.get(b['request_id']))
     result=score_case(plan,b,prediction,reward,first if first is not None else 2**62,now)
     if cmd not in eligible:result.update(status='CENSORED',reason='PREVIOUSLY_SEEN_COMMAND_BINDING_WITHDRAWN')
     elif known is not None and reward is None:result.update(status='CENSORED',reason='CURRENT_REPLAY_REVOKED_OR_UNSETTLED_EXACT_REWARD')

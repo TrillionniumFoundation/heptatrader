@@ -10,7 +10,8 @@ from .integrity import ContractError,read_json,digest,sha_file,canonical
 from .resident_data import collect
 from .resident_rewards import current as rewards_current
 from .resident_store import database,write_once,atomic,get_meta,put_meta,admit_job,complete_job
-from .promotion import RULE
+from .promotion import RULE,rule_for_trial
+from .promotion_power import PROTOCOL
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
@@ -28,6 +29,7 @@ def config_check(config):
   if Path(rel).is_absolute() or '..' in Path(rel).parts:raise ContractError('RUNTIME_PATH_ESCAPE')
   if sha_file(Path(config['runtime_directory'])/rel)!=expected:raise ContractError('RUNTIME_CHANGED:'+rel)
  budget_policy(config)
+ if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
  return config
 
 
@@ -47,6 +49,7 @@ class Supervisor:
   self.stop=True
   if self.child and self.child.poll() is None:self.child.terminate()
  def write_status(self,**extra):
+  self.storage=inspect_storage(self.c)
   stats={s:self.db.execute('SELECT count(*) FROM jobs WHERE status=?',(s,)).fetchone()[0] for s in ('ADMITTED','RUNNING','COMPLETED','FAILED')}
   state={'schema':'heptatrader.laya-resident-status.v1','at_ms':int(time.time()*1000),'job_counts':stats,
     'last_candidate_id':get_meta(self.db,'last_completed_candidate'),'historical_confirmed_pnl_rewards':self.db.execute('SELECT count(*) FROM rewards').fetchone()[0],
@@ -77,12 +80,13 @@ class Supervisor:
    return
   with self.db:
    trial=get_meta(self.db,'evaluation_trial',0)+1;put_meta(self.db,'evaluation_trial',trial)
+  rule=rule_for_trial(trial,self.c.get('promotion_protocol'))
   now=int(time.time()*1000);start=now+120000
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
-   'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(RULE['slots']-1)*RULE['slot_spacing_ms']+RULE['input_grace_ms']+RULE['horizon_ms']+5000,
-   'trial':trial,'rule':RULE,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
-   'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
+   'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000,
+   'trial':trial,'rule':rule,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
+   'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/promotion_power.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json')}
   plan['plan_id']=digest(plan);write_once(path,plan)
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -93,6 +97,13 @@ class Supervisor:
    'state':'UNADMITTED_CANONICAL_OWNER_NOT_ENROLLED','canonical_fact':False,'effect_authority':False}
   write_once(self.root/'owner-outbox'/(candidate['candidate_id']+'.json'),request)
  def recover(self):
+  if self.c.get('promotion_protocol')==PROTOCOL:
+   floor=self.c.get('promotion_legacy_trial_floor')
+   if type(floor)is not int or floor<1:raise ContractError('PROMOTION_MIGRATION_FLOOR_REQUIRED')
+   current=get_meta(self.db,'evaluation_trial',0)
+   trials=[read_json(p)['trial'] for p in Path(self.c['evaluation_directory']).glob('*/plan.json')]
+   if current<floor or not trials or max(trials)>current or max(trials)<floor or len(set(trials))!=len(trials):
+    raise ContractError('PROMOTION_TRIAL_HISTORY_RESET_OR_CONFLICT')
   for row in self.db.execute("SELECT * FROM jobs WHERE status IN ('ADMITTED','RUNNING','COMPLETED')").fetchall():
    if self.candidate_done(row):continue
    if row['status']=='COMPLETED':raise ContractError('COMMITTED_CANDIDATE_MISSING')
@@ -102,7 +113,8 @@ class Supervisor:
  def step(self):
   now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()
   self.storage=inspect_storage(self.c)
-  if not self.storage['admission_ready']:raise ContractError(self.storage['blocked_reason'])
+  if not self.storage['admission_ready']:
+   return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
   rewards=rewards_current(self.c,now);atomic(self.root/'rewards-status.json',rewards)
   with self.db:
    for r in rewards['rewards']:
@@ -124,11 +136,13 @@ class Supervisor:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
    if not self.db.execute('SELECT 1 FROM consumed_rows WHERE id=?',(key,)).fetchone():new.append((key,r))
   state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,'pending_evaluations':pending,'reward_reason':rewards['reason']}
-  if pending>=MAX_PENDING_EVALUATIONS:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**state)
+  pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
+  if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**state)
   last=get_meta(self.db,'last_job_created_ms',0)
   if now<last:raise ContractError('TRAINING_CLOCK_REGRESSION')
   if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
   if len(new)<16:return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
+  rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
   chosen=new[-64:];row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
   if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')

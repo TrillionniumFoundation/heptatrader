@@ -34,7 +34,15 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv
+      - name: Install pinned CPU research test dependency
+        run: |
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install --only-binary=:all: safetensors==0.8.0
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import safetensors; assert safetensors.__version__ == "0.8.0"; print(safetensors.__version__)'
+          echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
       - name: Native build and behavior tests
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core

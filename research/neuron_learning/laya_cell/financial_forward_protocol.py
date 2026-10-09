@@ -33,6 +33,9 @@ def feature_text(request,side):
 
 def validate_candidate(directory):
  directory=Path(directory);c=read_json(directory/'candidate.json')
+ if c.get('schema')=='heptatrader.current100k-value-candidate.v1':
+  from .current100k_forward import validate_value_candidate
+  return validate_value_candidate(directory,c)
  if c.get('candidate_id')!=digest({k:v for k,v in c.items() if k!='candidate_id'}):raise ContractError('FORWARD_CANDIDATE_HASH')
  if (c.get('financial_profile')!=PROFILE or c.get('pretrained_laya_unchanged') is not True
      or c.get('scorer_or_action_adapter_updated') is not False or c.get('automatic_trading') is not False

@@ -24,6 +24,11 @@ def pin(config,plan):
  c=validate_candidate(directory)
  if c['candidate_id']!=plan['candidate_id'] or sha_file(directory/'candidate.json')!=plan['candidate_manifest_sha256']:
   raise ContractError('CANDIDATE_SUBSTITUTION')
+ if (c.get('schema')=='heptatrader.current100k-value-candidate.v1')!=(plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1'):
+  raise ContractError('VALUE_CANDIDATE_AND_PLAN_BEHAVIOR_MISMATCH')
+ if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
+  from .current100k_forward import validate_bound_plan
+  validate_bound_plan(plan,c)
  return c
 
 class Predictor:
@@ -63,8 +68,15 @@ class Predictor:
     if float(torch.linalg.vector_norm(torch.cat([t.float().flatten() for t in tensors.values()])))>.100001:raise ContractError('READOUT_NORM_BOUND')
     self.heads[key]=head
    head=self.heads[key]
-   rows=[{'feature_text':feature_text(r,side)} for side in ('BUY','SELL')]
-   begin=time.monotonic();features,info=features_from_laya(self.raw,self.tokenizer,rows)
+   if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
+    from .current100k_forward import feature_rows
+    rows=feature_rows(plan,r)
+   else:rows=[{'feature_text':feature_text(r,side)} for side in ('BUY','SELL')]
+   begin=time.monotonic()
+   if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
+    encoded=[features_from_laya(self.raw,self.tokenizer,[row]) for row in rows]
+    features=torch.cat([x[0] for x in encoded]);info={'serial_action_features':[x[1] for x in encoded]}
+   else:features,info=features_from_laya(self.raw,self.tokenizer,rows)
    with torch.no_grad():values=(head(features)*100).cpu().tolist()
    if any(not torch.isfinite(t).all() for t in head.parameters()):raise ContractError('VALUE_NONFINITE')
    computed=int(time.time()*1000)
