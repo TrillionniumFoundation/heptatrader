@@ -37,15 +37,17 @@ def encode_cpu(base,rows,asset):
  import torch
  from torch.nn import functional as F
  from safetensors.torch import load_file
- from laya.common import build_model
- from transformers import AutoTokenizer
- from .matched_data import text
  from .neuron256_cpu_custody import BACKEND
  # No silent fallback to a ROCm wheel's CPU kernels. The archived vectors
  # came from this exact frozen CPU backend, confirmed byte-for-byte on 4 rows.
  if (torch.__version__!=BACKEND or torch.version.hip is not None
      or torch.version.cuda is not None or torch.cuda.is_available()):
   raise EvidenceError('CANONICAL_CPU_RUNTIME_REQUIRED_NO_FALLBACK')
+ # Fail the provenance check before importing optional source-only encoder
+ # packages: the common CI runner intentionally does not ship the Laya model.
+ from laya.common import build_model
+ from transformers import AutoTokenizer
+ from .matched_data import text
  base=Path(base)
  if sha(base/'model.safetensors')!=asset['model_file_sha256']:raise EvidenceError('FROZEN_ENCODER_BYTES')
  if sha(base/'tokenizer/tokenizer.json')!=asset['tokenizer_file_sha256']:raise EvidenceError('FROZEN_TOKENIZER_BYTES')
