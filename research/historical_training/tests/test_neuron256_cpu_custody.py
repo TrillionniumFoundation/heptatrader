@@ -106,6 +106,21 @@ class SignedCanonicalCpuFeatureTests(unittest.TestCase):
  def test_unknown_receipt_key_refused_even_when_signed(self):
   self.store_signed({**self.payload,'unreviewed_source_override':'yes'})
   with self.assertRaisesRegex(EvidenceError,'RECEIPT_FIELDS'):self.verify()
+ def test_canonical_batch2_companion_is_only_frozen_unlabeled_features(self):
+  import hashlib
+  from historical_training.neuron256_frozen_readout import (
+   canonical_companion_text,FROZEN_CPU_COMPANION_TEXT_SHA256,FROZEN_CPU_COMPANION_FEATURES)
+  self.assertEqual(len(FROZEN_CPU_COMPANION_FEATURES),25)
+  content=canonical_companion_text()
+  self.assertEqual(hashlib.sha256(content.encode()).hexdigest(),FROZEN_CPU_COMPANION_TEXT_SHA256)
+  self.assertNotIn('target_bps',content)
+  self.assertNotIn('realized_net',content)
+ def test_changed_canonical_cpu_companion_is_refused(self):
+  from historical_training.neuron256_frozen_readout import canonical_companion_text
+  from unittest.mock import patch
+  with patch('historical_training.neuron256_frozen_readout.FROZEN_CPU_COMPANION_FEATURES', (0.,)*25):
+   with self.assertRaisesRegex(EvidenceError,'FROZEN_CPU_BATCH2_COMPANION_CHANGED'):
+    canonical_companion_text()
  def test_original_cpu_encoder_cannot_run_on_rocm_cpu_backend(self):
   import torch
   from unittest.mock import patch

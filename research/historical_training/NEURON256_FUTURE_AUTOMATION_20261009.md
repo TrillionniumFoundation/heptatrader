@@ -42,6 +42,19 @@ binding the exact immutable original bytes, source text, model, runtime,
 anchor, plan and tensor hash. The CPU signing private key never leaves
 qian-qi. The CPU worker cannot call IB and never sends broker orders.
 
+**Critical numeric preflight:** canonical CPU singleton batching did **not**
+reproduce the original checkpoint readout under 1e-6: one inspected row had
+raw error 1.4528632164e-7 and graph output error 2.5629997253e-6.
+Its failed receipt is preserved. The corrected CPU encoder restores the
+original two-input compute shape: a real fresh source input is paired only
+for CPU computation with a frozen, already-inspected, **unlabeled** 25-feature
+companion. The companion string is SHA256-pinned
+`34fb4b19fda875c297fc12e497cffb714a5c4de8e308cb129866249917f02865`,
+never predicted, scored, transmitted as an observation, or counted toward the
+18 prospective slots. On four previously inspected development inputs this
+restores bitwise equality to the original archived vectors; independent GPU
+readout must also pass 1e-6 before deploying any corrected release.
+
 The independent pocket4 user-only predictor verifies this receipt,
 original local input, source provenance and signed plan **before**
 taking the same existing heavy-worker lease. It re-verifies inside its
