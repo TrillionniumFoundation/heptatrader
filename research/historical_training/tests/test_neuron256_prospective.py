@@ -7,8 +7,13 @@ class ResidualDesignTests(unittest.TestCase):
  def plan(self):
   start=1791558600;anchors=[start,start+7200]+[1791803400+d*86400+k*7200 for d in range(4) for k in range(4)]
   p={'schema':'heptatrader.neuron256-seven-bin-future-plan.v1','family':FAMILY,'trial':1,'alpha':.025,'baselines':list(BASELINES),'anchors':anchors,
-   'registered_at_ms':start*1000-86400000,'laya29_end_ms':start*1000-3600000,'min_observed':16,'max_censored':2,'min_days':4,'min_mean_brier_gain':.001,
+   'parent_campaign_id':'da06786816f632ba53c6bd2de822f786408135cef93195a02c7c863e9aa4de16',
+   'registered_at_ms':start*1000-7200000,'laya29_end_ms':start*1000-10800000,'min_observed':16,'max_censored':2,'min_days':4,'min_mean_brier_gain':.001,
    'cpu_public_key_hex':'ab'*32,'cpu_backend':'2.11.0+cpu','cpu_emitter_sha256':'ab'*32,
+   'cpu_source_inventory':{'research/laya/common.py':'ab'*32,
+       'research/historical_training/neuron256_cpu_custody.py':'ab'*32,
+       'research/historical_training/neuron256_transport.py':'ab'*32,
+       **{'research/historical_training/module_'+str(i)+'.py':'ab'*32 for i in range(7)}},
    'runtime_sha256':{'research/historical_training/neuron256_cpu_custody.py':'11'*32},
    'trade_authority':False,'automatic_selection':False,'replay_missed_windows':False}
   p['plan_id']=digest(p);return p

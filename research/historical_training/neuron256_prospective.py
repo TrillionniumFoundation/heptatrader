@@ -14,6 +14,12 @@ EDGES=(-10.,-3.,-1.,1.,3.,10.)
 BASELINES=('prior','numeric','equal_mix','graph')
 RHO_GRID=(0.,.1,.25,.5,1.)
 FAMILY='NEURON256_PRIOR_RESIDUAL_LEAD1_HOLD3_SEVEN_BIN_PROSPECTIVE'
+PARENT_ID='da06786816f632ba53c6bd2de822f786408135cef93195a02c7c863e9aa4de16'
+PARENT_FUTURE_ANCHORS=(1791558600,1791565800,
+ 1791803400,1791810600,1791817800,1791825000,
+ 1791889800,1791897000,1791904200,1791911400,
+ 1791976200,1791983400,1791990600,1791997800,
+ 1792062600,1792069800,1792077000,1792084200)
 
 
 def valid_probs(values):
@@ -55,13 +61,24 @@ def validate_plan(p):
      or any(c not in '0123456789abcdef' for c in p['cpu_emitter_sha256'])):
   raise EvidenceError('FUTURE_PINNED_CPU_EMITTER_REQUIRED')
  stamps=p['anchors']
- if len(stamps)!=18 or stamps!=sorted(set(stamps)) or any(type(t)is not int or t%300 for t in stamps):raise EvidenceError('FIXED_EIGHTEEN_FUTURE_ANCHORS')
- if p['registered_at_ms']>=stamps[0]*1000 or p['laya29_end_ms']>=stamps[0]*1000:raise EvidenceError('FUTURE_AND_AFTER_LAYA29_REQUIRED')
+ if (stamps!=list(PARENT_FUTURE_ANCHORS) or p.get('parent_campaign_id')!=PARENT_ID
+     or any(type(t)is not int or t%300 for t in stamps)):
+  raise EvidenceError('FIXED_EIGHTEEN_FUTURE_ANCHORS')
+ if (p['registered_at_ms']<=p['laya29_end_ms'] or p['registered_at_ms']>=stamps[0]*1000
+     or p['laya29_end_ms']>=stamps[0]*1000):raise EvidenceError('FUTURE_AND_AFTER_LAYA29_REQUIRED')
  if any(a+1500>=b-3600 for a,b in zip(stamps,stamps[1:])):raise EvidenceError('FULL_INPUT_OUTCOME_OVERLAP')
  if p.get('min_observed')!=16 or p.get('max_censored')!=2 or p.get('min_days')!=4 or p.get('min_mean_brier_gain')!=.001:raise EvidenceError('SEVEN_BIN_SCREEN_THRESHOLDS')
  if p.get('trade_authority') is not False or p.get('automatic_selection') is not False or p.get('replay_missed_windows') is not False:raise EvidenceError('NO_TRADE_NO_REPLAY')
  if 'research/historical_training/neuron256_cpu_custody.py' not in p.get('runtime_sha256',{}):
   raise EvidenceError('CPU_CUSTODY_RUNTIME_NOT_PINNED')
+ cpu=p.get('cpu_source_inventory')
+ if (not isinstance(cpu,dict) or len(cpu)<10 or 'research/laya/common.py' not in cpu
+     or 'research/historical_training/neuron256_transport.py' not in cpu
+     or 'research/historical_training/neuron256_cpu_custody.py' not in cpu
+     or any((not isinstance(k,str) or Path(k).is_absolute() or '..' in Path(k).parts
+             or type(v)is not str or len(v)!=64 or any(x not in '0123456789abcdef' for x in v))
+            for k,v in cpu.items())):
+  raise EvidenceError('PINNED_CANONICAL_CPU_SOURCE_REQUIRED')
  return p
 
 
@@ -139,11 +156,14 @@ def validate_runtime(c):
  p=read(Path(c['root'])/'plan.json');validate_plan(p)
  from laya_cell.financial_forward_witness import verify_record
  seal=read(Path(c['root'])/'registration.json');verify_record(c,'registrar',seal)
- if seal['plan_id']!=p['plan_id'] or seal['plan_sha256']!=sha(Path(c['root'])/'plan.json') or seal['role_witness']['signed_at_ms']>=p['anchors'][0]*1000:raise EvidenceError('FROZEN_STUDY_REGISTRATION')
+ if (seal['plan_id']!=p['plan_id'] or seal['plan_sha256']!=sha(Path(c['root'])/'plan.json')
+     or seal['role_witness']['signed_at_ms']<p['registered_at_ms']
+     or seal['role_witness']['signed_at_ms']>=p['anchors'][0]*1000):raise EvidenceError('FROZEN_STUDY_REGISTRATION')
  candidate=validate_candidate(read(Path(c['root'])/'candidate.json'))
  if sha(Path(c['root'])/'candidate.json')!=p['candidate_sha256'] or candidate['candidate_id']!=p['candidate_id']:raise EvidenceError('STUDY_CANDIDATE_SUBSTITUTION')
  if sha(Path(c['parent_root'])/'plan.json')!=p['parent_plan_sha256']:raise EvidenceError('ORIGINAL_RAW_SOURCE_PLAN_CHANGED')
  if sha(c['period_path'])!=c['period_sha256']:raise EvidenceError('STUDY_ACCOUNTING_PERIOD_CHANGED')
+ root=Path(c['root'])
  cpu_root=Path(c.get('canonical_cpu_root',''))
  if not cpu_root.is_absolute() or not cpu_root.resolve().is_relative_to(root.resolve()):
   raise EvidenceError('CANONICAL_CPU_LOCAL_INBOX_SCOPE')
