@@ -1,5 +1,6 @@
 #include "../adapter_ib/ib_callback_economics.h"
 #include "ib_paper_execution_runtime_internal.h"
+#include "../adapter_ib/ib_admission_event_policy.h"
 #include "../adapter_ib/ib_market_data_farm.h"
 #include "../adapter_ib/ib_venue_correlation.h"
 #include "../adapter_ib/ib_order_parse_rejection.h"
@@ -656,6 +657,28 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
     {
         MarkFatalRuntimeError("OMS_BROKER_EVENT_WRITE_FAILED");
         return AdapterRouteAction::Fatal;
+    }
+    if (IsIbCorroboratedCashMarketDataRequestError(event) && m_adapter &&
+        event.connectionEpoch == m_adapter->GetConnectionEpoch() &&
+        event.brokerClientId == m_config.profile.clientId)
+    {
+        // The Broker refusal is already durably retained above. Retire only
+        // the exact pending secondary request, preserving the active pair's
+        // original timestamps and five-second validity. Never cancel a ticker
+        // that the Broker has explicitly rejected as not subscribed.
+        if (event.key == "354") {
+            std::lock_guard<std::recursive_mutex> quoteLock(
+                m_authoritativeQuoteSendMutex);
+            const auto nowMs = m_testHooks.quoteClockMs ?
+                m_testHooks.quoteClockMs() : NowEpochMs();
+            if (!m_quoteSubscriptions ||
+                !m_quoteSubscriptions->RejectSecondaryCashRefreshRequest(
+                    event, nowMs)) {
+                MarkFatalRuntimeError("IB_PAPER_MARKET_DATA_REJECTION_SCOPE_UNSAFE");
+                return AdapterRouteAction::Fatal;
+            }
+            NotifyTestStage("secondary_cash_pending_request_rejected");
+        }
     }
     const bool historicalIdentityMiss = !validIdentity &&
         (((event.type == IBEventType::ExecutionDetails && event.requestId >= 0) ||

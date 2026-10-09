@@ -690,6 +690,14 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
         EmitObsEvent("risk.client_upgrade_notice", "\"error_code\":2172");
         return; // event remains in the queue and is persisted by Execution.
     }
+    if (IsIbCorroboratedCashMarketDataRequestError(event) &&
+        event.connectionEpoch == m_connectionEpoch &&
+        event.brokerClientId == m_cfg.clientId) {
+        EmitObsEvent("market_data.local_request_failure",
+            "\"request_id\":" + std::to_string(event.requestId) +
+            ",\"error_code\":" + std::to_string(errorCode));
+        return; // Preserve the raw callback; no order or account effect.
+    }
     // A repeat-cancel diagnostic is not an economic failure or terminal proof.
     // Suppress ONLY a current-epoch, locally corroborated pending-cancel 10148;
     // do not globally whitelist this code or infer Filled from its description.
@@ -763,7 +771,10 @@ void HeptaIBGatewayAdapter::ApplyEventStateTransition(
          event.type == IBEventType::OrderStatus ||
          event.type == IBEventType::ExecutionDetails ||
          event.type == IBEventType::CompletedOrder ||
-         (event.type == IBEventType::Error && event.id >= 0)))
+         (event.type == IBEventType::Error && event.id >= 0 &&
+          !(IsIbCorroboratedCashMarketDataRequestError(event) &&
+            event.connectionEpoch == m_connectionEpoch &&
+            event.brokerClientId == m_cfg.clientId))))
         InvalidateRecoveryAuditBarrier(
             "IB_RECOVERY_AUDIT_LATE_BROKER_EVENT");
     ObserveEconomicFill(event);

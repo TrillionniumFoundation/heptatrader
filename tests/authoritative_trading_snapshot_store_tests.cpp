@@ -161,37 +161,44 @@ void TestStaleSecondaryCashRefreshKeepsPrimaryAndCannotForgeQuote()
     assert(set.BeginStaleSecondaryCashRefresh("EUR.USD",18,1,22000,5000,15000).accepted==false);
     tick(btcId,"1",85100,20000);tick(btcId,"2",85101,20001);
     const auto refresh=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22000,5000,15000);
-    assert(refresh.accepted && refresh.cancelRequestIds.size()==1);
-    assert(refresh.cancelRequestIds[0]==eurId && refresh.subscriptions.size()==1);
+    assert(refresh.accepted && refresh.cancelRequestIds.empty());
+    assert(refresh.subscriptions.size()==1);
     const int newEurId=refresh.subscriptions[0].requestId;
     assert(newEurId!=eurId && newEurId!=btcId);
     assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
-    assert(set.GetHealth().contracts.at("EUR.USD").requestId==newEurId);
-    assert(tick(eurId,"1",1.130,22001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
-    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==eurId);
+    assert(set.GetHealth().contracts.at("EUR.USD").pendingRequestId==newEurId);
+    assert(tick(eurId,"1",1.120,22001).status==IBAuthoritativeQuoteConsumeStatus::Applied);
+    assert(set.GetQuote("EUR.USD").askObservedAtMs==1004);
     assert(!set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22002,5000,15000).accepted);
     assert(set.RecordDispatchResult(1,newEurId,true));
     tick(newEurId,"1",1.122,22003);
-    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==eurId);
+    assert(set.GetQuote("EUR.USD").askObservedAtMs==1004);
     assert(tick(newEurId,"2",1.123,22004).write.accepted);
     assert(set.GetQuote("EUR.USD").HasQuote());
     assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
     assert(set.GetHealth().ReadyForOperations());
+    const auto retire=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,22005,5000,15000);
+    assert(retire.accepted&&retire.subscriptions.empty()&&retire.cancelRequestIds==std::vector<int>{eurId});
+    assert(set.RecordRetirementResult(1,eurId));
+    assert(!set.RecordRetirementResult(1,eurId));
     // Another stale interval must renew the same secondary instrument again,
     // without ever reusing a previous request ID or borrowing BTC's BID/ASK.
     const auto again=set.BeginStaleSecondaryCashRefresh("EUR.USD",17,1,41000,5000,15000);
-    assert(again.accepted && again.cancelRequestIds.size()==1);
-    assert(again.cancelRequestIds[0]==newEurId);
+    assert(again.accepted && again.cancelRequestIds.empty());
     assert(again.subscriptions.size()==1);
     const int thirdEurId=again.subscriptions[0].requestId;
     assert(thirdEurId!=newEurId && thirdEurId!=eurId);
     assert(set.GetHealth().contracts.at("BTC.USD").requestId==btcId);
-    assert(tick(newEurId,"1",1.2,41001).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
+    assert(tick(newEurId,"1",1.124,41001).status==IBAuthoritativeQuoteConsumeStatus::Applied);
     assert(set.RecordDispatchResult(1,thirdEurId,true));
     tick(thirdEurId,"1",1.125,41002);
-    assert(!set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==newEurId);
     tick(thirdEurId,"2",1.126,41003);
     assert(set.GetQuote("EUR.USD").HasQuote());
+    assert(set.GetHealth().contracts.at("EUR.USD").requestId==thirdEurId);
+    assert(tick(newEurId,"2",1.126,41004).status==IBAuthoritativeQuoteConsumeStatus::Ignored);
     // Full broker reconnect: all old-epoch BID/ASK and request IDs are
     // untrusted, and both instruments need fresh callbacks.
     const auto reconnect=set.BeginCycle(18,2,50000);
@@ -251,8 +258,8 @@ void TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest()
     // disappeared before BID/ASK arrived.
     const auto first=quotes.BeginStaleSecondaryCashRefresh(
         "EUR.USD",17,1,17000,5000,15000);
-    assert(first.accepted && first.cancelRequestIds.size()==1);
-    assert(first.cancelRequestIds[0]==eurId && first.subscriptions.size()==1);
+    assert(first.accepted && first.cancelRequestIds.empty());
+    assert(first.subscriptions.size()==1);
     const int refused1=first.subscriptions[0].requestId;
     assert(quotes.RecordDispatchResult(1,refused1,false));
     assert(!quotes.GetQuote("EUR.USD").HasQuote());
@@ -269,7 +276,7 @@ void TestSecondaryCashFarmDeferralDoesNotReplayAnUnsentRequest()
     assert(refused2!=refused1 && refused2!=eurId);
     assert(quotes.RecordDispatchResult(1,refused2,false));
     assert(tick(eurId,"1",1.12,32001).status==
-           IBAuthoritativeQuoteConsumeStatus::Ignored);
+           IBAuthoritativeQuoteConsumeStatus::Applied);
     assert(tick(refused1,"2",1.13,32002).status==
            IBAuthoritativeQuoteConsumeStatus::Ignored);
     assert(!quotes.GetQuote("EUR.USD").HasQuote());

@@ -1,6 +1,7 @@
 ﻿#include "ib_admission_event_policy.h"
 #include "ib_callback_economics.h"
 #include "ib_local_cancel_notice.h"
+#include "ib_local_market_data_request.h"
 #include "ib_api_wrapper.h"
 
 #include <algorithm>
@@ -863,6 +864,7 @@ public:
         m_connectionEpoch.store(
             connectionEpoch, std::memory_order_release);
         m_eventIngressFarmMarker.Reset(connectionEpoch);
+        m_marketDataRequests.Reset(connectionEpoch);
     }
 
     void SetEventIngressFence(
@@ -1263,10 +1265,10 @@ public:
         std::uint64_t admissionGeneration = 0;
         bool cleanupNeeded = false;
         bool implicitAdmissionCompleted = false;
-        // Construct all potentially allocating SDK argument objects before
-        // the reservation CAS.  Once the sender wins, the only operation
-        // between the linearization point and IB is the single reqMktData
-        // call (plus the atomic bookkeeping needed for its cleanup).
+        // Construct SDK argument objects before the reservation CAS. No
+        // admission/queue mutex is held across the SDK send. The local CASH
+        // request ledger is recorded at that actual send boundary; a failure
+        // in its bounded bookkeeping makes this admission fail closed.
         const TagValueListSPtr mktDataOptions(new TagValueList());
         auto cleanup = MakeIBApiScopeExit(
             [this, &cleanupNeeded, &implicitAdmission,
@@ -1278,7 +1280,7 @@ public:
                 if (implicitAdmission && !implicitAdmissionCompleted) {
                     // Legacy/unfenced callers still get a complete local
                     // admission lifecycle.  Without this, an early return
-                    // after reqMarketDataType() would leave OPEN forever and
+                    // after connection/farm preflight would leave OPEN forever and
                     // poison every later request on this wrapper.
                     if (!m_eventIngressAdmissionState.Complete())
                         (void)m_eventIngressAdmissionState.MarkFault();
@@ -1338,10 +1340,9 @@ public:
                 admissionGeneration, std::memory_order_release);
         }
         try {
-            // This control call is deliberately before the final reservation;
-            // any synchronous blocking callback it produces therefore wins
-            // Open -> Blocked and prevents the real quote request.
-            m_client.reqMarketDataType(m_marketDataType);
+            // Connect already selected this immutable connection's data type.
+            // Reissuing the global control on every CASH renewal perturbs all
+            // subscriptions and is not a freshness or entitlement witness.
             if (!m_connected.load(std::memory_order_acquire) ||
                 !m_client.isSocketOK() ||
                 m_eventIngressFarmMarker.IsPending(
@@ -1392,6 +1393,15 @@ public:
                     std::memory_order_release);
                 cleanupNeeded = true;
             }
+            if (cashContract &&
+                reqId >= IBLocalMarketDataRequestTracker::kFirstMarketRequestId &&
+                !m_marketDataRequests.BeginSent(requestEpoch, reqId, c))
+                throw std::runtime_error("IB_MARKET_DATA_REQUEST_IDENTITY_UNSAFE");
+            Trace("market_data.reqMktData request=" + std::to_string(reqId) +
+                " epoch=" + std::to_string(requestEpoch) +
+                " secType=" + c.secType + " symbol=" + c.symbol +
+                " currency=" + c.currency + " exchange=" + c.exchange +
+                " dataType=" + std::to_string(m_marketDataType));
             m_client.reqMktData(reqId, ct, "", false, false,
                                 mktDataOptions);
             // A synchronous SDK return does not prove that the socket stayed
@@ -1404,8 +1414,8 @@ public:
         }
         catch (...) {
             // An SDK exception does not prove that no bytes/request reached
-            // IB (and reqMarketDataType itself may have synchronously
-            // delivered a fatal callback).  Preserve a sticky fault before
+            // IB (and the SDK request may have synchronously delivered a
+            // fatal callback). Preserve a sticky fault before
             // cleanup so this generation can never be silently reopened.
             (void)m_eventIngressAdmissionState.MarkFault();
             if (!m_connected.load(std::memory_order_acquire) ||
@@ -1419,7 +1429,32 @@ public:
 
     bool CancelMktData(int reqId) override {
         if (!m_connected) return false; // cancel subscription, not an order
-        m_client.cancelMktData(reqId);
+        const auto epoch = m_connectionEpoch.load(std::memory_order_acquire);
+        IBContractLite contract;
+        const bool locallyRecordedCash =
+            m_marketDataRequests.GetContract(epoch, reqId, contract);
+        if (locallyRecordedCash) {
+            if (m_marketDataRequests.Rejected(epoch, reqId) ||
+                m_marketDataRequests.CancelRecorded(epoch, reqId))
+                return true; // No Broker ticker remains; do not manufacture 300.
+        }
+        try {
+            Trace("market_data.cancelMktData request=" + std::to_string(reqId) +
+                " epoch=" + std::to_string(epoch));
+            // Publish immediately at the actual SDK boundary, after all
+            // allocating diagnostics, so a synchronous error callback can
+            // see this exact cancellation. Uncertain SDK effects fail closed.
+            if (locallyRecordedCash &&
+                (!m_marketDataRequests.BeginCancel(epoch, reqId) ||
+                 !m_marketDataRequests.MarkCancelSent(epoch, reqId))) {
+                (void)m_eventIngressAdmissionState.MarkFault();
+                return false;
+            }
+            m_client.cancelMktData(reqId);
+        } catch (...) {
+            (void)m_eventIngressAdmissionState.MarkFault();
+            throw;
+        }
         return true;
     }
 
@@ -1609,6 +1644,9 @@ public:
             IBEventType::Error, static_cast<long long>(id),
             std::to_string(code), errorString, 0.0);
         event.advancedOrderRejectJson = advancedOrderRejectJson;
+        event.connectionEpoch = m_connectionEpoch.load(std::memory_order_acquire);
+        (void)m_marketDataRequests.CorroborateError(
+            event, event.connectionEpoch, m_params.clientId);
         PushEvent(std::move(event));
     }
     void connectionClosed() override {
@@ -1627,6 +1665,9 @@ public:
 
     // Minimal no-op overrides for compatibility
     void tickPrice(TickerId reqId, TickType field, double price, const TickAttrib&) override {
+        (void)m_marketDataRequests.ObserveTick(
+            m_connectionEpoch.load(std::memory_order_acquire), reqId,
+            std::to_string((int)field), price);
         PushEvent(MakeIBEvent(IBEventType::TickPrice, static_cast<long long>(reqId), std::to_string((int)field), "", price));
     }
     void tickSize(TickerId, TickType, Decimal) override {}
@@ -1975,6 +2016,10 @@ private:
         // 202 afterwards. This is not an idle quote-transport failure. It still
         // blocks OPEN/RESERVED admission and remains in the normal OMS/risk path.
         const bool corroboratedCancel = m_cancelNoticeWitness.Corroborates(e);
+        const bool localMarketDataFailure =
+            IsIbCorroboratedCashMarketDataRequestError(e) &&
+            e.connectionEpoch == currentEpoch &&
+            e.brokerClientId == m_params.clientId;
         const bool blocking = IsAdmissionBlockingEvent(e);
         if (blocking && !staleEpoch) {
             // A callback never waits for the sender.  The state CAS is the
@@ -1983,7 +2028,8 @@ private:
             // the callback makes that reservation permanently bad so the
             // runtime must clean it up and fail closed.
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
-                m_eventIngressAdmissionState.ObserveBlockingCallback(!corroboratedCancel);
+                m_eventIngressAdmissionState.ObserveBlockingCallback(
+                    !corroboratedCancel && !localMarketDataFailure);
             (void)disposition;
         } else if (cashFarmWarning && !staleEpoch) {
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
@@ -2171,6 +2217,7 @@ private:
     IBPositionsRequestFence m_positionsRequestFence;
     IBSubmittedOrderQuantityTracker m_orderQuantities;
     IBLocalCancelNoticeWitness m_cancelNoticeWitness;
+    IBLocalMarketDataRequestTracker m_marketDataRequests;
 };
 
 #else

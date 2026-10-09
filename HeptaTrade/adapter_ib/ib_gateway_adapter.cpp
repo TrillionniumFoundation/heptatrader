@@ -972,7 +972,19 @@ bool HeptaIBGatewayAdapter::ReqMktData(int reqId, const IBContractLite& c) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (!m_api || m_terminalTransportHalted || !m_api->IsConnected())
         return false;
-    return m_api->ReqMktData(reqId, c);
+    EmitObsEvent("market_data.request_started",
+        "\"request_id\":" + std::to_string(reqId) +
+        ",\"connection_epoch\":" + std::to_string(m_connectionEpoch) +
+        ",\"symbol\":\"" + EscapeJson(c.symbol) + "\"" +
+        ",\"security_type\":\"" + EscapeJson(c.secType) + "\"" +
+        ",\"exchange\":\"" + EscapeJson(c.exchange) + "\"" +
+        ",\"currency\":\"" + EscapeJson(c.currency) + "\"");
+    const bool sent = m_api->ReqMktData(reqId, c);
+    EmitObsEvent("market_data.request_outcome",
+        "\"request_id\":" + std::to_string(reqId) +
+        ",\"connection_epoch\":" + std::to_string(m_connectionEpoch) +
+        ",\"dispatch_accepted\":" + (sent ? "true" : "false"));
+    return sent;
 }
 
 std::recursive_mutex& HeptaIBGatewayAdapter::EventIngressFence() {
@@ -1012,7 +1024,15 @@ bool HeptaIBGatewayAdapter::CancelMktData(int reqId) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (!m_api || m_terminalTransportHalted || !m_api->IsConnected())
         return false;
-    return m_api->CancelMktData(reqId);
+    EmitObsEvent("market_data.cancel_started",
+        "\"request_id\":" + std::to_string(reqId) +
+        ",\"connection_epoch\":" + std::to_string(m_connectionEpoch));
+    const bool sent = m_api->CancelMktData(reqId);
+    EmitObsEvent("market_data.cancel_outcome",
+        "\"request_id\":" + std::to_string(reqId) +
+        ",\"connection_epoch\":" + std::to_string(m_connectionEpoch) +
+        ",\"dispatch_accepted\":" + (sent ? "true" : "false"));
+    return sent;
 }
 
 void HeptaIBGatewayAdapter::UpdateReferencePrice(double price) {

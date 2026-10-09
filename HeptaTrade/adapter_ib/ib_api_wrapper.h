@@ -112,6 +112,10 @@ struct IBEvent {
     double number = 0.0;
     double number2 = 0.0;
     double number3 = 0.0;
+    // Set only by the SDK wrapper's current-connection request ledger for a
+    // pending CASH request rejection or its actually sent cancellation.
+    // This is never a successful subscription or fresh-price witness.
+    bool localMarketDataRequestError = false;
     // SDK execDetails omits total/remaining size. False forbids interpreting
     // the placeholder number3=0 as an actual completion witness.
     bool remainingQuantityKnown = true;

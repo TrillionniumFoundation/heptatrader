@@ -73,17 +73,43 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
         // Renewal schedules real callbacks; it never widens quote validity.
         // Reserve two seconds for this 1s poll and actual BID/ASK delivery so a
         // 5s valid quote does not become a >5s gap while waiting for renewal.
-        // Bound replacements to one send/cancel pair per 3s for this secondary.
+        // The old stream stays active until the replacement's own real pair
+        // arrives. A slow accepted stream is not cancelled/reissued every 3s.
         const std::uint64_t renewAfterMs = m_config.quoteMaxAgeMs > 2000 ?
             m_config.quoteMaxAgeMs - 2000 : m_config.quoteMaxAgeMs;
         const auto plan = m_quoteSubscriptions->BeginStaleSecondaryCashRefresh(
-            item.first, epoch, health.generation, nowMs, renewAfterMs, 3000);
+            item.first, epoch, health.generation, nowMs, renewAfterMs, 3000,
+            m_config.quoteMaxAgeMs);
         if (!plan.accepted) continue;
-        if (plan.cancelRequestIds.size() > 1 ||
-            plan.subscriptions.size() != 1)
+        const bool retirement = plan.subscriptions.empty() &&
+            plan.cancelRequestIds.size() == 1 &&
+            plan.reasonCode == "QUOTE_REFRESH_RETIRE_PREVIOUS";
+        if (!retirement && (!plan.cancelRequestIds.empty() ||
+            plan.subscriptions.size() != 1))
         {
             reason = "IB_PAPER_STALE_CASH_REFRESH_PLAN_INVALID";
             return false;
+        }
+        if (retirement)
+        {
+            bool cancelled = false;
+            try { cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0]); }
+            catch (...) {}
+            if (!cancelled || !m_quoteSubscriptions->RecordRetirementResult(
+                    plan.generation, plan.cancelRequestIds[0]))
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE";
+                return false;
+            }
+            if (!m_adapter->IsConnected() ||
+                m_adapter->GetConnectionEpoch() != epoch ||
+                m_adapter->EventIngressAdmissionFailed())
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_TRANSPORT_UNSAFE";
+                return false;
+            }
+            NotifyTestStage("stale_cash_quote_previous_retired");
+            continue;
         }
         const auto& renewed = plan.subscriptions[0];
         bool cancelled = true;

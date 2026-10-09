@@ -4,6 +4,7 @@
 #include "execution/execution_coordinator.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "adapter_ib/ib_callback_economics.h"
+#include "adapter_ib/ib_admission_event_policy.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -72,13 +74,17 @@ static IBContractLite contract(bool btc) {
 struct Shared {
     std::mutex mutex;
     std::deque<int> controls;
+    std::deque<IBEvent> injectedErrors;
     std::map<std::string,unsigned> stages;
     std::atomic<unsigned> connectCount{0},orderCalls{0},accountCalls{0},positionCalls{0},openCalls{0},terminalCalls{0},execCalls{0};
+    std::atomic<unsigned> injectedErrorsDequeued{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
+    std::atomic<bool> emitRetiredCashCancelErrors{false};
     bool seeded=false;
     void signal(int code){std::lock_guard<std::mutex> lock(mutex);controls.push_back(code);}
+    void injectError(const IBEvent& event){std::lock_guard<std::mutex> lock(mutex);injectedErrors.push_back(event);}
     void stage(const char* name){std::lock_guard<std::mutex> lock(mutex);++stages[name];}
     unsigned count(const char* name){std::lock_guard<std::mutex> lock(mutex);return stages[name];}
 };
@@ -166,7 +172,23 @@ public:
         if(c.secType=="CASH"&&!cashReady)return false;
         check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;return true;
     }
-    bool CancelMktData(int id)override {check(quotes.erase(id)==1,"cancel owned quote only");return true;}
+    bool CancelMktData(int id)override {
+        const auto found=quotes.find(id);check(found!=quotes.end(),"cancel owned quote only");
+        const auto cancelled=found->second;quotes.erase(found);
+        if(s->emitRetiredCashCancelErrors&&cancelled.secType=="CASH") {
+            // The fixture supplies the same provenance as the SDK's locally
+            // sent/cancelled CASH ledger, only after this exact request was
+            // actually retired. Four diagnostics exceed the ordinary fuse.
+            for(unsigned i=0;i<4;++i) {
+                auto e=make(IBEventType::Error);e.account.clear();
+                e.id=e.requestId=id;e.key="300";e.contract=cancelled;
+                e.localMarketDataRequestError=true;
+                e.value="OFFLINE_RETIRED_CASH_REQUEST_300:"+std::to_string(i);
+                events.push_back(e);
+            }
+        }
+        return true;
+    }
     bool PlaceOrder(long,const IBContractLite&,const IBOrderLite&)override {++s->orderCalls;throw std::runtime_error("NO_ORDER_TRANSPORT");}
     bool CancelOrder(long)override {++s->orderCalls;throw std::runtime_error("NO_CANCEL_TRANSPORT");}
     bool PollOnce(int)override {
@@ -177,10 +199,17 @@ public:
                 e.number=q.second.secType=="CASH"?(leg==1?1.12:1.1201):(leg==1?80000:80001);events.push_back(e);
             }
         }
-        {std::lock_guard<std::mutex> lock(s->mutex);while(!s->controls.empty()){control(s->controls.front());s->controls.pop_front();}}
+        {std::lock_guard<std::mutex> lock(s->mutex);while(!s->controls.empty()){control(s->controls.front());s->controls.pop_front();}
+            while(!s->injectedErrors.empty()){events.push_back(s->injectedErrors.front());s->injectedErrors.pop_front();}}
         return true;
     }
-    bool TryDequeueEvent(IBEvent& e)override {if(events.empty())return false;e=events.front();events.pop_front();return true;}
+    bool TryDequeueEvent(IBEvent& e)override {
+        if(events.empty())return false;e=events.front();events.pop_front();
+        const std::string injectedPrefix="OFFLINE_INJECTED:";
+        if(e.type==IBEventType::Error&&e.value.compare(0,injectedPrefix.size(),injectedPrefix)==0)
+            ++s->injectedErrorsDequeued;
+        return true;
+    }
     long GetLastValidOrderId()const override{return 900;}
 };
 static int listener(const std::string& path) {
@@ -351,7 +380,175 @@ struct Fixture {
         const auto audit=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
         check(audit.barrierComplete&&audit.risk.accountComplete&&audit.risk.positionsComplete&&audit.risk.fxCashComplete&&audit.active.complete&&audit.terminal.complete,"ALL_RECOVERY_BARRIERS");
     }
+    unsigned retainedErrorCount(long requestId,const std::string& messagePrefix) {
+        std::ifstream input(savedConfig.journalPath);std::string line;unsigned count=0;
+        while(std::getline(input,line)) {
+            // A concurrent append may leave its last line incomplete. It is
+            // never accepted as evidence; the bounded caller retries it.
+            OmsJournalEvent e;if(!OmsJournal::ParseJsonLine(line,e)) {
+                check(input.eof(),"malformed committed OMS error receipt");break;
+            }
+            if(e.eventType!="broker_error"||e.brokerRequestId!=requestId||
+               e.brokerMessage.compare(0,messagePrefix.size(),messagePrefix)!=0)continue;
+            check(e.brokerCallbackType=="error"&&
+                  e.status=="Error"&&e.brokerClientId>=-1,
+                  "raw request error identity retained");
+            ++count;
+        }
+        return count;
+    }
+    void waitForRetainedErrors(long requestId,const std::string& prefix,unsigned expected) {
+        const auto deadline=ms()+1500;
+        while(ms()<deadline&&retainedErrorCount(requestId,prefix)<expected&&
+              !runtime->HasFatalRuntimeError())
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(retainedErrorCount(requestId,prefix)==expected,"exact raw error callbacks durably retained");
+    }
+    void localCancelledCashErrorsPreserveEconomicRecovery() {
+        const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(before.barrierComplete&&before.active.complete&&before.terminal.complete&&
+              before.risk.complete&&before.risk.coherentRefreshComplete&&
+              !before.postFillRiskReconciliationPending,"complete economic barrier before market-data diagnostic");
+        const auto originals=originalCommands();
+        const auto quotesBefore=runtime->QuoteHealthForObservation();
+        const int btc=quotesBefore.contracts.at("BTC.USD").requestId;
+        const int eur=quotesBefore.contracts.at("EUR.USD").requestId;
+        const int extraCashRequest=1000901;
+        check(extraCashRequest!=btc&&extraCashRequest!=eur,"isolated extra CASH ticker identity");
+        check(!runtime->Adapter().IsCircuitBreakerTripped(),"error fuse initially clear");
+        // No current subscription is replaced. The real adapter dispatches
+        // and cancels a separate locally owned ticker; its late 300 callbacks
+        // then traverse the complete Runtime poll/adapter/OMS path.
+        check(runtime->Adapter().ReqMktData(extraCashRequest,contract(false)),"extra CASH request actually dispatched");
+        shared->emitRetiredCashCancelErrors=true;
+        check(runtime->Adapter().CancelMktData(extraCashRequest),"exact extra CASH ticker actually cancelled");
+        shared->emitRetiredCashCancelErrors=false;
+        waitForRetainedErrors(extraCashRequest,"OFFLINE_RETIRED_CASH_REQUEST_300:",4);
+        const auto after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(runtime->IsRunning()&&!runtime->HasFatalRuntimeError()&&after.barrierComplete&&
+              after.reasonCode.empty()&&!after.newConnectionEpochRequired,
+              "known retired CASH errors preserve recovery barrier");
+        check(after.active.complete&&after.active.connectionEpoch==before.active.connectionEpoch&&
+              after.active.generation==before.active.generation&&
+              after.active.activeOrderIds==before.active.activeOrderIds&&
+              after.active.activeOrderIdsByCorrelation==before.active.activeOrderIdsByCorrelation,
+              "market-data diagnostic cannot change active-order proof");
+        check(after.terminal.complete&&after.terminal.connectionEpoch==before.terminal.connectionEpoch&&
+              after.terminal.generation==before.terminal.generation&&
+              after.terminal.terminalOrderIdsByCorrelation==before.terminal.terminalOrderIdsByCorrelation&&
+              after.terminal.executionCorrelations==before.terminal.executionCorrelations,
+              "market-data diagnostic cannot change terminal economic proof");
+        check(after.risk.complete&&after.risk.coherentRefreshComplete&&after.risk.accountComplete&&
+              after.risk.positionsComplete&&after.risk.fxCashComplete&&
+              after.risk.connectionEpoch==before.risk.connectionEpoch&&
+              after.risk.generation==before.risk.generation&&
+              after.risk.accountGeneration==before.risk.accountGeneration&&
+              after.risk.positionsGeneration==before.risk.positionsGeneration&&
+              after.risk.fxCashGeneration==before.risk.fxCashGeneration&&
+              after.risk.grossAbsolutePosition==before.risk.grossAbsolutePosition&&
+              after.positionQuantities==before.positionQuantities&&
+              after.exposureGeneration==before.exposureGeneration&&
+              after.terminalExposureGeneration==before.terminalExposureGeneration&&
+              after.riskAbsorbedExposureGeneration==before.riskAbsorbedExposureGeneration&&
+              !after.postFillRiskReconciliationPending,
+              "all economic generations and nonzero FX/BTC positions stay unchanged");
+        check(!runtime->Adapter().IsCircuitBreakerTripped(),"four scoped market-data errors do not accumulate ordinary fuse");
+        check(originalCommands()==originals&&shared->orderCalls==0,"no order ownership or send affected by ticker cancellation");
+        const auto quotesAfter=runtime->QuoteHealthForObservation();
+        check(quotesAfter.contracts.at("BTC.USD").requestId==btc&&
+              quotesAfter.contracts.at("EUR.USD").requestId==eur&&
+              quotesAfter.contracts.at("BTC.USD").quote.HasQuote()&&
+              quotesAfter.contracts.at("EUR.USD").quote.HasQuote(),
+              "retired third ticker cannot replace either current quote");
+        std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
+        std::string line;unsigned localDiagnostics=0;
+        while(std::getline(obs,line))if(line.find("\"event\":\"market_data.local_request_failure\"")!=std::string::npos&&
+                                      line.find("\"request_id\":"+std::to_string(extraCashRequest))!=std::string::npos)
+            ++localDiagnostics;
+        check(localDiagnostics==4,"each raw local failure also emits its market-data diagnostic");
+        std::ifstream raw(savedConfig.journalPath);unsigned exactRawErrors=0;
+        const std::string localErrorPrefix="OFFLINE_RETIRED_CASH_REQUEST_300:";
+        while(std::getline(raw,line)) {
+            OmsJournalEvent e;if(!OmsJournal::ParseJsonLine(line,e)) {
+                check(raw.eof(),"malformed committed local error receipt");break;
+            }
+            if(e.eventType!="broker_error"||e.brokerRequestId!=extraCashRequest)continue;
+            check(e.orderId==extraCashRequest&&e.brokerErrorCode==300&&e.brokerClientId==701&&
+                  e.brokerConnectionEpoch==before.risk.connectionEpoch&&
+                  e.source=="ib-api-callback"&&e.account.empty()&&e.reqId.empty()&&
+                  e.brokerAdvancedOrderRejectJson.empty()&&
+                  e.brokerMessage.compare(0,localErrorPrefix.size(),localErrorPrefix)==0,
+                  "local cancellation diagnostic retained without attributing it to an order or account");
+            ++exactRawErrors;
+        }
+        check(exactRawErrors==4,"all four original local callbacks retained in OMS");
+    }
+    void uncorroboratedMarketDataErrorClosesRecovery(IBEvent event) {
+        const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(before.barrierComplete,"negative error fixture starts with complete barrier");
+        event.value="OFFLINE_INJECTED:UNCORROBORATED_MARKET_DATA_ERROR";
+        const auto originals=originalCommands();shared->injectError(event);
+        waitForRetainedErrors(event.requestId,event.value,1);
+        const auto after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(!after.barrierComplete&&after.reasonCode=="IB_RECOVERY_AUDIT_LATE_BROKER_EVENT",
+              "unknown or wrong-scoped request error cannot keep economic recovery authorized");
+        check(after.positionQuantities==before.positionQuantities&&
+              after.exposureGeneration==before.exposureGeneration&&
+              originalCommands()==originals&&shared->orderCalls==0,
+              "refusing diagnostic cannot invent a fill, clear position, or resend original order");
+    }
+    void differentEpochMarketDataErrorsCannotAuthorizeCurrentEpoch() {
+        reconnect(1101);const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        const auto current=runtime->Adapter().GetConnectionEpoch();
+        check(current>1&&before.barrierComplete,"old nonzero epoch exists for boundary regression");
+        const unsigned consumed=shared->injectedErrorsDequeued.load();
+        for(const auto epoch:{current-1,current+1}) {
+            IBEvent e;e.type=IBEventType::Error;e.key="300";e.id=e.requestId=1000901;
+            e.connectionEpoch=epoch;e.brokerClientId=701;e.contract=contract(false);
+            e.localMarketDataRequestError=true;e.value="OFFLINE_INJECTED:DIFFERENT_EPOCH_MARKET_DATA_ERROR";
+            shared->injectError(e);
+        }
+        const auto deadline=ms()+1500;
+        while(ms()<deadline&&shared->injectedErrorsDequeued<consumed+2)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(shared->injectedErrorsDequeued==consumed+2,"real adapter consumed both old/future callbacks");
+        const auto after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(after.barrierComplete&&after.risk.connectionEpoch==current&&
+              after.risk.generation==before.risk.generation&&
+              after.positionQuantities==before.positionQuantities&&
+              after.exposureGeneration==before.exposureGeneration&&
+              !runtime->Adapter().IsCircuitBreakerTripped()&&shared->orderCalls==0,
+              "existing epoch filter quarantines errors rather than reinterpreting them as current proof");
+        check(retainedErrorCount(1000901,"OFFLINE_INJECTED:DIFFERENT_EPOCH_MARKET_DATA_ERROR")==0,
+              "wrong-epoch diagnostic is not relabelled as a current OMS callback");
+        std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
+        std::string line;unsigned quarantined=0;
+        while(std::getline(obs,line))if(line.find("\"event\":\"event.stale_connection_epoch\"")!=std::string::npos)
+            ++quarantined;
+        check(quarantined>=2,"old and future callback epochs retain quarantine diagnostics");
+    }
 };
+static IBEvent corroboratedCashError(std::uint64_t epoch,const std::string& code) {
+    IBEvent e;e.type=IBEventType::Error;e.key=code;e.id=e.requestId=1000901;
+    e.connectionEpoch=epoch;e.brokerClientId=701;e.contract=contract(false);
+    e.localMarketDataRequestError=true;return e;
+}
+static void unknownRequestErrorsStillBlockQuoteAdmission() {
+    // Numeric 300/354 never suffice to rearm a sender. Exercise the actual
+    // admission state on both sides of its reservation linearization point.
+    for(const std::string code:{"300","354"})for(bool reserved:{false,true}) {
+        auto e=corroboratedCashError(1,code);e.localMarketDataRequestError=false;
+        check(!IsIbCorroboratedCashMarketDataRequestError(e)&&IbAdmissionBlockingEvent(e),
+              "unknown market-data error remains a blocking callback");
+        IBMarketDataAdmissionState admission;std::uint64_t generation=0;
+        check(admission.Begin(generation),"negative quote admission opens");
+        if(reserved)check(admission.TryReserve(generation),"negative quote admission reserves");
+        admission.ObserveBlockingCallback();
+        check(admission.IsFailed(),"unknown callback blocks actual quote admission");
+        if(reserved)check(!admission.EndSend(generation,false),"unsafe reserved send cannot settle cleanly");
+        else check(!admission.TryReserve(generation),"unsafe open admission cannot reserve");
+    }
+}
 int main(){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
@@ -363,6 +560,28 @@ int main(){try{
     {Fixture f;f.secondaryFarmRecovery();}
     {Fixture f;f.activeOrderFailsClosed();}
     {Fixture f(false,true);f.unknownOutcomeSurvivesReconstruction();}
-    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"live_recovery_qualified\":false,\"scenarios\":8}"<<std::endl;
+    {Fixture f(true);f.localCancelledCashErrorsPreserveEconomicRecovery();}
+    {Fixture f(true);f.differentEpochMarketDataErrorsCannotAuthorizeCurrentEpoch();}
+    const std::vector<std::function<void(IBEvent&)>> invalidMarketDataScopes={
+        [](IBEvent& e){e.localMarketDataRequestError=false;},
+        [](IBEvent& e){e.key="354";e.localMarketDataRequestError=false;},
+        [](IBEvent& e){e.brokerClientId=702;},
+        [](IBEvent& e){e.brokerClientId=-1;},
+        [](IBEvent& e){e.account="DU90001";},
+        [](IBEvent& e){e.order.orderRef="foreign-order-reference";},
+        [](IBEvent& e){e.advancedOrderRejectJson="{}";},
+        [](IBEvent& e){e.requestId=e.id+1;},
+        [](IBEvent& e){e.id=e.requestId=999999;},
+        [](IBEvent& e){e.contract.secType="CRYPTO";},
+        [](IBEvent& e){e.contract.exchange.clear();},
+        [](IBEvent& e){e.connectionEpoch=0;},
+        [](IBEvent& e){e.key="301";}
+    };
+    for(const auto& invalidate:invalidMarketDataScopes) {
+        Fixture f(true);auto e=corroboratedCashError(f.runtime->Adapter().GetConnectionEpoch(),"300");
+        invalidate(e);f.uncorroboratedMarketDataErrorClosesRecovery(e);
+    }
+    unknownRequestErrorsStillBlockQuoteAdmission();
+    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<10+invalidMarketDataScopes.size()<<"}"<<std::endl;
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}

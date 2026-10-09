@@ -110,15 +110,10 @@ bool IbPaperExecutionRuntimeComposition::StopQuoteSubscriptions(
     // connection/fatal reason into a spurious cancel failure.
     if (m_adapter && m_adapter->IsConnected())
     {
-        for (std::map<std::string, IBAuthoritativeQuoteContractHealth>::const_iterator it =
-                 health.contracts.begin(); it != health.contracts.end(); ++it)
+        for (const int requestId : health.dispatchedRequestIds)
         {
-            if (it->second.active && it->second.dispatchAccepted &&
-                it->second.requestId > 0)
-            {
-                if (!m_adapter->CancelMktData(it->second.requestId))
-                    cancellationFailed = true;
-            }
+            if (!m_adapter->CancelMktData(requestId))
+                cancellationFailed = true;
         }
     }
     m_quoteSubscriptions->AbortCycle(health.generation);
