@@ -545,8 +545,17 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
         if(reserved)check(admission.TryReserve(generation),"negative quote admission reserves");
         admission.ObserveBlockingCallback();
         check(admission.IsFailed(),"unknown callback blocks actual quote admission");
-        if(reserved)check(!admission.EndSend(generation,false),"unsafe reserved send cannot settle cleanly");
-        else check(!admission.TryReserve(generation),"unsafe open admission cannot reserve");
+        if(reserved) {
+            check(admission.EndSend(generation,false),"unsafe reserved send settles its lifecycle");
+            check(admission.GetPhase()==IBMarketDataAdmissionState::Blocked&&admission.IsFailed(),
+                  "settled unsafe send remains blocked and faulted");
+        } else check(!admission.TryReserve(generation),"unsafe open admission cannot reserve");
+        check(admission.Complete(),"failed admission closes its lifecycle");
+        check(admission.GetPhase()==IBMarketDataAdmissionState::Idle&&admission.IsFailed(),
+              "closing failed admission never clears its sticky fault");
+        std::uint64_t nextGeneration=0;
+        check(!admission.Begin(nextGeneration)&&nextGeneration==0&&
+              !admission.TryReserve(generation),"failed admission cannot reopen or reserve again");
     }
 }
 int main(){try{
