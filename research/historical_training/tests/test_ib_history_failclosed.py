@@ -116,16 +116,90 @@ class HistoricalFailClosedTests(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceError, "RESUME_CHUNK_CHANGED"):
                 verified_receipt(chunk, plan)
 
-    def test_pinned_history_client_globally_fenced_across_roots(self):
+    def test_pinned_history_client_globally_fenced_across_root_parents(self):
+        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
-            left = Path(td) / "first"
-            right = Path(td) / "second"
-            with global_history_lock(left):
-                with self.assertRaises(BlockingIOError):
-                    with global_history_lock(right):
-                        self.fail("second history session acquired the same pinned client")
-            with global_history_lock(right):
-                self.assertTrue((Path(td) / "ib-history-client-8984.lock").exists())
+            lock_dir = Path(td) / 'shared-locks'
+            # Deliberately use two unrelated output parents.
+            left = Path(td) / 'left-project' / 'history-v3'
+            right = Path(td) / 'right-project' / 'history-v4'
+            with patch('historical_training.ib_history.HISTORY_LOCK_DIR', lock_dir):
+                with global_history_lock(left):
+                    with self.assertRaises(BlockingIOError):
+                        with global_history_lock(right):
+                            self.fail('different root parents bypassed client fence')
+                with global_history_lock(right):
+                    self.assertTrue((lock_dir / 'ib-history-client-8984.lock').exists())
+                self.assertFalse((left.parent / 'ib-history-client-8984.lock').exists())
+                self.assertFalse((right.parent / 'ib-history-client-8984.lock').exists())
+
+    def test_pinned_history_client_lock_blocks_separate_process(self):
+        from unittest.mock import patch
+        import os
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as td:
+            lock_dir = Path(td) / 'locks'
+            left = Path(td) / 'left' / 'v3'
+            right = Path(td) / 'right' / 'v4'
+            child = '\n'.join([
+                'import sys',
+                'from pathlib import Path',
+                'import historical_training.ib_history as mod',
+                'mod.HISTORY_LOCK_DIR=Path(sys.argv[1])',
+                'from historical_training.ib_history import global_history_lock',
+                'with global_history_lock(Path(sys.argv[2])):',
+                '    pass',
+            ])
+            env = dict(os.environ)
+            with patch('historical_training.ib_history.HISTORY_LOCK_DIR', lock_dir):
+                with global_history_lock(left):
+                    outcome = subprocess.run(
+                        [sys.executable, '-c', child, str(lock_dir), str(right)],
+                        env=env, capture_output=True, text=True, timeout=5,
+                        check=False,
+                    )
+                self.assertNotEqual(outcome.returncode, 0)
+                self.assertIn('BlockingIOError', outcome.stderr)
+                retry = subprocess.run(
+                    [sys.executable, '-c', child, str(lock_dir), str(right)],
+                    env=env, capture_output=True, text=True, timeout=5,
+                    check=False,
+                )
+                self.assertEqual(retry.returncode, 0, retry.stderr)
+
+    def test_environment_home_override_cannot_move_shared_client_lock(self):
+        import os
+        import pwd
+        import subprocess
+        import sys
+        expected = str(Path(pwd.getpwuid(os.getuid()).pw_dir)
+                       / '.local/state/heptatrader/neuron-learning/historical-offline')
+        with tempfile.TemporaryDirectory() as td:
+            env = dict(os.environ)
+            env['HOME'] = str(Path(td) / 'injected-home')
+            child = subprocess.run(
+                [sys.executable, '-c',
+                 'from historical_training.ib_history import HISTORY_LOCK_DIR; '
+                 'print(HISTORY_LOCK_DIR)'],
+                capture_output=True, text=True, env=env, timeout=5,
+                check=False,
+            )
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(child.stdout.strip(), expected)
+
+    def test_symlinked_client_lock_directory_fails_closed(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            lock_dir = Path(td) / 'link'
+            real_dir = Path(td) / 'actual'
+            real_dir.mkdir()
+            lock_dir.symlink_to(real_dir, target_is_directory=True)
+            with patch('historical_training.ib_history.HISTORY_LOCK_DIR', lock_dir):
+                with self.assertRaisesRegex(EvidenceError,
+                                            'HISTORY_CLIENT_LOCK_DIRECTORY_SYMLINK'):
+                    with global_history_lock(Path(td) / 'input-root'):
+                        pass
 
     def test_synced_orphan_is_still_unknown_outcome(self):
         with tempfile.TemporaryDirectory() as td:

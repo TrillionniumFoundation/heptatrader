@@ -4,7 +4,7 @@ Existing PAPER Gateway only. Independent client. Resumable immutable chunks.
 An API end callback is transport completion, not a claim of full coverage.
 """
 from __future__ import annotations
-import argparse,collections,fcntl,json,os,sys,threading,time
+import argparse,collections,fcntl,json,os,pwd,sys,threading,time
 from contextlib import contextmanager
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -14,6 +14,10 @@ from .egress import HistoryGuard
 ALLOWED=frozenset((71,20,25,87,90))
 CONTRACT={'conId':12087792,'symbol':'EUR','secType':'CASH','exchange':'IDEALPRO','currency':'USD'}
 CASH_HMDS_NOTICES={2105:'DISCONNECTED',2106:'CONNECTED',2107:'INACTIVE'}
+# The live PAPER history client ID is process-global within this user, not
+# scoped to a caller-selected output directory. This is also the historical
+# lock location used by older download sessions in the canonical data root.
+HISTORY_LOCK_DIR=Path(pwd.getpwuid(os.getuid()).pw_dir)/'.local/state/heptatrader/neuron-learning/historical-offline'
 
 def observe_cash_hmds(previous, req_id, code, message):
     """Only the named cash history farm can gate EUR/USD history requests.
@@ -167,9 +171,17 @@ def preflight_existing(root, config, end):
 
 @contextmanager
 def global_history_lock(root):
-    """Reserve pinned client 8984 across distinct output roots on Pocket4."""
-    root.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
-    fd=os.open(root.parent/'ib-history-client-8984.lock',
+    """Reserve client 8984 even when output roots have different parents.
+
+    Never derive the client lock from caller-controlled output_root: that
+    would allow two simultaneous sessions to occupy the same IB client ID.
+    """
+    if HISTORY_LOCK_DIR.is_symlink():
+        raise EvidenceError('HISTORY_CLIENT_LOCK_DIRECTORY_SYMLINK')
+    HISTORY_LOCK_DIR.mkdir(parents=True,mode=0o700,exist_ok=True)
+    if not HISTORY_LOCK_DIR.is_dir() or HISTORY_LOCK_DIR.is_symlink():
+        raise EvidenceError('HISTORY_CLIENT_LOCK_DIRECTORY_INVALID')
+    fd=os.open(HISTORY_LOCK_DIR/'ib-history-client-8984.lock',
                os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)

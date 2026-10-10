@@ -107,11 +107,16 @@ terminal order state. The native OMS is never rewritten by this probe.
 ## Immutable IB failure continuation (2026-10-10)
 
 See [IB_HISTORY_FAILCLOSED_20261010.md](IB_HISTORY_FAILCLOSED_20261010.md)
-See [IB_HISTORY_DURABLE_RECEIPTS_20261010.md](IB_HISTORY_DURABLE_RECEIPTS_20261010.md) for the terminal receipt fix, real PAPER 162 probe, and deterministic 210-day offline replay.
-See [IB_CASH_HMDS_AND_VALIDATION_20261010.md](IB_CASH_HMDS_AND_VALIDATION_20261010.md) for the passive 2105/2106/2107 cash farm gate, read-only exact EUR CASH reconciliation, and economic validation frontier.
 for frozen HMDS error 162 evidence, fail-closed resumption, the 210-day
-verified dataset, a byte-identical three-fold walk-forward replay, and
-the preconditions for a later one-shot continuation in a **new** output root.
+verified dataset, and preconditions for any new output root.
+See [IB_HISTORY_DURABLE_RECEIPTS_20261010.md](IB_HISTORY_DURABLE_RECEIPTS_20261010.md)
+for terminal receipt safety, the real PAPER 162 probe and byte-identical
+three-fold offline replay.
+See [IB_CASH_HMDS_AND_VALIDATION_20261010.md](IB_CASH_HMDS_AND_VALIDATION_20261010.md)
+for passive cash farm status, exact EUR CASH evidence, and net-cost diagnostics.
+See [IB_HISTORY_GLOBAL_CLIENT_LOCK_20261010.md](IB_HISTORY_GLOBAL_CLIENT_LOCK_20261010.md)
+for the canonical UID-scoped lock and independent cross-process exclusion.
+
 A failed receipt is never a successful checkpoint; no operator should
 disable quote/source freshness gates or use revised history as a live mark.
 
