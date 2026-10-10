@@ -60,12 +60,17 @@ Private Pocket4 evidence root:
 - Exact upstream `codex-rs/Cargo.lock`: SHA256
   `8354b4cbdf14389db7aa5508e2ed5b524fc2d4c4ea0ecb475955c933f8bea389`.
 
-In a separate pinned workspace, all **7,531 tracked native blobs** were
-restored with zero modified `codex-rs` files, and all **193 original
-Cargo workspace member manifests** passed offline no-dependency metadata
-validation. Full upstream dependency resolution is separately blocked by
-missing/offline third-party dependency metadata or source; the six-crate
-qualification DOES NOT turn this unresolved original workspace into PASS.
+A second **full Git working tree** is restored on Pocket4 at
+`/home/alex/work/hepta-canonical-full-ledger-p0-20261010`. All **8,665
+tracked repository files** are exact `78fdb0cf...` Git-tree content and
+`git status --porcelain` is empty. This includes **7,531 native blobs**;
+the **193 original Cargo workspace member manifests** passed offline
+`--locked --no-deps` metadata validation. Full upstream dependency
+resolution is **not** certified; cached/offline dependency resolution
+found third-party gaps (including `Inflector 0.11.4`) and the complete
+manifest requires a separate successful full-resolution/build receipt.
+The six-crate qualification DOES NOT turn the unresolved full original
+Cargo workspace into a pass.
 
 ## Strictly unclosed product proof
 
