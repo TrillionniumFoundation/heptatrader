@@ -201,6 +201,42 @@ def verify_page_pin(pin):
     return doc
 
 
+
+def verify_archive_pin_sequence(pins):
+    """Bind a frozen dataset to the complete on-disk archive registry.
+
+    Checking isolated page hashes is insufficient: a caller could omit an
+    earlier valid page and present a later page as its whole source proof.
+    Match a genesis-rooted contiguous page prefix against the independently
+    validated archive ledger, including page files added after the freeze.
+    """
+    if not isinstance(pins, list) or not pins:
+        raise ContractError("SOURCE_ARCHIVE_PIN_SEQUENCE_REQUIRED")
+    first = pins[0]
+    if not isinstance(first, dict) or first.get("schema") != PIN_SCHEMA:
+        raise ContractError("SOURCE_ARCHIVE_PIN_SEQUENCE_REQUIRED")
+    if type(first.get("path")) is not str:
+        raise ContractError("SOURCE_ARCHIVE_PIN_ROOT_INVALID")
+    path = Path(first["path"])
+    period = first.get("period_sha256")
+    if (path.parent.name != "source-archive-v1" or not path.is_absolute()
+        or path.resolve() != path
+        or type(period) is not str or len(period) != 64
+        or any(c not in "0123456789abcdef" for c in period)):
+        raise ContractError("SOURCE_ARCHIVE_PIN_ROOT_INVALID")
+    if first.get("index") != 0 or first.get("previous_sha256") != GENESIS:
+        raise ContractError("SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY")
+    feed = path.parent.parent
+    _, _, recorded = _load_pages({"feed_directory": str(feed),
+                                   "period_sha256": period})
+    if len(recorded) < len(pins):
+        raise ContractError("SOURCE_ARCHIVE_PIN_NOT_CHECKPOINTED")
+    for i, pin in enumerate(pins):
+        if pin != recorded[i]:
+            raise ContractError("SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY")
+        verify_page_pin(pin)
+
+
 def inventory(config, paths):
     """Read every page, check no archived segment has been omitted/reordered."""
     pages, prefixes, pins = _load_pages(config)
@@ -236,6 +272,77 @@ def _write_once(path, document):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _recover_complete_orphan(config, root, paths):
+    """Finish only a fully fsynced page whose matching ledger append was lost.
+
+    Recovery is writer-only, under seal.lock. Readers remain fail-closed until
+    the exact page, preceding checkpoint chain, and all original source bytes
+    have been checked. Torn pages/ledger lines cannot be silently repaired.
+    """
+    receipts = _checkpoint_ledger(root)
+    discovered = sorted(root.glob("page-*.json"))
+    if len(discovered) == len(receipts):
+        return 0
+    if len(discovered) != len(receipts) + 1:
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_COUNT")
+    previous = GENESIS
+    for i, receipt in enumerate(receipts):
+        path = discovered[i]
+        if path.name != f"page-{i:08d}.json":
+            raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SEQUENCE")
+        size = _private(path).st_size
+        if size > 256 * 1024:
+            raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
+        raw = path.read_bytes()
+        page = read_json(path, 256 * 1024)
+        h = hashlib.sha256(raw).hexdigest()
+        if (raw != canonical(page) + b"\n" or h != receipt["page_sha256"]
+            or type(page.get("index")) is not int or page["index"] != i
+            or page.get("schema") != PAGE_SCHEMA
+            or page.get("previous_sha256") != previous
+            or page.get("period_sha256") != config["period_sha256"]
+            or type(page.get("prefixes")) is not list
+            or len(page["prefixes"]) != PAGE_SIZE):
+            raise ContractError("SOURCE_ARCHIVE_ORPHAN_PRIOR_PROOF")
+        for pin in page["prefixes"]:
+            verify_prefix(pin, sealed=True)
+        previous = h
+    index = len(receipts)
+    path = discovered[index]
+    if path.name != f"page-{index:08d}.json":
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SEQUENCE")
+    if _private(path).st_size > 256 * 1024:
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
+    raw = path.read_bytes()
+    page = read_json(path, 256 * 1024)
+    if (raw != canonical(page) + b"\n"
+        or set(page) != {"schema", "index", "previous_sha256",
+                        "period_sha256", "prefixes"}
+        or page["schema"] != PAGE_SCHEMA
+        or type(page["index"]) is not int or page["index"] != index
+        or page["previous_sha256"] != previous
+        or page["period_sha256"] != config["period_sha256"]
+        or type(page["prefixes"]) is not list
+        or len(page["prefixes"]) != PAGE_SIZE):
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_INVALID")
+    offset = index * PAGE_SIZE
+    if len(paths) - offset < PAGE_SIZE:
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_ORIGINAL_MISSING")
+    for j, pin in enumerate(page["prefixes"]):
+        origin = paths[offset+j]
+        if (origin.parent.name == "segment-recovery-live"
+            or pin.get("path") != str(origin)):
+            raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_REORDERED")
+        head, _, observed = read_source(origin)
+        if (head.get("period_sha256") != config["period_sha256"]
+            or observed != pin or observed.get("ended") is not True
+            or observed.get("uncommitted_tail_bytes") != 0):
+            raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_CHANGED")
+        verify_prefix(pin, sealed=True)
+    _append_checkpoint(root, index, hashlib.sha256(raw).hexdigest())
+    return 1
+
+
 def _seal_locked(config, maximum_new_pages=8):
     """Explicit, idempotent archive operation. Never deletes or changes feeds."""
     if not 1 <= maximum_new_pages <= 8:
@@ -245,6 +352,7 @@ def _seal_locked(config, maximum_new_pages=8):
     root.mkdir(mode=0o700, parents=False, exist_ok=True)
     _private(root, want_dir=True)
     paths = sorted(feed.glob("segment-*/quotes.jsonl"))
+    recovered = _recover_complete_orphan(config, root, paths)
     pages, prior_prefixes, pins = _load_pages(config)
     if len(prior_prefixes) > len(paths):
         raise ContractError("SOURCE_ARCHIVE_ORIGINAL_MISSING")
@@ -288,6 +396,7 @@ def _seal_locked(config, maximum_new_pages=8):
             "pages_added": added, "total_pages": index,
             "sealed_segments": offset, "unsealed_segments": len(paths) - offset,
             "latest_page_sha256": previous, "source_files_removed": 0,
+            "recovered_fsynced_orphan_pages": recovered,
             "broker_requests_sent": 0, "orders_sent": 0}
 
 

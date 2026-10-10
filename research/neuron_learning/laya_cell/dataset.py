@@ -20,18 +20,25 @@ def integer(x):
 def verify_source_prefixes(dataset):
  sources=dataset.get('source_prefixes')
  if not isinstance(sources,list) or not sources:raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
- from .source_archive import verify_page_pin,verify_prefix,PIN_SCHEMA,GENESIS
- last_page=None;last_sha=GENESIS
+ from .source_archive import verify_archive_pin_sequence,verify_prefix,PIN_SCHEMA
+ pages=[];post_page_raw=False
  for source in sources:
   if not isinstance(source,dict):raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
   if source.get('schema')==PIN_SCHEMA:
-   if last_page is not None and (source['index']!=last_page+1 or
-                                 source['previous_sha256']!=last_sha):
-    raise ContractError('SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY')
-   verify_page_pin(source)
-   last_page=source['index'];last_sha=source['sha256']
+   if post_page_raw:raise ContractError('SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY')
+   pages.append(source)
   else:
+   if pages:post_page_raw=True
    verify_prefix(source)
+ if pages:
+  # The archive is one ordered genesis-rooted range, never a selection of
+  # independently valid pages. Historical seed prefixes may precede it;
+  # unsealed current prefixes may follow it.
+  verify_archive_pin_sequence(pages)
+  scope=dataset.get('scope')
+  if isinstance(scope,str) and len(scope)>=65 and scope[64]==':':
+   if any(p['period_sha256']!=scope[:64] for p in pages):
+    raise ContractError('SOURCE_ARCHIVE_DATASET_PERIOD_CHANGED')
 def causal_state(sample,instrument,horizon):
  inp=sample['input_snapshot']
  if digest(inp)!=sample['sample_id']:raise ContractError('SAMPLE_INPUT_IDENTITY')

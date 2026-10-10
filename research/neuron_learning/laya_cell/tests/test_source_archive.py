@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from laya_cell.shadow_source import canonical, digest
 from laya_cell.source_archive import seal, inventory, directory, PAGE_SIZE
@@ -164,5 +165,123 @@ class SourceArchiveTests(unittest.TestCase):
         self.assertEqual(len(values),166)
         self.assertTrue(pins[-1]['ended'])
         self.assertEqual(seal(self.c,8)['pages_added'],0) # only 6 unsealed
+
+
+    def test_dataset_proof_cannot_start_from_later_valid_page(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        with self.assertRaisesRegex(ContractError,'PAGE_PROOF_DISCONTINUITY'):
+            verify_source_prefixes({'source_prefixes':pins[1:]})
+
+    def test_dataset_proof_cannot_skip_checkpointed_middle_page(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        with self.assertRaisesRegex(ContractError,'PAGE_PROOF_DISCONTINUITY'):
+            verify_source_prefixes({'source_prefixes':pins[:1]+pins[2:]})
+
+    def test_dataset_proof_cannot_ignore_corrupted_archive_ledger(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        ledger=directory(self.c)/'ledger.jsonl'
+        ledger.write_bytes(b'')
+        with self.assertRaisesRegex(ContractError,'PAGE_CHECKPOINT_COUNT'):
+            verify_source_prefixes({'source_prefixes':pins})
+
+    def test_dataset_proof_rejects_page_after_unsealed_source(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        self.assertEqual(len(pins),11)
+        forged=pins[:2]+[pins[-1]]+pins[2:-1]
+        with self.assertRaisesRegex(ContractError,'PAGE_PROOF_DISCONTINUITY'):
+            verify_source_prefixes({'source_prefixes':forged})
+
+    def test_archive_pin_cannot_claim_another_dataset_period(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        with self.assertRaisesRegex(ContractError,'DATASET_PERIOD_CHANGED'):
+            verify_source_prefixes({'scope':'f'*64+':EUR.USD','source_prefixes':pins})
+
+
+    def test_power_loss_after_fsynced_page_recovers_only_matching_checkpoint(self):
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=OSError('simulated-after-page-fsync')):
+            with self.assertRaisesRegex(OSError,'simulated-after-page-fsync'):
+                seal(self.c,8)
+        page=directory(self.c)/'page-00000000.json'
+        original=page.read_bytes()
+        with self.assertRaisesRegex(ContractError,'PAGE_CHECKPOINT_COUNT'):
+            read_quotes(self.c,int(time.time()*1000))
+        receipt=seal(self.c,8)
+        self.assertEqual(receipt['recovered_fsynced_orphan_pages'],1)
+        self.assertEqual(receipt['total_pages'],5)
+        self.assertEqual(page.read_bytes(),original)
+        self.assertEqual(len(read_quotes(self.c,int(time.time()*1000))[0]),166)
+        self.assertEqual(seal(self.c,8)['recovered_fsynced_orphan_pages'],0)
+
+    def test_tampered_uncheckpointed_page_stays_quarantined(self):
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=OSError('crash')):
+            with self.assertRaises(OSError):seal(self.c,8)
+        page=directory(self.c)/'page-00000000.json'
+        page.write_bytes(page.read_bytes().replace(b'"index":0',b'"index":8'))
+        with self.assertRaisesRegex(ContractError,'ORPHAN_PAGE_INVALID'):
+            seal(self.c,8)
+        self.assertFalse((directory(self.c)/'ledger.jsonl').exists())
+
+    def test_missing_original_in_orphan_prevents_recovery(self):
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=OSError('crash')):
+            with self.assertRaises(OSError):seal(self.c,8)
+        (self.feed/'segment-00000000'/'quotes.jsonl').unlink()
+        with self.assertRaisesRegex(ContractError,'ORPHAN_SOURCE_REORDERED'):
+            seal(self.c,8)
+        self.assertFalse((directory(self.c)/'ledger.jsonl').exists())
+
+
+    def test_mid_chain_power_loss_does_not_rewrite_prior_checkpoint(self):
+        from laya_cell import source_archive as archive
+        append=archive._append_checkpoint
+        def crash_second(root,index,page_sha):
+            if index==1:
+                raise OSError('simulated-index-one-powerloss')
+            return append(root,index,page_sha)
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=crash_second):
+            with self.assertRaisesRegex(OSError,'index-one-powerloss'):
+                seal(self.c,8)
+        root=directory(self.c)
+        page0=(root/'page-00000000.json').read_bytes()
+        page1=(root/'page-00000001.json').read_bytes()
+        ledger=(root/'ledger.jsonl').read_bytes()
+        self.assertEqual(len(ledger.splitlines()),1)
+        with self.assertRaisesRegex(ContractError,'PAGE_CHECKPOINT_COUNT'):
+            read_quotes(self.c,int(time.time()*1000))
+        resumed=seal(self.c,8)
+        self.assertEqual(resumed['recovered_fsynced_orphan_pages'],1)
+        self.assertEqual((root/'page-00000000.json').read_bytes(),page0)
+        self.assertEqual((root/'page-00000001.json').read_bytes(),page1)
+        self.assertTrue((root/'ledger.jsonl').read_bytes().startswith(ledger))
+        self.assertEqual(len(read_quotes(self.c,int(time.time()*1000))[0]),166)
+
+
+    def test_malformed_archive_pin_root_refused_as_contract_error(self):
+        self.archive()
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        altered=[dict(pins[0])]+pins[1:]
+        altered[0]['path']=None
+        with self.assertRaisesRegex(ContractError,'PIN_ROOT_INVALID'):
+            verify_source_prefixes({'source_prefixes':altered})
+
+    def test_bool_page_index_cannot_be_recovered_as_integer_zero(self):
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=OSError('crash')):
+            with self.assertRaises(OSError):seal(self.c,8)
+        page=directory(self.c)/'page-00000000.json'
+        doc=json.loads(page.read_bytes())
+        doc['index']=False
+        page.write_bytes(canonical(doc)+b'\n')
+        with self.assertRaisesRegex(ContractError,'ORPHAN_PAGE_INVALID'):
+            seal(self.c,8)
+        self.assertFalse((directory(self.c)/'ledger.jsonl').exists())
 
 if __name__=='__main__':unittest.main()
