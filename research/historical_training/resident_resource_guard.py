@@ -68,6 +68,38 @@ def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
         'automatic_trading':False,'statistical_rule_changed':False}
 
 
+
+def preflight_source_health_hold(source):
+    """Expose already-denied probe quality without falsely acquiring live proof.
+
+    Only the exact original source-health HOLD can take this optimization.
+    READY continues to require an independently verified fresh original
+    source extension. The returned data is DIAGNOSTIC, never authorization.
+    """
+    if source.get('state') != 'HOLD_NEW_FUSION_WINDOW':
+        return None
+    reasons=source.get('reasons')
+    if (not isinstance(reasons,list) or len(reasons)>24
+        or any(type(x) is not str or not 3<=len(x)<=90
+               or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_' for c in x)
+               for x in reasons)):
+        raise EvidenceError('SOURCE_HEALTH_HOLD_REASON_FORMAT')
+    def integer_or_null(value):
+        return value if type(value) is int else None
+    return {
+        'schema':'heptatrader.readiness-held-before-live-refresh.v1',
+        'observed_source_state':'HOLD_NEW_FUSION_WINDOW',
+        'cached_probe_status_at_ms':integer_or_null(source.get('at_ms')),
+        'cached_probe_usable':integer_or_null(source.get('usable')),
+        'cached_probe_unusable':integer_or_null(source.get('unusable')),
+        'reported_source_reasons':list(reasons),
+        'fresh_original_live_source_proven':False,
+        'live_quote_relabelled':False,
+        'broker_queries_sent':0,
+        'orders_sent':0,
+    }
+
+
 class Lease:
     def __init__(self,path):self.path=Path(path);self.fd=None
     def acquire(self):
@@ -94,10 +126,39 @@ class Gate:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
             if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
             from .resident_live_source import refresh
-            source,proof=refresh(read(self.c['original_config']),read(self.c['source_health_path']),int(time.time()*1000))
-            report=assess(parse_meminfo(Path('/proc/meminfo').read_text()),parse_full_psi(Path('/proc/pressure/memory').read_text()),
-                source,int(time.time()*1000),self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
-            report['original_live_source_evidence']=proof
+            original=read(self.c['original_config'])
+            source=read(self.c['source_health_path'],2*1024*1024)
+            if type(source) is not dict:
+                raise EvidenceError('CONTINUITY_SOURCE_STATUS_NOT_OBJECT')
+            prefixes=source.get('source_prefixes')
+            if type(prefixes) is not list or not prefixes:
+                raise EvidenceError('CONTINUITY_SOURCE_PREFIXES_MISSING')
+            if source.get('source_prefix_digest')!=digest(prefixes):
+                raise EvidenceError('CONTINUITY_PREFIX_DIGEST_CHANGED')
+            current=int(time.time()*1000)
+            memory=parse_meminfo(Path('/proc/meminfo').read_text())
+            pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
+            held=preflight_source_health_hold(source)
+            if held is not None:
+                # New real quotes cannot retroactively repair already-rejected
+                # mature quality probes. Do not confuse an unavailable live
+                # extension during a closed market with a corrupted archive.
+                report=assess(memory,pressure,source,current,
+                    self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                report['admit_new_worker']=False
+                report['reasons']=list(dict.fromkeys(
+                    report['reasons']+['SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY']))
+                report['cached_probe_diagnostic']=held
+                report['original_live_source_evidence']={
+                    'status':'NOT_COLLECTED_WHILE_SOURCE_PROBES_HELD',
+                    'source_ttl_ms':5000,
+                    'fresh_original_live_source_proven':False,
+                    'broker_queries_sent':0}
+            else:
+                source,proof=refresh(original,source,current)
+                report=assess(memory,pressure,source,int(time.time()*1000),
+                    self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                report['original_live_source_evidence']=proof
         except (OSError,ValueError,TypeError,KeyError) as exc:
             report={'schema':'heptatrader.resident-resource-admission.v1','at_ms':int(time.time()*1000),
                 'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}
