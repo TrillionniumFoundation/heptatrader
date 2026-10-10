@@ -60,17 +60,44 @@ Private Pocket4 evidence root:
 - Exact upstream `codex-rs/Cargo.lock`: SHA256
   `8354b4cbdf14389db7aa5508e2ed5b524fc2d4c4ea0ecb475955c933f8bea389`.
 
-A second **full Git working tree** is restored on Pocket4 at
-`/home/alex/work/hepta-canonical-full-ledger-p0-20261010`. All **8,665
-tracked repository files** are exact `78fdb0cf...` Git-tree content and
-`git status --porcelain` is empty. This includes **7,531 native blobs**;
-the **193 original Cargo workspace member manifests** passed offline
-`--locked --no-deps` metadata validation. Full upstream dependency
-resolution is **not** certified; cached/offline dependency resolution
-found third-party gaps (including `Inflector 0.11.4`) and the complete
-manifest requires a separate successful full-resolution/build receipt.
-The six-crate qualification DOES NOT turn the unresolved full original
-Cargo workspace into a pass.
+A second **full original Git working tree** was restored on Pocket4 at
+/home/alex/work/hepta-canonical-full-ledger-p0-20261010. All **8,665 tracked
+repository files** match the exact Canonical commit
+78fdb0cf8537e3a84fc6e0a849707559c80881e8 with zero modified files.
+The original Cargo.lock SHA256 stays
+8354b4cbdf14389db7aa5508e2ed5b524fc2d4c4ea0ecb475955c933f8bea389.
+
+**2026-10-11 full original dependency closure, not an isolated subworkspace:**
+
+- Original Cargo metadata ran with --offline --locked --format-version 1:
+  **193 workspace members / 1,517 fully resolved locked packages**.
+  JSON evidence SHA256:
+  68820a5c211683daee66d85e0fa37e6e548fc9bd6ba290cfa107d997a4a5280e.
+- All **1,316 crates.io .crate archive SHA256 hashes** were independently
+  checked against original Cargo.lock: 1,316 pass, zero missing or mismatch.
+  Integrity receipt SHA256:
+  0641c39bdb7a5415cf34261ee5072398ad9cfe02ebf60f47c12f3e562c113919.
+- The missing pinned v8-150.4.0 archive was reconstructed from verified
+  byte ranges and accepted only with its exact original lock SHA256.
+  Range-recovery receipt SHA256:
+  df2458890d9a1ebfb7b641223a2a81897c9ed14901db6dd815b78e8e88aebb9c.
+- The unmodified original full workspace ran the genuine
+  codex-hepta-learning-ledger plus codex-hepta-learning-artifacts library
+  suite under --offline --locked: **92 + 118 = 210 passed; 0 failed;
+  2 ignored**. Test log SHA256:
+  41a47cf7bd39ba23c37106f8682424fc23d8812f446f213468eb42245e414216.
+- Separately, four actual Rust process-crash, witness/reopen, and
+  exact retry regressions passed in the isolated harness. Receipt SHA256:
+  ff0a0ec11ea8039cd8cdaac0d9ebffeb086ee6221ea3908588c1b48a5e9dd862.
+
+Complete original-workspace evidence root:
+~/.local/state/heptatrader/operator-evidence/train-v2-full-canonical-20261011/
+
+This **closes exact source and pinned dependency resolution plus the two
+original native library tests**. It does NOT assert that all 193 members
+were built/tested, that the local witness survived genuine power failure,
+or that production keys, product Trader decision calls, independent Outcome
+issuers, dataset final use, or artifact Owner/CURRENT have been admitted.
 
 ## Strictly unclosed product proof
 

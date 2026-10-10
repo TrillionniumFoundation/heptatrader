@@ -93,6 +93,27 @@ Private log:
 SHA256:
 1f59328f382eb5d74f95bdbe98e642afdc96ec2137e6849fa01113740306252e
 
+### Additional immutable local source-chain histogram
+
+A separate read-only original SHA256 record/hash-chain check, distinct
+from original-request-to-command and signer admission, captured source
+event counts at its own time: 1,320 EUR/USD changed-policy Decisions,
+20 EUR/USD unchanged-policy Decisions, and 2,110 BTC/USD Decisions.
+These corresponded to 74, 2, and 1 exact OPEN command bindings at that
+moment. The currently running PAPER shadow can add further BTC Decisions
+after this receipt; historic counts must not be called a stable cohort
+or independent trainable population.
+
+Private histogram:
+~/.local/state/heptatrader/operator-evidence/train-v2-original-identity-20261011/source-histogram-v1.json
+
+SHA256:
+efaa7c6f3ac2bbcb92ca323d9fdaf685e827cc0c3d4b9b1845da03b42b39852c
+
+The local SHA256 chain can establish local mutation detection but
+cannot prove a root-signed original Generator, full decision support or
+true action propensity. OPE eligible count remains zero.
+
 ## Remaining hard gate
 
 Do not reconstruct absent behavior propensity or complete action support

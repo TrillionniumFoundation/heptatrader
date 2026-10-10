@@ -101,15 +101,18 @@ against another behavior-profile version.
    commissions, financing and post-cost net reward. All existing PAPER
    driver controls, risk exits, and service state remain unchanged.
 
-## Original full-workspace Cargo progress
+## Original full-workspace Cargo closure (2026-10-11)
 
-The complete `hepta-private-ci@78fdb0cf8537e3a84fc6e0a849707559c80881e8`
-checkout has 8,665 tracked files at 0 modifications and 193 exact member
-manifests. The full original `Cargo.lock` SHA256 is
-`8354b4cbdf14389db7aa5508e2ed5b524fc2d4c4ea0ecb475955c933f8bea389`.
-A low-priority `cargo fetch --locked --target x86_64-unknown-linux-gnu`
-ran for 420 seconds and exited 124; the full `cargo metadata --offline
---locked` remains BLOCKED by uncached `actix-http 3.11.2`. It must
-not be marked as successfully resolved or fully tested. The independently
-proven six-crate 210/210 qualification and native host file experiment
-remain valid at their **narrower** explicit scope.
+The exact original Canonical checkout at 78fdb0cf8537e3a84fc6e0a849707559c80881e8
+now has 8,665 clean tracked files, 193 workspace members and **1,517 locked
+packages resolved offline**, with no Cargo.lock changes. All 1,316
+registry archives were verified against their original SHA256 checksums.
+The native original LedgerWriter and Artifact Owner packages built and
+passed 210 library tests in that full workspace, with zero failures and
+two ignored tests. See Phase 4D for commands, full scope, and evidence
+hashes. Earlier missing actix-http and v8 archive gaps were resolved.
+
+This is a source and native library qualification only. Original complete
+PAPER behavior-policy candidates and true propensity, production independent
+signers/observer, native product facts/witness, V3 final revalidation
+and independent unseen after-cost efficacy remain HOLD.

@@ -111,10 +111,11 @@ See [PHASE4D.md](PHASE4D.md). Real original LedgerWriter and Artifact Owner
 Rust library tests passed (210/210), and a 256-Decision Pocket4 on-disk
 segmented-witness target-host test recovered exactly. The harness uses an
 isolated six-crate generated Cargo manifest, test-only signing keys and
-synthetic Decisions; original full upstream dependency resolution, real
-product controller enrollment, logged behavior propensity, host instance,
-V3 dataset from real observations and new after-cost prospective efficacy
-remain unqualified. Existing product admission remains HOLD.
+synthetic Decisions. The original complete Canonical workspace later
+resolved its exact lock and independently passed the same 210 native tests
+(see Phase 4D). Real product controller enrollment, logged behavior
+propensity, production host instance, V3 dataset from original outcomes
+and unseen after-cost prospective efficacy remain HOLD.
 
 ## Phase 4E: original behavior-policy cohort provenance
 
