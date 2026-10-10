@@ -101,7 +101,15 @@ def compare_numeric_laya_price_inputs(spec, observations, decision_at_ms, *, hor
         if q["event_at_ms"] <= decision_at_ms
         and q["available_at_ms"] <= decision_at_ms
     ]
-    if not causal or causal[-1]["known_at_ms"] != decision_at_ms:
+    if not causal:
+        raise ContractError("MODEL_PARITY_EXACT_ARRIVAL_REQUIRED")
+    if spec.get("quote_expiry_policy") is not None:
+        # Explicit NEW v2 source is bounded by the recorded IB expiry, unlike
+        # the arrival-only legacy profile. Compile-example already checks it.
+        last = [q for q in ordered if q["event_at_ms"] == causal[-1]["t"]]
+        if len(last) != 1 or not causal[-1]["known_at_ms"] <= decision_at_ms <= last[0]["valid_until_ms"]:
+            raise ContractError("MODEL_PARITY_BROKER_EXPIRY_DEADLINE")
+    elif causal[-1]["known_at_ms"] != decision_at_ms:
         raise ContractError("MODEL_PARITY_EXACT_ARRIVAL_REQUIRED")
     history, reset_at_gap = contiguous_history(causal, decision_at_ms)
     if not 6 <= len(history) <= 24 or reset_at_gap:
@@ -132,7 +140,9 @@ def compare_numeric_laya_price_inputs(spec, observations, decision_at_ms, *, hor
         "laya_price_question": q,
         "laya_causal_state": original_laya,
         "event_at_ms": history[-1]["t"],
-        "available_at_ms": decision_at_ms,
+        # The original source arrival is not the later model decision time.
+        "available_at_ms": causal[-1]["known_at_ms"],
+        "decision_at_ms": decision_at_ms,
         "model_targets_equal": False,
         "direct_four_to_sixteen_tensor_cast_allowed": False,
         "laya_action_is_trade_action": False,

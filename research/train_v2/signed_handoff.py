@@ -16,7 +16,7 @@ from .registry import (
     verify_registration,
 )
 from .orchestrator import ingest, SOURCE_EVENT, OUTCOME_EVENT
-from .handoff import verify_original_paper_handoff
+from .handoff import verify_original_paper_handoff, require_source_admitted_before_decision
 from .external_signatures import (
     validate_plan_witness, validate_event_witness, verify_trust,
 )
@@ -177,6 +177,10 @@ def ingest_signed_original(directory, plan, dataset, event, source_file,
                 "original_segment": str(source_file), "witness": event_witness,
                 "verified": proof, "canonical_owner_enrolled": False,
                 "trade_authority": False})
+    # Recheck at final use AFTER fsync of the external witness: a source
+    # signed early but persisted after the decision is not prospective.
+    require_source_admitted_before_decision(
+        event, spec, decision, now_ms=now_ms)
     result = ingest(root / SIGNED_LEDGER, plan, dataset, event)
     return {
         "schema": "heptatrader.train-v2-externally-signed-research-ingest.v1",

@@ -6,18 +6,22 @@ from pathlib import Path
 
 from .contracts import (
     CAUSAL, EXPLORATORY, LIVE, OBS_SCHEMA, REVISED, SPEC_SCHEMA,
+    BROKER_EXPIRY_POLICY, BROKER_EXPIRY_PROFILE,
     ContractError, digest, is_digest, validate_spec,
 )
 
 
 def make_spec(period_sha256, behavior_policy_id, *, historical=False,
-              horizon_ms=300000, lookback=6):
+              horizon_ms=300000, lookback=6, broker_reported_expiry=False):
+    if broker_reported_expiry and historical:
+        raise ContractError("BROKER_EXPIRY_NOT_FOR_REVISED_HISTORY")
     spec = {
         "schema": SPEC_SCHEMA,
         "instrument": "EUR.USD",
         "period_sha256": period_sha256,
         "behavior_policy_id": behavior_policy_id,
-        "feature_profile": "EURUSD_BID_ASK_MID_RETURNS_V1",
+        "feature_profile": (BROKER_EXPIRY_PROFILE if broker_reported_expiry
+                            else "EURUSD_BID_ASK_MID_RETURNS_V1"),
         "fields": ["mid", "spread_bps", "return_1_bps", "return_window_bps"],
         "source_kind": REVISED if historical else LIVE,
         "mode": EXPLORATORY if historical else CAUSAL,
@@ -30,6 +34,8 @@ def make_spec(period_sha256, behavior_policy_id, *, historical=False,
         "promotion_allowed": False,
         "actor_update": False,
     }
+    if broker_reported_expiry:
+        spec["quote_expiry_policy"] = BROKER_EXPIRY_POLICY
     return validate_spec(spec)
 
 
@@ -42,7 +48,7 @@ def sealed_live_segment(path, spec):
     allows the quote only at its already witnessed receipt instant.
     """
     validate_spec(spec)
-    if spec["source_kind"] != LIVE:
+    if spec["source_kind"] != LIVE or spec.get("quote_expiry_policy") is not None:
         raise ContractError("LIVE_ADAPTER_SCOPE")
     from laya_cell.shadow_source import read_source
     header, quotes, prefix = read_source(Path(path))

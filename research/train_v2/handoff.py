@@ -21,6 +21,15 @@ from .orchestrator import (
 MAX_EVENT_HANDOFF_LAG_MS = 3000
 
 
+def require_source_admitted_before_decision(event, spec, decision, now_ms=None):
+    """New TTL profile only: a valid signature cannot be ingested after use."""
+    if (event.get("kind") == SOURCE_EVENT
+            and spec.get("quote_expiry_policy") is not None):
+        at = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+        if type(at) is not int or at > decision:
+            raise ContractError("ORIGINAL_SOURCE_ADMITTED_AFTER_DECISION")
+
+
 def verify_original_paper_handoff(plan, dataset, event, original_segment,
                                   now_ms=None):
     verify_plan(plan)
@@ -41,9 +50,18 @@ def verify_original_paper_handoff(plan, dataset, event, original_segment,
     example = _validate_dataset(plan, dataset, event)
     # Source reader checks the complete original hash chain, custody, PAPER
     # scope, source time and no mutation authority. It cannot broker-sign data.
-    original, provenance = sealed_live_segment(Path(original_segment), spec)
+    if spec.get("quote_expiry_policy") is not None:
+        from .causal_ttl import sealed_original_broker_expiry
+        original, provenance = sealed_original_broker_expiry(Path(original_segment), spec)
+    else:
+        original, provenance = sealed_live_segment(Path(original_segment), spec)
     decision = example["features"]["decision_at_ms"]
-    recomputed = compile_example(spec, original, decision, event["at_ms"])
+    require_source_admitted_before_decision(event, spec, decision, now_ms=now)
+    # On a *new* broker-expiry profile the original quote may be available
+    # before the decision. Source sealing must still predate the decision;
+    # label maturity cannot be consulted at SOURCE admission.
+    recomputed = compile_example(spec, original, decision,
+                                 max(event["at_ms"], decision))
     if (recomputed["feature_id"] != example["feature_id"]
             or recomputed["features"] != example["features"]
             or recomputed["label_due_ms"] != example["label_due_ms"]):
@@ -77,6 +95,8 @@ def verify_original_paper_handoff(plan, dataset, event, original_segment,
         "original_prefix_sha256": provenance["prefix_sha256"],
         "quote_count": len(original),
         "verified_asof_ms": event["at_ms"],
+        "source_event_at_ms": event["at_ms"],
+        "feature_decision_at_ms": decision,
         "original_source_chain_locally_verified": True,
         "canonical_agentd_owner_enrolled": False,
         "prospective_registration_attested_by_independent_owner": False,

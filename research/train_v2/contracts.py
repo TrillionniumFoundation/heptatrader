@@ -20,6 +20,8 @@ REVISED = "IB_REVISED_HISTORICAL_BAR"
 CAUSAL = "CAUSAL_SHADOW_ONLY"
 EXPLORATORY = "REVISED_HISTORICAL_RESEARCH_ONLY"
 EXPECTED_FIELDS = ("mid", "spread_bps", "return_1_bps", "return_window_bps")
+BROKER_EXPIRY_POLICY = "ORIGINAL_CHAIN_BROKER_EXPIRY_V2"
+BROKER_EXPIRY_PROFILE = "EURUSD_BID_ASK_MID_RETURNS_BROKER_EXPIRY_V2"
 
 
 class ContractError(ValueError):
@@ -67,6 +69,13 @@ def validate_spec(spec):
         raise ContractError("FEATURE_PROFILE_IDENTITY")
     if spec.get("fields") != list(EXPECTED_FIELDS):
         raise ContractError("FEATURE_LAYOUT_MISMATCH")
+    expiry_mode = spec.get("quote_expiry_policy")
+    if expiry_mode is not None:
+        if (expiry_mode != BROKER_EXPIRY_POLICY
+                or spec.get("feature_profile") != BROKER_EXPIRY_PROFILE):
+            raise ContractError("FEATURE_EXPIRY_POLICY_UNREGISTERED")
+    elif spec.get("feature_profile") == BROKER_EXPIRY_PROFILE:
+        raise ContractError("FEATURE_EXPIRY_POLICY_UNREGISTERED")
     mode, source = spec.get("mode"), spec.get("source_kind")
     if (mode, source) not in ((CAUSAL, LIVE), (EXPLORATORY, REVISED)):
         raise ContractError("FEATURE_SOURCE_MODE_MISMATCH")
@@ -81,6 +90,8 @@ def validate_spec(spec):
         raise ContractError("FEATURE_SPEC_RESOURCE_OR_TIME_BOUND")
     if source == LIVE and (age > 5000 or gap > 30000 or tolerance > 5000):
         raise ContractError("LIVE_SOURCE_TIME_GUARD")
+    if expiry_mode is not None and (mode, source) != (CAUSAL, LIVE):
+        raise ContractError("FEATURE_BROKER_EXPIRY_REQUIRES_LIVE_SOURCE")
     return spec
 
 

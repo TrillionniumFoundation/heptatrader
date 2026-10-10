@@ -83,3 +83,14 @@ cannot be written through the old unverified CLIs. Test-only cross-host
 signatures are NOT Canonical Agentd LearningLedger facts or product
 selection evidence. No new model, running service or broker action is
 created by this package.
+
+
+## Phase 4B optional original broker TTL profile (research only)
+
+See [PHASE4B.md](PHASE4B.md). Old V1 remains arrival-only; new feature
+profile alone may reuse original, locally chained IB-reported expiration,
+never more than 5s from the observed quote. Its SOURCE event can be signed
+after quote arrival but before the future decision, which must itself be
+before the original expiry. This closes a timing impossibility found in
+Phase 4A's after-arrival external signing pipeline, without repairing
+earlier missed predictions or admitting any model/trade authority.

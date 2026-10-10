@@ -24,6 +24,10 @@ Train V2 Phase 4A adds a receive-only research Ed25519 signature verifier:
 [PHASE4.md](../train_v2/PHASE4.md). A signed research envelope is not
 a canonical Agentd owner, producer enrollment or trading permission.
 
+Train V2's opt-in original broker-quoted-expiry experiment is described in
+[PHASE4B.md](../train_v2/PHASE4B.md). This versioned FUTURE profile does
+not modify the existing arrival-only source rule or historical data roles.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
