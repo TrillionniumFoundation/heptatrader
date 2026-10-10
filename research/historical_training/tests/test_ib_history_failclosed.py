@@ -149,6 +149,157 @@ class HistoricalFailClosedTests(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceError, "RESUME_CHUNK_CHANGED"):
                 verified_receipt(chunk, plan)
 
+    def test_received_state_without_ib_end_callback_is_not_reusable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            end = datetime(2026, 10, 8, tzinfo=timezone.utc)
+            plan = plans({'chunks': 1}, end)[3]  # MIDPOINT bars
+            chunk = self.fixture(root, plan, 'RECEIVED')
+            with self.assertRaisesRegex(EvidenceError,
+                                        'RECEIVED_CHUNK_COMPLETION_UNPROVEN'):
+                verified_receipt(chunk, plan)
+
+    def test_error_payload_cannot_be_relabelled_success_and_resumed(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            end = datetime(2026, 10, 8, tzinfo=timezone.utc)
+            plan = plans({'chunks': 1}, end)[0]  # Head timestamp
+            chunk = self.fixture(root, plan, 'RECEIVED')
+            response_path = chunk / 'response.json'
+            receipt_path = chunk / 'receipt.json'
+            response = json.loads(response_path.read_text())
+            response['errors'] = [{'request_id': 7800, 'code': 162,
+                                   'message': 'Request Timed Out'}]
+            response_path.chmod(0o600)
+            response_path.write_text(json.dumps(response))
+            receipt = json.loads(receipt_path.read_text())
+            receipt['response_sha256'] = sha(response_path)
+            receipt_path.chmod(0o600)
+            receipt_path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(EvidenceError,
+                                        'RECEIVED_CHUNK_PAYLOAD_INVALID'):
+                verified_receipt(chunk, plan)
+
+
+
+class HistoricalSessionIOTests(unittest.TestCase):
+    """Exercise an entire sealed request lifecycle without IB socket access."""
+
+    class FakeHistoryApp:
+        def __init__(self, fail_first=False):
+            from types import SimpleNamespace
+            import threading
+            self.fail_first = fail_first
+            self.paper = True
+            self.dead = False
+            self.ready = threading.Event()
+            self.ready.set()
+            self.account_event = threading.Event()
+            self.account_event.set()
+            self.guard = SimpleNamespace(last=None, register=lambda *args: None)
+            self.own, self.active = set(), set()
+            self.events, self.rows = {}, {}
+            self.heads, self.ends, self.schedules, self.errors = {}, {}, {}, []
+            self.sent = {}
+            self.calls = []
+            self.disconnected = False
+
+        def connect(self, host, port, client_id):
+            self.calls.append(('CONNECT', host, port, client_id))
+
+        def run(self):
+            return None
+
+        def serverVersion(self):
+            return 187
+
+        def reqHeadTimeStamp(self, rid, contract, what, use_rth, fmt):
+            self.calls.append(('HEAD', rid, what))
+            if self.fail_first:
+                self.errors.append({'request_id': rid, 'code': 162,
+                                    'message': 'Request Timed Out'})
+            else:
+                self.heads[rid] = '20260311 00:00:00'
+            self.events[rid].set()
+
+        def reqHistoricalData(self, rid, contract, end, duration, bar_size,
+                              what, use_rth, fmt, keep_up, options):
+            self.calls.append(('HISTORY', rid, what))
+            if what == 'SCHEDULE':
+                self.schedules[rid] = {'sessions': []}
+            else:
+                self.ends[rid] = {'start': end, 'end': end}
+                self.rows[rid] = [{'time': '20261008-00:00:00',
+                                   'open': '1.1', 'close': '1.1'}]
+            self.events[rid].set()
+
+        def cancel_own(self, rid, head=False):
+            return None
+
+        def disconnect(self):
+            self.disconnected = True
+
+    def test_successful_broker_callbacks_seal_receipts_and_resume(self):
+        from unittest.mock import patch
+        from historical_training.ib_history import _run_locked
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'history-v2'
+            config = {'chunks': 1, 'spacing_sec': 0, 'host': '127.0.0.1', 'port': 4002, 'client_id': 8984}
+            end = datetime(2026, 10, 8, tzinfo=timezone.utc)
+            app = self.FakeHistoryApp()
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(app, object())):
+                session = _run_locked(config, end, root)
+            self.assertNotIn('exception', session)
+            self.assertEqual(len(session['results']), 7)
+            self.assertTrue(all(row['state'] == 'RECEIVED'
+                                for row in session['results']))
+            self.assertEqual(len([x for x in app.calls if x[0] != 'CONNECT']), 7)
+            self.assertTrue(app.disconnected)
+            for plan in plans(config, end):
+                key = digest({'contract': CONTRACT, **plan})
+                chunk = root / 'chunks' / key
+                receipt = verified_receipt(chunk, plan)
+                self.assertEqual(receipt['response_sha256'],
+                                 sha(chunk / 'response.json'))
+            # A second process may reuse the immutable receipts, not dispatch.
+            preflight_existing(root, config, end)
+            replay = self.FakeHistoryApp()
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(replay, object())):
+                next_session = _run_locked(config, end, root)
+            self.assertNotIn('exception', next_session)
+            self.assertEqual(len([x for x in replay.calls
+                                  if x[0] != 'CONNECT']), 0)
+            self.assertTrue(all(row['resumed'] for row in next_session['results']))
+
+    def test_first_error_162_seals_and_stops_without_reissuing(self):
+        from unittest.mock import patch
+        from historical_training.ib_history import _run_locked
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'failure-v2'
+            config = {'chunks': 1, 'spacing_sec': 0, 'host': '127.0.0.1', 'port': 4002, 'client_id': 8984}
+            end = datetime(2026, 10, 8, tzinfo=timezone.utc)
+            app = self.FakeHistoryApp(fail_first=True)
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(app, object())):
+                session = _run_locked(config, end, root)
+            self.assertIn('REQUEST_ERROR_NO_AUTOMATIC_RETRY',
+                          session['exception'])
+            self.assertEqual(len(session['results']), 1)
+            self.assertEqual(session['results'][0]['state'], 'ERROR')
+            self.assertEqual(len([x for x in app.calls
+                                  if x[0] != 'CONNECT']), 1)
+            first = plans(config, end)[0]
+            chunk = root / 'chunks' / digest({'contract': CONTRACT, **first})
+            self.assertTrue((chunk / 'receipt.json').exists())
+            self.assertEqual((__import__('json').loads(
+                (chunk / 'receipt.json').read_text()))['error_codes'], [162])
+            with self.assertRaisesRegex(EvidenceError,
+                                        'FAILED_CHUNK_IMMUTABLE'):
+                preflight_existing(root, config, end)
+
 
 if __name__ == "__main__":
     unittest.main()

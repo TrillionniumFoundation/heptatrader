@@ -125,6 +125,17 @@ def verified_receipt(directory, plan):
         raise EvidenceError('RESUME_CHUNK_CHANGED')
     if receipt.get('state') != 'RECEIVED':
         raise EvidenceError('FAILED_CHUNK_IMMUTABLE_USE_NEW_OUTPUT_ROOT')
+    response = read(directory / 'response.json')
+    if (not isinstance(response, dict) or response.get('errors') != []
+        or not isinstance(response.get('bars'), list)
+        or receipt.get('rows') != len(response['bars'])):
+        raise EvidenceError('RECEIVED_CHUNK_PAYLOAD_INVALID')
+    kind = plan['kind']
+    if ((kind == 'head' and not response.get('head'))
+        or (kind == 'bars' and not response.get('end_callback'))
+        or (kind == 'schedule' and not response.get('schedule'))
+        or kind not in ('head', 'bars', 'schedule')):
+        raise EvidenceError('RECEIVED_CHUNK_COMPLETION_UNPROVEN')
     return receipt
 
 
@@ -207,7 +218,8 @@ def _run_locked(c,end,root):
                 'received_at_ms':int(time.time()*1000),'state':state,'rows':len(app.rows[rid]),
                 'response_sha256':sha(directory/'response.json'),'full_range_coverage_claimed':False,
                 'error_codes':[x['code'] for x in errors]}
-            write_once(receipt_path,receipt)
+            # Terminal receipt is required for safe replay; a missing one is UNKNOWN_OUTCOME.
+            write_once(directory / 'receipt.json', receipt)
             results.append({'request_key':key,'state':state,'resumed':False,'rows':receipt['rows']})
             atomic(root/'progress.json',session)
             print(json.dumps({'kind':plan['what'],'end':plan['end'],'state':state,'rows':receipt['rows']}),flush=True)
