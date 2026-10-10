@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import stat
+import time
 from pathlib import Path
 
 from .contracts import (
@@ -118,33 +119,60 @@ def _private_storage(db_file):
     return path
 
 
+def _retry_sqlite_schema_busy(action, *, retry_seconds=5.0):
+    """Retry only SQLite BUSY/LOCKED while idempotent schema initialization races.
+
+    A retry never represents the event's actual transaction; transaction
+    identity/duplicate handling still belongs to BEGIN IMMEDIATE.
+    """
+    deadline = time.monotonic() + retry_seconds
+    while True:
+        try:
+            return action()
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, "sqlite_errorcode", None)
+            if (type(code) is not int or (code & 0xff) not in
+                    (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                    or time.monotonic() >= deadline):
+                raise
+            time.sleep(min(0.03, max(0.0, deadline - time.monotonic())))
+
+
 def database(db_file):
     path = _private_storage(db_file)
     db = sqlite3.connect(path, timeout=5, isolation_level=None)
-    db.execute("PRAGMA busy_timeout=5000")
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript("""
-    CREATE TABLE IF NOT EXISTS plans (
-        plan_id TEXT PRIMARY KEY, body TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS events (
-        event_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, feature_id TEXT NOT NULL,
-        kind TEXT NOT NULL, at_ms INTEGER NOT NULL, body TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS samples (
-        plan_id TEXT NOT NULL, feature_id TEXT NOT NULL,
-        input_digest TEXT NOT NULL, state TEXT NOT NULL, source_event_id TEXT NOT NULL,
-        outcome_event_id TEXT, PRIMARY KEY(plan_id, feature_id)
-    );
-    CREATE TABLE IF NOT EXISTS review_batches (
-        fingerprint TEXT PRIMARY KEY, plan_id TEXT NOT NULL, sample_count INTEGER NOT NULL,
-        state TEXT NOT NULL
-    );
-    """)
-    return db
+    try:
+        db.execute("PRAGMA busy_timeout=5000")
+        mode = _retry_sqlite_schema_busy(
+            lambda: db.execute("PRAGMA journal_mode=WAL").fetchone())
+        if mode != ("wal",):
+            db.close()
+            raise ContractError("TRAIN_SQLITE_WAL_REQUIRED")
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA foreign_keys=ON")
+        _retry_sqlite_schema_busy(lambda: db.executescript("""
+        CREATE TABLE IF NOT EXISTS plans (
+            plan_id TEXT PRIMARY KEY, body TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS events (
+            event_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, feature_id TEXT NOT NULL,
+            kind TEXT NOT NULL, at_ms INTEGER NOT NULL, body TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS samples (
+            plan_id TEXT NOT NULL, feature_id TEXT NOT NULL,
+            input_digest TEXT NOT NULL, state TEXT NOT NULL, source_event_id TEXT NOT NULL,
+            outcome_event_id TEXT, PRIMARY KEY(plan_id, feature_id)
+        );
+        CREATE TABLE IF NOT EXISTS review_batches (
+            fingerprint TEXT PRIMARY KEY, plan_id TEXT NOT NULL, sample_count INTEGER NOT NULL,
+            state TEXT NOT NULL
+        );
+        """))
+        return db
 
+    except BaseException:
+        db.close()
+        raise
 
 def _validate_dataset(plan, dataset, event):
     if (not isinstance(dataset, dict) or dataset.get("schema") != DATASET_SCHEMA

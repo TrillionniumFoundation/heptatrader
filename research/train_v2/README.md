@@ -136,3 +136,15 @@ checks now also refuse using one original REQUEST in multiple PREPARED
 commands or across different release cohorts with different command IDs.
 The observed 77 original command bindings have 77 distinct REQUESTs;
 no original logged behavior propensity or production identity is inferred.
+
+
+## Phase 4G: two-bit preregistered shadow signal policy
+
+See [PHASE4G.md](PHASE4G.md). A new isolated, **uninstalled** research
+policy implements a complete three-signal grammar with exactly known
+selection probabilities, a six-quote original-chain freshness gate and
+mandatory Phase 3 presealed local plan. It does not infer probabilities
+for the opaque original trading LLM. Pocket4 actual EUR/USD source
+returned HOLD (no fresh valid quote). A separately marked FABRICATED
+quote-source lab test verified software composition but provides zero
+real broker, trading, model or efficacy evidence. Production gates HOLD.

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from historical_training.common import canonical, read, sha
 from .contracts import CAUSAL, ContractError, feature_spec_id, validate_spec
-from .orchestrator import verify_plan
+from .orchestrator import verify_plan, _retry_sqlite_schema_busy
 from .handoff import ingest_original_event, verify_original_paper_handoff
 
 RECEIPT_SCHEMA = "heptatrader.train-v2-local-prospective-registration.v1"
@@ -54,25 +54,33 @@ def _registry_connection(directory, *, create=False):
         raise ContractError("REGISTRY_DB_NOT_PRIVATE")
     os.close(fd)
     db = sqlite3.connect(dbpath, timeout=5, isolation_level=None)
-    db.execute("PRAGMA busy_timeout=5000")
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS registrations (
-          plan_id TEXT PRIMARY KEY,
-          period_sha256 TEXT NOT NULL,
-          instrument TEXT NOT NULL,
-          feature_spec_id TEXT NOT NULL,
-          policy_id TEXT NOT NULL,
-          first_ms INTEGER NOT NULL,
-          last_ms INTEGER NOT NULL,
-          sealed_at_ms INTEGER NOT NULL,
-          receipt_sha256 TEXT NOT NULL,
-          registration_json TEXT NOT NULL
-        )
-    """)
-    return root, db
+    try:
+        db.execute("PRAGMA busy_timeout=5000")
+        mode = _retry_sqlite_schema_busy(
+            lambda: db.execute("PRAGMA journal_mode=WAL").fetchone())
+        if mode != ("wal",):
+            db.close()
+            raise ContractError("REGISTRY_SQLITE_WAL_REQUIRED")
+        db.execute("PRAGMA synchronous=FULL")
+        _retry_sqlite_schema_busy(lambda: db.execute("""
+            CREATE TABLE IF NOT EXISTS registrations (
+              plan_id TEXT PRIMARY KEY,
+              period_sha256 TEXT NOT NULL,
+              instrument TEXT NOT NULL,
+              feature_spec_id TEXT NOT NULL,
+              policy_id TEXT NOT NULL,
+              first_ms INTEGER NOT NULL,
+              last_ms INTEGER NOT NULL,
+              sealed_at_ms INTEGER NOT NULL,
+              receipt_sha256 TEXT NOT NULL,
+              registration_json TEXT NOT NULL
+            )
+        """))
+        return root, db
 
+    except BaseException:
+        db.close()
+        raise
 
 def _read_seal(root, plan_id):
     directory = root / "sealed-plans"
