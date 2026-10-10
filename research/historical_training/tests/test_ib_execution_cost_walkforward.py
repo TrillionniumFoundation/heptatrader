@@ -15,7 +15,7 @@ class CostTests(unittest.TestCase):
         obj=tempfile.TemporaryDirectory();self.addCleanup(obj.cleanup)
         self.root=Path(obj.name)
         self.feed=self.root/'input';self.feed.mkdir(mode=0o700)
-        self.period=self.root/'period.json';self.period.write_text('{}');self.period.chmod(0o600)
+        self.period=self.root/'period.json';self.period.write_text('{\"account\":\"DU_TEST\",\"execution_domain\":\"PAPER\",\"started_at_ms\":0}');self.period.chmod(0o600)
         from laya_cell.integrity import sha_file
         self.c={'period_path':str(self.period),'period_sha256':sha_file(self.period),
                 'feed_directory':str(self.feed),'completed_history_sources':[]}
@@ -41,7 +41,7 @@ class CostTests(unittest.TestCase):
         self.oms=self.root/'oms.jsonl'
         self.execution={'event':'broker_execution','execution_domain':'PAPER',
                         'broker_execution_id':'abc','ts_ms':self.timestamp+500,
-                        'instrument':'EUR.USD','side':'BOT','qty':50000.,
+                        'instrument':'EUR.USD','account':'DU_TEST','side':'BOT','qty':50000.,
                         'price':1.12510}
         self.commission={'event':'broker_commission','execution_domain':'PAPER',
                          'broker_execution_id':'abc','broker_econ_commission':2.0,
@@ -66,6 +66,14 @@ class CostTests(unittest.TestCase):
         self.write([self.execution,self.commission,different])
         with self.assertRaisesRegex(ValueError,'CONFLICTING_DUPLICATE'):
             calibrate(self.c,self.oms)
+
+    def test_different_account_execution_cannot_be_used_for_costs(self):
+        foreign={**self.execution,'account':'DU_DIFFERENT','broker_execution_id':'other'}
+        fee={**self.commission,'broker_execution_id':'other'}
+        self.write([self.execution,self.commission,foreign,fee])
+        r=calibrate(self.c,self.oms)
+        self.assertEqual(r['fx_unique_executions'],1)
+        self.assertTrue(r['exact_paper_account_scoped'])
 
     def test_missing_broker_commission_is_not_zero_fee(self):
         self.write([self.execution])

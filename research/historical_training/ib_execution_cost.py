@@ -29,7 +29,7 @@ def _safe_number(value):
     return value
 
 
-def _parse_oms_events(path):
+def _parse_oms_events(path, account, period_start_ms):
     """Keep full raw OMS integrity hashes; don't print identifiers or accounts."""
     from laya_cell.shadow_source import strict
     executions, fees, conflicts = {}, {}, set()
@@ -49,6 +49,10 @@ def _parse_oms_events(path):
             if not isinstance(identity,str) or not identity or len(identity)>128:
                 continue
             if typ=="broker_execution":
+                # Exact PAPER accounting account and reset boundary, not a
+                # global mixed-account callback journal.
+                if ev.get("account") != account or ev.get("ts_ms",0) < period_start_ms:
+                    continue
                 row=(ev.get("instrument"),ev.get("side"),ev.get("qty"),ev.get("price"))
                 if identity in executions and executions[identity][0]!=row:
                     conflicts.add(identity)
@@ -68,8 +72,14 @@ def calibrate(config,oms_path):
     from laya_cell.integrity import digest,sha_file
     at=__import__('time').time_ns()//1_000_000
     ordered,pins=read_quotes(config,at)
+    period=__import__('json').loads(Path(config["period_path"]).read_bytes())
+    if (period.get("execution_domain")!="PAPER" or
+        not isinstance(period.get("account"),str) or not period["account"] or
+        type(period.get("started_at_ms")) is not int):
+        raise ValueError("PAPER_PERIOD_FOR_COST_REQUIRED")
     start_sha=sha_file(Path(oms_path))
-    execs,fees,conflicts,oms_sha=_parse_oms_events(oms_path)
+    execs,fees,conflicts,oms_sha=_parse_oms_events(
+        oms_path,period["account"],period["started_at_ms"])
     if start_sha!=oms_sha or sha_file(Path(oms_path))!=oms_sha:
         raise ValueError("OMS_CHANGED_DURING_COST_READ")
     if conflicts:
@@ -119,6 +129,9 @@ def calibrate(config,oms_path):
     return {
         "schema":"heptatrader.ib-cost-evidence.offline.v1",
         "instrument":"EUR.USD",
+        "period_source_sha256":sha_file(Path(config["period_path"])),
+        "period_started_at_ms":period["started_at_ms"],
+        "exact_paper_account_scoped":True,
         "source":"ORIGINAL_CHAIN_VERIFIED_PAPER_LIVE_QUOTES_AND_OMS_COMMISSION_CALLBACKS",
         "source_prefix_digest":digest(pins),
         "source_prefix_count":len(pins),
