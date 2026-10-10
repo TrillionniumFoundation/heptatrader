@@ -61,3 +61,14 @@ See [Phase 2](PHASE2.md) for the independently validated original Numeric16/Laya
 seven-class feature reconstruction, fresh original PAPER source-chain event handoff
 and read-only broker-commission cost frontier. Phase 2 does not add a producer
 daemon, actor update, canonical owner or broker API capability.
+
+
+## Phase 3: distinct local prospective preregistration (research only)
+
+See [PHASE3.md](PHASE3.md). A new research trial must now write a
+clock-checked, immutable local registration at least 30 seconds before the
+first decision. The registered ledger accepts only original-source events
+whose exact registered plan and local segment are reverified. The old
+unverified one-event CLIs cannot write into this special ledger. These
+checks do not constitute an independent canonical owner signature or
+an installed producer hook.

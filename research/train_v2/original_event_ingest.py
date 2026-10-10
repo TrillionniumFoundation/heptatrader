@@ -16,6 +16,10 @@ def main():
         ap.add_argument("--" + name, type=Path, required=True)
     args = ap.parse_args()
     os.umask(0o077)
+    # Registered trials must use registered_event_ingest; older research-only
+    # CLIs cannot accidentally bypass their preregistration/source-root fence.
+    if args.ledger.name == "registered-events.sqlite":
+        ap.error("REGISTERED_LEDGER_REQUIRES_PRESEALED_PLAN_AND_ORIGINAL_SOURCE")
     plan = read(args.plan, 1024*1024)
     dataset = read(args.dataset, 32*1024*1024)
     event = read(args.event, 1024*1024)

@@ -16,6 +16,10 @@ The [Phase 2 continuation](../train_v2/PHASE2.md) verifies original Numeric16
 and Laya question semantics and original PAPER cost evidence, without granting
 historical data real-time authority or changing the trading model.
 
+Train V2 phase 3's local pre-event registry is documented in
+[PHASE3.md](../train_v2/PHASE3.md). It is not an automatic model owner or
+a replacement for the original forward trial evidence.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
