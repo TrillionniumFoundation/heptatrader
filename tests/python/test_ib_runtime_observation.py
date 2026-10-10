@@ -214,6 +214,108 @@ class IbRuntimeObservationTests(unittest.TestCase):
         text = report.prometheus(sample, summary)
         self.assertNotIn(sample["recovery_reason"], text)
 
+    def test_connected_complete_runtime_is_not_fresh_with_stale_native_quote(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        sample["primary_quote_age_ms"] = 12811
+        summary = report.report([sample], sample["observed_at_ms"])
+        self.assertTrue(summary["fresh"])  # Fresh telemetry != fresh market.
+        self.assertIn("IB_PRIMARY_QUOTE_STALE",
+                      {r["rule_id"] for r in summary["alerts"]})
+        self.assertEqual(summary["authorization_effect"], "NONE")
+        self.assertFalse(sample["paper_authorized"])
+        self.assertFalse(sample["live_authorized"])
+
+    def test_quote_staleness_boundary_is_exactly_five_seconds(self) -> None:
+        for age, flagged in ((4999, False), (5000, False), (5001, True)):
+            sample = copy.deepcopy(self.sample)
+            sample["primary_quote_age_ms"] = age
+            alerts = report.report([sample], sample["observed_at_ms"])["alerts"]
+            with self.subTest(age=age):
+                self.assertEqual(
+                    "IB_PRIMARY_QUOTE_STALE" in {r["rule_id"] for r in alerts},
+                    flagged)
+
+    def test_quote_continues_aging_while_native_telemetry_is_still_fresh(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        sample["primary_quote_age_ms"] = 3000
+        at_ms = sample["observed_at_ms"]
+        boundary = report.report([sample], at_ms + 2000)
+        stale = report.report([sample], at_ms + 2001)
+        self.assertTrue(stale["fresh"])
+        self.assertNotIn("IB_PRIMARY_QUOTE_STALE",
+                         {r["rule_id"] for r in boundary["alerts"]})
+        self.assertIn("IB_PRIMARY_QUOTE_STALE",
+                      {r["rule_id"] for r in stale["alerts"]})
+
+    def test_future_or_expired_native_telemetry_cannot_certify_quote(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        for now in (sample["observed_at_ms"]-1,
+                    sample["observed_at_ms"]+15001):
+            summary = report.report([sample], now)
+            with self.subTest(now=now):
+                self.assertFalse(summary["fresh"])
+                self.assertIn("IB_PRIMARY_QUOTE_FRESHNESS_UNKNOWN",
+                              {r["rule_id"] for r in summary["alerts"]})
+
+    def test_unknown_or_unpublished_quote_age_cannot_look_green(self) -> None:
+        cases = [(False, False), (True, False)]
+        for present, valid in cases:
+            sample = copy.deepcopy(self.sample)
+            sample["quote_age_metrics_present"] = present
+            if not present:
+                sample.pop("primary_quote_age_valid")
+                sample.pop("primary_quote_age_ms")
+            else:
+                sample["primary_quote_age_valid"] = valid
+                sample["primary_quote_age_ms"] = 0
+            summary = report.report([sample], sample["observed_at_ms"])
+            with self.subTest(present=present, valid=valid):
+                self.assertIn("IB_PRIMARY_QUOTE_FRESHNESS_UNKNOWN",
+                              {r["rule_id"] for r in summary["alerts"]})
+                self.assertNotIn("IB_PRIMARY_QUOTE_STALE",
+                                 {r["rule_id"] for r in summary["alerts"]})
+
+    def test_native_cash_account_positions_and_recovery_gaps_are_explicit(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        for field in ("fx_cash_complete", "account_complete",
+                      "positions_complete", "coherent_risk_complete",
+                      "recovery_barrier_complete"):
+            sample[field] = False
+        summary = report.report([sample], sample["observed_at_ms"])
+        rules = {r["rule_id"] for r in summary["alerts"]}
+        self.assertTrue({
+            "IB_AUTHORITATIVE_SNAPSHOT_INCOMPLETE",
+            "IB_FX_CASH_SNAPSHOT_INCOMPLETE",
+            "IB_ACCOUNT_SNAPSHOT_INCOMPLETE",
+            "IB_POSITIONS_SNAPSHOT_INCOMPLETE",
+            "IB_RISK_SNAPSHOT_NOT_COHERENT",
+            "IB_RECOVERY_BARRIER_INCOMPLETE"}.issubset(rules))
+        self.assertNotIn("IB_PRIMARY_QUOTE_STALE", rules)
+        self.assertEqual(summary["authorization_effect"], "NONE")
+
+    def test_cash_only_incomplete_is_timed_without_resetting_other_metrics(self) -> None:
+        earlier = copy.deepcopy(self.sample)
+        earlier["observed_at_ms"] = 8000
+        earlier["monotonic_ms"] = 3000
+        earlier["fx_cash_complete"] = False
+        earlier["coherent_risk_complete"] = False
+        later = copy.deepcopy(earlier)
+        later["observed_at_ms"] = 10000
+        later["monotonic_ms"] = 5000
+        summary = report.report([earlier, later], 10000)
+        self.assertEqual(summary["authoritative_snapshot_incomplete_observed_ms"], 2000)
+        self.assertEqual(summary["post_fill_reconciliation_pending_observed_ms"], 0)
+        self.assertIn("IB_FX_CASH_SNAPSHOT_INCOMPLETE",
+                      {r["rule_id"] for r in summary["alerts"]})
+
+    def test_snapshot_age_unknown_does_not_become_zero(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        sample["authoritative_snapshot_age_valid"] = False
+        sample["authoritative_snapshot_age_ms"] = 0
+        summary = report.report([sample], sample["observed_at_ms"])
+        self.assertIn("IB_AUTHORITATIVE_SNAPSHOT_AGE_UNKNOWN",
+                      {r["rule_id"] for r in summary["alerts"]})
+
     def test_file_reader_rejects_duplicate_keys_and_special_input(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

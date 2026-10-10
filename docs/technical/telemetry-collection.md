@@ -50,6 +50,25 @@ false PAPER/LIVE authorization flags, bounded reasons, coherent completeness,
 valid generation/count relationships and terminal-drain ordering. Missing callback
 lag/conflict/network producers are explicit presence `false`, never numerical zero.
 
+The optional IB runtime reporter now also distinguishes **connected API transport**
+from the independent PAPER risk, account, positions, FX cash, terminal and recovery
+snapshots. If any leg is incomplete, an explicit operator alert is produced;
+a complete risk snapshot cannot mask an unavailable or incoherent FX cash leg.
+The conservative incomplete-snapshot duration includes these legs but never
+joins different service/connection epochs. A native primary quote age greater
+than 5,000 ms is flagged as `IB_PRIMARY_QUOTE_STALE`; a missing or invalid
+quote-age observation is instead `IB_PRIMARY_QUOTE_FRESHNESS_UNKNOWN` and
+never interpreted as an age of zero. Unknown authoritative snapshot age is
+independently flagged. These alerts remain read-only telemetry, including on
+FX-closed weekends; they do **not** modify Broker connections, authorize
+PAPER/LIVE, reopen trading, train models, or replace independent 20/24 Laya
+source readiness. The native quotation age is projected forward by the observed native
+sample's elapsed wall time before applying the 5-second budget; a stale or
+future-dated telemetry sample cannot certify a quote even if its previous
+reported quote age was zero. No calendar backfill or retimestamping is
+introduced, and all alert rules retain fixed identifiers, not account IDs.
+A valid reported warning exits with 1, not a collector failure.
+
 Wall time is read **after** collection and parsing. Slow collection cannot make
 an expired sample look fresh using its start time. Reporters retain same-epoch
 freshness and accounting rules; no latency SLO is invented.
