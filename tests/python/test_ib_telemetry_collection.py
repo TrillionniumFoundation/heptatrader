@@ -56,6 +56,11 @@ def ib_sample(now: int) -> dict:
         "callback_lag_metrics_present": False,
         "callback_conflict_metrics_present": False,
         "network_policy_metrics_present": False,
+        "quote_age_metrics_present": True,
+        "primary_quote_age_valid": True, "primary_quote_age_ms": 125,
+        "snapshot_age_metrics_present": True,
+        "authoritative_snapshot_age_valid": True,
+        "authoritative_snapshot_age_ms": 250,
     }
 
 
@@ -112,6 +117,25 @@ class IbTelemetryCollectionTests(unittest.TestCase):
         self.assertIn("hepta_ib_callback_lag_metrics_present 0", ib_text)
         self.assertNotIn("active_reason", ib_text)
         self.assertIn("HEPTA_COLLECTION_IB_OK", output.getvalue())
+
+    def test_legacy_missing_native_quote_age_is_warning_not_collection_failure(self) -> None:
+        def no_quote_age(unit: str) -> bytes:
+            now = time.time_ns() // 1000000
+            if unit == self.profile["gateway"]:
+                return envelope(gateway_sample(now), unit)
+            ib = ib_sample(now)
+            ib.pop("quote_age_metrics_present")
+            ib.pop("primary_quote_age_valid")
+            ib.pop("primary_quote_age_ms")
+            return envelope(oms_sample(now), unit) + envelope(ib, unit)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                collect.collect_profile(self.directory, "ib-paper", no_quote_age), 1)
+        ib_text = (self.directory / "hepta_ib.prom").read_text()
+        self.assertIn("hepta_ib_collector_success 1", ib_text)
+        self.assertIn("hepta_ib_runtime_alerts 1", ib_text)
+        self.assertIn("hepta_ib_quote_age_metrics_present 0", ib_text)
+        self.assertNotIn("hepta_ib_primary_quote_age_ms", ib_text)
 
     def test_missing_ib_schema_replaces_only_ib_health_with_failure(self) -> None:
         self.assertEqual(collect.collect_profile(

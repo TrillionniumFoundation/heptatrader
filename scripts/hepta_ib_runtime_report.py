@@ -20,6 +20,9 @@ import hepta_oms_report as base_metrics
 
 SCHEMA = "heptatrader.ib-runtime-observation.v1"
 REPORT_SCHEMA = "heptatrader.ib-runtime-report.v1"
+# Mirrors the PAPER quote freshness acceptance budget. This is telemetry
+# ONLY, never a substitute for native Broker/Execution permission.
+PRIMARY_QUOTE_FRESHNESS_BUDGET_MS = 5000
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES = 8 << 20
 MAX_LINE = 131072
@@ -234,7 +237,10 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     post_fill_pending_ms = observed_condition_duration_ms(
         samples, lambda sample: sample["post_fill_risk_reconciliation_pending"])
     snapshot_incomplete_ms = observed_condition_duration_ms(
-        samples, lambda sample: not sample["risk_complete"] or not sample["active_complete"])
+        samples, lambda sample: not all(sample[key] for key in (
+            "active_complete", "terminal_complete", "risk_complete",
+            "coherent_risk_complete", "account_complete",
+            "positions_complete", "fx_cash_complete")))
     terminal_drain_pending_ms = observed_condition_duration_ms(
         samples, lambda sample: sample["terminal_transport_halted"] and
         sample["terminal_callbacks_in_flight"] > 0)
@@ -250,8 +256,39 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         alert("IB_EVENT_STREAM_INCOMPLETE", "P1")
     if latest["event_overflow_generation"]:
         alert("IB_EVENT_STREAM_OVERFLOW", "P1")
-    if not latest["risk_complete"] or not latest["active_complete"]:
+    if not all(latest[key] for key in (
+            "active_complete", "terminal_complete", "risk_complete",
+            "coherent_risk_complete", "account_complete",
+            "positions_complete", "fx_cash_complete")):
         alert("IB_AUTHORITATIVE_SNAPSHOT_INCOMPLETE")
+    # Completeness of one native snapshot is NOT a coherent account/cash
+    # reconciliation. Report each independent leg: a fully connected
+    # process may still be unable to qualify the exact PAPER account.
+    for field, rule in (
+            ("account_complete", "IB_ACCOUNT_SNAPSHOT_INCOMPLETE"),
+            ("positions_complete", "IB_POSITIONS_SNAPSHOT_INCOMPLETE"),
+            ("fx_cash_complete", "IB_FX_CASH_SNAPSHOT_INCOMPLETE"),
+            ("coherent_risk_complete", "IB_RISK_SNAPSHOT_NOT_COHERENT"),
+            ("terminal_complete", "IB_TERMINAL_SNAPSHOT_INCOMPLETE")):
+        if not latest[field]:
+            alert(rule, "P1")
+    if not latest["recovery_barrier_complete"]:
+        alert("IB_RECOVERY_BARRIER_INCOMPLETE", "P1")
+    # A live SDK connection can remain healthy while the primary quote is
+    # stale over the weekend or its timestamp is simply unknown. Do not
+    # silently render this an empty alert set. All ages are original native
+    # observations; no synthetic/replayed freshness is introduced.
+    if (not fresh or not latest.get("quote_age_metrics_present", False)
+            or not latest.get("primary_quote_age_valid", False)):
+        alert("IB_PRIMARY_QUOTE_FRESHNESS_UNKNOWN")
+    elif latest["primary_quote_age_ms"] + age > PRIMARY_QUOTE_FRESHNESS_BUDGET_MS:
+        # The quote keeps aging between the native sampling time and the
+        # observer's wall clock. Native age alone would wrongly certify a
+        # quote sampled 4 seconds ago as still within the 5-second TTL.
+        alert("IB_PRIMARY_QUOTE_STALE")
+    if (latest.get("snapshot_age_metrics_present", False)
+            and not latest.get("authoritative_snapshot_age_valid", False)):
+        alert("IB_AUTHORITATIVE_SNAPSHOT_AGE_UNKNOWN")
     if latest["post_fill_risk_reconciliation_pending"]:
         alert("IB_POST_FILL_RECONCILIATION_PENDING")
     if latest["new_connection_epoch_required"]:
