@@ -66,6 +66,8 @@ def verify_release(manifest_file: Path, *, binder=verified_bindings) -> dict:
     required = {"input_id", "forecast_id", "request_id", "prompt_sha256",
                 "producer_manifest_sha256", "source_prefixes", "binding_basis"}
     actions = Counter()
+    requests = set()
+    request_digests = []
     for command_id, row in bindings.items():
         if (not isinstance(command_id, str) or not isinstance(row, dict)
                 or not required <= set(row) or row["binding_basis"]
@@ -75,6 +77,22 @@ def verify_release(manifest_file: Path, *, binder=verified_bindings) -> dict:
                 or not isinstance(row["source_prefixes"], list)
                 or not row["source_prefixes"]):
             raise ValueError("NONEXACT_ORIGINAL_COMMAND_BINDING")
+        request_id = row["request_id"]
+        if (not isinstance(request_id, str) or not request_id
+                or len(request_id) > 256 or "\x00" in request_id):
+            raise ValueError("ORIGINAL_REQUEST_ID_INVALID")
+        for field in ("input_id", "forecast_id", "prompt_sha256"):
+            value = row[field]
+            if (not isinstance(value, str) or len(value) != 64
+                    or any(ch not in "0123456789abcdef" for ch in value)):
+                raise ValueError("ORIGINAL_DIGEST_ID_INVALID:" + field)
+        # Multiple PREPARED commands from one source REQUEST are not
+        # independently sampled Decisions. Reject instead of double-crediting.
+        request_identity = sha256(instrument.encode() + b"\x00" + request_id.encode())
+        if request_identity in requests:
+            raise ValueError("ORIGINAL_REQUEST_MULTIPLE_COMMANDS")
+        requests.add(request_identity)
+        request_digests.append(request_identity)
         # Side is a recorded command, not its probability under the policy.
         actions[row["side"]] += 1
     return {
@@ -88,6 +106,7 @@ def verify_release(manifest_file: Path, *, binder=verified_bindings) -> dict:
             sha256(instrument.encode() + bytes([0]) + cid.encode())
             for cid in bindings
         ),
+        "original_request_identity_digests": sorted(request_digests),
         "bound_command_side_counts": dict(sorted(actions.items())),
         "binding_issue_count": len(issues),
         "binding_issue_reasons": dict(sorted(Counter(
@@ -121,6 +140,9 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
     issue_count = sum(x["binding_issue_count"] for x in results)
     identities = Counter(h for x in results for h in x["original_command_identity_digests"])
     collisions = sum(n - 1 for n in identities.values() if n > 1)
+    original_requests = Counter(h for x in results
+                                for h in x["original_request_identity_digests"])
+    repeated_requests = sum(n - 1 for n in original_requests.values() if n > 1)
     return {
         "schema": SCHEMA,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -131,6 +153,8 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
         "verified_original_command_bindings": total,
         "unique_instrument_command_identities": len(identities),
         "cross_release_duplicate_command_ids": collisions,
+        "unique_original_request_identities": len(original_requests),
+        "cross_release_duplicate_original_request_ids": repeated_requests,
         "declared_behavior_changed_command_bindings": changed,
         "unchanged_policy_command_bindings": total - changed,
         "original_binding_issues": issue_count,
@@ -147,7 +171,7 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
         "assessment": (
             "HOLD_POLICY_COHORT_MISMATCH_AND_MISSING_PROPENSITY" if changed
             else "HOLD_MISSING_ORIGINAL_LOGGED_BEHAVIOR_PROPENSITY"
-        ) if not errors and not issue_count and not collisions and total else "HOLD_ORIGINAL_BINDINGS_UNVERIFIED",
+        ) if not errors and not issue_count and not collisions and not repeated_requests and total else "HOLD_ORIGINAL_BINDINGS_UNVERIFIED",
     }
 
 

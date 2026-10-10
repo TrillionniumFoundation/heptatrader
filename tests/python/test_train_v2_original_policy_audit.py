@@ -211,6 +211,46 @@ class OriginalPolicyAuditTests(unittest.TestCase):
         self.assertEqual(report["cross_release_duplicate_command_ids"], 1)
         self.assertEqual(report["assessment"], "HOLD_ORIGINAL_BINDINGS_UNVERIFIED")
 
+    def test_one_original_request_cannot_back_two_prepared_commands(self):
+        def repeated(reg, instrument, period):
+            rows, issues = self.fake_original_binding(reg, instrument, period)
+            rows["different-command"] = dict(rows["original-command"])
+            return rows, issues
+        with self.assertRaisesRegex(ValueError, "ORIGINAL_REQUEST_MULTIPLE_COMMANDS"):
+            self.verified(repeated)
+
+    def test_original_request_identity_collision_across_releases_holds(self):
+        second = self.release_root / "new-release" / "EUR.USD"
+        second.mkdir(parents=True)
+        (second / "manifest.json").write_text("{}")
+        def separate_commands_same_request(path):
+            record = self.verified()
+            if path.parent.parent.name == "new-release":
+                record["original_command_identity_digests"] = ["f" * 64]
+            return record
+        result = a.audit_releases(self.release_root, verifier=separate_commands_same_request)
+        self.assertEqual(result["verified_original_command_bindings"], 2)
+        self.assertEqual(result["unique_instrument_command_identities"], 2)
+        self.assertEqual(result["cross_release_duplicate_command_ids"], 0)
+        self.assertEqual(result["unique_original_request_identities"], 1)
+        self.assertEqual(result["cross_release_duplicate_original_request_ids"], 1)
+        self.assertEqual(result["assessment"], "HOLD_ORIGINAL_BINDINGS_UNVERIFIED")
+
+    def test_original_request_and_digest_fields_are_bounded(self):
+        for field,value,error in (
+            ("request_id", 5, "ORIGINAL_REQUEST_ID_INVALID"),
+            ("request_id", "r" * 257, "ORIGINAL_REQUEST_ID_INVALID"),
+            ("forecast_id", "invalid", "ORIGINAL_DIGEST_ID_INVALID"),
+            ("input_id", "ABC" * 21 + "A", "ORIGINAL_DIGEST_ID_INVALID"),
+        ):
+            def altered(reg, instrument, period):
+                rows, issues = self.fake_original_binding(reg, instrument, period)
+                rows["original-command"][field] = value
+                return rows, issues
+            with self.subTest(field=field,value=str(value)[:10]):
+                with self.assertRaisesRegex(ValueError, error):
+                    self.verified(altered)
+
     def test_empty_root_has_no_fabricated_evidence(self):
         empty = self.root / "empty"
         empty.mkdir()

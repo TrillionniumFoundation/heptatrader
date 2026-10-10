@@ -127,3 +127,11 @@ the 3 unchanged-policy bindings. No original generator logged a complete
 legal candidate set and selected behavior probability; model confidence
 is not propensity. Production Canonical LedgerWriter, identity, V3
 dataset and prospective after-cost efficacy still HOLD.
+
+## Phase 4F: reject reused source REQUESTs
+
+See [PHASE4F.md](PHASE4F.md). Read-only original decision-provenance
+checks now also refuse using one original REQUEST in multiple PREPARED
+commands or across different release cohorts with different command IDs.
+The observed 77 original command bindings have 77 distinct REQUESTs;
+no original logged behavior propensity or production identity is inferred.
