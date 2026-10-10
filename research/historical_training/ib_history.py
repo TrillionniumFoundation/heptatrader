@@ -5,6 +5,7 @@ An API end callback is transport completion, not a claim of full coverage.
 """
 from __future__ import annotations
 import argparse,collections,fcntl,json,os,sys,threading,time
+from contextlib import contextmanager
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,atomic,write_once
@@ -94,10 +95,76 @@ def plans(c,end):
                 'requested_end_utc':until.isoformat()})
     return out
 
+def completion_state(signalled, errors, complete):
+    """Fail closed on every request-scoped IB error, including HMDS error 162."""
+    if any('pacing' in str(e.get('message', '')).lower() for e in errors):
+        return 'ERROR', 'PACING_STOP'
+    if errors:
+        return 'ERROR', 'REQUEST_ERROR_NO_AUTOMATIC_RETRY'
+    if not signalled or not complete:
+        return 'TIMEOUT', 'REQUEST_TIMEOUT_NO_AUTOMATIC_RETRY'
+    return 'RECEIVED', None
+
+
+def verified_receipt(directory, plan):
+    if directory.is_symlink():
+        raise EvidenceError('RESUME_CHUNK_CHANGED')
+    receipt_path = directory / 'receipt.json'
+    if not receipt_path.exists():
+        # The request is durably sealed before network dispatch. After a
+        # crash, any unfinalized chunk may have reached the broker already.
+        if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+            raise EvidenceError('UNFINALIZED_CHUNK_UNKNOWN_OUTCOME_USE_NEW_OUTPUT_ROOT')
+        return None
+    receipt = read(receipt_path)
+    if (receipt.get('request') != plan or
+            not (directory / 'request.json').exists() or
+            read(directory / 'request.json') != plan or
+            not (directory / 'response.json').exists() or
+            sha(directory / 'response.json') != receipt.get('response_sha256')):
+        raise EvidenceError('RESUME_CHUNK_CHANGED')
+    if receipt.get('state') != 'RECEIVED':
+        raise EvidenceError('FAILED_CHUNK_IMMUTABLE_USE_NEW_OUTPUT_ROOT')
+    return receipt
+
+
+def preflight_existing(root, config, end):
+    """Reject frozen failures and tampering before any new network request."""
+    for plan in plans(config, end):
+        key = digest({'contract': CONTRACT, **plan})
+        verified_receipt(root / 'chunks' / key, plan)
+
+
+@contextmanager
+def global_history_lock(root):
+    """Reserve pinned client 8984 across distinct output roots on Pocket4."""
+    root.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+    fd=os.open(root.parent/'ib-history-client-8984.lock',
+               os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
+
+
+def sync_dir(path):
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+
+
 def run(c):
-    end=validate(c);root=Path(c['output_root']);root.mkdir(parents=True,mode=0o700,exist_ok=True)
+    end=validate(c);root=Path(c['output_root'])
+    with global_history_lock(root):
+        return _run_locked(c,end,root)
+
+
+def _run_locked(c,end,root):
+    root.mkdir(parents=True,mode=0o700,exist_ok=True)
     lock=open(root/'download.lock','a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     write_once(root/'plan.json',{'schema':'heptatrader.historical-download-plan.v1','config':c,'requests':plans(c,end)})
+    preflight_existing(root,c,end)
     app,contract=make_app(c);thread=None;results=[];sent_now=0;last=0
     session={'schema':'heptatrader.historical-download-session.v1','started_ms':int(time.time()*1000),
         'config_sha256':digest(c),'trade_authority':False,'results':results}
@@ -109,12 +176,9 @@ def run(c):
         session['server_version']=app.serverVersion()
         for index,plan in enumerate(plans(c,end)):
             key=digest({'contract':CONTRACT,**plan});directory=root/'chunks'/key
-            receipt_path=directory/'receipt.json'
-            if receipt_path.exists():
-                r=read(receipt_path)
-                if r.get('request')!=plan or sha(directory/'response.json')!=r.get('response_sha256'):
-                    raise EvidenceError('RESUME_CHUNK_CHANGED')
-                results.append({'request_key':key,'state':r['state'],'resumed':True,'rows':r.get('rows',0)})
+            r=verified_receipt(directory,plan)
+            if r is not None:
+                results.append({'request_key':key,'state':'RECEIVED','resumed':True,'rows':r.get('rows',0)})
                 continue
             if app.dead:raise EvidenceError('BROKER_DISCONNECTED_NO_RECONNECT_LOOP')
             elapsed=time.monotonic()-(app.guard.last if app.guard.last is not None else last)
@@ -124,6 +188,9 @@ def run(c):
             app.events[rid]=threading.Event();app.rows[rid]=[]
             directory.mkdir(mode=0o700,parents=True,exist_ok=True)
             write_once(directory/'request.json',plan)
+            # Prevent a power loss from erasing evidence of a dispatched request.
+            for path in (directory,directory.parent,root,root.parent):
+                sync_dir(path)
             last=time.monotonic();sent_now+=1
             if plan['kind']=='head':app.reqHeadTimeStamp(rid,contract,plan['what'],0,2)
             else:app.reqHistoricalData(rid,contract,plan['end'],plan['duration'],plan['bar_size'],plan['what'],0,2,False,[])
@@ -135,7 +202,7 @@ def run(c):
             response={'bars':app.rows[rid],'head':app.heads.get(rid),'schedule':app.schedules.get(rid),
                 'end_callback':app.ends.get(rid),'errors':errors}
             write_once(directory/'response.json',response)
-            state='RECEIVED' if complete and not errors else ('ERROR' if errors else 'TIMEOUT')
+            state,stop_reason=completion_state(signalled,errors,complete)
             receipt={'schema':'heptatrader.historical-chunk.v1','request':plan,'request_id':rid,
                 'received_at_ms':int(time.time()*1000),'state':state,'rows':len(app.rows[rid]),
                 'response_sha256':sha(directory/'response.json'),'full_range_coverage_claimed':False,
@@ -144,10 +211,8 @@ def run(c):
             results.append({'request_key':key,'state':state,'resumed':False,'rows':receipt['rows']})
             atomic(root/'progress.json',session)
             print(json.dumps({'kind':plan['what'],'end':plan['end'],'state':state,'rows':receipt['rows']}),flush=True)
-            if not signalled or any(x['code'] not in (162,165,200,321,366) for x in errors):
-                raise EvidenceError('REQUEST_FAILURE_STOP_NO_AUTOMATIC_RETRY')
-            if any('pacing' in x['message'].lower() for x in errors):
-                raise EvidenceError('PACING_STOP')
+            if stop_reason:
+                raise EvidenceError(stop_reason)
     except Exception as exc:
         session['exception']=type(exc).__name__+': '+str(exc)
     finally:

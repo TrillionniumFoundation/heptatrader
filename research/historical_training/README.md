@@ -104,6 +104,15 @@ permanent ID; it never matches solely by numeric order ID. A missing callback,
 flat position, execution fee completeness or API end marker does not prove a
 terminal order state. The native OMS is never rewritten by this probe.
 
+## Immutable IB failure continuation (2026-10-10)
+
+See [IB_HISTORY_FAILCLOSED_20261010.md](IB_HISTORY_FAILCLOSED_20261010.md)
+for frozen HMDS error 162 evidence, fail-closed resumption, the 210-day
+verified dataset, a byte-identical three-fold walk-forward replay, and
+the preconditions for a later one-shot continuation in a **new** output root.
+A failed receipt is never a successful checkpoint; no operator should
+disable quote/source freshness gates or use revised history as a live mark.
+
 ## Running and testing
 
 Set `PYTHONPATH=research:research/neuron_learning:scripts` from the repository.
