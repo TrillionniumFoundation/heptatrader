@@ -220,8 +220,13 @@ def _acquire_account(account: str, sdk_path: Path, client_id: int, timeout: int,
         def error(self, req, code, message, *args):
             # Keep exact numeric diagnostics, without broker message/account disclosure.
             event = {'request_id': req, 'code': code}
-            if req == -1 and code in (2104, 2106, 2107, 2108, 2158, 2172): self.informational.append(event)
-            else: self.errors.append(event)
+            # IB 2105 is the historical-data farm disconnect status, not an
+            # account-subscription failure. Retain it as diagnostic evidence
+            # only when it is global (req=-1); request-scoped errors stay fatal.
+            if req == -1 and code in (2104, 2105, 2106, 2107, 2108, 2158, 2172):
+                self.informational.append(event)
+            else:
+                self.errors.append(event)
         def accountUpdateMulti(self, req, account, model, key, value, currency):
             if req not in (self.requests['ledger'], self.requests['account']) or req in self.ends: return
             if len(self.rows) >= 4096:
