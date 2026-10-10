@@ -20,6 +20,10 @@ Train V2 phase 3's local pre-event registry is documented in
 [PHASE3.md](../train_v2/PHASE3.md). It is not an automatic model owner or
 a replacement for the original forward trial evidence.
 
+Train V2 Phase 4A adds a receive-only research Ed25519 signature verifier:
+[PHASE4.md](../train_v2/PHASE4.md). A signed research envelope is not
+a canonical Agentd owner, producer enrollment or trading permission.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

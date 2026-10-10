@@ -34,7 +34,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
       - name: Install pinned CPU research test dependency
         run: |
           python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"

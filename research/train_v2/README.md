@@ -72,3 +72,14 @@ whose exact registered plan and local segment are reverified. The old
 unverified one-event CLIs cannot write into this special ledger. These
 checks do not constitute an independent canonical owner signature or
 an installed producer hook.
+
+## Phase 4A: externally signed local research envelopes, no canonical owner
+
+See [PHASE4.md](PHASE4.md). The new receive-only Ed25519 verifier
+checks pinned public trust, distinct registrar/producer/observer keys,
+exact original plan/source/registry binding, current expiry/revocation
+and immutable signed receipts. A separate signed-only research ledger
+cannot be written through the old unverified CLIs. Test-only cross-host
+signatures are NOT Canonical Agentd LearningLedger facts or product
+selection evidence. No new model, running service or broker action is
+created by this package.
