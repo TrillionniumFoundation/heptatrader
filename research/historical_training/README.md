@@ -28,6 +28,10 @@ Train V2's opt-in original broker-quoted-expiry experiment is described in
 [PHASE4B.md](../train_v2/PHASE4B.md). This versioned FUTURE profile does
 not modify the existing arrival-only source rule or historical data roles.
 
+Train V2's Canonical native ledger readiness limits are recorded in
+[PHASE4C.md](../train_v2/PHASE4C.md); price confidence cannot substitute
+for an actual logged behavior propensity or canonical LedgerWriter ACK.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

@@ -94,3 +94,13 @@ after quote arrival but before the future decision, which must itself be
 before the original expiry. This closes a timing impossibility found in
 Phase 4A's after-arrival external signing pipeline, without repairing
 earlier missed predictions or admitting any model/trade authority.
+
+
+## Phase 4C exact canonical source requirements
+
+See [PHASE4C.md](PHASE4C.md). The pinned original Rust LedgerWriter
+cannot accept a research price JSON as an authenticated decision. The
+new code audits real original source, original Rust type/method layout
+and the missing complete candidate set, logged policy propensity,
+independent controller and root trust facts. It reports HOLD only:
+no native LedgerWriter, owner/selection, model or broker side effect.
