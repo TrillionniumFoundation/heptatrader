@@ -104,3 +104,14 @@ new code audits real original source, original Rust type/method layout
 and the missing complete candidate set, logged policy propensity,
 independent controller and root trust facts. It reports HOLD only:
 no native LedgerWriter, owner/selection, model or broker side effect.
+
+## Phase 4D: exact original native Rust library qualification (isolated only)
+
+See [PHASE4D.md](PHASE4D.md). Real original LedgerWriter and Artifact Owner
+Rust library tests passed (210/210), and a 256-Decision Pocket4 on-disk
+segmented-witness target-host test recovered exactly. The harness uses an
+isolated six-crate generated Cargo manifest, test-only signing keys and
+synthetic Decisions; original full upstream dependency resolution, real
+product controller enrollment, logged behavior propensity, host instance,
+V3 dataset from real observations and new after-cost prospective efficacy
+remain unqualified. Existing product admission remains HOLD.
