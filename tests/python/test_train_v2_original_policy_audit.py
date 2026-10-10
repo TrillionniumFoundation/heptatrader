@@ -211,6 +211,19 @@ class OriginalPolicyAuditTests(unittest.TestCase):
         self.assertEqual(report["cross_release_duplicate_command_ids"], 1)
         self.assertEqual(report["assessment"], "HOLD_ORIGINAL_BINDINGS_UNVERIFIED")
 
+    def test_open_only_binding_is_not_complete_behavior_policy_denominator(self):
+        # The actual binder rejects non-OPEN commands; observing the filled
+        # subset never certifies all HOLD, vetoed, aborted or risk-exit rows.
+        local = self.verified()
+        self.assertEqual(local["original_observation_subset"],
+                         "BOUND_OPEN_COMMANDS_ONLY")
+        self.assertFalse(local["complete_original_policy_decision_population_attested"])
+        report = a.audit_releases(self.release_root, verifier=lambda _: local)
+        self.assertEqual(report["verified_original_command_bindings"], 1)
+        self.assertFalse(report["complete_original_policy_decision_population_attested"])
+        self.assertEqual(report["original_non_open_selection_count_attested"], 0)
+        self.assertEqual(report["off_policy_evaluation_rows_admitted"], 0)
+
     def test_one_original_request_cannot_back_two_prepared_commands(self):
         def repeated(reg, instrument, period):
             rows, issues = self.fake_original_binding(reg, instrument, period)

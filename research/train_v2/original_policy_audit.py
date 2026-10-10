@@ -108,6 +108,12 @@ def verify_release(manifest_file: Path, *, binder=verified_bindings) -> dict:
         ),
         "original_request_identity_digests": sorted(request_digests),
         "bound_command_side_counts": dict(sorted(actions.items())),
+        # verified_bindings intentionally returns original PREPARED OPEN
+        # commands, not the full decision population (HOLD, vetoes, exits).
+        # The 77 real rows cannot be used as an OPE denominator.
+        "original_observation_subset": "BOUND_OPEN_COMMANDS_ONLY",
+        "complete_original_policy_decision_population_attested": False,
+        "original_non_open_selection_count_attested": 0,
         "binding_issue_count": len(issues),
         "binding_issue_reasons": dict(sorted(Counter(
             str(i.get("reason", "UNKNOWN"))[:120] for i in issues
@@ -162,6 +168,9 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
         "unverified": errors,
         "original_complete_candidate_sets_attested": 0,
         "original_logged_behavior_propensities_attested": 0,
+        "complete_original_policy_decision_population_attested": False,
+        "original_non_open_selection_count_attested": 0,
+        "off_policy_evaluation_rows_admitted": 0,
         "original_generator_root_trust_activated_by_audit": False,
         "independent_observer_root_trust_activated_by_audit": False,
         "native_product_ledger_decisions_written_by_audit": 0,

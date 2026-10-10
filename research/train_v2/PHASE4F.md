@@ -60,6 +60,39 @@ The native 210/210 Rust library tests and 256 synthetic test decisions
 documented in Phase 4D are separate evidence, not proofs
 of the production decision chain.
 
+## Selection-on-trades-only sampling risk
+
+The exact 77 bindings are the *PREPARED OPEN command subset*. The audit
+cannot turn these into the population of policy Decisions: no-ops (HOLD),
+risk-vetoed candidates, cancelled/expired decisions and closure events
+are not independently enumerated as a complete sample in this view.
+This is a **selection-on-trades-only** dataset. Even if a future tool
+reported valid open-action probabilities, there would still be no
+authenticated original all-decision denominator for off-policy evaluation.
+The new audit explicitly marks the population as incomplete and admits
+zero OPE rows rather than silently using the 77 command bindings.
+
+### Final selection-denominator validation
+
+The follow-up original audit explicitly records BOUND_OPEN_COMMANDS_ONLY,
+sets complete_original_policy_decision_population_attested to false, and
+admits **zero off-policy evaluation rows**.
+
+Read-only final Pocket4 audit:
+~/.local/state/heptatrader/operator-evidence/train-v2-original-identity-20261011/receipt-v2.json
+
+SHA256:
+bbd1d0d67c1565d1f7927cc081c1f1e12ffba1cc084f5441091a8e2e3078c1b7
+
+Expanded attribution + Canonical + native Python regression:
+**104 passed, 17 subtests passed, 0 failed**.
+
+Private log:
+~/.local/state/heptatrader/operator-evidence/train-v2-original-identity-20261011/python-regression-v2.log
+
+SHA256:
+1f59328f382eb5d74f95bdbe98e642afdc96ec2137e6849fa01113740306252e
+
 ## Remaining hard gate
 
 Do not reconstruct absent behavior propensity or complete action support
