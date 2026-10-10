@@ -84,6 +84,10 @@ def verify_release(manifest_file: Path, *, binder=verified_bindings) -> dict:
         "runtime_file_count_verified": len(hashes),
         "runtime_digest_set_sha256": sha256("".join(hashes).encode()),
         "exact_original_command_binding_count": len(bindings),
+        "original_command_identity_digests": sorted(
+            sha256(instrument.encode() + bytes([0]) + cid.encode())
+            for cid in bindings
+        ),
         "bound_command_side_counts": dict(sorted(actions.items())),
         "binding_issue_count": len(issues),
         "binding_issue_reasons": dict(sorted(Counter(
@@ -115,6 +119,8 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
     changed = sum(x["exact_original_command_binding_count"] for x in results
                   if x["declared_trading_behavior_changed"])
     issue_count = sum(x["binding_issue_count"] for x in results)
+    identities = Counter(h for x in results for h in x["original_command_identity_digests"])
+    collisions = sum(n - 1 for n in identities.values() if n > 1)
     return {
         "schema": SCHEMA,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -123,6 +129,8 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
         "verified_release_count": len(results),
         "unverified_release_count": len(errors),
         "verified_original_command_bindings": total,
+        "unique_instrument_command_identities": len(identities),
+        "cross_release_duplicate_command_ids": collisions,
         "declared_behavior_changed_command_bindings": changed,
         "unchanged_policy_command_bindings": total - changed,
         "original_binding_issues": issue_count,
@@ -130,16 +138,16 @@ def audit_releases(root: Path, *, verifier=verify_release) -> dict:
         "unverified": errors,
         "original_complete_candidate_sets_attested": 0,
         "original_logged_behavior_propensities_attested": 0,
-        "original_generator_root_trust_activated": False,
-        "independent_observer_root_trust_activated": False,
-        "native_product_ledger_decisions_written": 0,
-        "canonical_dataset_snapshot_v3_frozen": False,
-        "trade_authority": False,
-        "broker_queries_or_orders": 0,
+        "original_generator_root_trust_activated_by_audit": False,
+        "independent_observer_root_trust_activated_by_audit": False,
+        "native_product_ledger_decisions_written_by_audit": 0,
+        "canonical_dataset_snapshot_v3_frozen_by_audit": False,
+        "audit_granted_trade_authority": False,
+        "broker_queries_or_orders_performed_by_audit": 0,
         "assessment": (
             "HOLD_POLICY_COHORT_MISMATCH_AND_MISSING_PROPENSITY" if changed
             else "HOLD_MISSING_ORIGINAL_LOGGED_BEHAVIOR_PROPENSITY"
-        ) if not errors and not issue_count and total else "HOLD_ORIGINAL_BINDINGS_UNVERIFIED",
+        ) if not errors and not issue_count and not collisions and total else "HOLD_ORIGINAL_BINDINGS_UNVERIFIED",
     }
 
 

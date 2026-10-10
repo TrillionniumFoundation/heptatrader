@@ -121,7 +121,7 @@ remain unqualified. Existing product admission remains HOLD.
 See [PHASE4E.md](PHASE4E.md). A new strictly read-only tool revalidates
 actual installed PAPER runtime SHA256, exact period, and original
 REQUEST→RESPONSE→DECISION→PREPARED log identity. Pocket4 verified
-77 original command bindings with zero chain issues, but 74 belong to
+77 unique instrument/command bindings with zero chain issues or cross-release duplicate IDs, but 74 belong to
 a trading-behavior-changed EUR/USD release and must not be pooled with
 the 3 unchanged-policy bindings. No original generator logged a complete
 legal candidate set and selected behavior probability; model confidence

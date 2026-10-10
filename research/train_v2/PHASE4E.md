@@ -29,13 +29,19 @@ hashes, not external signed trust) verified:
 | BTC.USD release | false | 1 | 0 |
 | Total | mixed (do not pool) | 77 | 0 |
 
+The exact per-release command identity sets have **77/77 distinct**
+\`(instrument, command_id)\` keys across all three versions, with **zero**
+cross-release duplicates. The auditor now detects and rejects duplicate
+command identities across cohorts, rather than summing overlapping keys.
+
+
 Owner-permitted read-only evidence file:
 `~/.local/state/heptatrader/operator-evidence/train-v2-original-policy-verified-20261011/original-policy-v3.json`
 
 Evidence SHA256:
-`d192f29dbf6baa2f4592c84c6a4aab8f9f21df9e955a1e977f3f474bb891581d`
+`907f0bb3822cdb027d188730fd8a136ed6a45dbabb2f37284ec3d0748aedbbc0`
 
-The first ad-hoc 77-binding scan lacks runtime-file identity enforcement.
+A combined source/native-attribution regression passed **100 cases and 13 subtests**; exact log SHA256 \`594e46b1019bdb1561f7f32021e809ed8ced207db850d23bbaf9c97a862e1bd0\`.\n\nThe first ad-hoc 77-binding scan lacks runtime-file identity enforcement.
 The stricter implementation validates every runtime file, original period
 and source, and separately reports unchanged vs. changed policy cohorts.
 This is provenance of real recorded command paths, NOT an outcome join,

@@ -159,8 +159,8 @@ class OriginalPolicyAuditTests(unittest.TestCase):
             "bound_command_side_counts": {}})
         self.assertEqual(report["assessment"], "HOLD_ORIGINAL_BINDINGS_UNVERIFIED")
         self.assertEqual(report["original_logged_behavior_propensities_attested"], 0)
-        self.assertFalse(report["original_generator_root_trust_activated"])
-        self.assertEqual(report["broker_queries_or_orders"], 0)
+        self.assertFalse(report["original_generator_root_trust_activated_by_audit"])
+        self.assertEqual(report["broker_queries_or_orders_performed_by_audit"], 0)
 
     def test_unsafe_manifest_poison_does_not_get_dropped(self):
         self.m["execution_domain"] = "LIVE"
@@ -201,13 +201,23 @@ class OriginalPolicyAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "RELEASE_COUNT_LIMIT"):
             a.audit_releases(self.release_root)
 
+    def test_duplicate_original_command_across_releases_holds(self):
+        second = self.release_root / "other" / "EUR.USD"
+        second.mkdir(parents=True)
+        (second / "manifest.json").write_text("{}")
+        report = a.audit_releases(self.release_root, verifier=lambda _: self.verified())
+        self.assertEqual(report["verified_original_command_bindings"], 2)
+        self.assertEqual(report["unique_instrument_command_identities"], 1)
+        self.assertEqual(report["cross_release_duplicate_command_ids"], 1)
+        self.assertEqual(report["assessment"], "HOLD_ORIGINAL_BINDINGS_UNVERIFIED")
+
     def test_empty_root_has_no_fabricated_evidence(self):
         empty = self.root / "empty"
         empty.mkdir()
         result = a.audit_releases(empty)
         self.assertEqual(result["original_release_count"], 0)
         self.assertEqual(result["verified_original_command_bindings"], 0)
-        self.assertFalse(result["canonical_dataset_snapshot_v3_frozen"])
+        self.assertFalse(result["canonical_dataset_snapshot_v3_frozen_by_audit"])
 
 
 if __name__ == "__main__":
