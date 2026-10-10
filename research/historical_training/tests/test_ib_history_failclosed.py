@@ -301,5 +301,91 @@ class HistoricalSessionIOTests(unittest.TestCase):
                 preflight_existing(root, config, end)
 
 
+class CashHistoryFarmGateTests(unittest.TestCase):
+    """Test market-farm notification ordering without opening an IB connection."""
+
+    def test_cash_history_down_up_and_demand_idle_are_distinct(self):
+        from historical_training.ib_history import observe_cash_hmds
+        step=observe_cash_hmds
+        state='UNKNOWN'
+        state=step(state,-1,2105,'历史市场数据场连接中断:cashhmds')
+        self.assertEqual(state,'DISCONNECTED')
+        # An unrelated historical farm cannot clear the cashhmds disconnect.
+        self.assertEqual(step(state,-1,2106,'historical farm OK:apachmds'),state)
+        self.assertEqual(step(state,7800,2106,'cashhmds'),state)
+        state=step(state,-1,2107,'cashhmds inactive')
+        self.assertEqual(state,'INACTIVE')
+        state=step(state,-1,2106,'cashhmds connected')
+        self.assertEqual(state,'CONNECTED')
+        self.assertEqual(step(state,-1,2105,'unrelatedhmds'),'CONNECTED')
+        # A request-scoped 162 is already handled by the immutable request receipt.
+        self.assertEqual(step(state,7800,162,'Request Timed Out'),'CONNECTED')
+
+    def test_2105_cash_farm_disconnected_stops_before_first_request(self):
+        from unittest.mock import patch
+        from historical_training.ib_history import _run_locked
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/'unavailable-cash-hmds'
+            c={'chunks':1,'spacing_sec':12,'host':'127.0.0.1',
+               'port':4002,'client_id':8984}
+            end=datetime(2026,10,8,tzinfo=timezone.utc)
+            app=HistoricalSessionIOTests.FakeHistoryApp()
+            app.cash_hmds_state='DISCONNECTED'
+            app.errors.append({'request_id':-1,'code':2105,
+                               'message':'cashhmds disconnected'})
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(app,object())):
+                session=_run_locked(c,end,root)
+            self.assertIn('CASH_HMDS_DISCONNECTED_NO_HISTORY_DISPATCH',
+                          session['exception'])
+            self.assertEqual(session['requests_sent_this_run'],0)
+            self.assertEqual(session['broker_orders_sent'],0)
+            self.assertEqual(session['cash_hmds_state'],'DISCONNECTED')
+            self.assertEqual([x[0] for x in app.calls],['CONNECT'])
+            self.assertFalse((root/'chunks').exists())
+            self.assertTrue((root/'session.json').exists())
+
+    def test_cash_farm_2107_idle_does_not_block_request(self):
+        from unittest.mock import patch
+        from historical_training.ib_history import _run_locked
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/'idle-history'
+            c={'chunks':1,'spacing_sec':0,'host':'127.0.0.1',
+               'port':4002,'client_id':8984}
+            end=datetime(2026,10,8,tzinfo=timezone.utc)
+            app=HistoricalSessionIOTests.FakeHistoryApp()
+            app.cash_hmds_state='INACTIVE'
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(app,object())):
+                session=_run_locked(c,end,root)
+            self.assertNotIn('exception',session)
+            self.assertEqual(session['requests_sent_this_run'],7)
+            self.assertEqual(session['cash_hmds_state'],'INACTIVE')
+
+    def test_disconnect_during_pacing_refuses_dispatch(self):
+        from unittest.mock import patch
+        from historical_training.ib_history import _run_locked
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/'disconnect-on-pacing'
+            c={'chunks':1,'spacing_sec':12,'host':'127.0.0.1',
+               'port':4002,'client_id':8984}
+            end=datetime(2026,10,8,tzinfo=timezone.utc)
+            app=HistoricalSessionIOTests.FakeHistoryApp()
+            app.cash_hmds_state='CONNECTED'
+            app.guard.last=time.monotonic()
+            def lose_farm(_seconds):
+                app.cash_hmds_state='DISCONNECTED'
+            with patch('historical_training.ib_history.make_app',
+                       return_value=(app,object())), patch(
+                           'historical_training.ib_history.time.sleep',
+                           side_effect=lose_farm):
+                session=_run_locked(c,end,root)
+            self.assertIn('CASH_HMDS_DISCONNECTED_NO_HISTORY_DISPATCH',
+                          session['exception'])
+            self.assertEqual(session['requests_sent_this_run'],0)
+            self.assertEqual([x[0] for x in app.calls],['CONNECT'])
+
+
 if __name__ == "__main__":
     unittest.main()

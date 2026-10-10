@@ -13,6 +13,22 @@ from .egress import HistoryGuard
 
 ALLOWED=frozenset((71,20,25,87,90))
 CONTRACT={'conId':12087792,'symbol':'EUR','secType':'CASH','exchange':'IDEALPRO','currency':'USD'}
+CASH_HMDS_NOTICES={2105:'DISCONNECTED',2106:'CONNECTED',2107:'INACTIVE'}
+
+def observe_cash_hmds(previous, req_id, code, message):
+    """Only the named cash history farm can gate EUR/USD history requests.
+
+    2107 means demand-idle, NOT disconnected. Historical service 162 is
+    request-scoped and handled separately by the fail-closed receipt path.
+    """
+    if (req_id != -1 or code not in CASH_HMDS_NOTICES
+            or not isinstance(message,str) or 'cashhmds' not in message.casefold()):
+        return previous
+    return CASH_HMDS_NOTICES[code]
+
+def assert_cash_hmds_admitted(app):
+    if getattr(app, 'cash_hmds_state', 'UNKNOWN')=='DISCONNECTED':
+        raise EvidenceError('CASH_HMDS_DISCONNECTED_NO_HISTORY_DISPATCH')
 
 def validate(c):
     if (c.get('host')!='127.0.0.1' or c.get('port')!=4002 or c.get('client_id')!=8984
@@ -39,6 +55,7 @@ def make_app(c):
             self.ready=threading.Event();self.account_event=threading.Event();self.paper=False
             self.events={};self.rows={};self.ends={};self.errors=[];self.heads={};self.schedules={}
             self.sent=collections.Counter();self.own=set();self.active=set();self.dead=False
+            self.cash_hmds_state='UNKNOWN'
             self.guard=HistoryGuard(c['client_id'],c['spacing_sec'])
         def sendMsg(self,msg):
             fields=msg.split('\0');code=int(fields[0])
@@ -55,6 +72,8 @@ def make_app(c):
             self.account_event.set()
         def error(self,reqId,errorCode,errorString,advancedOrderRejectJson=''):
             self.errors.append({'request_id':reqId,'code':errorCode,'message':errorString})
+            self.cash_hmds_state=observe_cash_hmds(
+                self.cash_hmds_state,reqId,errorCode,errorString)
             if reqId in self.events:self.events[reqId].set()
             if errorCode in (1100,1300,326,502,504):self.dead=True
         def historicalData(self,reqId,bar):
@@ -192,8 +211,11 @@ def _run_locked(c,end,root):
                 results.append({'request_key':key,'state':'RECEIVED','resumed':True,'rows':r.get('rows',0)})
                 continue
             if app.dead:raise EvidenceError('BROKER_DISCONNECTED_NO_RECONNECT_LOOP')
+            assert_cash_hmds_admitted(app)
             elapsed=time.monotonic()-(app.guard.last if app.guard.last is not None else last)
             if elapsed<c['spacing_sec']:time.sleep(c['spacing_sec']-elapsed)
+            # The callback reader can receive 2105 while the pacing clock runs.
+            assert_cash_hmds_admitted(app)
             rid=7800+index;app.own.add(rid);app.active.add(rid)
             app.guard.register(rid,plan)
             app.events[rid]=threading.Event();app.rows[rid]=[]
@@ -232,6 +254,7 @@ def _run_locked(c,end,root):
         if thread:thread.join(timeout=2)
         session.update(ended_ms=int(time.time()*1000),paper_verified=app.paper,
             requests_sent_this_run=sent_now,outbound_message_counts=dict(app.sent),
+            cash_hmds_state=getattr(app,'cash_hmds_state','UNKNOWN'),
             allowed_outbound_codes=sorted(ALLOWED),broker_orders_sent=0,errors=app.errors)
         atomic(root/'session.json',session)
         write_once(root/'sessions'/(str(session['started_ms'])+'.json'),session)

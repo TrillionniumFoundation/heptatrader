@@ -108,6 +108,7 @@ terminal order state. The native OMS is never rewritten by this probe.
 
 See [IB_HISTORY_FAILCLOSED_20261010.md](IB_HISTORY_FAILCLOSED_20261010.md)
 See [IB_HISTORY_DURABLE_RECEIPTS_20261010.md](IB_HISTORY_DURABLE_RECEIPTS_20261010.md) for the terminal receipt fix, real PAPER 162 probe, and deterministic 210-day offline replay.
+See [IB_CASH_HMDS_AND_VALIDATION_20261010.md](IB_CASH_HMDS_AND_VALIDATION_20261010.md) for the passive 2105/2106/2107 cash farm gate, read-only exact EUR CASH reconciliation, and economic validation frontier.
 for frozen HMDS error 162 evidence, fail-closed resumption, the 210-day
 verified dataset, a byte-identical three-fold walk-forward replay, and
 the preconditions for a later one-shot continuation in a **new** output root.
