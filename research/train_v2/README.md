@@ -1,0 +1,56 @@
+# Train V2 Phase 1: PIT feature contract and event-only research admission
+
+Status: isolated pocket4 research code, 2026-10-10. No PAPER/Execution, OMS, order, model, Laya source hold, systemd unit or prior trial change. Stacked on the existing protected IB historical global-lock branch.
+
+## The boundary
+
+HeptaTrader currently has different model input profiles, horizons, feature availability times and policy identities. These cannot be unified merely by sharing a timestamp, concatenating data, or relabeling the Laya ACT/ESCALATE head as a trade BUY/SELL head.
+
+The new train_v2 package defines a common data *provenance* schema. Its strictly causal profile verifies both event_at_ms and actual available_at_ms against the decision time, respects local quote expiry, contiguity and horizon maturity. It retains the exact source receipts and period/policy identities. An outcome arriving later may update the label but cannot change earlier features or the feature digest.
+
+A 2026-03 broker historical bar downloaded in October is not a March-time observed live quote. The revised IB adapter verifies the original history plan and 31 hash-pinned receipts, then uses the conservative latest real receipt timestamp as data availability. Such observations can be explored but are always REVISED_HISTORICAL_RESEARCH_ONLY with locally_point_in_time=false, candidate_training_eligible=false and promotion_allowed=false.
+
+The LIVE_CAUSAL_QUOTE adapter calls the existing locally verified hash-chained PAPER shadow quote reader. Since that reader does not expose each original broker quote expiry to the adapter, each quote is conservatively valid **only at its already recorded arrival instant**. Its per-event source witness hash is the causal chain entry digest, not a later segment-wide hash that could include future quotes.
+
+## Components
+
+- contracts.py: immutable FeatureSpec, explicit source mode, matched instrument/period/policy, earliest knowable decision values, mature/censored labels, no synthesized quotes or missing outcomes.
+- adapters.py: read-only source-specific adapters, no network or broker calls.
+- orchestrator.py: event-triggered isolated SQLite admission for SOURCE_SEALED, OUTCOME_SEALED and CORRECTION_REVOKES. Every event has deterministic identity, time and source witness; BEGIN IMMEDIATE ensures no duplicated row or review batch after concurrent process starts.
+- event_ingest.py: one explicit event/file invocation, never periodic polling, training, broker calls, model selection or owner publication.
+- smoke.py: reproduces a bounded, read-only provenance check against sealed IB history and Laya original source.
+- tests/python/test_train_v2.py: timestamp, scope, future-leak, value maturity, correction, duplicate, cross-process and CLI adversarial tests; part of normal Core Python test discovery.
+
+The event/orchestrator layer is **research-review-only**. It never starts a GPU job, changes model weights, invokes canonical Agentd or owns trader credentials. Hashes do not replace canonical producer/owner signatures, and caller-supplied local events must independently be verified against retained original sources before becoming trusted future producer hooks.
+
+## Actual pocket4 smoke evidence
+
+- 210-day EUR/USD IB revised historical source: 42,716 five-minute timestamps and 31 immutable broker request receipts retained. The adapter checked 31 source receipts, read the last 128 recorded bars, and produced a revised historical research label, with neither causal-live nor candidate eligibility.
+- Frozen Laya PAPER quote segment: 671 locally hash-verified quote records; a real causal feature was compiled at its original availability time, and its outcome remained PENDING_OUTCOME at that decision.
+- Original observed Walk-forward economic result remains no-trade in all three folds, and the old USD100k Value trial3 stays PENDING/unaltered.
+- Smoke receipt stored privately at ~/.local/state/heptatrader/operator-evidence/train-v2-pit-events-20261010/real-source-smoke.json. Initial receipt SHA256: aa2254b47b90cead57e1ec135bc5dd92b4d8291304a729d71e2d04cb6135e54b.
+Final five-module source-inventory smoke receipt is real-source-smoke-final.json,
+SHA256 1a377ef21fe3d5889557a14c43b839437072c0e5fa1f11eceec50ea807334a47.
+Both were created in new output paths; prior receipts were not overwritten.
+
+## Preserved negative evidence and next gates
+
+The installed Trial3 predictor currently triggers as often as every second and has shown start-limit-hit. Do NOT edit its current registration, timers or missed outcomes: that could invalidate its frozen prospective protocol. Its successor should use genuinely new signed producer events and precommitted prediction deadlines, not retrospective callbacks.
+
+The current local event CLI is an implementation of an admission API, not an installed host watcher or live trading trainer. Integrating a new producer hook requires source identity enrollment before new observation windows, independent outcome/evaluator roles, the existing GPU resource lease, correction and revocation proofs, net economic evaluation, and an actual Canonical Owner artifact-selection receipt. Nothing in Train V2 creates any of those missing authorities.
+
+The next design step is separate, declared feature adapters for Numeric, Laya and Value with true matched offline/online parity, then a net-PnL evaluator that keeps actual commissions, unproved slippage, financing, position status and the no-trade baseline distinct. Do not reuse already-inspected historical test periods for new positive efficacy claims.
+
+## Run regression
+
+Set PYTHONPATH=research:research/neuron_learning:scripts and run Python unittest discovery for tests/python and research/historical_training/tests. No broker credentials or model checkpoints are necessary for these tests.
+
+## Exact pocket4 validation
+
+- 32 Train V2 adversarial unit tests pass, including CLI and independent Python
+  subprocess delivery to the same SQLite ledger.
+- Full historical research suite: 400 passed, 7 pre-existing skips.
+- Full core Python suite: 1,768 passed, 21 pre-existing skips.
+- Source/ownership/documentation partition: 106 passed.
+- The source-admission and economic efficacy results are unchanged. No additional
+  broker requests, GPU training jobs, account transfers or orders were launched.

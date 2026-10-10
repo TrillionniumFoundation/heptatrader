@@ -5,6 +5,14 @@ existing prospective trials, or canonical promotion. A trained offline readout
 is not a live strategy release. Private account data and model weights are not
 part of this source tree.
 
+## Train V2 research-only data contracts
+
+See [Train V2 Phase 1](../train_v2/README.md) for the independent
+Point-in-Time feature contract, revised-historical isolation and
+event-driven **review-only** orchestration. This does not install a new
+training service, upgrade old historical records into live predictions,
+replace the existing trainer or alter the original PAPER strategy.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
