@@ -1,0 +1,25 @@
+# Laya source archive and cost-aware offline research
+
+Status: October 10, 2026. PAPER research/data maintenance only, no trade or model-promotion authority. The operator must not change the USER_RESET boundary or rewrite failed historical evaluations.
+
+## Append-only archive
+
+The existing Laya feed_directory remains authoritative. A new child named source-archive-v1 contains immutable page-NNNNNNNN.json receipts, each sealing exactly 32 completely ended original segment files. Every receipt records full original path, committed byte size, SHA-256, source chain head, immutable END status, period identity and previous page SHA-256. An independent hash-chained ledger.jsonl is append-only. Both page and ledger are fsynced. One writer at a time via seal.lock.
+
+No original quote file is deleted, truncated, re-ordered or rewritten. Archived files are fully re-hashed, source chains re-parsed and their exact directory inventory reconciled at every quote read. Missing, reordered or modified segments, bad source identity, missing/deleted page, damaged ledger, non-private files or symlinks reject the read. The training loader independently verifies page pins and source bytes; its datasets retain compact page pins plus the unsealed source prefixes.
+
+Use source_archive.seal with the original pinned configuration. One invocation writes at most eight pages (256 completed segments). No more than 128 unsealed segments are allowed; total archived page count has no 128-page cap. Recovery-live quote source is never fabricated and recent source timestamps remain subject to original 5-second TTL, fixed-minute probes, and at least 20 of 24 usable observations. A weekend HOLD is correct. Local SHA-256 chains are tamper evidence, not a remote digital signature. For independent provenance, anchor the page-root hash in a separately controlled audit system.
+
+Unbounded disk and memory are impossible. The legacy budget and storage reserve remain in force. Original files continue to occupy space; long-run cold-tier streaming and quota policy require independent future acceptance and must not silently delete evidence.
+
+## Cost and chronological model research
+
+Historical MIDPOINT/BID/ASK five-minute IB OHLC bars are revised price history, not contemporaneous executable quotes. Price-only features and targets use completed midpoint bars, with no historical OHLC spreads treated as trading spreads. Live bid/ask spread estimates come from original hash-verified PAPER receipts. Commissions come from execution-ID de-duplicated IB commission callbacks in the OMS journal; all source SHA-256 identities must match. IB execution callback arrival time is NOT a broker-attested fill timestamp: quoted-price deviations are only diagnostic proxies. Use explicit slippage stress at 0.5, 1, 2 bps per side, not fabricated measured execution slippage.
+
+Isolated EUR/USD baseline uses a fixed 120-calendar-day training window, 30-day validation, 15-day test, 15-day step, with 900-second purging/embargo. A label matures only after its entire future 15-minute price window. No overlapping hypothetical positions; thresholds are fixed and chosen only from the validation period. Price outcomes are calculated using hypothetical next-bar midpoint open, not guaranteed Broker fills. Test results include no-trade and fixed three-bar trend baselines. Execution cost assumptions include actual live quote spread and deduplicated fees, plus clearly labeled unverified slippage stress.
+
+Data revision, missing actual-fill timestamps, insufficient independent prospective sealed samples, no positive after-cost validation, no-trade decisions, or failure to beat no-trade baseline all block promotion. Never relabel old predictions or turn price research into a live or paper order route.
+
+## Deployment and rollback
+
+Keep each source/config SHA and original service drop-in. Run adversarial unit tests, full quote-source read and byte-proof checks, then source_readiness with --once --sandbox in a private diagnostic output. Only after validation activate the read-only archiver, source-readiness checker and candidate guarded research imports. The account NAV, existing PAPER strategy, broker execution and order permissions are independent and must remain unchanged. Rollback only systemd import override(s), never delete signed archive/source evidence.

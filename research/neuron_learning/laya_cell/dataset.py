@@ -19,15 +19,19 @@ def integer(x):
  return x
 def verify_source_prefixes(dataset):
  sources=dataset.get('source_prefixes')
- if not isinstance(sources,list) or not sources or len(sources)>128:raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
+ if not isinstance(sources,list) or not sources:raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
+ from .source_archive import verify_page_pin,verify_prefix,PIN_SCHEMA,GENESIS
+ last_page=None;last_sha=GENESIS
  for source in sources:
-  size=integer(source['bytes'])
-  if size>64*1024**2:raise ContractError('PREFIX_SIZE_BOUND')
-  path=Path(source['path'])
-  if path.is_symlink() or not path.is_file():raise ContractError('PREFIX_FILE_REQUIRED')
-  with path.open('rb') as stream:raw=stream.read(size)
-  if len(raw)!=size or hashlib.sha256(raw).hexdigest()!=source['sha256']:raise ContractError('IMMUTABLE_PREFIX_CHANGED')
-  if raw and not raw.endswith(b'\n'):raise ContractError('UNCOMMITTED_PREFIX')
+  if not isinstance(source,dict):raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
+  if source.get('schema')==PIN_SCHEMA:
+   if last_page is not None and (source['index']!=last_page+1 or
+                                 source['previous_sha256']!=last_sha):
+    raise ContractError('SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY')
+   verify_page_pin(source)
+   last_page=source['index'];last_sha=source['sha256']
+  else:
+   verify_prefix(source)
 def causal_state(sample,instrument,horizon):
  inp=sample['input_snapshot']
  if digest(inp)!=sample['sample_id']:raise ContractError('SAMPLE_INPUT_IDENTITY')

@@ -12,17 +12,23 @@ from .dataset import rows_for_training
 
 def read_quotes(config,now_ms):
  if sha_file(Path(config['period_path']))!=config['period_sha256']:raise ContractError('RESIDENT_PERIOD_CHANGED')
- paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
- # Completed historical probes are training material only for later candidates,
- # never retrospective acceptance of the model that produced those probes.
- paths += [Path(x) for x in config.get('completed_history_sources',[])]
- paths=list(dict.fromkeys(paths))
- if len(paths)>128:raise ContractError('RESIDENT_SEGMENT_BOUND_NO_HISTORY_DELETION')
- quotes={};prefixes=[]
- for path in paths:
+ from .source_archive import inventory
+ feed_paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
+ sealed,pages=inventory(config,feed_paths)
+ # Historical probes are independent signed training sources. They cannot
+ # rewrite the real-time feed or retroactively validate a model.
+ extra=[Path(x) for x in config.get('completed_history_sources',[])]
+ if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
+ paths=list(dict.fromkeys(feed_paths+extra))
+ if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
+ quotes={};prefixes=list(pages)
+ for i,path in enumerate(paths):
   header,records,prefix=read_source(path)
   if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
-  prefixes.append(prefix)
+  if i<len(sealed):
+   if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+  else:
+   prefixes.append(prefix)
   for q in records:
    if q['known_at_ms']>now_ms:continue
    old=quotes.get(q['t'])
