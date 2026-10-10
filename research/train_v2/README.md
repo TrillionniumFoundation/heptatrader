@@ -54,3 +54,10 @@ Set PYTHONPATH=research:research/neuron_learning:scripts and run Python unittest
 - Source/ownership/documentation partition: 106 passed.
 - The source-admission and economic efficacy results are unchanged. No additional
   broker requests, GPU training jobs, account transfers or orders were launched.
+
+## Phase 2 original evidence and model semantics
+
+See [Phase 2](PHASE2.md) for the independently validated original Numeric16/Laya
+seven-class feature reconstruction, fresh original PAPER source-chain event handoff
+and read-only broker-commission cost frontier. Phase 2 does not add a producer
+daemon, actor update, canonical owner or broker API capability.

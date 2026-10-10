@@ -12,6 +12,9 @@ Point-in-Time feature contract, revised-historical isolation and
 event-driven **review-only** orchestration. This does not install a new
 training service, upgrade old historical records into live predictions,
 replace the existing trainer or alter the original PAPER strategy.
+The [Phase 2 continuation](../train_v2/PHASE2.md) verifies original Numeric16
+and Laya question semantics and original PAPER cost evidence, without granting
+historical data real-time authority or changing the trading model.
 
 ## Separate label populations
 
