@@ -115,3 +115,15 @@ synthetic Decisions; original full upstream dependency resolution, real
 product controller enrollment, logged behavior propensity, host instance,
 V3 dataset from real observations and new after-cost prospective efficacy
 remain unqualified. Existing product admission remains HOLD.
+
+## Phase 4E: original behavior-policy cohort provenance
+
+See [PHASE4E.md](PHASE4E.md). A new strictly read-only tool revalidates
+actual installed PAPER runtime SHA256, exact period, and original
+REQUEST→RESPONSE→DECISION→PREPARED log identity. Pocket4 verified
+77 original command bindings with zero chain issues, but 74 belong to
+a trading-behavior-changed EUR/USD release and must not be pooled with
+the 3 unchanged-policy bindings. No original generator logged a complete
+legal candidate set and selected behavior probability; model confidence
+is not propensity. Production Canonical LedgerWriter, identity, V3
+dataset and prospective after-cost efficacy still HOLD.
