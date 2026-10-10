@@ -165,3 +165,18 @@ Canonical Agentd product-host lab additionally passes 2 integration
 tests and an explicitly requested 2,368-record history/concurrency
 test, all with test-only signing keys and no production identity.
 No scheduled worker or trading/model/product identity path is changed.
+
+
+## Phase 4I: full captured model graphs and three-host test-only role signers
+
+See [PHASE4I.md](PHASE4I.md). Original pinned PAPER attribution sources
+hold many BUY/HOLD/SELL model outputs beyond the 77 original OPEN
+commands. A strictly read-only bounded validator verifies all captured
+REQUEST -> RESPONSE -> DECISION model calls, including the installed
+BTC deterministic forecast fields, but still proves ZERO eligible OPE
+samples because full policy support and behavior action propensity
+are not recorded. Separately, three ephemeral research-signing keys
+stayed on distinct qian-qi, Mac and X230 hosts while Pocket4 verified
+their Ed25519 roles, signature scopes, revocation/rollback rejection
+and eventual expired replay refusal. Product Canonical roots, real
+Generator/Observer and native market LedgerWriter remain HOLD.
