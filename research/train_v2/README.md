@@ -148,3 +148,20 @@ for the opaque original trading LLM. Pocket4 actual EUR/USD source
 returned HOLD (no fresh valid quote). A separately marked FABRICATED
 quote-source lab test verified software composition but provides zero
 real broker, trading, model or efficacy evidence. Production gates HOLD.
+
+
+## Phase 4H: exact IB weekly close vs locally witnessed original quote gap
+
+See [PHASE4H.md](PHASE4H.md). A new one-shot **read-only** auditor
+uses New York DST-aware IB regular FX hours and the actual source-chain
+receipts from the running Pocket4 EUR/USD Laya PAPER feed. The Friday
+last authoritative quote and the first unready failure align with the
+published 17:00 ET weekly close. Across 165 original source segments,
+86,642 distinct original quote timestamps match the unchanged Laya
+source reader with zero cross-segment price conflicts. Current state
+HOLD_FX_REGULAR_SESSION_CLOSED; this is a likely normal weekend market
+closure, NOT verified future entitlement. The unchanged original
+Canonical Agentd product-host lab additionally passes 2 integration
+tests and an explicitly requested 2,368-record history/concurrency
+test, all with test-only signing keys and no production identity.
+No scheduled worker or trading/model/product identity path is changed.
