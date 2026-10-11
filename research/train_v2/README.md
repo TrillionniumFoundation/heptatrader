@@ -165,3 +165,17 @@ Canonical Agentd product-host lab additionally passes 2 integration
 tests and an explicitly requested 2,368-record history/concurrency
 test, all with test-only signing keys and no production identity.
 No scheduled worker or trading/model/product identity path is changed.
+
+
+## Phase 4I: Mac/X230 test signers and original native product ledger
+
+See [PHASE4I.md](PHASE4I.md). The original pinned native LedgerWriter
+accepted a **test-only** Mac Generator signature and separate X230
+Observer signature under a qian-qi-signed Root test distribution,
+persisted a 3-record durable witnessed chain, froze/revalidated V3,
+recorded test-source withdrawal and rejected stale V3. A separate
+native process recovered from the acknowledged witness without
+private keys; all 6 exact native messages verified offline and all 5
+ephemeral test-key files were then removed from their host machines.
+This is not original LLM behavior propensity, independent production
+administrators or real original trading/outcome authorization.
