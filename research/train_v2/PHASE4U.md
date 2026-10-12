@@ -172,3 +172,50 @@ the qian-qi host during this run.
 The V2 source behavior remains opt-in under a distinct schema and
 policy ID, and has no installed service. No production switching or
 automatic model promotion was performed.
+
+
+## New actual independent V2 source, 2026-10-12 16:29 UTC+8
+
+After the numeric-directory-before-quotes-file fix, the single attempted
+NEW Phase4U source-window run actually succeeded. A preopened qian-qi SSH
+session controlled a Mac RAM-only TEST Ed25519 signer, while Pocket4
+preregistered and fsynced the exact numeric original writer segment
+identity ahead of its new decision window. There was no same-event retry
+or segment replacement.
+
+New original source local arrival: 1791793784493 ms
+Mac test-signature verified: 1791793784572 ms
+Signed proof durable: 1791793784577 ms
+Predeclared decision cutoff: 1791793785043 ms
+Original IB expiration: 1791793789274 ms
+
+The signed proof was durable 466 ms BEFORE the decision cutoff;
+Mac signing roundtrip was 6.09 ms. The orchestrator's signed-result
+transport roundtrip was 78.343 ms. One new original research event was
+indexed. This is a TEST-only source identity, not an actual model
+prediction, native LedgerWriter decision, trade PREPARED, Owner or PnL.
+
+Independent Pocket4 read-only V2 verifier reopened original source bytes,
+checked Mac Ed25519 public signature, original full-prefix chain,
+presealed numeric writer cohort and original registered research SQLite
+source count (exactly one). It reported:
+
+TEST_ONLY_FIRST_FRESH_SOURCE_PUBLICLY_VERIFIED
+
+Immutable independent verifier SHA256:
+16cd8b5a3478f5fd6c58bf4c247dd390c65f708a09fd66b691d0048072589d36
+
+Independent verifier path:
+~/.local/state/heptatrader/operator-evidence/train-v2-rotation-fence-20261012/live-fresh-source-v2-public-independent-check.json
+
+Original Pocket4 new preregistration and source evidence:
+~/.local/state/heptatrader/operator-evidence/train-v2-rotation-fence-20261012/live-fresh-source-v2-20261012-1626/
+
+Original qian-qi orchestrator receipt:
+/home/qian-qi/work/heptatrader-train-v2-rotation-orchestrator-20261012/live-fresh-source-v2-20261012-1626.json
+
+External controller/owner remains TEST-only and NOT enrolled in canonical
+product root-trust. No autonomous model, true BUY/HOLD/SELL/ABSTAIN
+decision population, original PREPARED, canonical witnessed
+LedgerWriter/DatasetSnapshotV3, signed CURRENT, actual model economics or
+trading authority is established by this result.
