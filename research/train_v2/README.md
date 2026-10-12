@@ -229,3 +229,21 @@ native cold recovery and 3 corrupt copy rejections still passed.
 All test identities, price-bps units, and original policy propensity
 limitations are deliberately quarantined; no real broker order,
 cost-complete PnL, eligible product dataset or production root enrolled.
+
+
+## Phase 4M: original source-time signatures, native exact retry & expiry HOLD
+
+See [PHASE4M.md](PHASE4M.md). Reuses the ACTUAL Phase 4L original
+IB PAPER shadow market Decision, independent Mac Generator / X230
+Observer canonical signed bytes, original native 2-record ledger/witness
+and its already-deleted temporary test keys. Six isolated native
+Rust copies prove IdempotentReplay, wrong retry rejection,
+one-record witness-lag reconciliation, incomplete-tail recovery,
+current-time signer expiration rejection and exact original record
+identity. An additional zero-write current-clock recovery guard
+returns ALREADY_ACKNOWLEDGED for fully acknowledged sources,
+or HOLD when a historically signed Outcome is no longer eligible
+for current-time resubmission and the independent Witness is one
+event behind. Historical issuance-time simulation is TEST-ONLY,
+not permission to backdate product admission or claim production
+Root, net PnL, original LLM policy probabilities or Artifact Owner.

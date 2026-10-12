@@ -233,7 +233,7 @@ fn do_init(pubfile:&str,packetfile:&str,dirname:&str){
     let request=native_decision(&p,&raw);
     let payload=decision_signing_payload_v2(&request).unwrap();
     let doc=evidence(&writer,"generator",LearningEvidenceRoleV1::Generator,
-                     &payload,"lab.originalmarket.gen.signed",ms());
+                     &payload,"lab.originalmarket.generator_evidence.signed",ms());
     let mut flip=doc.clone();flip.signature[0]^=1;
     assert!(writer.append_decision(Digest32::ZERO,request.clone(),&flip,ms()).is_err());
     assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,0);
@@ -382,4 +382,197 @@ fn main(){
             do_recover(pubfile,dir),
         _=>panic!("usage init PUB PACKET DIR | finish PUB PACKET DIR OUTCOME | recover PUB DIR")
     }
+}
+
+
+
+// New independent test-only recovery commands. No signer request, order,
+// new product credential or mutation of the retained original source trial.
+// Reconstruct exactly the previously signed Generator/Observer documents
+// from public native bytes and archived signatures, not new signing keys.
+fn replay_take<'a>(buf:&'a [u8], offset:&mut usize, n:usize)->&'a [u8] {
+    assert!(n<=buf.len().saturating_sub(*offset), "REPLAY_NATIVE_MESSAGE_BOUNDS");
+    let r=&buf[*offset..*offset+n];
+    *offset+=n;
+    r
+}
+fn replay_u64(buf:&[u8], offset:&mut usize)->u64 {
+    u64::from_be_bytes(fixed(replay_take(buf,offset,8).to_vec()))
+}
+fn replay_id(buf:&[u8],offset:&mut usize)->StableId {
+    let n=replay_u64(buf,offset) as usize;
+    assert!((1..=128).contains(&n));
+    let bytes=replay_take(buf,offset,n);
+    id(std::str::from_utf8(bytes).expect("native ID ASCII"))
+}
+fn replay_digest(buf:&[u8],offset:&mut usize)->Digest32 {
+    Digest32::from_array(fixed(replay_take(buf,offset,32).to_vec()))
+}
+fn replay_signed(att:&Value,role:&str,role_tag:u8)->SignedLearningEvidenceV1 {
+    let choices=att["signatures"].as_array().expect("archived signed native entries");
+    let prior=choices.iter().find(|e|e["role"]==role).expect("role");
+    assert_eq!(prior["signing_host"],
+        match role{"generator"=>"MacBook-Pro.local","observer"=>"qian-ThinkPad-X230",_=>panic!("not replayed")});
+    let raw=fromhex(prior["public_message_hex"].as_str().unwrap());
+    let domain=b"hepta.learning-ledger.signed-evidence.v1";
+    assert!(raw.starts_with(domain),"only canonical native signed evidence");
+    let mut i=domain.len();
+    let evidence_id=replay_id(&raw,&mut i);
+    let principal_id=replay_id(&raw,&mut i);
+    assert_eq!(replay_take(&raw,&mut i,1)[0],role_tag);
+    assert_eq!(principal_id,id(&format!("lab.{role}")));
+    let trust_digest=replay_digest(&raw,&mut i);
+    let scope_digest=replay_digest(&raw,&mut i);
+    let objective_digest=replay_digest(&raw,&mut i);
+    let authority_epoch=replay_u64(&raw,&mut i);
+    let issued_at=replay_u64(&raw,&mut i);
+    let expires_at=replay_u64(&raw,&mut i);
+    let payload_digest=replay_digest(&raw,&mut i);
+    assert_eq!(i,raw.len(),"no appended forgery after native signed bytes");
+    assert_eq!(authority_epoch,19);
+    assert_eq!(scope_digest,dg(SCOPE));
+    assert_eq!(objective_digest,dg(OBJECTIVE));
+    let doc=SignedLearningEvidenceV1{
+        evidence_id,principal_id,
+        role:if role_tag==0{LearningEvidenceRoleV1::Generator}
+             else{LearningEvidenceRoleV1::Observer},
+        trust_digest,scope_digest,objective_digest,authority_epoch,
+        issued_at,expires_at,payload_digest,
+        signature:fixed(fromhex(prior["signature_hex"].as_str().unwrap()))
+    };
+    assert_eq!(raw,doc.signing_bytes(),"byte-exact original detached signed message");
+    assert!(doc.issued_at < doc.expires_at);
+    doc
+}
+fn replay_outcome(p:&Value,out:&Value,original_outcome_raw:&[u8],ref_ms:u64,j:&Value)->AuthenticatedOutcomeV1 {
+    assert_eq!(out["schema"],"heptatrader.train-v2-real-source-crosshost-price-label.v1");
+    assert_eq!(out["research_only"],true);
+    assert_eq!(out["production_observer_enrolled"],false);
+    assert_eq!(out["episode_id"],p["episode_id"]);
+    let event_at=out["endpoint_at_ms"].as_u64().unwrap();
+    let verified=out["verified_at_ms"].as_u64().unwrap();
+    assert!(event_at>=p["outcome_due_ms"].as_u64().unwrap());
+    assert!(event_at<=p["outcome_due_ms"].as_u64().unwrap()+5000);
+    assert!(verified>=event_at);
+    AuthenticatedOutcomeV1 {
+        record_id:id("lab.originalmarket.outcome"),
+        outcome_id:id("lab.originalmarket.midprice"),
+        episode_id:id("lab.originalmarket.episode"),
+        observer:original_test_keys(j,ref_ms)[1].principal.clone(),
+        observed_at:Some(event_at),
+        value:Some(FixedQ32::from_raw(out["midprice_change_basis_points_q32_raw"].as_i64().unwrap())),
+        unit_profile_digest:dg("ORIGINAL_QUOTE_MIDPRICE_BPS_EXPLICITLY_NOT_NET_PNL"),
+        support_digest:Digest32::of_bytes(original_outcome_raw),
+        watermark:OutcomeWatermarkV1{
+            latest_observable_at:verified,
+            expected_delay_profile_digest:dg("5MIN_ORIGINAL_BROKER_QUOTE_TOLERANCE_5S_TEST_ONLY"),
+            terminality:OutcomeTerminalityV1::Terminal,
+            censoring_reason:None,correction_predecessor:None,
+            finalized_at:Some(verified),
+        },
+    }
+}
+pub(crate) fn replay_original_signed_test_packet(
+    pubfile:&str,packetfile:&str,outcomefile:&str,dirfile:&str,
+    generator_attest:&str,observer_attest:&str,kind:&str
+) {
+    assert!(["acknowledged","lag-exact","lag-wrong","expired","lag-torn","lag-expired"].contains(&kind));
+    let (j,_)=read(pubfile);
+    assert_eq!(j["purpose"],"test-only-no-production");
+    let (p,packet_raw)=read(packetfile);
+    expected_packet(&p);
+    let (out,outcome_raw)=read(outcomefile);
+    assert_eq!(out["source_shadow_packet_sha256"],hx(Digest32::of_bytes(&packet_raw).as_array()));
+    let (gen_att,_)=read(generator_attest);
+    let (obs_att,_)=read(observer_attest);
+    assert_eq!(gen_att["stage"],"init");
+    assert_eq!(obs_att["stage"],"finish");
+    let generator_evidence=replay_signed(&gen_att,"generator",0);
+    let obs=replay_signed(&obs_att,"observer",1);
+    let dir=Path::new(dirfile);
+    require_private_lab(dir);
+    let (r,_)=read(dir.join("original-test-trust.json").to_str().unwrap());
+    assert_eq!(r["test_only"],true);
+    let ref_ms=r["ref_ms"].as_u64().unwrap();
+    let root_sig:[u8;64]=fixed(fromhex(r["root_signature_hex"].as_str().unwrap()));
+    let mut writer=writer_recover(&j,ref_ms,root_sig,dir);
+    let before=writer.witness_frontier().unwrap().anchor.sequence;
+    let records=writer.records().unwrap();
+    assert_eq!(records.len(),2);
+    let request=native_decision(&p,&packet_raw);
+    assert_eq!(generator_evidence.payload_digest,Digest32::of_bytes(&decision_signing_payload_v2(&request).unwrap()));
+    let outcome=replay_outcome(&p,&out,&outcome_raw,ref_ms,&j);
+    assert_eq!(obs.payload_digest,Digest32::of_bytes(&outcome_signing_payload_v2(&outcome)));
+    let historical_gen=generator_evidence.issued_at+1;
+    let historical_obs=obs.issued_at+1;
+    assert!(historical_gen<generator_evidence.expires_at&&historical_obs<obs.expires_at);
+    assert!(ms()>generator_evidence.expires_at,"this test deliberately runs after expired generator credential");
+    let predecessor=records[0].chain_digest;
+    match kind {
+        "acknowledged" => {
+            assert_eq!(before,2);
+            let a=writer.append_decision(Digest32::ZERO,request.clone(),&generator_evidence,historical_gen)
+                .expect("historical exact typed Generator signed replay");
+            assert_eq!(a.disposition,AppendDisposition::IdempotentReplay);
+            assert_eq!(a.sequence.get(),1);
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,2);
+            let b=writer.append_outcome(predecessor,outcome.clone(),&obs,historical_obs)
+                .expect("historical exact typed Observer signed replay");
+            assert_eq!(b.disposition,AppendDisposition::IdempotentReplay);
+            assert_eq!(b.sequence.get(),2);
+            let mut altered=request;
+            altered.selected_candidate_id=id("lab.up_signal");
+            assert!(writer.append_decision(Digest32::ZERO,altered,&generator_evidence,historical_gen).is_err(),
+                    "cannot reuse signed original evidence for a different selected action");
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,2);
+        }
+        "expired" => {
+            assert_eq!(before,2);
+            assert!(writer.append_decision(Digest32::ZERO,request,&generator_evidence,ms()).is_err(),
+                    "real current-time expired test signer not permitted to append");
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,2);
+        }
+        "lag-expired" => {
+            assert_eq!(before,1);
+            assert!(ms()>obs.expires_at, "current wall time after original test Observer expiry");
+            assert!(writer.append_outcome(predecessor,outcome,&obs,ms()).is_err(),
+                    "previously signed Observation must not be newly accepted after expiry");
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,1);
+        }
+        "lag-wrong" => {
+            assert_eq!(before,1);
+            assert!(writer.append_decision(Digest32::ZERO,request,&generator_evidence,historical_gen).is_err(),
+                    "witness one-behind may ONLY retry exact last ledger event");
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,1);
+            let mut bad=outcome;
+            bad.value=Some(FixedQ32::ZERO);
+            assert!(writer.append_outcome(predecessor,bad,&obs,historical_obs).is_err(),
+                    "a changed payload cannot repair a missing witness ACK");
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,1);
+        }
+        "lag-exact" | "lag-torn" => {
+            assert_eq!(before,1);
+            let b=writer.append_outcome(predecessor,outcome,&obs,historical_obs)
+                .expect("native exact last signed Outcome repair one unwitnessed complete event");
+            assert_eq!(b.disposition,AppendDisposition::IdempotentReplay);
+            assert_eq!(b.sequence.get(),2);
+            assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,2);
+        }
+        _=>unreachable!()
+    }
+    let after=writer.witness_frontier().unwrap().anchor.sequence;
+    assert_eq!(writer.records().unwrap().len(),2);
+    println!("RESULT_JSON {}",json!({
+        "schema":"heptatrader.train-v2-native-source-signed-historical-replay-lab.v1",
+        "replay_mode":kind,"before_witness":before,"after_witness":after,
+        "records_still_exactly_two":true,
+        "native_generator_public_signer_expired_now":ms()>generator_evidence.expires_at,
+        "old_signed_evidence_historical_timestamp_used_for_replay":
+            kind!="expired" && kind!="lag-expired",
+        "new_signer_requests":0,
+        "test_private_signers_present":false,
+        "same_real_IB_market_source_testonly_episode":p["episode_id"],
+        "real_paper_broker_order_sent":false,
+        "production_product_authority":false
+    }));
 }
