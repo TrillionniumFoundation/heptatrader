@@ -42,6 +42,10 @@ corrects TEST-only native SignedLearningEvidenceV1 digest field order
 and proves final Rust typed X230/Mac readback. All real broker and
 Canonical LedgerWriter product promotion gates remain closed.
 
+Train V2 full-original-workspace native acceptance is documented at
+[PHASE4S.md](../train_v2/PHASE4S.md); a selected native crate pass
+does not establish real trader policy propensity or production release.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
