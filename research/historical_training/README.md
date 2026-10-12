@@ -32,6 +32,11 @@ Train V2's Canonical native ledger readiness limits are recorded in
 [PHASE4C.md](../train_v2/PHASE4C.md); price confidence cannot substitute
 for an actual logged behavior propensity or canonical LedgerWriter ACK.
 
+Two independently accessed physical hosts now support bounded full-byte
+TEST-ONLY escrow receipts in [Phase4Q](../train_v2/PHASE4Q.md).
+They are synthetic; original market-time source and production owner
+qualification remain separate and unapproved.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

@@ -285,3 +285,15 @@ The new TEST-ONLY offline archive validates exact typed payload,
 original signed evidence and detached Ed25519 signature, without
 minting new signatures or changing the Canonical Witness. Old
 digest-only escrows remain HOLD, not retroactively upgraded.
+
+
+## Phase4Q actual two-host full original signed-byte TEST escrow
+
+See [PHASE4Q.md](PHASE4Q.md). Unlike prior digest-only physical
+receipts and local complete-byte fixtures, two new synthetic
+native-formatted requests were fsynced and independently read back
+in full from X230 and Mac. Complete original byte and separate remote
+receipt signatures are preserved. A lost ACK gets the exact archived
+receipt, even after original signer expiry, but can never mint a first
+late signed intent. No real source-time product LedgerWriter, Owner,
+RecoveryAuthority or trade permission has been claimed.
