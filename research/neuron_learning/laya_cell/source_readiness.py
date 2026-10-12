@@ -61,8 +61,18 @@ def assess(config,now=None):
   'past_probe_labels_are_not_independent_efficacy_samples':True,'automatic_trial_registration':False,
   'trading_authority':False,'old_failed_windows_changed':False,'orders_sent':0}
 
+def next_monitor_deadline(cadence_seconds, assessment_started, assessment_finished):
+ """Preserve 60s default; fast sandbox mode is start-to-start bounded."""
+ if (type(cadence_seconds) is not int or not 10<=cadence_seconds<=60
+     or assessment_finished<assessment_started):
+  raise ContractError('READINESS_CADENCE_INVALID')
+ if cadence_seconds==60:return assessment_finished+60
+ return max(assessment_started+cadence_seconds,assessment_finished+1)
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);a=p.parse_args()
+ if not 10<=a.refresh_seconds<=60 or not 0<=a.max_cycles<=24:p.error('READINESS_CADENCE_OR_CYCLE_LIMIT')
+ if (a.refresh_seconds!=60 or a.max_cycles>0) and not a.sandbox:p.error('FASTER_OR_FINITE_MODE_REQUIRES_SANDBOX')
  os.umask(0o077);c=read_json(a.config);stop=False
  if a.sandbox:
   from sandbox import enter
@@ -75,12 +85,26 @@ def main():
   nonlocal stop
   stop=True
  signal.signal(signal.SIGTERM,finish);signal.signal(signal.SIGINT,finish)
+ cycles=0
  while not stop:
+  assessment_started=time.monotonic()
   try:status=assess(c)
   except Exception as exc:status={'at_ms':int(time.time()*1000),'state':'HOLD_NEW_FUSION_WINDOW','reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],'orders_sent':0}
   atomic(a.output,status)
+  finished=time.monotonic();cycles+=1
   if a.once:print(json.dumps({k:v for k,v in status.items() if k not in ('probes','source_prefixes')}),flush=True);break
-  for _ in range(60):
-   if stop:break
-   time.sleep(1)
+  if a.refresh_seconds!=60:
+   published_ms=int(time.time()*1000);original_ms=status.get('at_ms')
+   print(json.dumps({'schema':'heptatrader.source-readiness-cadence-lab.v1','cycle':cycles,
+      'assess_ms':round((finished-assessment_started)*1000),
+      'source_asof_ms':original_ms,'published_ms':published_ms,
+      'published_source_age_ms':(published_ms-original_ms if type(original_ms) is int else None),
+      'state':status.get('state'),'usable':status.get('usable'),
+      'trade_authority':False,'orders_sent':0}),flush=True)
+  if a.max_cycles and cycles>=a.max_cycles:break
+  deadline=next_monitor_deadline(a.refresh_seconds,assessment_started,finished)
+  while not stop:
+   left=deadline-time.monotonic()
+   if left<=0:break
+   time.sleep(min(1,left))
 if __name__=='__main__':main()
