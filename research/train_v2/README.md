@@ -498,3 +498,14 @@ as-of instant can no longer be treated as already observed. This is a
 research-only audit correction. All three preregistered source slots remain
 correlated PRICE observations, not economic trading decisions; no automatic
 model authority, broker order or retrospective input retry is enabled.
+
+## Fully closed original 3×4 price cohort — October 13
+
+[PRICE_COHORT_CLOSEOUT_20261013.md](PRICE_COHORT_CLOSEOUT_20261013.md)
+records the strictly preflighted five final original outcomes, their
+create-once receipts, a fresh 12/12 independent source-backed audit,
+and a separate no-authority closeout verifier. Three source decisions
+remain three correlated horizon groups; no actual financial reward or
+qualified model sample was generated. The fixed stressed price-movement
+hurdle was not reached by any of the twelve historical MID movements.
+This is never automatic training or trading permission.
