@@ -472,3 +472,7 @@ source slots and four original price horizons without changing existing
 seals. Missing future inputs remain pending, censored price is UNKNOWN, and
 an observed hindsight move never counts as signed model, actual PnL or
 economic alpha. It makes no broker requests or new model predictions.
+
+## 2026-10-13 original price as-of receipt fence
+
+See [ASOF_ORIGINAL_PRICE_COHORT_20261013.md](ASOF_ORIGINAL_PRICE_COHORT_20261013.md) for the future-dated original outcome refusal, complete 3x4 denominator and the independent second scheduled source capture. This is still PRICE ONLY and never grants model or trade authority.

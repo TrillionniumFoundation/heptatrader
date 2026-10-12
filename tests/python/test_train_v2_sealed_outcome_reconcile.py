@@ -230,6 +230,17 @@ class ReconcileDriverTests(unittest.TestCase):
    original.assert_not_called()
   self.assertFalse(self.target().exists())
 
+ def test_rehashed_future_dated_original_receipt_refused_at_asof(self):
+  original=self.save_valid()
+  changed=dict(original)
+  changed["observed_at_ms"]=self.due+70000
+  changed["result_id"]=digest({k:v for k,v in changed.items()
+                                if k!="result_id"})
+  self.target().write_text(json.dumps(changed,sort_keys=True))
+  with self.assertRaisesRegex(
+      ContractError,"OUTCOME_RECONCILE_RECEIPT_FROM_FUTURE"):
+   self.runit(at=self.due+5100)
+
  def test_one_original_observer_commit_then_independent_idempotent_read(self):
   def seal(*args,**kwargs):
    self.save_valid()

@@ -124,6 +124,9 @@ def audit(root, *, now_ms=None, archive_loader=load_original_quote_archive):
                     result["ready_original_price_state"] = expected["outcome_state"]
                 else:
                     receipt = strict(read_private(output, 128 * 1024))
+                    _require(type(receipt.get("observed_at_ms")) is int
+                             and receipt["observed_at_ms"] <= now,
+                             "COHORT_AUDIT_OUTCOME_OBSERVED_IN_FUTURE")
                     status = verify_immutable_outcome(
                         receipt, expected, due=due, archive=archive)
                     result["state"] = status

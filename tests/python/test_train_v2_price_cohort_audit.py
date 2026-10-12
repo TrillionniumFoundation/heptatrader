@@ -108,6 +108,18 @@ class CohortAuditTests(unittest.TestCase):
   with self.assertRaises(ContractError):
    self.runit()
 
+ def test_rehashed_future_dated_price_receipt_not_in_past_audit(self):
+  original=self.seal_h5()
+  altered=dict(original)
+  altered["observed_at_ms"]=self.now+60000
+  altered["result_id"]=digest({k:v for k,v in altered.items()
+                                if k!="result_id"})
+  (self.root/"slot-00-h05.outcome.json").write_text(
+   json.dumps(altered,sort_keys=True))
+  with self.assertRaisesRegex(
+      ContractError,"COHORT_AUDIT_OUTCOME_OBSERVED_IN_FUTURE"):
+   self.runit()
+
  def test_future_maturity_outcome_receipt_cannot_exist(self):
   self.seal_h5()
   now=self.f["outcome_maturity_ms"]["5"]+10

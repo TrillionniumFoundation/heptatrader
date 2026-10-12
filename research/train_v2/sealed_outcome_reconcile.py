@@ -189,6 +189,9 @@ def reconcile(root, slot, horizon_min, *, now_ms=None, commit=False):
                 "outcome_written": False}
     if output.exists():
         previous = strict(read_private(output, 128 * 1024))
+        require(type(previous.get("observed_at_ms")) is int
+                and previous["observed_at_ms"] <= now,
+                "OUTCOME_RECONCILE_RECEIPT_FROM_FUTURE")
         status = verify_immutable_outcome(previous, expected,
                                           due=due, archive=archive)
         return {**report, "state": status, "due_at_ms": due,
@@ -209,6 +212,9 @@ def reconcile(root, slot, horizon_min, *, now_ms=None, commit=False):
     require(output.is_file() and not output.is_symlink(),
             "OUTCOME_RECONCILE_ORIGINAL_OBSERVER_NOT_COMMITTED")
     previous = strict(read_private(output, 128 * 1024))
+    require(type(previous.get("observed_at_ms")) is int
+            and previous["observed_at_ms"] <= now,
+            "OUTCOME_RECONCILE_RECEIPT_FROM_FUTURE")
     status = verify_immutable_outcome(previous, expected,
                                       due=due, archive=archive)
     return {**report, "state": status, "due_at_ms": due,

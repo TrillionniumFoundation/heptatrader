@@ -116,6 +116,8 @@ The exact immutable 3×4 prospective PAPER price-only denominator audit is
 [FROZEN_PRICE_COHORT_AUDIT_20261013.md](../train_v2/FROZEN_PRICE_COHORT_AUDIT_20261013.md).
 Price-only post-maturity observations do not constitute executed returns.
 
+The updated Train V2 original price as-of outcome gate is in [ASOF_ORIGINAL_PRICE_COHORT_20261013.md](../train_v2/ASOF_ORIGINAL_PRICE_COHORT_20261013.md). It does not requalify historical bars or model predictions.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
