@@ -97,6 +97,12 @@ is documented in
 It preserves incomplete original model requests as UNKNOWN instead of
 silently dropping them from the observed decision-return subset.
 
+The post-October-12 new-source, NO_TRADE four-horizon input
+preregistration is specified in
+[PROSPECTIVE_ORIGINAL_MULTIHORIZON_20261013.md](../train_v2/PROSPECTIVE_ORIGINAL_MULTIHORIZON_20261013.md).
+It never upgrades the already inspected 254-segment historical study into
+unseen forward evidence.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

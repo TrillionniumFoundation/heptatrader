@@ -422,3 +422,15 @@ time-disjoint windows BEFORE future price labels, preserves missing path
 and endpoint censoring, and never trains, selects or promotes a model.
 Any later new sealed-source fingerprint must create a new research
 cohort, not silently widen this inspected one.
+
+
+## New original PAPER future four-horizon source population (research only)
+
+See [PROSPECTIVE_ORIGINAL_MULTIHORIZON_20261013.md](PROSPECTIVE_ORIGINAL_MULTIHORIZON_20261013.md).
+Three UTC-grid source-capture slots are frozen before the first decision,
+using ORIGINAL postregistration local PAPER quotes only. An independent
+read-only post-maturity observer module can subsequently seal price-only
+outcomes or exact censorship, but not canonical financial rewards. Fixed 5/15/30/60
+minute label horizons cannot be outcome-shopped; unknown/uninvoked
+slots are NOT no-market-quote or zero-profit results. On-demand CLI
+only, no watcher or trading/model/Canonical authority.
