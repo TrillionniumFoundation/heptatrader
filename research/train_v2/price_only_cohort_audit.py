@@ -17,7 +17,7 @@ import time
 
 from hepta_decision_attribution import read_private, strict
 from historical_training.common import sha
-from .contracts import ContractError, digest
+from .contracts import ContractError, digest, is_digest
 from .original_multihorizon import HORIZONS_MIN, ordered_quote_index
 from .postmodel_requote import load_original_quote_archive
 from .prospective_multihorizon import (
@@ -29,7 +29,7 @@ from .sealed_outcome_reconcile import (
     verify_input_and_timer, verify_immutable_outcome,
 )
 
-SCHEMA = "heptatrader.train-v2-original-price-cohort-audit.v1"
+SCHEMA = "heptatrader.train-v2-original-price-cohort-audit.v2"
 HURDLE = Decimal(COST_AND_MARGIN_BPS)
 
 
@@ -85,6 +85,8 @@ def audit(root, *, now_ms=None, archive_loader=load_original_quote_archive):
         row["original_input_sha256"] = sha(input_path)
         row["timer_result_sha256"] = sha(timer_path)
         row["source_decision_at_ms"] = frozen["decision_at_ms"]
+        row["original_input_id"] = frozen["input_id"]
+        row["original_source_quote_id"] = frozen["original_source_id"]
         if archive is None:
             archive = archive_loader(campaign["source_root"],
                                      campaign["period_sha256"])
@@ -141,6 +143,25 @@ def audit(root, *, now_ms=None, archive_loader=load_original_quote_archive):
         slots.append(row)
     _require(len(slots) == 3 and sum(len(x["outcomes"]) for x in slots) == 12,
              "COHORT_AUDIT_DECLARED_DENOMINATOR_CHANGED")
+    # Four nested horizons share a single original quote/decision. They are
+    # CORRELATED labels, never four independent financial trial outcomes.
+    captured = [s for s in slots if s["original_input_sealed"]]
+    original_inputs = [s["original_input_id"] for s in captured]
+    original_quotes = [s["original_source_quote_id"] for s in captured]
+    times = [s["source_decision_at_ms"] for s in captured]
+    _require(all(is_digest(item) for item in original_inputs + original_quotes)
+             and all(type(t) is int for t in times),
+             "COHORT_AUDIT_ORIGINAL_DECISION_IDENTITIES_INVALID")
+    _require(len(set(original_inputs)) == len(captured),
+             "COHORT_AUDIT_REUSED_ORIGINAL_DECISION")
+    _require(len(set(original_quotes)) == len(captured),
+             "COHORT_AUDIT_REUSED_ORIGINAL_PRICE_QUOTE")
+    _require(all(left < right for left, right in zip(times,times[1:])),
+             "COHORT_AUDIT_NONCHRONOLOGICAL_SOURCE_DECISIONS")
+    price_labels = (counter["VERIFIED_OBSERVED_ORIGINAL_PRICE_ONLY"] +
+                    counter["VERIFIED_CENSORED_ORIGINAL_PRICE_ONLY"])
+    _require(price_labels <= len(captured)*len(HORIZONS_MIN),
+             "COHORT_AUDIT_LABEL_MULTIPLICITY")
     body = {
         "schema": SCHEMA,
         "campaign_id": campaign["campaign_id"],
@@ -161,6 +182,20 @@ def audit(root, *, now_ms=None, archive_loader=load_original_quote_archive):
         "horizons_min": list(HORIZONS_MIN),
         "declared_source_slots": SLOT_COUNT,
         "declared_source_horizon_cells": 12,
+        "declared_original_decision_slots": SLOT_COUNT,
+        "captured_original_decision_slots": len(captured),
+        "distinct_original_decision_receipts": [{
+            "slot":row["slot"],
+            "source_decision_at_ms":row["source_decision_at_ms"],
+            "preoutcome_input_id":row["original_input_id"],
+            "original_source_quote_id":row["original_source_quote_id"],
+        } for row in captured],
+        "sealed_original_price_horizon_labels": price_labels,
+        "horizons_share_one_original_decision_per_slot": True,
+        "horizon_labels_are_independent_economic_trades": False,
+        "independently_executable_trading_samples": 0,
+        "actual_trading_reward_samples": 0,
+        "economic_generalization_qualified": False,
         "fixed_frozen_stressed_cost_plus_margin_bps": str(HURDLE),
         "all_slots": slots,
         "state_counts": dict(sorted(counter.items())),

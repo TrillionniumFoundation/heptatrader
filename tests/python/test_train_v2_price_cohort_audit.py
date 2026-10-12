@@ -62,6 +62,65 @@ class CohortAuditTests(unittest.TestCase):
   self.assertEqual(out["broker_orders_sent"],0)
   self.assertEqual(out["original_model_forecast_count"],0)
 
+ def test_four_horizons_only_one_frozen_source_decision_unit(self):
+  self.seal_h5()
+  receipt=self.runit()
+  self.assertEqual(receipt["declared_source_horizon_cells"],12)
+  self.assertEqual(receipt["declared_original_decision_slots"],3)
+  self.assertEqual(receipt["captured_original_decision_slots"],1)
+  self.assertEqual(receipt["sealed_original_price_horizon_labels"],1)
+  self.assertEqual(len(receipt["distinct_original_decision_receipts"]),1)
+  self.assertEqual(
+   receipt["distinct_original_decision_receipts"][0]["preoutcome_input_id"],
+   self.f["input_id"])
+  self.assertEqual(
+   receipt["distinct_original_decision_receipts"][0]["original_source_quote_id"],
+   self.f["original_source_id"])
+  self.assertTrue(receipt["horizons_share_one_original_decision_per_slot"])
+  self.assertFalse(receipt["horizon_labels_are_independent_economic_trades"])
+  self.assertEqual(receipt["independently_executable_trading_samples"],0)
+  self.assertEqual(receipt["actual_trading_reward_samples"],0)
+  self.assertFalse(receipt["economic_generalization_qualified"])
+
+ def test_two_source_slots_reusing_same_quote_are_not_independent(self):
+  for name in ("slot-01.input.json","slot-01.timer-result.json"):
+   p=self.root/name
+   p.write_text("{}");p.chmod(0o600)
+  # Explicit hostile fixture bypasses the old per-slot verifier to prove
+  # even a rehashed duplicate source ID is rejected by the new reviewer.
+  with self.assertRaisesRegex(
+       ContractError,"COHORT_AUDIT_REUSED_ORIGINAL_DECISION"):
+   self.runit()
+
+ def test_two_different_inputs_same_quote_cannot_count_twice(self):
+  for name in ("slot-01.input.json","slot-01.timer-result.json"):
+   p=self.root/name
+   p.write_text("{}");p.chmod(0o600)
+  from copy import deepcopy
+  second=deepcopy(self.f)
+  second["slot"]=1
+  second["decision_at_ms"]+=4800000
+  second["outcome_maturity_ms"]={
+   str(h):second["decision_at_ms"]+h*60000 for h in (5,15,30,60)}
+  second["input_id"]=digest({"legitimate_distinct_input_for_test":True})
+  def get_input(root,slot,campaign,roster):
+   return (self.f if slot==0 else second),{"slot":slot}
+  with patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
+             side_effect=get_input):
+   with self.assertRaisesRegex(
+       ContractError,"COHORT_AUDIT_REUSED_ORIGINAL_PRICE_QUOTE"):
+    self.runit(now=self.c["anchors_ms"][1]+5000)
+
+ def test_non_digest_original_quote_cannot_claim_distinct_decision(self):
+  from copy import deepcopy
+  forged=deepcopy(self.f)
+  forged["original_source_id"]=[]
+  with patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
+             return_value=(forged,{"slot":0})):
+   with self.assertRaisesRegex(
+       ContractError,"COHORT_AUDIT_ORIGINAL_DECISION_IDENTITIES_INVALID"):
+    self.runit()
+
  def test_existing_observed_price_does_not_become_strategy_profit(self):
   self.seal_h5()
   item=self.runit()["all_slots"][0]["outcomes"][0]

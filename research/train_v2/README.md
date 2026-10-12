@@ -476,3 +476,14 @@ economic alpha. It makes no broker requests or new model predictions.
 ## 2026-10-13 original price as-of receipt fence
 
 See [ASOF_ORIGINAL_PRICE_COHORT_20261013.md](ASOF_ORIGINAL_PRICE_COHORT_20261013.md) for the future-dated original outcome refusal, complete 3x4 denominator and the independent second scheduled source capture. This is still PRICE ONLY and never grants model or trade authority.
+
+
+## 2026-10-13 exact decision-versus-price-horizon denominator
+
+See [CORRELATED_PRICE_DECISION_UNITS_20261013.md](CORRELATED_PRICE_DECISION_UNITS_20261013.md).
+Four 5/15/30/60m forward price observations from a single original quote
+are **correlated labels of ONE source decision**, never four independent
+strategy opportunities or broker net-PnL labels. The new audit schema v2
+preserves 12 frozen cells, checks distinct input/source quote identity,
+and refuses economic/model promotion. Earlier immutable v1 reports and
+original PAPER capture/observer receipts remain unchanged.
