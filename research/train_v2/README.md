@@ -410,3 +410,15 @@ returns are **not** the entire model dispatch or trading opportunity
 population. Unknown requests remain unknown; no original model confidence
 becomes a genuine logged behavior-policy propensity, and no
 training/trading/Canonical Agentd authority is granted.
+
+
+## New fixed original multi-horizon economic research (NO_TRADE)
+
+See [ORIGINAL_MULTIHORIZON_CAPACITY_20261012.md](ORIGINAL_MULTIHORIZON_CAPACITY_20261012.md).
+A source-frozen, retrospective price-only capacity study compares fixed
+5/15/30/60-minute original PAPER midpoint windows under the UNCHANGED
+10.9133557-bps historical cost-plus-safety hurdle. It selects
+time-disjoint windows BEFORE future price labels, preserves missing path
+and endpoint censoring, and never trains, selects or promotes a model.
+Any later new sealed-source fingerprint must create a new research
+cohort, not silently widen this inspected one.

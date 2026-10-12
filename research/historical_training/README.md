@@ -5,6 +5,14 @@ existing prospective trials, or canonical promotion. A trained offline readout
 is not a live strategy release. Private account data and model weights are not
 part of this source tree.
 
+## Fixed original-source multi-horizon price-capacity research
+
+See [ORIGINAL_MULTIHORIZON_CAPACITY_20261012.md](../train_v2/ORIGINAL_MULTIHORIZON_CAPACITY_20261012.md).
+Four predeclared horizons use the same original locally SHA-chained PAPER
+quote population and pinned IB cost receipt. Censored future paths
+are retained in the denominator, and price-only hindsight movement
+cannot become a trading strategy, live-profit claim or OOS validation.
+
 ## Train V2 research-only data contracts
 
 See [Train V2 Phase 1](../train_v2/README.md) for the independent
