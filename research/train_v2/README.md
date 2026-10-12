@@ -331,3 +331,15 @@ previously preregistered research source event and its single source-only
 SQLite entry. It uses pinned SSH host keys and an immutable SQLite
 read-only checkpoint; it neither runs the original policy/LLM inference
 nor mints a native product LedgerWriter or trading credential.
+
+
+## Phase4U presealed original writer-segment identity
+
+See [PHASE4U.md](PHASE4U.md). For genuinely new, separate TEST-ONLY
+source windows, the V2 worker seals its original numeric source segment
+at local preregistration before the start of the future input window.
+Rotation during the lead, quote input, signature or fsync fails closed;
+an ordinary newer segment is never silently resampled as first.
+Old Phase4T signed worker and public readback are byte-identical and
+retain their own independent original reference identity. No change
+to current trading, trained models or broker authorization.

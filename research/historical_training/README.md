@@ -52,6 +52,10 @@ readback limitations are recorded in
 [PHASE4T.md](../train_v2/PHASE4T.md). It is NOT a model prediction,
 signed native LedgerWriter or completed financial Outcome.
 
+The optional future first-source rotation-fence research protocol is
+described in [Train V2 Phase4U](../train_v2/PHASE4U.md). It does not
+rewrite historical IB revisions or any previous prospective receipt.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
