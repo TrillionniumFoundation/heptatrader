@@ -343,3 +343,16 @@ an ordinary newer segment is never silently resampled as first.
 Old Phase4T signed worker and public readback are byte-identical and
 retain their own independent original reference identity. No change
 to current trading, trained models or broker authorization.
+
+
+## Phase 4V fresh source -> Canonical native TEST-only abstain ACK
+
+See [PHASE4V.md](PHASE4V.md). One newly observed original PAPER source
+was actually preregistered, Mac TEST signed, and passed to a separately
+prewarmed original Rust LedgerWriter. A fixed, model-free single NO_TRADE
+test policy yielded a real signed V2 Decision/Witness fsync ACK before
+original IB expiration. Independent readback used **copies** of the
+unchanged original ledger and witness; Rust verified exact typed
+Decision, corrupt-witness rejection, and acknowledged-history loss
+rejection. This is not original LLM behavior propensity, broker PREPARED,
+native product owner authorization, economic alpha, or model release.
