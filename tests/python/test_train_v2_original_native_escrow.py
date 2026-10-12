@@ -40,7 +40,7 @@ def fixture(stage="decision", now_ms=None):
         "expected_previous_witness_sequence":0 if first else 1,
         "next_ledger_sequence":1 if first else 2,
         "source_time_ms":now_ms-900,
-        "outcome_due_ms":now_ms+300000,
+        "outcome_due_ms":now_ms+300000 if first else now_ms-1800,
         "test_only":True,
         "product_trading_authority":False,
     }
@@ -161,14 +161,64 @@ class EscrowDurableLocalFixtureTests(unittest.TestCase):
         self.assertEqual(stored.stat().st_mode&0o777,0o600)
         self.assertEqual((self.private_root/"decision.escrow-test-only.key").stat().st_mode&0o777,0o600)
 
-    def test_duplicate_identical_intent_does_not_resign_or_overwrite(self):
+    def test_duplicate_identical_intent_returns_exact_durable_receipt(self):
         self.call("init")
         doc=fixture()
         first=self.call("seal",doc=doc)
         original=Path(first["durable_receipt_path"]).read_bytes()
-        with self.assertRaises(FileExistsError):
-            self.call("seal",doc=doc)
+        self.assertFalse(first["idempotent_prior_receipt_readback"])
+        second=self.call("seal",doc=doc)
+        self.assertTrue(second["idempotent_prior_receipt_readback"])
+        self.assertEqual(second["receipt_hex"],first["receipt_hex"])
+        self.assertEqual(second["receipt_sha256"],first["receipt_sha256"])
         self.assertEqual(Path(first["durable_receipt_path"]).read_bytes(),original)
+
+    def test_lost_ack_exact_replay_after_window_expiry_is_only_readback(self):
+        self.call("init")
+        doc=fixture()
+        original=self.call("seal",doc=doc)
+        prior=Path(original["durable_receipt_path"]).read_bytes()
+        future=doc["source_time_ms"]+4*60*60*1000
+        with patch.object(escrow.time,"time_ns",
+                          return_value=future*1000000):
+            second=self.call("seal",doc=doc)
+        self.assertTrue(second["idempotent_prior_receipt_readback"])
+        self.assertEqual(second["receipt_hex"],original["receipt_hex"])
+        self.assertEqual(prior,Path(original["durable_receipt_path"]).read_bytes())
+
+    def test_no_prior_archive_cannot_create_new_decision_after_window(self):
+        self.call("init")
+        doc=fixture()
+        future=doc["source_time_ms"]+4*60*60*1000
+        with patch.object(escrow.time,"time_ns",
+                          return_value=future*1000000):
+            with self.assertRaisesRegex(
+                  ValueError,"ESCROW_REAL_NATIVE_GENERATOR_SIGNED_TOO_LATE"):
+                self.call("seal",doc=doc)
+        receipts=list(self.private_root.glob("receipt-*.json"))
+        self.assertEqual(receipts,[])
+
+    def test_changed_existing_signed_receipt_cannot_be_replayed(self):
+        self.call("init")
+        doc=fixture()
+        original=self.call("seal",doc=doc)
+        file=Path(original["durable_receipt_path"])
+        envelope=json.loads(file.read_bytes())
+        envelope["signature_hex"]="00"*64
+        file.write_bytes(escrow.canonical(envelope)+b"\n")
+        with self.assertRaisesRegex(ValueError,
+                                    "ESCROW_PRIOR_RECEIPT_BAD_ED25519_SIGNATURE"):
+            self.call("seal",doc=doc)
+
+    def test_incomplete_existing_archive_cannot_be_reissued_as_ack(self):
+        self.call("init")
+        doc=fixture()
+        original=self.call("seal",doc=doc)
+        path=Path(original["durable_receipt_path"])
+        path.write_bytes(b"{")
+        with self.assertRaisesRegex(ValueError,
+                                    "ESCROW_PRIOR_ARCHIVE_NOT_OWNER_PRIVATE"):
+            self.call("seal",doc=doc)
 
     def test_destroyed_original_test_key_does_not_invalidate_old_public_receipt(self):
         initial=self.call("init")
@@ -191,7 +241,7 @@ class EscrowDurableLocalFixtureTests(unittest.TestCase):
         x=fixture()
         original_name=self.private_root/("receipt-decision-"+escrow.digest(escrow.canonical(x))+".json")
         original_name.symlink_to(self.temp/"other")
-        with self.assertRaises(FileExistsError):
+        with self.assertRaises((OSError,ValueError)):
             self.call("seal",doc=x)
         self.assertTrue(original_name.is_symlink())
 

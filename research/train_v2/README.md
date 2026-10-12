@@ -261,3 +261,17 @@ Actual independent remote Escrow custody/root enrollment has NOT
 been demonstrated and the new locally preregistered real-price plan
 was not consumed. No order, model, native production service or
 economic Outcome was generated; product remains HOLD.
+
+
+## Phase 4O: exact old Escrow receipt readback; native ACK-only HOLD
+
+See PHASE4O.md. A claimed test-only Escrow ACK requires byte-exact
+origin file readback and public signature/source/role verification.
+The candidate signer returns an already-fsynced identical receipt
+idempotently after lost network ACK, without overwriting or re-signing,
+but rejects the first submission after its original source-time
+window. All six old real original native market test Ledger/Witness
+copies are separately rechecked: four ACKed no-op, two lagged HOLD
+because no original independent preappend Escrow or production
+RecoveryGrant existed. Remote Mac/X230 Escrow enrollment remains
+unverified, no production keys, orders or model promotion.
