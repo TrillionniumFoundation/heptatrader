@@ -322,3 +322,16 @@ The new read-only gate proves these exact time/role/source facts from
 unchanged original bytes and blocks promotion to PREPARED/trading
 eligibility. No old prospective record, model or broker service is
 reconfigured or rewritten.
+
+
+## Independently audited finite Ridge source completeness (2026-10-12)
+
+See [FX_RIDGE_GLOBAL_EARLIEST_20261012.md](FX_RIDGE_GLOBAL_EARLIEST_20261012.md).
+This independent local numeric writer segment audit does NOT trust the
+producer's choice of mature source prefix as a complete original quote
+population. It detects an earlier eligible original quote in an omitted
+numeric segment and retains all four scheduled samples, including
+censored ones. Completed 4-window outcome: three PRICE-only samples,
+one censored, NO_TRADE in all slots, no after-cost alpha or trading grant.
+This remains local source evidence, not an independent broker inventory
+or canonical LedgerWriter/Owner.
