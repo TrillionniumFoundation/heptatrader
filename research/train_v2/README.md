@@ -211,3 +211,21 @@ static candidates and PREPARED must NEVER be labelled actual risk
 vetoes, and model confidence or observed action frequency must
 NEVER be promoted as the original LLM action propensity. Product
 root, native Writer, actual net reward and OPE remain HOLD.
+
+
+## Phase 4L: new real market source to original native signed ledger
+
+See [PHASE4L.md](PHASE4L.md). A genuinely new original IB PAPER EUR/USD
+quote-bound no-order shadow decision was preregistered and Mac test
+Generator-signed/ACKed by the original full Canonical native durable
+LedgerWriter and separate witness **before** the actual future
+five-minute outcome. After horizon, physical X230 independently
+verified 146 points of the same original quote source, and its separate
+test Observer signed the native price-only terminal Outcome. Native
+Witness advanced to 2 and original DatasetSnapshotV3 freeze and
+current-state revalidation passed with a test-only Evaluator.
+Five ephemeral private test files were then removed at source hosts;
+native cold recovery and 3 corrupt copy rejections still passed.
+All test identities, price-bps units, and original policy propensity
+limitations are deliberately quarantined; no real broker order,
+cost-complete PnL, eligible product dataset or production root enrolled.
