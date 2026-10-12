@@ -251,6 +251,9 @@ def independent_price_prediction(decision,model,anchor):
     prediction=float(weights[0])+sum(float(w)*v for w,v in zip(weights[1:],norm))
     require(abs(prediction-float(decision["forecast_midpoint_bps"]))<1e-8,
             "PREDICTION_CANNOT_BE_RECOMPUTED")
+    direction = "UP" if prediction > 0 else "DOWN" if prediction < 0 else "FLAT"
+    require(decision.get("forecast_direction_research_only") == direction,
+            "PREDICTION_DIRECTION_IDENTITY_CHANGED")
     return prediction
 
 def independent_cost(decision,cost):
@@ -390,19 +393,47 @@ def audit(root):
     details=[stage_evidence(root,i,item,intent)
              for i,item in enumerate(frozen["windows"])]
     done=[v for v in details if v["maturity_state"]!="PENDING"]
+    worker_path=root/"campaign-worker-start.json"
+    if worker_path.exists():
+        worker=read(worker_path)
+        require(worker["schema"]==CAMPAIGN+".worker-start.v1"
+                and worker["sealed_sha256"]==file_sha(root/"campaign-sealed.json")
+                and worker["started_at_ms"]<frozen["windows"][0]["first_decision_ms"]
+                and worker["no_order_api_or_model_promotion"] is True
+                and worker["automatic_retries"] is False
+                and worker["trade_authority"] is False,
+                "STARTED_WORKER_NOT_PRECOMMITTED")
+    else:
+        require(not any(v["decision_state"]!="PENDING" for v in details),
+                "DECISION_WITHOUT_FROZEN_WORKER_START")
     final_path=root/"campaign-final.json"
     if final_path.exists():
         final=read(final_path)
-        require(final["window_count"]==4
+        require(final["schema"]==CAMPAIGN+".final.v1"
+                and final["window_count"]==4
                 and len(done)==4 and len(final["window_results"])==4
                 and final["sealed_sha256"]==file_sha(root/"campaign-sealed.json")
+                and final["intent_sha256"]==file_sha(root/"campaign-intent.json")
+                and final["successful_matured_count"]==
+                    sum(v["maturity_state"]=="MATURE_PRICE_ONLY" for v in details)
+                and final["censored_count"]==
+                    sum(v["maturity_state"]!="MATURE_PRICE_ONLY" for v in details)
                 and final["automatic_promotion"] is False
+                and final["model_economic_efficacy_proven"] is False
+                and final["trade_authority"] is False
                 and final["broker_orders_sent"]==0,
                 "PREMATURE_OR_MUTATED_FINAL_CLAIM")
         for actual,record in zip(details,final["window_results"]):
+            i=actual["index"]
+            cell=root/("window-%02d"%i)
             require(actual["index"]==record["window"]
+                    and record["plan_id"]==frozen["windows"][i]["plan_id"]
                     and actual["decision_state"]==record["decision_state"]
-                    and actual["maturity_state"]==record["maturity_state"],
+                    and actual["maturity_state"]==record["maturity_state"]
+                    and record["decision_attempt_sha256"]==
+                        file_sha(cell/"decision-attempt.json")
+                    and record["maturity_attempt_sha256"]==
+                        file_sha(cell/"maturity-attempt.json"),
                     "FINAL_NOT_MATCHING_FROZEN_EVENTS")
     return {
         "schema": SCHEMA,

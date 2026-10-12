@@ -31,7 +31,7 @@ class ParserTests(unittest.TestCase):
         vec=[0.,0.,0.,0.,0.,0.,
              math.sin(2*math.pi*hour/24),math.cos(2*math.pi*hour/24)]
         decision={"history_quote_samples":quotes,"feature_vector":vec,
-                  "forecast_midpoint_bps":0.0}
+                  "forecast_midpoint_bps":0.0,"forecast_direction_research_only":"FLAT"}
         model={"mean":[0.]*8,"stddev":[1.]*8,"weights":[0.]*9}
         self.assertAlmostEqual(independent_price_prediction(decision,model,anchor),0.)
         quotes[0]["available_at_ms"] += 3000
@@ -148,6 +148,30 @@ class ActualImmutableCohortTests(unittest.TestCase):
                   "broker_orders_sent":0,"broker_requests_sent":0,"nonretryable":True}
             f.write_text(json.dumps(fake));f.chmod(0o600)
             with self.assertRaisesRegex(InvalidProof,"FUTURE_WITHOUT_PAST"):
+                audit(root)
+        finally:tmp.cleanup()
+
+    def test_tampered_worker_start_rejected(self):
+        tmp,root=self.clone()
+        try:
+            path=root/"campaign-worker-start.json"
+            data=json.loads(path.read_text())
+            data["sealed_sha256"]="0"*64
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(InvalidProof,"STARTED_WORKER_NOT_PRECOMMITTED"):
+                audit(root)
+        finally:tmp.cleanup()
+    def test_fabricated_final_before_complete_or_wrong_digest_refused(self):
+        tmp,root=self.clone()
+        try:
+            path=root/"campaign-final.json"
+            fake={"schema":"heptatrader.fx-ridge-finite-prospective-campaign.v1.final.v1",
+                  "window_count":4,"window_results":[],
+                  "sealed_sha256":"0"*64,
+                  "intent_sha256":"0"*64,"automatic_promotion":False,
+                  "broker_orders_sent":0}
+            path.write_text(json.dumps(fake));path.chmod(0o600)
+            with self.assertRaisesRegex(InvalidProof,"PREMATURE_OR_MUTATED_FINAL_CLAIM"):
                 audit(root)
         finally:tmp.cleanup()
 
