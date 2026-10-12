@@ -275,3 +275,13 @@ copies are separately rechecked: four ACKed no-op, two lagged HOLD
 because no original independent preappend Escrow or production
 RecoveryGrant existed. Remote Mac/X230 Escrow enrollment remains
 unverified, no production keys, orders or model promotion.
+
+
+## Phase 4P complete original signed-byte escrow contract
+
+See PHASE4P.md. The earlier real dual-host Phase4O escrow protects
+SHA256 identities but cannot reconstruct LOST native evidence bytes.
+The new TEST-ONLY offline archive validates exact typed payload,
+original signed evidence and detached Ed25519 signature, without
+minting new signatures or changing the Canonical Witness. Old
+digest-only escrows remain HOLD, not retroactively upgraded.
