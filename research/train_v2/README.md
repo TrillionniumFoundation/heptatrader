@@ -376,3 +376,14 @@ tests, independently reopens the original signed NO_TRADE-only Ledger and
 Witness on private copies, and joins real original source-cutoff timing.
 The 51 ms ACK lead, root TEST keys, absence of original LLM action
 propensities, and non-production product Owner HOLD remain explicit.
+
+
+## Original opaque LLM inference latency (read-only)
+
+See [ORIGINAL_LLM_INFERENCE_LATENCY_20261012.md](ORIGINAL_LLM_INFERENCE_LATENCY_20261012.md).
+The original release-pinned REQUEST/RESPONSE/DECISION graph is
+measured against an optimistic 5000ms original quote lifetime.
+The observed model usually finishes AFTER that source window;
+an early model output is not a witnessed PREPARED/Native ACK or
+an original action propensity. This module is observational only
+and does not change the original driver or enrolled model.

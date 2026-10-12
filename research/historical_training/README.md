@@ -72,6 +72,12 @@ jointly read back in
 [UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md](../train_v2/UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md).
 This is not an executable-price historical conversion or a trading grant.
 
+For original production opaque LLM input-to-decision timing and
+its incompatibility with a single newly received quote's <=5s
+source admission, see the independent source-hashed
+[latency audit](../train_v2/ORIGINAL_LLM_INFERENCE_LATENCY_20261012.md).
+No old training or forward result was changed.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
