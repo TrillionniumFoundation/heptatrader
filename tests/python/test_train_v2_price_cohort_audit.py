@@ -33,7 +33,8 @@ class CohortAuditTests(unittest.TestCase):
    patch("train_v2.price_only_cohort_audit._load",return_value=self.c),
    patch("train_v2.price_only_cohort_audit.load_roster",return_value=self.roster),
    patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
-         return_value=(self.f,{"slot":0})),
+         return_value=(self.f,{"slot":0,
+                              "worker_finished_at_ms":self.f["decision_at_ms"]+1})),
   ]
   for patcher in self.patches:
    patcher.start();self.addCleanup(patcher.stop)
@@ -104,7 +105,8 @@ class CohortAuditTests(unittest.TestCase):
    str(h):second["decision_at_ms"]+h*60000 for h in (5,15,30,60)}
   second["input_id"]=digest({"legitimate_distinct_input_for_test":True})
   def get_input(root,slot,campaign,roster):
-   return (self.f if slot==0 else second),{"slot":slot}
+   item = self.f if slot==0 else second
+   return item,{"slot":slot,"worker_finished_at_ms":item["decision_at_ms"]+1}
   with patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
              side_effect=get_input):
    with self.assertRaisesRegex(
@@ -116,9 +118,26 @@ class CohortAuditTests(unittest.TestCase):
   forged=deepcopy(self.f)
   forged["original_source_id"]=[]
   with patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
-             return_value=(forged,{"slot":0})):
+             return_value=(forged,{"slot":0,
+                                   "worker_finished_at_ms":forged["decision_at_ms"]+1})):
    with self.assertRaisesRegex(
        ContractError,"COHORT_AUDIT_ORIGINAL_DECISION_IDENTITIES_INVALID"):
+    self.runit()
+
+ def test_future_input_is_not_visible_in_earlier_asof_audit(self):
+  now=self.f["decision_at_ms"]-1
+  self.assertGreater(now,self.c["created_at_ms"])
+  with self.assertRaisesRegex(
+       ContractError,"COHORT_AUDIT_INPUT_SEALED_IN_FUTURE"):
+   self.runit(now=now)
+
+ def test_future_timer_completion_not_retroactively_counted(self):
+  mock_timer={"slot":0,
+              "worker_finished_at_ms":self.now+1}
+  with patch("train_v2.price_only_cohort_audit.verify_input_and_timer",
+             return_value=(self.f,mock_timer)):
+   with self.assertRaisesRegex(
+        ContractError,"COHORT_AUDIT_INPUT_SEALED_IN_FUTURE"):
     self.runit()
 
  def test_existing_observed_price_does_not_become_strategy_profit(self):

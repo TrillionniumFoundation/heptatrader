@@ -80,7 +80,16 @@ def audit(root, *, now_ms=None, archive_loader=load_original_quote_archive):
                 counter[key] += 1
             slots.append(row)
             continue
-        frozen, _ = verify_input_and_timer(root, slot, campaign, roster)
+        frozen, timer = verify_input_and_timer(root, slot, campaign, roster)
+        # A historical as-of audit must not see an input that was not yet
+        # committed by its own one-shot worker. The on-disk receipt may exist
+        # NOW but did not exist at the requested earlier cutoff. Refuse
+        # backdated observation rather than counting future source decisions.
+        finished = timer.get("worker_finished_at_ms")
+        decision = frozen.get("decision_at_ms")
+        _require(type(decision) is int and type(finished) is int
+                 and decision <= finished <= now,
+                 "COHORT_AUDIT_INPUT_SEALED_IN_FUTURE")
         row["slot_state"] = "ORIGINAL_PREOUTCOME_INPUT_SEALED"
         row["original_input_sha256"] = sha(input_path)
         row["timer_result_sha256"] = sha(timer_path)

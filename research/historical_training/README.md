@@ -118,6 +118,11 @@ Price-only post-maturity observations do not constitute executed returns.
 
 The updated Train V2 original price as-of outcome gate is in [ASOF_ORIGINAL_PRICE_COHORT_20261013.md](../train_v2/ASOF_ORIGINAL_PRICE_COHORT_20261013.md). It does not requalify historical bars or model predictions.
 
+The frozen three-source x four-horizon PAPER cohort, as-of input safety
+and actual third scheduled source timer evidence are preserved in
+[INPUT_SOURCE_ASOF_AND_SLOT2_20261013.md](../train_v2/INPUT_SOURCE_ASOF_AND_SLOT2_20261013.md).
+No original source receipt, timer, missed window or model-efficacy claim changes.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

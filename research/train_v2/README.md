@@ -487,3 +487,14 @@ strategy opportunities or broker net-PnL labels. The new audit schema v2
 preserves 12 frozen cells, checks distinct input/source quote identity,
 and refuses economic/model promotion. Earlier immutable v1 reports and
 original PAPER capture/observer receipts remain unchanged.
+
+
+## Input/timer as-of preservation — October 13
+
+[Input source as-of and third frozen slot](INPUT_SOURCE_ASOF_AND_SLOT2_20261013.md)
+adds the missing cutoff for the actual pre-outcome input and one-shot timer
+completion. A source decision or timer completed after a requested historical
+as-of instant can no longer be treated as already observed. This is a
+research-only audit correction. All three preregistered source slots remain
+correlated PRICE observations, not economic trading decisions; no automatic
+model authority, broker order or retrospective input retry is enabled.
