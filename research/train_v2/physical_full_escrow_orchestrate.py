@@ -51,9 +51,13 @@ def new_signed_original(stage):
     key=Ed25519PrivateKey.generate()
     message=(DOMAIN+native_id("lab.phase4q."+stage+".synthetic.")
         +native_id("lab."+role)+bytes([role_tag])
+        # The ORIGINAL canonical Rust SignedLearningEvidenceV1 serializer
+        # signs trust_digest, scope_digest, objective_digest in this order.
+        # Earlier Phase4Q synthetic physical archives used the wrong order:
+        # preserve those old bytes unchanged; NEW test fixtures use canonical.
+        +hashlib.sha256(b"TEST_TRUST").digest()
         +hashlib.sha256(b"TEST_SCOPE").digest()
         +hashlib.sha256(b"TEST_OBJECTIVE").digest()
-        +hashlib.sha256(b"TEST_TRUST").digest()
         +(19).to_bytes(8,"big")
         +(now-1000).to_bytes(8,"big")
         +(now+600000).to_bytes(8,"big")

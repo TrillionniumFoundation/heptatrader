@@ -37,6 +37,11 @@ TEST-ONLY escrow receipts in [Phase4Q](../train_v2/PHASE4Q.md).
 They are synthetic; original market-time source and production owner
 qualification remain separate and unapproved.
 
+The [Phase4R](../train_v2/PHASE4R.md) physical full-byte test
+corrects TEST-only native SignedLearningEvidenceV1 digest field order
+and proves final Rust typed X230/Mac readback. All real broker and
+Canonical LedgerWriter product promotion gates remain closed.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

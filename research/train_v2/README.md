@@ -297,3 +297,15 @@ receipt signatures are preserved. A lost ACK gets the exact archived
 receipt, even after original signer expiry, but can never mint a first
 late signed intent. No real source-time product LedgerWriter, Owner,
 RecoveryAuthority or trade permission has been claimed.
+
+
+## Phase 4R: original Rust typed complete-byte custody check
+
+See [PHASE4R.md](PHASE4R.md). The old synthetic X230/Mac Phase4Q
+signing message used the incorrect TRUST/SCOPE/OBJECTIVE digest order.
+It remains immutably archived and is rejected by the actual original
+Rust SignedLearningEvidenceV1 reparser. New SYNTHETIC messages use the
+correct native order; both physical hosts passed real native Rust typed
+byte-roundtrip and independent actor/host signature checks. The final
+read-only recheck created no further source, remote signature or event.
+No canonical Root, policy propensity, LedgerWriter event or order grant.
