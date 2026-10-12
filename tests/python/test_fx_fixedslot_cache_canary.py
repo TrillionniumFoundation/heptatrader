@@ -17,7 +17,7 @@ def fake_status(t=CAPTURE_MS,usable=24):
     if usable<24: counts["PATH_GAP"]=24-usable
     status={
         "schema":"heptatrader.quote-readiness-status.v1",
-        "period_sha256":"61995fcedc2993d7ac33d2ed86c9613068c5a0958f",
+        "period_sha256":"61995fcedc2993d7ac33d2ed86c9613068c5a3ecd0d1c377e612639cd5a0958f",
         "rule":dict(RULE),
         "at_ms":t-10000,
         "state":state,"reasons":[] if usable>=20 else ["INSUFFICIENT_ENDPOINT_AND_PATH_COVERAGE"],
@@ -45,6 +45,11 @@ def tmp_test():
     return t,root,{"original_health_file":str(a),"canary_health_file":str(b)}
 
 class CanaryTests(unittest.TestCase):
+    def test_complete_original_paper_period_digest_is_64_hex(self):
+        from train_v2.fx_fixedslot_cache_canary import PERIOD_SHA
+        self.assertEqual(PERIOD_SHA,"61995fcedc2993d7ac33d2ed86c9613068c5a3ecd0d1c377e612639cd5a0958f")
+        self.assertEqual(len(PERIOD_SHA),64)
+
     def test_prior_plan_sha_identity_is_pinned(self):
         self.assertEqual(ORIGINAL_PLAN_SHA,
             "02aa4a2662b743203cc925d09d3250bcc0e02155cf5d00bb319b0526448aaa04")
