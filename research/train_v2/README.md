@@ -387,3 +387,14 @@ The observed model usually finishes AFTER that source window;
 an early model output is not a witnessed PREPARED/Native ACK or
 an original action propensity. This module is observational only
 and does not change the original driver or enrolled model.
+
+
+## Post-model fresh quote timing feasibility (retrospective, NEW policy only)
+
+See [POSTMODEL_REQUOTE_ASOF_20261012.md](POSTMODEL_REQUOTE_ASOF_20261012.md).
+The existing opaque LLM regularly exceeds its original quote TTL; this
+isolated read-only auditor joins already captured EUR/USD model returns
+against separately sealed original PAPER quote availability at each
+actual return. It reports hypothetical *new policy* source-freshness
+upper bounds and explicit unknown unsealed source periods, not old
+LLM behavior-propensity, executable trades, net alpha or deployment.

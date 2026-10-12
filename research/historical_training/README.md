@@ -78,6 +78,11 @@ source admission, see the independent source-hashed
 [latency audit](../train_v2/ORIGINAL_LLM_INFERENCE_LATENCY_20261012.md).
 No old training or forward result was changed.
 
+Train V2's bounded original remote-model post-return fresh-source
+as-of audit is in
+[POSTMODEL_REQUOTE_ASOF_20261012.md](../train_v2/POSTMODEL_REQUOTE_ASOF_20261012.md).
+This is NOT a backdated original trade-policy decision or a model release.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
