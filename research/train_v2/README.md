@@ -462,3 +462,13 @@ sealed. Existing outcomes are independently rechecked without rewrite;
 unsealed/missing/missed inputs stay WAIT/MISSED, never zero PnL. This
 creates no model, signed independent observer, broker order or trading
 authority.
+
+
+## Finite, source-only 3×4 cohort audit (2026-10-13)
+
+See [FROZEN_PRICE_COHORT_AUDIT_20261013.md](FROZEN_PRICE_COHORT_AUDIT_20261013.md).
+An independent one-shot reviewer audits all three predeclared original PAPER
+source slots and four original price horizons without changing existing
+seals. Missing future inputs remain pending, censored price is UNKNOWN, and
+an observed hindsight move never counts as signed model, actual PnL or
+economic alpha. It makes no broker requests or new model predictions.

@@ -112,6 +112,10 @@ and immutable source-only PRICE labels are described in
 [SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md](../train_v2/SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md). These are not model efficacy
 results, broker fills or live strategy promotions.
 
+The exact immutable 3×4 prospective PAPER price-only denominator audit is
+[FROZEN_PRICE_COHORT_AUDIT_20261013.md](../train_v2/FROZEN_PRICE_COHORT_AUDIT_20261013.md).
+Price-only post-maturity observations do not constitute executed returns.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
