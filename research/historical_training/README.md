@@ -61,6 +61,17 @@ readback and its strict product HOLD are documented in
 [Train V2 Phase4V](../train_v2/PHASE4V.md). No previously failed
 historical-price or genuine behavior-policy trading sample is repaired.
 
+Original 193-member Canonical Rust workspace qualification and independent
+source-commit evidence are preserved separately in
+[FULL_CANONICAL_WORKSPACE_20261012.md](../train_v2/FULL_CANONICAL_WORKSPACE_20261012.md).
+This does not change the original Phase4S source-expiry incident,
+native Phase4V source cutoff or PAPER trading gate.
+
+The independent full-native and original source-time test lanes are
+jointly read back in
+[UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md](../train_v2/UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md).
+This is not an executable-price historical conversion or a trading grant.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

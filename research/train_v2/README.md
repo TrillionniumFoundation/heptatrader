@@ -356,3 +356,23 @@ unchanged original ledger and witness; Rust verified exact typed
 Decision, corrupt-witness rejection, and acknowledged-history loss
 rejection. This is not original LLM behavior propensity, broker PREPARED,
 native product owner authorization, economic alpha, or model release.
+
+
+## Full original Canonical workspace evidence (parallel track merged)
+
+See [FULL_CANONICAL_WORKSPACE_20261012.md](FULL_CANONICAL_WORKSPACE_20261012.md).
+Original 193-member locked workspace native LedgerWriter, Artifacts
+and Agentd terminal-cell Owner test evidence is retained alongside
+the separate Phase4S/V original-quote source cutoff checks.
+This is a merged TEST tree, not new product Owner enrollment, model
+behavior action support, a broker PREPARED decision or alpha.
+
+
+## Combined full original native workspace + source cutoff revalidation
+
+See [UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md](UNIFIED_NATIVE_SOURCE_CUTOFF_20261012.md).
+This separate merged TEST tree re-runs exact original full-workspace native
+tests, independently reopens the original signed NO_TRADE-only Ledger and
+Witness on private copies, and joins real original source-cutoff timing.
+The 51 ms ACK lead, root TEST keys, absence of original LLM action
+propensities, and non-production product Owner HOLD remain explicit.
