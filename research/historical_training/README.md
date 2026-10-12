@@ -83,6 +83,12 @@ as-of audit is in
 [POSTMODEL_REQUOTE_ASOF_20261012.md](../train_v2/POSTMODEL_REQUOTE_ASOF_20261012.md).
 This is NOT a backdated original trade-policy decision or a model release.
 
+The original post-model quote audit's fuller captured REQUEST denominator
+is documented in
+[ORIGINAL_REQUEST_DENOMINATOR_20261012.md](../train_v2/ORIGINAL_REQUEST_DENOMINATOR_20261012.md).
+It preserves incomplete original model requests as UNKNOWN instead of
+silently dropping them from the observed decision-return subset.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

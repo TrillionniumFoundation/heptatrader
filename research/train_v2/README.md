@@ -398,3 +398,15 @@ against separately sealed original PAPER quote availability at each
 actual return. It reports hypothetical *new policy* source-freshness
 upper bounds and explicit unknown unsealed source periods, not old
 LLM behavior-propensity, executable trades, net alpha or deployment.
+
+
+## Captured-request denominator for opaque model re-quote (read-only)
+
+See [ORIGINAL_REQUEST_DENOMINATOR_20261012.md](ORIGINAL_REQUEST_DENOMINATOR_20261012.md).
+This Phase 4 follow-through counts every captured original EUR/USD model
+REQUEST, including incomplete response/decision graphs, against the
+separately verified model-return/source-asof upper bound. Completed model
+returns are **not** the entire model dispatch or trading opportunity
+population. Unknown requests remain unknown; no original model confidence
+becomes a genuine logged behavior-policy propensity, and no
+training/trading/Canonical Agentd authority is granted.

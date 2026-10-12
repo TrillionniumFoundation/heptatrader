@@ -143,7 +143,7 @@ def asof_requote(known_times,rows,model_decision_ms):
   return "NO_FRESH_QUOTE_AT_MODEL_RETURN",None
  return "NEW_QUOTE_AVAILABLE_FOR_HYPOTHETICAL_NEW_POLICY",last
 
-def source_model_returns(release_root, period_sha):
+def source_model_returns(release_root, period_sha, *, original_cache=None):
  """Verify original EUR/USD REQUEST RESPONSE DECISION chains (no account IDs output)."""
  root=Path(release_root)
  if root.is_symlink() or not root.is_absolute() or not root.is_dir():
@@ -151,7 +151,8 @@ def source_model_returns(release_root, period_sha):
  manifests=sorted(root.glob("*/*/manifest.json"))
  if not 1<=len(manifests)<=MAX_MANIFESTS:
   raise ContractError("REQUOTING_ORIGINAL_RELEASE_COUNT")
- cached={};unique=set();reports=[];observations=[];unknown=Counter()
+ cached={} if original_cache is None else original_cache
+ unique=set();reports=[];observations=[];unknown=Counter()
  for path in manifests:
   manifest=strict(read_private(path,65536))
   if manifest.get("instrument")!="EUR.USD":
