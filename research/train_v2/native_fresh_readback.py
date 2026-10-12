@@ -141,6 +141,7 @@ def verify_timeline(source, ack, precommit, independent):
             or native_deadline != available + 3500
             or not source_cutoff < native_deadline
             or not sealed <= native_request <= verified_reply <= native_ack
+            or not native_ack <= source_cutoff
             or not native_ack < native_deadline):
         raise ValueError("TEST_NATIVE_ORIGINAL_TIMELINE_NOT_CAUSAL")
     return {
@@ -151,6 +152,7 @@ def verify_timeline(source, ack, precommit, independent):
         "native_witness_ack_at_ms": native_ack,
         "precommitted_native_deadline_ms": native_deadline,
         "original_ib_reported_expiry_at_ms": expiry,
+        "ack_before_source_decision_cutoff_ms": source_cutoff - native_ack,
         "ack_before_native_deadline_ms": native_deadline - native_ack,
         "ack_before_original_ib_expiry_ms": expiry - native_ack,
         "crosshost_wallclock_order_not_used": True,

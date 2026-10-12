@@ -107,6 +107,21 @@ class NativeIndependentTimelineTests(unittest.TestCase):
                 ValueError,"SOURCE_NATIVE_ACK_IDENTITY"):
                 verify_timeline(s,a,p,i)
 
+    def test_native_ack_after_original_source_cutoff_but_before_later_deadline_refused(self):
+        s,a,p,i=fixture()
+        cutoff=s["true_new_source_decision_cutoff_ms"]
+        self.assertLess(cutoff+1,a["native_precommitted_deadline_ms"])
+        self.assertLess(cutoff+1,s["real_original_quote_expiry_ms"])
+        a["native_witness_ack_at_ms"]=cutoff+1
+        with self.assertRaisesRegex(ValueError,"TIMELINE_NOT_CAUSAL"):
+            verify_timeline(s,a,p,i)
+
+    def test_native_ack_at_exact_source_cutoff_is_not_backdated(self):
+        s,a,p,i=fixture()
+        a["native_witness_ack_at_ms"]=s["true_new_source_decision_cutoff_ms"]
+        verified=verify_timeline(s,a,p,i)
+        self.assertEqual(verified["ack_before_source_decision_cutoff_ms"],0)
+
     def test_witness_acked_after_original_expiry_refused(self):
         s,a,p,i=fixture();a["native_witness_ack_at_ms"]=s["real_original_quote_expiry_ms"]+1
         with self.assertRaisesRegex(ValueError,"TIMELINE_NOT_CAUSAL"):

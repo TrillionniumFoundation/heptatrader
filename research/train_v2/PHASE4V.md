@@ -168,3 +168,40 @@ data/control-plane validation, not an after-cost efficacy result.
 No product Root, independent institutions, original opaque LLM policy
 action propensity, order PREPARED, financial reward or model release
 authority has been approved.
+
+
+## Strict original source cutoff follow-through (2026-10-12)
+
+The independent readback verifier now requires actual native LedgerWriter
+witness ACK no later than the original source decision cutoff, in addition
+to the separate later precommitted native deadline and original IB expiry.
+Previously, a late ACK between these two deadlines would pass even though
+the quote's original decision-window promise had already closed.
+
+The unmodified original Phase 4V public ACK/source/intent and independent
+source-verifier report were re-joined in memory: true native ACK
+1791801596374, original source cutoff 1791801596425, exact positive margin
+51ms, native later deadline margin 3001ms, original quote-expiry margin
+4059ms. The original signed native transaction remains VALID TEST ONLY.
+An adversarial **private in-memory copy** with ACK at source cutoff+1ms,
+which was still before the later native deadline, is now explicitly denied
+as TEST_NATIVE_ORIGINAL_TIMELINE_NOT_CAUSAL.
+
+No original signed bytes, native Ledger/Witness/ACK, broker request, trading
+order, learned model or production service has been changed.
+
+
+Final regression on the isolated cutoff-fix commit: 18 independent
+readback unit tests passed; the exact entire Python and historical
+pytest suite returned 1,927 passing, 23 preexisting skipped,
+816 passing subtests, zero failures. Source/build ownership lane
+returned 106 passing, zero failures. No native Rust source was modified;
+the earlier 118 original native tests and three original-copy tests
+remain earlier evidence, not re-run in this follow-through.
+
+The real original receipt recheck establishes exactly +51ms of true
+source cutoff slack (ACK 1791801596374, cutoff 1791801596425).
+A privately constructed ACK one millisecond AFTER source cutoff but
+still earlier than the later native deadline was rejected.
+These are local-clock test-only native constraints, not an actual
+opaque model PREPARED or canonical product owner grant.
