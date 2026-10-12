@@ -247,3 +247,17 @@ for current-time resubmission and the independent Witness is one
 event behind. Historical issuance-time simulation is TEST-ONLY,
 not permission to backdate product admission or claim production
 Root, net PnL, original LLM policy probabilities or Artifact Owner.
+
+
+## Phase 4N: independently-held preappend Escrow candidate — HOLD
+
+See PHASE4N.md. A test-only original Rust LedgerWriter call-site
+now enforces a separately signed, owner-private Escrow intent receipt
+BEFORE a Decision or Outcome append. Local synthetic native Rust and
+Python tests reject missing receipts, changed signed payloads,
+roles, hashes, sequence/clock or unsafe permissions. The first full
+regression exposed and fixed a new process-global umask leak.
+Actual independent remote Escrow custody/root enrollment has NOT
+been demonstrated and the new locally preregistered real-price plan
+was not consumed. No order, model, native production service or
+economic Outcome was generated; product remains HOLD.

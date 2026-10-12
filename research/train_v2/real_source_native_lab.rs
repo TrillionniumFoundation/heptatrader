@@ -4,6 +4,7 @@
 use codex_hepta_learning_ledger::*;
 use codex_hepta_types::{Digest32,StableId,ProbabilityQ32,FixedQ32};
 use serde_json::{json,Value};
+use ed25519_dalek::{Signature,VerifyingKey,Verifier};
 use std::fs::{File,OpenOptions};
 use std::io::{self,Write};
 #[cfg(unix)]
@@ -206,6 +207,89 @@ fn native_decision(p:&Value,packet_raw:&[u8])->ProductionDecisionV2 {
         support_digest:dg(p["preoutcome_feature_id"].as_str().unwrap()),
     }
 }
+
+// Strictly test-only independent physical escrow BEFORE any native append.
+// The original Canonical library is unmodified. A separate X230/Mac process
+// must O_EXCL+fsync the exact detached-signer event intent, then return its
+// public Ed25519 receipt. The transport independently reads back the
+// receipt hash on its originating physical host before ACKing.
+const ESCROW_DOMAIN:&[u8]=b"heptatrader.test-only.independently-held-recovery-intent.v1\x00";
+pub(crate) fn prove_independent_escrow(
+    pubmanifest:&Value,stage:&str,typed_payload:&[u8],
+    signed:&SignedLearningEvidenceV1, packet_raw:&[u8],source:&Value,
+    predecessor:Digest32,existing_witness_sequence:u64,
+    folder:&Path,
+) {
+    assert!(stage=="decision"||stage=="outcome");
+    let role=if stage=="decision"{"generator"}else{"observer"};
+    let escrow_role=if stage=="decision"{"escrow_decision"}else{"escrow_outcome"};
+    let escrow_host=if stage=="decision"{"qian-ThinkPad-X230"}else{"MacBook-Pro.local"};
+    let next_seq=if stage=="decision"{1}else{2};
+    assert_eq!(existing_witness_sequence,next_seq-1);
+    let intent=json!({
+        "schema":"heptatrader.train-v2-original-native-before-append-escrow-intent.v1",
+        "stage":stage,"native_signer":role,
+        "source_policy":POLICY,
+        "source_quote_receipt":source["original_quote_receipt"],
+        "test_source_packet_sha256":Digest32::of_bytes(packet_raw).to_string(),
+        "original_native_payload_sha256":Digest32::of_bytes(typed_payload).to_string(),
+        "original_native_evidence_message_sha256":
+            Digest32::of_bytes(&signed.signing_bytes()).to_string(),
+        "original_detached_signature_sha256":Digest32::of_bytes(&signed.signature).to_string(),
+        "expected_predecessor_chain_digest":predecessor.to_string(),
+        "expected_previous_witness_sequence":existing_witness_sequence,
+        "next_ledger_sequence":next_seq,
+        "source_time_ms":if stage=="decision"{
+            source["decision_at_ms"].as_u64().unwrap()
+        }else{
+            ms()
+        },
+        "outcome_due_ms":source["outcome_due_ms"],
+        "test_only":true,"product_trading_authority":false,
+    });
+    let body=serde_json::to_vec(&intent).unwrap();
+    assert!(body.len()<=4000);
+    println!("ESCROW_REQUEST {}",hx(&body));
+    io::stdout().flush().unwrap();
+    let mut line=String::new();
+    io::stdin().read_line(&mut line).expect("independent test escrow reply");
+    let tokens:Vec<&str>=line.split_whitespace().collect();
+    assert_eq!(tokens.len(),2,"exact durable escrow receipt response");
+    assert_eq!(tokens[0],"ESCROW_ACK");
+    let original=fromhex(tokens[1]);
+    assert!(original.len()<=8192);
+    let receipt:Value=serde_json::from_slice(&original).expect("typed independent escrow");
+    assert_eq!(receipt["schema"],"heptatrader.train-v2-escrow-signed-original-native-intent.v1");
+    assert_eq!(receipt["body"],intent,"cannot escrow substituted signed action");
+    assert_eq!(receipt["body_sha256"],Digest32::of_bytes(&body).to_string());
+    assert_eq!(receipt["escrow_test_role"],escrow_role);
+    assert_eq!(receipt["signing_host"],escrow_host);
+    assert_eq!(receipt["message_domain_hex"],hx(ESCROW_DOMAIN));
+    assert_eq!(receipt["test_only"],true);
+    assert_eq!(receipt["production_root_authority"],false);
+    assert_eq!(receipt["durably_persisted_before_reply"],true);
+    let when=receipt["intent_held_at_ms"].as_u64().unwrap();
+    assert!(when>=signed.issued_at && when<=ms()+2000);
+    assert!(when<signed.expires_at);
+    if stage=="decision"{
+        assert!(when<source["outcome_due_ms"].as_u64().unwrap());
+    }
+    let pinned=pubkey(pubmanifest,escrow_role);
+    assert_eq!(receipt["public_key_hex"],hx(&pinned));
+    let vk=VerifyingKey::from_bytes(&pinned).expect("escrow pinned public");
+    assert!(!vk.is_weak());
+    let signature: [u8;64]=fixed(fromhex(receipt["signature_hex"].as_str().unwrap()));
+    let mut signed_message=ESCROW_DOMAIN.to_vec();
+    signed_message.extend_from_slice(&body);
+    signed_message.extend_from_slice(&when.to_be_bytes());
+    vk.verify(&signed_message,&Signature::from_bytes(&signature))
+        .expect("independently held intent signature verified");
+    write_one(folder,&format!("original-native-{stage}-independent-escrow.json"),&receipt);
+    // The escrow never counts as a production authority. The original native
+    // product Writer still separately authenticates Mac Generator and X230
+    // Observer evidence before an event is allowed to advance.
+}
+
 fn do_init(pubfile:&str,packetfile:&str,dirname:&str){
     let (j,_)=read(pubfile);assert_eq!(j["purpose"],"test-only-no-production");
     let (p,raw)=read(packetfile);expected_packet(&p);
@@ -237,6 +321,8 @@ fn do_init(pubfile:&str,packetfile:&str,dirname:&str){
     let mut flip=doc.clone();flip.signature[0]^=1;
     assert!(writer.append_decision(Digest32::ZERO,request.clone(),&flip,ms()).is_err());
     assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,0);
+    prove_independent_escrow(&j,"decision",&payload,&doc,&raw,&p,
+                             Digest32::ZERO,0,dir);
     let ack=writer.append_decision(Digest32::ZERO,request,&doc,ms())
         .expect("Mac signed genuine new source-time shadow-only original native Decision");
     assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,1);
@@ -316,6 +402,9 @@ fn do_finish(pubfile:&str,packetfile:&str,dirname:&str,outcomefile:&str) {
     let mut changed=signed.clone();changed.signature[1]^=0x33;
     assert!(writer.append_outcome(origin,result.clone(),&changed,ms()).is_err());
     assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,1);
+    let outcome_payload=outcome_signing_payload_v2(&result);
+    prove_independent_escrow(&j,"outcome",&outcome_payload,&signed,&packet_raw,&p,
+                             origin,1,dir);
     let outcome_ack=writer.append_outcome(origin,result,&signed,ms())
         .expect("X230 real price label signed as test-only terminal outcome");
     assert_eq!(writer.witness_frontier().unwrap().anchor.sequence,2);
