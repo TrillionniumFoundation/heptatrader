@@ -322,3 +322,12 @@ The new read-only gate proves these exact time/role/source facts from
 unchanged original bytes and blocks promotion to PREPARED/trading
 eligibility. No old prospective record, model or broker service is
 reconfigured or rewritten.
+
+## Phase 4T fresh original PAPER quote signature and independent readback
+
+See [PHASE4T.md](PHASE4T.md). This phase verifies one actual NEW
+local original quote's TEST-only prewarmed Mac Ed25519 witness, the
+previously preregistered research source event and its single source-only
+SQLite entry. It uses pinned SSH host keys and an immutable SQLite
+read-only checkpoint; it neither runs the original policy/LLM inference
+nor mints a native product LedgerWriter or trading credential.

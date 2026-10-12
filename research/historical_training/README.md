@@ -47,6 +47,11 @@ pinpoints why the original Phase4L test-only signed Decision/Witness
 performed after quote expiry cannot qualify as an actual native trading
 PREPARED decision, despite valid 5-minute PRICE outcome evidence.
 
+Train V2's actual fresh source-only Mac TEST signature and independent
+readback limitations are recorded in
+[PHASE4T.md](../train_v2/PHASE4T.md). It is NOT a model prediction,
+signed native LedgerWriter or completed financial Outcome.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
