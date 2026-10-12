@@ -81,8 +81,16 @@ def evaluate(plan, live, candidate, at_ms):
         reasons.append("DIRECTION_FORECAST_MISMATCH")
     if edge <= num(plan["min_net_edge_bps"]):
         reasons.append("EDGE_DOES_NOT_CLEAR_COST")
-    return {"schema":SCHEMA,"state":"HOLD" if reasons else "REVIEW_ONLY",
-            "reasons":reasons,"shadow_action":"NO_TRADE" if reasons else candidate["direction"],
+    # Untrusted caller-supplied JSON never proves its own original-IB
+    # provenance, prospective registration or logged behavior propensity.
+    # This CLI is only a bounded arithmetic diagnostic. Independently
+    # verified original quote-chain and native signed owner admissions are
+    # separate, unavailable contracts; do not manufacture REVIEW_ONLY.
+    reasons.append("CALLER_JSON_NOT_ORIGINAL_SIGNED_PROVENANCE")
+    return {"schema":SCHEMA,"state":"HOLD",
+            "reasons":reasons,"shadow_action":"NO_TRADE",
+            "hypothetical_direction_field_only":candidate["direction"],
+            "caller_flags_cannot_grant_review":True,
             "expected_edge_after_cost_bps":round(edge,8),
             "spread_bps":round(spread,8),"trade_authority":False,
             "model_promotion_allowed":False,"plan_sha256":sha(plan)}

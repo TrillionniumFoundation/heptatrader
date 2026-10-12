@@ -19,10 +19,14 @@ class GateTests(unittest.TestCase):
         p,q,f=fixture();d=evaluate(p,None,None,1500)
         self.assertEqual(d["state"],"HOLD")
         self.assertFalse(d["trade_authority"])
-    def test_causally_qualified_is_review_not_trade(self):
+    def test_caller_supplied_success_flags_never_grant_review(self):
+        # All fields, hashes and booleans may be forged by an untrusted
+        # caller. This isolated checker must NEVER promote their claim.
         p,q,f=fixture();d=evaluate(p,q,f,1500)
-        self.assertEqual(d["state"],"REVIEW_ONLY")
-        self.assertEqual(d["shadow_action"],"BUY")
+        self.assertEqual(d["state"],"HOLD")
+        self.assertEqual(d["shadow_action"],"NO_TRADE")
+        self.assertTrue(d["caller_flags_cannot_grant_review"])
+        self.assertIn("CALLER_JSON_NOT_ORIGINAL_SIGNED_PROVENANCE",d["reasons"])
         self.assertFalse(d["trade_authority"])
         self.assertFalse(d["model_promotion_allowed"])
     def test_expired_quote_hold(self):
