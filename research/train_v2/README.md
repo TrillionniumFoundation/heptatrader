@@ -196,3 +196,18 @@ Pocket4 independently verified its detached Ed25519 signature and
 the unmodified original source-file prefix. This is NOT actual
 trade-net-PnL, an independent broker quote source, original opaque
 LLM action propensity or production Canonical signed dataset/Owner.
+
+
+## Phase 4K: original live opaque LLM action census versus partial gates
+
+See [PHASE4K.md](PHASE4K.md). The exact original PAPER FX/BTC
+REQUEST/RESPONSE/DECISION source chain was verified, including real
+BUY/SELL/HOLD model outputs, request-time position/confidence and
+original true PREPARED OPEN model-object bindings. The existing
+all-action source reader from separate Draft #200 is reused by hash
+in this #202-lineage worktree, with additional adversarial static
+gate and cross-process identity controls. The gap between partial
+static candidates and PREPARED must NEVER be labelled actual risk
+vetoes, and model confidence or observed action frequency must
+NEVER be promoted as the original LLM action propensity. Product
+root, native Writer, actual net reward and OPE remain HOLD.
