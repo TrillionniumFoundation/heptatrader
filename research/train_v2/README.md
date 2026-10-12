@@ -179,3 +179,20 @@ private keys; all 6 exact native messages verified offline and all 5
 ephemeral test-key files were then removed from their host machines.
 This is not original LLM behavior propensity, independent production
 administrators or real original trading/outcome authorization.
+
+
+## Phase 4J: one real original-market causal shadow Decision + 5min label
+
+See [PHASE4J.md](PHASE4J.md). After the live EUR/USD IB PAPER market
+reopened, one new local shadow research-only plan was preregistered
+44,994ms before a fresh ORIGINAL price-bound NO_TRADE decision at
+08:24:03.939 +08. Its exact six input receipts and feature ID were
+frozen as PENDING_OUTCOME. At actual 5-minute maturity, original
+continuous quotes gave OBSERVED midprice return -0.98103481 bps.
+A physically separate X230 research test Observer independently
+verified 148 original quote path points from a COPY of the same
+Pocket4 local data and recomputed/signed exactly the same value.
+Pocket4 independently verified its detached Ed25519 signature and
+the unmodified original source-file prefix. This is NOT actual
+trade-net-PnL, an independent broker quote source, original opaque
+LLM action propensity or production Canonical signed dataset/Owner.
