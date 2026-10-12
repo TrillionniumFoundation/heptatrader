@@ -107,3 +107,26 @@ custody update.
 - No installation of this patch into any original scheduled price timer.
 - All input/output and replay hashes above derive from the previously
   frozen original PAPER source and immutable prior campaign.
+
+
+## Additional real 03:38 UTC+8 post-maturity as-of review
+
+After slot 2's genuine 5-minute deadline, the strict observer returned
+WAIT_INPUT_ORIGINAL_SEGMENT_SEAL (not a label). Slot 1's mature 60m
+remained WAIT_END_OF_ORIGINAL_SEALED_COVERAGE. No forced source
+rotation, pending outcome write, or failure-to-zero accounting occurred.
+
+A NEW immutable read-only 3x4 as-of receipt confirmed 7 VERIFIED
+price-only labels, 1 matured WAIT original slot 1 endpoint,
+1 matured WAIT original slot 2 input segment and 3 PENDING future horizons.
+All THREE distinct original source decisions were captured, but
+independently executable trading samples and actual trade rewards stayed 0.
+The cohort did not become a statistical sample size of 12 independent trades.
+
+SHA256 of the 03:38 as-of report:
+ab693fdef4afc803888985abb10bcc8465f9d6fd3e701d07a12624a622638f6a
+
+Private retained report:
+~/.local/state/heptatrader/operator-evidence/train-v2-input-asof-fix-20261013/post-slot2-h5-asof.json
+
+No production quote source or original frozen cohort file was overwritten.
