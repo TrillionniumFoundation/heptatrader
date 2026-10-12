@@ -434,3 +434,14 @@ outcomes or exact censorship, but not canonical financial rewards. Fixed 5/15/30
 minute label horizons cannot be outcome-shopped; unknown/uninvoked
 slots are NOT no-market-quote or zero-profit results. On-demand CLI
 only, no watcher or trading/model/Canonical authority.
+
+
+## New isolated scheduled original-price cohort
+
+See [SCHEDULED_PRICE_COHORT_20261013.md](SCHEDULED_PRICE_COHORT_20261013.md).
+A separate NEW prospective price-only cohort can be bound to three
+finite one-shot user-systemd invocations sealed before the first source
+window. Neither the previously missed manual first slot nor any existing
+signed trial is modified. Timer delivery, original quote validity and
+immutable source-capture outcomes must all be independently checked;
+no broker orders, model, financial policy or Owner is enabled.

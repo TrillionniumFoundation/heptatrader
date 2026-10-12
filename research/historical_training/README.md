@@ -103,6 +103,10 @@ preregistration is specified in
 It never upgrades the already inspected 254-segment historical study into
 unseen forward evidence.
 
+The new read-only, fixed one-shot prospective source roster is documented in
+[SCHEDULED_PRICE_COHORT_20261013.md](../train_v2/SCHEDULED_PRICE_COHORT_20261013.md).
+It does not deploy a financial policy or alter pre-existing source windows.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
