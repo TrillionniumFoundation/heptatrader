@@ -42,6 +42,11 @@ corrects TEST-only native SignedLearningEvidenceV1 digest field order
 and proves final Rust typed X230/Mac readback. All real broker and
 Canonical LedgerWriter product promotion gates remain closed.
 
+Phase 4S [native preaction deadline audit](../train_v2/PHASE4S.md)
+pinpoints why the original Phase4L test-only signed Decision/Witness
+performed after quote expiry cannot qualify as an actual native trading
+PREPARED decision, despite valid 5-minute PRICE outcome evidence.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

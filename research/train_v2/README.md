@@ -309,3 +309,16 @@ correct native order; both physical hosts passed real native Rust typed
 byte-roundtrip and independent actor/host signature checks. The final
 read-only recheck created no further source, remote signature or event.
 No canonical Root, policy propensity, LedgerWriter event or order grant.
+
+
+## Phase 4S: native preaction deadline vs preoutcome signature
+
+See [PHASE4S.md](PHASE4S.md). The real original Phase4L Mac TEST
+Generator Ed25519 signature and native Witness ACK were AFTER the
+original IB quote's 5-second expiry despite being BEFORE the 5-minute
+price-outcome maturity. Original PRICE evidence and LedgerWriter test
+durability remain valid only within their explicit research scope.
+The new read-only gate proves these exact time/role/source facts from
+unchanged original bytes and blocks promotion to PREPARED/trading
+eligibility. No old prospective record, model or broker service is
+reconfigured or rewritten.
