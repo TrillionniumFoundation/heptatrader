@@ -445,3 +445,10 @@ window. Neither the previously missed manual first slot nor any existing
 signed trial is modified. Timer delivery, original quote validity and
 immutable source-capture outcomes must all be independently checked;
 no broker orders, model, financial policy or Owner is enabled.
+
+
+Exact post-trigger readback: [scheduled_replay.py](scheduled_replay.py)
+reconstructs the original locally hash-chained source prefix from the
+recorded head and SHA256 after later quotes were appended. It compares
+the original as-of feature identity and leaves every horizon PENDING
+until the independent original price observer can read sealed coverage.
