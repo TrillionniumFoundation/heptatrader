@@ -447,7 +447,13 @@ immutable source-capture outcomes must all be independently checked;
 no broker orders, model, financial policy or Owner is enabled.
 
 
-## Phase 4U: finite sealed-original PRICE outcome reconciliation
+Exact post-trigger readback: [scheduled_replay.py](scheduled_replay.py)
+reconstructs the original locally hash-chained source prefix from the
+recorded head and SHA256 after later quotes were appended. It compares
+the original as-of feature identity and leaves every horizon PENDING
+until the independent original price observer can read sealed coverage.
+
+## 2026-10-13 finite sealed-original PRICE outcome reconciliation
 
 See [SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md](SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md). After original prospective source capture,
 a separate on-demand observer may seal a mature 5/15/30/60 minute PRICE
