@@ -107,6 +107,11 @@ The new read-only, fixed one-shot prospective source roster is documented in
 [SCHEDULED_PRICE_COHORT_20261013.md](../train_v2/SCHEDULED_PRICE_COHORT_20261013.md).
 It does not deploy a financial policy or alter pre-existing source windows.
 
+The strictly finite Train V2 original-PAPER outcome reconciliation
+and immutable source-only PRICE labels are described in
+[SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md](../train_v2/SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md). These are not model efficacy
+results, broker fills or live strategy promotions.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

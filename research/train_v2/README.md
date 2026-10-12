@@ -445,3 +445,14 @@ window. Neither the previously missed manual first slot nor any existing
 signed trial is modified. Timer delivery, original quote validity and
 immutable source-capture outcomes must all be independently checked;
 no broker orders, model, financial policy or Owner is enabled.
+
+
+## Phase 4U: finite sealed-original PRICE outcome reconciliation
+
+See [SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md](SEALED_ORIGINAL_PRICE_OUTCOMES_20261013.md). After original prospective source capture,
+a separate on-demand observer may seal a mature 5/15/30/60 minute PRICE
+label **only after** the corresponding original NUMERIC source is fully
+sealed. Existing outcomes are independently rechecked without rewrite;
+unsealed/missing/missed inputs stay WAIT/MISSED, never zero PnL. This
+creates no model, signed independent observer, broker order or trading
+authority.
