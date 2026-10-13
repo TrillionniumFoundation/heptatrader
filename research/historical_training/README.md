@@ -397,6 +397,10 @@ selection grant. Legacy exact-f64 failures remain unchanged.
 ## Paged original quote verification (2026-10-13)
 
 See [Train V2 paged original source](../train_v2/PAGED_ORIGINAL_PRICE_SOURCE_20261013.md)
+and [independent two-machine source custody](../train_v2/CROSSHOST_PAGED_ORIGINAL_CUSTODY_20261013.md)
+for proof that the original archive path identity can be preserved while
+checking transported bytes on a different physical host. No existing
+original model prediction/outcome receipt is rewritten.
 for opt-in validated 32-segment archive paging, frozen original prefix custody,
 and independent read-only Native price outcome comparison. All old cohort
 source verifiers and original failed receipts remain unchanged.

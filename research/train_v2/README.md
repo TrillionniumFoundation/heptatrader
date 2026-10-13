@@ -513,6 +513,10 @@ This is never automatic training or trading permission.
 ## Versioned paged original price source (2026-10-13)
 
 See [PAGED_ORIGINAL_PRICE_SOURCE_20261013.md](PAGED_ORIGINAL_PRICE_SOURCE_20261013.md).
+Independent cross-host qian-qi hash-chain/archival ledger replay and
+byte-exact two actual frozen PRICE outcome recomputations are documented
+in [CROSSHOST_PAGED_ORIGINAL_CUSTODY_20261013.md](CROSSHOST_PAGED_ORIGINAL_CUSTODY_20261013.md).
+This is not a broker-signed or profit qualification.
 The new opt-in source view verifies ALL original paged hash-linked PAPER source
 segments and returns only the requested bounded 2-hour quote window. It
 preserves old frozen source-prefix fingerprints across natural archive growth,
