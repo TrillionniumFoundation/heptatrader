@@ -539,3 +539,12 @@ from an independently copied 285-segment qian-qi archive. This is a
 separate host and code path from the original Pocket4 paged audit, not
 a fresh independent economic trading dataset, model inference or an
 Agentd Owner authorization.
+
+
+## Independent three-window singlepass cross-host source evidence
+
+See [INDEPENDENT_SINGLEPASS_FROZEN_3X4_20261013.md](INDEPENDENT_SINGLEPASS_FROZEN_3X4_20261013.md).
+The operator-owned qian-qi verifier scanned the copied 285 original
+PAPER quote segments once and reproduced the previous independently
+frozen 3x4 PRICE-only result exactly. This is an efficiency and source
+integrity improvement, **not** net profit, model selection or live trading.

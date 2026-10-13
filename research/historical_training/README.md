@@ -177,6 +177,11 @@ and twelve correlated price labels is documented in
 ../train_v2/CROSSHOST_FROZEN_12CELL_20261013.md). Do not reinterpret
 the twelve observations as independent trades or profitable PnL.
 
+The existing original PAPER 3x4 source cohort also has a
+[read-only cross-host single-pass independent verifier](../train_v2/INDEPENDENT_SINGLEPASS_FROZEN_3X4_20261013.md).
+All twelve nested PRICE-only outcomes remain three correlated decision
+sources; no actual broker reward or model-promotion evidence is inferred.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
