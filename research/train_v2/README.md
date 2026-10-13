@@ -528,3 +528,14 @@ now be independently reverified after append-only original source growth,
 using three disjoint paged sealed-source windows and a pinned original
 269-segment source prefix. Earlier audit and closeout receipts stay immutable;
 no broker order, Native model, real economic reward or Owner is created.
+
+
+## Independent qian-qi archived 3×4 PRICE proof (2026-10-13)
+
+See [CROSSHOST_FROZEN_12CELL_20261013.md](
+CROSSHOST_FROZEN_12CELL_20261013.md) for standard-library rederivation
+of the original three source decisions and twelve correlated PRICE labels
+from an independently copied 285-segment qian-qi archive. This is a
+separate host and code path from the original Pocket4 paged audit, not
+a fresh independent economic trading dataset, model inference or an
+Agentd Owner authorization.

@@ -171,6 +171,12 @@ The optional [paged frozen 3 × 4 PRICE-only cohort replay](../train_v2/PAGED_FR
 preserves all historical original receipts and never promotes correlated
 price labels into independent model forecasts or realized broker rewards.
 
+Read-only cross-host corroboration of the old three original decisions
+and twelve correlated price labels is documented in
+[Train V2 independent frozen 3×4](
+../train_v2/CROSSHOST_FROZEN_12CELL_20261013.md). Do not reinterpret
+the twelve observations as independent trades or profitable PnL.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
