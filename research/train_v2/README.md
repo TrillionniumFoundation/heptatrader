@@ -571,3 +571,14 @@ An independent original Guard/source preflight then passed research
 review at its ACTUAL quote instant, while the production Guard remained
 HOLD due to host SwapFree. The earlier failed 96 MiB memory.high trial
 remains preserved. **No GPU model loaded or native Owner promoted.**
+
+
+## October 13: kernel GPU owner noncontention remains a real HARD HOLD
+
+See [GPU_OWNER_FENCE_20261013.md](GPU_OWNER_FENCE_20261013.md).
+The isolated zero-swap source/cgroup readiness and GPU-owner two-pass
+census are now jointly reproducible on actual Pocket4 hardware. Ten
+independent GPU handle holders and incomplete root process inspection
+make a heavy ROCm model run unqualified, even during a 24/24 original
+quote source instant. An idle FD census never grants a kernel-enforced
+exclusive GPU lease. No model or trading unit was touched.

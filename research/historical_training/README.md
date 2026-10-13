@@ -187,6 +187,10 @@ Laya training Guard and source admission unchanged:
 [SWAPLESS_RESOURCE_CELL_20261013.md](../train_v2/SWAPLESS_RESOURCE_CELL_20261013.md).
 No live worker is reconfigured or auto-authorized by this source gate.
 
+See [Train V2 GPU owner fence](../train_v2/GPU_OWNER_FENCE_20261013.md)
+for the real read-only DRM/KFD owner census and zero-swap source
+HOLD; this is not a GPU/ROCm admission or production change.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
