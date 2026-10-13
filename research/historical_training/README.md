@@ -191,6 +191,11 @@ See [Train V2 GPU owner fence](../train_v2/GPU_OWNER_FENCE_20261013.md)
 for the real read-only DRM/KFD owner census and zero-swap source
 HOLD; this is not a GPU/ROCm admission or production change.
 
+The original 24-minute PAPER feed restart/gap diagnosis is documented in
+[ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md](../train_v2/ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md).
+No revised historical bar is permitted to fill missing original-source
+decision minutes.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

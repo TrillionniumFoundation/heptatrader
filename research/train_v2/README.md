@@ -582,3 +582,13 @@ independent GPU handle holders and incomplete root process inspection
 make a heavy ROCm model run unqualified, even during a 24/24 original
 quote source instant. An idle FD census never grants a kernel-enforced
 exclusive GPU lease. No model or trading unit was touched.
+
+
+## Original fixed-grid outage root-cause inspection (October 13/14)
+
+See [ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md](ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md).
+This read-only tool distinguishes missing original minute anchors from
+causal-selector rejection without fabricating prices, revising old trial
+windows, changing original source Guard semantics or authorizing a new
+model/GPU job. It binds precisely the periodically updated original status
+bytes read at start, never an unrelated newer status hash.
