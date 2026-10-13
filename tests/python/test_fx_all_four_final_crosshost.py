@@ -96,6 +96,16 @@ class FinalCohortTests(unittest.TestCase):
         self.assertEqual(r["original_complete_matured_censored_count"],14)
         self.assertEqual(r["fourth_future_horizons_pending"],[60,120])
         self.assertFalse(r["result_is_production_release"])
+    def test_15_of_16_is_partial(self):
+        for h in (15, 30, 60):
+            self.write(self.fourth/f"maturity-{h:03d}-attempt.json", mature(h))
+        result = self.evaluate(now=ANCHOR_10_05+120*60000-1000)
+        self.assertEqual(result["original_complete_matured_censored_count"], 15)
+        self.assertEqual(result["fourth_future_horizons_pending"], [120])
+        self.assertEqual(result["result"], "PARTIAL_AWAIT_ORIGINAL_FUTURE_MATURITIES")
+        self.assertFalse(result["result_is_production_release"])
+        self.assertEqual(result["price_labels_proven"], 0)
+
     def test_missing_past_maturity_is_failure_not_pending(self):
         with self.assertRaisesRegex(CrosshostHold,"MISSING_FOURTH_MATURITY_AFTER"):
             self.evaluate(now=BEFORE_LAST_DUE_MS+1000)
