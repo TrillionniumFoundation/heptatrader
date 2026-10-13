@@ -373,3 +373,12 @@ multiple horizon returns from one quote are not independent financial trades.
 
 See [archive Guard activation](LAYA_GUARD_ARCHIVE_ACTIVATION_20261013.md)
 for the separately guarded, rollback-capable Laya research service cutover.
+
+
+## Future-only Native numeric fixed-score shadow proof
+
+See [NATIVE_PRICE_TICKS_PROSPECTIVE_20261013.md](NATIVE_PRICE_TICKS_PROSPECTIVE_20261013.md).
+A new research-only fixed 1e-8 bps tick Profile has its own predeclared
+future plan and original-PAPER-causal source verifier. Legacy f64
+bitwise-replay failures are NOT requalified. It cannot select, train
+or trade a policy, and requires new original outcome evidence.
