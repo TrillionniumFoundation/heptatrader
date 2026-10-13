@@ -382,3 +382,14 @@ A new research-only fixed 1e-8 bps tick Profile has its own predeclared
 future plan and original-PAPER-causal source verifier. Legacy f64
 bitwise-replay failures are NOT requalified. It cannot select, train
 or trade a policy, and requires new original outcome evidence.
+
+## Independent naturally sealed Native tick-price pair closure
+
+See [NATIVE_PRICE_TICKS_COHORT_CLOSEOUT_20261013.md](NATIVE_PRICE_TICKS_COHORT_CLOSEOUT_20261013.md).
+The newly preregistered two disjoint original Native/Numeric tick forecasts
+have an independent price-only closeout reviewer that requires an identical
+naturally sealed original source frontier across BOTH outcome evaluations.
+WAIT and CENSORED outcomes remain explicit, never zero PnL. Two observed
+market-price returns are not actual executable fills, financially independent
+trades, statistical efficacy, Canonical Agentd Owner acceptance or a model
+selection grant. Legacy exact-f64 failures remain unchanged.
