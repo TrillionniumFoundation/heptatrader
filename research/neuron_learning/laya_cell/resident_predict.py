@@ -10,7 +10,8 @@ import numpy as np
 import torch
 from .integrity import ContractError,read_json,sha_file,digest
 from .resident_store import write_once,atomic
-from .resident_data import read_quotes,forecast_input
+from .resident_data import forecast_input
+from .resident_source_policy import declared_profile,read_for_future_plan
 from .dataset import encode_rows
 from .model import load_verified_laya
 from .resident_model import ResidentDecisionCell
@@ -19,8 +20,12 @@ from .resident_train import validate_parent
 
 
 def predict(config,plan_path,slot):
+ plan=read_json(plan_path)
+ # Preflight the sealed NEW source profile before heavyweight model loading:
+ # a mismatched/corrupt future plan must never consume a GPU admission.
+ expected_source_profile=declared_profile(config,plan)
  from safetensors.torch import load_file
- plan=read_json(plan_path);candidate_dir=Path(plan['candidate_directory']);parent_dir=Path(plan['parent_directory'])
+ candidate_dir=Path(plan['candidate_directory']);parent_dir=Path(plan['parent_directory'])
  timing={'process_started_at_ms':int(time.time()*1000),'phase':'VALIDATE_AND_LOAD'}
  stage=plan_path.parent/f'phase-{slot:03}.json'
  atomic(stage,timing)
@@ -44,7 +49,9 @@ def predict(config,plan_path,slot):
   if now>late:raise ContractError('INPUT_SLOT_EXPIRED:'+str(last_input_error or 'MODEL_LOAD_OR_SCHEDULING_LATE'))
   if now<due_start:time.sleep(min(1,(due_start-now)/1000));continue
   read_begin=time.monotonic()
-  quotes,prefixes=read_quotes(config,now)
+  quotes,prefixes,source_profile=read_for_future_plan(config,plan,now)
+  if source_profile!=expected_source_profile:
+   raise ContractError('FUTURE_SOURCE_PROFILE_CHANGED_DURING_READ')
   now=int(time.time()*1000)
   timing['last_quote_read_ms']=round((time.monotonic()-read_begin)*1000,3)
   if now>late:raise ContractError('INPUT_SLOT_EXPIRED:DURING_QUOTE_READ')
@@ -61,6 +68,8 @@ def predict(config,plan_path,slot):
  input_record={'schema':'heptatrader.laya-committed-input.v1','plan_id':plan['plan_id'],'slot':slot,
   'candidate_id':candidate['candidate_id'],'input_id':digest(row['state']),'sample':sample,'state':row['state'],
   'source_prefixes':prefixes,'committed_at_ms':int(time.time()*1000)}
+ if plan.get('future_source_read_profile') is not None:
+  input_record['source_read_profile']=source_profile
  input_path=plan_path.parent/f'input-{slot:03}.json'
  write_once(input_path,input_record)
  if candidate['created_at_ms']>=anchor or candidate['trained_until_ms']>anchor:
@@ -89,6 +98,8 @@ def predict(config,plan_path,slot):
   'bootstrap_model_id':bootstrap['model_id'],'bootstrap_point_bps':point,'horizon_sec':300,
   'action_head_is_trade_permission':False,'remote_comparison':'NO_IDENTICAL_EXPORTED_INPUT_NO_EXTRA_MODEL_CALL',
   'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),'broker_orders_sent':0}
+ if plan.get('future_source_read_profile') is not None:
+  result['source_read_profile']=source_profile
  result['input_receipt_sha256']=sha_file(input_path)
  timing.update(prediction_committed_at_ms=available,phase='COMPLETE')
  result['timing']=timing

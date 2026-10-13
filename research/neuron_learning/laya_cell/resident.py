@@ -30,6 +30,11 @@ def config_check(config):
   if sha_file(Path(config['runtime_directory'])/rel)!=expected:raise ContractError('RUNTIME_CHANGED:'+rel)
  budget_policy(config)
  if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
+ if config.get('future_source_read_profile') is not None:
+  from .resident_source_policy import RECENT,RUNTIME_PIN
+  if config['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
+  if any(config.get('runtime_sha256',{}).get(rel) is None for rel in RUNTIME_PIN):
+   raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
  return config
 
 
@@ -88,6 +93,14 @@ class Supervisor:
    'trial':trial,'rule':rule,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
    'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/promotion_power.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json')}
+  if self.c.get('future_source_read_profile') is not None:
+   from .resident_source_policy import RECENT,RUNTIME_PIN
+   if self.c['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
+   plan['future_source_read_profile']=RECENT
+   for name in RUNTIME_PIN:
+    pinned=self.c.get('runtime_sha256',{}).get(name)
+    if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
+    plan['evaluation_runtime_sha256'][name]=pinned
   plan['plan_id']=digest(plan);write_once(path,plan)
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
   request={'schema':'heptatrader.unadmitted-laya-owner-handoff.v1','candidate_id':candidate['candidate_id'],

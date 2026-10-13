@@ -131,6 +131,14 @@ The direct original runtime path inside the resource Guard, not PYTHONPATH
 alone, determines the actual Supervisor and Evaluator code. Preserve
 original data and deny trading/model promotion through any migration.
 
+## Future-only original archive source optimization
+
+See [LAYA_FUTURE_RECENT_SOURCE_20261013.md](LAYA_FUTURE_RECENT_SOURCE_20261013.md)
+for strict read-only parity against the original PAPER quote archive,
+the non-retroactive 89-slot trial failure and the separately hash-pinned
+**future-only** quote-reader profile. This is not installed on the active
+Laya runtime and never changes old evaluation/selection eligibility.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
