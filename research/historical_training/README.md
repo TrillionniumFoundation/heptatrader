@@ -334,3 +334,6 @@ See [2026-10-09 training resumption](TRAINING_RESUME_20261009.md) for original-s
 Train V2 finite-price cohort decision-unit accounting is documented in
 [CORRELATED_PRICE_DECISION_UNITS_20261013.md](../train_v2/CORRELATED_PRICE_DECISION_UNITS_20261013.md):
 multiple horizon returns from one quote are not independent financial trades.
+
+See [archive Guard activation](LAYA_GUARD_ARCHIVE_ACTIVATION_20261013.md)
+for the separately guarded, rollback-capable Laya research service cutover.
