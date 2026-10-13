@@ -105,5 +105,3 @@ tests included.
 qualify a new FX entry policy, execution fee/slippage, financing,
 realized account net PnL, IB Flex/Activity, native Owner/Witness or
 model-alpha promotion.
-
-
