@@ -47,6 +47,36 @@ def valid_quote(q,received,instrument):
         raise ValueError('QUOTE_NUMERIC')
     return bid,ask
 
+def parse_native_quote_reply(returncode,stdout,received,instrument):
+    """Fail closed on malformed gateway replies; never cache or refresh a quote.
+
+    The original collector still owns its fixed read-only market.get_quote call.
+    This pure parser has no broker client, subscription mutator or recovery
+    commands. Recovering means accepting a *subsequent actual fresh quote*.
+    """
+    if type(returncode) is not int or type(stdout) is not str:
+        raise ValueError('QUOTE_TOOL_RESPONSE_TYPE')
+    try:
+        obj=strict(stdout)
+    except (ValueError,TypeError) as exc:
+        raise ValueError('QUOTE_TOOL_JSON_INVALID') from None
+    if type(obj) is not dict:
+        raise ValueError('QUOTE_TOOL_RESPONSE_SHAPE')
+    if returncode or obj.get('status')!='ok':
+        reason=obj.get('reason_code')
+        if (type(reason) is not str or not 1<=len(reason)<=100
+            or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789'
+                   for c in reason)):
+            reason='QUOTE_TOOL_UNAVAILABLE'
+        raise ValueError(reason)
+    q=obj.get('payload')
+    if type(q) is not dict:
+        raise ValueError('QUOTE_TOOL_PAYLOAD_INVALID')
+    if q.get('subscription_state')!='active':
+        raise ValueError('QUOTE_SUBSCRIPTION_NOT_ACTIVE')
+    valid_quote(q,received,instrument)
+    return q
+
 def read_source(path):
     path=Path(path)
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
@@ -133,9 +163,8 @@ def collect(root,seconds):
             try:
                 p=subprocess.run([str(cli),'native','--io-timeout-ms','4000','--call-id','laya-shadow-read-'+uuid.uuid4().hex,
                     'call','market.get_quote','instrument=EUR.USD'],capture_output=True,text=True,timeout=8)
-                obj=strict(p.stdout);q=obj.get('payload') or {}
-                if p.returncode or obj.get('status')!='ok':raise ValueError(obj.get('reason_code','QUOTE_UNAVAILABLE'))
-                valid_quote(q,int(time.time()*1000),'EUR.USD')
+                q=parse_native_quote_reply(p.returncode,p.stdout,
+                                            int(time.time()*1000),'EUR.USD')
                 append('QUOTE',{k:q[k] for k in FIELDS if k in q})
             except Exception as exc:
                 reason=str(exc)
