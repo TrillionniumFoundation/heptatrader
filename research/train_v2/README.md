@@ -559,3 +559,15 @@ cell has demonstrated kernel-enforced zero swap, 6 GiB hard memory, 5 GiB
 memory-high, bounded CPU/tasks, and an independently refreshed pinned original
 source. Its eligibility means READY_FOR_OPERATOR_REVIEW_NO_JOB, NOT the
 existing Trainer/Owner admitting a new GPU worker or trading policy.
+
+
+## Optional isolated zero-swap cgroup fault / recovery proof (2026-10-13)
+
+See [SWAPLESS_CGROUP_RECOVERY_20261013.md](SWAPLESS_CGROUP_RECOVERY_20261013.md).
+A real disposable user-level Linux cgroup OOM-killed a bounded child while
+the observer survived and fsynced original kernel counters. A completely
+new, zero-swap 6 GiB cgroup subsequently ran a healthy 64 MiB memory test.
+An independent original Guard/source preflight then passed research
+review at its ACTUAL quote instant, while the production Guard remained
+HOLD due to host SwapFree. The earlier failed 96 MiB memory.high trial
+remains preserved. **No GPU model loaded or native Owner promoted.**

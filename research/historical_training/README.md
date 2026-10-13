@@ -420,3 +420,11 @@ See [Train V2 paged original source](../train_v2/PAGED_ORIGINAL_PRICE_SOURCE_202
 for opt-in validated 32-segment archive paging, frozen original prefix custody,
 and independent read-only Native price outcome comparison. All old cohort
 source verifiers and original failed receipts remain unchanged.
+
+
+### Isolated resource-fault recovery evidence
+
+The original production Laya Guard remains unchanged. See
+[swapless-cgroup recovery](../train_v2/SWAPLESS_CGROUP_RECOVERY_20261013.md)
+for actual kernel OOM/recovery and separately refreshed source proofs.
+No production training admission or GPU memory ceiling is inferred.
