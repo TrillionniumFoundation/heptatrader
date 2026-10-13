@@ -167,6 +167,10 @@ produce an actual frozen Native/Numeric 300s MID forecast, separate from
 Laya7 GPU inference, trading orders, true financial reward and canonical
 model selection. Old SOURCE-only canaries and failed Laya Trial31 stay frozen.
 
+The optional [paged frozen 3 × 4 PRICE-only cohort replay](../train_v2/PAGED_FROZEN_12CELL_REPLAY_20261013.md)
+preserves all historical original receipts and never promotes correlated
+price labels into independent model forecasts or realized broker rewards.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and

@@ -518,3 +518,13 @@ segments and returns only the requested bounded 2-hour quote window. It
 preserves old frozen source-prefix fingerprints across natural archive growth,
 without modifying existing legacy loader caps, model forecasts or outcomes.
 No trader or model promotion is implied.
+
+
+## Paged replay of frozen 3 × 4 original price cohort
+
+See [PAGED_FROZEN_12CELL_REPLAY_20261013.md](PAGED_FROZEN_12CELL_REPLAY_20261013.md).
+The old three price-only decisions and twelve correlated horizon labels can
+now be independently reverified after append-only original source growth,
+using three disjoint paged sealed-source windows and a pinned original
+269-segment source prefix. Earlier audit and closeout receipts stay immutable;
+no broker order, Native model, real economic reward or Owner is created.
