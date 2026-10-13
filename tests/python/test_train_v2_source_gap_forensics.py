@@ -12,6 +12,8 @@ def status(probe_states=None):
     last=((AT-RULE["horizon_ms"]-RULE["input_grace_ms"]-
            RULE["endpoint_tolerance_ms"])//RULE["spacing_ms"])*RULE["spacing_ms"]
     starts=[last-i*RULE["spacing_ms"] for i in reversed(range(24))]
+    from collections import Counter
+    counter=Counter(states)
     return {
         "schema":"heptatrader.quote-readiness-status.v1",
         "at_ms":AT,
@@ -19,7 +21,11 @@ def status(probe_states=None):
         "rule":copy.deepcopy(RULE),
         "state":"HOLD_NEW_FUSION_WINDOW",
         "reasons":["INSUFFICIENT_COMPLETE_HISTORY_SPAN",
+                   "LATEST_AUTHORITATIVE_QUOTE_NOT_FRESH",
                    "INSUFFICIENT_ENDPOINT_AND_PATH_COVERAGE"],
+        "counts":dict(counter),
+        "usable":counter.get("USABLE",0),
+        "unusable":24-counter.get("USABLE",0),
         "probes":[{"start_ms":t,"status":st,
                    "input_failures":{}} for t,st in zip(starts,states)],
     }
@@ -213,3 +219,75 @@ class SourceGapTests(unittest.TestCase):
         self.assertEqual(x["original_grid_probes"][-1][
             "root_cause_class"],"SOURCE_PRESENT_ORIGINAL_STATUS_PATH_GAP")
         self.assertFalse(x["historical_revised_bars_substituted"])
+
+
+class IndependentExactProbeReplayTests(unittest.TestCase):
+    def setUp(self):
+        self.config={"period_sha256":"a"*64}
+
+    def test_all_twenty_four_original_empty_windows_are_recomputed(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        x=replay_original_fixed_grid([],status(),self.config)
+        self.assertEqual(x["independently_recomputed_slots"],24)
+        self.assertEqual(x["recomputed_status_counts"],{"INPUT_UNAVAILABLE":24})
+        self.assertEqual(x["recomputed_source_state"],"HOLD_NEW_FUSION_WINDOW")
+        self.assertTrue(x["exact_per_slot_status_and_input_lineage_matches"])
+        self.assertFalse(x["future_training_authority"])
+        self.assertEqual(x["broker_orders_sent"],0)
+        self.assertEqual(len(x["native_original_probe_source_sha256"]),64)
+
+    def test_source_anchors_without_causal_history_cannot_claim_ready(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        y=status(["USABLE"]*24)
+        y["state"]="READY_FOR_REVIEW_NOT_AUTHORIZATION"
+        y["reasons"]=[]
+        ticks=[quote(probe["start_ms"]+1000) for probe in y["probes"]]
+        # Every minute has a quote, but each is separated by >30s and
+        # cannot supply the original contiguous history and mature outcome.
+        with self.assertRaisesRegex(
+            EvidenceError,"ORIGINAL_PROBE_REPLAY_STATUS_OR_LINEAGE_MISMATCH"):
+            replay_original_fixed_grid(ticks,y,self.config)
+
+    def test_forged_totals_rejected_even_when_original_grid_agrees(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        y=status()
+        y["counts"]={"USABLE":24}
+        with self.assertRaisesRegex(
+            EvidenceError,"ORIGINAL_PROBE_REPLAY_COUNTS_CHANGED"):
+            replay_original_fixed_grid([],y,self.config)
+
+    def test_forged_ready_on_all_original_missing_grid_rejected(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        y=status()
+        y["state"]="READY_FOR_REVIEW_NOT_AUTHORIZATION"
+        y["reasons"]=[]
+        with self.assertRaisesRegex(
+            EvidenceError,"ORIGINAL_PROBE_REPLAY_CAUSAL_ADMISSION_MISMATCH"):
+            replay_original_fixed_grid([],y,self.config)
+
+    def test_unreported_stale_latest_quote_refused(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        y=status()
+        y["reasons"].remove("LATEST_AUTHORITATIVE_QUOTE_NOT_FRESH")
+        with self.assertRaisesRegex(
+            EvidenceError,"ORIGINAL_PROBE_REPLAY_CAUSAL_ADMISSION_MISMATCH"):
+            replay_original_fixed_grid([],y,self.config)
+
+    def test_source_algorithm_status_lineage_change_refused(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        from unittest.mock import patch
+        y=status()
+        def tampered(q,start,c):
+            return {"start_ms":start,"status":"INPUT_UNAVAILABLE",
+                    "input_failures":{"FORGED_MISSING":1}}
+        with patch("train_v2.source_gap_forensics.original_probe",
+                   side_effect=tampered):
+            with self.assertRaisesRegex(
+                EvidenceError,"ORIGINAL_PROBE_REPLAY_STATUS_OR_LINEAGE_MISMATCH"):
+                replay_original_fixed_grid([],y,self.config)
+
+    def test_wrong_config_period_or_guard_rules_fails(self):
+        from train_v2.source_gap_forensics import replay_original_fixed_grid
+        with self.assertRaisesRegex(
+            EvidenceError,"ORIGINAL_PROBE_REPLAY_CONFIG_CHANGED"):
+            replay_original_fixed_grid([],status(),{"period_sha256":"b"*64})

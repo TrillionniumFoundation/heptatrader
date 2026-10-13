@@ -194,7 +194,9 @@ HOLD; this is not a GPU/ROCm admission or production change.
 The original 24-minute PAPER feed restart/gap diagnosis is documented in
 [ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md](../train_v2/ORIGINAL_SOURCE_GAP_FORENSICS_20261013.md).
 No revised historical bar is permitted to fill missing original-source
-decision minutes.
+decision minutes. The [independent 24-probe exact replay](../train_v2/INDEPENDENT_ORIGINAL_PROBE_REPLAY_20261014.md)
+recomputes full original causal statuses without upgrading the original
+source admission or previously missing evidence.
 
 ## Separate label populations
 

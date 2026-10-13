@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 from historical_training.common import EvidenceError, read, sha
-from laya_cell.source_readiness import RULE as ORIGINAL_RULE
+from laya_cell.source_readiness import RULE as ORIGINAL_RULE, probe as original_probe
 from laya_cell.integrity import digest as chain_digest
 
 SCHEMA="heptatrader.train-v2-original-source-gap-forensics.v1"
@@ -148,6 +148,64 @@ def diagnose(quotes,status,*,observation_now_ms):
     }
     return result
 
+def replay_original_fixed_grid(quotes, status, config):
+    """Independently recompute every original causal probe from actual quotes.
+
+    Having one quote in a minute is NOT sufficient proof that the input
+    history, 300s endpoint and maximum 30s outcome path meet the original
+    requirements. This is strictly a second read-only replay, never admission.
+    """
+    if (not isinstance(config,dict)
+            or config.get("period_sha256") != status.get("period_sha256")
+            or status.get("rule") != ORIGINAL_RULE):
+        raise EvidenceError("ORIGINAL_PROBE_REPLAY_CONFIG_CHANGED")
+    original = status.get("probes")
+    if not isinstance(original,list) or len(original) != ORIGINAL_RULE["input_probes"]:
+        raise EvidenceError("ORIGINAL_PROBE_REPLAY_GRID_MISSING")
+    starts = [row["start_ms"] for row in original]
+    recent = [q for q in quotes if q["t"] >= starts[0]-600000]
+    expected = [original_probe(recent,start,config) for start in starts]
+    for old,new in zip(original,expected):
+        if old != new:
+            raise EvidenceError("ORIGINAL_PROBE_REPLAY_STATUS_OR_LINEAGE_MISMATCH")
+    counts = dict(Counter(row["status"] for row in expected))
+    usable=counts.get("USABLE",0)
+    if (status.get("counts") != counts
+            or type(status.get("usable")) is not int
+            or status["usable"] != usable
+            or type(status.get("unusable")) is not int
+            or status["unusable"] != len(expected)-usable):
+        raise EvidenceError("ORIGINAL_PROBE_REPLAY_COUNTS_CHANGED")
+    reasons=[]
+    if not recent or recent[0]["t"] > starts[0]-50000:
+        reasons.append("INSUFFICIENT_COMPLETE_HISTORY_SPAN")
+    latest_age=status["at_ms"]-quotes[-1]["t"] if quotes else None
+    if latest_age is None or not 0<=latest_age<=ORIGINAL_RULE["source_ttl_ms"]:
+        reasons.append("LATEST_AUTHORITATIVE_QUOTE_NOT_FRESH")
+    if usable<ORIGINAL_RULE["minimum_usable"]:
+        reasons.append("INSUFFICIENT_ENDPOINT_AND_PATH_COVERAGE")
+    state=("HOLD_NEW_FUSION_WINDOW" if reasons
+           else "READY_FOR_REVIEW_NOT_AUTHORIZATION")
+    if status.get("reasons") != reasons or status.get("state") != state:
+        raise EvidenceError("ORIGINAL_PROBE_REPLAY_CAUSAL_ADMISSION_MISMATCH")
+    return {
+        "schema":"heptatrader.original-source-exact-probe-replay.v1",
+        "original_grid_slots":len(expected),
+        "independently_recomputed_slots":len(expected),
+        "exact_per_slot_status_and_input_lineage_matches":True,
+        "recomputed_status_counts":counts,
+        "recomputed_source_state":state,
+        "recomputed_reasons":reasons,
+        "native_original_probe_source_sha256":sha(
+            Path(__file__).resolve().parents[1]/
+            "neuron_learning/laya_cell/source_readiness.py"),
+        "source_timestamp_at_ms":status["at_ms"],
+        "future_training_authority":False,
+        "broker_queries_sent":0,
+        "broker_orders_sent":0,
+    }
+
+
 def run(config_path,status_path):
     from laya_cell.resident_data import read_quotes
     from laya_cell.integrity import read_json
@@ -165,6 +223,8 @@ def run(config_path,status_path):
     stamp=status["at_ms"]
     quotes,prefixes=read_quotes(config,stamp)
     result=diagnose(quotes,status,observation_now_ms=int(time.time()*1000))
+    result["independent_exact_original_probe_replay"]=replay_original_fixed_grid(
+        quotes,status,config)
     # The periodic status may legitimately advance while original quote pages
     # are verified. Bind the exact initial bytes, never the later path content.
     result["original_status_sha256"]=status_hash_after
