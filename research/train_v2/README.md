@@ -509,3 +509,12 @@ remain three correlated horizon groups; no actual financial reward or
 qualified model sample was generated. The fixed stressed price-movement
 hurdle was not reached by any of the twelve historical MID movements.
 This is never automatic training or trading permission.
+
+## Versioned paged original price source (2026-10-13)
+
+See [PAGED_ORIGINAL_PRICE_SOURCE_20261013.md](PAGED_ORIGINAL_PRICE_SOURCE_20261013.md).
+The new opt-in source view verifies ALL original paged hash-linked PAPER source
+segments and returns only the requested bounded 2-hour quote window. It
+preserves old frozen source-prefix fingerprints across natural archive growth,
+without modifying existing legacy loader caps, model forecasts or outcomes.
+No trader or model promotion is implied.

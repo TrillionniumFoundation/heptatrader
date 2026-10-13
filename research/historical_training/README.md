@@ -393,3 +393,10 @@ WAIT and CENSORED outcomes remain explicit, never zero PnL. Two observed
 market-price returns are not actual executable fills, financially independent
 trades, statistical efficacy, Canonical Agentd Owner acceptance or a model
 selection grant. Legacy exact-f64 failures remain unchanged.
+
+## Paged original quote verification (2026-10-13)
+
+See [Train V2 paged original source](../train_v2/PAGED_ORIGINAL_PRICE_SOURCE_20261013.md)
+for opt-in validated 32-segment archive paging, frozen original prefix custody,
+and independent read-only Native price outcome comparison. All old cohort
+source verifiers and original failed receipts remain unchanged.
