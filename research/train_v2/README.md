@@ -548,3 +548,14 @@ The operator-owned qian-qi verifier scanned the copied 285 original
 PAPER quote segments once and reproduced the previous independently
 frozen 3x4 PRICE-only result exactly. This is an efficiency and source
 integrity improvement, **not** net profit, model selection or live trading.
+
+
+## Optional swapless isolated training resource preflight (October 13)
+
+See [SWAPLESS_RESOURCE_CELL_20261013.md](SWAPLESS_RESOURCE_CELL_20261013.md).
+The current Laya resource Guard remains live, unchanged and held when the
+host swap reserve is below 1 GiB. A separate no-model transient systemd
+cell has demonstrated kernel-enforced zero swap, 6 GiB hard memory, 5 GiB
+memory-high, bounded CPU/tasks, and an independently refreshed pinned original
+source. Its eligibility means READY_FOR_OPERATOR_REVIEW_NO_JOB, NOT the
+existing Trainer/Owner admitting a new GPU worker or trading policy.

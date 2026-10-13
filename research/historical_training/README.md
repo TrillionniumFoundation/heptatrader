@@ -182,6 +182,11 @@ The existing original PAPER 3x4 source cohort also has a
 All twelve nested PRICE-only outcomes remain three correlated decision
 sources; no actual broker reward or model-promotion evidence is inferred.
 
+An optional **new research-only cgroup** preflight keeps the original
+Laya training Guard and source admission unchanged:
+[SWAPLESS_RESOURCE_CELL_20261013.md](../train_v2/SWAPLESS_RESOURCE_CELL_20261013.md).
+No live worker is reconfigured or auto-authorized by this source gate.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
