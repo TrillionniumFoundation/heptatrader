@@ -29,6 +29,25 @@ recording exact 480/480 cycle chain, **one failed observation** and the
 real 31,654ms cross-publication stale interval. No successful model
 training or broker execution authorization is inferred.
 
+## First 12-slot implementation failure retained (v1)
+
+Original first prewarm experiment at pocket4:
+\`operator-evidence/fx-source-cache-prewarm-20261014-v1/\`.
+It successfully completed an original read-only cache prewarm *before* all
+fixed slots, but **all 12 health verdicts failed with
+\`ASSESSMENT_KeyError\`**. The production PAPER period had been written as
+\`original_period_sha256\` in the frozen new plan while the existing
+read-only health validator expects \`period_sha256\`. The assessment
+itself saved 12 original 0600 source-health JSONs, but the wrapper
+erroneously passed the new plan directly into the period checker.
+This is a real **candidate implementation bug**, not evidence of a
+broker quote failure, and **0/12 v1 are qualified**. The original plan,
+status/attempt SHA chains and full v1 final receipt must remain preserved.
+The fix explicitly verifies and maps the frozen original PAPER period into
+the established monitor checker; a missing or forged period is rejected.
+This change is regression-tested before a **distinct, future-registered v2**
+pilot. No earlier v1 slot may be replayed, relabeled or overwritten.
+
 ## New design (predeclared, separate real observation)
 
 Code: `research/train_v2/fx_source_cache_prewarm_probe.py`.

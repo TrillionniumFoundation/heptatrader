@@ -106,6 +106,15 @@ class TestPrewarmProbe(unittest.TestCase):
         self.assertIs(v,fake)
         self.assertEqual(issues,[])
         mocked.assert_called_once()
+    def test_actual_frozen_period_field_binds_monitor(self):
+        from train_v2.fx_source_cache_prewarm_probe import frozen_period_scope
+        frozen={"original_period_sha256":"f"*64}
+        scope=frozen_period_scope(frozen)
+        self.assertEqual(scope,{"period_sha256":"f"*64})
+        actual=decide_cycle(status(100000),scope,100000,100500)
+        self.assertTrue(actual["source_ready"])
+        with self.assertRaises(Exception):
+            frozen_period_scope({"period_sha256":"f"*64})
     def test_original_source_state_unexpected_refused(self):
         v=status(100000)
         v["state"]="STUFFED_READY"

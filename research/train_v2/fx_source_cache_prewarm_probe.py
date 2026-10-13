@@ -135,6 +135,15 @@ def prewarm_health(cfg,cache,*,assessment=assess):
                          started,finished)
     return started,finished,status,issues
 
+def frozen_period_scope(plan):
+    """Bridge the frozen study's `original_period_sha256` to the monitor
+    verification contract; a missing/malformed identity must fail closed."""
+    period=plan.get("original_period_sha256")
+    require(type(period) is str and len(period)==64 and
+            all(c in "0123456789abcdef" for c in period),
+            "FROZEN_ORIGINAL_PAPER_PERIOD_NOT_PINNED")
+    return {"period_sha256":period}
+
 def decide_cycle(status,plan,started,published):
     issues=review_health(status,plan,started,published)
     ready=(not issues and status.get("state")=="READY_FOR_REVIEW_NOT_AUTHORIZATION")
@@ -243,7 +252,7 @@ def run(root,*,assessment=assess,cache_type=VerifiedSealedReadinessCache):
                 status=assessment(cfg,quote_loader=cache.read_quotes)
                 status_sha=write_once(root/status_name,canonical(status)+b"\n")
                 published=now_ms()
-                decision=decide_cycle(status,plan,started,published)
+                decision=decide_cycle(status,frozen_period_scope(plan),started,published)
                 outcome.update(decision)
                 outcome.update({
                     "source_status_sha256":status_sha,
