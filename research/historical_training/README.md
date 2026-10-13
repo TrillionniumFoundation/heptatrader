@@ -149,6 +149,14 @@ repaired, and a new, second future window passed with the corrected code.
 Neither input is a signed model forecast, broker PnL, independent trade
 return, or automatic model admission; original Trial31 remains immutable.
 
+## New prospective frozen native-price baseline (2026-10-13)
+
+See [LAYA_NATIVE_PRICE_FORWARD_20261013.md](LAYA_NATIVE_PRICE_FORWARD_20261013.md).
+One new, explicitly preregistered, CPU-only original PAPER source slot can
+produce an actual frozen Native/Numeric 300s MID forecast, separate from
+Laya7 GPU inference, trading orders, true financial reward and canonical
+model selection. Old SOURCE-only canaries and failed Laya Trial31 stay frozen.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
