@@ -38,7 +38,7 @@ def valid_quote(q,received,instrument):
         or q.get('stale') is not False or not isinstance(q.get('subscription_id'),str) or not q['subscription_id']):
         raise ValueError('QUOTE_AUTHORITY')
     t=q.get('observed_at_ms');expiry=q.get('stale_after_ms')
-    if type(t)is not int or type(expiry)is not int or not 0<t<=received<=min(t+5000,expiry):
+    if type(t)is not int or type(expiry)is not int or not 0<t<=received<min(t+5000,expiry):
         raise ValueError('QUOTE_STALE_OR_FUTURE')
     if any(isinstance(q.get(k),bool) for k in ('bid','ask')):raise ValueError('QUOTE_NUMERIC')
     try:bid=Decimal(str(q['bid']));ask=Decimal(str(q['ask']))
