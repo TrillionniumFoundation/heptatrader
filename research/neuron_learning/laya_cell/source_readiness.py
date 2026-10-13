@@ -39,9 +39,9 @@ def probe(quotes,start,config):
  if any(y-x>RULE['path_gap_max_ms'] for x,y in zip(times[a:b],times[a+1:b+1])):return {**result,'status':'PATH_GAP'}
  return {**result,'status':'USABLE','actual_endpoint_ms':times[b]}
 
-def assess(config,now=None):
+def assess(config,now=None,*,quote_loader=None):
  now=int(time.time()*1000) if now is None else now
- quotes,prefixes=read_quotes(config,now)
+ quotes,prefixes=(quote_loader or read_quotes)(config,now)
  # Latest probe must be fully mature even for a last-grace-second input.
  last=((now-RULE['horizon_ms']-RULE['input_grace_ms']-RULE['endpoint_tolerance_ms'])//RULE['spacing_ms'])*RULE['spacing_ms']
  starts=[last-i*RULE['spacing_ms'] for i in reversed(range(RULE['input_probes']))]
@@ -70,9 +70,9 @@ def next_monitor_deadline(cadence_seconds, assessment_started, assessment_finish
  return max(assessment_started+cadence_seconds,assessment_finished+1)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);p.add_argument('--verified-sealed-cache',action='store_true');a=p.parse_args()
  if not 10<=a.refresh_seconds<=60 or not 0<=a.max_cycles<=24:p.error('READINESS_CADENCE_OR_CYCLE_LIMIT')
- if (a.refresh_seconds!=60 or a.max_cycles>0) and not a.sandbox:p.error('FASTER_OR_FINITE_MODE_REQUIRES_SANDBOX')
+ if (a.refresh_seconds!=60 or a.max_cycles>0 or a.verified_sealed_cache) and not a.sandbox:p.error('FASTER_OR_FINITE_OR_CACHE_MODE_REQUIRES_SANDBOX')
  os.umask(0o077);c=read_json(a.config);stop=False
  if a.sandbox:
   from sandbox import enter
@@ -85,10 +85,14 @@ def main():
   nonlocal stop
   stop=True
  signal.signal(signal.SIGTERM,finish);signal.signal(signal.SIGINT,finish)
+ cache=None
+ if a.verified_sealed_cache:
+  from .verified_sealed_readiness_cache import VerifiedSealedReadinessCache
+  cache=VerifiedSealedReadinessCache()
  cycles=0
  while not stop:
   assessment_started=time.monotonic()
-  try:status=assess(c)
+  try:status=assess(c,quote_loader=cache.read_quotes if cache is not None else None)
   except Exception as exc:status={'at_ms':int(time.time()*1000),'state':'HOLD_NEW_FUSION_WINDOW','reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],'orders_sent':0}
   atomic(a.output,status)
   finished=time.monotonic();cycles+=1
@@ -107,4 +111,7 @@ def main():
    left=deadline-time.monotonic()
    if left<=0:break
    time.sleep(min(1,left))
+ if cache is not None:
+  print(json.dumps({'schema':'heptatrader.readiness-verified-sealed-cache-counters.v1',
+   **cache.counters()}),flush=True)
 if __name__=='__main__':main()
