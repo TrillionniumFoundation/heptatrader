@@ -123,6 +123,14 @@ and actual third scheduled source timer evidence are preserved in
 [INPUT_SOURCE_ASOF_AND_SLOT2_20261013.md](../train_v2/INPUT_SOURCE_ASOF_AND_SLOT2_20261013.md).
 No original source receipt, timer, missed window or model-efficacy claim changes.
 
+## Laya pinned resource Guard archive cutover
+
+See [LAYA_GUARD_ARCHIVE_CUTOVER_20261013.md](LAYA_GUARD_ARCHIVE_CUTOVER_20261013.md).
+Staging is create-only, without source deletion or production installation.
+The direct original runtime path inside the resource Guard, not PYTHONPATH
+alone, determines the actual Supervisor and Evaluator code. Preserve
+original data and deny trading/model promotion through any migration.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
