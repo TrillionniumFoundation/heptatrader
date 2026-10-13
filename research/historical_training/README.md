@@ -139,6 +139,16 @@ the non-retroactive 89-slot trial failure and the separately hash-pinned
 **future-only** quote-reader profile. This is not installed on the active
 Laya runtime and never changes old evaluation/selection eligibility.
 
+## Newly preregistered Laya SOURCE-only fast-reader canary
+
+See [LAYA_FUTURE_SOURCE_CANARY_20261013.md](LAYA_FUTURE_SOURCE_CANARY_20261013.md)
+for two physically preregistered October 13 original-PAPER source inputs
+with fsynced input ACKs, independently rechecked by the original full
+archive reader. The initial library-level umask side effect was independently
+repaired, and a new, second future window passed with the corrected code.
+Neither input is a signed model forecast, broker PnL, independent trade
+return, or automatic model admission; original Trial31 remains immutable.
+
 ## Separate label populations
 
 `export_current100k` reuses the existing authoritative economics replay and
