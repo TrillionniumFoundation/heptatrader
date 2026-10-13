@@ -118,7 +118,7 @@ def verify_terminal(*,firstthree_root,cache1005_root,fourth_root,
                       require_complete=True)
     early=first_three_verify(firstthree_root)
     p=Path(primary_final_file)
-    final,fdigest=evidence(p.parent,p.name)
+    final,fdigest=evidence(p)
     receipt=validate_manifest(final,early,physical)
     receipt.update({
         "verified_at_utc":datetime.now(timezone.utc).isoformat(),
