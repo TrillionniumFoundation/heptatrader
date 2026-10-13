@@ -1,5 +1,15 @@
 # Isolated historical-price research and current-$100k reward consumer
 
+## Two REAL prospective Native/Numeric forecast outcomes
+
+See [NATIVE_PRICE_FORECAST_OUTCOMES_20261013.md](NATIVE_PRICE_FORECAST_OUTCOMES_20261013.md)
+for two actual frozen model forecasts with later original PAPER 300s MID
+price observations, both wrong-direction, and the retained 1/3-ULP
+original strict model-output replay failures. The separate future-only
+tick codec is not an accepted retroactive modification of either model
+prediction. Economic alpha and model promotion remain HOLD.
+
+
 This package does not modify live trading, NAV, quote feeds, old Laya training,
 existing prospective trials, or canonical promotion. A trained offline readout
 is not a live strategy release. Private account data and model weights are not
