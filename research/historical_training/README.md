@@ -404,3 +404,10 @@ See [Train V2 paged original source](../train_v2/PAGED_ORIGINAL_PRICE_SOURCE_202
 for opt-in validated 32-segment archive paging, frozen original prefix custody,
 and independent read-only Native price outcome comparison. All old cohort
 source verifiers and original failed receipts remain unchanged.
+
+## One-pass 3 x 4 old price receipt replay (2026-10-13)
+
+See [BATCHED_FROZEN_COHORT_20261013.md](../train_v2/BATCHED_FROZEN_COHORT_20261013.md).
+This is a separate OPT-IN batch-only original sealed-source reader. The
+prior paged_price_window implementation, production data source and frozen
+3x4 original outcomes are not modified. No new trading/economic authority.

@@ -528,3 +528,12 @@ now be independently reverified after append-only original source growth,
 using three disjoint paged sealed-source windows and a pinned original
 269-segment source prefix. Earlier audit and closeout receipts stay immutable;
 no broker order, Native model, real economic reward or Owner is created.
+
+## 2026-10-13 one-source-scan frozen 3 x 4 price cohort
+
+See [BATCHED_FROZEN_COHORT_20261013.md](BATCHED_FROZEN_COHORT_20261013.md).
+A NEW read-only scanner verifies all original sealed source segments once
+and extracts three disjoint frozen price windows with the original strict
+12-price-label audit unchanged. Source-first-269, original price/cohort
+hashes and all 11 economic/identity fields exactly match the old 3-scan
+negative control. There is no new model/trade/Owner qualification.
