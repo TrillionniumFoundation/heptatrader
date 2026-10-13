@@ -598,3 +598,12 @@ for true independent recomputation of all 24 original quote-input,
 300-second endpoint and 30-second path verdicts against sealed original
 sources. A quote anchor alone does not establish a USABLE minute; this
 replay grants review only, not training/GPU/model authorization.
+
+
+2026-10-14 new CPU Native price-only forecast closeout:
+[INDEPENDENT_CPU_PAIR_CLOSEOUT_20261014.md](INDEPENDENT_CPU_PAIR_CLOSEOUT_20261014.md).
+Two genuinely frozen CPU Numeric price predictions now have sealed
+original 300-second outcomes and a separate physical qian-qi replay
+(one correct, one incorrect, zero clearing predeclared hypothetical
+cost). This is **price** research, no fills, trading propensity,
+independent economic alpha or model promotion.

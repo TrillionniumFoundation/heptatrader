@@ -439,3 +439,12 @@ The original production Laya Guard remains unchanged. See
 [swapless-cgroup recovery](../train_v2/SWAPLESS_CGROUP_RECOVERY_20261013.md)
 for actual kernel OOM/recovery and separately refreshed source proofs.
 No production training admission or GPU memory ceiling is inferred.
+
+
+2026-10-14 new CPU Native price-only forecast closeout:
+[INDEPENDENT_CPU_PAIR_CLOSEOUT_20261014.md](../train_v2/INDEPENDENT_CPU_PAIR_CLOSEOUT_20261014.md).
+Two genuinely frozen CPU Numeric price predictions now have sealed
+original 300-second outcomes and a separate physical qian-qi replay
+(one correct, one incorrect, zero clearing predeclared hypothetical
+cost). This is **price** research, no fills, trading propensity,
+independent economic alpha or model promotion.
