@@ -592,3 +592,9 @@ causal-selector rejection without fabricating prices, revising old trial
 windows, changing original source Guard semantics or authorizing a new
 model/GPU job. It binds precisely the periodically updated original status
 bytes read at start, never an unrelated newer status hash.
+
+See [INDEPENDENT_ORIGINAL_PROBE_REPLAY_20261014.md](INDEPENDENT_ORIGINAL_PROBE_REPLAY_20261014.md)
+for true independent recomputation of all 24 original quote-input,
+300-second endpoint and 30-second path verdicts against sealed original
+sources. A quote anchor alone does not establish a USABLE minute; this
+replay grants review only, not training/GPU/model authorization.
