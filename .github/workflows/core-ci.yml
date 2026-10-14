@@ -2,7 +2,7 @@ name: Core Runtime CI
 
 on:
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -35,24 +35,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
-      - name: Install pinned CPU research test dependency
-        run: |
-          python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
-          echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
       - name: Native build and behavior tests
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
-      - name: Python behavior and source tests once
-        run: |
-          set -euo pipefail
-          python3 scripts/run_python_tests.py --lane core
-          python3 scripts/run_python_tests.py --lane source
-          python3 scripts/check_documentation.py
-          git diff --check
       - name: Retain actual test diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -64,3 +51,37 @@ jobs:
             build/core/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 7
+
+  python:
+    name: python-behavior-exact-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
+      - name: Install pinned CPU research test dependency
+        run: |
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
+          echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
+      - name: Python behavior and source tests once
+        run: |
+          set -euo pipefail
+          python3 scripts/run_python_tests.py --lane core
+          python3 scripts/run_python_tests.py --lane source
+          python3 scripts/check_documentation.py
+          git diff --check

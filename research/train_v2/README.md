@@ -1,5 +1,7 @@
 # Train V2 Phase 1: PIT feature contract and event-only research admission
 
+Current [development and evidence-reuse policy](../../docs/modules/repository-control.md) separates source integration, isolated research, product integration, model selection and trading authority. Dated campaign reports do not add ordinary merge prerequisites.
+
 Status: isolated pocket4 research code, 2026-10-10. No PAPER/Execution, OMS, order, model, Laya source hold, systemd unit or prior trial change. Stacked on the existing protected IB historical global-lock branch.
 
 ## The boundary

@@ -26,7 +26,7 @@ class PythonTestPartitionTests(unittest.TestCase):
             root = Path(directory)
             tests = root / "tests/python"
             tests.mkdir(parents=True)
-            for name in runner.SOURCE_TESTS | runner.INSTALL_TESTS | runner.PROCESS_TESTS | {"test_new_behavior.py"}:
+            for name in runner.SOURCE_TESTS | runner.INSTALL_TESTS | runner.PROCESS_TESTS | runner.EXTERNAL_TESTS | {"test_new_behavior.py"}:
                 (tests / name).touch()
             groups = runner.partitions(root)
             self.assertIn("test_new_behavior.py", groups["core"])
@@ -96,3 +96,13 @@ class PythonTestPartitionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalResearchPartitionTests(unittest.TestCase):
+    def test_native_fixtures_are_not_implicit_core_requirements(self):
+        groups = runner.partitions(ROOT)
+        self.assertEqual(groups["external"], set(runner.EXTERNAL_TESTS))
+        self.assertFalse(groups["external"] & groups["core"])
+        self.assertIn("test_train_v2_native_wire_semantics.py", groups["core"])
+        self.assertTrue(all((ROOT / "tests/python" / name).is_file()
+                            for name in groups["external"]))

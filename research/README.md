@@ -1,5 +1,7 @@
 # Hepta research modules
 
+Current [development and evidence-reuse policy](../docs/modules/repository-control.md) separates source integration, isolated research, product integration, model selection and trading authority. Dated campaign reports do not add ordinary merge prerequisites.
+
 Explicit C++11 data, analytics, offline replay and completed-bar strategy APIs,
 plus a separately linked adapter to the existing NativeToolClient. These are
 experimental developer components, not a restored HeptaDLL runtime or a

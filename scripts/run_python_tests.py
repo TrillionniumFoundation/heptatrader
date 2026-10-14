@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run a disjoint Python CI partition, or the complete local suite.
 
-New test files belong to core unless explicitly assigned to source, install or isolated process integration.
+New test files belong to core unless explicitly assigned to source, install,
+isolated process integration, or optional external native integration.
 No test is dropped by a filename glob maintained in a second workflow.
 """
 from __future__ import annotations
@@ -39,23 +40,34 @@ PROCESS_TESTS = frozenset({
     "test_shadow_pipeline_integration.py",
 })
 
+# These tests execute independently built Canonical Rust fixtures, not the
+# HeptaTrader core. Keep them explicit and runnable without blocking core edits.
+EXTERNAL_TESTS = frozenset({
+    "test_train_v2_original_native_escrow_contract.py",
+    "test_train_v2_physical_native_roundtrip.py",
+})
+
 
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
     discovered = {p.name for p in (root / "tests/python").glob("test_*.py") if p.is_file()}
-    overlap = (SOURCE_TESTS & INSTALL_TESTS) | (SOURCE_TESTS & PROCESS_TESTS) | (INSTALL_TESTS & PROCESS_TESTS)
-    missing = (SOURCE_TESTS | INSTALL_TESTS | PROCESS_TESTS) - discovered
+    explicit = (SOURCE_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS)
+    overlap = set()
+    for i, group in enumerate(explicit):
+        for other in explicit[i+1:]:
+            overlap.update(group & other)
+    missing = set.union(*(set(group) for group in explicit)) - discovered
     if overlap or missing:
         raise ValueError(f"invalid test ownership: overlap={sorted(overlap)}, missing={sorted(missing)}")
     if not discovered:
         raise ValueError("no Python test files discovered")
     return {"source": set(SOURCE_TESTS), "install": set(INSTALL_TESTS),
-            "process": set(PROCESS_TESTS),
-            "core": discovered - SOURCE_TESTS - INSTALL_TESTS - PROCESS_TESTS}
+            "process": set(PROCESS_TESTS), "external": set(EXTERNAL_TESTS),
+            "core": discovered - SOURCE_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", choices=("core", "source", "install", "process", "all"), required=True)
+    parser.add_argument("--lane", choices=("core", "source", "install", "process", "external", "all"), required=True)
     parser.add_argument("--list", action="store_true", help="list selected test files without importing them")
     args = parser.parse_args(argv)
     if not args.list:
@@ -78,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         print("\n".join(sorted(selected)))
         return 0
-    sys.path.insert(0, str(ROOT / "tests/python"))
+    for path in (ROOT / "research", ROOT / "research/neuron_learning", ROOT / "scripts", ROOT / "tests/python"):
+        sys.path.insert(0, str(path))
     loader = unittest.TestLoader()
     suite = unittest.TestSuite(loader.loadTestsFromName(Path(name).stem) for name in sorted(selected))
     if loader.errors or not suite.countTestCases():

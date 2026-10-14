@@ -1,5 +1,7 @@
 # Isolated historical-price research and current-$100k reward consumer
 
+Current [development and evidence-reuse policy](../../docs/modules/repository-control.md) separates source integration, isolated research, product integration, model selection and trading authority. Dated campaign reports do not add ordinary merge prerequisites.
+
 ## Two REAL prospective Native/Numeric forecast outcomes
 
 See [NATIVE_PRICE_FORECAST_OUTCOMES_20261013.md](NATIVE_PRICE_FORECAST_OUTCOMES_20261013.md)

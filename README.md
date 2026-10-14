@@ -1,5 +1,7 @@
 # HeptaTrader
 
+Current [development and evidence-reuse policy](docs/modules/repository-control.md) separates source integration, isolated research, product integration, model selection and trading authority. Dated campaign reports do not add ordinary merge prerequisites.
+
 The [development index](docs/index.md) owns architecture, module contracts and operations.
 For a broker-disabled native development build, run `./scripts/dev_core.sh`.
 For lease/audit/OMS-only feedback, run `./scripts/dev_core.sh --storage`; this is not full core acceptance.
