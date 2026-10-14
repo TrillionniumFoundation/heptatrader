@@ -80,6 +80,10 @@ struct IBAuthoritativeQuoteContractHealth
     int requestId = 0;
     bool dispatchAccepted = false;
     IBAuthoritativeQuoteSnapshot quote;
+    int pendingRequestId = 0;
+    bool pendingDispatchAccepted = false;
+    bool nativeRequestRejected = false;
+    std::uint64_t refreshRetryNotBeforeMs = 0;
 };
 
 struct IBAuthoritativeQuoteSubscriptionHealth
@@ -102,6 +106,9 @@ struct IBAuthoritativeQuoteSubscriptionHealth
     }
     std::string primaryInstrument;
     std::map<std::string, IBAuthoritativeQuoteContractHealth> contracts;
+    // Include an in-flight renewal and a promoted ticker awaiting retirement.
+    // Only positively recorded SDK sends may be cancelled.
+    std::vector<int> dispatchedRequestIds;
 };
 
 class IBAuthoritativeQuoteSubscriptionSet
@@ -118,7 +125,19 @@ public:
     IBAuthoritativeQuoteSubscriptionPlan BeginCycle(std::uint64_t connectionEpoch,
                                                     std::uint64_t generation,
                                                     std::uint64_t observedAtMs);
+    // Market-data only: refresh a stale secondary CASH ticker in place without
+    // changing the primary ticker or its trading authority.
+    IBAuthoritativeQuoteSubscriptionPlan BeginStaleSecondaryCashRefresh(
+        const std::string& instrument, std::uint64_t connectionEpoch,
+        std::uint64_t generation, std::uint64_t observedAtMs,
+        std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs,
+        std::uint64_t freshQuoteMaxAgeMs = 5000);
     bool RecordDispatchResult(std::uint64_t generation, int requestId, bool accepted);
+    bool RecordRetirementResult(std::uint64_t generation, int requestId);
+    // A native 354 is terminal only for this exactly owned, sent renewal.
+    // It is not a quote or a cancellation acknowledgement.
+    bool RejectSecondaryCashRefreshRequest(const IBEvent& event,
+        std::uint64_t observedAtMs, std::uint64_t retryBackoffMs = 15000);
     std::vector<int> AbortCycle(std::uint64_t generation);
     IBAuthoritativeQuoteConsumeResult ConsumeTick(const IBEvent& event,
                                                   std::uint64_t observedAtMs);
@@ -138,6 +157,15 @@ private:
         std::string instrument;
         IBContractLite contract;
         bool dispatchAccepted = false;
+        // Distinguish an initial/pending SDK dispatch from a positively
+        // established pre-SDK refusal. Only the latter may be retried
+        // without cancelling an unissued market-data request.
+        bool dispatchResultRecorded = false;
+        // Native rejection is distinct from a refusal before SDK entry.
+        bool nativeRequestRejected = false;
+        bool hadCompletePair = false;
+        std::uint64_t requestStartedAtMs = 0;
+        std::uint64_t freshQuoteMaxAgeMs = 0;
         IBAuthoritativeQuoteSnapshot quote;
     };
 
@@ -159,6 +187,9 @@ private:
     std::string m_primaryInstrument;
     std::map<int, QuoteState> m_quotesByRequestId;
     std::map<std::string, int> m_requestIdByInstrument;
+    std::map<std::string, int> m_pendingRequestIdByInstrument;
+    std::map<std::string, int> m_retiringRequestIdByInstrument;
+    std::map<std::string, std::uint64_t> m_refreshRetryNotBeforeMs;
     std::int64_t m_nextRequestId;
     std::uint64_t m_connectionEpoch = 0;
     std::uint64_t m_generation = 0;

@@ -41,6 +41,8 @@ struct IbPaperAuthoritativePositionSnapshot;
 struct IbPaperExecutionRuntimeTestHooks
 {
     std::function<void(const char*)> onStage;
+    // Offline injected clock only; no environment or IPC entrypoint.
+    std::function<std::uint64_t()> quoteClockMs;
     std::function<bool(const std::string&,
                        std::shared_ptr<IbPaperKillSwitchReader>&,
                        std::string&)> openKillSwitch;
@@ -107,7 +109,10 @@ public:
     ExecutionEventHub& EventHub();
 
 private:
+    friend struct IbPostFillReconciliationFixture; // offline exact-event regression only
     friend struct IbRecentBrokerOrderReplayAccess; // offline test only; no IPC/argv entry point
+    friend struct IbQuoteRecoveryFixture; // same runtime path, socket-free egress spy
+    friend struct IbQuoteRecoveryLiveFixture; // opt-in quote-only probe through an order-denying relay
     bool PreparePrivateState(std::string& reason);
     bool LoadFxCashBaselines(std::string& reason);
     bool ValidateFxCashBaselineRecords(
@@ -177,6 +182,7 @@ private:
     bool StartQuoteSubscriptions(
         std::string& reason, std::uint64_t expectedConnectionEpoch = 0);
     bool StopQuoteSubscriptions(std::string* reason = nullptr);
+    bool RefreshStaleSecondaryCashQuote(std::string& reason);
     bool BeginBrokerReconnect(std::string& reason,
                               bool recoveryAudit = false);
     bool DriveBrokerReconnect(std::string& reason);
@@ -386,6 +392,8 @@ private:
     std::atomic<bool> m_startupWaitingForUpstream;
     std::atomic<bool> m_startupUpstreamUnavailable;
     std::atomic<bool> m_startupUpstreamRestored;
+    // A known secondary CASH farm outage suppresses renewal; old prices stay stale.
+    std::atomic<std::uint64_t> m_secondaryCashFarmUnavailableEpoch{0};
     std::atomic<bool> m_startupMarketDataFarmWaiting;
     std::atomic<bool> m_startupMarketDataFarmRestored;
     // Epoch of the positive CASH-farm 2104 witness.  A readiness bit without

@@ -2,6 +2,23 @@
 #include "ib_api_wrapper.h"
 #include <cerrno>
 #include <cstdlib>
+#include <climits>
+
+// Provenance comes from the wrapper's locally sent CASH request ledger, not
+// from the Broker error text or numeric id alone. These failures invalidate a
+// pending quote request, not an account/order recovery generation. They still
+// block an OPEN/RESERVED quote admission at the sender boundary.
+inline bool IsIbCorroboratedCashMarketDataRequestError(const IBEvent& event) {
+    return event.type == IBEventType::Error &&
+        event.localMarketDataRequestError &&
+        (event.key == "354" || event.key == "300") &&
+        event.id >= 1000000 && event.id <= INT_MAX &&
+        event.requestId == event.id && event.connectionEpoch != 0 &&
+        event.brokerClientId >= 0 && event.account.empty() &&
+        event.order.orderRef.empty() && event.advancedOrderRejectJson.empty() &&
+        event.contract.secType == "CASH" && !event.contract.symbol.empty() &&
+        !event.contract.currency.empty() && !event.contract.exchange.empty();
+}
 
 // Observed Broker 2172 is the global advance notice of a future TWS/Gateway
 // minimum-version change, not a rejected order or data entitlement. Preserve
@@ -13,8 +30,19 @@ inline bool IsIbGlobalUpgradeNotice(const IBEvent& event) {
         event.advancedOrderRejectJson.empty();
 }
 
+// An unscoped 2105 reports historical-market-data farm loss, not a live
+// quote-send result. Retain its original Broker error for diagnostics and
+// never interpret it as a positive market-data readiness witness. A scoped
+// order/request/account 2105 remains unsafe, as do 1100/1101/2110.
+inline bool IsIbUnscopedHistoricalFarmDisconnect(const IBEvent& event) {
+    return event.type == IBEventType::Error && event.key == "2105" &&
+        event.id == -1 && event.account.empty() &&
+        event.order.orderRef.empty() && event.advancedOrderRejectJson.empty();
+}
+
 inline bool IbAdmissionBlockingEvent(const IBEvent& event) {
-        if (IsIbGlobalUpgradeNotice(event)) return false;
+        if (IsIbGlobalUpgradeNotice(event) ||
+            IsIbUnscopedHistoricalFarmDisconnect(event)) return false;
         if (event.type == IBEventType::ConnectionClosed ||
             event.type == IBEventType::EventQueueOverflow)
             return true;
@@ -50,4 +78,3 @@ inline bool IbAdmissionBlockingEvent(const IBEvent& event) {
             return true;
         }
     }
-

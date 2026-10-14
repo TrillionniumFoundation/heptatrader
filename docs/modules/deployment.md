@@ -101,3 +101,7 @@ by this module. They reuse the existing PAPER base/economics code byte-for-byte
 and do not grant trading authority. See `docs/technical/exact-decision-attribution.md`
 for request/response/original-command identity, failure isolation and recovery
 boundaries. The original execution authority remains unchanged.
+
+The FX/NAV candidate and its non-authorizing probe/assurance components are tracked in
+[PR #178 consolidation](../technical/pr178-candidate-consolidation-20261008.md).
+Source ownership does not approve Broker deployment or strict NAV.

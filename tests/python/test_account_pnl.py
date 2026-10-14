@@ -438,11 +438,24 @@ class SourceBackedDeploymentTests(unittest.TestCase):
         with patch.object(report,'now_ms',lambda:T+130):
             return report.attach_account({'complete':True,'totals':{'net_total_pnl':'-5'}},self.pp,self.state,self.cfg)
     def test_current_nav_and_every_missing_prerequisite_are_separate(self):
-        x=self.attach();self.assertEqual(x['totals']['net_total_pnl'],'-5');self.assertTrue(x['account']['nav_complete'])
-        e=x['account']['evidence_status'];self.assertEqual(e['current_nav']['status'],'KNOWN')
+        x=self.attach();self.assertEqual(x['totals']['net_total_pnl'],'-5');self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled'])
+        e=x['account']['evidence_status'];self.assertEqual(e['current_nav']['status'],'UNKNOWN');self.assertEqual(e['current_arithmetic_observation']['status'],'KNOWN')
         for k in ('opening_nav_at_reset','external_cash_and_asset_flows','posted_taxes_in_period','outside_nav_liabilities'):
             self.assertEqual(e[k]['status'],'UNKNOWN')
         self.assertIsNone(x['all_in_account_net_pnl'])
+    def test_new_public_v2_and_legacy_cache_cannot_bypass_strict_consumer(self):
+        from hepta_nav_assurance import publish_arithmetic_observation
+        public = publish_arithmetic_observation(self.out, self.nav, self.raw, period(), T+130)
+        public['strict_nav_eligible'] = True  # Forged public flags are ignored.
+        public['valuation_basis_attested'] = True
+        self.save('nav.json', public)
+        x = self.attach()
+        self.assertTrue(x['account']['arithmetic_reconciled'])
+        self.assertFalse(x['account']['strict_nav_eligible'])
+        self.assertIsNone(x['account_nav'])
+        self.assertFalse(x['account_complete'])
+        self.assertEqual(x['account']['arithmetic_nav'], self.nav['nav'])
+
     def test_nav_without_raw_download_cannot_self_certify(self):
         (self.out/'raw-latest.json').unlink();x=self.attach();self.assertIsNone(x['account_nav'])
         self.assertIn('ACCOUNT_NAV_RAW_SOURCE_MISSING',x['account']['reason_codes'])
@@ -455,14 +468,14 @@ class SourceBackedDeploymentTests(unittest.TestCase):
     def test_activity_index_cannot_invent_source_coverage(self):
         x=activity.parse_flex(xml_fixture(),'DU_TEST','USD','UTC',T+2*86400000)
         self.save('activity.json',x);r=self.attach()
-        self.assertTrue(r['account']['nav_complete']);self.assertIsNone(r['account']['broker_reported_account_net_pnl'])
+        self.assertFalse(r['account']['nav_complete']);self.assertTrue(r['account']['arithmetic_reconciled']);self.assertIsNone(r['account']['broker_reported_account_net_pnl'])
     def test_invalid_cost_model_does_not_hide_valid_nav(self):
         p=self.cfg/'exit-cost-model.json';p.write_text('{bad');p.chmod(0o600)
-        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+        x=self.attach();self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled']);self.assertFalse(x['account']['future_exit_costs']['complete'])
     def test_failing_cost_model_keeps_current_nav_not_previous_scenarios(self):
         m=model();m['BTC.USD']['rate']='-1'
         p=self.cfg/'exit-cost-model.json';p.write_text(json.dumps(m));p.chmod(0o600)
-        x=self.attach();self.assertTrue(x['account']['nav_complete']);self.assertFalse(x['account']['future_exit_costs']['complete'])
+        x=self.attach();self.assertFalse(x['account']['nav_complete']);self.assertTrue(x['account']['arithmetic_reconciled']);self.assertFalse(x['account']['future_exit_costs']['complete'])
     def test_late_first_observation_without_raw_is_not_profit_or_opening(self):
         name='first-'+hashlib.sha256(period()['period_id'].encode()).hexdigest()[:16]+'.json'
         self.save(name,self.nav);x=self.attach()
@@ -474,7 +487,7 @@ class SourceBackedDeploymentTests(unittest.TestCase):
     def test_verified_opening_is_known_even_when_funding_sources_are_missing(self):
         self.save('return-inputs.json',{'opening_nav_raw':raw_snapshot(T-20,T)})
         x=self.attach()['account']
-        self.assertEqual(x['evidence_status']['opening_nav_at_reset']['status'],'KNOWN')
+        self.assertEqual(x['evidence_status']['opening_nav_at_reset']['status'],'UNKNOWN');self.assertEqual(x['evidence_status']['opening_arithmetic_observation_at_reset']['status'],'KNOWN')
         self.assertEqual(x['evidence_status']['external_cash_and_asset_flows']['status'],'UNKNOWN')
         self.assertIsNone(x['broker_reported_account_net_pnl'])
     def test_consumer_has_no_ledger_or_period_writes(self):
@@ -502,5 +515,106 @@ class SourceBackedDeploymentTests(unittest.TestCase):
         self.assertIn('ProtectHome=read-only',text);self.assertIn('IPAddressDeny=any',text)
         writes=[l for l in text.splitlines() if l.startswith('ReadWritePaths=')]
         self.assertEqual(writes,['ReadWritePaths=%h/.local/state/heptatrader/pnl/account'])
+
+class AccountCaptureCohortTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = raw_snapshot()
+        start, end = self.raw['started_at_ms'], self.raw['observed_at_ms']
+        self.raw['capture_cohort'] = {
+            'schema': 'heptatrader.account-capture-cohort.v1',
+            'request_end_at_ms': {'ledger': end, 'account': end, 'positions': end},
+            'first_row_callback_at_ms': start+1,
+            'last_row_callback_at_ms': start+1,
+            'broker_valuation_tick_attested': False,
+            'time_basis': 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK'}
+
+    def test_exact_request_cohort_reconciles_without_claiming_atomic_broker_tick(self):
+        result = a.normalize_nav(self.raw, period())
+        self.assertEqual(result['capture_cohort'], self.raw['capture_cohort'])
+        self.assertFalse(result['fx_translation_atomic_tick'])
+        self.assertFalse(result['capture_cohort']['broker_valuation_tick_attested'])
+
+    def test_missing_request_end_or_false_tick_attestation_cannot_pass(self):
+        cohort = self.raw['capture_cohort']
+        for key, value in [('request_end_at_ms', {'ledger':T+120,'account':T+120}),
+                           ('broker_valuation_tick_attested',True),
+                           ('time_basis','BROKER_ATOMIC')]:
+            with self.subTest(key=key):
+                original = copy.deepcopy(cohort[key])
+                cohort[key] = value
+                with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+                    a.normalize_nav(self.raw,period())
+                cohort[key] = original
+
+    def test_late_cross_request_row_and_forged_timestamp_rejected(self):
+        self.raw['capture_cohort']['request_end_at_ms']['ledger']=T+100
+        with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+            a.normalize_nav(self.raw,period())
+        self.raw['capture_cohort']['request_end_at_ms']['ledger']=T+120
+        self.raw['rows'][0]['observed_at_ms']=T+101
+        self.raw['capture_cohort']['last_row_callback_at_ms']=T+102
+        with self.assertRaisesRegex(EvidenceError,'CAPTURE_COHORT'):
+            a.normalize_nav(self.raw,period())
+
+    def test_capture_cohort_cannot_widen_fx_dollar_limit(self):
+        for row in self.raw['rows']:
+            if row['key']=='CashBalance' and row['currency']=='EUR':row['value']='104'
+            if row['key']=='TotalCashBalance' and row['currency']=='EUR':row['value']='104'
+            if row['key']=='NetLiquidationByCurrency' and row['currency']=='EUR':row['value']='103'
+        with self.assertRaisesRegex(EvidenceError,'ACCOUNT_NAV_FX_RECONCILIATION_FAILED'):
+            a.normalize_nav(self.raw,period())
+
+
+class AccountCaptureV2FailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = raw_snapshot()
+        self.raw['schema'] = 'heptatrader.account-download.v2'
+        start, end = self.raw['started_at_ms'], self.raw['observed_at_ms']
+        self.cohort = {
+            'schema': 'heptatrader.account-capture-cohort.v1',
+            'request_end_at_ms': {'ledger': end, 'account': end, 'positions': end},
+            'first_row_callback_at_ms': start + 1,
+            'last_row_callback_at_ms': start + 1,
+            'broker_valuation_tick_attested': False,
+            'time_basis': 'LOCAL_CALLBACK_ARRIVAL_NOT_BROKER_VALUATION_TICK'}
+
+    def test_current_download_requires_cohort(self):
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT_REQUIRED'):
+            a.normalize_nav(self.raw, period())
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        result = a.normalize_nav(self.raw, period())
+        self.assertEqual(result['capture_cohort'], self.cohort)
+        self.assertFalse(result['fx_translation_atomic_tick'])
+        self.assertFalse(result['capture_cohort']['broker_valuation_tick_attested'])
+        del self.raw['capture_cohort']
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT_REQUIRED'):
+            a.normalize_nav(self.raw, period())
+
+    def test_late_end_and_fake_atomic_tick_rejected(self):
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        self.raw['capture_cohort']['request_end_at_ms']['ledger'] = self.raw['started_at_ms']
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT'):
+            a.normalize_nav(self.raw, period())
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        self.raw['capture_cohort']['broker_valuation_tick_attested'] = True
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_CAPTURE_COHORT'):
+            a.normalize_nav(self.raw, period())
+
+    def test_historical_v1_opening_replay_survives_schema_upgrade(self):
+        self.raw['schema'] = 'heptatrader.account-download.v1'
+        first = a.normalize_nav(self.raw, period())
+        self.assertEqual(first['nav'], '1203.90')
+        self.assertNotIn('capture_cohort', first)
+
+    def test_v2_reconciliation_bound_remains_one_usd(self):
+        self.raw['capture_cohort'] = copy.deepcopy(self.cohort)
+        for row in self.raw['rows']:
+            if row['currency'] == 'EUR' and row['key'] in ('CashBalance', 'TotalCashBalance'):
+                row['value'] = '104'
+            if row['currency'] == 'EUR' and row['key'] == 'NetLiquidationByCurrency':
+                row['value'] = '103'
+        with self.assertRaisesRegex(EvidenceError, 'ACCOUNT_NAV_FX_RECONCILIATION_FAILED'):
+            a.normalize_nav(self.raw, period())
+
 
 if __name__=='__main__':unittest.main()

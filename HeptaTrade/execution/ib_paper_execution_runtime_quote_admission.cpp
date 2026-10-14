@@ -39,6 +39,126 @@ private:
     std::unique_lock<std::recursive_mutex> m_lock;
     bool m_open = true;
 };
+bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
+    std::string& reason)
+{
+    reason.clear();
+    if (!m_config.profile.UsesUserCrypto() || !m_adapter ||
+        m_reconnectPending.load() || !m_adapter->IsConnected())
+        return true;
+    if (!m_adapter->IsEventStreamAuthoritative() ||
+        m_adapter->EventIngressAdmissionFailed())
+    {
+        reason = "IB_PAPER_STALE_CASH_REFRESH_STREAM_UNSAFE";
+        return false;
+    }
+    if (m_secondaryCashFarmUnavailableEpoch.load() ==
+            m_adapter->GetConnectionEpoch())
+        return true; // Old prices remain stale; await original scoped farm recovery.
+    // Serialize the exact subscription-id replacement with normal quote
+    // reads and all other market-data request sends. This is market-data only:
+    // it never places, modifies or cancels an ORDER.
+    std::lock_guard<std::recursive_mutex> quoteLock(m_authoritativeQuoteSendMutex);
+    if (!m_quoteSubscriptions) return true;
+    const auto health = m_quoteSubscriptions->GetHealth();
+    const auto nowMs = m_testHooks.quoteClockMs ?
+        m_testHooks.quoteClockMs() : NowEpochMs();
+    const auto epoch = m_adapter->GetConnectionEpoch();
+    if (health.connectionEpoch != epoch || !epoch || !health.generation)
+        return true;
+    for (const auto& item : health.contracts)
+    {
+        if (item.first == health.primaryInstrument ||
+            item.second.contract.secType != "CASH") continue;
+        // Renewal schedules real callbacks; it never widens quote validity.
+        // Reserve two seconds for this 1s poll and actual BID/ASK delivery so a
+        // 5s valid quote does not become a >5s gap while waiting for renewal.
+        // The old stream stays active until the replacement's own real pair
+        // arrives. A slow accepted stream is not cancelled/reissued every 3s.
+        const std::uint64_t renewAfterMs = m_config.quoteMaxAgeMs > 2000 ?
+            m_config.quoteMaxAgeMs - 2000 : m_config.quoteMaxAgeMs;
+        const auto plan = m_quoteSubscriptions->BeginStaleSecondaryCashRefresh(
+            item.first, epoch, health.generation, nowMs, renewAfterMs, 3000,
+            m_config.quoteMaxAgeMs);
+        if (!plan.accepted) continue;
+        const bool retirement = plan.subscriptions.empty() &&
+            plan.cancelRequestIds.size() == 1 &&
+            plan.reasonCode == "QUOTE_REFRESH_RETIRE_PREVIOUS";
+        if (!retirement && (!plan.cancelRequestIds.empty() ||
+            plan.subscriptions.size() != 1))
+        {
+            reason = "IB_PAPER_STALE_CASH_REFRESH_PLAN_INVALID";
+            return false;
+        }
+        if (retirement)
+        {
+            bool cancelled = false;
+            try { cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0]); }
+            catch (...) {}
+            if (!cancelled || !m_quoteSubscriptions->RecordRetirementResult(
+                    plan.generation, plan.cancelRequestIds[0]))
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE";
+                return false;
+            }
+            if (!m_adapter->IsConnected() ||
+                m_adapter->GetConnectionEpoch() != epoch ||
+                m_adapter->EventIngressAdmissionFailed())
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_TRANSPORT_UNSAFE";
+                return false;
+            }
+            NotifyTestStage("stale_cash_quote_previous_retired");
+            continue;
+        }
+        const auto& renewed = plan.subscriptions[0];
+        bool cancelled = true;
+        bool sent = false;
+        bool sdkThrew = false;
+        try
+        {
+            if (!plan.cancelRequestIds.empty())
+                cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0]);
+            if (cancelled)
+                sent = m_adapter->ReqMktData(renewed.requestId, renewed.contract);
+        }
+        catch (...)
+        {
+            // A throwing SDK call has uncertain send/cancel effects.
+            // Never retry on an unknown transport outcome.
+            sdkThrew = true;
+        }
+        const bool recorded = m_quoteSubscriptions->RecordDispatchResult(
+            plan.generation, renewed.requestId, sent);
+        if (!cancelled || sdkThrew || !recorded)
+        {
+            reason = "IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE";
+            return false;
+        }
+        if (!sent)
+        {
+            // Deferral applies only to a healthy, unchanged broker transport.
+            // An ingress fault or epoch change requires normal fail-closed
+            // reconnect handling, never another renewal on this socket.
+            if (!m_adapter->IsConnected() ||
+                m_adapter->GetConnectionEpoch() != epoch ||
+                m_adapter->EventIngressAdmissionFailed())
+            {
+                reason = "IB_PAPER_STALE_CASH_REFRESH_TRANSPORT_UNSAFE";
+                return false;
+            }
+            // The IB adapter returns false only before reqMktData reaches
+            // the SDK (for example after CASH-farm 2103). Keep EUR
+            // unavailable and retry with a different ID after the bounded cooldown.
+            // This never submits/cancels or replays a trading order.
+            NotifyTestStage("stale_cash_quote_deferred_no_send");
+            continue;
+        }
+        NotifyTestStage("stale_cash_quote_resubscribed");
+    }
+    return true;
+}
+
 bool IbPaperExecutionRuntimeComposition::PrepareQuoteSubscriptionPlan(
     std::unique_ptr<IBAuthoritativeQuoteSubscriptionSet>& subscriptions,
     IBAuthoritativeQuoteSubscriptionPlan& plan,

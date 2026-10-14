@@ -1,5 +1,6 @@
 #include "../adapter_ib/ib_callback_economics.h"
 #include "ib_paper_execution_runtime_internal.h"
+#include "../adapter_ib/ib_admission_event_policy.h"
 #include "../adapter_ib/ib_market_data_farm.h"
 #include "../adapter_ib/ib_venue_correlation.h"
 #include "../adapter_ib/ib_order_parse_rejection.h"
@@ -190,8 +191,12 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         return;
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
-    const IBAuthoritativeRiskSnapshot risk =
-        m_adapter->GetAuthoritativeRiskSnapshot();
+    // One adapter-lock observation binds completed risk to the latest exposure.
+    // A refresh started after a partial fill can finish after the final fill:
+    // its positions may already match while its captured exposure is still old.
+    const IBAuthoritativeRecoveryAuditSnapshot observed =
+        m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+    const IBAuthoritativeRiskSnapshot& risk = observed.risk;
     double position = 0.0;
     std::string reason;
     const std::map<std::string, InstrumentRef>::const_iterator contract =
@@ -206,6 +211,10 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         if (m_postFillExecutionComplete) m_postFillTerminalObserved = true;
     }
     const bool coherent = m_postFillExecutionComplete &&
+        risk.complete && risk.coherentRefreshComplete &&
+        risk.connectionEpoch != 0 &&
+        risk.connectionEpoch == m_adapter->GetConnectionEpoch() &&
+        risk.riskAbsorbedExposureGeneration == observed.exposureGeneration &&
         risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete &&
         risk.positionsGeneration > m_postFillBaselinePositionGeneration &&
@@ -386,6 +395,15 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
             event.value);
     const bool currentBrokerEpoch =
         IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch);
+    if (brokerControlError && currentBrokerEpoch && cashMarketDataFarm) {
+        if (controlErrorCode == 2103 || controlErrorCode == 2119)
+            m_secondaryCashFarmUnavailableEpoch.store(event.connectionEpoch);
+        else if (controlErrorCode == 2104)
+            m_secondaryCashFarmUnavailableEpoch.store(0);
+        // This never marks a quote fresh or admits a trade. Keep existing
+        // subscriptions during a known outage so real recovery callbacks can
+        // resume them without a needless cancel/failed-resubscribe cooldown.
+    }
     if (brokerControlError && currentBrokerEpoch &&
         (m_startupBrokerPhase.load() || m_reconnectPending.load())) {
         // A generic 2104 is diagnostic only.  It never authorizes a CASH
@@ -639,6 +657,28 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
     {
         MarkFatalRuntimeError("OMS_BROKER_EVENT_WRITE_FAILED");
         return AdapterRouteAction::Fatal;
+    }
+    if (IsIbCorroboratedCashMarketDataRequestError(event) && m_adapter &&
+        event.connectionEpoch == m_adapter->GetConnectionEpoch() &&
+        event.brokerClientId == m_config.profile.clientId)
+    {
+        // The Broker refusal is already durably retained above. Retire only
+        // the exact pending secondary request, preserving the active pair's
+        // original timestamps and five-second validity. Never cancel a ticker
+        // that the Broker has explicitly rejected as not subscribed.
+        if (event.key == "354") {
+            std::lock_guard<std::recursive_mutex> quoteLock(
+                m_authoritativeQuoteSendMutex);
+            const auto nowMs = m_testHooks.quoteClockMs ?
+                m_testHooks.quoteClockMs() : NowEpochMs();
+            if (!m_quoteSubscriptions ||
+                !m_quoteSubscriptions->RejectSecondaryCashRefreshRequest(
+                    event, nowMs)) {
+                MarkFatalRuntimeError("IB_PAPER_MARKET_DATA_REJECTION_SCOPE_UNSAFE");
+                return AdapterRouteAction::Fatal;
+            }
+            NotifyTestStage("secondary_cash_pending_request_rejected");
+        }
     }
     const bool historicalIdentityMiss = !validIdentity &&
         (((event.type == IBEventType::ExecutionDetails && event.requestId >= 0) ||

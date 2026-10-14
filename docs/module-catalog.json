@@ -232,7 +232,14 @@
         "scripts/verify_canonical_ib_paper_profile.py",
         "scripts/run_ib_paper_campaign.py",
         "scripts/hepta_ib_runtime_report.py",
-        "HeptaTrade/cli/hepta_ib_profile.cpp"
+        "HeptaTrade/cli/hepta_ib_profile.cpp",
+        "scripts/hepta_fx_readonly_probe.py",
+        "scripts/hepta_fx_tick_by_tick_probe.py",
+        "scripts/hepta_fx_tbt_midpoint_control.py",
+        "scripts/hepta_fx_source_evidence.py",
+        "scripts/hepta_native_quote_gate.py",
+        "scripts/hepta_broker_recovery_snapshot.py",
+        "scripts/hepta_recovery_identity_chain.py"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
@@ -253,7 +260,16 @@
         "tests/python/test_exported_source_configure.py",
         "tests/python/test_ib_runtime_observation.py",
         "tests/ib_connection_probe_behavior.py",
-        "tests/user_profile_cli_tests.py"
+        "tests/user_profile_cli_tests.py",
+        "tests/ib_quote_recovery_component_tests.cpp",
+        "tests/python/test_fx_readonly_probe.py",
+        "tests/python/test_fx_tbt_probe.py",
+        "tests/python/test_fx_source_evidence.py",
+        "tests/ib_quote_recovery_live_probe.cpp",
+        "tests/python/test_native_quote_gate.py",
+        "tests/ib_full_runtime_recovery_tests.cpp",
+        "tests/python/test_broker_recovery_snapshot.py",
+        "tests/python/test_recovery_identity_chain.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
@@ -404,7 +420,8 @@
         "scripts/heptatrader_attributed_driver.py",
         "scripts/install_decision_attribution.py",
         "scripts/hepta_fx_churn.py",
-        "scripts/install_fx_churn.py"
+        "scripts/install_fx_churn.py",
+        "scripts/hepta_nav_assurance.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -423,7 +440,8 @@
         "tests/python/test_account_pnl.py",
         "tests/python/test_btc_entry_economics.py",
         "tests/python/test_decision_attribution.py",
-        "tests/python/test_fx_churn.py"
+        "tests/python/test_fx_churn.py",
+        "tests/python/test_nav_assurance.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

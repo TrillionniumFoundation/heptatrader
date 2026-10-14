@@ -258,6 +258,10 @@ endif()
 add_executable(hepta_ib_admission_event_policy_tests ib_admission_event_policy_tests.cpp)
 hepta_register_core_test(hepta_ib_admission_event_policy_tests)
 
+add_executable(hepta_ib_local_market_data_request_tests ib_local_market_data_request_tests.cpp)
+target_link_libraries(hepta_ib_local_market_data_request_tests PRIVATE hepta_ib_adapter_runtime)
+hepta_register_core_test(hepta_ib_local_market_data_request_tests)
+
 add_executable(hepta_ib_startup_recovery_hold_tests ib_startup_recovery_hold_tests.cpp)
 hepta_register_core_test(hepta_ib_startup_recovery_hold_tests)
 
@@ -277,6 +281,47 @@ add_executable(hepta_ib_recent_order_replay_tests ib_recent_order_replay_tests.c
 target_link_libraries(hepta_ib_recent_order_replay_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_recent_order_replay_tests)
+
+# The same production runtime source list and adapter/subscription/admission
+# objects; an injected wrapper has no socket and throws on every order method.
+add_executable(hepta_ib_quote_recovery_component_tests
+    ib_quote_recovery_component_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_quote_recovery_component_tests)
+
+add_executable(hepta_ib_cancel_notice_tests ib_cancel_notice_tests.cpp)
+target_link_libraries(hepta_ib_cancel_notice_tests PRIVATE hepta_ib_adapter_runtime)
+hepta_register_core_test(hepta_ib_cancel_notice_tests)
+
+# Same native post-fill methods; synthetic events, no production broker or state.
+add_executable(hepta_ib_postfill_reconciliation_tests
+    ib_postfill_reconciliation_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_postfill_reconciliation_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_postfill_reconciliation_tests)
+
+# Full runtime startup, recovery coordinator, durable OMS and real local IPC.
+# Broker wrapper is socket-free; no production state or credentials are used.
+add_executable(hepta_ib_full_runtime_recovery_tests
+    ib_full_runtime_recovery_tests.cpp ${_hepta_ib_replay_sources})
+target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_full_runtime_recovery_tests)
+
+# Deliberate local operator target only: no ordinary ctest, no installation,
+# no default build, and no direct gateway access from the CLI. The runner
+# pins this SDK-linked binary and places an exact frame allowlist in front.
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_ib_quote_recovery_live_probe EXCLUDE_FROM_ALL
+        ib_quote_recovery_live_probe.cpp ${_hepta_ib_replay_sources})
+    target_link_libraries(hepta_ib_quote_recovery_live_probe PRIVATE
+        hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+        hepta_authoritative_state hepta_risk_engine)
+endif()
 
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}
