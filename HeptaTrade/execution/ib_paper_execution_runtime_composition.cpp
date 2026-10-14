@@ -559,6 +559,10 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
     auto nextStaleCashQuoteCheck = nextPendingReconcile + std::chrono::seconds(1);
+    // One no-trade account+position refresh per exact broker/exposure pair.
+    auto nextCashGenerationRefresh = nextPendingReconcile;
+    std::uint64_t lastCashRefreshEpoch = 0;
+    std::uint64_t lastCashRefreshExposure = 0;
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -613,6 +617,41 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
             }
             if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
+        }
+        // CashBalance subscription callbacks are not tied to reqAccountSummary
+        // End. If such a push invalidated a coherent risk view with no live
+        // post-fill reconciliation, request a fresh *ordinary* account+position
+        // generation. Never declare owner recovery audit complete here: that
+        // requires the separately enforced NEW broker connection epoch.
+        // One dispatch per epoch/exposure prevents stale duplicate callbacks
+        // from causing a broker-request storm or repeated reconnections.
+        if (m_config.profile.userScope && m_adapter && m_coordinator &&
+            now >= nextCashGenerationRefresh &&
+            !m_reconnectPending.load() &&
+            !m_recoveryAuditReconnectRequested.load() &&
+            !m_postFillRiskRefreshPending.load() &&
+            !m_adapter->HasPendingLivePostFillRiskReconciliation()) {
+            nextCashGenerationRefresh = now + std::chrono::seconds(1);
+            std::string blockedReason;
+            if (!m_coordinator->IsMutationBlocked(&blockedReason)) {
+                const auto audit = m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+                const std::uint64_t epoch = audit.risk.connectionEpoch;
+                const std::uint64_t exposure = audit.exposureGeneration;
+                if (!audit.risk.complete &&
+                    audit.reasonCode == "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE" &&
+                    audit.active.complete && audit.terminal.complete &&
+                    audit.active.activeOrderIds.empty() && epoch != 0 &&
+                    audit.active.connectionEpoch == epoch &&
+                    audit.terminal.connectionEpoch == epoch &&
+                    (lastCashRefreshEpoch != epoch ||
+                     lastCashRefreshExposure != exposure)) {
+                    if (m_adapter->ReqRiskRefresh()) {
+                        lastCashRefreshEpoch = epoch;
+                        lastCashRefreshExposure = exposure;
+                        NotifyTestStage("cash_drift_ordinary_risk_dispatched");
+                    }
+                }
+            }
         }
         if (m_config.profile.userScope && m_coordinator && m_policyAuthority &&
             m_coordinator->IsMutationBlocked(&pendingReason) &&
