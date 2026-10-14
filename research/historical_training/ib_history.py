@@ -5,11 +5,12 @@ An API end callback is transport completion, not a claim of full coverage.
 """
 from __future__ import annotations
 import argparse,collections,fcntl,json,os,pwd,sys,threading,time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,atomic,write_once
 from .egress import HistoryGuard
+from .history_farm_readiness import FarmReadiness, validate_wait
 
 ALLOWED=frozenset((71,20,25,87,90))
 CONTRACT={'conId':12087792,'symbol':'EUR','secType':'CASH','exchange':'IDEALPRO','currency':'USD'}
@@ -47,6 +48,7 @@ def validate(c):
     end=datetime.strptime(c['end_utc'],'%Y%m%d %H:%M:%S UTC').replace(tzinfo=timezone.utc)
     validate_cutoff(end, c.get('cutoff_policy', 'OLDER_THAN_24H'))
     request_window_days(c)
+    validate_wait(c.get('cash_hmds_startup_wait_sec', 0))
     return end
 
 def validate_cutoff(end, policy='OLDER_THAN_24H', now=None):
@@ -90,21 +92,26 @@ def make_app(c):
             self.events={};self.rows={};self.ends={};self.errors=[];self.heads={};self.schedules={}
             self.sent=collections.Counter();self.own=set();self.active=set();self.dead=False
             self.cash_hmds_state='UNKNOWN'
+            self.farm = FarmReadiness() if c.get('cash_hmds_startup_wait_sec', 0) else None
             self.guard=HistoryGuard(c['client_id'],c['spacing_sec'])
         def sendMsg(self,msg):
             fields=msg.split('\0');code=int(fields[0])
             if code not in ALLOWED:raise EvidenceError('NON_HISTORY_MESSAGE_REFUSED:'+str(code))
             if code!=71 and not self.paper:raise EvidenceError('PAPER_NOT_VERIFIED')
             if sum(self.sent.values())>=80:raise EvidenceError('OUTBOUND_MESSAGE_CAP')
-            self.guard.check(msg,self.paper,self.serverVersion())
-            self.sent[code]+=1
-            return EClient.sendMsg(self,msg)
+            fence = self.farm.dispatch(code, int(fields[1])) if self.farm is not None and code in (20, 87) else nullcontext()
+            with fence:
+                self.guard.check(msg,self.paper,self.serverVersion())
+                self.sent[code]+=1
+                return EClient.sendMsg(self,msg)
         def nextValidId(self,orderId):self.ready.set()
         def managedAccounts(self,accountsList):
             accounts=[x.strip() for x in accountsList.split(',') if x.strip()]
             self.paper=bool(accounts) and all(x.startswith('DU') for x in accounts)
             self.account_event.set()
         def error(self,reqId,errorCode,errorString,advancedOrderRejectJson=''):
+            if self.farm is not None:
+                self.farm.notice(reqId, errorCode, errorString)
             self.errors.append({'request_id':reqId,'code':errorCode,'message':errorString})
             self.cash_hmds_state=observe_cash_hmds(
                 self.cash_hmds_state,reqId,errorCode,errorString)
@@ -247,6 +254,10 @@ def _run_locked(c,end,root):
         if not app.ready.wait(12) or not app.account_event.wait(3) or not app.paper:
             raise EvidenceError('PAPER_HANDSHAKE_FAILED')
         session['server_version']=app.serverVersion()
+        if c.get('cash_hmds_startup_wait_sec', 0):
+            if getattr(app, 'farm', None) is None:
+                raise EvidenceError('REQUIRED_HMDS_READINESS_TRACKER_MISSING')
+            session['startup_readiness'] = app.farm.wait(c['cash_hmds_startup_wait_sec'], alive=lambda: app.isConnected() and not app.dead)
         for index,plan in enumerate(plans(c,end)):
             key=digest({'contract':CONTRACT,**plan});directory=root/'chunks'/key
             r=verified_receipt(directory,plan)
@@ -299,6 +310,8 @@ def _run_locked(c,end,root):
             requests_sent_this_run=sent_now,outbound_message_counts=dict(app.sent),
             cash_hmds_state=getattr(app,'cash_hmds_state','UNKNOWN'),
             allowed_outbound_codes=sorted(ALLOWED),broker_orders_sent=0,errors=app.errors)
+        if getattr(app, 'farm', None) is not None:
+            session['same_connection_cash_hmds'] = app.farm.snapshot()
         atomic(root/'session.json',session)
         write_once(root/'sessions'/(str(session['started_ms'])+'.json'),session)
         lock.close()
