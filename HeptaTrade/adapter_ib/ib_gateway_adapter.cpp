@@ -749,6 +749,15 @@ bool HeptaIBGatewayAdapter::ReqRiskRefresh() {
 
 bool HeptaIBGatewayAdapter::ReqRecoveryAuditRiskRefresh() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // A previous failed recovery audit may require a NEW IB connection
+    // epoch. Do not re-admit that same epoch through a manual or scheduled
+    // risk refresh before its independent active/terminal replay.
+    if (m_recoveryAuditMinimumConnectionEpoch != 0 &&
+        m_connectionEpoch < m_recoveryAuditMinimumConnectionEpoch) {
+        m_lastRejectReason =
+            "IB_RECOVERY_AUDIT_NEW_CONNECTION_EPOCH_REQUIRED";
+        return false;
+    }
     if (!m_correlationSnapshot.complete ||
         !m_terminalCorrelationSnapshot.complete ||
         m_correlationSnapshot.connectionEpoch != m_connectionEpoch ||

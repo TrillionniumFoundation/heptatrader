@@ -1,4 +1,5 @@
 #include "ib_paper_execution_runtime_internal.h"
+#include "ib_paper_cash_reaudit.h"
 
 #include <cerrno>
 #include <chrono>
@@ -558,6 +559,9 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
+    auto nextCashReauditTry = nextPendingReconcile;
+    std::uint64_t attemptedCashReauditEpoch = 0;
+    std::uint64_t attemptedCashReauditRiskGeneration = 0;
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -601,6 +605,33 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
             }
             if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
+        }
+        // A changed out-of-generation FX cash subscription push deliberately
+        // revoked the old authoritative risk and recovery audit. Post-fill
+        // ReqRiskRefresh() can reconstruct an informational coherent risk
+        // snapshot, but never re-grants the independent recovery audit.
+        // One bounded, exact-epoch recovery request per observed risk generation
+        // bridges that gap. No order, account baseline, or gate is forged here.
+        // A failed/competing request retries only after a short delay; an
+        // accepted one cannot spam this connection/risk generation.
+        if (!m_config.profile.observationOnly && !PostFillRiskRefreshPending() &&
+            now >= nextCashReauditTry && m_adapter->IsConnected() &&
+            m_adapter->IsEventStreamAuthoritative()) {
+            const auto cashAudit =
+                m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+            const std::uint64_t epoch = m_adapter->GetConnectionEpoch();
+            if (CanRequestCashRecoveryReaudit(
+                    cashAudit, epoch, PostFillRiskRefreshPending(),
+                    attemptedCashReauditEpoch,
+                    attemptedCashReauditRiskGeneration)) {
+                nextCashReauditTry = now + std::chrono::milliseconds(1500);
+                if (m_adapter->ReqRecoveryAuditRiskRefresh()) {
+                    attemptedCashReauditEpoch = epoch;
+                    attemptedCashReauditRiskGeneration =
+                        cashAudit.risk.generation;
+                    NotifyTestStage("cash_change_recovery_reaudit_requested");
+                }
+            }
         }
         if (m_config.profile.userScope && m_coordinator && m_policyAuthority &&
             m_coordinator->IsMutationBlocked(&pendingReason) &&

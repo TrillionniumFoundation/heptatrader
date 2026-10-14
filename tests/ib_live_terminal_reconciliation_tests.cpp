@@ -1,4 +1,5 @@
 #include "adapter_ib/ib_gateway_adapter.h"
+#include "execution/ib_paper_cash_reaudit.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
 #include "execution/ib_paper_startup_recovery.h"
@@ -185,6 +186,69 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestChangedCashPushRequiresFreshBrokerRecoveryAudit() {
+    // Broker fixture: no native order submission or account mutation.
+    Fixture f(true,false,true);
+    auto cash = f.Event(IBEventType::AccountValue);
+    auto finish = [&](const char* eur) {
+        auto account = cash;
+        account.key="NetLiquidation:USD";account.value="1000";f.Push(account);
+        account.key="AccountReady:";account.value="true";f.Push(account);
+        account.key="CashBalance:EUR";account.value=eur;f.Push(account);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    finish("-75000");
+    auto ready = f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(ready.barrierComplete && ready.risk.coherentRefreshComplete);
+    const auto epoch = f.adapter.GetConnectionEpoch();
+
+    cash.key="CashBalance:EUR";cash.value="-75001";f.Push(cash);
+    const auto invalid = f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!invalid.barrierComplete && !invalid.risk.complete);
+    assert(invalid.reasonCode ==
+        "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    assert(CanRequestCashRecoveryReaudit(invalid,epoch,false,0,0));
+    assert(!CanRequestCashRecoveryReaudit(invalid,epoch,true,0,0));
+    assert(!CanRequestCashRecoveryReaudit(
+        invalid,epoch,false,epoch,invalid.risk.generation));
+    assert(!CanRequestCashRecoveryReaudit(invalid,epoch+1,false,0,0));
+    auto untrusted=invalid;
+    untrusted.active.complete=false;
+    assert(!CanRequestCashRecoveryReaudit(untrusted,epoch,false,0,0));
+    untrusted=invalid;untrusted.terminal.complete=false;
+    assert(!CanRequestCashRecoveryReaudit(untrusted,epoch,false,0,0));
+    untrusted=invalid;untrusted.active.activeOrderIds.insert(777);
+    assert(!CanRequestCashRecoveryReaudit(untrusted,epoch,false,0,0));
+    untrusted=invalid;untrusted.reasonCode="IB_ACCOUNT_READY_VALUE_INVALID";
+    assert(!CanRequestCashRecoveryReaudit(untrusted,epoch,false,0,0));
+    untrusted=invalid;untrusted.terminalExposureGeneration =
+        untrusted.exposureGeneration+1;
+    assert(!CanRequestCashRecoveryReaudit(untrusted,epoch,false,0,0));
+
+    // Only a NEW, independently delimited account+positions download and
+    // exact active+terminal witnesses may restore the old cash invalidation.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    finish("-75000");
+    const auto recovered=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(recovered.barrierComplete && recovered.risk.coherentRefreshComplete);
+    assert(recovered.risk.generation>invalid.risk.generation);
+    assert(recovered.risk.fxCashGeneration==recovered.risk.accountGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    // Once an already attempted same-epoch audit is explicitly fenced by
+    // BeginRecoveryAuditBarrier, no scheduled refresh can bypass its required
+    // new connection and fresh active+terminal broker replay.
+    cash.value="-75002";f.Push(cash);
+    const auto newEpochRequired=f.adapter.BeginRecoveryAuditBarrier();
+    assert(newEpochRequired.newConnectionEpochRequired);
+    assert(!f.adapter.ReqRecoveryAuditRiskRefresh());
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
 void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     // All observations below are synthetic. No broker connection or sends.
     for(int invalidation=0;invalidation<6;++invalidation) {
@@ -854,6 +918,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestChangedCashPushRequiresFreshBrokerRecoveryAudit();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
