@@ -600,3 +600,12 @@ for true independent recomputation of all 24 original quote-input,
 300-second endpoint and 30-second path verdicts against sealed original
 sources. A quote anchor alone does not establish a USABLE minute; this
 replay grants review only, not training/GPU/model authorization.
+
+## 2026-10-13 one-source-scan frozen 3 x 4 price cohort
+
+See [BATCHED_FROZEN_COHORT_20261013.md](BATCHED_FROZEN_COHORT_20261013.md).
+A NEW read-only scanner verifies all original sealed source segments once
+and extracts three disjoint frozen price windows with the original strict
+12-price-label audit unchanged. Source-first-269, original price/cohort
+hashes and all 11 economic/identity fields exactly match the old 3-scan
+negative control. There is no new model/trade/Owner qualification.

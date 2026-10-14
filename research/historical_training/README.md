@@ -441,3 +441,10 @@ The original production Laya Guard remains unchanged. See
 [swapless-cgroup recovery](../train_v2/SWAPLESS_CGROUP_RECOVERY_20261013.md)
 for actual kernel OOM/recovery and separately refreshed source proofs.
 No production training admission or GPU memory ceiling is inferred.
+
+## One-pass 3 x 4 old price receipt replay (2026-10-13)
+
+See [BATCHED_FROZEN_COHORT_20261013.md](../train_v2/BATCHED_FROZEN_COHORT_20261013.md).
+This is a separate OPT-IN batch-only original sealed-source reader. The
+prior paged_price_window implementation, production data source and frozen
+3x4 original outcomes are not modified. No new trading/economic authority.
