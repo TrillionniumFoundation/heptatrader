@@ -94,3 +94,25 @@ from GitHub, not inferred from the local results.
 
 No production Execution replacement/restart, driver unmask, stop removal, model
 promotion or trading request is part of these source changes.
+
+### Engineering watchdog versus execution freshness
+
+The remaining hosted failures on `519a2d9d` were both the ten-second CMake
+subprocess watchdog in the Gateway symbol-boundary fixture. Its assertions test
+privilege separation, not a ten-second performance SLO. This development-only
+watchdog is now 30 seconds, matching the fixture's existing compiler budget.
+All allowed/forbidden-symbol assertions remain, and timeout still fails. This
+does not widen any quote TTL, order deadline, runtime limit or frozen experiment.
+The old hosted failures remain recorded; a new run, not this edit, establishes
+whether the shared-runner failure is resolved.
+
+### Concurrent operational observation
+
+The final read-only Pocket4 inspection found Execution still at PID 1824767 and
+its original `486583c` release. FX/BTC drivers were now running at PIDs 2324730/
+2324731, with start time 2026-10-14 20:57:45 UTC+08; the old runtime stop marker
+was absent. These are changes relative to the initial masked/held snapshot.
+This convergence task issued no start/unmask/disarm/order operation, and has not
+established which concurrent operator changed that state. Do not report that
+the two drivers are still masked, or that zero calls by this task means there
+were zero account-wide trades. The new persistent-mode source was not deployed.

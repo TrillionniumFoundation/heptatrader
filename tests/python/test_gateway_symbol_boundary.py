@@ -19,7 +19,10 @@ class GatewaySymbolBoundaryTests(unittest.TestCase):
             return subprocess.run(["cmake", f"-DHEPTA_GATEWAY_BINARY={binary}",
                                    f"-DHEPTA_NM_EXECUTABLE={shutil.which('nm')}", "-P",
                                    str(ROOT / "cmake/verify_gateway_forbidden_symbols.cmake")],
-                                  capture_output=True, text=True, timeout=10)
+                                  # Shared CI process watchdog, not a trading TTL or
+                                  # a latency SLO. Match the compiler's bounded budget;
+                                  # retain the complete positive/negative symbol checks.
+                                  capture_output=True, text=True, timeout=30)
 
     def test_innocent_symbol_growth_is_observed_without_a_fake_budget(self):
         source = "\n".join(f"int ordinary_{i}() {{ return {i}; }}" for i in range(1250))
