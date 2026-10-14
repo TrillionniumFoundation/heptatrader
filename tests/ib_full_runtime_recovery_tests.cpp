@@ -80,6 +80,7 @@ struct Shared {
     std::atomic<unsigned> injectedErrorsDequeued{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
+    std::atomic<int> cashBalanceOverride{0};
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
     bool seeded=false;
@@ -124,7 +125,7 @@ public:
     const char* GetStatusString()const override{return "SYNTHETIC_FULL_RUNTIME_NO_SOCKET";}
     bool ReqAccountSummary()override {
         ++s->accountCalls;
-        for(const auto& row:std::map<std::string,std::string>{{"AccountReady:","true"},{"NetLiquidation:USD","1000000"},{"CashBalance:EUR",s->seeded?"1025":"1000"}}) {
+        for(const auto& row:std::map<std::string,std::string>{{"AccountReady:","true"},{"NetLiquidation:USD","1000000"},{"CashBalance:EUR",s->cashBalanceOverride.load()!=0?std::to_string(s->cashBalanceOverride.load()):(s->seeded?"1025":"1000")}}) {
             auto e=make(IBEventType::AccountValue);e.key=row.first;e.value=row.second;events.push_back(e);
         }
         events.push_back(make(IBEventType::AccountSummaryEnd));return true;
@@ -319,6 +320,77 @@ struct Fixture {
         }
         check(intents==2&&sends==2&&attempts==2,"reconstruction cannot create new sends or intents");
         check(permanent.size()==2,"both original execution identities retained after restart");
+    }
+    void injectAccountValue(const std::string& key,const std::string& value) {
+        IBEvent event;event.type=IBEventType::AccountValue;
+        event.connectionEpoch=runtime->Adapter().GetConnectionEpoch();
+        event.account="DU90001";event.brokerClientId=701;event.key=key;event.value=value;
+        shared->injectError(event); // injected native event, no Broker socket
+    }
+    void cashDriftOrdinaryRefresh(bool missingPositions=false) {
+        const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(before.risk.complete&&before.active.complete&&before.terminal.complete,
+              "cash fixture starts with complete original evidence");
+        const auto accountCalls=shared->accountCalls.load(),positionCalls=shared->positionCalls.load();
+        const auto epoch=runtime->Adapter().GetConnectionEpoch();
+        const int original=shared->seeded?1025:1000;
+        shared->cashBalanceOverride=original+1;shared->omitPositions=missingPositions;
+        injectAccountValue("CashBalance:EUR",std::to_string(original+1));
+        const auto until=ms()+2200;
+        while(ms()<until&&shared->count("cash_drift_ordinary_risk_dispatched")==0&&
+              !runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(shared->count("cash_drift_ordinary_risk_dispatched")==1,
+              "CASH_DRIFT_ORDINARY_REFRESH_NOT_DISPATCHED");
+        const auto completeUntil=ms()+1000;
+        while(!missingPositions&&ms()<completeUntil&&
+              !runtime->Adapter().GetAuthoritativeRiskSnapshot().complete)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        auto after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(shared->accountCalls==accountCalls+1&&shared->positionCalls==positionCalls+1,
+              "cash drift dispatches exactly one account/positions cohort");
+        check(!after.barrierComplete,"ordinary cash refresh never clears owner recovery audit");
+        if(missingPositions) {
+            check(!after.risk.complete,"missing positions End cannot complete ordinary cash risk");
+        } else {
+            check(after.risk.complete&&after.risk.coherentRefreshComplete&&after.risk.fxCashComplete,
+                  "actual new account/position callbacks complete ordinary risk");
+            check(after.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE",
+                  "sticky owner audit reason remains unchanged");
+            check(after.risk.riskAbsorbedExposureGeneration==before.exposureGeneration,
+                  "ordinary refresh does not invent economic exposure");
+            if(shared->seeded) {
+                check(after.positionQuantities.at("BTC.USD")==.01,
+                      "completed cash refresh preserves original physical BTC position");
+            }
+        }
+        // The old delayed balance is genuinely different, not a no-op duplicate.
+        // Once this epoch/exposure pair was dispatched it cannot start a storm.
+        for(int i=0;i<8;++i)injectAccountValue("CashBalance:EUR",std::to_string(original));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1250));
+        after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(shared->accountCalls==accountCalls+1&&shared->positionCalls==positionCalls+1&&
+              shared->count("cash_drift_ordinary_risk_dispatched")==1,
+              "repeated delayed balance callbacks must not dispatch more cohorts");
+        check(!after.barrierComplete&&runtime->Adapter().GetConnectionEpoch()==epoch&&
+              shared->orderCalls==0&&runtime->IsRunning()&&!runtime->HasFatalRuntimeError(),
+              "ordinary repair neither reconnects nor orders nor grants owner audit");
+        if(shared->seeded) originalCommands();
+    }
+    void cashRefreshDoesNotBypassOtherHolds(bool unknown) {
+        const auto accountCalls=shared->accountCalls.load(),positionCalls=shared->positionCalls.load();
+        if(unknown)check(runtime->Coordinator().IsMutationBlocked(),"uncertain original command hold exists");
+        shared->cashBalanceOverride=1001;
+        injectAccountValue(unknown?"CashBalance:EUR":"AccountReady:",unknown?"1001":"false");
+        const auto until=ms()+1000;
+        while(ms()<until&&runtime->Adapter().GetAuthoritativeRiskSnapshot().complete)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(!runtime->Adapter().GetAuthoritativeRiskSnapshot().complete,"negative native callback invalidates risk");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1250));
+        check(shared->count("cash_drift_ordinary_risk_dispatched")==0&&
+              shared->accountCalls==accountCalls&&shared->positionCalls==positionCalls,
+              "uncertain command or non-cash risk failure cannot acquire refresh eligibility");
+        check(!runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot().barrierComplete&&shared->orderCalls==0,
+              "negative evidence stays held without any order method");
     }
     void unknownOutcomeSurvivesReconstruction() {
         for(int pass=0;pass<2;++pass){
@@ -558,8 +630,18 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
               !admission.TryReserve(generation),"failed admission cannot reopen or reserve again");
     }
 }
-int main(){try{
+int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    {Fixture f;f.cashDriftOrdinaryRefresh();}
+    {Fixture f(true);f.cashDriftOrdinaryRefresh();}
+    {Fixture f;f.cashDriftOrdinaryRefresh(true);}
+    {Fixture f(false,true);f.cashRefreshDoesNotBypassOtherHolds(true);}
+    {Fixture f;f.cashRefreshDoesNotBypassOtherHolds(false);}
+    if(argc==2&&std::string(argv[1])=="--cash-refresh-only") {
+        std::cout<<"PASS 5 full-loop cash-refresh cases; missing End/unknown command/other risk held; no orders or Broker socket"<<std::endl;
+        return 0;
+    }
+
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
     {Fixture f(true);const auto originals=f.originalCommands();f.reconnect(1101);
         check(f.originalCommands()==originals,"original commands and owners preserved through full reconnect");
@@ -591,6 +673,6 @@ int main(){try{
         invalidate(e);f.uncorroboratedMarketDataErrorClosesRecovery(e);
     }
     unknownRequestErrorsStillBlockQuoteAdmission();
-    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<10+invalidMarketDataScopes.size()<<"}"<<std::endl;
+    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<15+invalidMarketDataScopes.size()<<"}"<<std::endl;
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}
