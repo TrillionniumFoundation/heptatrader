@@ -218,13 +218,28 @@ static int listener(const std::string& path) {
     check(path.size()<sizeof(a.sun_path),"unix path length");std::strcpy(a.sun_path,path.c_str());
     check(::bind(fd,reinterpret_cast<sockaddr*>(&a),sizeof(a))==0&&::listen(fd,8)==0,"unix fixture listen");return fd;
 }
-static void writePrivate(const std::string& path,const std::string& text){std::ofstream f(path);f<<text;f.close();check(::chmod(path.c_str(),0400)==0,"credential mode");}
+static void writePrivate(const std::string& path,const std::string& text) {
+    std::ofstream f(path,std::ios::binary|std::ios::trunc);
+    check(f.is_open(),"fixture credential create failed");
+    f.write(text.data(),static_cast<std::streamsize>(text.size()));
+    f.flush();
+    check(f.good(),"fixture credential write failed (temporary storage unavailable)");
+    f.close();
+    check(!f.fail(),"fixture credential close failed");
+    check(::chmod(path.c_str(),0400)==0,"credential mode");
+}
 struct Fixture {
     std::string dir;std::shared_ptr<Shared> shared=std::make_shared<Shared>();
     std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
     IbPaperExecutionRuntimeConfig savedConfig;
     explicit Fixture(bool seeded=false,bool unknown=false) {
-        char tmpl[]="/tmp/hepta-full-XXXXXX";auto p=::mkdtemp(tmpl);check(p,"private fixture directory");dir=p;
+        // Test-only storage choice: do not depend on another task's /tmp capacity.
+        // Production credential/control paths and validation remain unchanged.
+        const char* configured=::getenv("TMPDIR");
+        std::string temporaryRoot=configured&&*configured?configured:"/tmp";
+        check(temporaryRoot[0]=='/',"fixture TMPDIR must be absolute");
+        std::string tmpl=temporaryRoot+"/hepta-full-XXXXXX";
+        auto p=::mkdtemp(&tmpl[0]);check(p,"private fixture directory");dir=p;
         check(::mkdir((dir+"/state").c_str(),0700)==0 && ::mkdir((dir+"/cred").c_str(),0700)==0,"fixture dirs");shared->seeded=seeded;
         IbPaperExecutionRuntimeConfig c;c.mode=IbPaperExecutionRuntimeMode::Paper;c.profile.enabled=true;c.profile.userScope=true;c.profile.observationOnly=false;
         c.profile.account="DU90001";c.profile.host="127.0.0.1";c.profile.port=4002;c.profile.clientId=701;
