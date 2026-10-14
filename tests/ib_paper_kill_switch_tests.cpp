@@ -8,6 +8,8 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include "execution/ib_paper_execution_profile.h"
 
 namespace
 {
@@ -155,10 +157,63 @@ void TestSymlinkTraversalAndProductionOwnershipFailClosed()
     assert(::rmdir(real.c_str()) == 0);
     assert(::rmdir(parent.c_str()) == 0);
 }
+
+void TestPersistentOperatorMode()
+{
+    const auto dir=MakeControlDirectory("hepta-persistent-unit");
+    const auto path=dir+"/operator-mode";
+    auto write=[&](const std::string& value) {
+        const auto next=path+".new";
+        const int fd=::open(next.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+        assert(fd>=0);assert(::write(fd,value.data(),value.size())==static_cast<ssize_t>(value.size()));
+        assert(::fchmod(fd,0440)==0);assert(::fsync(fd)==0);assert(::close(fd)==0);
+        assert(::rename(next.c_str(),path.c_str())==0);
+        const int parent=::open(dir.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+        assert(parent>=0);assert(::fsync(parent)==0);assert(::close(parent)==0);
+    };
+    auto open=[&]() {
+        std::shared_ptr<IbPaperKillSwitch> result;std::string reason;
+        assert(IbPaperKillSwitch::OpenAndPinForTesting(dir,::geteuid(),::getegid(),result,reason,true));
+        return result;
+    };
+    auto reader=open();
+    ExpectState(reader,IbPaperKillSwitchState::Engaged,"IB_PAPER_OPERATOR_HOLD");
+    write("HOLD\n");reader.reset();reader=open();
+    ExpectState(reader,IbPaperKillSwitchState::Engaged,"IB_PAPER_OPERATOR_HOLD");
+    const pid_t child=::fork();assert(child>=0);
+    if(child==0){auto reopened=open();::_exit(reopened->Observe().state==IbPaperKillSwitchState::Engaged?0:1);}
+    int status=0;assert(::waitpid(child,&status,0)==child);assert(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    write("PAPER_ENABLED\n");ExpectState(reader,IbPaperKillSwitchState::Disarmed,"");
+    CreateMarker(dir);ExpectState(reader,IbPaperKillSwitchState::Engaged,"IB_PAPER_KILL_SWITCH_ENGAGED");
+    assert(::unlink((dir+"/kill-switch").c_str())==0);
+    write("HOLD\n");ExpectState(reader,IbPaperKillSwitchState::Engaged,"IB_PAPER_OPERATOR_HOLD");
+    for(const auto& value:{std::string(""),std::string("LIVE\n"),std::string("PAPER_ENABLED"),
+                          std::string("HOLD\nPAPER_ENABLED\n"),std::string(80,'x'),std::string("HOLD\n\0",6)}) {
+        write(value);ExpectState(reader,IbPaperKillSwitchState::Uncertain,"IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    }
+    write("PAPER_ENABLED\n");assert(::chmod(path.c_str(),0640)==0);
+    ExpectState(reader,IbPaperKillSwitchState::Uncertain,"IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(path.c_str())==0);assert(::symlink("/dev/null",path.c_str())==0);
+    ExpectState(reader,IbPaperKillSwitchState::Uncertain,"IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(path.c_str())==0);assert(::mkfifo(path.c_str(),0440)==0);
+    ExpectState(reader,IbPaperKillSwitchState::Uncertain,"IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(path.c_str())==0);write("PAPER_ENABLED\n");
+    assert(::link(path.c_str(),(dir+"/hardlink").c_str())==0);
+    ExpectState(reader,IbPaperKillSwitchState::Uncertain,"IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink((dir+"/hardlink").c_str())==0);assert(::unlink(path.c_str())==0);
+    ExpectState(reader,IbPaperKillSwitchState::Engaged,"IB_PAPER_OPERATOR_HOLD");
+    reader.reset();assert(::rmdir(dir.c_str())==0);
+    const auto expected=IbPaperKillSwitch::UserPersistentControlDirectoryPath();
+    assert(!expected.empty());assert(IbPaperExecutionProfileConfig::IsUserControlDirectory(expected));
+    assert(!IbPaperExecutionProfileConfig::IsUserControlDirectory(expected+"-foreign"));
+    assert(IbPaperExecutionProfileConfig::IsUserControlDirectory(IbPaperExecutionProfileConfig::UserControlDirectoryPath()));
+}
+
 }
 
 int main()
 {
+    TestPersistentOperatorMode();
     TestExplicitUserReaderPreservesStateAndOwnerChecks();
     TestMarkerStatesAndMetadata();
     TestDirectoryReplacementIsStickyUncertain();

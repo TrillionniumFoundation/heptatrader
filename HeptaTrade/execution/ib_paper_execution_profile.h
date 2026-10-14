@@ -98,6 +98,7 @@ struct IbPaperExecutionProfileConfig
     static const char* AuthorizationCredentialName();
     static const char* ControlDirectoryPath();
     static std::string UserControlDirectoryPath();
+    static bool IsUserControlDirectory(const std::string& directory);
     static const char* AllowedSecurityTypes();
     const char* AllowedOrderTypes() const;
     static const char* OrderModeName(IbPaperOrderMode mode);

@@ -416,8 +416,9 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     if (!ExpectedControlDirectory(
             gatewayContextBinding.executionDomain,
             expectedControlDirectory) ||
-        profile.controlDirectory != (profile.userScope ?
-            IbPaperExecutionProfileConfig::UserControlDirectoryPath() : expectedControlDirectory))
+        !(profile.userScope ?
+            IbPaperExecutionProfileConfig::IsUserControlDirectory(profile.controlDirectory) :
+            profile.controlDirectory == expectedControlDirectory))
     {
         reason =
             "IB_PAPER_CONTROL_DIRECTORY_DOMAIN_MISMATCH";
