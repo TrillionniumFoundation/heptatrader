@@ -138,16 +138,82 @@ struct IbPostFillReconciliationFixture {
         runtime->m_postFillStableSince=Clock::now()-std::chrono::milliseconds(300);
         runtime->DrivePostFillRiskRefresh();
         need(!runtime->HasFatalRuntimeError(&reason),"coherent commit nonfatal: "+reason);
+        if(runtime->m_postFillRiskRefreshPending.load() && broker->requests==4) {
+            need(!runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),"adapter ACK precedes independent audit");
+            need(!runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot().barrierComplete,"audit cannot inherit old risk proof");
+            finishRisk(0);runtime->DrivePostFillRiskRefresh();
+            need(runtime->m_postFillRiskRefreshPending.load(),"new audit needs its own stability window");
+            runtime->m_postFillStableSince=Clock::now()-std::chrono::milliseconds(300);
+            runtime->DrivePostFillRiskRefresh();
+        }
         need(!runtime->m_postFillRiskRefreshPending.load(),"post-fill gate released only on latest generation");
         need(!runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),"adapter ACK complete");
         const auto done=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
         need(done.risk.riskAbsorbedExposureGeneration==done.exposureGeneration,"latest exposure absorbed");
+        need(done.barrierComplete && done.reasonCode.empty(),
+             "POSTFILL_AUDIT_STAYS_STALE_AFTER_VALID_CASH_REDOWNLOAD");
         nativeFinal();need(!runtime->m_postFillRiskRefreshPending.load(),"duplicate native final cannot double-apply");
         need(broker->places==1,"no extra synthetic order");
     }
+    void auditFailureRejects(int scenario) {
+        fill(total,"synthetic-audit-final");nativeFinal();finishRisk(0);
+        runtime->DrivePostFillRiskRefresh();
+        runtime->m_postFillStableSince=Clock::now()-std::chrono::milliseconds(300);
+        runtime->DrivePostFillRiskRefresh();
+        need(runtime->m_postFillRiskAcknowledged && runtime->m_postFillRiskRefreshPending.load(),
+             "runtime gate stays closed after adapter ACK before audit End");
+        const auto deadline=runtime->m_postFillDeadline;
+        const auto requests=broker->requests;
+        if(scenario==2) {
+            auto e=event(IBEventType::AccountValue);e.key="AccountReady:";e.value="false";push(e);
+        }
+        if(scenario==4) {
+            const auto fence=runtime->m_adapter->BeginRecoveryAuditBarrier();
+            need(fence.newConnectionEpochRequired,"owner fence demands another connection");
+        }
+        finishRisk(scenario==1?.01:0,scenario==0);
+        if(scenario!=3) {
+            runtime->DrivePostFillRiskRefresh();
+            need(runtime->m_postFillRiskRefreshPending.load(),"incomplete or unfenced audit cannot release risk");
+            need(runtime->m_postFillDeadline==deadline && broker->requests==requests,
+                 "no audit retries or deadline extension");
+        }
+        runtime->m_postFillDeadline=Clock::now()-std::chrono::milliseconds(1);
+        runtime->DrivePostFillRiskRefresh();
+        std::string reason;
+        need(runtime->HasFatalRuntimeError(&reason) &&
+             reason=="IB_POST_FILL_RISK_RECONCILIATION_FAILED",
+             "audit missing End/position/accountReady/late/new-epoch must fail closed");
+        need(runtime->m_postFillRiskRefreshPending.load() && broker->places==1,
+             "failed audit cannot reopen or create another order");
+    }
+    void cashInvalidationThenAuditProof() {
+        auto e=event(IBEventType::AccountValue);e.key="CashBalance:EUR";e.value="999";push(e);
+        auto before=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(!before.risk.complete && before.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE",
+             "changed unscoped cash must invalidate both risk and audit");
+        reproduceAdvancedExposure(true);
+        const auto after=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(after.reasonCode=="IB_RECOVERY_AUDIT_LATE_BROKER_EVENT",
+             "POSTFILL_AUDIT_STAYS_STALE_AFTER_VALID_CASH_REDOWNLOAD");
+        runtime->m_lifecycleGate.reset(new ExecutionServiceLifecycleGate());
+        runtime->m_lifecycleGate->ready.store(true);
+        std::string reason;
+        need(!runtime->AllowsRiskIncrease(reason) && reason=="IB_PAPER_RECOVERY_AUDIT_REQUIRED",
+             "late invalidation must block the actual risk-increasing admission gate");
+        need(after.risk.accountGeneration>before.risk.accountGeneration &&
+             after.risk.positionsGeneration>before.risk.positionsGeneration,
+             "restored audit requires newer account and positions generations");
+        need(broker->places==1,"cash/audit recovery cannot resend the original order");
+    }
 };
 int main(int argc,char**argv){
-    try{IbPostFillReconciliationFixture f;f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
+    try{if(argc>1&&std::string(argv[1])=="--audit-proof") {
+            {IbPostFillReconciliationFixture audit;audit.cashInvalidationThenAuditProof();}
+            for(int k=0;k<5;++k){IbPostFillReconciliationFixture neg;neg.auditFailureRejects(k);}
+            std::cout<<"PASS cash redownload and independent postfill recovery audit; synthetic only\n";return 0;
+        }
+        IbPostFillReconciliationFixture f;f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
         if(!(argc>1)){for(int k=0;k<3;++k){IbPostFillReconciliationFixture negative;negative.rejectIncompleteEvidence(k);}}
         std::cout<<"PASS partial/full, duplicate, missing End, position mismatch, missing terminal and fixed timeout; synthetic only\n";return 0;
     }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}

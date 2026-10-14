@@ -302,6 +302,9 @@ target_link_libraries(hepta_ib_postfill_reconciliation_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_postfill_reconciliation_tests)
+add_test(NAME hepta_ib_postfill_cash_audit_tests
+    COMMAND hepta_ib_postfill_reconciliation_tests --audit-proof)
+set_tests_properties(hepta_ib_postfill_cash_audit_tests PROPERTIES LABELS "core")
 
 # Full runtime startup, recovery coordinator, durable OMS and real local IPC.
 # Broker wrapper is socket-free; no production state or credentials are used.

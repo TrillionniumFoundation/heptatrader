@@ -76,10 +76,13 @@ struct Shared {
     std::deque<int> controls;
     std::deque<IBEvent> injectedErrors;
     std::map<std::string,unsigned> stages;
+    std::deque<std::string> diagnostic;
+    void record(const std::string& value){std::lock_guard<std::mutex> lock(mutex);diagnostic.push_back(std::to_string(ms())+" "+value);if(diagnostic.size()>96)diagnostic.pop_front();}
     std::atomic<unsigned> connectCount{0},orderCalls{0},accountCalls{0},positionCalls{0},openCalls{0},terminalCalls{0},execCalls{0};
     std::atomic<unsigned> injectedErrorsDequeued{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
+    std::atomic<bool> omitPrimaryTicks{false};
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
     bool seeded=false;
@@ -123,14 +126,14 @@ public:
     bool IsConnected()const override{return connected;}
     const char* GetStatusString()const override{return "SYNTHETIC_FULL_RUNTIME_NO_SOCKET";}
     bool ReqAccountSummary()override {
-        ++s->accountCalls;
+        ++s->accountCalls;s->record("REQ_ACCOUNT epoch="+std::to_string(epoch));
         for(const auto& row:std::map<std::string,std::string>{{"AccountReady:","true"},{"NetLiquidation:USD","1000000"},{"CashBalance:EUR",s->seeded?"1025":"1000"}}) {
             auto e=make(IBEventType::AccountValue);e.key=row.first;e.value=row.second;events.push_back(e);
         }
         events.push_back(make(IBEventType::AccountSummaryEnd));return true;
     }
     bool ReqPositions()override {
-        ++s->positionCalls;
+        ++s->positionCalls;s->record("REQ_POSITIONS epoch="+std::to_string(epoch));
         if(s->seeded){auto e=make(IBEventType::Position);e.key="BTC.USD";e.contract=contract(true);e.number=.01;events.push_back(e);}
         if(!s->omitPositions)events.push_back(make(IBEventType::PositionEnd));return true;
     }
@@ -194,7 +197,8 @@ public:
     bool PollOnce(int)override {
         if(ms()-lastTicks>80) {
             lastTicks=ms();
-            for(const auto& q:quotes)if(q.second.secType!="CASH"||cashReady)for(int leg=1;leg<=2;++leg){
+            for(const auto& q:quotes)if((q.second.secType!="CASH"||cashReady) &&
+                !(q.second.secType=="CRYPTO" && s->omitPrimaryTicks.load()))for(int leg=1;leg<=2;++leg){
                 auto e=make(IBEventType::TickPrice);e.id=q.first;e.key=std::to_string(leg);
                 e.number=q.second.secType=="CASH"?(leg==1?1.12:1.1201):(leg==1?80000:80001);events.push_back(e);
             }
@@ -205,6 +209,7 @@ public:
     }
     bool TryDequeueEvent(IBEvent& e)override {
         if(events.empty())return false;e=events.front();events.pop_front();
+        if(e.type!=IBEventType::TickPrice)s->record("DEQUEUE type="+std::to_string(static_cast<int>(e.type))+" key="+e.key+" epoch="+std::to_string(e.connectionEpoch));
         const std::string injectedPrefix="OFFLINE_INJECTED:";
         if(e.type==IBEventType::Error&&e.value.compare(0,injectedPrefix.size(),injectedPrefix)==0)
             ++s->injectedErrorsDequeued;
@@ -351,6 +356,29 @@ struct Fixture {
         check(shared->orderCalls==0,"missing positions cannot trigger orders");
         std::cout<<"FULL_RUNTIME_MISSING_POSITIONS_FAIL_CLOSED "<<reason<<std::endl;
     }
+    void acceptedRequestWithoutQuotesStaysUnready() {
+        const auto before=runtime->QuoteHealthForObservation();
+        const auto request=before.contracts.at("BTC.USD").requestId;
+        shared->omitPrimaryTicks=true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5350));
+        const auto stale=runtime->QuoteHealthForObservation();
+        const auto& quote=stale.contracts.at("BTC.USD").quote;
+        check(stale.contracts.at("BTC.USD").requestId==request,
+              "accepted subscription is not proof of fresh callbacks");
+        check(ms()-quote.bidObservedAtMs>5000 && ms()-quote.askObservedAtMs>5000,
+              "dispatched but silent primary quote expires under original TTL");
+        const auto snapshot=runtime->AuthoritativeSnapshotForObservation(ms());
+        check(snapshot.quotes.at("BTC.USD").state.availability==AuthoritativeSnapshotAvailability::Stale,
+              "silent primary is stale in the real authoritative snapshot");
+        check(runtime->IsRunning() && !runtime->HasFatalRuntimeError(),
+              "absence of prices is not a fabricated callback race");
+        shared->omitPrimaryTicks=false;
+        const auto until=ms()+1500;bool fresh=false;
+        while(ms()<until){auto q=runtime->QuoteHealthForObservation().contracts.at("BTC.USD").quote;
+            fresh=q.bidObservedAtMs>quote.bidObservedAtMs && q.askObservedAtMs>quote.askObservedAtMs;
+            if(fresh)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+        check(fresh && shared->orderCalls==0,"recovery requires actual new BID and ASK without orders");
+    }
     void secondaryFarmRecovery() {
         const auto epoch=runtime->Adapter().GetConnectionEpoch();
         const int primary=runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId;
@@ -374,6 +402,19 @@ struct Fixture {
         shared->reconnectCode=restore;shared->signal(1100);
         const auto until=ms()+6000;while(ms()<until&&shared->count("broker_reconnect_complete")==count&&!runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
         std::string reason;runtime->HasFatalRuntimeError(&reason);
+        if(shared->count("broker_reconnect_complete")!=count+1) {
+            const auto fault=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+            std::cerr<<"RECONNECT_DIAGNOSTIC seeded="<<shared->seeded<<" old_epoch="<<oldEpoch
+                     <<" new_epoch="<<runtime->Adapter().GetConnectionEpoch()
+                     <<" account_calls="<<shared->accountCalls<<" position_calls="<<shared->positionCalls
+                     <<" terminal_calls="<<shared->terminalCalls<<" exec_calls="<<shared->execCalls
+                     <<" active_complete="<<fault.active.complete<<" terminal_complete="<<fault.terminal.complete
+                     <<" risk_complete="<<fault.risk.complete<<" risk_reason="<<fault.risk.reasonCode
+                     <<" audit_reason="<<fault.reasonCode<<" fixture="<<dir<<std::endl;
+            std::lock_guard<std::mutex> lock(shared->mutex);
+            for(const auto& stage:shared->stages)std::cerr<<"STAGE "<<stage.first<<" "<<stage.second<<std::endl;
+            for(const auto& line:shared->diagnostic)std::cerr<<"TRACE "<<line<<std::endl;
+        }
         check(shared->count("broker_reconnect_complete")==count+1,"FULL_RECONNECT_FAILED: "+reason);
         check(runtime->Adapter().GetConnectionEpoch()>oldEpoch,"full adapter epoch advanced");
         check(shared->orderCalls==0,"reconnect has no order methods");
@@ -558,8 +599,14 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
               !admission.TryReserve(generation),"failed admission cannot reopen or reserve again");
     }
 }
-int main(){try{
+int main(int argc,char** argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==2 && std::string(argv[1])=="--reconnect-stress") {
+        for(unsigned round=0;round<20;++round){std::cerr<<"RECONNECT_ROUND "<<round<<std::endl;
+            Fixture f(true);f.differentEpochMarketDataErrorsCannotAuthorizeCurrentEpoch();}
+        std::cout<<"PASS 20 bounded seeded reconnect and stale-epoch regressions; no network/orders"<<std::endl;
+        return 0;
+    }
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
     {Fixture f(true);const auto originals=f.originalCommands();f.reconnect(1101);
         check(f.originalCommands()==originals,"original commands and owners preserved through full reconnect");
@@ -567,6 +614,7 @@ int main(){try{
         f.restartSameJournal();}
     {Fixture f;f.missingPositionsFailsClosed();}
     {Fixture f;f.secondaryFarmRecovery();}
+    {Fixture f;f.acceptedRequestWithoutQuotesStaysUnready();}
     {Fixture f;f.activeOrderFailsClosed();}
     {Fixture f(false,true);f.unknownOutcomeSurvivesReconstruction();}
     {Fixture f(true);f.localCancelledCashErrorsPreserveEconomicRecovery();}
@@ -591,6 +639,6 @@ int main(){try{
         invalidate(e);f.uncorroboratedMarketDataErrorClosesRecovery(e);
     }
     unknownRequestErrorsStillBlockQuoteAdmission();
-    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<10+invalidMarketDataScopes.size()<<"}"<<std::endl;
+    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<11+invalidMarketDataScopes.size()<<"}"<<std::endl;
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}

@@ -321,8 +321,13 @@ bool IbPaperExecutionRuntimeComposition::AllowsRiskIncrease(
         reason = "IB_PAPER_AUTHORITATIVE_RISK_UNREADY";
         return false;
     }
-    const IBAuthoritativeRiskSnapshot risk =
-        m_adapter->GetAuthoritativeRiskSnapshot();
+    const auto audit = m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+    if (!audit.barrierComplete)
+    {
+        reason = "IB_PAPER_RECOVERY_AUDIT_REQUIRED";
+        return false;
+    }
+    const IBAuthoritativeRiskSnapshot& risk = audit.risk;
     if (!risk.accountComplete || !risk.positionsComplete ||
         !risk.fxCashComplete || risk.accountGeneration == 0 ||
         risk.positionsGeneration == 0 || risk.fxCashGeneration == 0)

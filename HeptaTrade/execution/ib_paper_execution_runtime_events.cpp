@@ -160,6 +160,7 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
     m_postFillBaselinePositionGeneration = baseline.positionGeneration;
     m_postFillBaselineFxCashGeneration = baseline.fxCashGeneration;
     m_postFillRiskRefreshAttempts = 0;
+    m_postFillRiskAcknowledged = false;
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
     m_postFillNextRetryAt = now;
@@ -191,6 +192,11 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         return;
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
+    if (now >= m_postFillDeadline)
+    {
+        MarkFatalRuntimeError("IB_POST_FILL_RISK_RECONCILIATION_FAILED");
+        return;
+    }
     // One adapter-lock observation binds completed risk to the latest exposure.
     // A refresh started after a partial fill can finish after the final fill:
     // its positions may already match while its captured exposure is still old.
@@ -211,6 +217,7 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         if (m_postFillExecutionComplete) m_postFillTerminalObserved = true;
     }
     const bool coherent = m_postFillExecutionComplete &&
+        (!m_postFillRiskAcknowledged || observed.barrierComplete) &&
         risk.complete && risk.coherentRefreshComplete &&
         risk.connectionEpoch != 0 &&
         risk.connectionEpoch == m_adapter->GetConnectionEpoch() &&
@@ -243,14 +250,28 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
                     checkpointReason);
                 return;
             }
-            // Release the adapter's final-send gate while the runtime pending
-            // flag still blocks every concurrent command. Owner retirement
-            // follows only for an observed broker terminal.
-            if (!m_adapter->AcknowledgePostFillRiskReconciled(
-                    m_postFillOrderId))
+            if (!m_postFillRiskAcknowledged)
             {
-                MarkFatalRuntimeError(
-                    "IB_POST_FILL_RISK_ACKNOWLEDGEMENT_FAILED");
+                // Keep the runtime pending gate CLOSED while retiring the
+                // adapter's live-fill latch. A normal post-fill risk refresh
+                // cannot restore the independent recovery-audit barrier.
+                if (!m_adapter->AcknowledgePostFillRiskReconciled(m_postFillOrderId))
+                {
+                    MarkFatalRuntimeError("IB_POST_FILL_RISK_ACKNOWLEDGEMENT_FAILED");
+                    return;
+                }
+                m_postFillRiskAcknowledged = true;
+                m_postFillStableSince = std::chrono::steady_clock::time_point();
+                // The original API client must collect another account and
+                // positions pair bound to current active/terminal/exposure
+                // generations. This retains any new-connection-epoch fence.
+                // Exactly one audit request: no blind retry, trade, or cancel.
+                if (!m_adapter->ReqRecoveryAuditRiskRefresh())
+                {
+                    MarkFatalRuntimeError("IB_POST_FILL_RECOVERY_AUDIT_REQUEST_REJECTED");
+                    return;
+                }
+                NotifyTestStage("post_fill_recovery_audit_requested");
                 return;
             }
             if (m_postFillTerminalObserved && m_coordinator)
@@ -280,6 +301,9 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
         MarkFatalRuntimeError("IB_POST_FILL_RISK_RECONCILIATION_FAILED");
         return;
     }
+    // The audit has its own exact End/generation evidence, but shares the
+    // original hard deadline. Never replace it with an ordinary risk refresh.
+    if (m_postFillRiskAcknowledged) return;
     if (!m_postFillExecutionComplete)
     {
         // The first partial callback starts the hard deadline and one coherent

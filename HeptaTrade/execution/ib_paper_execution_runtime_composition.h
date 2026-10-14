@@ -428,6 +428,7 @@ private:
     double m_postFillExpectedPosition = 0.0;
     bool m_postFillExecutionComplete = false;
     bool m_postFillTerminalObserved = false;
+    bool m_postFillRiskAcknowledged = false;
     std::uint64_t m_postFillBaselinePositionGeneration = 0;
     std::uint64_t m_postFillBaselineFxCashGeneration = 0;
     int m_postFillRiskRefreshAttempts = 0;
