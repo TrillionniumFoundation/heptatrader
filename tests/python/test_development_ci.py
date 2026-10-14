@@ -52,3 +52,12 @@ class StackedCiReachabilityTests(unittest.TestCase):
         self.assertIn('./scripts/dev_core.sh', native)
         self.assertIn('torch==2.8.0', str(ci['jobs']['python']))
         self.assertNotIn('pull_request_target', ci['on'])
+
+
+class CheckoutTransportTests(unittest.TestCase):
+    def test_transport_setup_precedes_exact_checkout_in_each_job(self):
+        for job in workflow('core-ci.yml')['jobs'].values():
+            steps=job['steps']
+            self.assertEqual(steps[0]['run'], 'git config --global http.version HTTP/1.1')
+            self.assertEqual(steps[1]['name'], 'Checkout exact event subject without credentials')
+            self.assertNotIn('continue-on-error', steps[1])
