@@ -61,3 +61,12 @@ class CheckoutTransportTests(unittest.TestCase):
             self.assertEqual(steps[0]['run'], 'git config --global http.version HTTP/1.1')
             self.assertEqual(steps[1]['name'], 'Checkout exact event subject without credentials')
             self.assertNotIn('continue-on-error', steps[1])
+
+
+class CurrentHeadFeedbackTests(unittest.TestCase):
+    def test_superseded_push_and_pr_feedback_can_cancel_but_manual_stays(self):
+        ci=workflow('core-ci.yml')
+        self.assertEqual(ci['concurrency']['cancel-in-progress'],
+                         "${{ github.event_name != 'workflow_dispatch' }}")
+        self.assertIn('github.event_name',ci['concurrency']['group'])
+        self.assertEqual(workflow('ib-paper-qualification.yml')['concurrency']['cancel-in-progress'],'false')

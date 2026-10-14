@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: heptatrader-core-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   core:

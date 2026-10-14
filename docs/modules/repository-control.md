@@ -116,3 +116,8 @@ This convergence task issued no start/unmask/disarm/order operation, and has not
 established which concurrent operator changed that state. Do not report that
 the two drivers are still masked, or that zero calls by this task means there
 were zero account-wide trades. The new persistent-mode source was not deployed.
+
+Superseded broker-free main-push and PR feedback now cancels rather than
+serializing newer heads behind obsolete jobs. Manual dispatch is not canceled by
+this rule; release and IB qualification workflows are separate and unchanged.
+Canceled runs remain canceled, not passing evidence for a later revision.
