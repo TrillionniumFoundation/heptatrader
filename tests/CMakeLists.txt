@@ -314,6 +314,20 @@ target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_full_runtime_recovery_tests)
+# A deliberately late native PositionEnd must not inherit a pre-dispatch
+# reconnect deadline and publish Ready after timeout. Synthetic and socket-free.
+add_test(NAME hepta_ib_late_position_end_deadline_tests
+    COMMAND hepta_ib_full_runtime_recovery_tests --late-position-end)
+set_tests_properties(hepta_ib_late_position_end_deadline_tests PROPERTIES LABELS "core")
+add_test(NAME hepta_ib_late_ready_publication_deadline_tests
+    COMMAND hepta_ib_full_runtime_recovery_tests --late-ready-publication)
+set_tests_properties(hepta_ib_late_ready_publication_deadline_tests PROPERTIES LABELS "core")
+# Negative control: delayed synchronous formal broker read dispatch must not
+# consume the bounded response window before the first request is accepted.
+add_test(NAME hepta_ib_reconnect_broker_dispatch_budget_tests
+    COMMAND hepta_ib_full_runtime_recovery_tests --slow-reconnect-read-dispatch)
+set_tests_properties(hepta_ib_reconnect_broker_dispatch_budget_tests PROPERTIES LABELS "core")
+
 
 # Deliberate local operator target only: no ordinary ctest, no installation,
 # no default build, and no direct gateway access from the CLI. The runner

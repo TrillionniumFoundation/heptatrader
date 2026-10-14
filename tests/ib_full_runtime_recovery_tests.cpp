@@ -83,6 +83,15 @@ struct Shared {
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
     std::atomic<bool> omitPrimaryTicks{false};
+    // Synthetic-only callback timing receipts; not broker or authorization state.
+    std::atomic<std::uint64_t> lastPositionsRequestedMs{0}, lastPositionsEndDeliveredMs{0};
+    std::atomic<unsigned> positionsEndDelivered{0};
+    std::atomic<bool> delayReconnectPositionEnd{false};
+    std::atomic<bool> delayReadyPublication{false};
+    std::atomic<bool> slowReconnectReadDispatch{false};
+
+
+
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
     bool seeded=false;
@@ -134,10 +143,16 @@ public:
     }
     bool ReqPositions()override {
         ++s->positionCalls;s->record("REQ_POSITIONS epoch="+std::to_string(epoch));
+        s->lastPositionsRequestedMs.store(ms());
+
         if(s->seeded){auto e=make(IBEventType::Position);e.key="BTC.USD";e.contract=contract(true);e.number=.01;events.push_back(e);}
         if(!s->omitPositions)events.push_back(make(IBEventType::PositionEnd));return true;
     }
     bool ReqAllOpenOrders()override{
+        if(epoch>1 && s->slowReconnectReadDispatch.exchange(false)) {
+            s->record("SLOW_RECONNECT_BROKER_READ_DISPATCH");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        }
         ++s->openCalls;
         if(s->activeOnReconnect&&s->connectCount>1){
             auto e=make(IBEventType::OpenOrder);e.id=999;e.contract=contract(false);
@@ -208,8 +223,19 @@ public:
         return true;
     }
     bool TryDequeueEvent(IBEvent& e)override {
-        if(events.empty())return false;e=events.front();events.pop_front();
+        if(events.empty())return false;
+        if(events.front().type==IBEventType::PositionEnd && epoch>1 &&
+            s->delayReconnectPositionEnd.exchange(false)) {
+            s->record("DELAY_RECONNECT_POSITION_END_BEFORE_DEQUEUE");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+        }
+        e=events.front();events.pop_front();
         if(e.type!=IBEventType::TickPrice)s->record("DEQUEUE type="+std::to_string(static_cast<int>(e.type))+" key="+e.key+" epoch="+std::to_string(e.connectionEpoch));
+        if(e.type==IBEventType::PositionEnd) {
+            s->lastPositionsEndDeliveredMs.store(ms());
+            ++s->positionsEndDelivered;
+        }
+
         const std::string injectedPrefix="OFFLINE_INJECTED:";
         if(e.type==IBEventType::Error&&e.value.compare(0,injectedPrefix.size(),injectedPrefix)==0)
             ++s->injectedErrorsDequeued;
@@ -281,7 +307,12 @@ struct Fixture {
     }
     void start(const IbPaperExecutionRuntimeConfig& c) {
         std::shared_ptr<Shared> state=shared;
-        IbPaperExecutionRuntimeTestHooks hooks;hooks.onStage=[state](const char* name){state->stage(name);};
+        IbPaperExecutionRuntimeTestHooks hooks;hooks.onStage=[state](const char* name){
+            state->stage(name);
+            if(std::strcmp(name,"before_broker_reconnect_ready_publication")==0 &&
+                state->delayReadyPublication.exchange(false))
+                std::this_thread::sleep_for(std::chrono::milliseconds(3400));
+        };
         hooks.reconnectApiFactory=[state](){return std::unique_ptr<IIBApiWrapper>(new FullBroker(state));};
         runtime.reset(new IbPaperExecutionRuntimeComposition(c,std::unique_ptr<IIBApiWrapper>(new FullBroker(shared)),hooks,std::make_shared<NeverEnableTrading>()));
         std::string reason;const bool started=runtime->Start(reason);
@@ -397,6 +428,45 @@ struct Fixture {
         check(runtime->Adapter().GetConnectionEpoch()==epoch&&runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId==primary,"unrelated BTC ownership survives secondary farm loss");
         check(shared->orderCalls==0,"farm recovery never orders");
     }
+    void delayedReadyPublicationMustNotPassDeadline() {
+        const auto prior=shared->count("broker_reconnect_complete");
+        shared->delayReadyPublication=true;
+        shared->signal(1100);
+        const auto until=ms()+6500;
+        while(ms()<until && shared->count("broker_reconnect_complete")==prior &&
+              !runtime->HasFatalRuntimeError())
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;const bool failed=runtime->HasFatalRuntimeError(&reason);
+        check(shared->count("before_broker_reconnect_ready_publication")>=1,
+              "negative fixture must reach lifecycle publication");
+        check(shared->count("broker_reconnect_complete")==prior && failed &&
+              reason=="IB_PAPER_BROKER_RECONNECT_EXHAUSTED",
+              "LATE_READY_PUBLICATION_MUST_NOT_PASS_GLOBAL_RECONNECT_DEADLINE: "+reason);
+        check(shared->orderCalls==0,"late reconnect lifecycle cannot emit order calls");
+    }
+    void slowAcceptedReconnectDispatchStillUsesFullSnapshotWindow() {
+        shared->slowReconnectReadDispatch=true;
+        reconnect(1101);
+        check(shared->count("broker_reconnect_complete")>=1 && shared->orderCalls==0,
+              "accepted slow reconnect read cannot create an order or authorize stale data");
+    }
+    void delayedPositionEndMustNotPublishReady() {
+        const auto prior=shared->count("broker_reconnect_complete");
+        shared->delayReconnectPositionEnd=true;
+        shared->signal(1100);
+        const auto until=ms()+6500;
+        while(ms()<until && shared->count("broker_reconnect_complete")==prior &&
+              !runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;const bool failed=runtime->HasFatalRuntimeError(&reason);
+        check(shared->positionsEndDelivered.load()>=2 &&
+              shared->lastPositionsEndDeliveredMs.load()>=shared->lastPositionsRequestedMs.load(),
+              "negative fixture must actually deliver late PositionEnd");
+        check(shared->count("broker_reconnect_complete")==prior && failed &&
+              (reason=="IB_PAPER_BROKER_RECONNECT_SNAPSHOTS_TIMEOUT" ||
+               reason=="IB_POSITIONS_REFRESH_PENDING"),
+              "LATE_RECONNECT_POSITION_END_MUST_NOT_PUBLISH_READY: "+reason);
+        check(shared->orderCalls==0,"late position end cannot place or cancel any order");
+    }
     void reconnect(int restore) {
         auto oldEpoch=runtime->Adapter().GetConnectionEpoch();auto count=shared->count("broker_reconnect_complete");
         shared->reconnectCode=restore;shared->signal(1100);
@@ -410,7 +480,11 @@ struct Fixture {
                      <<" terminal_calls="<<shared->terminalCalls<<" exec_calls="<<shared->execCalls
                      <<" active_complete="<<fault.active.complete<<" terminal_complete="<<fault.terminal.complete
                      <<" risk_complete="<<fault.risk.complete<<" risk_reason="<<fault.risk.reasonCode
-                     <<" audit_reason="<<fault.reasonCode<<" fixture="<<dir<<std::endl;
+                     <<" audit_reason="<<fault.reasonCode
+                     <<" pos_req_ms="<<shared->lastPositionsRequestedMs.load()
+                     <<" pos_end_ms="<<shared->lastPositionsEndDeliveredMs.load()
+                     <<" pos_end_count="<<shared->positionsEndDelivered.load()
+                     <<" fixture="<<dir<<std::endl;
             std::lock_guard<std::mutex> lock(shared->mutex);
             for(const auto& stage:shared->stages)std::cerr<<"STAGE "<<stage.first<<" "<<stage.second<<std::endl;
             for(const auto& line:shared->diagnostic)std::cerr<<"TRACE "<<line<<std::endl;
@@ -601,10 +675,25 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
 }
 int main(int argc,char** argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==2 && std::string(argv[1])=="--slow-reconnect-read-dispatch") {
+        Fixture f(true);f.slowAcceptedReconnectDispatchStillUsesFullSnapshotWindow();
+        std::cout<<"PASS bounded refresh window starts after accepted broker read dispatch"<<std::endl;
+        return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--late-ready-publication") {
+        Fixture f(true);f.delayedReadyPublicationMustNotPassDeadline();
+        std::cout<<"PASS late lifecycle Ready publication rejected at original deadline"<<std::endl;
+        return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--late-position-end") {
+        Fixture f(true);f.delayedPositionEndMustNotPublishReady();
+        std::cout<<"PASS late PositionEnd cannot pass original reconnect deadline; no orders"<<std::endl;
+        return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--reconnect-stress") {
-        for(unsigned round=0;round<20;++round){std::cerr<<"RECONNECT_ROUND "<<round<<std::endl;
+        for(unsigned round=0;round<80;++round){std::cerr<<"RECONNECT_ROUND "<<round<<std::endl;
             Fixture f(true);f.differentEpochMarketDataErrorsCannotAuthorizeCurrentEpoch();}
-        std::cout<<"PASS 20 bounded seeded reconnect and stale-epoch regressions; no network/orders"<<std::endl;
+        std::cout<<"PASS 80 bounded seeded reconnect and stale-epoch regressions; no network/orders"<<std::endl;
         return 0;
     }
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}

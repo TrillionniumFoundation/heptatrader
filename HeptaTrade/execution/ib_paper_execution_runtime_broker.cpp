@@ -568,7 +568,21 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
-        if (ReconnectAuthoritativeStateReady(reason))
+        // Re-evaluate the actual monotonic time after consuming synchronous
+        // End callbacks. The old observedNow was captured *before* dispatch:
+        // a slow callback could otherwise cross the original deadline and
+        // still publish a ready service from a now-complete late snapshot.
+        const bool authoritativeReady = ReconnectAuthoritativeStateReady(reason);
+        // A complete broker snapshot containing an active order is a hard
+        // identity/ownership fault, not a harmless timeout. Preserve its
+        // exact refusal even when the bounded refresh budget also expires.
+        if (!authoritativeReady &&
+            reason == "IB_PAPER_BROKER_RECONNECT_ACTIVE_ORDERS_UNSAFE")
+            return FailBrokerReconnect(reason, reason);
+        if (std::chrono::steady_clock::now() >= snapshotDeadline)
+            return FailBrokerReconnect(reason, reason.empty() ?
+                "IB_PAPER_BROKER_RECONNECT_SNAPSHOTS_TIMEOUT" : reason);
+        if (authoritativeReady)
         {
             if (!m_config.profile.observationOnly && !PersistFxCashRestartCheckpoint(reason))
                 return FailBrokerReconnect(reason, reason.empty() ?
@@ -584,11 +598,38 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
                     reason = "IB_PAPER_BROKER_RECONNECT_RECONCILIATION_FAILED";
                 return FailBrokerReconnect(reason, reason);
             }
+            // The snapshot had already passed its shorter readiness deadline.
+            // Checkpoint/OMS owner recovery is bounded by the independent
+            // overall reconnect deadline. Reusing the short snapshot deadline
+            // here would turn slow but valid durable reconciliation into a
+            // false missing-snapshot failure.
+            if (std::chrono::steady_clock::now() >= m_reconnectDeadline)
+                return FailBrokerReconnect(
+                    reason, "IB_PAPER_BROKER_RECONNECT_EXHAUSTED");
+            NotifyTestStage("before_broker_reconnect_ready_publication");
+            bool readyPublishedWithinDeadline = false;
             {
                 std::lock_guard<std::mutex> lifecycleLock(
                     m_lifecycleStateMutex);
-                m_reconnectPending.store(false);
-                m_lifecycleGate->ready.store(true);
+                // The final linearization point must check the clock and
+                // fatal state under the same mutex that publishes Ready.
+                // A delayed mutex acquisition cannot inherit an earlier
+                // good timestamp or overwrite a concurrently closed gate.
+                if (!m_fatalRuntimeError.load() &&
+                    std::chrono::steady_clock::now() < m_reconnectDeadline)
+                {
+                    m_reconnectPending.store(false);
+                    m_lifecycleGate->ready.store(true);
+                    readyPublishedWithinDeadline = true;
+                }
+            }
+            if (!readyPublishedWithinDeadline)
+            {
+                std::string fatalReason;
+                HasFatalRuntimeError(&fatalReason);
+                return FailBrokerReconnect(reason, fatalReason.empty() ?
+                    "IB_PAPER_BROKER_RECONNECT_EXHAUSTED" :
+                    fatalReason);
             }
             FinishBrokerReconnectObservation(
                 std::chrono::steady_clock::now());
@@ -642,6 +683,30 @@ bool IbPaperExecutionRuntimeComposition::RequestReconnectRiskRefresh(
     }
     m_reconnectRiskRefreshDispatched.store(true);
     NotifyTestStage("broker_reconnect_recovery_risk_dispatched");
+    // reqAccountSummary/reqPositions may have put their End callbacks in
+    // the adapter ingress queue before the dispatch API returned. Consume
+    // only those *already queued* callbacks now, on this same reconnect
+    // owner thread, instead of requiring a further scheduled poll tick.
+    // This does not issue a new SDK request, place/cancel any order, retry
+    // an uncertain End, or extend the original deadline. All normal
+    // callback epoch, overflow, cash and correlation checks still apply.
+    DrainAdapterEvents(-1);
+    if (HasFatalRuntimeError(&reason)) return false;
+    if (!m_adapter->IsConnected() ||
+        !m_adapter->IsEventStreamAuthoritative() ||
+        m_adapter->GetConnectionEpoch() != m_reconnectConnectionEpoch.load())
+    {
+        reason = "IB_PAPER_BROKER_RECONNECT_RISK_CALLBACK_UNSAFE";
+        return false;
+    }
+    if (m_reconnectUpstreamUnavailable.load() ||
+        (PrimaryQuoteRequiresMarketDataFarm(
+             m_config.quoteContracts, m_config.primaryQuoteInstrument) &&
+         m_startupMarketDataFarmWaiting.load()))
+    {
+        reason = "IB_PAPER_BROKER_RECONNECT_UPSTREAM_LOST_DURING_RISK";
+        return false;
+    }
     return true;
 }
 

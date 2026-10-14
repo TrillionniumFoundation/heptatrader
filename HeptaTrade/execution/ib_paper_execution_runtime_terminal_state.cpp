@@ -478,14 +478,20 @@ bool IbPaperExecutionRuntimeComposition::DispatchReconnectRefreshIfReady(
         retryScheduled = true;
         return true;
     }
-    BeginBrokerReconnectRefreshObservation(observedNow);
+    // The bounded read window starts when the broker actually accepted the
+    // first formal order/account read requests. observedNow was sampled
+    // *before* quote admission and synchronous SDK dispatch, so using it
+    // charges pre-request processing against the broker response budget.
+    // The original global reconnect deadline is never advanced.
+    const auto acceptedAt = std::chrono::steady_clock::now();
+    BeginBrokerReconnectRefreshObservation(acceptedAt);
     m_reconnectRefreshDispatched.store(true);
     // In observation mode the accepted account request above is the only risk
     // read required. No order-history or financial reconciliation is implied.
     if (m_config.profile.observationOnly) m_reconnectRiskRefreshDispatched.store(true);
     snapshotDeadline = std::min(
         m_reconnectDeadline,
-        observedNow + std::chrono::milliseconds(m_config.readinessTimeoutMs));
+        acceptedAt + std::chrono::milliseconds(m_config.readinessTimeoutMs));
     NotifyTestStage("broker_reconnect_refresh_dispatched");
     return true;
 }
