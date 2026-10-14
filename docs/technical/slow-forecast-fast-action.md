@@ -26,3 +26,22 @@ checks new real quote delivery and journal timing, not remote-LLM latency, model
 quality, old cohort recovery or trade execution. No original plan, trial, source,
 worker, model selection or execution profile is changed. A timing PASS has
 authorization_effect NONE and cannot release the current PAPER stop.
+
+## Observed new-source timing, 2026-10-14
+
+A single new window began at 2026-10-14T13:17:55.882000+00:00. The existing Pocket4
+original feed was read without a new Broker request. After the declared 6.2-second
+controlled delay and forecast fsync, the old input quote was expired. A genuinely
+new quote arrived and its decision was durable 593 ms after its source timestamp,
+leaving 4,407 ms before its unchanged original expiry. The four original result
+files were copied to qian-qi, their remote digests matched, and the actual decision
+and post-fsync deadline were independently recomputed with the same source code.
+Result SHA-256: `896e174ef2f0acd1e700f23f6faf1dc06c4710266464576fbfa45f77452dc2c8`.
+
+This is one real-source transport/journal timing check with a zero-alpha baseline
+and injected delay, not measured remote LLM inference, economic model validation,
+SLO/durability certification or trading qualification. The feed exposes a
+subscription identity; the probe uses that as its local scope and does not prove
+a Broker connection-epoch transition. A trading consumer must obtain authoritative
+connection identity through its existing runtime. No new order or Broker data
+request was issued; no production feed/worker/stop state was modified.

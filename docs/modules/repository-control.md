@@ -71,3 +71,26 @@ checking remains; prose length, generated navigation and status repetition are n
 development gates. The module catalog supports actual Git/CMake reachability.
 Journal-before-send, original-command recovery, identity, current quotes, risk
 limits, kill-switch and authoritative reduce-only behavior remain mandatory.
+
+## Convergence performed on 2026-10-14
+
+The 96-commit cumulative research stack through `e1c4f0ff` was fast-forward
+integrated with the development cleanup. Of the original 124 open Draft PRs,
+65 unchanged head commits were verified as ancestors of the actual remote main
+and their redundant PRs were closed; their branches and evidence were retained.
+The 59 other branch tips were not silently merged or deleted. Old branch snapshots
+do not inherit a new workflow file automatically: their next integration should
+use current main or an explicit workflow-dispatch, not wait for an excluded event.
+
+Local combined source `efadca44` passed 61 native CTest targets, 2,746 Python core
+tests, 111 source tests plus documentation links, and 10 separately invoked real
+external Rust-fixture tests with zero skips. The real hosted runs remain distinct:
+initial checkout TLS failures were repaired with HTTP/1.1, then 12 child-process
+import failures were repaired by propagating PYTHONPATH. On `519a2d9d` the hosted
+native job passed, but Python still recorded two ten-second CMake symbol-check
+timeouts; those failures were not erased, ignored or resolved by widening a test
+deadline. The integrated head has a new actual CI run; its result must be read
+from GitHub, not inferred from the local results.
+
+No production Execution replacement/restart, driver unmask, stop removal, model
+promotion or trading request is part of these source changes.
