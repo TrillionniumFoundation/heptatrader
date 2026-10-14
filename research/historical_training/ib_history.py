@@ -49,6 +49,8 @@ def validate(c):
     validate_cutoff(end, c.get('cutoff_policy', 'OLDER_THAN_24H'))
     request_window_days(c)
     validate_wait(c.get('cash_hmds_startup_wait_sec', 0))
+    if type(c.get('head_probe_on_unknown',False)) is not bool:raise EvidenceError('HISTORY_PROBE_POLICY_TYPE')
+    if c.get('head_probe_on_unknown',False) and not c.get('cash_hmds_startup_wait_sec',0):raise EvidenceError('HISTORY_PROBE_NEEDS_FINITE_WAIT')
     return end
 
 def validate_cutoff(end, policy='OLDER_THAN_24H', now=None):
@@ -129,6 +131,7 @@ def make_app(c):
             self.ends[reqId]={'start':start,'end':end};self.events[reqId].set()
         def headTimestamp(self,reqId,headTimestamp):
             self.guard.check_response(reqId,'head')
+            if self.farm is not None:self.farm.prove_head_response(reqId)
             self.heads[reqId]=headTimestamp;self.events[reqId].set()
         def historicalSchedule(self,reqId,startDateTime,endDateTime,timeZone,sessions):
             self.guard.check_response(reqId,'schedule')
@@ -257,7 +260,9 @@ def _run_locked(c,end,root):
         if c.get('cash_hmds_startup_wait_sec', 0):
             if getattr(app, 'farm', None) is None:
                 raise EvidenceError('REQUIRED_HMDS_READINESS_TRACKER_MISSING')
-            session['startup_readiness'] = app.farm.wait(c['cash_hmds_startup_wait_sec'], alive=lambda: app.isConnected() and not app.dead)
+            session['startup_readiness'] = app.farm.wait_or_probe(
+                c['cash_hmds_startup_wait_sec'],allow_unknown=c.get('head_probe_on_unknown',False),
+                alive=lambda: app.isConnected() and not app.dead)
         for index,plan in enumerate(plans(c,end)):
             key=digest({'contract':CONTRACT,**plan});directory=root/'chunks'/key
             r=verified_receipt(directory,plan)

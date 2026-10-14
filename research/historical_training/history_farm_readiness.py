@@ -4,7 +4,7 @@ import threading
 import time
 from .common import EvidenceError
 
-READY = frozenset(('CONNECTED', 'INACTIVE'))
+READY = frozenset(('CONNECTED', 'INACTIVE', 'PROBED'))
 NOTICES = {2105: 'DISCONNECTED', 2106: 'CONNECTED', 2107: 'INACTIVE'}
 FATAL = frozenset((1100, 1300, 326, 502, 504, 2110))
 
@@ -22,6 +22,8 @@ class FarmReadiness:
         self.started = clock()
         self.state, self.dead = 'UNKNOWN', False
         self.events, self.dispatches = [], []
+        self.unknown_probe_id = None
+        self.positive_head_response = False
 
     def notice(self, request_id, code, message):
         with self.lock:
@@ -53,15 +55,37 @@ class FarmReadiness:
                 raise EvidenceError('CASH_HMDS_STARTUP_NOT_READY_NO_HISTORY_DISPATCH')
             sleep(min(.05, remaining))
 
+    def wait_or_probe(self, seconds, allow_unknown=False, alive=lambda: True, sleep=time.sleep):
+        try:
+            return self.wait(seconds, alive=alive, sleep=sleep)
+        except EvidenceError as exc:
+            if str(exc) != 'CASH_HMDS_STARTUP_NOT_READY_NO_HISTORY_DISPATCH':
+                raise
+            with self.lock:
+                if not allow_unknown or self.dead or self.state != 'UNKNOWN' or not alive():
+                    raise
+                return 'UNKNOWN_SINGLE_HEAD_PROBE'
+
+    def prove_head_response(self, request_id):
+        with self.lock:
+            if self.unknown_probe_id != request_id or self.dead or self.state == 'DISCONNECTED':
+                return False
+            self.positive_head_response = True
+            if self.state == 'UNKNOWN':
+                self.state = 'PROBED'
+            return True
+
     @contextmanager
     def dispatch(self, code, request_id):
         # Serialize the last local state check with observed disconnect callbacks.
         # This is not a claim of atomicity with the remote broker server.
         with self.lock:
-            if self.dead or self.state not in READY:
-                raise EvidenceError('CASH_HMDS_CHANGED_BEFORE_WIRE_DISPATCH')
-            if code not in (20, 87) or len(self.dispatches) >= 31:
+            if self.dead or len(self.dispatches) >= 31 or code not in (20, 87):
                 raise EvidenceError('HISTORY_DISPATCH_SCOPE')
+            if self.state == 'UNKNOWN' and code == 87 and self.unknown_probe_id is None:
+                self.unknown_probe_id = request_id  # one probe; no retry on uncertainty
+            elif self.state not in READY:
+                raise EvidenceError('CASH_HMDS_CHANGED_BEFORE_WIRE_DISPATCH')
             self.dispatches.append({'code': code, 'request_id': request_id,
                                     'state': self.state, 'notice_count': len(self.events),
                                     'elapsed_ms': int((self.clock()-self.started)*1000)})
@@ -72,4 +96,6 @@ class FarmReadiness:
             return {'state': self.state, 'fatal': self.dead,
                     'notices': list(self.events), 'dispatch_checks': list(self.dispatches),
                     'elapsed_ms': int((self.clock()-self.started)*1000),
-                    'reconnects': 0, 'farm_is_not_broker_signed': True}
+                    'reconnects': 0, 'farm_is_not_broker_signed': True,
+                'unknown_probe_id': self.unknown_probe_id,
+                'positive_head_response': self.positive_head_response}

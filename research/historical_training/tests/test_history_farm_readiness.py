@@ -52,6 +52,29 @@ class FarmTest(unittest.TestCase):
  def test_unknown_is_not_ready(self):
   f,c=self.make()
   with self.assertRaises(EvidenceError):f.wait(0)
+ def test_unknown_one_head_probe_then_success(self):
+  f,c=self.make()
+  self.assertEqual(f.wait_or_probe(0,allow_unknown=True,sleep=c.sleep),'UNKNOWN_SINGLE_HEAD_PROBE')
+  with f.dispatch(87,7800):pass
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(87,7801):pass
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(20,7801):pass
+  self.assertTrue(f.prove_head_response(7800))
+  with f.dispatch(20,7801):pass
+  self.assertEqual(f.snapshot()['state'],'PROBED')
+ def test_unknown_probe_error_or_disconnect_no_second_request(self):
+  f,c=self.make()
+  self.assertEqual(f.wait_or_probe(0,allow_unknown=True,sleep=c.sleep),'UNKNOWN_SINGLE_HEAD_PROBE')
+  with f.dispatch(87,7800):pass
+  f.notice(-1,2105,'disconnected:cashhmds')
+  self.assertFalse(f.prove_head_response(7800))
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(20,7801):pass
+  self.assertEqual(len(f.snapshot()['dispatch_checks']),1)
+ def test_unknown_default_still_denies(self):
+  f,c=self.make()
+  with self.assertRaises(EvidenceError):f.wait_or_probe(0,sleep=c.sleep)
  def test_order_code_denied(self):
   f,c=self.make();f.notice(-1,2106,'good:cashhmds')
   with self.assertRaises(EvidenceError):
