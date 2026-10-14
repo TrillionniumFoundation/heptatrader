@@ -65,6 +65,18 @@ def partitions(root: Path = ROOT) -> dict[str, set[str]]:
             "core": discovered - SOURCE_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS}
 
 
+def configure_import_paths() -> None:
+    """Use the same checkout imports in this runner and actual child processes."""
+    roots = [str(ROOT / suffix) for suffix in
+             ("research", "research/neuron_learning", "scripts", "tests/python")]
+    for path in roots:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    inherited = [part for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+                 if part and part not in roots]
+    os.environ["PYTHONPATH"] = os.pathsep.join(roots + inherited)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", choices=("core", "source", "install", "process", "external", "all"), required=True)
@@ -90,8 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         print("\n".join(sorted(selected)))
         return 0
-    for path in (ROOT / "research", ROOT / "research/neuron_learning", ROOT / "scripts", ROOT / "tests/python"):
-        sys.path.insert(0, str(path))
+    configure_import_paths()
     loader = unittest.TestLoader()
     suite = unittest.TestSuite(loader.loadTestsFromName(Path(name).stem) for name in sorted(selected))
     if loader.errors or not suite.countTestCases():

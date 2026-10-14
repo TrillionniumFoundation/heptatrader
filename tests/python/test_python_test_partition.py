@@ -106,3 +106,22 @@ class ExternalResearchPartitionTests(unittest.TestCase):
         self.assertIn("test_train_v2_native_wire_semantics.py", groups["core"])
         self.assertTrue(all((ROOT / "tests/python" / name).is_file()
                             for name in groups["external"]))
+
+
+class ChildImportTests(unittest.TestCase):
+    def test_clean_environment_subprocess_uses_exact_checkout_modules(self):
+        import os, subprocess, sys, tempfile
+        from unittest.mock import patch
+        prior = list(sys.path)
+        try:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('PYTHONPATH', None)
+                runner.configure_import_paths()
+                with tempfile.TemporaryDirectory() as directory:
+                    child = subprocess.run([sys.executable, '-c',
+                        'import historical_training, train_v2; print(train_v2.__file__)'],
+                        cwd=directory, text=True, capture_output=True, timeout=15)
+                self.assertEqual(child.returncode, 0, child.stderr)
+                self.assertIn(str(ROOT / 'research/train_v2'), child.stdout)
+        finally:
+            sys.path[:] = prior
