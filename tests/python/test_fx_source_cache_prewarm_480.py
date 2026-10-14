@@ -1,6 +1,14 @@
-"""Fail-closed prewarm 480-slot original PAPER source health candidate."""
+"""Portable campaign-contract tests; temporary bytes are NOT historical evidence.
+
+The actual campaign CLI retains its original private paths and frozen results.
+Ordinary CI exercises the same validation with independently created fixtures;
+it never reads a user's installed monitor or private completed experiment.
+"""
 from __future__ import annotations
 import unittest
+import hashlib
+import json
+from contextlib import ExitStack
 from unittest.mock import patch
 import tempfile
 from pathlib import Path
@@ -11,8 +19,39 @@ from train_v2.fx_source_cache_prewarm_480 import (
     verify_candidate, SCHEMA, original_observer,
 )
 from train_v2.fx_original_health_sustained import AuditHold
+from train_v2 import fx_source_cache_prewarm_480 as campaign
+from train_v2 import fx_verified_cache_480 as cache_contract
 
 class Frozen480Tests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name)
+        self.failed=self.root/"negative-fixture.json"
+        self.pilot=self.root/"pilot-fixture.json"
+        self.monitor=self.root/"original-monitor.py"
+        self.fast=self.root/"fast-monitor.py"
+        self.cache=self.root/"cache.py"
+        self.failed.write_text(json.dumps({"count":480}))
+        self.pilot.write_text(json.dumps({"count":12,"operational_ready_count":11,
+            "valid_original_status_count":12,"production_monitor_cutover":False}))
+        self.monitor.write_text("# synthetic original monitor fixture\n")
+        self.fast.write_text("# synthetic fast monitor fixture\n")
+        self.cache.write_text("# synthetic cache fixture\n")
+        for path in (self.failed,self.pilot,self.monitor,self.fast,self.cache):path.chmod(0o600)
+        self.scope=ExitStack()
+        self.addCleanup(self.scope.close)
+        for name,path in (("ORIGINAL_480_FINAL",self.failed),("PILOT_12_FINAL",self.pilot)):
+            self.scope.enter_context(patch.object(campaign,name,path))
+            self.scope.enter_context(patch.object(campaign,name+"_SHA",self.sha(path)))
+        self.scope.enter_context(patch.object(cache_contract,"ORIGINAL_MONITOR_SHA",self.sha(self.monitor)))
+        self.scope.enter_context(patch.object(cache_contract,"FAST_MONITOR_SHA",self.sha(self.fast)))
+        self.scope.enter_context(patch.object(cache_contract,"VERIFIED_CACHE_SHA",self.sha(self.cache)))
+        self.scope.enter_context(patch.object(cache_contract,"source_file",return_value=self.fast))
+        self.scope.enter_context(patch.object(cache_contract,"cache_file",return_value=self.cache))
+    @staticmethod
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     def test_fixed_480_15second_clock(self):
         self.assertEqual(N,480)
         self.assertEqual(STEP_MS,15_000)
@@ -29,9 +68,9 @@ class Frozen480Tests(unittest.TestCase):
     def test_distinct_research_schema(self):
         self.assertNotEqual(SCHEMA,
             "heptatrader.fx-cache-prewarm-source-health.v1")
-    def test_exact_existing_source_and_cache_pins(self):
+    def test_matching_candidate_fixture_contract(self):
         self.assertTrue(verify_candidate())
-    def test_old_failure_and_new_pilot_pinned(self):
+    def test_distinct_negative_and_pilot_fixtures_validate(self):
         self.assertTrue(require_prior_negative_and_pilot())
     def test_mutated_original_failure_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -59,8 +98,40 @@ class Frozen480Tests(unittest.TestCase):
     def test_period_field_bridging(self):
         d={"original_period_sha256":"a"*64}
         self.assertEqual(frozen_period_scope(d),{"period_sha256":"a"*64})
-    def test_old_source_digest_exact(self):
-        src=Path("/home/alex/.local/share/heptatrader/laya-resident/releases/8dd7ddd-proof-c17f338/learn/laya_cell/source_readiness.py")
+    def test_original_monitor_identity_uses_fixture_bytes(self):
+        src=self.monitor
         self.assertEqual(original_observer(src),src)
+
+
+    def test_rehashed_wrong_population_is_still_rejected(self):
+        self.failed.write_text(json.dumps({"count":479}))
+        with patch.object(campaign,"ORIGINAL_480_FINAL_SHA",self.sha(self.failed)):
+            with self.assertRaisesRegex(AuditHold,"ORIGINAL_480_POPULATION_CHANGED"):
+                require_prior_negative_and_pilot()
+    def test_rehashed_wrong_pilot_semantics_are_still_rejected(self):
+        original=json.loads(self.pilot.read_text())
+        for key,value in (("count",11),("operational_ready_count",12),
+                          ("valid_original_status_count",11),("production_monitor_cutover",True)):
+            with self.subTest(key=key):
+                self.pilot.write_text(json.dumps({**original,key:value}))
+                with patch.object(campaign,"PILOT_12_FINAL_SHA",self.sha(self.pilot)):
+                    with self.assertRaisesRegex(AuditHold,"PILOT_RESULTS_CHANGED"):
+                        require_prior_negative_and_pilot()
+    def test_changed_candidate_file_does_not_validate(self):
+        self.cache.write_text("changed fixture cache")
+        with self.assertRaisesRegex(AuditHold,"CACHE_CANDIDATE_OR_SOURCE_CONTRACT_CHANGED"):
+            verify_candidate()
+    def test_original_monitor_change_and_symlink_refused(self):
+        self.monitor.write_text("changed original fixture")
+        with self.assertRaisesRegex(AuditHold,"INSTALLED_MONITOR_IDENTITY_CHANGED"):
+            original_observer(self.monitor)
+        link=self.root/"linked-monitor.py"
+        link.symlink_to(self.monitor)
+        with patch.object(cache_contract,"ORIGINAL_MONITOR_SHA",self.sha(self.monitor)):
+            with self.assertRaisesRegex(AuditHold,"INSTALLED_MONITOR_IDENTITY_CHANGED"):
+                original_observer(link)
+    def test_missing_fixture_cannot_claim_validation(self):
+        self.failed.unlink()
+        with self.assertRaises(FileNotFoundError):require_prior_negative_and_pilot()
 
 if __name__=="__main__":unittest.main()
