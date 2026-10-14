@@ -46,6 +46,10 @@ class FarmReadiness:
             with self.lock:
                 if self.dead or not alive():
                     raise EvidenceError('HMDS_CONNECTION_LOST_NO_RECONNECT')
+                # Zero requests a single nonblocking observation. Otherwise,
+                # expiry wins even when a delayed callback just marked READY.
+                if seconds and self.clock() >= deadline:
+                    raise EvidenceError('CASH_HMDS_STARTUP_NOT_READY_NO_HISTORY_DISPATCH')
                 if self.state in READY:
                     return self.state
             remaining = deadline-self.clock()

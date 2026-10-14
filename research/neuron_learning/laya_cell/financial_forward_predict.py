@@ -47,19 +47,50 @@ def publication_deadline(plan, request, now_ms, computed_at_ms=None):
  return now_ms
 
 
-def publish_prediction(config, plan, request, folder, payload):
- publication_deadline(plan,request,int(time.time()*1000),payload['computed_at_ms'])
+class PublicationBudget:
+ """One non-renewable local budget, anchored before pin/load/inference.
+
+ Wall time retains the frozen request/window cutoff; monotonic elapsed time
+ prevents a clock correction from granting extra computation time. This does
+ not attest remote time or guarantee completion of the next filesystem call.
+ """
+ def __init__(self, plan, request, now_ms):
+  self.binding=(plan['plan_id'],plan['candidate_id'],request['request_id'],
+                request['started_at_ms'],plan['input_end_ms'])
+  self.last_wall=publication_deadline(plan,request,now_ms)
+  self.limit_ns=(min(request['started_at_ms']+60000,plan['input_end_ms'])-now_ms)*1000000
+  self.started_ns=time.monotonic_ns();self.last_ns=self.started_ns;self.failed=False
+ def check(self, plan, request, now_ms, lower_ms=None):
+  if self.failed:raise ContractError('VALUE_PUBLICATION_BUDGET_ALREADY_FAILED')
+  try:
+   if self.binding!=(plan['plan_id'],plan['candidate_id'],request['request_id'],
+                     request['started_at_ms'],plan['input_end_ms']):
+    raise ContractError('VALUE_PUBLICATION_BUDGET_SCOPE_CHANGED')
+   tick=time.monotonic_ns()
+   if type(tick) is not int or tick<self.last_ns or now_ms<self.last_wall:
+    raise ContractError('VALUE_PUBLICATION_CLOCK_REVERSED')
+   if tick-self.started_ns>=self.limit_ns:
+    raise ContractError('VALUE_EXPIRED_MONOTONIC_BUDGET_NO_BACKDATING')
+   publication_deadline(plan,request,now_ms,lower_ms)
+   self.last_ns=tick;self.last_wall=now_ms
+   return now_ms
+  except Exception:
+   self.failed=True
+   raise
+
+
+def publish_prediction(config, plan, request, folder, payload, budget=None):
+ now=int(time.time()*1000)
+ if budget is None:budget=PublicationBudget(plan,request,now)
+ budget.check(plan,request,now,payload['computed_at_ms'])
  write_once(folder/'prediction.json',payload)
- # Prediction bytes are durable before the commit's signature. Recheck after
- # payload fsync, then again after signing/verification immediately before the
- # commit write. A known-late signed object is never published as a commit.
- commit_at=publication_deadline(plan,request,int(time.time()*1000),payload['computed_at_ms'])
+ commit_at=budget.check(plan,request,int(time.time()*1000),payload['computed_at_ms'])
  commit={'schema':'heptatrader.financial-forward-commit.v1','prediction_sha256':sha_file(folder/'prediction.json'),
   'committed_at_ms':commit_at,'plan_id':plan['plan_id'],'request_id':request['request_id'],'candidate_id':plan['candidate_id']}
  from .financial_forward_witness import sign_record
  commit=sign_record(config,'predictor',commit)
- publication_deadline(plan,request,commit['role_witness']['signed_at_ms'],commit_at)
- publication_deadline(plan,request,int(time.time()*1000),commit['role_witness']['signed_at_ms'])
+ budget.check(plan,request,commit['role_witness']['signed_at_ms'],commit_at)
+ budget.check(plan,request,int(time.time()*1000),commit['role_witness']['signed_at_ms'])
  write_once(folder/'commit.json',commit)
  return commit
 
@@ -88,6 +119,7 @@ class Predictor:
   if now-r['started_at_ms']>60000:
    write_once(folder/'failure.json',{'reason':'REQUEST_ALREADY_OLD_NO_BACKDATING','observed_at_ms':now,'request_id':r['request_id']});return None
   try:
+   budget=PublicationBudget(plan,r,int(time.time()*1000))
    c=pin(self.c,plan)
    self.load()
    import torch
@@ -122,7 +154,7 @@ class Predictor:
     'feature_receipt':info,'inference_seconds':time.monotonic()-begin,'candidate_refit':False,
     'side_choice_provided_to_trader':False,'output_scope':'CONDITIONAL_ROUNDTRIP_NET_USD_NOT_TRADE_SIGNAL',
     'both_action_conditions_committed_without_response_input':True,'broker_orders_sent':0}
-   return publish_prediction(self.c, plan, r, folder, payload)
+   return publish_prediction(self.c, plan, r, folder, payload, budget)
   except Exception as exc:
    write_once(folder/'failure.json',{'reason':type(exc).__name__+':'+str(exc)[:220],'observed_at_ms':int(time.time()*1000),'request_id':r['request_id']})
    return None
