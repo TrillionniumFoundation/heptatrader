@@ -16,6 +16,12 @@ class HistoryGuard:
         if kind not in ('head','bars','schedule') or what not in ('MIDPOINT','BID','ASK','SCHEDULE'):
             raise EvidenceError('HISTORY_REQUEST_KIND')
         if (kind=='schedule')!=(what=='SCHEDULE'):raise EvidenceError('HISTORY_REQUEST_KIND')
+        if kind != 'head':
+            duration = plan.get('duration', '30 D')
+            words = duration.split() if isinstance(duration, str) else []
+            if (len(words) != 2 or words[1] != 'D' or not words[0].isdigit() or
+                    not 1 <= int(words[0]) <= 30 or duration != str(int(words[0]))+' D'):
+                raise EvidenceError('BOUNDED_HISTORY_DURATION_REQUIRED')
         self.plans[rid]=copy.deepcopy(plan)
     def check(self,msg,paper,server_version,now=None):
         if not isinstance(msg,str) or not msg.endswith('\0'):raise EvidenceError('WIRE_FORMAT')
@@ -52,7 +58,7 @@ class HistoryGuard:
             if f[15:]!=['0',plan['what'],'2']:raise EvidenceError('HEAD_REQUEST_PAYLOAD')
         else:
             size='1 day' if plan['kind']=='schedule' else '5 mins'
-            if f[15:]!=[plan['end'],size,'30 D','0',plan['what'],'2','0','']:
+            if f[15:]!=[plan['end'],size,plan.get('duration','30 D'),'0',plan['what'],'2','0','']:
                 raise EvidenceError('HISTORY_REQUEST_PAYLOAD')
         now=time.monotonic() if now is None else now
         if self.last is not None and now-self.last<self.spacing:
