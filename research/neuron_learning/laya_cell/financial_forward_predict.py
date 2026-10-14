@@ -31,6 +31,39 @@ def pin(config,plan):
   validate_bound_plan(plan,c)
  return c
 
+def publication_deadline(plan, request, now_ms, computed_at_ms=None):
+ """Candidate-only guard; no reinterpretation of an older frozen experiment.
+
+ Checks the latest local clock before I/O, not a hard real-time guarantee that
+ a future filesystem write completes before the deadline.
+ """
+ start=request.get('started_at_ms'); end=plan.get('input_end_ms')
+ if any(type(v) is not int or v<=0 for v in (start,end,now_ms)):
+  raise ContractError('VALUE_PUBLICATION_TIME_TYPE')
+ if now_ms<start or (computed_at_ms is not None and (type(computed_at_ms) is not int or now_ms<computed_at_ms)):
+  raise ContractError('VALUE_PUBLICATION_CLOCK_REVERSED')
+ if now_ms>=min(start+60000,end):
+  raise ContractError('VALUE_EXPIRED_BEFORE_PUBLICATION_NO_BACKDATING')
+ return now_ms
+
+
+def publish_prediction(config, plan, request, folder, payload):
+ publication_deadline(plan,request,int(time.time()*1000),payload['computed_at_ms'])
+ write_once(folder/'prediction.json',payload)
+ # Prediction bytes are durable before the commit's signature. Recheck after
+ # payload fsync, then again after signing/verification immediately before the
+ # commit write. A known-late signed object is never published as a commit.
+ commit_at=publication_deadline(plan,request,int(time.time()*1000),payload['computed_at_ms'])
+ commit={'schema':'heptatrader.financial-forward-commit.v1','prediction_sha256':sha_file(folder/'prediction.json'),
+  'committed_at_ms':commit_at,'plan_id':plan['plan_id'],'request_id':request['request_id'],'candidate_id':plan['candidate_id']}
+ from .financial_forward_witness import sign_record
+ commit=sign_record(config,'predictor',commit)
+ publication_deadline(plan,request,commit['role_witness']['signed_at_ms'],commit_at)
+ publication_deadline(plan,request,int(time.time()*1000),commit['role_witness']['signed_at_ms'])
+ write_once(folder/'commit.json',commit)
+ return commit
+
+
 class Predictor:
  def __init__(self,config):
   self.c=config;self.root=Path(config['forward_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -89,15 +122,7 @@ class Predictor:
     'feature_receipt':info,'inference_seconds':time.monotonic()-begin,'candidate_refit':False,
     'side_choice_provided_to_trader':False,'output_scope':'CONDITIONAL_ROUNDTRIP_NET_USD_NOT_TRADE_SIGNAL',
     'both_action_conditions_committed_without_response_input':True,'broker_orders_sent':0}
-   write_once(folder/'prediction.json',payload)
-   # Separate commit witness is made AFTER fsync of the actual output payload.
-   # Committing after PREPARED is never rescued by changing timestamps.
-   commit={'schema':'heptatrader.financial-forward-commit.v1','prediction_sha256':sha_file(folder/'prediction.json'),
-    'committed_at_ms':int(time.time()*1000),'plan_id':plan['plan_id'],'request_id':r['request_id'],'candidate_id':key}
-   from .financial_forward_witness import sign_record
-   commit=sign_record(self.c,'predictor',commit)
-   write_once(folder/'commit.json',commit)
-   return commit
+   return publish_prediction(self.c, plan, r, folder, payload)
   except Exception as exc:
    write_once(folder/'failure.json',{'reason':type(exc).__name__+':'+str(exc)[:220],'observed_at_ms':int(time.time()*1000),'request_id':r['request_id']})
    return None
