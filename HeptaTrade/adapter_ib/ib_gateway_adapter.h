@@ -415,6 +415,7 @@ private:
     void ApplyLiveTerminalEvidence(const IBEvent& event);
     void PublishLiveTerminalEvidence(long orderId);
     bool IsConsistentBoundOrderStatus(const IBEvent& event) const;
+    bool IsExactDuplicateNativeTerminalStatus(const IBEvent& event) const;
     bool IsConsistentBoundLiveExecution(const IBEvent& event) const;
     void PublishPositionEvent(const IBEvent& event);
     bool MergeIncrementalActiveOrder(long orderId,
@@ -519,6 +520,10 @@ private:
         double publishedExecutionQuantity = 0.0;
         std::string terminalStatus;
         double terminalFilledQuantity = 0.0;
+        // One original native terminal callback per existing send binding.
+        // Cleared with that binding on reconnect; no global order-id cache.
+        bool hasNativeTerminalStatus = false;
+        IBEvent nativeTerminalStatus;
     };
     std::map<long, LiveTerminalBinding> m_liveTerminalBindings;
     std::uint64_t m_exposureGeneration = 0;

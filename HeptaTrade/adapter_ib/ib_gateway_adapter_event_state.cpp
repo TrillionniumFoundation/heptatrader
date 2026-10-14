@@ -759,6 +759,7 @@ void HeptaIBGatewayAdapter::ApplyEventStateTransition(
         !IsConsistentBoundOrderStatus(event))
         return;
     if (m_recoveryAuditBarrierComplete &&
+        !IsExactDuplicateNativeTerminalStatus(event) &&
         (event.type == IBEventType::OpenOrder ||
          event.type == IBEventType::OrderStatus ||
          event.type == IBEventType::ExecutionDetails ||
@@ -1310,6 +1311,37 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     }
 }
 
+bool HeptaIBGatewayAdapter::IsExactDuplicateNativeTerminalStatus(
+    const IBEvent& event) const {
+    // IB explicitly permits repeated native orderStatus callbacks. Only the
+    // exact, already-published terminal evidence for our current send binding
+    // is a no-op. Never use naked order ids, quantity tolerances or this path
+    // to establish/reopen a recovery barrier. Economic extensions remain
+    // conservative until they have their own complete identity comparison.
+    if (!m_eventStreamAuthoritative || !event.value.empty() ||
+        !event.economics.Absent() || !event.advancedOrderRejectJson.empty() ||
+        !IsConsistentBoundOrderStatus(event) || !IsIbFinalStatus(event.key))
+        return false;
+    const auto& binding=m_liveTerminalBindings.at(static_cast<long>(event.id));
+    if (!binding.hasNativeTerminalStatus ||
+        !m_terminalCorrelationSnapshot.complete ||
+        m_terminalCorrelationSnapshot.connectionEpoch != m_connectionEpoch)
+        return false;
+    const auto order=m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.find(binding.correlationId);
+    const auto status=m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.find(binding.correlationId);
+    if (order==m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.end() ||
+        status==m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.end() ||
+        order->second!=event.id || status->second!=event.key ||
+        binding.executionQuantity!=event.number2)
+        return false;
+    const auto& original=binding.nativeTerminalStatus;
+    return original.requestId==event.requestId && original.key==event.key &&
+        original.number==event.number && original.number2==event.number2 &&
+        original.number3==event.number3 && original.whyHeld==event.whyHeld &&
+        original.marketCapPrice==event.marketCapPrice &&
+        original.remainingQuantityKnown==event.remainingQuantityKnown;
+}
+
 bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) const {
     const auto found = m_liveTerminalBindings.find(static_cast<long>(event.id));
     if (found == m_liveTerminalBindings.end()) return false;
@@ -1405,6 +1437,10 @@ void HeptaIBGatewayAdapter::ApplyLiveTerminalEvidence(const IBEvent& event) {
         if (event.value == "execDetails" ||
             !IsConsistentBoundOrderStatus(event) || !IsIbFinalStatus(event.key))
             return;
+        binding.hasNativeTerminalStatus = event.value.empty() &&
+            event.economics.Absent() && event.advancedOrderRejectJson.empty() &&
+            std::isfinite(event.number) && std::isfinite(event.marketCapPrice);
+        if (binding.hasNativeTerminalStatus) binding.nativeTerminalStatus = event;
         binding.terminalStatus = event.key;
         binding.terminalFilledQuantity = event.number2;
     }
