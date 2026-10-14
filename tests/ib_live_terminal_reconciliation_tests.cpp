@@ -714,6 +714,72 @@ void TestValidatedSyntheticFillWithoutNativeStatus() {
     assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.empty());
     assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
 }
+void TestExactNativeTerminalStatusReplayPreservesRecoveryAudit() {
+    // Original callbacks from the fake broker; no socket, account or live send.
+    for (int scenario=0; scenario<3; ++scenario) {
+        Fixture f; const long id=f.Place();
+        const double quantity=scenario==0?0.0:(scenario==1?0.4:1.0);
+        const auto original=f.Status(scenario==2?"Filled":"Cancelled",quantity);
+        if(quantity>0.0) f.Push(f.Execution(quantity));
+        f.Push(original);
+        if(quantity>0.0) f.AbsorbFill(id);
+        assert(f.adapter.ReqRecoveryAuditRiskRefresh()); f.FinishRiskRefresh();
+        const auto before=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+        assert(before.barrierComplete);
+        for(int n=0;n<8;++n) {
+            auto repeated=original; repeated.queueIngressMonotonicNs=1000+n;
+            assert(f.Push(repeated)==1);
+            const auto after=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+            if(!after.barrierComplete)
+                throw std::runtime_error("EXACT_NATIVE_TERMINAL_REPLAY_INVALIDATED_RECOVERY_AUDIT");
+            assert(after.exposureGeneration==before.exposureGeneration);
+            assert(after.terminal.generation==before.terminal.generation);
+            assert(after.risk.generation==before.risk.generation);
+            assert(f.broker->places==1 && f.broker->cancels==0);
+        }
+    }
+}
+
+void TestChangedTerminalStatusStillInvalidatesRecoveryAudit() {
+    const std::vector<std::function<void(IBEvent&)>> changes={
+        [](IBEvent& e){e.key="ApiCancelled";},
+        [](IBEvent& e){e.number=1.19;},
+        [](IBEvent& e){e.number2=0.2;},
+        [](IBEvent& e){e.number3+=0.1;},
+        [](IBEvent& e){++e.requestId;},
+        [](IBEvent& e){e.whyHeld="changed";},
+        [](IBEvent& e){e.marketCapPrice=1.17;},
+        [](IBEvent& e){e.remainingQuantityKnown=!e.remainingQuantityKnown;},
+        [](IBEvent& e){e.advancedOrderRejectJson="changed";},
+        [](IBEvent& e){e.economics.version=1;},
+        [](IBEvent& e){++e.brokerClientId;},
+        [](IBEvent& e){e.account="DU999";},
+        [](IBEvent& e){++e.id;},
+        [](IBEvent& e){e.number=std::numeric_limits<double>::quiet_NaN();}};
+    int changeIndex=0;
+    for(const auto& change:changes) {
+        Fixture f;const long id=f.Place();f.Push(f.Execution(0.4));
+        const auto original=f.Status("Cancelled",0.4);f.Push(original);f.AbsorbFill(id);
+        assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+        assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+        auto changed=original;change(changed);f.Push(changed);
+        if(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete)
+            throw std::runtime_error("CHANGED_NATIVE_TERMINAL_ACCEPTED_CASE_"+std::to_string(changeIndex));
+        ++changeIndex;
+        // A subsequent old duplicate must never repair a now-invalid barrier.
+        f.Push(original);
+        assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+        assert(f.broker->places==1 && f.broker->cancels==0);
+    }
+    Fixture f;f.Place();const auto original=f.Status("Cancelled",0);f.Push(original);
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+    auto old=original;old.connectionEpoch=0;assert(f.Push(old)==0);
+    // Preserve the original conservative quarantine for an untagged epoch.
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    f.adapter.Disconnect();assert(f.adapter.Connect());f.Bootstrap();
+    f.Push(original);assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+}
+
 void TestQuarantineInvalidatesRecoveryBarrier() {
     Fixture f;f.Place();f.Push(f.Status("Cancelled",0));
     assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
@@ -854,6 +920,8 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
+    TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
