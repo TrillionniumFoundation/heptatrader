@@ -51,6 +51,15 @@ def validate(c):
     validate_wait(c.get('cash_hmds_startup_wait_sec', 0))
     if type(c.get('head_probe_on_unknown',False)) is not bool:raise EvidenceError('HISTORY_PROBE_POLICY_TYPE')
     if c.get('head_probe_on_unknown',False) and not c.get('cash_hmds_startup_wait_sec',0):raise EvidenceError('HISTORY_PROBE_NEEDS_FINITE_WAIT')
+    if c.get('unknown_probe_kind','head') not in ('head','bars'):raise EvidenceError('UNKNOWN_PROBE_KIND')
+    if type(c.get('skip_head_timestamp_requests',False)) is not bool:
+        raise EvidenceError('SKIP_HEAD_MODE_TYPE')
+    if c.get('unknown_probe_kind','head')=='bars' and not (
+            c.get('history_probe_only') is True
+            or (c.get('skip_head_timestamp_requests') is True and c.get('head_probe_on_unknown') is True)):
+        raise EvidenceError('UNKNOWN_BAR_PROBE_WITHOUT_EXPLICIT_HEAD_SKIP')
+    if c.get('skip_head_timestamp_requests') and c.get('unknown_probe_kind')!='bars':
+        raise EvidenceError('BAR_FIRST_HEAD_SKIP_REQUIRED')
     return end
 
 def validate_cutoff(end, policy='OLDER_THAN_24H', now=None):
@@ -94,7 +103,7 @@ def make_app(c):
             self.events={};self.rows={};self.ends={};self.errors=[];self.heads={};self.schedules={}
             self.sent=collections.Counter();self.own=set();self.active=set();self.dead=False
             self.cash_hmds_state='UNKNOWN'
-            self.farm = FarmReadiness() if c.get('cash_hmds_startup_wait_sec', 0) else None
+            self.farm = FarmReadiness(probe_kind=20 if c.get('unknown_probe_kind')=='bars' else 87) if c.get('cash_hmds_startup_wait_sec', 0) else None
             self.guard=HistoryGuard(c['client_id'],c['spacing_sec'])
         def sendMsg(self,msg):
             fields=msg.split('\0');code=int(fields[0])
@@ -128,6 +137,9 @@ def make_app(c):
                 'wap':str(bar.wap),'bar_count':bar.barCount})
         def historicalDataEnd(self,reqId,start,end):
             self.guard.check_response(reqId,'bars')
+            if (self.farm is not None and self.rows.get(reqId)
+                    and not any(x['request_id']==reqId for x in self.errors)):
+                self.farm.prove_bar_response(reqId)
             self.ends[reqId]={'start':start,'end':end};self.events[reqId].set()
         def headTimestamp(self,reqId,headTimestamp):
             self.guard.check_response(reqId,'head')
@@ -148,7 +160,7 @@ def make_app(c):
 
 def plans(c,end):
     days=request_window_days(c)
-    out=[{'kind':'head','what':what,'end':''} for what in ('MIDPOINT','BID','ASK')]
+    out=[] if c.get('skip_head_timestamp_requests') is True else [{'kind':'head','what':what,'end':''} for what in ('MIDPOINT','BID','ASK')]
     for i in range(c['chunks']):
         until=end-timedelta(days=30*i)
         for what in ('MIDPOINT','BID','ASK','SCHEDULE'):
@@ -257,6 +269,7 @@ def _run_locked(c,end,root):
         if not app.ready.wait(12) or not app.account_event.wait(3) or not app.paper:
             raise EvidenceError('PAPER_HANDSHAKE_FAILED')
         session['server_version']=app.serverVersion()
+        session['head_timestamp_requests_skipped']=c.get('skip_head_timestamp_requests') is True
         if c.get('cash_hmds_startup_wait_sec', 0):
             if getattr(app, 'farm', None) is None:
                 raise EvidenceError('REQUIRED_HMDS_READINESS_TRACKER_MISSING')

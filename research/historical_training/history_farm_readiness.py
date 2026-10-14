@@ -16,7 +16,9 @@ def validate_wait(value):
 
 
 class FarmReadiness:
-    def __init__(self, clock=time.monotonic, wall=time.time):
+    def __init__(self, clock=time.monotonic, wall=time.time, probe_kind=87):
+        if probe_kind not in (20,87):raise ValueError('UNSUPPORTED_HISTORY_PROBE_KIND')
+        self.probe_kind=probe_kind
         self.lock = threading.RLock()
         self.clock, self.wall = clock, wall
         self.started = clock()
@@ -24,6 +26,7 @@ class FarmReadiness:
         self.events, self.dispatches = [], []
         self.unknown_probe_id = None
         self.positive_head_response = False
+        self.positive_bar_response = False
 
     def notice(self, request_id, code, message):
         with self.lock:
@@ -75,6 +78,15 @@ class FarmReadiness:
                 self.state = 'PROBED'
             return True
 
+    def prove_bar_response(self,request_id):
+        with self.lock:
+            if (self.probe_kind != 20 or self.unknown_probe_id != request_id
+                    or self.dead or self.state == 'DISCONNECTED'):
+                return False
+            self.positive_bar_response=True
+            if self.state=='UNKNOWN':self.state='PROBED'
+            return True
+
     @contextmanager
     def dispatch(self, code, request_id):
         # Serialize the last local state check with observed disconnect callbacks.
@@ -82,7 +94,7 @@ class FarmReadiness:
         with self.lock:
             if self.dead or len(self.dispatches) >= 31 or code not in (20, 87):
                 raise EvidenceError('HISTORY_DISPATCH_SCOPE')
-            if self.state == 'UNKNOWN' and code == 87 and self.unknown_probe_id is None:
+            if self.state == 'UNKNOWN' and code == self.probe_kind and self.unknown_probe_id is None:
                 self.unknown_probe_id = request_id  # one probe; no retry on uncertainty
             elif self.state not in READY:
                 raise EvidenceError('CASH_HMDS_CHANGED_BEFORE_WIRE_DISPATCH')
@@ -98,4 +110,6 @@ class FarmReadiness:
                     'elapsed_ms': int((self.clock()-self.started)*1000),
                     'reconnects': 0, 'farm_is_not_broker_signed': True,
                 'unknown_probe_id': self.unknown_probe_id,
-                'positive_head_response': self.positive_head_response}
+                'probe_kind': self.probe_kind,
+                'positive_head_response': self.positive_head_response,
+                'positive_bar_response': self.positive_bar_response}

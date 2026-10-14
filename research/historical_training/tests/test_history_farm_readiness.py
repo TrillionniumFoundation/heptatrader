@@ -72,6 +72,30 @@ class FarmTest(unittest.TestCase):
   with self.assertRaises(EvidenceError):
    with f.dispatch(20,7801):pass
   self.assertEqual(len(f.snapshot()['dispatch_checks']),1)
+ def test_unknown_one_bars_probe_only(self):
+  c=FakeClock()
+  f=FarmReadiness(c,lambda:1791960000+c(),probe_kind=20)
+  self.assertEqual(f.wait_or_probe(0,allow_unknown=True,sleep=c.sleep),'UNKNOWN_SINGLE_HEAD_PROBE')
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(87,7800):self.fail('wrong code')
+  with f.dispatch(20,7800):pass
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(20,7801):self.fail('duplicate probe')
+  self.assertEqual([d['code'] for d in f.snapshot()['dispatch_checks']],[20])
+ def test_bar_probe_requires_actual_response(self):
+  f,c=self.make();f.probe_kind=20
+  f.wait_or_probe(0,allow_unknown=True,sleep=c.sleep)
+  with f.dispatch(20,7800):pass
+  self.assertFalse(f.prove_bar_response(7801))
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(20,7801):pass
+  self.assertTrue(f.prove_bar_response(7800))
+  self.assertTrue(f.snapshot()['positive_bar_response'])
+  with f.dispatch(20,7801):pass
+ def test_unknown_bars_disconnect_still_denied(self):
+  f=FarmReadiness(probe_kind=20);f.notice(-1,2105,'disconnect:cashhmds')
+  with self.assertRaises(EvidenceError):
+   with f.dispatch(20,7800):self.fail('dispatched despite 2105')
  def test_unknown_default_still_denies(self):
   f,c=self.make()
   with self.assertRaises(EvidenceError):f.wait_or_probe(0,sleep=c.sleep)
