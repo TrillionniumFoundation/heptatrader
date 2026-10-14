@@ -277,7 +277,24 @@ hepta_register_core_test(hepta_ib_cumulative_execution_evidence_tests)
 get_target_property(_hepta_ib_replay_sources hepta_ib_executiond SOURCES)
 list(REMOVE_ITEM _hepta_ib_replay_sources execution/hepta_ib_executiond.cpp)
 list(TRANSFORM _hepta_ib_replay_sources PREPEND "${CMAKE_SOURCE_DIR}/HeptaTrade/")
-add_executable(hepta_ib_recent_order_replay_tests ib_recent_order_replay_tests.cpp ${_hepta_ib_replay_sources})
+# Compile the same offline test runtime once, with the original test-only
+# assertions and usage requirements. Production and the explicit live probe
+# keep their separate compilation; no installed artifact gains test flags.
+add_library(hepta_ib_test_runtime_objects OBJECT ${_hepta_ib_replay_sources})
+target_include_directories(hepta_ib_test_runtime_objects PRIVATE
+    ../HeptaTrade ../HeptaTrade/adapter_ib)
+set_target_properties(hepta_ib_test_runtime_objects PROPERTIES
+    CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(hepta_ib_test_runtime_objects PRIVATE /UNDEBUG)
+else()
+    target_compile_options(hepta_ib_test_runtime_objects PRIVATE -UNDEBUG)
+endif()
+target_link_libraries(hepta_ib_test_runtime_objects PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+
+add_executable(hepta_ib_recent_order_replay_tests ib_recent_order_replay_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
 target_link_libraries(hepta_ib_recent_order_replay_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_recent_order_replay_tests)
@@ -285,7 +302,7 @@ hepta_register_core_test(hepta_ib_recent_order_replay_tests)
 # The same production runtime source list and adapter/subscription/admission
 # objects; an injected wrapper has no socket and throws on every order method.
 add_executable(hepta_ib_quote_recovery_component_tests
-    ib_quote_recovery_component_tests.cpp ${_hepta_ib_replay_sources})
+    ib_quote_recovery_component_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
 target_link_libraries(hepta_ib_quote_recovery_component_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine)
@@ -297,7 +314,7 @@ hepta_register_core_test(hepta_ib_cancel_notice_tests)
 
 # Same native post-fill methods; synthetic events, no production broker or state.
 add_executable(hepta_ib_postfill_reconciliation_tests
-    ib_postfill_reconciliation_tests.cpp ${_hepta_ib_replay_sources})
+    ib_postfill_reconciliation_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
 target_link_libraries(hepta_ib_postfill_reconciliation_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine)
@@ -306,7 +323,7 @@ hepta_register_core_test(hepta_ib_postfill_reconciliation_tests)
 # Full runtime startup, recovery coordinator, durable OMS and real local IPC.
 # Broker wrapper is socket-free; no production state or credentials are used.
 add_executable(hepta_ib_full_runtime_recovery_tests
-    ib_full_runtime_recovery_tests.cpp ${_hepta_ib_replay_sources})
+    ib_full_runtime_recovery_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
 target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine)
