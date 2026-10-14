@@ -45,8 +45,38 @@ def validate(c):
     for name,wanted in c['sdk_sha256'].items():
         if sha(Path(c['sdk_root'])/'ibapi'/name)!=wanted:raise EvidenceError('SDK_CHANGED')
     end=datetime.strptime(c['end_utc'],'%Y%m%d %H:%M:%S UTC').replace(tzinfo=timezone.utc)
-    if end>=datetime.now(timezone.utc)-timedelta(days=1):raise EvidenceError('HISTORICAL_ONLY_CUTOFF')
+    validate_cutoff(end, c.get('cutoff_policy', 'OLDER_THAN_24H'))
+    request_window_days(c)
     return end
+
+def validate_cutoff(end, policy='OLDER_THAN_24H', now=None):
+    """An explicit offline-only mode accepts the previous completed UTC day.
+
+    The legacy 24-hour cutoff remains the default. No current-day or intraday
+    exception, future endpoint or prospective source repair is permitted.
+    """
+    now = datetime.now(timezone.utc) if now is None else now
+    if policy == 'OLDER_THAN_24H':
+        if end >= now - timedelta(days=1):
+            raise EvidenceError('HISTORICAL_ONLY_CUTOFF')
+    elif policy == 'COMPLETED_UTC_DAY':
+        midnight = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        if (end.utcoffset() != timedelta(0) or
+                (end.hour, end.minute, end.second, end.microsecond) != (23, 59, 59, 0) or
+                end >= midnight or now - end < timedelta(minutes=5)):
+            raise EvidenceError('COMPLETED_UTC_DAY_REQUIRED')
+    else:
+        raise EvidenceError('UNKNOWN_HISTORICAL_CUTOFF_POLICY')
+
+
+def request_window_days(c):
+    days = c.get('window_days', 30)
+    if type(days) is not int or not 1 <= days <= 30:
+        raise EvidenceError('BOUNDED_HISTORY_WINDOW_DAYS')
+    if days != 30 and c.get('chunks') != 1:
+        raise EvidenceError('INCREMENTAL_SINGLE_CHUNK_ONLY')
+    return days
+
 
 def make_app(c):
     sys.path.insert(0,c['sdk_root'])
@@ -107,14 +137,15 @@ def make_app(c):
     return Reader(),contract
 
 def plans(c,end):
+    days=request_window_days(c)
     out=[{'kind':'head','what':what,'end':''} for what in ('MIDPOINT','BID','ASK')]
     for i in range(c['chunks']):
         until=end-timedelta(days=30*i)
         for what in ('MIDPOINT','BID','ASK','SCHEDULE'):
             out.append({'kind':'bars' if what!='SCHEDULE' else 'schedule','what':what,
-                'end':until.strftime('%Y%m%d %H:%M:%S UTC'),'duration':'30 D',
+                'end':until.strftime('%Y%m%d %H:%M:%S UTC'),'duration':str(days)+' D',
                 'bar_size':'1 day' if what=='SCHEDULE' else '5 mins',
-                'requested_start_utc':(until-timedelta(days=30)).isoformat(),
+                'requested_start_utc':(until-timedelta(days=days)).isoformat(),
                 'requested_end_utc':until.isoformat()})
     return out
 
