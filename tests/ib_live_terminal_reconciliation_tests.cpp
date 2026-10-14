@@ -714,6 +714,48 @@ void TestValidatedSyntheticFillWithoutNativeStatus() {
     assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.empty());
     assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
 }
+void TestCashDriftNeedsExplicitNewRecoveryAuditRiskGeneration() {
+    // Real AccountValue callbacks have no trustworthy request ID. A later
+    // out-of-generation push must invalidate the prior recovery barrier; a
+    // completed ordinary refresh only restores the risk view, not the audit.
+    Fixture f(true, false, true);
+    auto completeCash=[&](const std::string& balance) {
+        auto v=f.Event(IBEventType::AccountValue);
+        v.key="NetLiquidation:USD";v.value="1000";f.Push(v);
+        v.key="AccountReady:";v.value="true";f.Push(v);
+        v.key="CashBalance:EUR";v.value=balance;f.Push(v);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    completeCash("-75000");
+    assert(f.adapter.GetAuthoritativeRiskSnapshot().complete);
+    assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    auto changed=f.Event(IBEventType::AccountValue);
+    changed.key="CashBalance:EUR";changed.value="-75001";f.Push(changed);
+    auto invalid=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!invalid.barrierComplete && !invalid.risk.complete);
+    assert(invalid.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    assert(f.adapter.ReqRiskRefresh());
+    completeCash("-75001");
+    const auto restoredRisk=f.adapter.GetAuthoritativeRiskSnapshot();
+    assert(restoredRisk.complete && restoredRisk.coherentRefreshComplete);
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    // The recovery flag forces a genuine new broker request/end generation.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    completeCash("-75001");
+    const auto audited=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(audited.barrierComplete && audited.reasonCode.empty());
+    assert(audited.risk.complete && audited.active.complete && audited.terminal.complete);
+    assert(audited.exposureGeneration==audited.riskAbsorbedExposureGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    // A delayed older subscription observation must not be accepted merely
+    // because the immediately preceding request/end generation completed.
+    changed.value="-75000";f.Push(changed);
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    assert(!f.adapter.GetAuthoritativeRiskSnapshot().complete);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
 void TestQuarantineInvalidatesRecoveryBarrier() {
     Fixture f;f.Place();f.Push(f.Status("Cancelled",0));
     assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
@@ -870,6 +912,7 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
+    TestCashDriftNeedsExplicitNewRecoveryAuditRiskGeneration();
     TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }

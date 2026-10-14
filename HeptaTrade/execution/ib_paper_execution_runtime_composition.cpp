@@ -558,6 +558,11 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 {
     auto nextPendingReconcile = std::chrono::steady_clock::now();
     auto nextPendingOpenOrderRead = nextPendingReconcile;
+    // One cash-only audit refresh per broker/exposure generation, not per
+    // incoming untagged AccountValue callback. Never reconnect or place/cancel.
+    auto nextCashAuditCheck = nextPendingReconcile;
+    std::uint64_t lastCashAuditEpoch = 0;
+    std::uint64_t lastCashAuditExposure = 0;
     while (m_polling.load())
     {
         if (m_reconnectPending.load())
@@ -601,6 +606,44 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
             }
             if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
+        }
+        // A cash subscription push can invalidate the recovery barrier after
+        // the ordinary post-fill account/position refresh already recovered a
+        // coherent risk view. This explicitly requests a NEW account+position
+        // generation in recovery-audit mode; an ordinary risk refresh must not
+        // silently promote the prior barrier. Only attempt with terminal and
+        // active evidence in this broker epoch and NO active/pending orders.
+        // Bound repeated late cash pushes: at most once per (epoch, exposure).
+        if (m_config.profile.userScope && m_adapter && m_coordinator &&
+            !m_reconnectPending.load() &&
+            !m_recoveryAuditReconnectRequested.load() &&
+            !m_postFillRiskRefreshPending.load() &&
+            !m_adapter->HasPendingLivePostFillRiskReconciliation() &&
+            now >= nextCashAuditCheck) {
+            nextCashAuditCheck = now + std::chrono::seconds(1);
+            std::string blockedReason;
+            if (!m_coordinator->IsMutationBlocked(&blockedReason)) {
+                const auto audit = m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+                const std::uint64_t epoch = audit.risk.connectionEpoch;
+                const std::uint64_t exposure = audit.exposureGeneration;
+                if (!audit.barrierComplete &&
+                    audit.reasonCode == "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE" &&
+                    audit.risk.complete && audit.risk.coherentRefreshComplete &&
+                    audit.active.complete && audit.terminal.complete &&
+                    audit.active.activeOrderIds.empty() && epoch != 0 &&
+                    audit.active.connectionEpoch == epoch &&
+                    audit.terminal.connectionEpoch == epoch &&
+                    audit.riskAbsorbedExposureGeneration == exposure &&
+                    audit.terminalExposureGeneration <= exposure &&
+                    (lastCashAuditEpoch != epoch ||
+                     lastCashAuditExposure != exposure)) {
+                    if (m_adapter->ReqRecoveryAuditRiskRefresh()) {
+                        lastCashAuditEpoch = epoch;
+                        lastCashAuditExposure = exposure;
+                        NotifyTestStage("cash_drift_recovery_risk_dispatched");
+                    }
+                }
+            }
         }
         if (m_config.profile.userScope && m_coordinator && m_policyAuthority &&
             m_coordinator->IsMutationBlocked(&pendingReason) &&
