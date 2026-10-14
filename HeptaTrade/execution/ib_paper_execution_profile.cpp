@@ -1,4 +1,5 @@
 #include "ib_paper_execution_profile.h"
+#include "ib_paper_kill_switch.h"
 #include "../adapter_ib/ib_venue_correlation.h"
 
 #include <cerrno>
@@ -467,7 +468,7 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         reason = "IB_PAPER_STATE_DIRECTORY_INVALID";
         return false;
     }
-    if (!(userScope ? controlDirectory == UserControlDirectoryPath() :
+    if (!(userScope ? IsUserControlDirectory(controlDirectory) :
                        CanonicalControlDirectory(controlDirectory)) ||
         !SafeAbsolutePath(controlDirectory) ||
         SameOrChildPath(controlDirectory, stateDirectory) ||
@@ -2110,4 +2111,11 @@ bool IbPaperExecutionProfileConfig::CryptoProtectedSellLimitValid(double price, 
     if (!CryptoPriceOnGrid(price) || !std::isfinite(bid) || bid <= 0.0 || price > bid)
         return false;
     return price + 1e-9 >= bid * (1.0 - CryptoProtectionFraction());
+}
+
+
+bool IbPaperExecutionProfileConfig::IsUserControlDirectory(const std::string& directory)
+{
+    const auto persistent=IbPaperKillSwitch::UserPersistentControlDirectoryPath();
+    return directory==UserControlDirectoryPath() || (!persistent.empty() && directory==persistent);
 }

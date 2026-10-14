@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <pwd.h>
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -158,11 +159,11 @@ IbPaperKillSwitch::IbPaperKillSwitch(const std::string& controlDirectory,
                                      std::uint32_t expectedOwnerUid,
                                      std::uint32_t expectedGroupGid,
                                      std::uint64_t device,
-                                     std::uint64_t inode)
+                                     std::uint64_t inode, bool persistentMode)
     : m_controlDirectory(controlDirectory), m_rootFd(rootFd),
       m_directoryFd(directoryFd), m_expectedOwnerUid(expectedOwnerUid),
       m_expectedGroupGid(expectedGroupGid), m_device(device), m_inode(inode),
-      m_directoryUncertain(false)
+      m_persistentMode(persistentMode), m_directoryUncertain(false)
 {
 }
 
@@ -178,7 +179,7 @@ bool IbPaperKillSwitch::OpenAndPinProduction(
     std::string& reason)
 {
     return OpenAndPin(controlDirectory, 0,
-                      static_cast<std::uint32_t>(::getegid()), true,
+                      static_cast<std::uint32_t>(::getegid()), true, false,
                       result, reason);
 }
 
@@ -187,7 +188,8 @@ bool IbPaperKillSwitch::OpenAndPinUserOwned(
     std::shared_ptr<IbPaperKillSwitch>& result, std::string& reason)
 {
     return OpenAndPin(controlDirectory, static_cast<std::uint32_t>(::geteuid()),
-        static_cast<std::uint32_t>(::getegid()), true, result, reason);
+        static_cast<std::uint32_t>(::getegid()), true,
+        controlDirectory == UserPersistentControlDirectoryPath(), result, reason);
 }
 
 bool IbPaperKillSwitch::OpenAndPinForTesting(
@@ -195,17 +197,17 @@ bool IbPaperKillSwitch::OpenAndPinForTesting(
     std::uint32_t expectedOwnerUid,
     std::uint32_t expectedGroupGid,
     std::shared_ptr<IbPaperKillSwitch>& result,
-    std::string& reason)
+    std::string& reason, bool persistentMode)
 {
     return OpenAndPin(controlDirectory, expectedOwnerUid, expectedGroupGid,
-                      false, result, reason);
+                      false, persistentMode, result, reason);
 }
 
 bool IbPaperKillSwitch::OpenAndPin(
     const std::string& controlDirectory,
     std::uint32_t expectedOwnerUid,
     std::uint32_t expectedGroupGid,
-    bool requireNonRootService,
+    bool requireNonRootService, bool persistentMode,
     std::shared_ptr<IbPaperKillSwitch>& result,
     std::string& reason)
 {
@@ -247,7 +249,7 @@ bool IbPaperKillSwitch::OpenAndPin(
     result.reset(new IbPaperKillSwitch(
         controlDirectory, rootFd, directoryFd, expectedOwnerUid,
         expectedGroupGid, static_cast<std::uint64_t>(metadata.st_dev),
-        static_cast<std::uint64_t>(metadata.st_ino)));
+        static_cast<std::uint64_t>(metadata.st_ino), persistentMode));
     reason.clear();
     return true;
 }
@@ -338,6 +340,7 @@ IbPaperKillSwitchObservation IbPaperKillSwitch::Observe() const
             return Uncertain("kill-switch marker appeared during absence observation");
         if (errno != ENOENT)
             return Uncertain(ErrnoDetail("confirm absent kill-switch marker"));
+        if (m_persistentMode) return ObservePersistentMode();
         return Observation(IbPaperKillSwitchState::Disarmed, "", std::string());
     }
 
@@ -372,4 +375,60 @@ IbPaperKillSwitchObservation IbPaperKillSwitch::Observe() const
     }
     return Observation(IbPaperKillSwitchState::Engaged,
                        "IB_PAPER_KILL_SWITCH_ENGAGED", std::string());
+}
+
+
+std::string IbPaperKillSwitch::UserPersistentControlDirectoryPath()
+{
+    // Never derive authority paths from caller-controlled HOME/XDG variables.
+    struct passwd entry; struct passwd* found=nullptr; char buffer[16384];
+    if (::getpwuid_r(::geteuid(), &entry, buffer, sizeof(buffer), &found)!=0 ||
+        !found || !entry.pw_dir || !SafeAbsoluteDirectoryPath(entry.pw_dir))
+        return std::string();
+    return std::string(entry.pw_dir)+"/.local/state/heptatrader/operator-control";
+}
+
+IbPaperKillSwitchObservation IbPaperKillSwitch::ObservePersistentMode() const
+{
+    // Opt-in persistent profile only. Absence means HOLD, not implicit enable.
+    // The independent kill-switch marker was checked first and always wins.
+    const int fd=::openat(m_directoryFd,"operator-mode",
+                         O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+    if(fd<0) {
+        if(errno==ENOENT)
+            return Observation(IbPaperKillSwitchState::Engaged,
+                               "IB_PAPER_OPERATOR_HOLD", "persistent mode missing");
+        return Uncertain(ErrnoDetail("open persistent operator mode"));
+    }
+    struct stat before{},after{},named{};
+    const bool first=::fstat(fd,&before)==0 && S_ISREG(before.st_mode) &&
+        before.st_uid==m_expectedOwnerUid && before.st_gid==m_expectedGroupGid &&
+        (before.st_mode&07777)==0440 && before.st_nlink==1 &&
+        static_cast<std::uint64_t>(before.st_dev)==m_device &&
+        before.st_size>0 && before.st_size<=32;
+    char bytes[33]={}; ssize_t count=-1;
+    if(first) do { count=::read(fd,bytes,sizeof(bytes)); } while(count<0 && errno==EINTR);
+    const bool stable=first && count==before.st_size && ::fstat(fd,&after)==0 &&
+        ::fstatat(m_directoryFd,"operator-mode",&named,AT_SYMLINK_NOFOLLOW)==0 &&
+        SameIdentity(before,after) && SameIdentity(before,named) &&
+        before.st_mode==after.st_mode && before.st_mode==named.st_mode &&
+        before.st_uid==named.st_uid && before.st_gid==named.st_gid &&
+        named.st_nlink==1 && after.st_nlink==1 && before.st_size==named.st_size &&
+        before.st_size==after.st_size &&
+        before.st_ctim.tv_sec==after.st_ctim.tv_sec &&
+        before.st_ctim.tv_nsec==after.st_ctim.tv_nsec &&
+        before.st_ctim.tv_sec==named.st_ctim.tv_sec &&
+        before.st_ctim.tv_nsec==named.st_ctim.tv_nsec;
+    ::close(fd);
+    if(!stable) return Uncertain("persistent operator mode unsafe or changed");
+    std::string detail;
+    if(!DirectoryIdentityValid(detail)) {
+        LatchDirectoryUncertain(detail);return Uncertain(detail);
+    }
+    const std::string mode(bytes,static_cast<std::size_t>(count));
+    if(mode=="HOLD\n")
+        return Observation(IbPaperKillSwitchState::Engaged,"IB_PAPER_OPERATOR_HOLD","");
+    if(mode=="PAPER_ENABLED\n")
+        return Observation(IbPaperKillSwitchState::Disarmed,"","");
+    return Uncertain("unrecognized persistent operator mode");
 }

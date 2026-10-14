@@ -41,6 +41,7 @@ public:
     ~IbPaperKillSwitch();
 
     static const char* MarkerName();
+    static std::string UserPersistentControlDirectoryPath();
 
     static bool OpenAndPinProduction(
         const std::string& controlDirectory,
@@ -61,7 +62,7 @@ public:
         std::uint32_t expectedOwnerUid,
         std::uint32_t expectedGroupGid,
         std::shared_ptr<IbPaperKillSwitch>& result,
-        std::string& reason);
+        std::string& reason, bool persistentMode = false);
 
     IbPaperKillSwitchObservation Observe() const override;
 
@@ -75,16 +76,17 @@ private:
                       std::uint32_t expectedOwnerUid,
                       std::uint32_t expectedGroupGid,
                       std::uint64_t device,
-                      std::uint64_t inode);
+                      std::uint64_t inode, bool persistentMode);
 
     static bool OpenAndPin(
         const std::string& controlDirectory,
         std::uint32_t expectedOwnerUid,
         std::uint32_t expectedGroupGid,
-        bool requireNonRootService,
+        bool requireNonRootService, bool persistentMode,
         std::shared_ptr<IbPaperKillSwitch>& result,
         std::string& reason);
 
+    IbPaperKillSwitchObservation ObservePersistentMode() const;
     bool DirectoryIdentityValid(std::string& detail) const;
     void LatchDirectoryUncertain(const std::string& detail) const;
     IbPaperKillSwitchObservation Uncertain(const std::string& detail) const;
@@ -96,6 +98,7 @@ private:
     std::uint32_t m_expectedGroupGid;
     std::uint64_t m_device;
     std::uint64_t m_inode;
+    bool m_persistentMode;
     mutable std::mutex m_mutex;
     mutable bool m_directoryUncertain;
     mutable std::string m_directoryUncertainDetail;
