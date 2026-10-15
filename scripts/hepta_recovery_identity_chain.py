@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from hepta_broker_recovery_snapshot import private_bytes, save, sha
+from hepta_broker_recovery_snapshot import private_bytes, private_execution_journal_bytes, save, sha
 
 
 def correlation(order_ref):
@@ -179,8 +179,8 @@ def main(argv=None):
     ap.add_argument('--raw-sha256',required=True);ap.add_argument('--output',type=Path,required=True);a=ap.parse_args(argv)
     raw_bytes=private_bytes(a.capture/'broker-raw.json');plan=json.loads(private_bytes(a.capture/'plan.json'))
     if sha(raw_bytes)!=a.raw_sha256:raise ValueError('RAW_HASH_MISMATCH')
-    broker=json.loads(raw_bytes);journal_bytes=private_bytes(a.capture/'journal-before.jsonl')
-    after_bytes=private_bytes(a.capture/'journal-after.jsonl')
+    broker=json.loads(raw_bytes);journal_bytes=private_execution_journal_bytes(a.capture/'journal-before.jsonl')
+    after_bytes=private_execution_journal_bytes(a.capture/'journal-after.jsonl')
     verify_journal_coherence(journal_bytes,after_bytes,broker,plan)
     pb=private_bytes(Path.home()/'.config/heptatrader/pnl-period.json')
     if sha(pb)!=plan['period_sha256'] or broker['period_sha256']!=plan['period_sha256']:

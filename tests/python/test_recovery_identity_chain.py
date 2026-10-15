@@ -2,6 +2,7 @@
 from pathlib import Path
 import base64
 import copy
+import tempfile
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts'))
@@ -114,6 +115,19 @@ class IdentityChainTests(unittest.TestCase):
         self.assertEqual(chain.correlation(ref),'hepta-v1-sha256:'+('ab'*32))
         for invalid in ('',ref+'=', 'H1'+'A'*42+'B','H1'+'/'*43):
             with self.subTest(invalid=invalid),self.assertRaises(ValueError):chain.correlation(invalid)
+
+
+    def test_original_identity_join_handles_real_native_oms_capacity(self):
+        # Read-only proof consumes two copies of the 64 MiB native OMS;
+        # the old generic 32 MiB limit blocked the actual Broker cohort.
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/'journal-before.jsonl'
+            with path.open('wb') as f:f.truncate(34*1024*1024)
+            path.chmod(0o600)
+            self.assertEqual(len(chain.private_execution_journal_bytes(path)),34*1024*1024)
+            with path.open('r+b') as f:f.truncate(64*1024*1024+1)
+            with self.assertRaisesRegex(ValueError,'PRIVATE_SOURCE_REQUIRED'):
+                chain.private_execution_journal_bytes(path)
 
 
 if __name__=='__main__':unittest.main()
