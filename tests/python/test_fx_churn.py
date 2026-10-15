@@ -3,7 +3,7 @@ import copy,importlib.util,json,os,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'scripts'))
 import hepta_fx_churn as f
-from install_fx_churn import collect_original_oms_open_attempts, release_slot_name, flat
+from install_fx_churn import collect_original_oms_open_attempts, release_slot_name, flat, wait_for_natural_flat
 NOW=1800000000000
 
 def seed():return {'period_sha256':'a'*64,'last_exit_ms':NOW-3600000,'open_attempts':[]}
@@ -55,6 +55,52 @@ class PolicyTests(unittest.TestCase):
   with self.assertRaises(f.ChurnError):f.admission(c,state()['last_decision'],NOW)
  def test_serialized_restart_keeps_cooldown(self):
   c=confirmed();c['last_exit_ms']=NOW-1;c=json.loads(json.dumps(c));self.assertFalse(f.admission(c,state()['last_decision'],NOW)['allowed'])
+
+class NaturalFlatWaitTests(unittest.TestCase):
+ def state(self,position=25000,pending=None,**extra):
+  return {'position':position,'pending':pending,'halt_new_entries':False,**extra}
+ def test_unchanged_owner_then_natural_flat(self):
+  calls=iter([self.state(),self.state(),self.state(position=0)])
+  sleeps=[]
+  result=wait_for_natural_flat(lambda:next(calls),lambda:'123','123',5,
+      monotonic=lambda:0,sleep=sleeps.append)
+  self.assertEqual(result['position'],0)
+  self.assertEqual(sleeps,[.35,.35])
+ def test_timeout_is_bounded_with_no_broker_calls(self):
+  now=[0.]
+  def clock():return now[0]
+  def advance(delay):now[0]+=delay
+  with self.assertRaisesRegex(RuntimeError,'NO_NATURAL_FLAT'):
+   wait_for_natural_flat(lambda:self.state(),lambda:'123','123',1,
+       monotonic=clock,sleep=advance)
+  self.assertLessEqual(now[0],1.001)
+ def test_foreign_owner_refused_even_if_flat(self):
+  with self.assertRaisesRegex(RuntimeError,'ORIGINAL_DRIVER_CHANGED'):
+   wait_for_natural_flat(lambda:self.state(position=0),lambda:'456','123',5)
+ def test_pending_original_is_not_flat(self):
+  calls=iter([self.state(position=0,pending={'command_id':'original'}),
+              self.state(position=0)])
+  sleeps=[]
+  result=wait_for_natural_flat(lambda:next(calls),lambda:'123','123',5,
+       monotonic=lambda:0,sleep=sleeps.append)
+  self.assertEqual(result['position'],0)
+  self.assertIsNone(result['pending'])
+  self.assertEqual(sleeps,[.35])
+ def test_halted_or_lease_uncertain_is_not_flat(self):
+  for state in (self.state(position=0,halt_new_entries=True),
+                self.state(position=0,lease_uncertain=True)):
+   clock=[0.]
+   with self.assertRaisesRegex(RuntimeError,'NO_NATURAL_FLAT'):
+    wait_for_natural_flat(lambda:state,lambda:'123','123',1,
+       monotonic=lambda:clock[0],sleep=lambda sec:clock.__setitem__(0,clock[0]+sec))
+ def test_unbounded_wait_and_missing_driver_refused(self):
+  for secs in (-1,0,1801,True,'ten'):
+   with self.subTest(seconds=secs):
+    with self.assertRaises(ValueError):
+     wait_for_natural_flat(lambda:self.state(),lambda:'123','123',secs)
+  with self.assertRaisesRegex(RuntimeError,'ORIGINAL_DRIVER_MISSING'):
+   wait_for_natural_flat(lambda:self.state(position=0),lambda:'0','0',1)
+
 
 class InstallerTwoPhaseTests(unittest.TestCase):
  def test_stage_and_later_activation_use_independent_immutable_slots(self):
