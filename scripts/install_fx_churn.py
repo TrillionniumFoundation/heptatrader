@@ -38,6 +38,15 @@ def coherent_idle(state):
 def economic_state(state):
  return {k:state.get(k) for k in ('position','pending','entries','exits','gross_pnl','entry_price','entry_price_basis','entry_at_ms')}
 
+def release_slot_name(head, now, activate):
+    # A stage-only artifact and a later flat activation cannot share a frozen
+    # OMS seed: activation must consume a fresh original command window.
+    if not isinstance(head,str) or not re.fullmatch(r'[0-9a-f]{40}',head):
+        raise ValueError('FX_RELEASE_COMMIT_INVALID')
+    if type(now) is not int or now<=0:
+        raise ValueError('FX_ACTIVATION_CLOCK_INVALID')
+    return head if not activate else head+'-active-'+str(now)
+
 def collect_original_oms_open_attempts(blob, now, period_started_at):
     """Conservatively seed only actual original PAPER FX send/uncertain attempts.
 
@@ -88,6 +97,10 @@ def main():
  base_path=old_root/'heptatrader_paper_driver.py';spec=importlib.util.spec_from_file_location('fx_churn_deploy_base',base_path);base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
  if base.CONF!=.62 or base.QTY!=25000 or base.MAX_ADVERSE!=.002:raise RuntimeError('OLD_STRATEGY_CONSTANTS_CHANGED')
  state_path=h/'.local/state/heptatrader/paper-driver/state.json';state=read(state_path)
+ # New-entry-only activation is performed exclusively at a real zero-exposure
+ # boundary. Never stop an existing 100K FX position merely for installation.
+ if a.activate and not flat(state):
+  raise RuntimeError('FX_ACTIVATION_REQUIRES_FLAT_AND_SETTLED_STATE')
  now=int(time.time()*1000);journal=h/'.local/state/heptatrader/execution/oms-journal.jsonl';blob=journal.read_bytes();blob=blob[:blob.rfind(b'\n')+1]
  attempts=collect_original_oms_open_attempts(blob,now,read(period)['started_at_ms'])
  seed={'period_sha256':old['period_sha256'],'last_exit_ms':now,'activation_ms':now,
@@ -95,8 +108,8 @@ def main():
        'open_attempts':[{'command_id':k,'at_ms':v} for k,v in sorted(attempts.items(),key=lambda x:x[1])],
        'seed_source_sha256':hashlib.sha256(blob).hexdigest()}
  profile={'profile':PROFILE,'period_path':str(period),'period_sha256':old['period_sha256'],'seed':seed}
- release=h/'.local/share/heptatrader/fx-churn/releases'/head
- if release.exists():raise RuntimeError('NEW_RELEASE_ALREADY_STAGED_USE_EXISTING_REVIEWED_FILES')
+ release=h/'.local/share/heptatrader/fx-churn/releases'/release_slot_name(head,now,a.activate)
+ if release.exists():raise RuntimeError('IMMUTABLE_ACTIVATION_SLOT_ALREADY_EXISTS')
  release.mkdir(mode=0o700,parents=True)
  hashes={}
  for name in installed_names+('hepta_fx_churn.py',):
@@ -114,8 +127,8 @@ def main():
   'profile':PROFILE,'journal_seed_attempts':len(attempts),'state_before':{k:state.get(k) for k in ('position','pending','entries','exits','gross_pnl')},
   'activated':False,'forced_orders':0,'native_base_sha256':sha(base_path),'state_unchanged_by_staging':True}
  write_once(a.evidence/'fx-staged.json',receipt)
- if not a.activate or not coherent_idle(state):
-  receipt['activation_blocker']='POSITION_IDENTITY_INCOMPLETE_OR_PENDING_NO_FORCED_FLATTEN' if not coherent_idle(state) else 'STAGE_ONLY'
+ if not a.activate:
+  receipt['activation_blocker']='STAGE_ONLY'
   print(json.dumps(receipt,indent=2));return
  drop=h/'.config/systemd/user/heptatrader-paper-driver.service.d/80-fx-churn.conf'
  if drop.exists():raise RuntimeError('EXISTING_DROPIN_NO_OVERWRITE')
@@ -126,7 +139,7 @@ def main():
  try:
   lock=os.open(state_path.parent/'driver.lock',os.O_RDWR|os.O_CLOEXEC|os.O_NOFOLLOW);fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   stopped_state=read(state_path)
-  if not coherent_idle(stopped_state) or economic_state(stopped_state)!=economic_state(state) or period.read_bytes()!=pr:
+  if not flat(stopped_state) or economic_state(stopped_state)!=economic_state(state) or period.read_bytes()!=pr:
    raise RuntimeError('EXPOSURE_OR_PERIOD_CHANGED')
   snap=base.snapshot(str(h/'.local/bin/heptatrader'),require_quote=False);owner=snap['owner_health']
   if (snap['active'] or abs(float(snap['position'])-float(state['position']))>1e-9 or owner.get('mutation_ready') is not True
