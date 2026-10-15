@@ -992,12 +992,57 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
         if (rejected != m_rejectedFxCashObservationBalances.end() &&
             rejected->second == parsed) return true;
     }
+    // After a committed cash generation has already been invalidated, the
+    // authoritative cash map is empty until a NEW account request/end pair
+    // completes. Subsequent numeric subscription callbacks have no generation
+    // identity and cannot reauthorize anything. In particular they must NOT
+    // cancel an in-progress independent positions refresh by re-entering
+    // InvalidateRiskSnapshot() on every monitor tick. Preserve the current
+    // denial and await a new coherent account+positions generation.
+    //
+    // Startup-attestation mismatch is different: a changed monitor balance
+    // must still invalidate any independently observed physical crypto
+    // position, as tested by the existing original rejection regression.
+    if (!m_riskSnapshot.accountComplete &&
+        !m_riskSnapshot.fxCashComplete &&
+        m_authoritativeFxCashBalances.empty() &&
+        m_riskSnapshot.reasonCode !=
+            "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH")
+        return true;
     const std::map<std::string, double>::const_iterator committed =
         m_authoritativeFxCashBalances.find(currency);
     if (committed == m_authoritativeFxCashBalances.end() ||
-        committed->second != parsed)
+        committed->second != parsed) {
+        // A subscription update is a freshness signal, never an account/position
+        // download boundary. Record the provenance of the invalidation without
+        // persisting currency balances or silently reopening broker authority.
+        // Only the first transition in a risk generation needs a diagnostic.
+        // Repeated subscription pushes after risk is already denied must not
+        // flood a bounded observability journal or look like new generations.
+        if (m_riskSnapshot.accountComplete ||
+            m_riskSnapshot.fxCashComplete ||
+            m_riskSnapshot.reasonCode !=
+                "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE")
+            EmitObsEvent(
+            "risk.fx_cash_monitor_invalidated",
+            "\"subscription_request_id\":" + std::to_string(event.id) +
+            ",\"connection_epoch\":" + std::to_string(m_connectionEpoch) +
+            ",\"account_generation\":" +
+                std::to_string(m_riskSnapshot.accountGeneration) +
+            ",\"positions_generation\":" +
+                std::to_string(m_riskSnapshot.positionsGeneration) +
+            ",\"fx_cash_generation\":" +
+                std::to_string(m_riskSnapshot.fxCashGeneration) +
+            ",\"previous_cash_checkpoint_present\":" +
+                (committed == m_authoritativeFxCashBalances.end() ?
+                    "false" : "true") +
+            ",\"account_complete_before\":" +
+                (m_riskSnapshot.accountComplete ? "true" : "false") +
+            ",\"fx_cash_complete_before\":" +
+                (m_riskSnapshot.fxCashComplete ? "true" : "false"));
         InvalidateRiskSnapshot(
             "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    }
     return true;
 }
 
