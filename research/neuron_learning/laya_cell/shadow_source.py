@@ -21,6 +21,10 @@ SCHEMA='heptatrader.laya-shadow-quotes.v1'
 MAX_BYTES=64*1024*1024
 FIELDS=('instrument','source','authoritative','stale','bid','ask','observed_at_ms',
         'stale_after_ms','subscription_id','subscription_state')
+# Exact original collector revision on the immutable Pocket4 segment population.
+# It accepted a quote at the inclusive expiry boundary; newer native intake
+# MUST continue refusing equality. Do not extend this exception to new hashes.
+LEGACY_INCLUSIVE_EXPIRY_COLLECTOR_SHA256 = 'b35f3d118283e453973d654d0b1562b59cf74ae9e7a87a0e32d8141fb19372d6'
 
 def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
 def digest(v):return hashlib.sha256(canonical(v)).hexdigest()
@@ -33,12 +37,14 @@ def strict(raw):
         return out
     return json.loads(raw,object_pairs_hook=unique,parse_constant=lambda _:(_ for _ in ()).throw(ValueError('NONFINITE')))
 
-def valid_quote(q,received,instrument):
+def valid_quote(q,received,instrument,*,legacy_historical_expiry=False):
     if (q.get('instrument')!=instrument or q.get('source')!='IB' or q.get('authoritative') is not True
         or q.get('stale') is not False or not isinstance(q.get('subscription_id'),str) or not q['subscription_id']):
         raise ValueError('QUOTE_AUTHORITY')
     t=q.get('observed_at_ms');expiry=q.get('stale_after_ms')
-    if type(t)is not int or type(expiry)is not int or not 0<t<=received<min(t+5000,expiry):
+    if (type(t)is not int or type(expiry)is not int or not 0<t<=received
+        or not (received<min(t+5000,expiry) or
+                (legacy_historical_expiry and received==min(t+5000,expiry)))):
         raise ValueError('QUOTE_STALE_OR_FUTURE')
     if any(isinstance(q.get(k),bool) for k in ('bid','ask')):raise ValueError('QUOTE_NUMERIC')
     try:bid=Decimal(str(q['bid']));ask=Decimal(str(q['ask']))
@@ -111,7 +117,10 @@ def read_source(path):
                 or not isinstance(header.get('period_sha256'),str) or len(header['period_sha256'])!=64):
                 raise ValueError('SHADOW_SOURCE_SCOPE')
         elif kind=='QUOTE':
-            q=r['data'];bid,ask=valid_quote(q,at,header['instrument']);t=q['observed_at_ms']
+            q=r['data'];bid,ask=valid_quote(
+                q,at,header['instrument'],
+                legacy_historical_expiry=(header.get('collector_sha256') ==
+                    LEGACY_INCLUSIVE_EXPIRY_COLLECTOR_SHA256));t=q['observed_at_ms']
             current={'t':t,'bid':q['bid'],'ask':q['ask'],'mid':float((bid+ask)/2),
                      'known_at_ms':at,'receipt':r['sha256']}
             old=quotes.get(t)
