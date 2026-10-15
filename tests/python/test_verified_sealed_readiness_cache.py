@@ -143,6 +143,54 @@ class CacheTests(unittest.TestCase):
             r,pins=cache.read_quotes(h.config,3000)
             self.assertEqual(len(r),2)
             self.assertEqual(cache.counters()["cached_sealed_segments"],0)
+    def test_oversized_archive_retains_hot_suffix_without_lru_scan_thrash(self):
+        """Over-cap ascending inventories must not evict the next cached key."""
+        for max_segments, max_records in ((2, 99), (99, 2)):
+            with self.subTest(max_segments=max_segments,max_records=max_records):
+                tmp,h,cache=self.new()
+                with tmp:
+                    paths=[h.p1,h.p2]
+                    for n in range(3,6):
+                        folder=h.feed/f"segment-{n:03d}"
+                        folder.mkdir(mode=0o700)
+                        path=folder/"quotes.jsonl"
+                        path.write_bytes(f"original sealed {n}\n".encode())
+                        path.chmod(0o600)
+                        paths.append(path)
+                    pins=[{"path":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
+                           "bytes":path.stat().st_size,"ended":True} for path in paths]
+                    parses=[]; inventory_calls=[]
+                    def checked_inventory(config,files):
+                        self.assertEqual(files,paths)
+                        inventory_calls.append(1)
+                        for path,pin in zip(paths,pins):
+                            if hashlib.sha256(path.read_bytes()).hexdigest()!=pin["sha256"]:
+                                raise ContractError("SOURCE_PREFIX_HASH_CHANGED")
+                        return [pin.copy() for pin in pins],[]
+                    def strict_reader(path):
+                        parses.append(path)
+                        index=paths.index(path)
+                        return h.headers.copy(),[{"t":1000*(index+1),
+                           "known_at_ms":1000*(index+1)+30,"bid":"1.1000","ask":"1.1002"}],pins[index].copy()
+                    with patch.object(module,"inventory",checked_inventory),patch.object(module,"read_source",strict_reader),\
+                         patch.object(module,"MAX_CACHED_SEGMENTS",max_segments),\
+                         patch.object(module,"MAX_CACHED_QUOTE_RECORDS",max_records):
+                        cold=cache.read_quotes(h.config,10000)
+                        self.assertEqual(len(parses),5)
+                        self.assertEqual(cache.counters()["cached_sealed_segments"],2)
+                        hot=cache.read_quotes(h.config,10000)
+                        self.assertEqual(hot,cold)
+                        self.assertEqual(len(parses),8)  # oldest three strictly parsed again
+                        self.assertEqual(cache.sealed_hits,2)
+                        self.assertEqual(cache.sealed_hits_bytes_reverified_at_use,2)
+                        cache.read_quotes(h.config,10000)
+                        self.assertEqual(len(parses),11)
+                        self.assertEqual(cache.sealed_hits,4)
+                        self.assertEqual(len(inventory_calls),3)
+                        paths[0].write_bytes(b"X"+paths[0].read_bytes()[1:])
+                        with self.assertRaisesRegex(ContractError,"SOURCE_PREFIX_HASH_CHANGED"):
+                            cache.read_quotes(h.config,10000)
+
     def test_counters_mark_research_not_broker_signature(self):
         tmp,h,cache=self.new()
         with tmp,h.patched():
