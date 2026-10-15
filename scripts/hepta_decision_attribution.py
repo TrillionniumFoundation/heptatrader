@@ -26,13 +26,20 @@ def strict(raw):
    out[k]=v
   return out
  return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(ValueError('NONFINITE_JSON')))
-def read_private(path,limit=MAX_STREAM):
+def read_private(path,limit=MAX_STREAM,*,prefix_bytes=None):
+ # A validated immutable prefix may remain readable as the append-only file grows.
+ # Bound bytes READ, not the full size of an unrelated later journal suffix.
+ if type(limit) is not int or limit < 0 or (prefix_bytes is not None
+     and (type(prefix_bytes) is not int or not 0 <= prefix_bytes <= limit)):
+  raise ValueError('ATTRIBUTION_FILE_SCOPE')
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
  try:
   st=os.fstat(fd)
-  if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_mode&0o077 or st.st_size>limit:
+  if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_mode&0o077:
    raise ValueError('ATTRIBUTION_FILE_SCOPE')
-  chunks=[];left=st.st_size
+  left=st.st_size if prefix_bytes is None else prefix_bytes
+  if left > limit or left > st.st_size:raise ValueError('ATTRIBUTION_FILE_SCOPE')
+  chunks=[]
   while left:
    data=os.read(fd,min(left,1048576))
    if not data:raise ValueError('SHORT_READ')
