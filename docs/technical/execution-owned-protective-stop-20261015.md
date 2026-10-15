@@ -333,3 +333,50 @@ and child correlations to the same original command and account, and it
 must update the Broker owner projector and replay accordingly, before it
 can call the existing native IB sender. The ongoing unprotected risk is
 tracked in Issue #331; never claim this Draft as a live protective stop.
+
+## 2026-10-15 — Frozen original H1 parent / stop / OCA identities
+
+Existing Execution owner correlation is the strict 45-character `H1`
+representation of a canonical `hepta-v1-sha256:<64 lowercase hex>`
+digest. The earlier research-only `HEPTA-PARENT-*`, `HEPTA-STOP-*`
+and `HEPTA-FX-OCA-*` values cannot be routed through that codec.
+
+The new *non-dispatching* `ib_bracket_h1_identity.h` addresses the
+identity collision problem without weakening the production encoder.
+It derives domain-separated Parent, Stop and OCA digests from **one
+frozen original-command group**. The canonical input is length-delimited
+and binds account, owner, PAPER domain, exact conId 12087792,
+original command, client, reserved consecutive parent/child order IDs,
+initial broker epoch, position generation, owner fence token, decision
+time, direction, original quantity, reference-price IEEE-754 bits and
+stop price on verified MarketRule 3188 tick `0.00005`.
+
+The helper uses the existing `IbVenueCorrelationCodec::EncodeOrderRef`
+and decodes each role again for independent verification. Duplicate
+roles, changed account/owner, stop, notional, fence, order identity,
+or forged non-H1 byte strings must fail. Outputs never authorize
+actual orders, independent stops, maintenance or release.
+
+Local isolated validation was performed against a faithful copy of
+the repository H1 codec and the GitHub-published exact new header/test
+blobs: C++11 with warnings-as-errors, standalone CTest 1/1, ASan+UBSan
+PASS. Corresponding verified source Git blobs:
+- H1 header: `28236e4fc00b3c644ff67963a1a3984d848249eb`
+- H1 test: `70c49262b58373ff3cbdc063a8eea42d892e1d04`
+
+**Important remaining blocker**: this is the frozen identity helper
+and negative-control test only, not a production OMS reservation, broker
+sender or callback binding. In particular, a caller-supplied nonzero
+owner-fence token is not proof of a durable fence. The Execution owner
+must source and attest that token, reserve its broker-order ID pair,
+persist the immutable group before any effect, then match the actual
+Broker callback to the independently stored Parent/Stop H1 correlations
+and permanent IDs. UNKNOWN must never cause a duplicate child
+submission. Normal exits still require actual OCA/partial-fill proofs.
+
+The Pocket4 Desktop Commander path was not available in this tool
+session, and the alternative Hepta Runtime endpoint refused the
+invocation. Thus **Pocket4 native/full CI and PAPER positive order
+admission were NOT run for this revision**. Do not infer those
+qualifications from the local isolated test or earlier commits.
+Issue #331 remains P0 OPEN; keep PR #337 Draft.
