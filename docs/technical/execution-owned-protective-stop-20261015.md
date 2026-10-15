@@ -380,3 +380,45 @@ invocation. Thus **Pocket4 native/full CI and PAPER positive order
 admission were NOT run for this revision**. Do not infer those
 qualifications from the local isolated test or earlier commits.
 Issue #331 remains P0 OPEN; keep PR #337 Draft.
+
+## 2026-10-15 — Existing OMS durable H1 parent/stop group (non-dispatching)
+
+On Pocket4, the same previously verified H1 identity helper has been
+connected to the **existing** `OmsJournal::AppendDurablePair`, without a
+new journal service, order broker owner, TWS socket or change to current
+strategy policy. The new `ib_bracket_h1_oms_reservation.h` derives
+immutable parent/child H1 identities from a frozen PAPER original command
+and writes ordered critical `order_intent` records for both reserved native
+IDs under one durability barrier. Every record binds original command,
+account, group SHA256, exact parent or stop H1 correlation, direction,
+quantity and original pretrade reference/stop price.
+
+The pair format is intentionally **not atomic if the process crashes**:
+a prefix alone MUST NOT be interpreted as a completed group. Recovery
+requires exactly one matching parent and one matching stop. Missing,
+duplicated, substituted or price-altered records refuse admission.
+
+A distinct `place_send_attempt` is synced before any proposed
+parent/child send. On replay, either potential send invalidates the
+clean-reservation state. The result is `UNKNOWN`: never zero-fill,
+never a new parent/child ID, never permission to retransmit.
+Only original Broker callbacks and separately authorized Execution
+reconciliation could ever resolve uncertainty. The helper exposes
+**no placeOrder/cancelOrder or Driver-stop method**, and the
+`sendAuthorized` and `driverStopAllowed` outputs remain false
+even for a fully validated pair.
+
+Real Pocket4 IB-API-enabled Release build and 8/8 targeted CTests
+passed, covering H1 identity, new OMS pair + UNKNOWN replay,
+existing original shadow OMS, native bracket evidence, OMS schema
+and durability, Coordinator and PAPER profile. This is bounded
+research validation, **not** live broker protection.
+
+The remaining production blocker is critical: this helper's
+caller-supplied frozen owner-fence metadata is not an authoritative
+Execution owner fence and this work does not reserve broker order IDs
+through the live adapter or wire native two-order transport. A real
+PAPER stop cannot be declared until the existing owner binds those
+authorities, attests the Broker's permanent parent/child IDs, prevents
+normal-exit/OCA reversal and proves risk continuity during Driver
+absence. Keep Issue #331 OPEN and PR #337 Draft.

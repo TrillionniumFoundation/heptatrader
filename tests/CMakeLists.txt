@@ -226,6 +226,13 @@ target_link_libraries(hepta_execution_bracket_h1_identity_tests PRIVATE
     hepta_ib_order_state OpenSSL::Crypto)
 hepta_register_core_test(hepta_execution_bracket_h1_identity_tests)
 
+# Experimental H1-bracket durable pair on real OMS (no broker send path).
+add_executable(hepta_execution_bracket_h1_oms_reservation_tests
+    ib_bracket_h1_oms_reservation_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_oms_reservation_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_oms_reservation_tests)
+
 # Simulated native parent transmit=false / child transmit=true bracket group.
 # Still no broker transport or maintenance authority in this research target.
 add_executable(hepta_execution_bracket_shadow_tests
