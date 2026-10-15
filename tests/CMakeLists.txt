@@ -213,6 +213,11 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+# Issue #331: shadow-only broker stop contract, no transport or live install.
+add_executable(hepta_execution_owner_stop_shadow_tests
+    execution_owned_stop_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_owner_stop_shadow_tests)
+
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
     ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
