@@ -76,6 +76,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
+      # Validate the checked-out documentation before downloading the large
+      # fixed CPU research dependency. Keep all native/source tests unchanged.
+      - name: Documentation links preflight
+        run: python3 scripts/check_documentation.py
       # Cache only downloaded HTTP/wheel bytes, never an installed venv or
       # tested program. Every run still installs and asserts CPU torch==2.8.0.
       - name: Cache CPU research dependency downloads
@@ -95,5 +99,4 @@ jobs:
           set -euo pipefail
           python3 scripts/run_python_tests.py --lane core
           python3 scripts/run_python_tests.py --lane source
-          python3 scripts/check_documentation.py
           git diff --check
