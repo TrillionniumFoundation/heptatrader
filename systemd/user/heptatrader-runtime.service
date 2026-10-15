@@ -1,8 +1,8 @@
 [Unit]
+RefuseManualStop=yes
 DefaultDependencies=no
 Before=sockets.target
 Description=HeptaTrader private runtime directories
-PartOf=heptatrader.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes

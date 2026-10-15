@@ -16,12 +16,27 @@ class SystemdUnitTests(unittest.TestCase):
         path = ROOT / "systemd/user/heptatrader-paper-driver.service"
         text = path.read_text(encoding="utf-8")
         self.assertIn("WantedBy=heptatrader.target", text)
-        self.assertIn("PartOf=heptatrader.target", text)
+        self.assertIn("RefuseManualStop=yes", text)
+        self.assertNotIn("PartOf=heptatrader.target", text)
         self.assertIn("Wants=heptatrader-execution.service heptatrader-gateway.service", text)
         self.assertNotIn("Requires=heptatrader-execution.service heptatrader-gateway.service", text)
         self.assertIn("After=heptatrader-execution.service heptatrader-gateway.service", text)
         self.assertNotIn("After=heptatrader.target", text)
         self.assertNotIn("Requires=heptatrader.target", text)
+
+    def test_risk_exit_dependency_chain_survives_target_stop(self):
+        risk_units = (
+            "heptatrader-paper-driver.service", "heptatrader-crypto-driver.service",
+            "heptatrader-execution.service", "heptatrader-gateway.service",
+            "heptatrader-execution.socket", "heptatrader-events.socket",
+            "heptatrader-runtime.service",
+        )
+        for name in risk_units:
+            with self.subTest(name=name):
+                text = (ROOT / "systemd/user" / name).read_text()
+                self.assertIn("RefuseManualStop=yes", text)
+                self.assertNotIn("PartOf=heptatrader.target", text)
+                self.assertNotIn("ExecStop=", text)
 
     def test_repository_units_satisfy_readiness_contract(self) -> None:
         self.assertEqual(units.validate(ROOT), [])

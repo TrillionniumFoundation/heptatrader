@@ -1,8 +1,8 @@
 [Unit]
+RefuseManualStop=yes
 Description=HeptaTrader user IB PAPER Execution
 Requires=heptatrader-execution.socket heptatrader-events.socket
 After=heptatrader-execution.socket heptatrader-events.socket
-PartOf=heptatrader.target
 [Service]
 Type=simple
 Sockets=heptatrader-execution.socket heptatrader-events.socket
