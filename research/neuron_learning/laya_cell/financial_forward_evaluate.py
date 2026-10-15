@@ -18,7 +18,9 @@ from .financial_forward_witness import verify_record,sign_record
 
 def execution_index(source):
  from hepta_decision_attribution import read_private,strict
- raw=read_private(source['path'],32*1024**2)[:source['bytes']]
+ # Match the 64 MiB bound in data.prefix(), which produced this pinned OMS
+ # prefix. A 32 MiB file cap rejects legitimate growing PAPER journals.
+ raw=read_private(source['path'],64*1024**2)[:source['bytes']]
  if len(raw)!=source['bytes'] or hashlib.sha256(raw).hexdigest()!=source['sha256']:raise ContractError('FINANCIAL_LEDGER_PREFIX_CHANGED')
  by_id={};by_command={};execution_commands={}
  for line in raw.splitlines():
