@@ -357,9 +357,9 @@ roles, changed account/owner, stop, notional, fence, order identity,
 or forged non-H1 byte strings must fail. Outputs never authorize
 actual orders, independent stops, maintenance or release.
 
-Local isolated validation was performed against a faithful copy of
-the repository H1 codec and the GitHub-published exact new header/test
-blobs: C++11 with warnings-as-errors, standalone CTest 1/1, ASan+UBSan
+Local isolated validation was performed against the byte-identical
+original production H1 codec (Git blob `1194bf99e4c3388c9dd91110e176299a28c61fc8`)
+and the GitHub-published exact new header/test blobs: C++11 with warnings-as-errors, standalone CTest 1/1, ASan+UBSan
 PASS. Corresponding verified source Git blobs:
 - H1 header: `28236e4fc00b3c644ff67963a1a3984d848249eb`
 - H1 test: `70c49262b58373ff3cbdc063a8eea42d892e1d04`
