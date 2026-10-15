@@ -55,15 +55,57 @@ def admission(control,decision,now):
  return {'allowed':not reasons,'reasons':reasons,'checked_at_ms':now,'profile_sha256':digest(PROFILE),
   'confirmation_count':control['confirmations'],'commission_budget_note':'UNCHANGED_ACTUAL_FEES_NOT_CONFIDENCE_DERIVED_EDGE'}
 
+def resume_activation_control(existing, seed, period):
+    """A new observed OMS seed conservatively replaces old activation signals.
+
+    The prior controller may contain real PREPARED-but-rejected attempts not
+    represented by Broker sends; carry them forward without replaying commands.
+    Restarting the identical activation preserves its durable counters.
+    """
+    if existing is None:
+        return fresh_control(seed)
+    if (not isinstance(existing, dict) or
+            existing.get('period_sha256') != period or
+            existing.get('profile_sha256') != digest(PROFILE)):
+        raise ChurnError('FX_CONTROL_SCOPE')
+    older = existing.get('activation_ms')
+    newer = seed.get('activation_ms')
+    if newer is None:
+        return copy.deepcopy(existing)
+    if type(older) is not int or type(newer) is not int or newer < older:
+        raise ChurnError('FX_ACTIVATION_CLOCK_REGRESSION')
+    if newer == older:
+        return copy.deepcopy(existing)
+    if (type(existing.get('last_exit_ms')) is not int or
+            type(seed.get('last_exit_ms')) is not int or
+            type(existing.get('open_attempts')) is not list or
+            type(seed.get('open_attempts')) is not list):
+        raise ChurnError('FX_PREVIOUS_CONTROL_INVALID')
+    attempts = {}
+    for row in existing['open_attempts'] + seed['open_attempts']:
+        if (not isinstance(row, dict) or
+                not isinstance(row.get('command_id'), str) or
+                not row['command_id'] or type(row.get('at_ms')) is not int or
+                row['at_ms'] > newer):
+            raise ChurnError('FX_ATTEMPT_CLOCK')
+        if row['at_ms'] >= newer - 86400000:
+            key = row['command_id']
+            attempts[key] = min(row['at_ms'], attempts.get(key, row['at_ms']))
+    updated = copy.deepcopy(seed)
+    updated['open_attempts'] = [
+        {'command_id': key, 'at_ms': value}
+        for key, value in sorted(attempts.items(), key=lambda item: (item[1], item[0]))
+    ]
+    updated['last_exit_ms'] = max(existing['last_exit_ms'], seed['last_exit_ms'])
+    return fresh_control(updated)
+
+
 def attach(driver,configuration):
  if driver.INSTRUMENT!='EUR.USD' or configuration['profile']!=PROFILE:raise ChurnError('FX_ONLY_PROFILE')
  seed=configuration['seed'];period=configuration['period_sha256'];local=threading.local()
  original={n:getattr(driver,n) for n in ('atomic_json','prepare_send','inspect_pending')}
  def control(state):
-  c=state.get('fx_open_control')
-  if c is None:c=fresh_control(seed)
-  if c.get('period_sha256')!=period or c.get('profile_sha256')!=digest(PROFILE):raise ChurnError('FX_CONTROL_SCOPE')
-  return copy.deepcopy(c)
+  return resume_activation_control(state.get('fx_open_control'),seed,period)
  def atomic(path,state):
   # Only the OPEN callsite requires these extra fields. Exit persistence never
   # becomes unavailable merely because optional opening controls are malformed.
