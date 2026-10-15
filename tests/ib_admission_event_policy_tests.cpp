@@ -17,6 +17,28 @@ int main(){
   assert(!IsIbUnscopedHistoricalFarmDisconnect(scoped));
   assert(IbAdmissionBlockingEvent(scoped));
  }
+ // Exact real 2026-10-14 callback: global sec-def farm 2157, ID -1.
+ // Its loss is NOT an existing live CASH quote, TWS API socket, order or
+ // account-state failure. Only the fully unscoped native callback is exempt.
+ const auto secdef=Error("2157");
+ assert(IsIbUnscopedSecDefFarmDisconnect(secdef));
+ assert(!IbAdmissionBlockingEvent(secdef));
+ for(int k=0;k<11;++k) {
+  auto scoped=secdef;
+  if(k==0)scoped.id=1000352;
+  if(k==1)scoped.account="DU123";
+  if(k==2)scoped.order.orderRef="broker-order";
+  if(k==3)scoped.advancedOrderRejectJson="{}";
+  if(k==4)scoped.requestId=701;
+  if(k==5)scoped.key="21570";
+  if(k==6)scoped.contract.symbol="EUR";
+  if(k==7)scoped.order.action="BUY";
+  if(k==8)scoped.economics.version=1;
+  if(k==9)scoped.localMarketDataRequestError=true;
+  if(k==10)scoped.requestId=-2;
+  assert(!IsIbUnscopedSecDefFarmDisconnect(scoped));
+  assert(IbAdmissionBlockingEvent(scoped));
+ }
  for(int k=0;k<4;++k){auto scoped=notice;if(k==0)scoped.id=159;if(k==1)scoped.account="DU123";
   if(k==2)scoped.order.orderRef="original-order";if(k==3)scoped.advancedOrderRejectJson="{}";
   assert(!IsIbGlobalUpgradeNotice(scoped));assert(IbAdmissionBlockingEvent(scoped));
@@ -28,5 +50,9 @@ int main(){
  auto e=notice;e.type=IBEventType::ConnectionClosed;assert(IbAdmissionBlockingEvent(e));
  e.type=IBEventType::EventQueueOverflow;assert(IbAdmissionBlockingEvent(e));
  e.type=IBEventType::ExecutionDetails;assert(!IsIbGlobalUpgradeNotice(e));
+ auto closed=secdef;closed.type=IBEventType::ConnectionClosed;
+ assert(IbAdmissionBlockingEvent(closed));
+ closed.type=IBEventType::EventQueueOverflow;
+ assert(IbAdmissionBlockingEvent(closed));
  std::cout<<"PASS: global 2172 advisory retained without startup fault; scoped, unknown, order, entitlement and connection errors stay blocking\n";
 }

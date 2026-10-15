@@ -555,6 +555,45 @@ struct Fixture {
         }
         check(exactRawErrors==4,"all four original local callbacks retained in OMS");
     }
+    void unscopedSecDefFarmLossRetainsEconomicRecovery() {
+        // Actual 2157/-1 at 2026-10-14 23:45:48 (+08): a disconnected
+        // SECURITY-DEFINITION farm, NOT a live CASH quote rejection.
+        const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(before.barrierComplete && before.risk.complete &&
+              before.risk.fxCashComplete, "unscoped farm starts with true economic recovery");
+        const auto originals=originalCommands();
+        const auto primary=runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId;
+        const auto epoch=runtime->Adapter().GetConnectionEpoch();
+        const auto accountCalls=shared->accountCalls.load();
+        const auto positionCalls=shared->positionCalls.load();
+        IBEvent error;error.type=IBEventType::Error;error.id=-1;
+        error.requestId=0;error.account.clear();error.brokerClientId=701;
+        error.connectionEpoch=epoch;error.key="2157";
+        error.value="OFFLINE_INJECTED:SEC_DEF_FARM_CONNECTION_BROKEN";
+        shared->injectError(error);
+        waitForRetainedErrors(0,error.value,1);
+        const auto after=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+        check(runtime->IsRunning() && !runtime->HasFatalRuntimeError() &&
+              runtime->Adapter().IsEventStreamAuthoritative() &&
+              after.barrierComplete && after.reasonCode.empty(),
+              "unscoped 2157 must not poison a previously valid live stream");
+        check(after.risk.generation==before.risk.generation &&
+              after.active.generation==before.active.generation &&
+              after.terminal.generation==before.terminal.generation &&
+              after.exposureGeneration==before.exposureGeneration &&
+              after.positionQuantities==before.positionQuantities &&
+              shared->accountCalls==accountCalls &&
+              shared->positionCalls==positionCalls,
+              "global sec-def notice cannot change economic snapshots");
+        check(runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId==primary &&
+              originalCommands()==originals && shared->orderCalls==0,
+              "unscoped farm event cannot replace quote ownership or submit orders");
+        std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
+        std::string row;unsigned notices=0;
+        while(std::getline(obs,row))
+            notices += row.find("\"event\":\"broker.secdef_farm_unavailable_unscoped\"")!=std::string::npos;
+        check(notices==1,"raw 2157 remains visible as a scoped native diagnostic");
+    }
     void uncorroboratedMarketDataErrorClosesRecovery(IBEvent event) {
         const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
         check(before.barrierComplete,"negative error fixture starts with complete barrier");
@@ -632,6 +671,17 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
 }
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==2&&std::string(argv[1])=="--secdef-only") {
+        {Fixture f(true);f.unscopedSecDefFarmLossRetainsEconomicRecovery();}
+        {Fixture f(true);auto event=IBEvent{};event.type=IBEventType::Error;
+         event.key="2157";event.id=1000352;event.requestId=1000352;
+         event.connectionEpoch=f.runtime->Adapter().GetConnectionEpoch();
+         event.brokerClientId=701;
+         f.uncorroboratedMarketDataErrorClosesRecovery(event);}
+        std::cout<<"PASS native original 2157/-1 advisory and unsafe scoped 2157 controls; no orders\n";
+        return 0;
+    }
+
     {Fixture f;f.cashDriftOrdinaryRefresh();}
     {Fixture f(true);f.cashDriftOrdinaryRefresh();}
     {Fixture f;f.cashDriftOrdinaryRefresh(true);}
@@ -642,6 +692,12 @@ int main(int argc,char**argv){try{
         return 0;
     }
 
+    {Fixture f(true);f.unscopedSecDefFarmLossRetainsEconomicRecovery();}
+    {Fixture f(true);auto event=IBEvent{};event.type=IBEventType::Error;
+     event.key="2157";event.id=1000352;event.requestId=1000352;
+     event.connectionEpoch=f.runtime->Adapter().GetConnectionEpoch();
+     event.brokerClientId=701;
+     f.uncorroboratedMarketDataErrorClosesRecovery(event);}
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
     {Fixture f(true);const auto originals=f.originalCommands();f.reconnect(1101);
         check(f.originalCommands()==originals,"original commands and owners preserved through full reconnect");

@@ -40,9 +40,29 @@ inline bool IsIbUnscopedHistoricalFarmDisconnect(const IBEvent& event) {
         event.order.orderRef.empty() && event.advancedOrderRejectJson.empty();
 }
 
+// Broker 2157, when truly unscoped, is a security-*definition* farm
+// notification, not loss of the connected live-quote feed or a rejected
+// market-data/order request. An original 2157/-1 caused an otherwise healthy
+// PAPER Execution to fatal-exit at 2026-10-14 23:45:48 (+08). Never classify
+// a scoped or economic callback as an advisory; do not infer farm recovery.
+inline bool IsIbUnscopedSecDefFarmDisconnect(const IBEvent& event) {
+    return event.type == IBEventType::Error && event.key == "2157" &&
+        event.id == -1 && (event.requestId == 0 || event.requestId == -1) &&
+        event.account.empty() && event.whyHeld.empty() &&
+        event.order.orderRef.empty() && event.order.action.empty() &&
+        event.order.orderType.empty() && event.order.totalQuantity == 0 &&
+        event.advancedOrderRejectJson.empty() &&
+        event.contract.symbol.empty() &&
+        event.contract.secType.empty() && event.contract.exchange.empty() &&
+        event.contract.currency.empty() &&
+        event.economics.Absent() && !event.localMarketDataRequestError &&
+        event.number == 0 && event.number2 == 0 && event.number3 == 0;
+}
+
 inline bool IbAdmissionBlockingEvent(const IBEvent& event) {
         if (IsIbGlobalUpgradeNotice(event) ||
-            IsIbUnscopedHistoricalFarmDisconnect(event)) return false;
+            IsIbUnscopedHistoricalFarmDisconnect(event) ||
+            IsIbUnscopedSecDefFarmDisconnect(event)) return false;
         if (event.type == IBEventType::ConnectionClosed ||
             event.type == IBEventType::EventQueueOverflow)
             return true;

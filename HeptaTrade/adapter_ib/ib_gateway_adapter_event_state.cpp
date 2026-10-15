@@ -690,6 +690,15 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
         EmitObsEvent("risk.client_upgrade_notice", "\"error_code\":2172");
         return; // event remains in the queue and is persisted by Execution.
     }
+    if (IsIbUnscopedSecDefFarmDisconnect(event) &&
+        event.connectionEpoch == m_connectionEpoch) {
+        // The raw 2157 callback is still sent to Execution/OMS. Do not
+        // inflate the order-error counter or mark a valid cash quote unsafe
+        // merely because the *security definition* farm is unavailable.
+        EmitObsEvent("broker.secdef_farm_unavailable_unscoped",
+            "\"error_code\":2157");
+        return;
+    }
     if (IsIbCorroboratedCashMarketDataRequestError(event) &&
         event.connectionEpoch == m_connectionEpoch &&
         event.brokerClientId == m_cfg.clientId) {
