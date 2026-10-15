@@ -34,9 +34,15 @@ public IBKR first tier is 0.20 basis point with a $2/order minimum. These rates
 are not configurable fee discounts; changing trading frequency does not alter
 the broker tariff. Source: https://www.interactivebrokers.com/en/pricing/commissions-spot-currencies.php
 
-At 25,000 EUR, a typical complete opening/closing pair costs $4 before considering
-price/spread effects. The new timing/confirmation values are initial engineering
-choices, not optimized parameters or proof of future savings/profitability.
+The original current EUR/USD OPEN targets **at most USD 100,000 reference
+notional**, dynamically sized as whole EUR (about 89,000 EUR at a 1.12
+reference price, capped at 100,000 EUR). A pair of $2-minimum-commission fills
+costs at least $4 before spread/slippage; actual Broker commission receipts
+are authoritative. The opening-control profile describes
+`BASE_NOTIONAL_TARGET`, `target_notional_usd=100000`, and
+`max_base_quantity=100000`; it does not replace original quantity sizing.
+The new timing/confirmation values are initial engineering choices, not
+optimized parameters or proof of future savings/profitability.
 Do not add the minimum commission to an already reported actual fee twice.
 
 ## Persistence, attribution and deployment
@@ -49,12 +55,21 @@ adapter and can neither grant nor veto orders.
 
 The installer copies immutable original base and provenance bytes, binds the new
 profile and current PAPER period, and registers a new separate producer journal.
-Activation requires no pending/active order and an authoritative native position
-matching the recorded strategy state. A nonzero position is allowed ONLY with
-complete entry identity and the exact same native quantity before restart; its
-exit code is unchanged. It is never force-flattened for installation. Concurrent
-exposure/period changes abort installation and restore the old unit. Execution,
-Gateway, BTC and learning services are not restarted by this installer.
+The current installer activates **only from an actual zero-exposure,
+no-pending-command state**, with no active Broker order and an authoritative
+native position matching the original strategy's flat state. An earlier flat
+snapshot does not grant a later nonflat cutover. It never forces an exit to
+install. Before stopping the original driver, the installer checks the exact
+original service identity; after stopping it, it rechecks the economic state,
+PAPER period and native Broker/owner readiness. Changed exposure or ownership
+aborts installation and restores the old unit. Execution, Gateway, BTC and
+learning services are not restarted by this installer.
+
+The installer and runtime binding both reject changed original USD-notional
+sizing constants before accepting the new profile. Since this corrects the
+profile digest, historical staged profiles with fixed `quantity=25000` are
+not interchangeable with a new activation and must never inherit fresh
+cooldown/confirmation authority silently.
 
 The reader must explicitly register the new producer manifest while retaining
 previous registrations. Runtime files/configs are immutable. A new model decision
