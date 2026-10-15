@@ -147,7 +147,8 @@ class PriorityGateTests(unittest.TestCase):
    gate=Gate(self.config(root),'evaluator')
    gate.check=lambda:{'at_ms':10,'admit_new_worker':True,'reasons':[]}
    with patch('historical_training.value_priority_admission.decision',
-              side_effect=[(False,'NO_PRIORITY',{'test':1}),
+              side_effect=[(False,'NO_PRIORITY',{'test':0}),
+                           (False,'NO_PRIORITY',{'test':1}),
                            (True,'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST',{'test':2})]):
     self.assertFalse(gate.acquire({'plan':'test','slot':1}))
    self.assertIsNone(gate.lease.fd)
