@@ -103,7 +103,7 @@ class Evaluator:
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('EVAL_PERIOD_CHANGED')
   # A source scan is only needed for a genuinely mature prediction.
   # Never spend a full archive decode while every active trial is already lost.
-  quotes=None;prefixes=None
+  quotes=None;prefixes=None;quote_clock=None
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
   counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0
@@ -151,6 +151,12 @@ class Evaluator:
        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now});continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
      if now<start-90000 or len(self.tasks)>=2:continue
+     # An expired or failed earlier slot can become irrevocably censored
+     # during THIS step. Recompute immediately before GPU admission.
+     if not futile:
+      current=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+      futile=suppress_new_work_for_frozen_failure(plan,current)
+      if futile:futile_pending+=1
      if futile:
       launches_suppressed+=1
       continue
@@ -159,8 +165,11 @@ class Evaluator:
     if now<pred['anchor_ms']+rule['horizon_ms']:continue
     # A snapshot collected before a long GPU call must never decide maturity.
     if quotes is None:
-     quotes,prefixes=read_quotes(self.c,int(time.time()*1000))
-    quote_clock=int(time.time()*1000)
+     # Freeze the causal as-of time BEFORE loading the evidence. A later
+     # wall-clock value paired with this older snapshot could otherwise
+     # manufacture an early OUTCOME_MISSING censor at the 15-second grace.
+     quote_clock=int(time.time()*1000)
+     quotes,prefixes=read_quotes(self.c,quote_clock)
     result=measure(plan,slot,pred,quotes,quote_clock)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
