@@ -559,7 +559,9 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
         if (m_reconnectUpstreamUnavailable.load())
             return FailBrokerReconnect(
                 reason, "IB_PAPER_BROKER_UPSTREAM_LOST_DURING_REFRESH");
-        if (!m_reconnectRiskRefreshDispatched.load() &&
+        const bool riskPreviouslyDispatched =
+            m_reconnectRiskRefreshDispatched.load();
+        if (!riskPreviouslyDispatched &&
             !RequestReconnectRiskRefresh(reason))
             return FailBrokerReconnect(reason, reason.empty() ?
                 "IB_PAPER_BROKER_RECONNECT_RISK_REFRESH_REJECTED" : reason);
@@ -568,6 +570,33 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
+        if (!riskPreviouslyDispatched)
+        {
+            // A real wrapper can make account/position End callbacks readable
+            // immediately on dispatch. Drain that already available batch
+            // before consulting a possibly exhausted snapshot budget; never
+            // fabricate an End, retry the request or extend either deadline.
+            DrainAdapterEvents(0);
+            std::string fatalReason;
+            if (HasFatalRuntimeError(&fatalReason))
+                return FailBrokerReconnect(reason, fatalReason.empty() ?
+                    "IB_PAPER_BROKER_RECONNECT_CALLBACK_FATAL" : fatalReason);
+            if (!m_reconnectPending.load() || !m_adapter->IsConnected() ||
+                m_adapter->GetConnectionEpoch() !=
+                    m_reconnectConnectionEpoch.load() ||
+                m_reconnectUpstreamUnavailable.load() ||
+                (requiresCashMarketDataFarm &&
+                 m_startupMarketDataFarmWaiting.load()))
+                return FailBrokerReconnect(
+                    reason, "IB_PAPER_BROKER_RECONNECT_CHANGED_DURING_RISK_DRAIN");
+        }
+        // A broker End emitted only after the original snapshot deadline is
+        // too late even if the immediate drain just consumed it. Compare the
+        // actual current steady clock, not observedNow from before SDK calls.
+        // Neither the reconnect-wide nor the snapshot budget is extended.
+        if (std::chrono::steady_clock::now() >= snapshotDeadline)
+            return FailBrokerReconnect(
+                reason, "IB_PAPER_BROKER_RECONNECT_SNAPSHOTS_TIMEOUT");
         if (ReconnectAuthoritativeStateReady(reason))
         {
             if (!m_config.profile.observationOnly && !PersistFxCashRestartCheckpoint(reason))

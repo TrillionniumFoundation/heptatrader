@@ -80,6 +80,8 @@ struct Shared {
     std::atomic<unsigned> connectCount{0},orderCalls{0},accountCalls{0},positionCalls{0},openCalls{0},terminalCalls{0},execCalls{0};
     std::atomic<unsigned> injectedErrorsDequeued{0};
     std::atomic<unsigned> positionEndsQueued{0}, positionEndsDequeued{0};
+    std::atomic<int> reconnectQuoteDispatchDelayMs{0};
+    std::atomic<int> reconnectPositionEndDelayMs{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
     std::atomic<int> cashBalanceOverride{0};
@@ -134,6 +136,10 @@ public:
     }
     bool ReqPositions()override {
         ++s->positionCalls;
+        if(s->connectCount.load()>1) {
+            const int delay=s->reconnectPositionEndDelayMs.exchange(0);
+            if(delay>0)std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        }
         if(s->seeded){auto e=make(IBEventType::Position);e.key="BTC.USD";e.contract=contract(true);e.number=.01;events.push_back(e);}
         if(!s->omitPositions){events.push_back(make(IBEventType::PositionEnd));++s->positionEndsQueued;}return true;
     }
@@ -172,6 +178,10 @@ public:
         auto e=make(IBEventType::ExecutionDetailsEnd);e.requestId=rid;events.push_back(e);return true;
     }
     bool ReqMktData(int id,const IBContractLite& c)override {
+        if(s->connectCount.load()>1) {
+            const int delay=s->reconnectQuoteDispatchDelayMs.exchange(0);
+            if(delay>0)std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        }
         if(c.secType=="CASH"&&!cashReady)return false;
         check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;return true;
     }
@@ -440,6 +450,24 @@ struct Fixture {
         check(!runtime->IsRunning()&&shared->count("broker_reconnect_complete")==completed,"incomplete barrier cannot publish reconnect complete");
         check(shared->orderCalls==0,"missing positions cannot trigger orders");
         std::cout<<"FULL_RUNTIME_MISSING_POSITIONS_FAIL_CLOSED "<<reason<<std::endl;
+    }
+    void latePositionEndCannotPublishRecovery() {
+        const unsigned before=shared->count("broker_reconnect_complete");
+        shared->reconnectPositionEndDelayMs.store(1150);
+        shared->signal(1100);
+        const auto until=ms()+6000;
+        while(ms()<until&&shared->count("broker_reconnect_complete")==before&&
+              !runtime->HasFatalRuntimeError())
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::string reason;
+        check(shared->count("broker_reconnect_complete")==before,
+              "late PositionEnd after original snapshot budget opened reconnect");
+        check(runtime->HasFatalRuntimeError(&reason),
+              "late accepted PositionEnd must still fail closed at original deadline");
+        check(!runtime->IsRunning()&&shared->orderCalls==0,
+              "failed late barrier must not expose IPC or Broker orders");
+        check(shared->positionEndsQueued.load()==2,
+              "the late PositionEnd really came from the mock broker");
     }
     void secondaryFarmRecovery() {
         const auto epoch=runtime->Adapter().GetConnectionEpoch();
@@ -734,6 +762,22 @@ int main(int argc,char**argv){try{
      event.connectionEpoch=f.runtime->Adapter().GetConnectionEpoch();
      event.brokerClientId=701;
      f.uncorroboratedMarketDataErrorClosesRecovery(event);}
+    if(argc==2&&std::string(argv[1])=="--slow-quote-reconnect-only") {
+        Fixture f;
+        f.shared->reconnectQuoteDispatchDelayMs.store(900);
+        f.reconnect(1102);
+        check(f.shared->positionEndsQueued==f.shared->positionEndsDequeued,
+              "every dispatched PositionEnd must cross the real adapter before reconnect is published");
+        std::cout<<"PASS delayed quote setup preserves entire ordered End cohort with original reconnect deadline"<<std::endl;
+        return 0;
+    }
+    {Fixture f;f.shared->reconnectQuoteDispatchDelayMs.store(900);f.reconnect(1102);}
+    if(argc==2&&std::string(argv[1])=="--late-position-end-only") {
+        Fixture f;f.latePositionEndCannotPublishRecovery();
+        std::cout<<"PASS late risk End cannot reopen after original hard deadline"<<std::endl;return 0;
+    }
+    {Fixture f;f.latePositionEndCannotPublishRecovery();}
+
     {Fixture f;f.reconnect(1101);f.reconnect(1102);check(f.shared->accountCalls>=3&&f.shared->positionCalls>=3&&f.shared->terminalCalls>=3,"full risk/order refresh methods executed");}
     {Fixture f(true);const auto originals=f.originalCommands();f.reconnect(1101);
         check(f.originalCommands()==originals,"original commands and owners preserved through full reconnect");
