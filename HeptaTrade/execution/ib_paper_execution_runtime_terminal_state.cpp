@@ -478,14 +478,20 @@ bool IbPaperExecutionRuntimeComposition::DispatchReconnectRefreshIfReady(
         retryScheduled = true;
         return true;
     }
-    BeginBrokerReconnectRefreshObservation(observedNow);
+    // Quote admission can legitimately occupy the preceding stability window.
+    // Start the ONE original snapshot budget only once the authoritative
+    // open/terminal reads have actually been accepted, not from the older
+    // timestamp taken before quote preparation. The overall reconnect
+    // deadline remains immutable and continues to cap this entire phase.
+    const auto evidenceDispatchedAt = std::chrono::steady_clock::now();
+    BeginBrokerReconnectRefreshObservation(evidenceDispatchedAt);
     m_reconnectRefreshDispatched.store(true);
     // In observation mode the accepted account request above is the only risk
     // read required. No order-history or financial reconciliation is implied.
     if (m_config.profile.observationOnly) m_reconnectRiskRefreshDispatched.store(true);
     snapshotDeadline = std::min(
         m_reconnectDeadline,
-        observedNow + std::chrono::milliseconds(m_config.readinessTimeoutMs));
+        evidenceDispatchedAt + std::chrono::milliseconds(m_config.readinessTimeoutMs));
     NotifyTestStage("broker_reconnect_refresh_dispatched");
     return true;
 }
