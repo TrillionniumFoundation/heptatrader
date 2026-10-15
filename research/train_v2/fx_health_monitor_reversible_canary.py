@@ -6,7 +6,7 @@ permit activation before the original 24 frozen windows close naturally.
 No order, strategy, operator kill-switch or model-promotion interface.
 """
 from __future__ import annotations
-import argparse, collections, hashlib, json, os, stat, subprocess, sys, time
+import argparse, collections, hashlib, json, os, signal, stat, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,14 +82,26 @@ def config_guard(p):
          and c.get("period_path")==str(p["period"])
          and sha(p["period"])==PERIOD_SHA,
          "PAPER_PERIOD_OR_AUTOTRADING_CHANGED")
+def write_once_bytes(path,raw):
+    """Durably create a complete private file, or leave no created path."""
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:
+        with os.fdopen(fd,"wb") as f:
+            f.write(raw);f.flush();os.fsync(f.fileno())
+        d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(d)
+        finally:os.close(d)
+    except BaseException:
+        # The path was exclusively created by THIS attempt. A failed flush
+        # must not leave a truncated receipt or partial systemd override.
+        try:path.unlink()
+        except FileNotFoundError:pass
+        raise
+
+
 def write_once(path,obj):
     raw=(json.dumps(obj,sort_keys=True,indent=2,allow_nan=False)+"\n").encode()
-    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-    with os.fdopen(fd,"wb") as f:
-        f.write(raw);f.flush();os.fsync(f.fileno())
-    d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
-    try:os.fsync(d)
-    finally:os.close(d)
+    write_once_bytes(path,raw)
 def override(p):
     root=p["candidate"]
     return ("[Service]\n"
@@ -156,6 +168,35 @@ def frozen_terminal(p,now_ms=None):
          b.get("trade_authority") is False and
          a.get("campaign_id")==b.get("campaign_id")==c.get("campaign_id"),
          "ORIGINAL_CAMPAIGN_TERMINAL_EVIDENCE_INVALID")
+    anchors=c.get("anchors")
+    need(type(anchors) is list and len(anchors)==24 and
+         all(type(x) is int for x in anchors) and len(set(anchors))==24 and
+         [x.get("anchor") for x in slots]==anchors and
+         c.get("trade_authority") is False and
+         c.get("automatic_promotion") is False and
+         b.get("candidate_unchanged") is True and
+         b.get("old_smoke_excluded") is True and
+         a.get("assessment")==b.get("assessment"),
+         "ORIGINAL_CAMPAIGN_TERMINAL_EVIDENCE_INVALID")
+    # Bind all 24 original status entries to the actual frozen write-once
+    # final.json receipts; a forged aggregate 24/24 status is not terminality.
+    for entry in slots:
+        receipt=root/"slots"/str(entry["anchor"])/"final.json"
+        need(not receipt.parent.is_symlink() and receipt.is_file()
+             and not receipt.is_symlink() and
+             receipt.stat().st_uid==os.geteuid() and
+             stat.S_IMODE(receipt.stat().st_mode)==0o400 and
+             receipt.stat().st_size<=65536 and
+             type(entry.get("receipt_sha256")) is str and
+             sha(receipt)==entry["receipt_sha256"],
+             "ORIGINAL_CAMPAIGN_SLOT_RECEIPT_CHANGED")
+        row=json.loads(receipt.read_bytes())
+        need(row.get("schema")=="heptatrader.frozen-window-final.v1" and
+             row.get("campaign_id")==b["campaign_id"] and
+             row.get("anchor")==entry["anchor"] and
+             row.get("state")==entry["state"] and
+             row.get("broker_order_authority") is False,
+             "ORIGINAL_CAMPAIGN_SLOT_RECEIPT_CHANGED")
     return {"campaign_id":b["campaign_id"],"complete_sha256":sha(done),
             "status_sha256":sha(status),"plan_sha256":sha(plan),
             "observed":b["observed"],"censored":b["censored"]}
@@ -233,16 +274,27 @@ def activate(root):
          "PRODUCTION_MONITOR_CHANGED_SINCE_STAGING")
     protected=trading_pids()
     need(not (root/"activation.json").exists(),"CUTOVER_ALREADY_ACTIVATED")
-    fd=os.open(p["dropin"],os.O_EXCL|os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600)
-    with os.fdopen(fd,"w") as f:
-        f.write(override(p));f.flush();os.fsync(f.fileno())
+    # The write, restart, identity verification AND final activation receipt
+    # form one rollback scope. A successful service restart without an
+    # activation receipt must not leave the candidate live.
     try:
+        write_once_bytes(p["dropin"],override(p).encode())
         cmd("systemctl","--user","daemon-reload")
         cmd("systemctl","--user","restart",SERVICE)
         s2=service_show()
         status_assert(s2,candidate=True)
         need(s2["MainPID"]!=s["MainPID"],"MONITOR_RESTART_IDENTITY_UNCHANGED")
         need(trading_pids()==protected,"TRADING_OR_LAYA_PID_CHANGED_DURING_MONITOR_CUTOVER")
+        write_once(root/"activation.json",{
+            "schema":"heptatrader.fx-health-monitor-reversible-cutover.v2.activation",
+            "activated_at_ms":time.time_ns()//1000000,
+            "override_sha256":sha(p["dropin"]),
+            "new_service_show":s2,
+            "original_terminal":terminal,
+            "protected_pids":protected,
+            "production_trading_authority":False,
+            "model_promotion_authorized":False,
+        })
     except BaseException:
         # Roll back only OUR exact bytes. Never delete a concurrent override.
         if p["dropin"].is_file() and sha(p["dropin"])==original["override_sha256"]:
@@ -252,16 +304,6 @@ def activate(root):
                 cmd("systemctl","--user","restart",SERVICE)
             except BaseException:pass
         raise
-    write_once(root/"activation.json",{
-        "schema":"heptatrader.fx-health-monitor-reversible-cutover.v2.activation",
-        "activated_at_ms":time.time_ns()//1000000,
-        "override_sha256":sha(p["dropin"]),
-        "new_service_show":s2,
-        "original_terminal":terminal,
-        "protected_pids":protected,
-        "production_trading_authority":False,
-        "model_promotion_authorized":False,
-    })
     return {"state":"CONTROLLED_SOURCE_MONITOR_ONLY_ACTIVATED",
             "main_pid":s2["MainPID"],"safety":"ROLLBACK_RETAINED"}
 
@@ -286,8 +328,9 @@ def audit_live(root,minimum_cycles=24):
         except ValueError:continue
         if row.get("schema")=="heptatrader.source-readiness-cadence-lab.v1":seq.append(row)
     need(len(seq)>=minimum_cycles,"MONITOR_CADENCE_NOT_YET_PROVEN")
-    seq=seq[:minimum_cycles]
-    need([x.get("cycle") for x in seq]==list(range(1,minimum_cycles+1)),
+    # Review EVERY actual candidate cycle since activation. Selecting only
+    # the first 24 could conceal a later real timeout before acceptance.
+    need([x.get("cycle") for x in seq]==list(range(1,len(seq)+1)),
          "SOURCE_CYCLE_IDENTITY_GAP")
     for x in seq:
         need(x.get("trade_authority") is False and x.get("orders_sent")==0
@@ -301,6 +344,10 @@ def audit_live(root,minimum_cycles=24):
         if x["state"]=="READY_FOR_REVIEW_NOT_AUTHORIZATION":
             need(type(x.get("usable")) is int and x["usable"]>=20,
                  "MONITOR_FALSE_READY_AT_PUBLICATION")
+    for a,b in zip(seq,seq[1:]):
+        need(a["published_ms"]<b["published_ms"] and
+             a["source_asof_ms"]<b["source_asof_ms"],
+             "MONITOR_PUBLISHER_CLOCK_OR_ORDER_REGRESSION")
     gaps=[b["published_ms"]-a["source_asof_ms"] for a,b in zip(seq,seq[1:])]
     need(all(0<g<30000 for g in gaps),"MONITOR_SLA_BREACHED_BETWEEN_PUBLICATIONS")
     status=json.loads(p["health"].read_bytes())
@@ -315,6 +362,20 @@ def audit_live(root,minimum_cycles=24):
     need(status.get("counts")==counts and
          status.get("usable")==counts.get("USABLE",0),
          "MONITOR_OUTPUT_PROBE_COUNT_MISMATCH")
+    need(status.get("state") in ("READY_FOR_REVIEW_NOT_AUTHORIZATION",
+                                 "HOLD_NEW_FUSION_WINDOW"),
+         "MONITOR_UNRECOGNISED_SOURCE_STATE")
+    need(type(status.get("at_ms")) is int and
+         0 <= time.time_ns()//1000000-status["at_ms"] < 30000,
+         "MONITOR_RESULT_STALE_NOW")
+    prefixes=status.get("source_prefixes")
+    need(type(prefixes) is list and
+         status.get("source_prefix_digest")==hashlib.sha256(json.dumps(
+             prefixes,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest(),
+         "MONITOR_SOURCE_PREFIX_DIGEST_CHANGED")
+    if status.get("state")=="HOLD_NEW_FUSION_WINDOW":
+        need(type(status.get("reasons")) is list and len(status["reasons"])>0,
+             "MONITOR_FALSE_EMPTY_HOLD_REASON")
     if status.get("state")=="READY_FOR_REVIEW_NOT_AUTHORIZATION":
         need(status["usable"]>=20 and type(status.get("latest_quote_age_ms")) is int
              and 0<=status["latest_quote_age_ms"]<=5000 and not status.get("reasons"),
@@ -329,15 +390,25 @@ def audit_live(root,minimum_cycles=24):
 
 
 def cutover(root,*,minimum_cycles=24,timeout_seconds=520):
-    activate(root)
+    root=Path(root)
+    # An SSH/session interruption should take the same evidence-preserving
+    # rollback path as a failed fresh-source observation. SIGKILL/power loss
+    # cannot be caught; the exact stage + `restore` allow manual recovery.
+    def interrupted(signum,_frame):
+        raise Stop("MONITOR_CUTOVER_INTERRUPTED_SIGNAL_"+str(signum))
+    handlers={sig:signal.getsignal(sig) for sig in (signal.SIGTERM,signal.SIGHUP,signal.SIGINT)}
+    for sig in handlers:signal.signal(sig,interrupted)
+    activated=False
     try:
+        activate(root)
+        activated=True
         deadline=time.monotonic()+timeout_seconds
         while True:
             try:
                 evidence=audit_live(root,minimum_cycles=minimum_cycles)
-                write_once(Path(root)/"acceptance.json",evidence)
+                write_once(root/"acceptance.json",evidence)
                 return {"state":"MONITOR_ONLY_ROLLOUT_ACCEPTED",
-                        "receipt_sha256":sha(Path(root)/"acceptance.json"),
+                        "receipt_sha256":sha(root/"acceptance.json"),
                         "cycles":evidence["cycles"],"orders_sent":0,"trade_authority":False}
             except Stop as exc:
                 # Only incomplete cadence may mature; a genuine unsafe
@@ -346,8 +417,19 @@ def cutover(root,*,minimum_cycles=24,timeout_seconds=520):
                     raise
                 time.sleep(3)
     except BaseException:
-        restore(root)
+        # Activation also has its own rollback. Inspect the exact recorded
+        # override rather than restarting an already-restored old service.
+        p=paths()
+        if activated:
+            restore(root)
+        elif (root/"stage.json").is_file() and p["dropin"].is_file():
+            stage=json.loads((root/"stage.json").read_bytes())
+            need(sha(p["dropin"])==stage["override_sha256"],
+                 "UNKNOWN_OVERRIDE_CANNOT_REMOVE")
+            restore(root)
         raise
+    finally:
+        for sig,old in handlers.items():signal.signal(sig,old)
 
 def restore(root):
     p=paths();root=Path(root)
