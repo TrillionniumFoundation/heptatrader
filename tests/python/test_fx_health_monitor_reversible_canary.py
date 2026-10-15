@@ -65,6 +65,14 @@ class MonitorCanaryTests(unittest.TestCase):
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
             with self.assertRaises(FileExistsError):
                 m.write_once(p,{"trade_authority":True})
+    def test_failed_receipt_fsync_does_not_leave_truncated_writeonce_file(self):
+        with tempfile.TemporaryDirectory() as t:
+            target=Path(t)/"activation.json"
+            with patch.object(m.os,"fsync",side_effect=OSError("EIO_FLUSH_INJECTED")):
+                with self.assertRaisesRegex(OSError,"EIO_FLUSH_INJECTED"):
+                    m.write_once(target,{"schema":"incomplete"})
+            self.assertFalse(target.exists(),"failed write-once receipt blocks safe recovery")
+
     def test_restore_must_refuse_unrecognised_override(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t)/"proof";root.mkdir()
@@ -179,6 +187,8 @@ class MonitorCanaryTests(unittest.TestCase):
                     published_source_age_ms=4000,state="HOLD_NEW_FUSION_WINDOW",
                     usable=17,trade_authority=False,orders_sent=0))
             original=dict(schema="heptatrader.quote-readiness-status.v1",
+                at_ms=m.time.time_ns()//1000000,
+                source_prefixes=[],source_prefix_digest=hashlib.sha256(b'[]').hexdigest(),
                 period_sha256=m.PERIOD_SHA,trading_authority=False,
                 automatic_trial_registration=False,orders_sent=0,
                 probes=[{"status":"USABLE"}]*17+[{'status':'PATH_GAP'}]*7,
@@ -194,6 +204,16 @@ class MonitorCanaryTests(unittest.TestCase):
                 self.assertEqual(good["cycles"],24)
                 self.assertEqual(good["max_before_next_publish_ms"],19000)
                 self.assertTrue(good["original_source_HOLD_preserved"])
+                # A 25th REAL publisher breach after 24 green cycles must not
+                # be hidden by slicing the original 24 successful rows.
+                late=events[-1].copy()
+                late.update(cycle=25,
+                            source_asof_ms=late['source_asof_ms']+15000,
+                            published_ms=late['published_ms']+42000,
+                            published_source_age_ms=31000)
+                with patch.object(m,"cmd",return_value='\n'.join(json.dumps(x) for x in events+[late])):
+                    with self.assertRaisesRegex(m.Stop,"MONITOR_SOURCE_AT_PUBLICATION_STALE_OR_UNTRUSTED"):
+                        m.audit_live(root)
                 original.update(probes=[{'status':'USABLE'}]*24,counts={'USABLE':24},
                                 usable=24,state='READY_FOR_REVIEW_NOT_AUTHORIZATION',
                                 reasons=[],latest_quote_age_ms=6000)
@@ -207,10 +227,64 @@ class MonitorCanaryTests(unittest.TestCase):
                     with self.assertRaisesRegex(m.Stop,"MONITOR_FALSE_READY_AT_PUBLICATION"):
                         m.audit_live(root)
                 events[0]['state']='HOLD_NEW_FUSION_WINDOW'
-                events[5]['published_ms']+=17000
-                events[5]['published_source_age_ms']+=17000
+                # Simulate a genuine 35+ second publication outage without
+                # breaking monotonic clocks or forging any per-cycle age.
+                for row in events[6:]:
+                    row['source_asof_ms']+=20000
+                    row['published_ms']+=20000
                 with patch.object(m,"cmd",return_value='\n'.join(json.dumps(x) for x in events)):
                     with self.assertRaisesRegex(m.Stop,"MONITOR_SLA_BREACHED_BETWEEN_PUBLICATIONS"):
                         m.audit_live(root)
+
+    def test_activation_receipt_io_failure_restores_original_after_restart(self):
+        # After candidate service successfully restarts and verifies, its
+        # write-once activation receipt can still fail (e.g. ENOSPC).
+        # Previously that left the candidate live without an audit identity.
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);p={"base":root/"base","candidate":root/"candidate",
+                             "dropin":root/"candidate.conf",
+                             "config":root/"config.json","health":root/"status.json"}
+            baseline=show(candidate=False,pid="10011")
+            activated=show(candidate=True,pid="10012")
+            release_bytes=m.override(p)
+            unit_bytes='original systemd unit exactly'
+            from hashlib import sha256
+            stage={"original_campaign_plan_sha256":"originalplan",
+                   "candidate_inventory_sha256":"originalcandidate",
+                   "override_sha256":sha256(release_bytes.encode()).hexdigest(),
+                   "original_service_show":baseline,
+                   "original_service_cat_sha256":sha256(unit_bytes.encode()).hexdigest()}
+            (root/"stage.json").write_text(json.dumps(stage))
+            performed=[]
+            def systemd(*args):
+                performed.append(args)
+                return unit_bytes if args[-1]==m.SERVICE and 'cat' in args else ''
+            with patch.object(m,"paths",return_value=p), \
+                 patch.object(m,"frozen_terminal",return_value={"plan_sha256":"originalplan"}), \
+                 patch.object(m,"candidate_inventory",return_value="originalcandidate"), \
+                 patch.object(m,"frozen_prereqs",return_value=baseline), \
+                 patch.object(m,"service_show",return_value=activated), \
+                 patch.object(m,"trading_pids",return_value={"execution":"pinned"}), \
+                 patch.object(m,"cmd",side_effect=systemd), \
+                 patch.object(m,"write_once",side_effect=OSError("ENOSPC_ACTIVATION_RECEIPT")):
+                with self.assertRaisesRegex(OSError,"ENOSPC_ACTIVATION_RECEIPT"):
+                    m.activate(root)
+            self.assertFalse(p["dropin"].exists())
+            self.assertFalse((root/"activation.json").exists())
+            self.assertEqual(sum(x[-2:]==("restart",m.SERVICE) for x in performed),2)
+            self.assertEqual(sum(x[-2:]==("daemon-reload",m.SERVICE) for x in performed),0)
+
+    def test_sigterm_during_real_monitor_audit_rolls_back_and_resets_handler(self):
+        import signal
+        previous=signal.getsignal(signal.SIGTERM)
+        def interrupt(_root,**_):
+            signal.raise_signal(signal.SIGTERM)
+        with patch.object(m,"activate",return_value={"state":"activated"}), \
+             patch.object(m,"audit_live",side_effect=interrupt), \
+             patch.object(m,"restore",return_value={"state":"restored"}) as rollback:
+            with self.assertRaisesRegex(m.Stop,"MONITOR_CUTOVER_INTERRUPTED_SIGNAL"):
+                m.cutover(Path('/isolated'),timeout_seconds=1)
+            rollback.assert_called_once()
+        self.assertEqual(signal.getsignal(signal.SIGTERM),previous)
 
 if __name__=="__main__":unittest.main()
