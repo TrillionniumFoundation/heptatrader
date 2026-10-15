@@ -138,6 +138,10 @@ private:
         IbPaperExecutionPolicyCallbacks& callbacks);
     IBAuthoritativeCorrelationSnapshot PolicyCorrelationSnapshot() const;
     IBAuthoritativeRecoveryAuditSnapshot PolicyRecoveryAuditSnapshot();
+    // Shared economic precondition for both scheduling and consuming a
+    // recovery audit reconnect; a stale flat audit cannot disconnect nonflat.
+    static bool RecoveryAuditEconomicPreflight(
+        const IBAuthoritativeRecoveryAuditSnapshot& snapshot);
     bool BeginTerminalRecoveryAudit(
         const ExecutionControlCommand& command,
         IBAuthoritativeRecoveryAuditSnapshot& snapshot,

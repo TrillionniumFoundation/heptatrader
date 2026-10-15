@@ -137,6 +137,25 @@ IbPaperExecutionRuntimeComposition::PolicyCorrelationSnapshot() const
     // makes an otherwise flat owner audit internally contradictory.
     return m_adapter->GetAuthoritativeCorrelationSnapshot();
 }
+bool IbPaperExecutionRuntimeComposition::RecoveryAuditEconomicPreflight(
+    const IBAuthoritativeRecoveryAuditSnapshot& snapshot)
+{
+    bool safe = snapshot.risk.complete &&
+        snapshot.risk.coherentRefreshComplete &&
+        snapshot.risk.accountComplete && snapshot.risk.positionsComplete &&
+        snapshot.risk.fxCashComplete &&
+        snapshot.risk.grossAbsolutePosition == 0.0 &&
+        snapshot.active.complete && snapshot.active.activeOrderIds.empty() &&
+        snapshot.terminal.complete &&
+        !snapshot.postFillRiskReconciliationPending &&
+        snapshot.terminalExposureGeneration <=
+            snapshot.riskAbsorbedExposureGeneration &&
+        snapshot.riskAbsorbedExposureGeneration == snapshot.exposureGeneration;
+    for (const auto& position : snapshot.positionQuantities)
+        if (position.first.empty() || position.second != 0.0)
+            safe = false;
+    return safe;
+}
 IBAuthoritativeRecoveryAuditSnapshot
 IbPaperExecutionRuntimeComposition::PolicyRecoveryAuditSnapshot()
 {
@@ -152,21 +171,8 @@ IbPaperExecutionRuntimeComposition::PolicyRecoveryAuditSnapshot()
     // *rejected* probe into a background Broker disconnect/reconnect. The
     // complete, current, all-flat economic state must be proven BEFORE any
     // reconnect scheduling, not after the RPC has returned Rejected.
-    bool safeToSchedule = snapshot.risk.complete &&
-        snapshot.risk.coherentRefreshComplete &&
-        snapshot.risk.accountComplete && snapshot.risk.positionsComplete &&
-        snapshot.risk.fxCashComplete &&
-        snapshot.risk.grossAbsolutePosition == 0.0 &&
-        snapshot.active.complete && snapshot.active.activeOrderIds.empty() &&
-        snapshot.terminal.complete &&
-        !snapshot.postFillRiskReconciliationPending &&
-        snapshot.terminalExposureGeneration <=
-            snapshot.riskAbsorbedExposureGeneration &&
-        snapshot.riskAbsorbedExposureGeneration == snapshot.exposureGeneration;
-    for (const auto& position : snapshot.positionQuantities)
-        if (position.first.empty() || position.second != 0.0)
-            safeToSchedule = false;
-    if (snapshot.newConnectionEpochRequired && safeToSchedule)
+    if (snapshot.newConnectionEpochRequired &&
+        RecoveryAuditEconomicPreflight(snapshot))
         m_recoveryAuditReconnectRequested.store(true);
     return snapshot;
 }
