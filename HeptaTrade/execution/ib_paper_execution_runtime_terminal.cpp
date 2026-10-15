@@ -277,9 +277,10 @@ bool IbPaperExecutionRuntimeComposition::CommitTerminalRecoveryAudit(
 // completes any live post-fill refresh before starting the fresh-epoch audit.
 bool IbPaperExecutionRuntimeComposition::DriveRecoveryAuditReconnect()
 {
+    bool lifecyclePreviouslyReady = false;
     {
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
-        m_lifecycleGate->ready.store(false);
+        lifecyclePreviouslyReady = m_lifecycleGate->ready.exchange(false);
     }
     NotifyTestStage("before_recovery_audit_reconnect_drain");
     const bool drained = DrainAdapterEvents(0);
@@ -296,6 +297,28 @@ bool IbPaperExecutionRuntimeComposition::DriveRecoveryAuditReconnect()
         if (!drained && !m_fatalRuntimeError.load())
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         return !m_fatalRuntimeError.load();
+    }
+    // A queued original CASH callback may invalidate an earlier all-flat
+    // owner audit while its reconnect request is waiting for the poll loop.
+    // Re-check the post-drain economic cohort without initiating a new audit
+    // or clearing the sticky Broker barrier. A stale request is consumed, not
+    // allowed to close the existing Broker transport.
+    const auto latest = m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+    auto economic = latest;
+    economic.postFillRiskReconciliationPending =
+        economic.postFillRiskReconciliationPending ||
+        m_postFillRiskRefreshPending.load();
+    if (latest.barrierComplete || !RecoveryAuditEconomicPreflight(economic))
+    {
+        m_recoveryAuditReconnectRequested.store(false);
+        {
+            std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+            if (lifecyclePreviouslyReady && !m_fatalRuntimeError.load() &&
+                !m_reconnectPending.load())
+                m_lifecycleGate->ready.store(true);
+        }
+        NotifyTestStage("recovery_audit_reconnect_aborted_economic_changed");
+        return true;
     }
     std::string reconnectReason;
     if (!BeginBrokerReconnect(reconnectReason, true))

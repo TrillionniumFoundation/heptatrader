@@ -55,6 +55,10 @@ struct IbPostFillReconciliationFixture {
         b.baselineCashBalance=b.observedCashBalance=1000;b.observedAtMs=1;b.proof="sha256:"+std::string(64,'e');
         c.fxCashBaselines["EUR.USD"]=b;
         runtime.reset(new IbPaperExecutionRuntimeComposition(c));
+        // This narrow offline fixture does not call Start(); initialize the
+        // lifecycle gate so a recovery-poll test cannot dereference nullptr.
+        runtime->m_lifecycleGate=std::make_shared<ExecutionServiceLifecycleGate>();
+        runtime->m_lifecycleGate->ready.store(true);
         broker=new ReplayBroker;runtime->m_adapter.reset(new HeptaIBGatewayAdapter(std::unique_ptr<IIBApiWrapper>(broker)));
         HeptaIBConfig a;a.account="DU_TEST";a.clientId=73;a.readOnly=false;
         a.risk.enableOrderSubmission=true;a.risk.maxDailyOrders=100;a.risk.maxPriceDeviationBps=0;a.risk.duplicateOrderWindowSec=0;
@@ -147,6 +151,42 @@ struct IbPostFillReconciliationFixture {
              broker->connected && broker->places==0,
              "unit requests a future reconnect but never performs Broker IO");
     }
+    void flatAuditInvalidatedBeforeDisconnectMustNotReconnect() {
+        // The explicit owner request observed flat authoritative risk and
+        // scheduled a NEW-epoch audit, but a queued cash change later
+        // invalidated that economic state before the poll thread could close
+        // the Broker transport. A rejected/stale request is not permission
+        // to disconnect an active production owner.
+        need(broker->places==0,"audit fixture has never sent an order");
+        need(runtime->m_adapter->ReqRiskRefresh(),"flat ordinary risk request");
+        finishRisk(0);
+        const auto before=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(before.risk.complete&&before.risk.grossAbsolutePosition==0,
+             "authoritative audit started from genuine flat risk");
+        const auto startEpoch=runtime->m_adapter->GetConnectionEpoch();
+        const auto scheduled=runtime->PolicyRecoveryAuditSnapshot();
+        need(scheduled.newConnectionEpochRequired&&
+             runtime->m_recoveryAuditReconnectRequested.load(),
+             "flat owner audit scheduled a legitimate future epoch");
+        auto drift=event(IBEventType::AccountValue);
+        drift.key="CashBalance:EUR";drift.value="1001";
+        push(drift); // callback arrives before the scheduled poll phase
+        const auto invalid=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(!invalid.risk.complete&&
+             invalid.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE",
+             "actual late cash callback invalidated the same-epoch risk");
+        const bool drove=runtime->DriveRecoveryAuditReconnect();
+        std::string reason;
+        need(drove&&!runtime->HasFatalRuntimeError(&reason),
+             "stale owner audit must not fail the healthy Broker runtime: "+reason);
+        need(!runtime->m_recoveryAuditReconnectRequested.load()&&
+             !runtime->m_reconnectPending.load()&&
+             runtime->m_adapter->GetConnectionEpoch()==startEpoch&&
+             broker->connected&&broker->places==0,
+             "stale owner audit cannot begin a disconnect or new epoch");
+        need(runtime->m_lifecycleGate->ready.load(),
+             "aborted stale audit restores the original service readiness");
+    }
     void rejectIncompleteEvidence(int scenario) {
         fill(scenario==2?.16509636:total,"synthetic-incomplete");
         if(scenario!=2)nativeFinal();
@@ -192,6 +232,12 @@ struct IbPostFillReconciliationFixture {
 };
 int main(int argc,char**argv){
     try{IbPostFillReconciliationFixture f;
+        if(argc>1&&std::string(argv[1])=="--invalidated-flat-audit") {
+            IbPostFillReconciliationFixture invalidated(false);
+            invalidated.flatAuditInvalidatedBeforeDisconnectMustNotReconnect();
+            std::cout<<"PASS invalidated flat audit did not reconnect or mutate Broker\n";
+            return 0;
+        }
         if(argc>1&&std::string(argv[1])=="--nonflat-owner-audit") {
             IbPostFillReconciliationFixture nonflat(false);
             nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
