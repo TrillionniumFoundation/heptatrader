@@ -1,4 +1,4 @@
-"""Read-only broker terminal evidence for three original BTC commands.
+"""Read-only completed/open broker evidence for four original BTC commands.
 Never submits/cancels orders and never edits the native journal or PnL state.
 """
 from __future__ import annotations
@@ -8,7 +8,17 @@ from .common import EvidenceError,read,sha,write_once
 
 TARGETS=('hexec-command-0dd1f7cb13c55273058ea8c002ca70f7',
  'hexec-command-5b8e2caf55ed91bb4ef9d82c12209357',
- 'hexec-command-213f7bfb57709ef895e9745b2b47035f')
+ 'hexec-command-213f7bfb57709ef895e9745b2b47035f',
+ 'hexec-command-693081360314427d2578f7fe54b7f4fa')
+
+
+def match_btc_orders(rows, account, correlation, permanent_ids):
+    """Match full original identity, never a reused numeric order ID."""
+    return [row for row in rows if row.get('account_matches') is True
+        and row.get('conid')==479624278 and row.get('currency')=='USD'
+        and row.get('order_ref')==correlation
+        and row.get('permanent_id') in permanent_ids]
+
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--history-config',type=Path,required=True)
@@ -34,10 +44,11 @@ def main():
             EWrapper.__init__(self);EClient.__init__(self,self)
             self.ready=threading.Event();self.paper=False;self.accounts=threading.Event()
             self.completed=threading.Event();self.executed=threading.Event()
-            self.orders=[];self.executions=[];self.errors=[];self.outbound=collections.Counter()
+            self.open_done=threading.Event()
+            self.orders=[];self.open_orders=[];self.executions=[];self.errors=[];self.outbound=collections.Counter()
         def sendMsg(self,msg):
             code=int(msg.split('\0')[0])
-            if code not in (71,7,99) or (code!=71 and not self.paper):raise EvidenceError('READ_ONLY_METHOD_REQUIRED')
+            if code not in (71,7,99,16) or (code!=71 and not self.paper):raise EvidenceError('READ_ONLY_METHOD_REQUIRED')
             if self.outbound[code]>=1:raise EvidenceError('ONE_REQUEST_PER_METHOD')
             self.outbound[code]+=1;return EClient.sendMsg(self,msg)
         def nextValidId(self,orderId):self.ready.set()
@@ -55,6 +66,13 @@ def main():
                 'filled_quantity':str(getattr(order,'filledQuantity','')),
                 'status':state.status,'completed_time':state.completedTime,'completed_status':state.completedStatus})
         def completedOrdersEnd(self):self.completed.set()
+        def openOrder(self,orderId,contract,order,orderState):
+            if contract.symbol!='BTC' or contract.secType!='CRYPTO':return
+            self.open_orders.append({'conid':contract.conId,'currency':contract.currency,
+                'account_matches':order.account==account,'order_id':orderId,
+                'permanent_id':order.permId,'order_ref':order.orderRef,
+                'status':orderState.status,'remaining_order_quantity':str(order.totalQuantity)})
+        def openOrderEnd(self):self.open_done.set()
         def execDetails(self,reqId,contract,execution):
             if contract.symbol!='BTC' or contract.secType!='CRYPTO':return
             self.executions.append({'execution_id':execution.execId,'order_ref':execution.orderRef,
@@ -69,6 +87,7 @@ def main():
     try:
         app.connect('127.0.0.1',4002,8985);thread=threading.Thread(target=app.run,daemon=True);thread.start()
         if not app.ready.wait(12) or not app.accounts.wait(3) or not app.paper:raise EvidenceError('PAPER_HANDSHAKE')
+        app.reqAllOpenOrders();app.open_done.wait(20)
         app.reqCompletedOrders(False);app.completed.wait(20)
         f=ExecutionFilter();f.acctCode=account;f.symbol='BTC';f.secType='CRYPTO';f.clientId=701
         f.time='20261007-00:00:00'
@@ -80,16 +99,21 @@ def main():
     for command,rs in groups.items():
         send=sends[command];fills=[r for r in rs if r.get('event')=='broker_execution']
         perms={r.get('broker_econ_permanent_order_id') for r in fills}
-        matching=[r for r in app.orders if r['account_matches'] and r['conid']==479624278
-            and r['currency']=='USD' and r['order_ref']==send['venue_correlation_id'] and r['permanent_id'] in perms]
+        matching=match_btc_orders(app.orders,account,send['venue_correlation_id'],perms)
+        current=match_btc_orders(app.open_orders,account,send['venue_correlation_id'],perms)
         statuses=[r for r in rs if r.get('event')=='broker_order_status']
         receipt['commands'][command]={'original_order_id':send['order_id'],'permanent_ids':sorted(x for x in perms if x),
             'last_local_status':statuses[-1]['status'] if statuses else None,
             'last_local_remaining':statuses[-1].get('broker_remaining_quantity') if statuses else None,
-            'matching_completed_orders':matching,
-            'state':'BROKER_TERMINAL_CANDIDATE_REQUIRES_NATIVE_IMPORT' if matching else 'TERMINAL_NOT_RETURNED_REMAINS_UNCONFIRMED'}
-    receipt.update(completed_end=app.completed.is_set(),execution_end=app.executed.is_set(),
-        returned_btc_orders=app.orders,returned_btc_executions=app.executions,errors=app.errors,
+            'matching_completed_orders':matching,'matching_current_open_orders':current,
+            'currently_open_broker_order':bool(current) if app.open_done.is_set() else None,
+            'state':('BROKER_TERMINAL_CANDIDATE_REQUIRES_NATIVE_IMPORT' if matching else
+                     'CURRENT_BROKER_OPEN_ORDER' if current else
+                     'OPEN_ORDER_SNAPSHOT_INCOMPLETE' if not app.open_done.is_set() else
+                     'NOT_CURRENTLY_OPEN_TERMINAL_UNCONFIRMED')}
+    receipt.update(completed_end=app.completed.is_set(),open_order_end=app.open_done.is_set(),
+        execution_end=app.executed.is_set(),returned_btc_orders=app.orders,
+        returned_btc_open_orders=app.open_orders,returned_btc_executions=app.executions,errors=app.errors,
         outbound_message_counts=dict(app.outbound),broker_orders_sent=0)
     write_once(a.output,receipt)
     print(json.dumps({k:v for k,v in receipt.items() if k not in ('returned_btc_orders','returned_btc_executions','errors')},indent=2))
