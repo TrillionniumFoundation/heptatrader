@@ -57,6 +57,7 @@ class StackedCiReachabilityTests(unittest.TestCase):
         self.assertEqual(cache['with']['path'], '~/.cache/pip')
         self.assertIn('cpu-torch-2.8.0', cache['with']['key'])
         self.assertNotIn('restore-keys', cache['with'])
+        self.assertEqual(cache.get('continue-on-error'), 'true')
         cache_index = python_steps.index(cache)
         install_index = next(i for i, step in enumerate(python_steps) if
                              step.get('name') == 'Install pinned CPU research test dependency')
