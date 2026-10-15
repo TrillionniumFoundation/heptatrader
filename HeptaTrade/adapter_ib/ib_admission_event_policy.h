@@ -50,7 +50,13 @@ inline bool IsIbUnscopedSecDefFarmDisconnect(const IBEvent& event) {
         event.id == -1 && (event.requestId == 0 || event.requestId == -1) &&
         event.account.empty() && event.whyHeld.empty() &&
         event.order.orderRef.empty() && event.order.action.empty() &&
-        event.order.orderType.empty() && event.order.totalQuantity == 0 &&
+        event.order.orderType.empty() &&
+        event.order.positionEffect.empty() &&
+        event.order.totalQuantity == 0 && event.order.cashQuantity == 0 &&
+        event.order.lmtPrice == 0 && event.order.auxPrice == 0 &&
+        !event.order.outsideRth &&
+        event.marketCapPrice == 0 &&
+        event.overflowGeneration == 0 && event.droppedEventCount == 0 &&
         event.advancedOrderRejectJson.empty() &&
         event.contract.symbol.empty() &&
         event.contract.secType.empty() && event.contract.exchange.empty() &&

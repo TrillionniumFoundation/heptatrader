@@ -23,7 +23,7 @@ int main(){
  const auto secdef=Error("2157");
  assert(IsIbUnscopedSecDefFarmDisconnect(secdef));
  assert(!IbAdmissionBlockingEvent(secdef));
- for(int k=0;k<11;++k) {
+ for(int k=0;k<23;++k) {
   auto scoped=secdef;
   if(k==0)scoped.id=1000352;
   if(k==1)scoped.account="DU123";
@@ -36,6 +36,18 @@ int main(){
   if(k==8)scoped.economics.version=1;
   if(k==9)scoped.localMarketDataRequestError=true;
   if(k==10)scoped.requestId=-2;
+  if(k==11)scoped.order.cashQuantity=100;
+  if(k==12)scoped.order.positionEffect="OPEN";
+  if(k==13)scoped.order.lmtPrice=1.1;
+  if(k==14)scoped.order.auxPrice=2.0;
+  if(k==15)scoped.order.outsideRth=true;
+  if(k==16)scoped.order.totalQuantity=1;
+  if(k==17)scoped.order.orderType="MKT";
+  if(k==18)scoped.marketCapPrice=1.0;
+  if(k==19)scoped.overflowGeneration=1;
+  if(k==20)scoped.droppedEventCount=1;
+  if(k==21)scoped.whyHeld="held";
+  if(k==22)scoped.number=1.0;
   assert(!IsIbUnscopedSecDefFarmDisconnect(scoped));
   assert(IbAdmissionBlockingEvent(scoped));
  }
