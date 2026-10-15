@@ -212,18 +212,69 @@ def observe(reader: Callable, period: dict, instrument: str) -> dict:
     return result
 
 
-def collect(reader: Callable, period_path: Path, state_root: Path) -> dict:
+class IncrementalOMSParser:
+    """In-process watch cache bound to the exact original OMS byte prefix.
+
+    Full source bytes are still read and hash-checked on every cycle. Only JSON
+    decoding is avoided for unchanged history. Never trust size/mtime alone,
+    infer missing fees, overwrite the journal or persist a cached identity.
+    """
+    def __init__(self):
+        self._size = 0
+        self._sha = None
+        self._events = []
+        self.hits = 0
+        self.appends = 0
+        self.rebuilds = 0
+
+    def parse(self, raw: bytes) -> list[dict]:
+        if type(raw) is not bytes or len(raw) > MAX_JOURNAL_BYTES:
+            raise EvidenceError("OMS_INPUT_TYPE_OR_SIZE")
+        if raw and not raw.endswith(b"\n"):
+            raise EvidenceError("OMS_INCOMPLETE_TAIL")
+        sha = hashlib.sha256(raw).digest()
+        if self._sha == sha and self._size == len(raw):
+            self.hits += 1
+            return self._events
+        if (self._sha is not None and len(raw) > self._size
+                and hashlib.sha256(raw[:self._size]).digest() == self._sha):
+            lines = raw[self._size:].splitlines()
+            if len(lines) + len(self._events) > MAX_JOURNAL_RECORDS:
+                raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
+            parsed = [strict_json(line.decode()) for line in lines]
+            events = self._events + parsed
+            appended = True
+        else:
+            lines = raw.splitlines()
+            if len(lines) > MAX_JOURNAL_RECORDS:
+                raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
+            events = [strict_json(line.decode()) for line in lines]
+            appended = False
+        # Never poison a valid cache on malformed, truncated or partial bytes.
+        self._events, self._sha, self._size = events, sha, len(raw)
+        if appended:
+            self.appends += 1
+        else:
+            self.rebuilds += 1
+        return events
+
+
+def collect(reader: Callable, period_path: Path, state_root: Path,
+            journal_parser: IncrementalOMSParser | None = None) -> dict:
     raw_period, period_fingerprint = read_private(period_path)
     period = strict_json(raw_period.decode())
     validate_period(period)
     journal = state_root / "execution/oms-journal.jsonl"
     raw_journal, journal_fingerprint = read_private(journal, MAX_JOURNAL_BYTES)
-    if raw_journal and not raw_journal.endswith(b"\n"):
-        raise EvidenceError("OMS_INCOMPLETE_TAIL")
-    lines = raw_journal.splitlines()
-    if len(lines) > MAX_JOURNAL_RECORDS:
-        raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
-    events = [strict_json(line.decode()) for line in lines]
+    if journal_parser is None:
+        if raw_journal and not raw_journal.endswith(b"\n"):
+            raise EvidenceError("OMS_INCOMPLETE_TAIL")
+        lines = raw_journal.splitlines()
+        if len(lines) > MAX_JOURNAL_RECORDS:
+            raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
+        events = [strict_json(line.decode()) for line in lines]
+    else:
+        events = journal_parser.parse(raw_journal)
     states, observations = {}, {}
     for instrument in INSTRUMENTS:
         path = state_root / ("crypto-driver" if instrument == "BTC.USD" else "paper-driver") / "state.json"
@@ -596,6 +647,7 @@ def main(argv=None) -> int:
         print(json.dumps({"created_period_id": period["period_id"], "path": str(args.period), "trading_state_changed": False}))
         return 0
     stop = False
+    journal_parser = IncrementalOMSParser() if args.watch else None
     def stopping(_signum, _frame):
         nonlocal stop
         stop = True
@@ -610,7 +662,7 @@ def main(argv=None) -> int:
         report = None
         for _ in range(3 if not args.cached else 1):
             try:
-                report = cached(output, args.period, args.state_root) if args.cached else collect(reader, args.period, args.state_root)
+                report = cached(output, args.period, args.state_root) if args.cached else collect(reader, args.period, args.state_root, journal_parser)
                 break
             except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 report = unavailable(str(error) if isinstance(error, EvidenceError) else type(error).__name__)
