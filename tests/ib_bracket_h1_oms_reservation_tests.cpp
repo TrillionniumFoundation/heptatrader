@@ -47,6 +47,24 @@ int main(){
    Must(!ConfirmReplay(otherInstrument,f,checked,reason)&&checked.uncertain,"wrong instrument accepted");
    auto otherTimestamp=events;otherTimestamp[1].tsMs+=1000;
    Must(!ConfirmReplay(otherTimestamp,f,checked,reason)&&checked.uncertain,"wrong timestamp accepted");
+   auto fakeStatus=events;fakeStatus[1].status="Submitted";
+   Must(!ConfirmReplay(fakeStatus,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker Submitted status accepted");
+   auto fakeCallback=events;fakeCallback[0].brokerCallbackType="openOrder";
+   Must(!ConfirmReplay(fakeCallback,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker openOrder callback accepted");
+   auto fakeClient=events;fakeClient[1].brokerClientId=991;
+   Must(!ConfirmReplay(fakeClient,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker client identity accepted");
+   auto fakeReason=events;fakeReason[0].reason="BROKER_CONFIRMED";
+   Must(!ConfirmReplay(fakeReason,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker-claim reason accepted");
+   auto fakeBracket=events;fakeBracket[1].brokerBracket.version=1;
+   Must(!ConfirmReplay(fakeBracket,f,checked,reason)&&checked.uncertain,
+        "research intent carrying native broker bracket proof accepted");
+   auto fakeEpoch=events;fakeEpoch[0].brokerConnectionEpoch=812;
+   Must(!ConfirmReplay(fakeEpoch,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker connection epoch accepted");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
    auto foreign=events;foreign[0].eventType="place_send_attempt";

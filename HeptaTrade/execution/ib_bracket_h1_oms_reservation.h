@@ -95,6 +95,17 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
            e.account!=f.account || e.executionDomain!="PAPER") {
             out.uncertain=true;reason="H1_UNEXPECTED_ORIGINAL_COMMAND_EVENT";return false;
         }
+        // Shadow order_intent cannot carry positive Broker callback or
+        // Submitted/filled evidence. Only an independently matched broker
+        // callback may ever establish working protection; no sender exists here.
+        if(!e.status.empty() || !e.reason.empty() ||
+           !e.brokerCallbackType.empty() || e.brokerClientId!=-1 ||
+           e.brokerConnectionEpoch!=0 || !e.brokerExecutionId.empty() ||
+           e.brokerBracket.version!=0) {
+            out.uncertain=true;
+            reason="H1_SHADOW_INTENT_CONTAINS_UNATTESTED_BROKER_EVIDENCE";
+            return false;
+        }
         bool isParent=e.tsMs==parent.tsMs && e.source==parent.source && e.venue==parent.venue && e.instrument==parent.instrument && e.orderId==parent.orderId &&
             e.venueCorrelationId==parent.venueCorrelationId &&
             e.eventId==parent.eventId && e.side==parent.side &&
