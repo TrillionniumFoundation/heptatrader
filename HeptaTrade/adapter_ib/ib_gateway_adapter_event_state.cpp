@@ -971,6 +971,23 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
         if (rejected != m_rejectedFxCashObservationBalances.end() &&
             rejected->second == parsed) return true;
     }
+    // After a committed cash generation has already been invalidated, the
+    // authoritative cash map is empty until a NEW account request/end pair
+    // completes. Subsequent numeric subscription callbacks have no generation
+    // identity and cannot reauthorize anything. In particular they must NOT
+    // cancel an in-progress independent positions refresh by re-entering
+    // InvalidateRiskSnapshot() on every monitor tick. Preserve the current
+    // denial and await a new coherent account+positions generation.
+    //
+    // Startup-attestation mismatch is different: a changed monitor balance
+    // must still invalidate any independently observed physical crypto
+    // position, as tested by the existing original rejection regression.
+    if (!m_riskSnapshot.accountComplete &&
+        !m_riskSnapshot.fxCashComplete &&
+        m_authoritativeFxCashBalances.empty() &&
+        m_riskSnapshot.reasonCode !=
+            "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH")
+        return true;
     const std::map<std::string, double>::const_iterator committed =
         m_authoritativeFxCashBalances.find(currency);
     if (committed == m_authoritativeFxCashBalances.end() ||

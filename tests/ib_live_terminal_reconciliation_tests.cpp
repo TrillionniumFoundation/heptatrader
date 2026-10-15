@@ -188,6 +188,69 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh() {
+    // Regression: an already invalid cash generation has no authoritative
+    // cash map. Repeating a numeric subscription value used to reset the
+    // positions-refresh pending flag and discard its real PositionEnd.
+    Fixture f(true,false,true);
+    auto account=[&](const std::string& cash) {
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value=cash;f.Push(value);
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    account("-75000");
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto initial=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(initial.barrierComplete && initial.risk.coherentRefreshComplete);
+
+    auto monitor=f.Event(IBEventType::AccountValue);
+    monitor.key="CashBalance:EUR";monitor.value="-75001";
+    f.Push(monitor);
+    const auto stale=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!stale.barrierComplete && !stale.risk.accountComplete &&
+           !stale.risk.fxCashComplete && !stale.risk.positionsComplete);
+    assert(stale.risk.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+
+    // A new positions read MUST still be allowed to reach its real end
+    // boundary even if stale monitor values continue being delivered.
+    assert(f.adapter.ReqPositions());
+    const auto partial=f.adapter.GetAuthoritativeRiskSnapshot();
+    assert(!partial.positionsComplete);
+    monitor.value="-75002";f.Push(monitor);
+    monitor.value="-75000";f.Push(monitor);
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto positionOnly=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(positionOnly.risk.positionsComplete);
+    assert(!positionOnly.risk.accountComplete &&
+           !positionOnly.risk.fxCashComplete &&
+           !positionOnly.barrierComplete);
+    assert(positionOnly.risk.positionsGeneration>initial.risk.positionsGeneration);
+
+    // A monitor reversion or position end cannot grant order authority.
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long id=-1;
+    assert(!f.adapter.PlaceOrderCorrelated(c,o,
+        "hepta-v1-sha256:"+std::string(64,'e'),&id));
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    // Only a new two-leg account+positions request/end with the correctly
+    // attested current value may establish internal adapter completeness.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    account("-75000");
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto renewed=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(renewed.barrierComplete && renewed.risk.coherentRefreshComplete);
+    assert(renewed.risk.accountGeneration>initial.risk.accountGeneration);
+    assert(renewed.risk.positionsGeneration>positionOnly.risk.positionsGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
 void TestCashMonitorRedactedGenerationObservation() {
     // Provenance-only log: no callback cash values, and no mutation or orders.
     const char* env=std::getenv("TMPDIR");
@@ -957,6 +1020,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
     TestCashMonitorRedactedGenerationObservation();
     TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();

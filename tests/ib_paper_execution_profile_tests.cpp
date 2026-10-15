@@ -14,9 +14,15 @@
 #include <memory>
 #include <limits>
 #include <string>
+#include <cstdlib>
 
 namespace
 {
+std::string FixtureTemporaryPath(const std::string& leaf) {
+    const char* env=std::getenv("TMPDIR");
+    return std::string(env && *env ? env : "/tmp")+"/"+leaf+"-XXXXXX";
+}
+
 std::map<std::string, std::string> QualificationValues()
 {
     std::map<std::string, std::string> values;
@@ -625,9 +631,9 @@ void TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress()
 {
     IbPaperExecutionProfileConfig config; std::string reason;
     assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
-    char path[] = "/tmp/hepta-owner-release-XXXXXX";
-    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
-    OmsJournal journal; assert(journal.Init(path));
+    std::string path = FixtureTemporaryPath("hepta-owner-release");
+    const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path.c_str()));
     ExecutionCoordinatorCallbacks callbacks;
     ExecutionCoordinator coordinator(journal, callbacks);
     IBAuthoritativeRecoveryAuditSnapshot snapshot;
@@ -682,7 +688,7 @@ void TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress()
     assert(policy.ReleaseSessionOwnerFence(command).status == ExecutionCommandStatus::Rejected);
     assert(coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
     assert(coordinator.IsSessionOwnerRecoveryOnly("resume-owner", "resume-session"));
-    ::unlink(path);
+    ::unlink(path.c_str());
 }
 
 void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
@@ -699,9 +705,9 @@ void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
     values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"] = IbPaperExecutionProfileConfig::UserControlDirectoryPath();
     IbPaperExecutionProfileConfig config; std::string reason;
     assert(IbPaperExecutionProfileConfig::FromValues(values, config, reason));
-    char path[] = "/tmp/hepta-user-recovery-resume-XXXXXX";
-    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
-    OmsJournal journal; assert(journal.Init(path));
+    std::string path = FixtureTemporaryPath("hepta-user-recovery-resume");
+    const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path.c_str()));
     ExecutionCoordinatorCallbacks callbacks; ExecutionCoordinator coordinator(journal, callbacks);
     IBAuthoritativeRecoveryAuditSnapshot snapshot;
     snapshot.active.complete = true; snapshot.active.connectionEpoch = 1; snapshot.active.generation = 1;
@@ -754,16 +760,16 @@ void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
     assert(policy.ReleaseSessionOwnerFence(command).status==ExecutionCommandStatus::Rejected);
     assert(coordinator.IsMutationBlocked(nullptr));
     assert(coordinator.IsSessionOwnerRecoveryOnly("active-user","active-session"));
-    ::unlink(path);
+    ::unlink(path.c_str());
 }
 
 void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 {
     IbPaperExecutionProfileConfig config; std::string reason;
     assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
-    char path[] = "/tmp/hepta-policy-control-XXXXXX";
-    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
-    OmsJournal journal; assert(journal.Init(path));
+    std::string path = FixtureTemporaryPath("hepta-policy-control");
+    const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path.c_str()));
     std::mutex mutex; std::condition_variable changed; bool entered = false, released = false;
     ExecutionCoordinatorCallbacks callbacks;
     callbacks.placement = VenuePlacement::Immediate([](const PlaceOrderCommand&, const std::string&) {
@@ -806,7 +812,7 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
     assert(coordinator.IsSessionOwnerFenced(place.context.agentId, place.context.sessionId));
     { std::lock_guard<std::mutex> lock(mutex); released = true; changed.notify_all(); }
     assert(pending.get().status == ExecutionCommandStatus::Accepted);
-    ::unlink(path);
+    ::unlink(path.c_str());
 }
 
 }
@@ -832,9 +838,9 @@ IbPaperExecutionProfileConfig MixedCryptoProfileForTest()
 void TestMixedCryptoRuntimeParsesRealEnvironmentFields()
 {
     if (::geteuid()==0 || ::getegid()==0) return;
-    char stateDir[]="/tmp/hepta-crypto-runtime-state-XXXXXX";
-    char credentialDir[]="/tmp/hepta-crypto-runtime-credentials-XXXXXX";
-    assert(::mkdtemp(stateDir) && ::mkdtemp(credentialDir));
+    std::string stateDir = FixtureTemporaryPath("hepta-crypto-runtime-state");
+    std::string credentialDir = FixtureTemporaryPath("hepta-crypto-runtime-credentials");
+    assert(::mkdtemp(&stateDir[0]) && ::mkdtemp(&credentialDir[0]));
     auto values=QualificationValues();
     values["STATE_DIRECTORY"]=stateDir;
     values["CREDENTIALS_DIRECTORY"]=credentialDir;
@@ -872,7 +878,7 @@ void TestMixedCryptoRuntimeParsesRealEnvironmentFields()
     values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"]="EUR.USD";
     assert(IbPaperExecutionRuntimeConfig::FromValues(values,1234,runtime,reason));
     assert(!runtime.profile.UsesUserCrypto() && runtime.quoteContracts.size()==1);
-    assert(::rmdir(stateDir)==0 && ::rmdir(credentialDir)==0);
+    assert(::rmdir(stateDir.c_str())==0 && ::rmdir(credentialDir.c_str())==0);
 }
 
 void TestCryptoGuardHasIndependentUnitsAndNoSpotShorts()
@@ -983,9 +989,9 @@ void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
 {
     if (::geteuid()==0 || ::getegid()==0)return;
     const auto config=MixedCryptoProfileForTest();std::string reason;
-    char path[]="/tmp/hepta-active-crypto-lease-XXXXXX";
-    int fd=::mkstemp(path);assert(fd>=0);::close(fd);
-    OmsJournal journal;assert(journal.Init(path));ExecutionCoordinatorCallbacks callbacks;
+    std::string path = FixtureTemporaryPath("hepta-active-crypto-lease");
+    int fd=::mkstemp(&path[0]);assert(fd>=0);::close(fd);
+    OmsJournal journal;assert(journal.Init(path.c_str()));ExecutionCoordinatorCallbacks callbacks;
     ExecutionCoordinator coordinator(journal,callbacks);
     IBAuthoritativeRecoveryAuditSnapshot s;
     s.active.complete=true;s.active.connectionEpoch=1;s.active.generation=1;
@@ -1014,7 +1020,7 @@ void TestActiveLeaseAuditPreservesHeldFxButCannotReleaseFence()
     s.active.activeOrderIds.clear();coordinator.FenceSessionOwner("fx-owner","fx-session");
     assert(policy.AuditSessionLease(command).status==ExecutionCommandStatus::Rejected);
     assert(coordinator.IsSessionOwnerFenced("fx-owner","fx-session"));
-    ::unlink(path);
+    ::unlink(path.c_str());
 }
 
 void TestConfiguredUserOwnerResumeScopesAreIndependent()
@@ -1037,9 +1043,9 @@ void TestConfiguredUserOwnerResumeScopesAreIndependent()
         if(invalid==4){bad.userQuoteContracts="EUR.USD|EUR|CASH|IDEALPRO|USD";bad.userPrimaryQuoteInstrument="EUR.USD";}
         assert(!bad.Validate(reason));
     }
-    char path[]="/tmp/hepta-scoped-crypto-resume-XXXXXX";
-    int fd=::mkstemp(path);assert(fd>=0);::close(fd);
-    OmsJournal journal;assert(journal.Init(path));ExecutionCoordinatorCallbacks callbacks;
+    std::string path = FixtureTemporaryPath("hepta-scoped-crypto-resume");
+    int fd=::mkstemp(&path[0]);assert(fd>=0);::close(fd);
+    OmsJournal journal;assert(journal.Init(path.c_str()));ExecutionCoordinatorCallbacks callbacks;
     ExecutionCoordinator coordinator(journal,callbacks);
     IBAuthoritativeRecoveryAuditSnapshot snapshot;
     snapshot.active.complete=true;snapshot.active.connectionEpoch=3;snapshot.active.generation=4;
@@ -1122,7 +1128,7 @@ void TestConfiguredUserOwnerResumeScopesAreIndependent()
 
     int mutations=0;
     journal.Replay([&](const OmsJournalEvent& e){if(e.eventType=="place_send_attempt"||e.eventType=="flatten_send_attempt"||e.eventType=="cancel_send_attempt")++mutations;});
-    assert(mutations==0);::unlink(path);
+    assert(mutations==0);::unlink(path.c_str());
 }
 
 
