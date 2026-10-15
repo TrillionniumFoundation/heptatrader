@@ -6,7 +6,7 @@ position, no pending command/order exists, and native authority is ready. Never
 flattens a position for deployment, never changes actual fee or native risk rules.
 """
 from __future__ import annotations
-import argparse,fcntl,hashlib,importlib.util,json,math,os,re,subprocess,time
+import argparse,fcntl,hashlib,importlib.util,json,math,os,re,shlex,subprocess,time
 from pathlib import Path
 from hepta_fx_churn import PROFILE,digest,require_original_fx_sizing
 
@@ -15,6 +15,32 @@ def read(path):return json.loads(Path(path).read_bytes())
 def show(unit):
  s=subprocess.check_output(['systemctl','--user','show',unit,'-p','MainPID','-p','ActiveState','-p','NRestarts','-p','ExecStart'],text=True)
  return dict(x.split('=',1) for x in s.splitlines() if '=' in x)
+
+def validate_restarted_fx_service(before, after, release):
+    """Reject a successful-looking restart that still runs the wrong release.
+
+    This operates on the actual systemctl-show ExecStart/PID identity, not
+    staged file names or the mere fact that the old service is active.
+    """
+    try:
+        original_pid=int(before.get('MainPID','0'))
+        new_pid=int(after.get('MainPID','0'))
+        effective=after.get('ExecStart','')
+        executable=re.search(r'(?:^|[ {;])path=([^; ]+)',effective)
+        argv=re.search(r'argv[[]]=([^;]+)',effective)
+        actual_args=shlex.split(argv.group(1).strip()) if argv else []
+        expected=['/usr/bin/python3','-B',
+                  str(release/'heptatrader_attributed_driver.py'),
+                  '--manifest',str(release/'manifest.json')]
+    except (TypeError,ValueError,AttributeError) as exc:
+        raise RuntimeError('FX_RESTART_IDENTITY_NOT_VERIFIED') from exc
+    if (after.get('ActiveState')!='active' or
+            original_pid<=0 or new_pid<=0 or new_pid==original_pid or
+            executable is None or executable.group(1)!='/usr/bin/python3' or
+            actual_args!=expected):
+        raise RuntimeError('FX_RESTART_IDENTITY_NOT_VERIFIED')
+    return after
+
 def write_once(path,value,mode=0o400):
  raw=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() if not isinstance(value,bytes) else value
  path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -196,13 +222,13 @@ def main():
   text='[Service]\nExecStart=\nExecStart=/usr/bin/python3 -B '+str(release/'heptatrader_attributed_driver.py')+' --manifest '+str(release/'manifest.json')+'\n'
   write_once(drop,text.encode(),0o600);installed=True;subprocess.run(['systemctl','--user','daemon-reload'],check=True)
   os.close(lock);lock=None;subprocess.run(['systemctl','--user','start',unit],check=True);time.sleep(2)
-  if show(unit)['ActiveState']!='active' or show(unit)['MainPID']=='0':raise RuntimeError('FX_RESTART_FAILED')
+  activated_unit=validate_restarted_fx_service(before_unit,show(unit),release)
  except Exception:
   if lock is not None:os.close(lock)
   if installed:subprocess.run(['systemctl','--user','stop',unit]);drop.unlink();subprocess.run(['systemctl','--user','daemon-reload'])
   subprocess.run(['systemctl','--user','start',unit]);raise
  after_state=read(state_path)
- receipt.update(activated=True,service=show(unit),position_identity_preserved=economic_state(after_state)==economic_state(state),
+ receipt.update(activated=True,service=activated_unit,position_identity_preserved=economic_state(after_state)==economic_state(state),
   economic_state_before=economic_state(state),economic_state_after=economic_state(after_state),peer_pids_unchanged=all(show(n)['MainPID']==v['MainPID'] for n,v in peers.items()))
  write_once(a.evidence/'fx-deployed.json',receipt);print(json.dumps(receipt,indent=2))
 if __name__=='__main__':main()
