@@ -38,6 +38,29 @@ def coherent_idle(state):
 def economic_state(state):
  return {k:state.get(k) for k in ('position','pending','entries','exits','gross_pnl','entry_price','entry_price_basis','entry_at_ms')}
 
+def collect_original_oms_open_attempts(blob, now, period_started_at):
+    """Conservatively seed only actual original PAPER FX send/uncertain attempts.
+
+    An earlier timestamp for a repeated command can age it out of the
+    rolling-hour limiter before the later broker send; keep the *latest*
+    credible event for each unchanged command identity, never mint new IDs.
+    """
+    attempts={}
+    for line in blob.splitlines():
+        event=json.loads(line)
+        if (event.get('event') not in ('place_sent','place_outcome_uncertain') or
+                event.get('instrument')!='EUR.USD' or
+                event.get('execution_domain')!='PAPER'):
+            continue
+        at=event.get('ts_ms');cmd=event.get('req_id')
+        # A future or malformed relevant send must fail the installation,
+        # not disappear from cooldown history.
+        if type(at) is not int or at>now or not isinstance(cmd,str) or not cmd:
+            raise ValueError('UNVERIFIABLE_OR_FUTURE_FX_OPEN_ATTEMPT')
+        if at>=max(now-86400000,period_started_at):
+            attempts[cmd]=max(attempts.get(cmd,at),at)
+    return attempts
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('--evidence',type=Path,required=True);p.add_argument('--activate',action='store_true');a=p.parse_args();os.umask(0o077)
  h=Path.home();repo=Path(__file__).resolve().parents[1];scripts=repo/'scripts'
@@ -66,12 +89,7 @@ def main():
  if base.CONF!=.62 or base.QTY!=25000 or base.MAX_ADVERSE!=.002:raise RuntimeError('OLD_STRATEGY_CONSTANTS_CHANGED')
  state_path=h/'.local/state/heptatrader/paper-driver/state.json';state=read(state_path)
  now=int(time.time()*1000);journal=h/'.local/state/heptatrader/execution/oms-journal.jsonl';blob=journal.read_bytes();blob=blob[:blob.rfind(b'\n')+1]
- attempts={}
- for line in blob.splitlines():
-  event=json.loads(line)
-  if (event.get('event') in ('place_sent','place_outcome_uncertain') and event.get('instrument')=='EUR.USD'
-      and event.get('execution_domain')=='PAPER' and event.get('ts_ms',0)>=max(now-86400000,read(period)['started_at_ms']) and event.get('req_id')):
-   cmd=event['req_id'];attempts[cmd]=min(attempts.get(cmd,event['ts_ms']),event['ts_ms'])
+ attempts=collect_original_oms_open_attempts(blob,now,read(period)['started_at_ms'])
  seed={'period_sha256':old['period_sha256'],'last_exit_ms':now,'activation_ms':now,
        'last_exit_basis':'CONSERVATIVE_ACTIVATION_COOLDOWN_NOT_FABRICATED_EXECUTION',
        'open_attempts':[{'command_id':k,'at_ms':v} for k,v in sorted(attempts.items(),key=lambda x:x[1])],
