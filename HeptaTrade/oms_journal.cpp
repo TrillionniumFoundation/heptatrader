@@ -922,6 +922,41 @@ bool OmsJournal::EncodeValidatedEventLocked(
     return ParseJsonLine(line, checked);
 }
 
+bool OmsJournal::AppendDurableCritical(const OmsJournalEvent& event)
+{
+    const auto started = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(m_mtx);
+    OmsScopedLatencySample timing(m_appendLatency, started);
+    if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
+        !ValidatePinnedPathLocked()) return false;
+    std::string line;
+    if (!IsCriticalEventType(event.eventType) ||
+        !EncodeValidatedEventLocked(event, line)) return false;
+    try
+    {
+        // Preserve actual journal ordering and force a durability barrier
+        // regardless of configurable ordinary critical-append settings.
+        if (!FlushQueuedNoLock() || !FlushBufferedLocked())
+        {
+            m_writePoisoned = true;
+            return false;
+        }
+        ++m_criticalSyncWrites;
+        if (!WriteLineToPinnedFileLocked(line, true))
+        {
+            m_writePoisoned = true;
+            return false;
+        }
+        return true;
+    }
+    catch (...)
+    {
+        m_writePoisoned = true;
+        ++m_writeFailTotal;
+        return false;
+    }
+}
+
 OmsJournal::DurablePairResult OmsJournal::AppendDurablePair(
     const OmsJournalEvent& first, const OmsJournalEvent& second)
 {

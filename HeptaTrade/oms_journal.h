@@ -152,6 +152,11 @@ public:
 
     bool Init(const std::string& path);
     bool Append(const OmsJournalEvent& evt);
+    // Mandatory pre-broker-send durability barrier. Unlike ordinary Append,
+    // this ALWAYS flushes the existing queue and fsyncs the exact critical
+    // marker, even with HEPTA_OMS_SYNC_CRITICAL=0 or async writes enabled.
+    // A failed barrier never authorizes a Broker request.
+    bool AppendDurableCritical(const OmsJournalEvent& evt);
     // Two ordered critical records with no intervening external effect share
     // one durability barrier. This is not an atomic two-record disk format:
     // a failed/crashed call may leave a prefix, which ordinary replay retains.

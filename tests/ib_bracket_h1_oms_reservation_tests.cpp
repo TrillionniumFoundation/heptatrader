@@ -61,6 +61,34 @@ int main(){
    Must(!ConfirmReplay(events,f,info,reason)&&info.uncertain,"unknown send reappeared as safe reservation");
    Must(!info.sendAuthorized&&!info.driverStopAllowed,"reboot minted order permissions");
   }
+  // A future real sender must NEVER trust ordinary Append() when its
+  // critical-write durability switch is off and async buffering is enabled.
+  // This is a negative control for the exact pre-send crash boundary.
+  {
+   Must(setenv("HEPTA_OMS_SYNC_CRITICAL","0",1)==0,"env sync off");
+   Must(setenv("HEPTA_OMS_ASYNC_FLUSH","1",1)==0,"env async on");
+   Must(setenv("HEPTA_OMS_CRITICAL_FLUSH_QUEUED","0",1)==0,"env queue mode");
+   const std::string mask="/tmp/hepta-h1-presend-XXXXXX";
+   std::vector<char> tmp(mask.begin(),mask.end());tmp.push_back('\0');
+   const int tfd=mkstemp(tmp.data());Must(tfd>=0,"async temp file");
+   close(tfd);unlink(tmp.data());
+   {
+    OmsJournal j;Must(j.Init(tmp.data()),"async OMS init failed");
+    Reservation saved;Must(ReservePair(j,f,saved,reason),"async H1 pair reserve");
+    auto before=j.GetHealthSnapshot();
+    Must(before.asyncEnabled&&!before.syncCritical,
+         "did not activate async noncritical durability hazard");
+    Must(MarkPotentialSend(j,saved,true,reason),"forced durable presend failed");
+    auto after=j.GetHealthSnapshot();
+    Must(after.durableSyncWrites==before.durableSyncWrites+1,
+         "PRE_SEND_RETURNED_WITHOUT_FSYNC");
+    Must(!saved.sendAuthorized&&!saved.driverStopAllowed,"async minted risk grant");
+   }
+   Must(unlink(tmp.data())==0,"async test cleanup failed");
+   unsetenv("HEPTA_OMS_SYNC_CRITICAL");
+   unsetenv("HEPTA_OMS_ASYNC_FLUSH");
+   unsetenv("HEPTA_OMS_CRITICAL_FLUSH_QUEUED");
+  }
   Must(unlink(target.c_str())==0,"test temporary cleanup");
   std::cout<<"ib_bracket_h1_oms_reservation=PASS\n";return 0;
  }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

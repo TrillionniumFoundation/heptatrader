@@ -422,3 +422,33 @@ PAPER stop cannot be declared until the existing owner binds those
 authorities, attests the Broker's permanent parent/child IDs, prevents
 normal-exit/OCA reversal and proves risk continuity during Driver
 absence. Keep Issue #331 OPEN and PR #337 Draft.
+
+
+## 2026-10-15: force native H1 pre-send receipt durability under async OMS
+
+The shadow H1 pair was already sealed by AppendDurablePair, but its
+MarkPotentialSend used ordinary OmsJournal::Append. With
+HEPTA_OMS_SYNC_CRITICAL=0 and HEPTA_OMS_ASYNC_FLUSH=1, ordinary Append
+can acknowledge an **enqueued** critical marker before an fsync. A later
+real broker send must never depend on this configuration-sensitive boundary.
+
+The existing OMS now exposes a narrow additive AppendDurableCritical method:
+it holds the pinned-file mutex, drains any queued/buffered journal prefix,
+validates a critical event, writes the original v4 event, and explicitly
+syncs the exact pinned file regardless of ordinary flush settings. Failure
+keeps the writer poisoned and cannot authorize a sender. The H1 shadow
+pre-send marker now uses this API, but this research lane retains
+sendAuthorized=false and driverStopAllowed=false.
+
+On a physically isolated Pocket4 CMake Release build, a new adversarial test
+**first failed** with PRE_SEND_RETURNED_WITHOUT_FSYNC on the old path.
+After the change, the original H1 role/pair tests and six neighboring
+existing native OMS/stop/bracket tests passed **8/8**, including disabled
+ordinary critical durability with async enabled. These are private scratch
+OMS files, not the resident Execution ledger; no IB API, Broker order,
+service restart, forced stop, live risk grant or price policy change.
+
+**Remaining gate:** durable intent and durable pre-send receipts do not
+prove a real broker parent/child placeOrder, successful venue native STP,
+a surviving working stop, OCA-safe ordinary exit, or uncertainty-free
+reconnect. Issue #331 remains open and this PR remains Draft.

@@ -64,7 +64,10 @@ inline bool MarkPotentialSend(OmsJournal& journal, const Reservation& r,
     e.eventType="place_send_attempt";
     e.eventId=(child?"possible-child:":"possible-parent:")+r.ids.groupCorrelation;
     e.status="POSSIBLY_SENT";
-    if(!journal.Append(e)){
+    // A successful ordinary Append can mean "queued" when critical fsync is
+    // disabled by host configuration. The future Broker send needs the
+    // unconditionally durable single-record barrier before ANY venue effect.
+    if(!journal.AppendDurableCritical(e)){
         reason="H1_SEND_ATTEMPT_DURABILITY_UNKNOWN";return false;
     }
     reason.clear();return true;
