@@ -24,7 +24,7 @@ def execution_index(source):
  from hepta_decision_attribution import MAX_TOTAL
  if type(source.get('bytes')) is not int or not 0 <= source['bytes'] <= MAX_TOTAL:
   raise ContractError('FINANCIAL_LEDGER_PREFIX_SIZE')
- raw=read_private(source['path'],MAX_TOTAL)[:source['bytes']]
+ raw=read_private(source['path'],MAX_TOTAL,prefix_bytes=source['bytes'])
  if len(raw)!=source['bytes'] or hashlib.sha256(raw).hexdigest()!=source['sha256']:raise ContractError('FINANCIAL_LEDGER_PREFIX_CHANGED')
  by_id={};by_command={};execution_commands={}
  for line in raw.splitlines():

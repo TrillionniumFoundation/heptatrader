@@ -39,7 +39,7 @@ class LedgerPrefixSizeTests(unittest.TestCase):
                     'req_id':'fixture-c1'},sort_keys=True)+'\n').encode()
    with path.open('wb') as f:
     f.write(row)
-    f.truncate(33*1024**2)
+    f.truncate(257*1024**2)
    os.chmod(path,0o600)
    prefix={'path':str(path),'bytes':len(row),'sha256':hashlib.sha256(row).hexdigest()}
    self.assertEqual(execution_index(prefix)[1]['fixture-c1'],123456)
