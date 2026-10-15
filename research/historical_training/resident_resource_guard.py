@@ -121,6 +121,28 @@ class Gate:
         if role not in ('trainer','evaluator'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
         self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
+        self.last_admission=None
+        if self.c.get('value_priority') is not None and role in ('trainer','evaluator'):
+            from .value_priority_admission import verify_policy
+            verify_policy(self.c['value_priority'])
+    def _prioritize_background(self,report):
+        if not report['admit_new_worker'] or self.c.get('value_priority') is None:
+            self.last_admission=report
+            return report
+        try:
+            from .value_priority_admission import decision
+            held,reason,proof=decision(self.c['value_priority'],self.role,int(time.time()*1000))
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            held=True;reason='VALUE_PRIORITY_UNVERIFIED_SOURCE'
+            proof={'source':'UNVERIFIED','error_class':type(exc).__name__,
+                   'no_order_authority':True,'existing_workers_interrupted':False}
+        if held:
+            report['admit_new_worker']=False
+            report['reasons'].append(reason)
+        report['value_priority_evidence']=proof
+        self.last_admission=report
+        atomic(self.root/(self.role+'-admission.json'),report)
+        return report
     def check(self):
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
@@ -166,14 +188,17 @@ class Gate:
             report['admit_new_worker']=False;report['reasons'].append('SUPERVISOR_DRAIN_REQUESTED')
         report['role']=self.role;atomic(self.root/(self.role+'-admission.json'),report);return report
     def acquire(self,subject):
-        report=self.check()
+        report=self._prioritize_background(self.check())
         if report['admit_new_worker'] and not self.lease.acquire():
             report['admit_new_worker']=False;report['reasons']=['OTHER_RESEARCH_WORKER_ACTIVE']
-        # Recheck after taking the lease, closing competing admission and source-change windows.
+        # Recheck BOTH original admission and Value priority after taking the
+        # same original lease. Never stop another worker or extend any deadline.
         if report['admit_new_worker']:
-            report=self.check()
+            report=self._prioritize_background(self.check())
             if report['admit_new_worker']:return True
             self.lease.release()
+        self.last_admission=report
+        atomic(self.root/(self.role+'-admission.json'),report)
         name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')
         if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
         return False
@@ -196,7 +221,9 @@ def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
         def step(self):
             if not gate.acquire({'role':'trainer'}):
-                return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',resource_admission=gate.check())
+                report=getattr(gate,'last_admission',None)
+                return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',
+                                         resource_admission=report if report is not None else gate.check())
             try:return super().step()
             finally:gate.release()
     return GuardedTrainer
@@ -206,6 +233,14 @@ def verify_config(c):
     if c.get('schema')!='heptatrader.resident-admission-wrapper-config.v1' or c.get('trade_authority') is not False:
         raise EvidenceError('GUARD_CONFIG_SCOPE')
     if c.get('resource_rule')!=RESOURCE_RULE or c.get('max_heavy_workers')!=1:raise EvidenceError('RESOURCE_RULE_CHANGED')
+    if c.get('value_priority') is not None:
+        from .value_priority_admission import verify_policy,_load_pinned
+        verify_policy(c['value_priority'])
+        _load_pinned(c['value_priority'])
+        if set(c.get('guard_files_sha256',{}))!={
+            'common.py','resident_live_source.py','resident_resource_guard.py',
+            'value_priority_admission.py'}:
+            raise EvidenceError('PRIORITY_RUNTIME_NOT_PINNED')
     if sha(c['original_config'])!=c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
     original=read(c['original_config'])
     if original['automatic_trading'] is not False or original['period_sha256']!=c['period_sha256']:
