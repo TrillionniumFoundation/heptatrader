@@ -14,6 +14,25 @@ from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess,validate_plan_rule
 
 
+def suppress_new_work_for_frozen_failure(plan, results):
+ """Scheduling only: immutable failed slots can never be made successful.
+
+ Keep the original trial open until its registered deadline and continue
+ recording real outcomes; never relax thresholds, promote, or rewrite history.
+ """
+ rule=validate_plan_rule(plan)
+ seen=set();censored=0
+ for result in results:
+  slot=result.get('slot')
+  if (type(slot) is not int or not 0<=slot<rule['slots'] or slot in seen
+      or result.get('candidate_id')!=plan['candidate_id']
+      or result.get('plan_id')!=plan['plan_id']
+      or result.get('status') not in ('OBSERVED','CENSORED')):
+   raise ContractError('FUTILITY_OUTCOME_IDENTITY_OR_STATUS')
+  seen.add(slot);censored+=result['status']=='CENSORED'
+ return censored>rule['max_censored'] or rule['slots']-censored<rule['min_observed']
+
+
 def measure(plan,slot,prediction,quotes,now_ms):
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
@@ -82,10 +101,12 @@ class Evaluator:
  def step(self):
   self.reap();now=int(time.time()*1000)
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('EVAL_PERIOD_CHANGED')
-  quotes,prefixes=read_quotes(self.c,now)
+  # A source scan is only needed for a genuinely mature prediction.
+  # Never spend a full archive decode while every active trial is already lost.
+  quotes=None;prefixes=None
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};observed=0;censored=0;worker_errors={}
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0
   for path in plans:
    plan=read_json(path)
    if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
@@ -111,6 +132,9 @@ class Evaluator:
     counts['REJECTED']=counts.get('REJECTED',0)+1;continue
    if (path.parent/'qualification.json').exists():
     q=read_json(path.parent/'qualification.json');counts[q['state']]=counts.get(q['state'],0)+1;continue
+   recorded=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+   futile=suppress_new_work_for_frozen_failure(plan,recorded)
+   if futile:futile_pending+=1
    for slot in range(rule['slots']):
     output=path.parent/f'outcome-{slot:03}.json';prediction=path.parent/f'prediction-{slot:03}.json'
     if output.exists():continue
@@ -127,14 +151,19 @@ class Evaluator:
        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now});continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
      if now<start-90000 or len(self.tasks)>=2:continue
+     if futile:
+      launches_suppressed+=1
+      continue
      self.launch(path,slot);continue
     pred=read_json(prediction)
     if now<pred['anchor_ms']+rule['horizon_ms']:continue
     # A snapshot collected before a long GPU call must never decide maturity.
-    quote_clock=int(time.time()*1000);fresh_quotes,fresh_prefixes=read_quotes(self.c,quote_clock)
-    result=measure(plan,slot,pred,fresh_quotes,quote_clock)
+    if quotes is None:
+     quotes,prefixes=read_quotes(self.c,int(time.time()*1000))
+    quote_clock=int(time.time()*1000)
+    result=measure(plan,slot,pred,quotes,quote_clock)
     if result is not None:
-     result['source_prefixes']=fresh_prefixes;result['prediction_file_sha256']=sha_file(prediction)
+     result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
      write_once(output,result)
    results=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
    observed+=sum(r['status']=='OBSERVED' for r in results);censored+=sum(r['status']=='CENSORED' for r in results)
@@ -145,7 +174,9 @@ class Evaluator:
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
    'prediction_prewarm_ms':90000,'worker_failure_details':worker_errors,
-   'latest_quote_ms':quotes[-1]['t'] if quotes else None,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
+   'latest_quote_ms':quotes[-1]['t'] if quotes else None,
+   'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
+   'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
    'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}
   atomic(self.root/'status.json',status)
