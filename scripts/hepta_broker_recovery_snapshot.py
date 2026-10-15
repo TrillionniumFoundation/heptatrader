@@ -46,6 +46,15 @@ def private_bytes(path, limit=32*1024*1024):
         os.close(fd)
 
 
+# The native bounded OMS journal is capped at 64 MiB. Its read-only
+# reconstruction needs the same bound; ordinary credentials stay 32 MiB.
+MAX_EXECUTION_OMS_BYTES = 64 * 1024 * 1024
+
+
+def private_execution_journal_bytes(path):
+    return private_bytes(path, limit=MAX_EXECUTION_OMS_BYTES)
+
+
 def save(path, value):
     data = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False)+'\n').encode()
     fd = os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
@@ -249,7 +258,7 @@ def main(argv=None):
     fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
     a.output.mkdir(mode=0o700,parents=False,exist_ok=False)
     if a.output.resolve()!=a.output.absolute():raise ValueError('NO_OUTPUT_SYMLINKS')
-    journal=h/'.local/state/heptatrader/execution/oms-journal.jsonl';before=private_bytes(journal)
+    journal=h/'.local/state/heptatrader/execution/oms-journal.jsonl';before=private_execution_journal_bytes(journal)
     checkpoint=h/'.local/state/heptatrader/execution/ib-fx-cash-restart-attestation'
     checkpoint_before=private_bytes(checkpoint,16384) if checkpoint.exists() else None
     source=Path(__file__).resolve();root=source.parent.parent
@@ -260,7 +269,7 @@ def main(argv=None):
     plan['fx_checkpoint_before_sha256']=sha(checkpoint_before) if checkpoint_before is not None else None
     save(a.output/'plan.json',plan)
     raw=capture(a.sdk,a.client_id,period)
-    after=private_bytes(journal)
+    after=private_execution_journal_bytes(journal)
     checkpoint_after=private_bytes(checkpoint,16384) if checkpoint.exists() else None
     raw.update(period_sha256=sha(pb),period_unchanged=private_bytes(period_path)==pb,
                journal_before_sha256=sha(before),journal_after_sha256=sha(after),journal_stable=before==after)

@@ -52,4 +52,24 @@ class GateTests(unittest.TestCase):
             with self.assertRaises(ValueError):reader.private_bytes(p)
 
 
+    def test_realistic_oms_journal_above_32mib_is_read_without_relaxing_other_files(self):
+        # Production OMS is bounded to 64 MiB; the prior generic 32 MiB
+        # helper rejected a real 35.8 MB journal before connecting to IB.
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/'oms.jsonl'
+            with p.open('wb') as f:f.truncate(34*1024*1024)
+            p.chmod(0o600)
+            with self.assertRaisesRegex(ValueError,'PRIVATE_SOURCE_REQUIRED'):
+                reader.private_bytes(p)  # private config default remains 32 MiB
+            data=reader.private_execution_journal_bytes(p)
+            self.assertEqual(len(data),34*1024*1024)
+            self.assertEqual(data[:1],b'\0')
+            with p.open('r+b') as f:f.truncate(64*1024*1024+1)
+            with self.assertRaisesRegex(ValueError,'PRIVATE_SOURCE_REQUIRED'):
+                reader.private_execution_journal_bytes(p)
+            p.chmod(0o644)
+            with self.assertRaisesRegex(ValueError,'PRIVATE_SOURCE_REQUIRED'):
+                reader.private_execution_journal_bytes(p)
+
+
 if __name__=='__main__':unittest.main()
