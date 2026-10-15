@@ -113,6 +113,9 @@ void RejectUnfencedAndLive() {
     s=Ready();s.originalEntryExecutionId="invalid:newline";
     MustRefuse([&]{ ProposeUnsentFxStop(s,10100); },
                "PAPER_EXACT_ACCOUNT_OWNER_REQUIRED");
+    s=Ready();s.originalEntryExecutionId=std::string(40,'b');
+    MustRefuse([&]{ ProposeUnsentFxStop(s,10100); },
+               "STOP_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     s=Ready();s.activeOrderCount=1;
     MustRefuse([&]{ ProposeUnsentFxStop(s,10100); },
                "BROKER_FENCE_POSITION_ORDERS_NOT_ATTESTED");

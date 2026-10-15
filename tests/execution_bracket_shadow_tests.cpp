@@ -92,6 +92,8 @@ void IdentityAndRiskMustRefuse() {
     Refused([&]{ProposeUnsentBracket(s,10100);},"BRACKET_EXACT_PAPER_SCOPE_REQUIRED");
     s=Fresh();s.originalCommandKey="malformed:name";
     Refused([&]{ProposeUnsentBracket(s,10100);},"BRACKET_EXACT_PAPER_SCOPE_REQUIRED");
+    s=Fresh();s.originalCommandKey=std::string(40,'a');
+    Refused([&]{ProposeUnsentBracket(s,10100);},"BRACKET_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     s=Fresh();s.contractId=1234;
     Refused([&]{ProposeUnsentBracket(s,10100);},"BRACKET_EXACT_PAPER_SCOPE_REQUIRED");
     s=Fresh();s.coordinatorExclusiveEntryOwner=false;

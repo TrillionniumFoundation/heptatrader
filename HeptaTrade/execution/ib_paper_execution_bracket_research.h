@@ -151,6 +151,11 @@ inline BracketShadowPlan ProposeUnsentBracket(
     p.stop.intent.totalQuantity = s.quantity;
     p.stop.intent.auxPrice = stop;
     p.stop.intent.orderRef = "HEPTA-STOP-" + s.originalCommandKey;
+    // Research-only refs do NOT satisfy the existing production H1 codec.
+    // At minimum, reject values the broker cannot retain without truncation.
+    if (p.parent.intent.orderRef.size() > 45 ||
+        p.stop.intent.orderRef.size() > 45)
+        throw Refusal("BRACKET_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     return p;
 }
 

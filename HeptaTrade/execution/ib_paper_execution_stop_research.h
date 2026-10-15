@@ -133,6 +133,9 @@ inline StopProposal ProposeUnsentFxStop(
     result.originalEntryExecutionId = s.originalEntryExecutionId;
     result.exactBrokerContractId = s.exactBrokerContractId;
     result.order.orderRef = "HEPTA-PROTECT-" + s.originalEntryExecutionId;
+    // This shadow reference is not a valid production H1 correlation.
+    if (result.order.orderRef.size() > 45)
+        throw Refusal("STOP_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     result.connectionEpoch = s.connectionEpoch;
     result.positionGeneration = s.positionGeneration;
     result.activeOrdersGeneration = s.activeOrdersGeneration;

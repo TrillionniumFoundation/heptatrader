@@ -322,7 +322,10 @@ The resident `IbVenueCorrelationCodec` requires a **45-character H1**
 base64url encoding of a service-owned `hepta-v1-sha256` correlation for
 real IB orderRef. The current experimental `HEPTA-PARENT-` / `HEPTA-STOP-`
 refs from this Draft PR are not recognized by that live-owner correlation
-codec and may exceed IB's 45-byte orderRef limit. The optional legacy
+codec. The unsent shadow bracket, standalone stop and OCA sibling now
+**explicitly reject refs exceeding IB's 45-byte orderRef limit**, including
+long otherwise-valid original command IDs; they do not truncate or re-map them.
+**This length check does not make non-H1 refs eligible for production.** The optional legacy
 research-only OMS bracket witness now rejects refs longer than 45 bytes,
 but **this does not make a HEPTA-STOP ref eligible for production.** A future
 Execution-owned group must reserve and durably bind distinct valid H1 parent

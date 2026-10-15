@@ -187,6 +187,10 @@ void RejectUnsafeOcaEvidence() {
     RequireOcaRefusal(group,o,"OCA_BROKER_EPOCH_OR_FRESHNESS_MISMATCH");
     o=OcaState(group);o.validUntilMs=1;
     RequireOcaRefusal(group,o,"OCA_BROKER_EPOCH_OR_FRESHNESS_MISMATCH");
+    auto wide=Original("BUY");wide.originalCommandKey=std::string(31,'x');
+    const auto wideGroup=ProposeUnsentBracket(wide,100500);
+    RequireOcaRefusal(wideGroup,OcaState(wideGroup),
+                      "OCA_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
 }
 void BadModeNoNative() {
     auto s=Original("BUY");s.executionDomain="LIVE";

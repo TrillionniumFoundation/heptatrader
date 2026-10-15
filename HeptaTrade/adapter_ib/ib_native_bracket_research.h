@@ -197,6 +197,9 @@ inline UnsentNativeOcaExit ProposeUnsentOcaExit(
     plan.exit.ocaGroup = state.brokerOcaGroup;
     plan.exit.ocaType = 1;   // IB overfill-protecting cancel-with-block
     plan.exit.orderRef = "HEPTA-OCA-CLOSE-" + group.originalCommandKey;
+    // The OCA sibling is UNSENT. Never silently truncate an IB orderRef.
+    if (plan.exit.orderRef.size() > 45)
+        throw Refusal("OCA_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     plan.exit.transmit = true;
     return plan;
 }
