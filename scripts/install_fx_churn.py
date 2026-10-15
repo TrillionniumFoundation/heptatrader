@@ -8,7 +8,7 @@ flattens a position for deployment, never changes actual fee or native risk rule
 from __future__ import annotations
 import argparse,fcntl,hashlib,importlib.util,json,math,os,re,subprocess,time
 from pathlib import Path
-from hepta_fx_churn import PROFILE,digest
+from hepta_fx_churn import PROFILE,digest,require_original_fx_sizing
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def read(path):return json.loads(Path(path).read_bytes())
@@ -128,6 +128,9 @@ def main():
   raise RuntimeError('ORIGINAL_PAPER_DRIVER_SOURCE_CHANGED')
  base_path=old_root/'heptatrader_paper_driver.py';spec=importlib.util.spec_from_file_location('fx_churn_deploy_base',base_path);base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
  if base.CONF!=.62 or base.QTY!=25000 or base.MAX_ADVERSE!=.002:raise RuntimeError('OLD_STRATEGY_CONSTANTS_CHANGED')
+ # Legacy QTY=25000 is not the EUR/USD OPEN size: the installed driver
+ # computes whole-EUR size from its pinned $100k reference-notional budget.
+ require_original_fx_sizing(base)
  state_path=h/'.local/state/heptatrader/paper-driver/state.json';state=read(state_path)
  # New-entry-only activation is performed exclusively at a real zero-exposure
  # boundary. Never stop an existing 100K FX position merely for installation.

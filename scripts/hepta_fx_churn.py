@@ -11,9 +11,29 @@ from pathlib import Path
 PROFILE={'schema':'heptatrader.fx-opening-hysteresis.v1','instrument':'EUR.USD',
  'confidence_threshold':.62,'required_confirmations':2,'confirmation_min_spacing_ms':60000,
  'confirmation_max_span_ms':300000,'minimum_open_spacing_ms':900000,
- 'after_flat_cooldown_ms':600000,'rolling_hour_max_open_attempts':2,'quantity':25000,
+ 'after_flat_cooldown_ms':600000,'rolling_hour_max_open_attempts':2,
+ 'quantity_mode':'BASE_NOTIONAL_TARGET','target_notional_usd':100000,
+ 'max_base_quantity':100000,'order_type':'MKT','time_in_force':'DAY',
  'exit_rule_changed':False,'cost_forecast_required':False}
+# Exact hash of the previously shipped metadata with quantity=25000.
+# Accept it ONLY as historic cooldown evidence at a strictly newer
+# activation, never as current signal approval or a tradable profile.
+LEGACY_FIXED_25K_PROFILE_SHA256='d301c65581eff77c3d217b61cd599612d43b06c382d8087ae0a55771a34f68a1'
 class ChurnError(RuntimeError):pass
+
+def require_original_fx_sizing(driver):
+ # This wrapper controls OPEN timing only. Never reinterpret the original
+ # $100k USD notional budget as a fixed 25k-EUR position.
+ if (getattr(driver,'INSTRUMENT',None)!='EUR.USD' or
+     getattr(driver,'FX_TARGET_NOTIONAL_USD',None)!=PROFILE['target_notional_usd'] or
+     getattr(driver,'FX_MAX_QUANTITY',None)!=PROFILE['max_base_quantity']):
+  raise ChurnError('FX_ORIGINAL_SIZING_DRIFT')
+ try:
+  quantities=tuple(driver.fx_order_quantity(px) for px in (1.10,1.12,1.15))
+ except Exception as exc:
+  raise ChurnError('FX_ORIGINAL_SIZING_DRIFT') from exc
+ if quantities!=(90909.0,89285.0,86956.0):
+  raise ChurnError('FX_ORIGINAL_SIZING_DRIFT')
 
 def digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 def valid_direction(d):
@@ -64,17 +84,21 @@ def resume_activation_control(existing, seed, period):
     """
     if existing is None:
         return fresh_control(seed)
+    legacy=(isinstance(existing,dict) and
+            existing.get('profile_sha256')==LEGACY_FIXED_25K_PROFILE_SHA256)
     if (not isinstance(existing, dict) or
             existing.get('period_sha256') != period or
-            existing.get('profile_sha256') != digest(PROFILE)):
+            (existing.get('profile_sha256') != digest(PROFILE) and not legacy)):
         raise ChurnError('FX_CONTROL_SCOPE')
     older = existing.get('activation_ms')
     newer = seed.get('activation_ms')
     if newer is None:
+        if legacy: raise ChurnError('FX_LEGACY_SIZING_REQUIRES_NEW_ACTIVATION')
         return copy.deepcopy(existing)
     if type(older) is not int or type(newer) is not int or newer < older:
         raise ChurnError('FX_ACTIVATION_CLOCK_REGRESSION')
     if newer == older:
+        if legacy: raise ChurnError('FX_LEGACY_SIZING_REQUIRES_NEW_ACTIVATION')
         return copy.deepcopy(existing)
     if (type(existing.get('last_exit_ms')) is not int or
             type(seed.get('last_exit_ms')) is not int or
@@ -104,6 +128,7 @@ def resume_activation_control(existing, seed, period):
 
 def attach(driver,configuration):
  if driver.INSTRUMENT!='EUR.USD' or configuration['profile']!=PROFILE:raise ChurnError('FX_ONLY_PROFILE')
+ require_original_fx_sizing(driver)
  seed=configuration['seed'];period=configuration['period_sha256'];local=threading.local()
  original={n:getattr(driver,n) for n in ('atomic_json','prepare_send','inspect_pending')}
  def control(state):

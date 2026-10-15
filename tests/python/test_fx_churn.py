@@ -12,6 +12,31 @@ def confirmed():
  c=f.observe(f.fresh_control(seed()),state(at=NOW-120000),NOW-120000)
  return f.observe(c,state(seq=2),NOW)
 
+class SizingContractTests(unittest.TestCase):
+ def original(self):
+  spec=importlib.util.spec_from_file_location('fx_sizing_fixture',ROOT/'scripts/heptatrader_paper_driver.py')
+  driver=importlib.util.module_from_spec(spec);spec.loader.exec_module(driver)
+  return driver
+ def test_metadata_matches_real_original_100k_usd_sizing(self):
+  driver=self.original()
+  self.assertNotIn('quantity',f.PROFILE)
+  self.assertEqual(f.PROFILE['quantity_mode'],'BASE_NOTIONAL_TARGET')
+  self.assertEqual(f.PROFILE['target_notional_usd'],driver.FX_TARGET_NOTIONAL_USD)
+  self.assertEqual(f.PROFILE['max_base_quantity'],driver.FX_MAX_QUANTITY)
+  self.assertEqual(f.PROFILE['order_type'],'MKT')
+  self.assertEqual(f.PROFILE['time_in_force'],'DAY')
+  self.assertEqual(driver.fx_order_quantity(1.12),89285)
+ def test_changed_original_sizing_is_rejected_before_adapter_binding(self):
+  driver=self.original()
+  f.require_original_fx_sizing(driver)
+  for field in ('FX_TARGET_NOTIONAL_USD','FX_MAX_QUANTITY'):
+   before=getattr(driver,field)
+   setattr(driver,field,25000.0)
+   with self.subTest(field=field),self.assertRaisesRegex(f.ChurnError,'FX_ORIGINAL_SIZING_DRIFT'):
+    f.require_original_fx_sizing(driver)
+   setattr(driver,field,before)
+
+
 class PolicyTests(unittest.TestCase):
  def test_two_distinct_fresh_signals_can_enter(self):self.assertTrue(f.admission(confirmed(),state()['last_decision'],NOW)['allowed'])
  def test_one_signal_cannot_enter(self):
@@ -226,6 +251,49 @@ class ResumeActivationTests(unittest.TestCase):
       'open_attempts':[{'command_id':'same','at_ms':NOW-20000}]})
   newer=f.resume_activation_control(c,seed,'a'*64)
   self.assertEqual(newer['open_attempts'],[{'command_id':'same','at_ms':NOW-10000}])
+
+
+class ExactLegacyProfileMigrationTests(unittest.TestCase):
+ LEGACY='d301c65581eff77c3d217b61cd599612d43b06c382d8087ae0a55771a34f68a1'
+ def previous(self):
+  c=f.fresh_control({'period_sha256':'a'*64,'activation_ms':NOW-600000,
+      'last_exit_ms':NOW-500000,
+      'open_attempts':[{'command_id':'old-prepared','at_ms':NOW-250000}]})
+  c.update(profile_sha256=self.LEGACY,confirmations=2,
+      signal_side='BUY',last_seen_decisions=912)
+  return c
+ def test_exact_old_profile_reseeds_without_importing_prior_entry_approval(self):
+  latest={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,
+      'open_attempts':[{'command_id':'old-prepared','at_ms':NOW-180000},
+                       {'command_id':'new-broker','at_ms':NOW-60000}]}
+  c=f.resume_activation_control(self.previous(),latest,'a'*64)
+  self.assertEqual(c['profile_sha256'],f.digest(f.PROFILE))
+  self.assertNotEqual(c['profile_sha256'],self.LEGACY)
+  self.assertEqual(c['activation_ms'],NOW)
+  self.assertEqual(c['open_attempts'],
+      [{'command_id':'old-prepared','at_ms':NOW-180000},
+       {'command_id':'new-broker','at_ms':NOW-60000}])
+  self.assertEqual(c['last_exit_ms'],NOW)
+  self.assertEqual(c['confirmations'],0)
+  self.assertIsNone(c['signal_side'])
+  self.assertEqual(c['last_seen_decisions'],-1)
+  self.assertIn('AFTER_FLAT_COOLDOWN',
+      f.admission(c,state()['last_decision'],NOW)['reasons'])
+ def test_old_profile_requires_new_activation_and_exact_period(self):
+  old=self.previous()
+  for newer in (None,old['activation_ms']):
+   seed={'period_sha256':'a'*64,'activation_ms':newer,
+       'last_exit_ms':NOW,'open_attempts':[]}
+   with self.subTest(newer=newer),self.assertRaisesRegex(
+       f.ChurnError,'FX_LEGACY_SIZING_REQUIRES_NEW_ACTIVATION'):
+    f.resume_activation_control(old,seed,'a'*64)
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,
+       'last_exit_ms':NOW,'open_attempts':[]}
+  with self.assertRaisesRegex(f.ChurnError,'FX_CONTROL_SCOPE'):
+   f.resume_activation_control(old,seed,'b'*64)
+  old['profile_sha256']='0'*64
+  with self.assertRaisesRegex(f.ChurnError,'FX_CONTROL_SCOPE'):
+   f.resume_activation_control(old,seed,'a'*64)
 
 
 class BaseIntegrationTests(unittest.TestCase):
