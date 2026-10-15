@@ -10,33 +10,54 @@ from .shadow_source import read_source
 from .dataset import rows_for_training
 
 
-def read_quotes(config,now_ms):
+def read_quotes(config,now_ms,*,recent_only=False):
+ """Read verified quote sources. The default always retains full history.
+
+ Recent-only is confined to prospective *input selection*, never training
+ outcomes or historical qualification. Each archived byte is still SHA256
+ verified against the complete checkpoint ledger by inventory(). Archived
+ sources were chain-validated before sealing; live/unsealed sources are
+ fully chain-validated on every read. No stale source is made fresh.
+ """
  if sha_file(Path(config['period_path']))!=config['period_sha256']:raise ContractError('RESIDENT_PERIOD_CHANGED')
  from .source_archive import inventory
  feed_paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
  sealed,pages=inventory(config,feed_paths)
- # Historical probes are independent signed training sources. They cannot
- # rewrite the real-time feed or retroactively validate a model.
  extra=[Path(x) for x in config.get('completed_history_sources',[])]
  if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
  paths=list(dict.fromkeys(feed_paths+extra))
  if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
+ # Historical probes are research sources, not a real-time shortcut.
+ if extra:recent_only=False
  quotes={};prefixes=list(pages)
- for i,path in enumerate(paths):
+ def include(i):
+  path=paths[i]
   header,records,prefix=read_source(path)
   if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
   if i<len(sealed):
    if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
-  else:
-   prefixes.append(prefix)
+  else:prefixes.append(prefix)
   for q in records:
    if q['known_at_ms']>now_ms:continue
    old=quotes.get(q['t'])
    if old and (Decimal(str(old['bid']))!=Decimal(str(q['bid'])) or Decimal(str(old['ask']))!=Decimal(str(q['ask']))):
     raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
    if old is None or q['known_at_ms']<old['known_at_ms']:quotes[q['t']]=q
- ordered=[{**quotes[t],"bid":float(quotes[t]["bid"]),"ask":float(quotes[t]["ask"])} for t in sorted(quotes)]
- return ordered,prefixes
+ def ordered():
+  return [{**quotes[t],'bid':float(quotes[t]['bid']),'ask':float(quotes[t]['ask'])} for t in sorted(quotes)]
+ if recent_only:
+  # Unsealed tail has no archive pin, so validate every byte and chain.
+  for i in range(len(sealed),len(paths)):include(i)
+  # A just-sealed tail may contain the only usable causal input. Extend
+  # backwards only until the original 24-point selector is complete or
+  # reaches a real gap; never interpolate or cross an archived gap.
+  for i in range(len(sealed)-1,-1,-1):
+   history,reset=contiguous_history(ordered(),now_ms)
+   if len(history)>=24 or reset:break
+   include(i)
+ else:
+  for i in range(len(paths)):include(i)
+ return ordered(),prefixes
 
 
 def collect(config,now_ms):
