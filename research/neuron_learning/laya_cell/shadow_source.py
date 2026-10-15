@@ -43,8 +43,8 @@ def valid_quote(q,received,instrument,*,legacy_historical_expiry=False):
         raise ValueError('QUOTE_AUTHORITY')
     t=q.get('observed_at_ms');expiry=q.get('stale_after_ms')
     if (type(t)is not int or type(expiry)is not int or not 0<t<=received
-        or received>min(t+5000,expiry)
-        or (received==min(t+5000,expiry) and not legacy_historical_expiry)):
+        or not (received<min(t+5000,expiry) or
+                (legacy_historical_expiry and received==min(t+5000,expiry)))):
         raise ValueError('QUOTE_STALE_OR_FUTURE')
     if any(isinstance(q.get(k),bool) for k in ('bid','ask')):raise ValueError('QUOTE_NUMERIC')
     try:bid=Decimal(str(q['bid']));ask=Decimal(str(q['ask']))
