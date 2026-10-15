@@ -31,8 +31,9 @@ units are hardcoded; caller cannot choose arbitrary units.
 
 The installer:
 
-- Requires the current user (non-root), the existing PAPER/4002 profile, and
-  all eight named units already active.
+- Requires the current user (non-root), the existing owner-private PAPER/4002
+  profile (no symlink or duplicate broker identity fields), and all eight
+  named units already active.
 - Publishes one identical user-owned `95-risk-stop-continuity.conf` drop-in
   for each unit. Refuses symlinked/conflicting paths and never overwrites a
   modified existing drop-in.
@@ -41,8 +42,13 @@ The installer:
 - Re-reads effective `RefuseManualStop=yes` and empty `PartOf` on every
   unit, checks original PID and InvocationID are unchanged, and preserves
   an immutable local activation receipt.
-- Rolls back only its newly created drop-ins if effective verification
-  fails; it never attempts a service stop during rollback.
+- The private write-once activation receipt is part of the **same install
+  transaction**: an ENOSPC/fsync failure must restore the original stop
+  policy, rather than leave a shield running with no audit identity. Partial
+  drop-ins and partial receipts are removed on failed writes.
+- Rolls back only its newly created exact-byte drop-ins if effective
+  verification or receipt persistence fails; it never attempts a service
+  stop during rollback. Pre-existing verified drop-ins remain unchanged.
 
 This means **direct `systemctl --user stop` of a shielded unit is rejected**.
 A manual stop of `heptatrader.target` also no longer propagates to the

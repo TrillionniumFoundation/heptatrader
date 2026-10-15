@@ -37,12 +37,22 @@ class StopFenceError(RuntimeError):
 
 
 def check_paper_config(path: Path) -> None:
-    raw = path.read_text(encoding="utf-8")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        file = os.fstat(fd)
+        if (not stat.S_ISREG(file.st_mode) or file.st_uid != os.geteuid() or
+                file.st_mode & 0o077 or file.st_size > 65536):
+            raise StopFenceError("PAPER_PROFILE_NOT_PRIVATE")
+        raw = os.read(fd, file.st_size).decode("utf-8",errors="strict")
+    finally:
+        os.close(fd)
     values = {}
     for line in raw.splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             if key in ("HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_PORT"):
+                if key in values:
+                    raise StopFenceError("PAPER_PROFILE_DUPLICATE_FIELD")
                 values[key] = value.strip()
     if values != {"HEPTA_IB_EXECUTION_MODE": "PAPER",
                   "HEPTA_IB_PAPER_PORT": "4002"}:
@@ -105,15 +115,27 @@ def private_directory(path: Path, uid: int) -> None:
 
 
 def write_new(path: Path, data: bytes) -> None:
+    """Create private bytes durably, or leave no partial installer-created file."""
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
                  os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        # O_EXCL established exclusive ownership of this newly created path.
+        # A failed flush is NOT a valid installed stop policy or audit receipt.
+        path.unlink(missing_ok=True)
+        raise
 
 
-def install(home: Path) -> dict:
+def install(home: Path, *, persist_receipt=None) -> dict:
     if os.geteuid() == 0:
         raise StopFenceError("NON_ROOT_USER_SYSTEMD_ONLY")
     check_paper_config(home / ".config/heptatrader/execution.env")
@@ -145,36 +167,44 @@ def install(home: Path) -> dict:
                        check=True, timeout=30)
         after = {name: show_unit(name) for name in RISK_UNITS}
         check_state(before, after, required=True)
-    except Exception:
-        # Never stop/restart a live unit on rollback. Remove only our own files.
+        report = {
+            "schema": "heptatrader.paper-stop-request-fence.v1",
+            "state": "MANUAL_AND_TARGET_STOP_REQUEST_SHIELDED_ONLY",
+            "critical_limit": "NOT_INDEPENDENT_BROKER_PROTECTIVE_ORDER",
+            "at_ms": int(time.time() * 1000),
+            "mode": "PAPER",
+            "installer_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "dropin_text_sha256": hashlib.sha256(GUARD_TEXT.encode()).hexdigest(),
+            "risk_units": list(RISK_UNITS),
+            "unit_dropins": paths,
+            "install_status": original_states,
+            "all_effective_refuse_manual_stop": True,
+            "all_effective_part_of_target_cleared": True,
+            "original_unit_invocations_preserved": True,
+            "protected_services_restarted": 0,
+            "broker_orders_sent": 0,
+            "trade_authority_changed": False,
+            "still_unprotected_from": [
+                "HOST_SHUTDOWN", "MANAGER_PROCESS_TERMINATION",
+                "DEPENDENCY_FAILURE", "SIGKILL", "NETWORK_OR_BROKER_FAILURE",
+                "BROKER_NATIVE_STOP_ABSENT",
+            ],
+        }
+        # Include the private activation receipt in the SAME rollback scope.
+        # A successful daemon-reload without a durable receipt is not PASS.
+        if persist_receipt is not None:
+            persist_receipt(report)
+    except BaseException:
+        # Never stop/restart risk units. Remove only exact bytes created by
+        # this attempt; refuse to delete another operator's changed drop-in.
         for path in additions:
-            path.unlink(missing_ok=True)
+            if path.is_file() and not path.is_symlink() and path.read_bytes()==GUARD_TEXT.encode():
+                path.unlink()
         subprocess.run(["systemctl", "--user", "daemon-reload"],
                        check=False, timeout=30)
         raise
-    return {
-        "schema": "heptatrader.paper-stop-request-fence.v1",
-        "state": "MANUAL_AND_TARGET_STOP_REQUEST_SHIELDED_ONLY",
-        "critical_limit": "NOT_INDEPENDENT_BROKER_PROTECTIVE_ORDER",
-        "at_ms": int(time.time() * 1000),
-        "mode": "PAPER",
-        "installer_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "dropin_text_sha256": hashlib.sha256(GUARD_TEXT.encode()).hexdigest(),
-        "risk_units": list(RISK_UNITS),
-        "unit_dropins": paths,
-        "install_status": original_states,
-        "all_effective_refuse_manual_stop": True,
-        "all_effective_part_of_target_cleared": True,
-        "original_unit_invocations_preserved": True,
-        "protected_services_restarted": 0,
-        "broker_orders_sent": 0,
-        "trade_authority_changed": False,
-        "still_unprotected_from": [
-            "HOST_SHUTDOWN", "MANAGER_PROCESS_TERMINATION",
-            "DEPENDENCY_FAILURE", "SIGKILL", "NETWORK_OR_BROKER_FAILURE",
-            "BROKER_NATIVE_STOP_ABSENT",
-        ],
-    }
+    return report
+
 
 
 def main() -> None:
@@ -189,10 +219,12 @@ def main() -> None:
     root = args.evidence_dir
     private_directory(root.parent, os.geteuid())
     private_directory(root, os.geteuid())
-    report = install(Path.home())
     filename = root / ("stop-shield-" + str(time.time_ns()) + ".json")
-    raw = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
-    write_new(filename, raw)
+    def persist_receipt(report):
+        raw = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
+        write_new(filename, raw)
+    report = install(Path.home(), persist_receipt=persist_receipt)
+    raw = filename.read_bytes()
     print(json.dumps({
         "state": report["state"],
         "guarded_units": len(RISK_UNITS),

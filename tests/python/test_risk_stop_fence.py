@@ -19,6 +19,7 @@ def fixture_home(path: Path):
     environment.write_text(
         "HEPTA_IB_EXECUTION_MODE=PAPER\nHEPTA_IB_PAPER_PORT=4002\n"
     )
+    environment.chmod(0o600)
     return home
 
 
@@ -46,8 +47,27 @@ class RiskStopFenceContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "execution.env"
             p.write_text("HEPTA_IB_EXECUTION_MODE=LIVE\nHEPTA_IB_PAPER_PORT=4001\n")
+            p.chmod(0o600)
             with self.assertRaisesRegex(fence.StopFenceError, "ONLY_EXISTING_PAPER"):
                 fence.check_paper_config(p)
+
+    def test_profile_duplicate_or_exposed_permissions_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)/"execution.env"
+            p.write_text("HEPTA_IB_EXECUTION_MODE=PAPER\nHEPTA_IB_PAPER_PORT=4002\n"
+                         "HEPTA_IB_EXECUTION_MODE=LIVE\n")
+            p.chmod(0o600)
+            with self.assertRaisesRegex(fence.StopFenceError,"PAPER_PROFILE_DUPLICATE_FIELD"):
+                fence.check_paper_config(p)
+            p.write_text("HEPTA_IB_EXECUTION_MODE=PAPER\nHEPTA_IB_PAPER_PORT=4002\n")
+            p.chmod(0o640)
+            with self.assertRaisesRegex(fence.StopFenceError,"PAPER_PROFILE_NOT_PRIVATE"):
+                fence.check_paper_config(p)
+            p.chmod(0o600)
+            alias=Path(td)/"execution-link.env"
+            alias.symlink_to(p)
+            with self.assertRaises(OSError):
+                fence.check_paper_config(alias)
 
     def test_show_strict_identity(self):
         expected = status(Path("/nowhere"), "heptatrader-paper-driver.service")
@@ -99,6 +119,31 @@ class RiskStopFenceContract(unittest.TestCase):
                 self.assertEqual(set(second["install_status"].values()), {"ALREADY_PRESENT"})
             self.assertTrue(all(command == ("systemctl", "--user", "daemon-reload")
                                 for command in calls))
+
+    def test_partial_guard_fsync_failure_cannot_leave_blocking_dropin(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/fence.GUARD_NAME
+            with patch.object(fence.os,'fsync',side_effect=OSError('INJECTED_EIO')):
+                with self.assertRaisesRegex(OSError,'INJECTED_EIO'):
+                    fence.write_new(path,fence.GUARD_TEXT.encode())
+            self.assertFalse(path.exists(), 'truncated stop shield survived failed fsync')
+
+    def test_receipt_failure_restores_original_stop_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            home=fixture_home(Path(td))
+            commands=[]
+            def fake_run(argv,**_):
+                commands.append(tuple(argv))
+                return subprocess.CompletedProcess(argv,0)
+            with patch.object(fence,'show_unit',side_effect=lambda name:status(home,name)), \
+                 patch.object(fence.subprocess,'run',side_effect=fake_run), \
+                 patch.object(fence.os,'geteuid',return_value=__import__('os').geteuid()):
+                with self.assertRaisesRegex(OSError,'INJECTED_RECEIPT_IO'):
+                    fence.install(home,persist_receipt=lambda _: (_ for _ in ()).throw(OSError('INJECTED_RECEIPT_IO')))
+            for name in fence.RISK_UNITS:
+                path=home/'.config/systemd/user'/(name+'.d')/fence.GUARD_NAME
+                self.assertFalse(path.exists(),'installation without receipt changed stop policy')
+            self.assertGreaterEqual(commands.count(('systemctl','--user','daemon-reload')),2)
 
     def test_conflicting_dropin_aborts_without_partial_install(self):
         with tempfile.TemporaryDirectory() as td:
