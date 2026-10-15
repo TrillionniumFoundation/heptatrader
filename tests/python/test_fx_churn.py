@@ -3,7 +3,7 @@ import copy,importlib.util,json,os,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'scripts'))
 import hepta_fx_churn as f
-from install_fx_churn import collect_original_oms_open_attempts
+from install_fx_churn import collect_original_oms_open_attempts, release_slot_name, flat
 NOW=1800000000000
 
 def seed():return {'period_sha256':'a'*64,'last_exit_ms':NOW-3600000,'open_attempts':[]}
@@ -55,6 +55,32 @@ class PolicyTests(unittest.TestCase):
   with self.assertRaises(f.ChurnError):f.admission(c,state()['last_decision'],NOW)
  def test_serialized_restart_keeps_cooldown(self):
   c=confirmed();c['last_exit_ms']=NOW-1;c=json.loads(json.dumps(c));self.assertFalse(f.admission(c,state()['last_decision'],NOW)['allowed'])
+
+class InstallerTwoPhaseTests(unittest.TestCase):
+ def test_stage_and_later_activation_use_independent_immutable_slots(self):
+  head='a'*40
+  staged=release_slot_name(head,NOW,False)
+  first=release_slot_name(head,NOW,True)
+  second=release_slot_name(head,NOW+1,True)
+  self.assertEqual(staged,head)
+  self.assertNotEqual(staged,first)
+  self.assertNotEqual(first,second)
+  self.assertTrue(first.startswith(head+'-active-'))
+ def test_bad_source_or_clock_refused(self):
+  for h,t in [('wrong',NOW),('a'*40,0),('a'*40,True)]:
+   with self.subTest(h=h,t=t):
+    with self.assertRaises(ValueError):release_slot_name(h,t,True)
+ def test_activation_is_flat_only_and_never_forces_existing_open(self):
+  state={'position':0.0,'pending':None,'halt_new_entries':False}
+  self.assertTrue(flat(state))
+  for x in (25000.0,-25000.0,89138.0,-89138.0):
+   state['position']=x
+   self.assertFalse(flat(state))
+  state['position']=0.0;state['pending']={'command_id':'original'}
+  self.assertFalse(flat(state))
+  state['pending']=None;state['lease_uncertain']=True
+  self.assertFalse(flat(state))
+
 
 class InstallerOmsSeedTests(unittest.TestCase):
  def record(self,event='place_sent',ts=NOW,command='original',instrument='EUR.USD',domain='PAPER'):
