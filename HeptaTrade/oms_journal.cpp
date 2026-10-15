@@ -494,6 +494,7 @@ bool OmsJournal::IsCriticalEventType(const std::string& eventType)
            eventType == "execution_command_resolved" ||
            eventType == "cancel_command_resolved" ||
            eventType == "broker_order_status" ||
+           eventType == "broker_open_order_bracket" ||
            eventType == "broker_order_accepted" ||
            eventType == "broker_error" ||
            eventType == "broker_execution" ||
@@ -1305,6 +1306,21 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
         oss << ",\"broker_econ_realized_pnl\":" << JsonNumber(economic.realizedPnl);
         oss << ",\"broker_econ_realized_pnl_known\":" << economic.realizedPnlKnown;
     }
+    if (evt.brokerBracket.version != 0) {
+        const auto& bracket = evt.brokerBracket;
+        oss << ",\"broker_bracket_version\":" << bracket.version;
+        oss << ",\"broker_bracket_contract_id\":" << bracket.contractId;
+        oss << ",\"broker_bracket_parent_order_id\":" << bracket.parentOrderId;
+        oss << ",\"broker_bracket_permanent_order_id\":" << bracket.permanentOrderId;
+        oss << ",\"broker_bracket_transmit\":" << bracket.transmit;
+        oss << ",\"broker_bracket_oca_type\":" << bracket.ocaType;
+        oss << ",\"broker_bracket_trigger_method\":" << bracket.triggerMethod;
+        oss << ",\"broker_bracket_order_ref\":\"" << EscapeJson(bracket.orderRef) << "\"";
+        oss << ",\"broker_bracket_oca_group\":\"" << EscapeJson(bracket.ocaGroup) << "\"";
+        oss << ",\"broker_bracket_tif\":\"" << EscapeJson(bracket.timeInForce) << "\"";
+        oss << ",\"broker_bracket_quantity\":" << JsonNumber(bracket.quantity);
+        oss << ",\"broker_bracket_stop_aux_price\":" << JsonNumber(bracket.stopAuxPrice);
+    }
     oss << "}";
     return oss.str();
 }
@@ -1380,6 +1396,53 @@ bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
         if((economic.kind=="EXECUTION" && out.eventType!="broker_execution") ||
            (economic.kind=="COMMISSION" && out.eventType!="broker_commission"))return false;
     }
+    // Optional v4 group: incomplete/malformed native SDK attributes cannot
+    // silently turn into positive protection evidence during OMS recovery.
+    const char* bracketNames[] = {
+        "broker_bracket_version", "broker_bracket_contract_id",
+        "broker_bracket_parent_order_id", "broker_bracket_permanent_order_id",
+        "broker_bracket_transmit", "broker_bracket_oca_type",
+        "broker_bracket_trigger_method", "broker_bracket_order_ref",
+        "broker_bracket_oca_group", "broker_bracket_tif",
+        "broker_bracket_quantity", "broker_bracket_stop_aux_price"
+    };
+    bool hasBracketFields=false;
+    for (const auto& field : fields)
+        if (field.first.compare(0,15,"broker_bracket_")==0) {
+            bool known=false;
+            for (const char* name : bracketNames)
+                if (field.first==name) known=true;
+            if (!known) return false;
+            hasBracketFields=true;
+        }
+    if (hasBracketFields) {
+        for (const char* name : bracketNames)
+            if (!fields.count(name)) return false;
+        auto& b=out.brokerBracket;
+        if (!ReadInteger(fields,"broker_bracket_version",b.version) ||
+            !ReadInteger(fields,"broker_bracket_contract_id",b.contractId) ||
+            !ReadInteger(fields,"broker_bracket_parent_order_id",b.parentOrderId) ||
+            !ReadInteger(fields,"broker_bracket_permanent_order_id",b.permanentOrderId) ||
+            !ReadInteger(fields,"broker_bracket_transmit",b.transmit) ||
+            !ReadInteger(fields,"broker_bracket_oca_type",b.ocaType) ||
+            !ReadInteger(fields,"broker_bracket_trigger_method",b.triggerMethod) ||
+            !ReadString(fields,"broker_bracket_order_ref",b.orderRef) ||
+            !ReadString(fields,"broker_bracket_oca_group",b.ocaGroup) ||
+            !ReadString(fields,"broker_bracket_tif",b.timeInForce) ||
+            !ReadDouble(fields,"broker_bracket_quantity",b.quantity) ||
+            !ReadDouble(fields,"broker_bracket_stop_aux_price",b.stopAuxPrice))
+            return false;
+        if (!b.ValidShape() ||
+            out.eventType!="broker_open_order_bracket" ||
+            out.brokerCallbackType!="openOrder" ||
+            out.status!="Submitted" ||
+            out.orderId <= 0 || out.brokerClientId <= 0 ||
+            out.brokerConnectionEpoch == 0 ||
+            out.account.compare(0,2,"DU") != 0 ||
+            out.source.compare(0,6,"agent:") != 0 ||
+            out.qty != b.quantity || out.price != b.stopAuxPrice)
+            return false;
+    } else if (out.eventType=="broker_open_order_bracket") return false;
     if(out.eventType=="broker_commission" && (!hasEconomicFields || out.orderId!=-1 ||
        !out.reqId.empty() || !out.clientReqId.empty() || !out.account.empty() || !out.traceId.empty() ||
        !out.instrument.empty() || !out.venueCorrelationId.empty() || out.brokerClientId!=-1 ||

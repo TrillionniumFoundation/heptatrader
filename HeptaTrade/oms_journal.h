@@ -4,6 +4,7 @@
 #include "execution/ib_economic_evidence.h"
 
 #include <cstdint>
+#include <cmath>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -12,6 +13,51 @@
 #include <deque>
 #include <thread>
 #include <condition_variable>
+
+// Optional additive v4 native STOP child witness. Present only on an
+// exact owner-bound, complete SDK openOrder callback. The witness is NOT a
+// working protective guarantee without independently complete broker orders,
+// exact physical position and no-new-entry fence.
+struct IbBracketCallbackEvidence {
+    int version = 0;
+    long contractId = 0;
+    long parentOrderId = 0;
+    long permanentOrderId = 0;
+    int transmit = 0;
+    int ocaType = 0;
+    int triggerMethod = 0;
+    std::string orderRef;
+    std::string ocaGroup;
+    std::string timeInForce;
+    double quantity = 0.0;
+    double stopAuxPrice = 0.0;
+
+    bool ValidShape() const {
+        static const std::string prefix = "HEPTA-STOP-";
+        if (version != 1 || contractId != 12087792 ||
+            parentOrderId <= 0 || permanentOrderId <= 0 ||
+            transmit != 1 || ocaType != 1 || triggerMethod != 0 ||
+            timeInForce != "GTC" ||
+            orderRef.compare(0, prefix.size(), prefix) != 0 ||
+            orderRef.size() <= prefix.size() || orderRef.size() > 45 ||
+            ocaGroup != "HEPTA-FX-OCA-" + orderRef.substr(prefix.size()) ||
+            !std::isfinite(quantity) || quantity <= 0 || quantity > 100000 ||
+            std::floor(quantity) != quantity ||
+            !std::isfinite(stopAuxPrice) || stopAuxPrice <= 0) return false;
+        // This legacy research-only reference is intentionally bounded to
+        // the IBKR 45-byte orderRef budget. A future production sender must
+        // instead use the existing exact H1 venue correlation codec.
+        for (std::size_t i=prefix.size(); i<orderRef.size(); ++i) {
+            const char c=orderRef[i];
+            if (!((c>='a'&&c<='z') || (c>='A'&&c<='Z') ||
+                  (c>='0'&&c<='9') || c=='-' || c=='_' || c=='.'))
+                return false;
+        }
+        const double ticks = stopAuxPrice / 0.00005;
+        return std::isfinite(ticks) &&
+            std::fabs(ticks-std::round(ticks)) < 1.e-7;
+    }
+};
 
 struct OmsJournalEvent {
     // v4 schema. Keep old keys/fields for backward compatibility.
@@ -55,6 +101,7 @@ struct OmsJournalEvent {
     double brokerRemainingQuantity = 0.0;
     double brokerMarketCapPrice = 0.0;
     IbEconomicEvidence brokerEconomics;
+    IbBracketCallbackEvidence brokerBracket;
 
     std::string rawLine;
 };

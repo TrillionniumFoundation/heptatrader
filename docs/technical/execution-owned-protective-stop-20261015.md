@@ -272,3 +272,61 @@ server-held stop lifecycle, guaranteed stop triggering, or overfill prevention.
 restart-proof parent/child broker send, OCA-safe ordinary exit and real IBKR
 PAPER callbacks across order partials/unknown submission/driver death.
 No existing exposed FX trade was amended in this work. Issue #331 is OPEN.
+
+## 2026-10-15: SDK callback provenance and additive OMS v4 recovery
+
+The existing IB C++ SDK wrapper previously reduced `openOrder` and
+`completedOrder` to `IBEvent.order`, dropping the native `parentId`,
+`permId`, `transmit`, `ocaGroup`, `ocaType`, `triggerMethod`, `tif`
+and exact `Contract.conId` fields. These are required to distinguish the
+original protective child from a similar-priced or foreign-client order.
+
+This iteration adds an optional `IBBrokerNativeOrderWitness` to `IBEvent`.
+Actual SDK `openOrder` and `completedOrder` callbacks capture those
+original attributes **without normalizing or inferring them**. The ordinary
+`orderStatus` callback carries only the reported permanent ID, and never
+sets `present=true`; it cannot manufacture a complete stop callback.
+
+The strict `ExactWorkingStopOpenOrder` matcher requires an active native
+`openOrder(Submitted)`, correct Broker account and client, exact conId,
+parent and child order IDs, permanent ID, original reference, OCA type/group,
+stop action, original quantity and price, fresh broker epoch and SDK callback
+ingress provenance. An ordinary MKT parent, completed order, lone orderStatus,
+untransmitted child, PreSubmitted order, changed account, old epoch or
+foreign OCA is **not** positive protective evidence.
+
+An additive, optional OMS v4 `broker_open_order_bracket` event stores the
+native parent/permanent IDs, OCA, transmit, trigger method, stop price,
+contract ID, quantity and orderRef. It is registered as a *critical durable*
+event, is emitted only for an owner-bound candidate, and round-trips through
+the **existing** OmsJournal writer/parser without changing the schema of
+legacy events. The parser rejects partial, unknown, malformed, off-grid or
+PreSubmitted positive records. The production Broker callback observer uses
+one shared pure projector also exercised by the OMS regression tests. Note:
+this optional event is a **broker callback candidate**, not an independent
+account-wide active-order/position attestation or a maintenance permit.
+
+### Actual validation
+
+The SDK-enabled C++ build of `hepta_ib_executiond` succeeds. Ten targeted
+native regression tests passed, covering the complete Coordinator,
+pre-existing OMS v4 schema, OMS fsync durability, new native OpenOrder
+projection, native stop, IB PAPER profile, post-fill reconciliation, live
+terminal recovery and the full IB runtime recovery test (44+ seconds).
+All native callbacks and OMS replay tests are isolated: no real Broker orders,
+service restarts, model promotion or production file replacement were made.
+
+### Identified hard blocker before actual protective send
+
+The resident `IbVenueCorrelationCodec` requires a **45-character H1**
+base64url encoding of a service-owned `hepta-v1-sha256` correlation for
+real IB orderRef. The current experimental `HEPTA-PARENT-` / `HEPTA-STOP-`
+refs from this Draft PR are not recognized by that live-owner correlation
+codec and may exceed IB's 45-byte orderRef limit. The optional legacy
+research-only OMS bracket witness now rejects refs longer than 45 bytes,
+but **this does not make a HEPTA-STOP ref eligible for production.** A future
+Execution-owned group must reserve and durably bind distinct valid H1 parent
+and child correlations to the same original command and account, and it
+must update the Broker owner projector and replay accordingly, before it
+can call the existing native IB sender. The ongoing unprotected risk is
+tracked in Issue #331; never claim this Draft as a live protective stop.
