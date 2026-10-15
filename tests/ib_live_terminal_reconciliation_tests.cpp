@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -123,11 +124,13 @@ public:
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
-    Fixture(bool finishBootstrap=true, bool cryptoScope=false, bool cashScope=false):broker(new Broker()),adapter(
+    Fixture(bool finishBootstrap=true, bool cryptoScope=false, bool cashScope=false,
+            const std::string& observabilityPath=std::string()):broker(new Broker()),adapter(
         std::unique_ptr<IIBApiWrapper>(broker), [this]() {
             broker=new Broker();return std::unique_ptr<IIBApiWrapper>(broker);
         }) {
         HeptaIBConfig cfg;cfg.account="DU123";cfg.clientId=73;cfg.readOnly=false;
+        cfg.observabilityLogPath=observabilityPath;
         cfg.risk.enableOrderSubmission=true;cfg.risk.maxDailyOrders=100;
         cfg.risk.duplicateOrderWindowSec=0;cfg.risk.maxPriceDeviationBps=0;
         if(cryptoScope) {
@@ -185,6 +188,163 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh() {
+    // Regression: an already invalid cash generation has no authoritative
+    // cash map. Repeating a numeric subscription value used to reset the
+    // positions-refresh pending flag and discard its real PositionEnd.
+    Fixture f(true,false,true);
+    auto account=[&](const std::string& cash) {
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value=cash;f.Push(value);
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    account("-75000");
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto initial=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(initial.barrierComplete && initial.risk.coherentRefreshComplete);
+
+    auto monitor=f.Event(IBEventType::AccountValue);
+    monitor.key="CashBalance:EUR";monitor.value="-75001";
+    f.Push(monitor);
+    const auto stale=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!stale.barrierComplete && !stale.risk.accountComplete &&
+           !stale.risk.fxCashComplete && !stale.risk.positionsComplete);
+    assert(stale.risk.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+
+    // A new positions read MUST still be allowed to reach its real end
+    // boundary even if stale monitor values continue being delivered.
+    assert(f.adapter.ReqPositions());
+    const auto partial=f.adapter.GetAuthoritativeRiskSnapshot();
+    assert(!partial.positionsComplete);
+    monitor.value="-75002";f.Push(monitor);
+    monitor.value="-75000";f.Push(monitor);
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto positionOnly=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(positionOnly.risk.positionsComplete);
+    assert(!positionOnly.risk.accountComplete &&
+           !positionOnly.risk.fxCashComplete &&
+           !positionOnly.barrierComplete);
+    assert(positionOnly.risk.positionsGeneration>initial.risk.positionsGeneration);
+
+    // A monitor reversion or position end cannot grant order authority.
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long id=-1;
+    assert(!f.adapter.PlaceOrderCorrelated(c,o,
+        "hepta-v1-sha256:"+std::string(64,'e'),&id));
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    // Only a new two-leg account+positions request/end with the correctly
+    // attested current value may establish internal adapter completeness.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    account("-75000");
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto renewed=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(renewed.barrierComplete && renewed.risk.coherentRefreshComplete);
+    assert(renewed.risk.accountGeneration>initial.risk.accountGeneration);
+    assert(renewed.risk.positionsGeneration>positionOnly.risk.positionsGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+void TestCashMonitorRedactedGenerationObservation() {
+    // Provenance-only log: no callback cash values, and no mutation or orders.
+    const char* env=std::getenv("TMPDIR");
+    const std::string root=env && *env ? env : "/tmp";
+    const std::string pattern=root+"/hepta-cash-observation-XXXXXX";
+    std::vector<char> temp(pattern.begin(),pattern.end());
+    temp.push_back('\0');
+    const int fd=mkstemp(temp.data());
+    assert(fd>=0);close(fd);
+    {
+        Fixture f(true,false,true,temp.data());
+        assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value="-75000";f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+        assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+        value.id=98501;value.value="-75001";f.Push(value);
+        assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+        // Duplicate monitor updates are still rejected, but cannot generate
+        // a new invalidation receipt without a fresh coherent risk generation.
+        f.Push(value);f.Push(value);
+        assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+    std::ifstream input(temp.data());
+    assert(input.good());
+    std::string line;
+    int found=0;
+    while(std::getline(input,line)) {
+        if (line.find("\"event\":\"risk.fx_cash_monitor_invalidated\"") ==
+            std::string::npos) continue;
+        ++found;
+        assert(line.find("\"subscription_request_id\":98501")!=std::string::npos);
+        assert(line.find("\"previous_cash_checkpoint_present\":true")!=std::string::npos);
+        assert(line.find("\"account_complete_before\":true")!=std::string::npos);
+        assert(line.find("-75001")==std::string::npos);
+        assert(line.find("-75000")==std::string::npos);
+    }
+    assert(found==1);
+    std::remove(temp.data());
+}
+void TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration() {
+    // Synthetic callbacks only. No real broker, place or cancel request.
+    Fixture f(true,false,true);
+    auto pushAccountAndPositions=[&](const std::string& cash) {
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value=cash;f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    pushAccountAndPositions("-75000");
+    const auto first=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(first.barrierComplete && first.risk.coherentRefreshComplete);
+    auto monitor=f.Event(IBEventType::AccountValue);
+    monitor.key="CashBalance:EUR";monitor.value="-75000";
+    f.Push(monitor);
+    assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    monitor.value="-75001";f.Push(monitor);
+    const auto invalidated=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!invalidated.barrierComplete);
+    assert(!invalidated.risk.complete);
+    assert(invalidated.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    // A standalone broker monitor mismatch must refuse an actual risk-increase
+    // attempt in the local fake broker, independently of telemetry's fixed
+    // authorization_effect=NONE field. No original permission is invented.
+    IBContractLite blockedContract;blockedContract.symbol="EUR";
+    blockedContract.secType="CASH";blockedContract.exchange="IDEALPRO";
+    blockedContract.currency="USD";
+    IBOrderLite blockedOrder;blockedOrder.action="BUY";
+    blockedOrder.orderType="LMT";blockedOrder.lmtPrice=1.18;
+    blockedOrder.totalQuantity=1;
+    long blockedId=-1;
+    assert(!f.adapter.PlaceOrderCorrelated(blockedContract,blockedOrder,
+        "hepta-v1-sha256:"+std::string(64,'d'),&blockedId));
+    assert(f.broker->places==0);
+    monitor.value="-75000";f.Push(monitor);
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    // A genuinely new matched request/end boundary is required. An old
+    // subscription push can never reauthorize an unchanged risk snapshot.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    pushAccountAndPositions("-75000");
+    const auto renewed=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(renewed.barrierComplete && renewed.risk.complete);
+    assert(renewed.risk.accountGeneration>first.risk.accountGeneration);
+    assert(renewed.risk.positionsGeneration>first.risk.positionsGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
 void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     // All observations below are synthetic. No broker connection or sends.
     for(int invalidation=0;invalidation<6;++invalidation) {
@@ -674,8 +834,14 @@ void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     f.Push(f.Execution());f.Push(f.Status());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().generation==live.generation);
 
-    char path[]="/tmp/hepta-live-cancel-XXXXXX";const int fd=mkstemp(path);assert(fd>=0);close(fd);
-    OmsJournal journal;assert(journal.Init(path));OmsJournalEvent event;
+    const char* temporaryDirectory=std::getenv("TMPDIR");
+    const std::string tempRoot=temporaryDirectory && *temporaryDirectory ?
+        temporaryDirectory : "/tmp";
+    const std::string pattern=tempRoot+"/hepta-live-cancel-XXXXXX";
+    std::vector<char> path(pattern.begin(),pattern.end());
+    path.push_back('\0');
+    const int fd=mkstemp(path.data());assert(fd>=0);close(fd);
+    OmsJournal journal;assert(journal.Init(path.data()));OmsJournalEvent event;
     event.schemaVersion=OmsJournal::kSchemaVersion;event.eventType="cancel";event.tsMs=OmsJournal::NowEpochMs();
     event.eventId="deferred-fixture";event.orderId=id;event.reqId="cancel-fixture";event.clientReqId=event.reqId;
     event.traceId="session";event.source="agent.tool:agent";event.strategy="fixture";event.account="DU123";
@@ -697,7 +863,7 @@ void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     assert(result.status==ExecutionCommandStatus::Rejected&&result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");
     ExecutionCoordinator replay(journal,ExecutionCoordinatorCallbacks());assert(replay.RecoverFromJournal(reason));
     assert(replay.GetCommandStatus("agent","session","cancel-fixture",result));
-    assert(result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");std::remove(path);
+    assert(result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");std::remove(path.data());
 }
 void TestCancelledAndPartialCancelled() {
     for(const char* status:{"Cancelled","ApiCancelled","Inactive","Rejected"}) {
@@ -983,6 +1149,9 @@ void TestReconnectAndIncompleteBootstrap() {
 int main() {
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
+    TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
+    TestCashMonitorRedactedGenerationObservation();
+    TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
     TestCashOutsideGenerationCannotBorrowOrdinaryRiskFreshness();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
