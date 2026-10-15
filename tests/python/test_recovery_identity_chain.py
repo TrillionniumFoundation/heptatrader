@@ -64,6 +64,33 @@ class IdentityChainTests(unittest.TestCase):
         raw,j,p=fixture();p['instruments']['EUR.USD']['agent_id']='foreign'
         self.assertTrue(chain.proof(raw,j,p)['conflicts'])
 
+    def test_unbound_historical_callback_can_only_corroborate_owned_exact_economics(self):
+        raw,records,period=fixture()
+        replay=dict(records[-1], source='ib-api-callback',req_id='',client_req_id='',
+                    trace_id='',request_hash='')
+        # A previously attributed native callback already pins the exact
+        # economic and original command identity. An additional legacy API
+        # callback contains economics + correlation, but no command owner.
+        records.append(replay)
+        result=chain.proof(raw,records,period)
+        self.assertEqual(result['conflicts'],[])
+        self.assertEqual(result['verified_execution_count'],1)
+        self.assertEqual(result['execution_proofs'][0]['original_owner_attributed_native_callbacks'],1)
+        self.assertEqual(result['execution_proofs'][0]['unbound_historical_native_replays'],1)
+        # Unbound evidence alone NEVER proves command ownership.
+        missing_owner=chain.proof(raw,[records[0],records[1],replay],period)
+        self.assertTrue(missing_owner['conflicts'])
+        # A changed price, permId, contract or nonblank forged identity MUST
+        # still reject the entire execution, despite the good original proof.
+        for field,value in (('broker_econ_execution_price',1.13),
+                            ('broker_econ_shares',24),
+                            ('broker_econ_permanent_order_id',777),
+                            ('venue_correlation_id','hepta-v1-sha256:'+'f'*64),
+                            ('req_id','foreign'),('source','agent:foreign')):
+            changed=dict(replay,**{field:value})
+            with self.subTest(field=field):
+                self.assertTrue(chain.proof(raw,records[:-1]+[changed],period)['conflicts'])
+
     def test_duplicate_send_is_not_idempotency_proof(self):
         raw,j,p=fixture();j.append(copy.deepcopy(j[1]));self.assertTrue(chain.proof(raw,j,p)['conflicts'])
     def test_exact_duplicate_execution_is_inert_conflicting_duplicate_rejects(self):

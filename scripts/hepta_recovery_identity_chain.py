@@ -90,21 +90,53 @@ def proof(broker, journal, period):
             intents=[j for j in journal if j.get('event') in ('order_intent','flatten_intent') and identity(j)==key]
             if len(intents)!=1:
                 raise ValueError('ORIGINAL_INTENT_HASH_NOT_UNIQUE')
+            # Do not silently discard a conflicting native permId under the
+            # SAME economic execution ID. Examine every scoped callback.
             counterparts=[j for j in native if j.get('broker_execution_id')==e['execution_id'] and
-                          j.get('account')==e['account'] and j.get('broker_econ_permanent_order_id')==e['permanent_order_id']]
+                          j.get('account')==e['account']]
             if not counterparts:raise ValueError('NATIVE_EXECUTION_PROOF_MISSING')
+            owner_attributed = 0
+            unbound_replays = 0
             for j in counterparts:
-                if (any(j.get(k)!=original.get(k) for k in ('account','execution_domain','req_id','client_req_id','trace_id','venue_correlation_id')) or
-                    (j.get('request_hash') not in ('',original['request_hash'])) or
-                    j.get('source') not in ('agent:'+owner['agent_id'],'agent.tool:'+owner['agent_id']) or
-                    j.get('order_id')!=e['order_id'] or j.get('broker_client_id')!=e['client_id'] or
-                    type(j.get('broker_econ_version')) is not int or j['broker_econ_version']!=1 or
+                # Every native receipt, including a historical unbound SDK
+                # callback, must match the same Broker economic identity.
+                # Local order IDs alone are never sufficient.
+                if (any(j.get(k)!=original.get(k) for k in
+                        ('account','execution_domain','venue_correlation_id')) or
+                    j.get('request_hash') not in ('',original['request_hash']) or
+                    j.get('order_id')!=e['order_id'] or
+                    j.get('broker_client_id')!=e['client_id'] or
+                    j.get('broker_econ_permanent_order_id')!=e['permanent_order_id'] or
+                    type(j.get('broker_econ_version')) is not int or
+                    j['broker_econ_version']!=1 or
                     j.get('broker_econ_kind')!='EXECUTION' or
-                    not (type(j.get('broker_econ_valid')) is int and j['broker_econ_valid']==1) or j.get('broker_econ_contract_id')!=contract['conId'] or
+                    not (type(j.get('broker_econ_valid')) is int and
+                         j['broker_econ_valid']==1) or
+                    j.get('broker_econ_contract_id')!=contract['conId'] or
                     number(j.get('broker_econ_shares'))!=number(e['shares']) or
                     number(j.get('broker_econ_execution_price'))!=number(e['price']) or
                     number(j.get('broker_econ_cumulative_quantity'))!=number(e['cumulative_quantity'])):
                     raise ValueError('NATIVE_BROKER_EXECUTION_CONFLICT')
+                attributed = (
+                    all(j.get(k)==original.get(k) for k in
+                        ('req_id','client_req_id','trace_id')) and
+                    j.get('source') in (
+                        'agent:'+owner['agent_id'],
+                        'agent.tool:'+owner['agent_id']))
+                unbound = (
+                    j.get('source')=='ib-api-callback' and
+                    all(j.get(k)=='' for k in
+                        ('req_id','client_req_id','trace_id','request_hash')))
+                if attributed:
+                    owner_attributed += 1
+                elif unbound:
+                    # A legacy API callback is economic corroboration only;
+                    # never promote it to a command-owner witness.
+                    unbound_replays += 1
+                else:
+                    raise ValueError('NATIVE_BROKER_EXECUTION_CONFLICT')
+            if owner_attributed == 0:
+                raise ValueError('ORIGINAL_OWNER_ATTRIBUTED_NATIVE_EXECUTION_MISSING')
             terminal=[c for c in completed if c['account']==e['account'] and c['permanent_order_id']==e['permanent_order_id'] and c['order_ref']==e['order_ref']]
             terminal_status=None
             if terminal:
@@ -117,6 +149,8 @@ def proof(broker, journal, period):
             result.append({'instrument':instrument,'order_id':e['order_id'],'permanent_order_id':e['permanent_order_id'],
                 'execution_id':e['execution_id'],'command_identity_sha256':sha(json.dumps(key).encode()),
                 'original_send_event':original['event'],'original_send_count':1,'native_callback_matches':len(counterparts),
+                'original_owner_attributed_native_callbacks':owner_attributed,
+                'unbound_historical_native_replays':unbound_replays,
                 'completed_status':terminal_status,'order_ref_exact':True,'economic_fields_exact':True,
                 'request_hash_source':'MATCHED_ORIGINAL_INTENT_AND_SEND',
                 'native_callback_request_hash_present':all(bool(j.get('request_hash')) for j in counterparts)})
@@ -131,6 +165,7 @@ def proof(broker, journal, period):
     # are kept distinct from actual currency cash and strategy-owned deltas.
     return {'schema':'heptatrader.original-command-broker-chain.v1',
         'raw_hash_bound_by_caller':False,'verified_execution_count':len(result),'conflicts':conflicts,
+        'unbound_historical_native_replay_count':sum(x['unbound_historical_native_replays'] for x in result),
         'matched_original_commands':len(covered),'original_sent_records':len(sends),
         'sent_commands_outside_returned_execution_scope':len({identity(s) for s in sends}-covered),
         'outside_scope_is_zero_fill':False,'execution_proofs':result,
