@@ -762,6 +762,16 @@ int main(int argc,char**argv){try{
      event.connectionEpoch=f.runtime->Adapter().GetConnectionEpoch();
      event.brokerClientId=701;
      f.uncorroboratedMarketDataErrorClosesRecovery(event);}
+    if(argc==2&&std::string(argv[1])=="--active-order-only") {
+        Fixture f;
+        // Enforce the prior GitHub failure deterministically: End can arrive
+        // after the original budget, while the authoritative active-order
+        // view already proves that reconnect must not reopen.
+        f.shared->reconnectPositionEndDelayMs.store(1150);
+        f.activeOrderFailsClosed();
+        std::cout << "PASS exact active-order refusal before reconnect readiness deadline" << std::endl;
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--slow-quote-reconnect-only") {
         Fixture f;
         f.shared->reconnectQuoteDispatchDelayMs.store(900);

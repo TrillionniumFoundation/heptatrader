@@ -590,6 +590,16 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
                 return FailBrokerReconnect(
                     reason, "IB_PAPER_BROKER_RECONNECT_CHANGED_DURING_RISK_DRAIN");
         }
+        // An authoritative current-epoch active order is an immediate
+        // ECONOMIC refusal, even if the risk snapshot deadline elapsed.
+        // Never downgrade it to a generic timeout. No order cancel/replay.
+        const IBAuthoritativeCorrelationSnapshot active =
+            m_adapter->GetAuthoritativeCorrelationSnapshot();
+        if (active.complete &&
+            active.connectionEpoch == m_reconnectConnectionEpoch.load() &&
+            !active.activeOrderIds.empty())
+            return FailBrokerReconnect(
+                reason, "IB_PAPER_BROKER_RECONNECT_ACTIVE_ORDERS_UNSAFE");
         // A broker End emitted only after the original snapshot deadline is
         // too late even if the immediate drain just consumed it. Compare the
         // actual current steady clock, not observedNow from before SDK calls.
