@@ -1,5 +1,5 @@
 """Synthetic FX anti-churn controls and unchanged real base-driver contracts."""
-import copy,importlib.util,json,os,sys,tempfile,unittest
+import copy,importlib.util,json,os,sys,tempfile,unittest,warnings
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'scripts'))
 import hepta_fx_churn as f
@@ -139,7 +139,9 @@ class InstallerRestartIdentityTests(unittest.TestCase):
   return previous,current,release
  def test_restart_proves_distinct_pid_and_exact_release_argv(self):
   previous,current,release=self.setup_service()
-  validate_restarted_fx_service(previous,current,release)
+  with warnings.catch_warnings():
+   warnings.simplefilter('error',FutureWarning)
+   validate_restarted_fx_service(previous,current,release)
  def test_inactive_same_pid_or_invalid_pid_refuse_completion(self):
   previous,current,release=self.setup_service()
   for field,value in (('ActiveState','failed'),('MainPID','101'),

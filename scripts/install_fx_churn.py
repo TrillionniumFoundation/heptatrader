@@ -27,7 +27,7 @@ def validate_restarted_fx_service(before, after, release):
         new_pid=int(after.get('MainPID','0'))
         effective=after.get('ExecStart','')
         executable=re.search(r'(?:^|[ {;])path=([^; ]+)',effective)
-        argv=re.search(r'argv[[]]=([^;]+)',effective)
+        argv=re.search(r'(?:^|[ ;])'+re.escape('argv[]=')+r'([^;]+)',effective)
         actual_args=shlex.split(argv.group(1).strip()) if argv else []
         expected=['/usr/bin/python3','-B',
                   str(release/'heptatrader_attributed_driver.py'),
