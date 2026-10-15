@@ -60,3 +60,45 @@ quietly switch the input of precommitted future decisions. A later controlled
 monitor-only release should separately handle the cold-start stale interval,
 preserve genuine source HOLDS, compare exact service/release identity and
 perform tested rollback. Code merge is not permission for new orders.
+
+## Same-day 50%-CPU cold-to-warm proof (no live cutover)
+
+A **new**, separate finite Pocket4 user service
+`heptatrader-health-cold50-20261015-r1` tested the *identical* current main
+source monitor SHA-256 `8cbedb6a5f792891f0141f7b2ae0da91a7738080cd14c45995436ed55473c309`
+and suffix cache SHA-256 `a125a88765f3b212b709ee817fce07d8dded504d93139b0ab6da4db3833f0bc7`.
+The transient unit had `CPUQuota=50%`, `MemoryMax=384M`,
+`RestrictAddressFamilies=AF_UNIX`, `NoNewPrivileges=yes`, a private distinct
+output directory, `--sandbox --verified-sealed-cache --refresh-seconds 15
+--max-cycles 24`, and `Restart=no`. It did not write the original product
+monitor status or call Broker APIs.
+
+The original 24 cycles naturally exited with `Result=success`, code 0,
+over ~5m49s and observed memory peak **220.3 MiB**. Measured from actual
+journal event clocks, `next_published_ms - previous_source_asof_ms` was
+**18,607ms** across the cold first interval and at most **18,820ms** across
+subsequent intervals: **0/23** exceeded the unchanged 30,000ms limit.
+The maximum age at a status's own publication was 12,219ms. All **24**
+complete source archive inventories were SHA-checked; 7,337 sealed decoder
+hits were individually reverified, 1,879 sealed sources and 264 unsealed/extra
+sources were strictly re-parsed. Original genuine usable probes remained
+**17–18/24**; every decision was correctly `HOLD_NEW_FUSION_WINDOW`.
+Zero Broker orders, zero new trial admissions, no altered original labels.
+
+Pocket4 operator-private exact evidence (write-once):
+`~/.local/state/heptatrader/operator-evidence/fx-health-cold50-20261015-r1/`
+- `cycle-journal.jsonl` SHA-256:
+  `e8ff19926d1e39e9d1e5e791c8719f0586403ab725402e70d25d1263d262169f`
+- `final-summary.json` SHA-256:
+  `36a5ec8415282af378b4044032907f8e97e4989e913c7181bcf567261160087d`
+
+**Operational decision:** finite source-health publisher cadence at CPU50 is
+qualified by this actual cold/warm proof, **not** indefinite operational
+uptime, broker-signature authenticity, source readiness, model profitability,
+or trading authorization. At readback the original 24-window frozen-price
+campaign timer remained active and scheduled further windows. Its input must
+NOT change mid-cohort. Once that original cohort naturally reaches terminal,
+a bounded **monitor-only** cutover may check current config/release identity,
+original order/owner/driver process continuity, the same 30s original-source
+age budget, cold/restart and rollback; a local publication change by itself
+must never flip an original source HOLD into READY.
