@@ -45,6 +45,32 @@ class StackedCiReachabilityTests(unittest.TestCase):
             self.assertEqual(checkout['with']['persist-credentials'], 'false')
             self.assertIn('github.event.pull_request.head.sha', checkout['with']['ref'])
 
+    def test_cpu_torch_download_cache_never_replaces_exact_head_tests(self):
+        ci = workflow('core-ci.yml')
+        python_steps = ci['jobs']['python']['steps']
+        caches = [step for step in python_steps if
+                  step.get('name') == 'Cache CPU research dependency downloads']
+        self.assertEqual(len(caches), 1)
+        cache = caches[0]
+        self.assertEqual(cache['uses'],
+                         'actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809')
+        self.assertEqual(cache['with']['path'], '~/.cache/pip')
+        self.assertIn('cpu-torch-2.8.0', cache['with']['key'])
+        self.assertNotIn('restore-keys', cache['with'])
+        self.assertEqual(cache.get('continue-on-error'), 'true')
+        cache_index = python_steps.index(cache)
+        install_index = next(i for i, step in enumerate(python_steps) if
+                             step.get('name') == 'Install pinned CPU research test dependency')
+        run_index = next(i for i, step in enumerate(python_steps) if
+                         step.get('name') == 'Python behavior and source tests once')
+        self.assertLess(cache_index, install_index)
+        self.assertLess(install_index, run_index)
+        self.assertNotIn('if', python_steps[install_index])
+        self.assertNotIn('if', python_steps[run_index])
+        self.assertIn('torch==2.8.0', python_steps[install_index]['run'])
+        self.assertIn('torch.version.cuda is None', python_steps[install_index]['run'])
+        self.assertFalse(any('actions/cache@' in str(x) for x in ci['jobs']['core']['steps']))
+
     def test_native_feedback_does_not_wait_for_torch_or_python(self):
         ci = workflow('core-ci.yml')
         native = str(ci['jobs']['core'])
