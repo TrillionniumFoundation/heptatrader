@@ -55,6 +55,53 @@ class PolicyTests(unittest.TestCase):
  def test_serialized_restart_keeps_cooldown(self):
   c=confirmed();c['last_exit_ms']=NOW-1;c=json.loads(json.dumps(c));self.assertFalse(f.admission(c,state()['last_decision'],NOW)['allowed'])
 
+class ResumeActivationTests(unittest.TestCase):
+ def test_stale_oct7_control_reseeds_from_original_oms(self):
+  old=f.fresh_control({'period_sha256':'a'*64,'activation_ms':NOW-8*86400000,
+   'last_exit_ms':NOW-8*86400000,'open_attempts':[
+    {'command_id':'stale','at_ms':NOW-8*86400000},
+    {'command_id':'prepared','at_ms':NOW-600000}]})
+  old.update(last_seen_decisions=275,confirmations=2,signal_side='BUY',
+    signal_first_ms=NOW-80000,signal_latest_ms=NOW-20000)
+  updated={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,
+    'open_attempts':[{'command_id':'actual-oms','at_ms':NOW-400000}]}
+  c=f.resume_activation_control(old,updated,'a'*64)
+  self.assertEqual(c['activation_ms'],NOW)
+  self.assertEqual(c['last_exit_ms'],NOW)
+  self.assertEqual(c['last_seen_decisions'],-1)
+  self.assertEqual(c['confirmations'],0)
+  self.assertEqual([i['command_id'] for i in c['open_attempts']],['prepared','actual-oms'])
+  self.assertIn('AFTER_FLAT_COOLDOWN',f.admission(c,state()['last_decision'],NOW)['reasons'])
+  self.assertIn('ROLLING_HOUR_OPEN_LIMIT',f.admission(c,state()['last_decision'],NOW)['reasons'])
+ def test_same_activation_restores_durable_decision_count(self):
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,
+      'last_exit_ms':NOW-3600000,'open_attempts':[]}
+  c=f.fresh_control(seed);c.update(confirmations=1,signal_side='SELL',last_seen_decisions=231)
+  self.assertEqual(f.resume_activation_control(c,seed,'a'*64),c)
+ def test_mismatched_profile_and_activation_clock_fail_closed(self):
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,'open_attempts':[]}
+  c=f.fresh_control({**seed,'activation_ms':NOW+1})
+  with self.assertRaisesRegex(f.ChurnError,'ACTIVATION_CLOCK'):
+   f.resume_activation_control(c,seed,'a'*64)
+  c['profile_sha256']='bad'
+  with self.assertRaisesRegex(f.ChurnError,'FX_CONTROL_SCOPE'):
+   f.resume_activation_control(c,seed,'a'*64)
+ def test_old_future_attempt_malformed_blocks_migration(self):
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,'open_attempts':[]}
+  for at in (NOW+1,'now'):
+   c=f.fresh_control({**seed,'activation_ms':NOW-3600000,
+                     'open_attempts':[{'command_id':'old','at_ms':at}]})
+   with self.assertRaises(f.ChurnError):
+    f.resume_activation_control(c,seed,'a'*64)
+ def test_old_prepared_attempt_union_uses_earliest_timestamp(self):
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,'open_attempts':[
+      {'command_id':'same','at_ms':NOW-10000}]}
+  c=f.fresh_control({**seed,'activation_ms':NOW-200000,'last_exit_ms':NOW-100000,
+      'open_attempts':[{'command_id':'same','at_ms':NOW-20000}]})
+  newer=f.resume_activation_control(c,seed,'a'*64)
+  self.assertEqual(newer['open_attempts'],[{'command_id':'same','at_ms':NOW-20000}])
+
+
 class BaseIntegrationTests(unittest.TestCase):
  def setUp(self):
   sp=importlib.util.spec_from_file_location('fx_base_fixture',ROOT/'scripts/heptatrader_paper_driver.py');self.d=importlib.util.module_from_spec(sp);sp.loader.exec_module(self.d)
@@ -73,6 +120,22 @@ class BaseIntegrationTests(unittest.TestCase):
   close=f.attach(self.d,self.c);self.addCleanup(close)
   self.state=state(2);cc=confirmed();cc['period_sha256']=self.ph;self.state['fx_open_control']=cc
  def open(self):return self.d.prepare_send(self.state,self.root/'state','b','s','t','o','OPEN',{'bid':1.1,'ask':1.1001},'BUY')
+ def test_new_activation_does_not_reuse_oct7_stale_confirmation(self):
+  # Simulates the present attributed PAPER state: same period/profile, but
+  # an FX churn snapshot left behind by a prior (now inactive) deployment.
+  old=self.state['fx_open_control']
+  old.update(activation_ms=NOW-8*86400000,last_exit_ms=NOW-8*86400000,
+             last_seen_decisions=275,confirmations=2,signal_side='BUY')
+  self.c['seed'].update(activation_ms=NOW,last_exit_ms=NOW,
+      open_attempts=[{'command_id':'previous-real-oms','at_ms':NOW-250000}])
+  with self.assertRaisesRegex(f.ChurnError,'FX_OPEN_DEFERRED'):
+   self.open()
+  self.assertEqual(self.calls,[])
+  self.assertEqual(self.state['fx_open_control']['activation_ms'],NOW)
+  self.assertEqual(self.state['fx_open_control']['confirmations'],1)
+  self.assertEqual(self.state['fx_open_control']['open_attempts'],
+      [{'command_id':'previous-real-oms','at_ms':NOW-250000}])
+  self.assertIn('AFTER_FLAT_COOLDOWN',self.state['fx_last_open_admission']['reasons'])
  def test_confirmed_open_follows_original_command_once(self):
   self.open();self.assertEqual(self.calls,['prepare-open','submit']);self.assertEqual(self.state['pending']['command_id'],'original-command');self.assertEqual(self.state['pending']['send_state'],'ACKNOWLEDGED')
   self.assertEqual(self.state['fx_open_control']['open_attempts'],[{'command_id':'original-command','at_ms':NOW}])

@@ -53,8 +53,15 @@ def main():
  if old.get('fx_churn_profile_sha256'):raise RuntimeError('FX_PROFILE_ALREADY_ACTIVE')
  period=Path(old['period_path']);pr=period.read_bytes()
  if sha(period)!=old['period_sha256'] or read(period)['execution_domain']!='PAPER':raise RuntimeError('PERIOD_CHANGED')
- for name in ('heptatrader_paper_driver.py','hepta_decision_attribution.py'):
-  if sha(old_root/name)!=sha(scripts/name):raise RuntimeError('BASE_OR_PROVENANCE_CHANGED')
+ # Preserve exactly the running attributed runtime. Repo attribution code
+ # may have advanced, but must not silently switch during an FX risk edit.
+ installed_names=('heptatrader_paper_driver.py','hepta_decision_attribution.py',
+                  'heptatrader_attributed_driver.py')
+ for name in installed_names:
+  if name not in old['runtime_sha256'] or sha(old_root/name)!=old['runtime_sha256'][name]:
+   raise RuntimeError('PINNED_INSTALLED_RUNTIME_CHANGED:'+name)
+ if sha(old_root/'heptatrader_paper_driver.py')!=sha(scripts/'heptatrader_paper_driver.py'):
+  raise RuntimeError('ORIGINAL_PAPER_DRIVER_SOURCE_CHANGED')
  base_path=old_root/'heptatrader_paper_driver.py';spec=importlib.util.spec_from_file_location('fx_churn_deploy_base',base_path);base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
  if base.CONF!=.62 or base.QTY!=25000 or base.MAX_ADVERSE!=.002:raise RuntimeError('OLD_STRATEGY_CONSTANTS_CHANGED')
  state_path=h/'.local/state/heptatrader/paper-driver/state.json';state=read(state_path)
@@ -74,8 +81,9 @@ def main():
  if release.exists():raise RuntimeError('NEW_RELEASE_ALREADY_STAGED_USE_EXISTING_REVIEWED_FILES')
  release.mkdir(mode=0o700,parents=True)
  hashes={}
- for name in ('heptatrader_paper_driver.py','hepta_decision_attribution.py','heptatrader_attributed_driver.py','hepta_fx_churn.py'):
-  write_once(release/name,(scripts/name).read_bytes());hashes[name]=sha(release/name)
+ for name in installed_names+('hepta_fx_churn.py',):
+  src=old_root/name if name in installed_names else scripts/name
+  write_once(release/name,src.read_bytes());hashes[name]=sha(release/name)
  write_once(release/'fx-profile.json',profile)
  manifest={**old,'source_sha':head,'created_at_ms':now,'runtime_sha256':hashes,
   'journal_directory':str(Path(old['journal_directory'])/('fx-control-'+head)),
