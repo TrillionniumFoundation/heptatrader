@@ -13,6 +13,7 @@ import json
 import math
 import os
 from decimal import Decimal
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -109,6 +110,87 @@ def stats(pred, actual):
             "observed_net_sum_usd": round(float(sum(actual)), 6)}
 
 
+
+
+def economic_tail(rows, execution_at):
+    """Explain ONLY realized behavior, preserving execution-time/quote provenance."""
+    entries = []
+    spans = defaultdict(list)
+    spreads = defaultdict(list)
+    sides = defaultdict(list)
+    for r in rows:
+        reward = r["reward"]
+        net = Decimal(r["net_usd"])
+        gross = Decimal(reward["realized_gross_usd"])
+        fee = Decimal(r["actual_commissions_usd"])
+        if not all(v.is_finite() for v in (net, gross, fee)) or gross - fee != net:
+            raise EvidenceError("EXACT_GROSS_FEE_NET_IDENTITY")
+        executions = reward["executions"]
+        open_command = reward["open_command_id"]
+        opened = [execution_at.get(e["execution_id"]) for e in executions if e["command_id"] == open_command]
+        closed = [execution_at.get(e["execution_id"]) for e in executions if e["command_id"] != open_command]
+        if not opened or not closed or any(v is None for v in opened + closed):
+            raise EvidenceError("OPEN_CLOSE_EXECUTION_TIME_MISSING")
+        duration_ms = max(closed) - min(opened)
+        if duration_ms < 0:
+            raise EvidenceError("CLOSE_EARLIER_THAN_OPEN")
+        if duration_ms < 5*60_000:
+            bucket = "LT_5_MIN"
+        elif duration_ms < 15*60_000:
+            bucket = "5_TO_15_MIN"
+        elif duration_ms < 60*60_000:
+            bucket = "15_TO_60_MIN"
+        elif duration_ms < 4*60*60_000:
+            bucket = "1_TO_4_HOURS"
+        else:
+            bucket = "GE_4_HOURS"
+        q = r["source_request"]["request"]["history_snapshot"][-1]
+        spread_bps = Decimal(str(q["ask"] - q["bid"])) / Decimal(str(q["mid"])) * 10000
+        if spread_bps < 0 or not spread_bps.is_finite():
+            raise EvidenceError("INVALID_FROZEN_PRETRADE_SPREAD")
+        spread_bucket = ("ZERO" if spread_bps == 0 else
+                         "LE_0_15_BPS" if spread_bps <= Decimal("0.15") else
+                         "LE_0_50_BPS" if spread_bps <= Decimal("0.50") else
+                         "GT_0_50_BPS")
+        entry = {"gross": gross, "fee": fee, "net": net, "duration_ms": duration_ms}
+        entries.append(entry)
+        spans[bucket].append(entry)
+        spreads[spread_bucket].append(entry)
+        sides[r["action"]].append(entry)
+
+    def summary(items):
+        return {
+            "count": len(items),
+            "gross_usd": str(sum((e["gross"] for e in items), Decimal(0))),
+            "reported_commissions_usd": str(sum((e["fee"] for e in items), Decimal(0))),
+            "net_usd": str(sum((e["net"] for e in items), Decimal(0))),
+            "net_winners": sum(e["net"] > 0 for e in items),
+            "gross_winners": sum(e["gross"] > 0 for e in items),
+            "gross_positive_but_net_nonpositive": sum(e["gross"] > 0 and e["net"] <= 0 for e in items),
+        }
+    losses = sorted((e["net"] for e in entries if e["net"] < 0))
+    negative_pool = -sum(losses, Decimal(0))
+    def worst_share(count):
+        return (str((-sum(losses[:count], Decimal(0)) / negative_pool * 100).quantize(Decimal(".0001")))
+                if negative_pool else None)
+    return {
+        "scope": "EXECUTED_ORIGINAL_POLICY_ONLY_NOT_COUNTERFACTUAL_OR_TRADING_SIGNAL",
+        "pretrade_quote_not_execution_spread": True,
+        "duration_proxy": "FIRST_OPEN_FILL_TO_LAST_CLOSE_FILL_MS",
+        "all_rows": summary(entries),
+        "negative_loss_pool_usd": str(negative_pool),
+        "worst_1_net_usd": str(losses[0]) if losses else None,
+        "worst_5_net_sum_usd": str(sum(losses[:5], Decimal(0))),
+        "worst_5_share_of_negative_loss_pool_pct": worst_share(5),
+        "worst_10_share_of_negative_loss_pool_pct": worst_share(10),
+        "by_original_action": {k: summary(v) for k, v in sorted(sides.items())},
+        "by_execution_span": {k: summary(spans[k]) for k in (
+            "LT_5_MIN", "5_TO_15_MIN", "15_TO_60_MIN", "1_TO_4_HOURS", "GE_4_HOURS")},
+        "by_pretrade_quote_spread": {k: summary(spreads[k]) for k in (
+            "ZERO", "LE_0_15_BPS", "LE_0_50_BPS", "GT_0_50_BPS")},
+    }
+
+
 def run(dataset_file, status_file):
     from hepta_decision_attribution import read_private
 
@@ -170,6 +252,7 @@ def run(dataset_file, status_file):
         if maturity < r["input_started_at_ms"]:
             raise EvidenceError("EXECUTION_PRECEDES_REQUEST")
         last_fill.append(maturity)
+    economic = economic_tail(rows, execution_at)
     tr, va, te, cutoffs = three_way_split(rows, last_fill)
     candidates = []
     for alpha in ALPHAS:
@@ -196,6 +279,7 @@ def run(dataset_file, status_file):
             "selected_ridge_alpha_from_validation": selected[3],
             "validation": v, "test_model": result, "test_train_median_baseline": baseline,
             "test_zero_prediction_baseline": zero,
+            "original_execution_economics": economic,
             "model_coeff_sha256": hashlib.sha256(coeff).hexdigest(),
             "model_beats_train_median_mae": result["mae_usd"] < baseline["mae_usd"],
             "model_beats_zero_prediction_mae": result["mae_usd"] < zero["mae_usd"],

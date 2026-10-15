@@ -4,7 +4,7 @@ import numpy as np
 
 from historical_training.common import EvidenceError
 from historical_training.value_original_oos_probe import (
-    features, three_way_split, fit_huber_ridge, predict, stats, EMBARGO_MS,
+    features, three_way_split, fit_huber_ridge, predict, stats, economic_tail, EMBARGO_MS,
 )
 
 
@@ -85,6 +85,53 @@ class ObjectiveTests(unittest.TestCase):
         self.assertEqual(module.ALPHAS, (1.,10.,100.,1000.))
         self.assertEqual(module.EMBARGO_MS,15*60_000)
 
+
+
+
+def episode(t=1700000000000, net="-2", fee="4", gross="2"):
+    row = example(t)
+    row["net_usd"] = net
+    row["actual_commissions_usd"] = fee
+    row["reward"] = {
+        "realized_gross_usd": gross,
+        "open_command_id": "original-open",
+        "executions": [
+            {"execution_id": "entry", "command_id": "original-open"},
+            {"execution_id": "exit", "command_id": "original-close"},
+        ],
+    }
+    return row
+
+
+class ExecutionEconomicsTests(unittest.TestCase):
+    def test_fee_flip_from_actual_execution_with_short_duration(self):
+        row = episode()
+        out = economic_tail([row], {"entry": 1700000001000, "exit": 1700000061000})
+        self.assertEqual(out["all_rows"]["net_usd"], "-2")
+        self.assertEqual(out["all_rows"]["gross_usd"], "2")
+        self.assertEqual(out["all_rows"]["reported_commissions_usd"], "4")
+        self.assertEqual(out["all_rows"]["gross_positive_but_net_nonpositive"], 1)
+        self.assertEqual(out["by_execution_span"]["LT_5_MIN"]["count"], 1)
+        self.assertEqual(out["worst_5_share_of_negative_loss_pool_pct"], "100.0000")
+
+    def test_fee_inconsistency_is_never_rounded_or_ignored(self):
+        row = episode(net="-2.0001")
+        with self.assertRaisesRegex(EvidenceError, "EXACT_GROSS_FEE_NET_IDENTITY"):
+            economic_tail([row], {"entry": 1700000001000, "exit": 1700000061000})
+
+    def test_missing_exit_evidence_rejected(self):
+        with self.assertRaisesRegex(EvidenceError, "OPEN_CLOSE_EXECUTION_TIME_MISSING"):
+            economic_tail([episode()], {"entry": 1700000001000})
+
+    def test_exit_before_open_rejected(self):
+        with self.assertRaisesRegex(EvidenceError, "CLOSE_EARLIER_THAN_OPEN"):
+            economic_tail([episode()], {"entry": 1700000061000, "exit": 1700000001000})
+
+    def test_fee_burden_and_short_hold_are_not_alternate_action_profits(self):
+        row = episode()
+        out = economic_tail([row], {"entry": 1700000001000, "exit": 1700000061000})
+        self.assertEqual(out["scope"], "EXECUTED_ORIGINAL_POLICY_ONLY_NOT_COUNTERFACTUAL_OR_TRADING_SIGNAL")
+        self.assertTrue(out["pretrade_quote_not_execution_spread"])
 
 if __name__ == "__main__":
     unittest.main()
