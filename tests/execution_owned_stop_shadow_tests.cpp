@@ -44,7 +44,7 @@ BrokerExposure Ready() {
     s.brokerAverageEntry = 1.12054;
     s.brokerBid = 1.12049;
     s.brokerAsk = 1.12051;
-    s.minTick = 0.00001;
+    s.minTick = 0.00005;
     return s;
 }
 BrokerStopWitness Working(const StopProposal& p) {
@@ -151,6 +151,9 @@ void RejectAlreadyAdverse() {
     s=Ready();s.minTick=0;
     MustRefuse([&]{ ProposeUnsentFxStop(s,10100); },
                "EXACT_FX_FILL_QUOTE_GRID_REQUIRED");
+    s=Ready();s.minTick=0.00001;
+    MustRefuse([&]{ ProposeUnsentFxStop(s,10100); },
+               "FX_CONTRACT_MARKET_RULE_CHANGED");
 }
 void BrokerWitnessNeverTrustsUncorrelated() {
     const StopProposal p=ProposeUnsentFxStop(Ready(),10100);
