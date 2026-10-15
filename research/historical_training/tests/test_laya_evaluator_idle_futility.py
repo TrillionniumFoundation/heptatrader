@@ -113,5 +113,108 @@ class FrozenFutilityTests(unittest.TestCase):
             self.assertFalse((folder / "qualification.json").exists())
 
 
+    def test_same_tick_third_censor_blocks_later_worker(self):
+        """A newly terminalized missed slot must block the next GPU launch."""
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            period = root / "period.json"
+            period.write_text('{"execution_domain":"PAPER"}')
+            runtime = root / "runtime"
+            runtime.mkdir()
+            code = runtime / "pinned.py"
+            code.write_text("# fixture\\n")
+            plan = self.plan()
+            rule = plan["rule"]
+            # Slot 2 is expired, while slot 3 is inside its 90 s prewarm.
+            plan.update(
+                scope=sha_file(period),
+                start_ms=int(time.time() * 1000) + 30000
+                - 3 * rule["slot_spacing_ms"],
+                evaluation_runtime_sha256={"pinned.py": sha_file(code)},
+            )
+            plan.pop("plan_id")
+            plan["plan_id"] = digest(plan)
+            folder = root / "evaluation" / "job"
+            folder.mkdir(parents=True)
+            (folder / "plan.json").write_text(json.dumps(plan))
+            for result in self.outcomes(plan, 2):
+                (folder / f"outcome-{result['slot']:03}.json").write_text(
+                    json.dumps(result))
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "evaluation_directory": str(root / "evaluation"),
+                "period_path": str(period),
+                "period_sha256": sha_file(period),
+                "runtime_directory": str(runtime),
+                "promotion_protocol": PROTOCOL,
+            }))
+            evaluator = Evaluator(config)
+            with patch.object(evaluator, "launch") as launch:
+                status = evaluator.step()
+            launch.assert_not_called()
+            self.assertEqual(status["counts"], {"PENDING": 1})
+            self.assertEqual(status["futile_pending_plans"], 1)
+            self.assertEqual(status["censored"], 3)
+            self.assertGreaterEqual(status["new_prediction_launches_suppressed"], 1)
+            self.assertFalse((folder / "qualification.json").exists())
+
+    def test_one_verified_snapshot_clock_for_all_mature_outcomes(self):
+        """Measured as-of may not advance beyond the quotes already read."""
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            period = root / "period.json"
+            period.write_text('{"execution_domain":"PAPER"}')
+            runtime = root / "runtime"
+            runtime.mkdir()
+            code = runtime / "pinned.py"
+            code.write_text("# fixture\\n")
+            plan = self.plan()
+            rule = plan["rule"]
+            now_ms = int(time.time() * 1000)
+            plan.update(
+                scope=sha_file(period),
+                start_ms=now_ms + rule["slot_spacing_ms"] * 2,
+                evaluation_runtime_sha256={"pinned.py": sha_file(code)},
+            )
+            plan.pop("plan_id")
+            plan["plan_id"] = digest(plan)
+            folder = root / "evaluation" / "job"
+            folder.mkdir(parents=True)
+            (folder / "plan.json").write_text(json.dumps(plan))
+            for slot in range(2):
+                (folder / f"prediction-{slot:03}.json").write_text(
+                    json.dumps({"anchor_ms": now_ms - 600000, "slot": slot}))
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "evaluation_directory": str(root / "evaluation"),
+                "period_path": str(period),
+                "period_sha256": sha_file(period),
+                "runtime_directory": str(runtime),
+                "promotion_protocol": PROTOCOL,
+            }))
+            evaluator = Evaluator(config)
+            reads = []
+            measurements = []
+            def read_quotes(config, asof_ms):
+                reads.append(asof_ms)
+                time.sleep(.02)  # force wall-clock advance after evidence cut
+                return [], []
+            def measure(plan, slot, prediction, quotes, asof_ms):
+                measurements.append((slot, asof_ms))
+                self.assertEqual(asof_ms, reads[0])
+                return None
+            with patch("laya_cell.resident_evaluate.read_quotes",
+                       side_effect=read_quotes), patch(
+                "laya_cell.resident_evaluate.measure", side_effect=measure
+            ):
+                status = evaluator.step()
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(len(measurements), 2)
+            self.assertTrue(status["source_scan_performed"])
+            self.assertEqual(status["counts"], {"PENDING": 1})
+            self.assertEqual(status["observed"], 0)
+            self.assertFalse((folder / "qualification.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
