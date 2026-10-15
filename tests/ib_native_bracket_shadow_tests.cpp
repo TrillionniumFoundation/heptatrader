@@ -192,6 +192,51 @@ void RejectUnsafeOcaEvidence() {
     RequireOcaRefusal(wideGroup,OcaState(wideGroup),
                       "OCA_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
 }
+void H1NativeOriginalIdentity() {
+    auto snap=Original("BUY");
+    hepta_bracket_h1::FrozenBracket f;
+    f.originalCommandKey=snap.originalCommandKey;
+    f.account=snap.account; f.owner=snap.owner;
+    f.sessionId="session-native-shadow";
+    f.executionDomain=snap.executionDomain;
+    f.side=snap.action; f.contractId=snap.contractId;
+    f.clientId=snap.clientId; f.parentOrderId=snap.reservedParentOrderId;
+    f.childOrderId=snap.reservedChildOrderId;
+    f.connectionEpoch=snap.connectionEpoch;
+    f.positionGeneration=snap.originalPositionGeneration;
+    f.ownerFenceToken=88;
+    f.intentObservedAtMs=snap.observedAtMs;
+    f.quantity=snap.quantity; f.referencePrice=snap.ask;
+    f.stopPrice=hepta_execution_bracket_research::ProposeUnsentBracket(
+        snap,100500).stop.intent.auxPrice;
+    f.minTick=snap.minTick;
+    hepta_bracket_h1::Reservation r;
+    std::string reason;
+    Check(hepta_bracket_h1::BuildFrozenRefs(f,r.ids,reason),
+          "H1 reserved role derivation failed");
+    r.frozen=f; r.replayComplete=true;
+    auto wire=BuildNeverSentNativeReservedH1Pair(snap,r,100500);
+    Check(wire.parent.orderRef==r.ids.parentRef &&
+          wire.stop.orderRef==r.ids.childRef &&
+          wire.stop.ocaGroup==r.ids.ocaGroup &&
+          wire.parent.orderRef.size()==45 &&
+          wire.stop.orderRef.size()==45 &&
+          wire.stop.ocaGroup.size()==45,
+          "H1 native SDK order refs mismatched");
+    Check(!wire.brokerSendEnabled && !wire.driverStopAuthorized,
+          "native H1 mapping acquired Broker rights");
+    r.uncertain=true;
+    try {
+        (void)BuildNeverSentNativeReservedH1Pair(snap,r,100500);
+        throw std::runtime_error("unknown OMS result authorized native H1");
+    } catch(const hepta_execution_stop_research::Refusal&) {}
+    r.uncertain=false;
+    snap.reservedChildOrderId++;
+    try {
+        (void)BuildNeverSentNativeReservedH1Pair(snap,r,100500);
+        throw std::runtime_error("substituted native child ID accepted");
+    } catch(const hepta_execution_stop_research::Refusal&) {}
+}
 void BadModeNoNative() {
     auto s=Original("BUY");s.executionDomain="LIVE";
     try { (void)BuildNeverSentNativePair(s,100500); }
@@ -205,6 +250,7 @@ int main() {
         NativeOcaSiblingOnlyAfterWorkingStop("BUY");
         NativeOcaSiblingOnlyAfterWorkingStop("SELL");
         RejectUnsafeOcaEvidence();
+        H1NativeOriginalIdentity();
         BadContractNoNative(); LegacyOnePipTickRefused(); BadModeNoNative();
         std::cout<<"ib_native_bracket_shadow_fields=PASS\n";
         return 0;

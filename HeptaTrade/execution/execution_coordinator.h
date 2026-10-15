@@ -21,6 +21,11 @@
 #include <unordered_set>
 #include <vector>
 
+namespace hepta_bracket_h1 {
+struct FrozenBracket;
+struct Reservation;
+}
+
 struct ExecutionOrderOwner
 {
     std::string agentId;
@@ -170,6 +175,15 @@ public:
                                 const std::string& sessionId,
                                 std::uint64_t ingressFence,
                                 std::string& reason);
+    // Research-only owner-state/OMS integration. This holds the real
+    // Coordinator mutex and checks the EXACT durable recovery-only ingress
+    // token, but does NOT reserve Broker native IDs or grant stop sends.
+    // Existing trading tools never invoke this method.
+    bool ReserveResearchH1BracketForRecoveryOnlyOwner(
+        const AgentExecutionContext& originalOwner,
+        const hepta_bracket_h1::FrozenBracket& frozen,
+        hepta_bracket_h1::Reservation& result,
+        std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
                                      ExecutionControlStatusResult& result);
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);

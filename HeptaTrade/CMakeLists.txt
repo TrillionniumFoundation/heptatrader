@@ -145,6 +145,7 @@ set(HEPTA_EXECUTION_COORDINATOR_SOURCES
     execution/execution_coordinator.cpp
     execution/execution_coordinator_cancel.cpp
     execution/execution_coordinator_recovery.cpp
+    execution/execution_coordinator_h1_research.cpp
     execution/execution_coordinator_reconnect.cpp
     execution/execution_coordinator_terminal.cpp
     execution/execution_generation_support.cpp)

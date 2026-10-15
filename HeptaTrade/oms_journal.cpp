@@ -476,7 +476,11 @@ static bool ReadDouble(const JsonFields& fields, const char* key, double& out)
 
 bool OmsJournal::IsCriticalEventType(const std::string& eventType)
 {
-    return eventType == "order_intent" || eventType == "place_send_attempt" ||
+    return eventType == "bracket_parent_reserved" ||
+           eventType == "bracket_child_reserved" ||
+           eventType == "bracket_parent_send_attempt" ||
+           eventType == "bracket_child_send_attempt" ||
+           eventType == "order_intent" || eventType == "place_send_attempt" ||
            eventType == "flatten_intent" ||
            eventType == "flatten_send_attempt" ||
            eventType == "cancel_send_attempt" ||

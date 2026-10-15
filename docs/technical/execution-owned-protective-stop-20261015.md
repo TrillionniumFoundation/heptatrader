@@ -452,3 +452,59 @@ service restart, forced stop, live risk grant or price policy change.
 prove a real broker parent/child placeOrder, successful venue native STP,
 a surviving working stop, OCA-safe ordinary exit, or uncertainty-free
 reconnect. Issue #331 remains open and this PR remains Draft.
+
+## 2026-10-15 — Coordinator-owned Recovery-only fence + H1 OMS pair
+
+The previous shadow H1 pair accepted a caller-supplied nonzero fence token.
+That is **not sufficient authority**: the real Execution owner already has
+a durable `EnterRecoveryOnlyOwner(agentId, sessionId, ingressFence)` API,
+and the existing `PlaceOrder` path refuses new risk for a recovery-only
+session. Reuse it instead of adding a second fence mechanism.
+
+The original H1 `FrozenBracket` is now bound to `sessionId` in addition
+to original command, owner/agent, account, Broker epoch, quantity, quote
+and reserved IDs. The actual `ExecutionCoordinator` now has
+`ReserveResearchH1BracketForRecoveryOnlyOwner`, implemented under
+its existing mutex. It checks:
+
+- exact `agentId + sessionId + original toolCallId`, expected PAPER FX
+  execution domain and the current coordinator-owned ingress fence token;
+- absence of active owner orders, ongoing risk dispatch/cancel, terminal
+  mutation fence and matching original command in current/historical OMS;
+- exact original H1 Parent/Stop pair via the existing
+  `OmsJournal::AppendDurablePair`.
+
+The records use distinct critical
+`bracket_parent_reserved / bracket_child_reserved` event names, and
+potential sends use `bracket_*_send_attempt`. These events cannot be
+mistaken for ordinary, individually authorized `order_intent` and
+`place_send_attempt` by the pre-existing Coordinator replay logic.
+The full original owner + session are also recorded in the new
+`trace_id / strategy` fields of each research reservation.
+
+The full-owner test uses **an actual ExecutionCoordinator instance**,
+calling its existing durable `EnterRecoveryOnlyOwner`, then reserving
+and replaying the H1 pair. It verifies that missing/stale fencing,
+other sessions, duplicate original commands, changed tokens and a
+restart cannot create a second approved order group. The reserved
+pair is confirmed durable, but remains unqualified for submission,
+and a real Coordinator restart must preserve the no-new-entry fence.
+
+The native IB C++ SDK research adapter can now map a verified frozen
+H1 `Reservation` to actual `Contract / Order` objects with 45-byte
+Parent, Stop and OCA identifiers. Those objects are still **unsent**:
+the mapping explicitly refuses OMS UNKNOWN, changed quantity, child
+ID, direction, reference price, stop, account or Broker epoch.
+
+**Critical open risk:** the Coordinator is validating its durable
+recovery-only ingress fence, but native Broker IDs are still supplied
+to this research helper; no actual broker-owned ID pair lease is
+performed here. The user's active FX position is NOT covered by this
+helper. The next allowed integration must atomically lease the two
+order IDs under the actual adapter send lock, bind them to the OMS
+transaction, restore them after crash, then run an isolated positive
+IBKR PAPER bracket/OCA canary. Do not infer authority from the
+research `Reservation` object or merge this PR as protection.
+
+Only the isolated Pocket4 research worktree was changed; no
+resident services, commands, positions or model selectors were touched.
