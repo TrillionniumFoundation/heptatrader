@@ -419,6 +419,7 @@
         "scripts/hepta_decision_attribution.py",
         "scripts/heptatrader_attributed_driver.py",
         "scripts/install_decision_attribution.py",
+        "scripts/hepta_maintenance_exposure_preflight.py",
         "scripts/hepta_nav_assurance.py"
       ],
       "tests": [
