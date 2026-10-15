@@ -3,6 +3,7 @@
 #include "execution/ib_paper_execution_runtime_composition.h"
 #include "execution/execution_coordinator.h"
 #include "adapter_ib/ib_venue_correlation.h"
+#include <cstdlib>
 #include <deque>
 #include <dirent.h>
 #include <cstring>
@@ -44,7 +45,10 @@ struct IbPostFillReconciliationFixture {
     std::string dir;ReplayBroker* broker;std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
     ExecutionOrderOwner owner;long id=0;IBContractLite btc,eur;
     explicit IbPostFillReconciliationFixture(bool issueSyntheticOrder = true) {
-        char name[]="/tmp/hepta-postfill-XXXXXX";auto p=::mkdtemp(name);need(p,"temporary private state");dir=p;
+        const char* configured=std::getenv("TMPDIR");
+        const std::string parent=configured && *configured ? configured : "/tmp";
+        std::string name=parent+"/hepta-postfill-XXXXXX";
+        auto p=::mkdtemp(&name[0]);need(p,"temporary private state");dir=p;
         btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
         eur.symbol="EUR";eur.secType="CASH";eur.exchange="IDEALPRO";eur.currency="USD";
         IbPaperExecutionRuntimeConfig c;c.stateDirectory=dir;c.profile.account="DU_TEST";c.profile.clientId=73;
