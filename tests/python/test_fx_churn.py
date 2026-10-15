@@ -93,13 +93,26 @@ class ResumeActivationTests(unittest.TestCase):
                      'open_attempts':[{'command_id':'old','at_ms':at}]})
    with self.assertRaises(f.ChurnError):
     f.resume_activation_control(c,seed,'a'*64)
- def test_old_prepared_attempt_union_uses_earliest_timestamp(self):
+ def test_newer_real_oms_send_cannot_age_out_with_earlier_prepared_time(self):
+  # Same immutable command was prepared before it was really sent. Choosing
+  # the earlier timestamp can erase the fresh send from the rolling-hour gate.
+  seed={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW-3600000,
+      'open_attempts':[{'command_id':'same','at_ms':NOW-300000},
+                       {'command_id':'other','at_ms':NOW-1800000}]}
+  old=f.fresh_control({'period_sha256':'a'*64,'activation_ms':NOW-4000000,
+      'last_exit_ms':NOW-3600000,'open_attempts':[{'command_id':'same','at_ms':NOW-3700000}]})
+  merged=f.resume_activation_control(old,seed,'a'*64)
+  self.assertEqual(next(x['at_ms'] for x in merged['open_attempts']
+                         if x['command_id']=='same'),NOW-300000)
+  merged.update(confirmations=2,signal_side='BUY',signal_latest_ms=NOW)
+  self.assertIn('ROLLING_HOUR_OPEN_LIMIT',f.admission(merged,state()['last_decision'],NOW)['reasons'])
+ def test_old_prepared_attempt_union_uses_latest_conservative_timestamp(self):
   seed={'period_sha256':'a'*64,'activation_ms':NOW,'last_exit_ms':NOW,'open_attempts':[
       {'command_id':'same','at_ms':NOW-10000}]}
   c=f.fresh_control({**seed,'activation_ms':NOW-200000,'last_exit_ms':NOW-100000,
       'open_attempts':[{'command_id':'same','at_ms':NOW-20000}]})
   newer=f.resume_activation_control(c,seed,'a'*64)
-  self.assertEqual(newer['open_attempts'],[{'command_id':'same','at_ms':NOW-20000}])
+  self.assertEqual(newer['open_attempts'],[{'command_id':'same','at_ms':NOW-10000}])
 
 
 class BaseIntegrationTests(unittest.TestCase):

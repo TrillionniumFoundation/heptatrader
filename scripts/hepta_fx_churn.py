@@ -90,7 +90,9 @@ def resume_activation_control(existing, seed, period):
             raise ChurnError('FX_ATTEMPT_CLOCK')
         if row['at_ms'] >= newer - 86400000:
             key = row['command_id']
-            attempts[key] = min(row['at_ms'], attempts.get(key, row['at_ms']))
+            # Later observed send/attempt must retain the more restrictive
+            # rolling-window clock; an earlier PREPARED receipt cannot age it out.
+            attempts[key] = max(row['at_ms'], attempts.get(key, row['at_ms']))
     updated = copy.deepcopy(seed)
     updated['open_attempts'] = [
         {'command_id': key, 'at_ms': value}
