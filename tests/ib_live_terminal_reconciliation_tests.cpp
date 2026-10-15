@@ -185,6 +185,43 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration() {
+    // Synthetic callbacks only. No real broker, place or cancel request.
+    Fixture f(true,false,true);
+    auto pushAccountAndPositions=[&](const std::string& cash) {
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value=cash;f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+    };
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    pushAccountAndPositions("-75000");
+    const auto first=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(first.barrierComplete && first.risk.coherentRefreshComplete);
+    auto monitor=f.Event(IBEventType::AccountValue);
+    monitor.key="CashBalance:EUR";monitor.value="-75000";
+    f.Push(monitor);
+    assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    monitor.value="-75001";f.Push(monitor);
+    const auto invalidated=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!invalidated.barrierComplete);
+    assert(!invalidated.risk.complete);
+    assert(invalidated.reasonCode=="IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    monitor.value="-75000";f.Push(monitor);
+    assert(!f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    // A genuinely new matched request/end boundary is required. An old
+    // subscription push can never reauthorize an unchanged risk snapshot.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    pushAccountAndPositions("-75000");
+    const auto renewed=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(renewed.barrierComplete && renewed.risk.complete);
+    assert(renewed.risk.accountGeneration>first.risk.accountGeneration);
+    assert(renewed.risk.positionsGeneration>first.risk.positionsGeneration);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
 void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     // All observations below are synthetic. No broker connection or sends.
     for(int invalidation=0;invalidation<6;++invalidation) {
@@ -613,8 +650,14 @@ void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     f.Push(f.Execution());f.Push(f.Status());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().generation==live.generation);
 
-    char path[]="/tmp/hepta-live-cancel-XXXXXX";const int fd=mkstemp(path);assert(fd>=0);close(fd);
-    OmsJournal journal;assert(journal.Init(path));OmsJournalEvent event;
+    const char* temporaryDirectory=std::getenv("TMPDIR");
+    const std::string tempRoot=temporaryDirectory && *temporaryDirectory ?
+        temporaryDirectory : "/tmp";
+    const std::string pattern=tempRoot+"/hepta-live-cancel-XXXXXX";
+    std::vector<char> path(pattern.begin(),pattern.end());
+    path.push_back('\0');
+    const int fd=mkstemp(path.data());assert(fd>=0);close(fd);
+    OmsJournal journal;assert(journal.Init(path.data()));OmsJournalEvent event;
     event.schemaVersion=OmsJournal::kSchemaVersion;event.eventType="cancel";event.tsMs=OmsJournal::NowEpochMs();
     event.eventId="deferred-fixture";event.orderId=id;event.reqId="cancel-fixture";event.clientReqId=event.reqId;
     event.traceId="session";event.source="agent.tool:agent";event.strategy="fixture";event.account="DU123";
@@ -636,7 +679,7 @@ void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     assert(result.status==ExecutionCommandStatus::Rejected&&result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");
     ExecutionCoordinator replay(journal,ExecutionCoordinatorCallbacks());assert(replay.RecoverFromJournal(reason));
     assert(replay.GetCommandStatus("agent","session","cancel-fixture",result));
-    assert(result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");std::remove(path);
+    assert(result.reasonCode=="AUTHORITATIVE_CANCEL_TARGET_FILLED");std::remove(path.data());
 }
 void TestCancelledAndPartialCancelled() {
     for(const char* status:{"Cancelled","ApiCancelled","Inactive","Rejected"}) {
@@ -854,6 +897,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
