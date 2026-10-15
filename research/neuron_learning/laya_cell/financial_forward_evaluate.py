@@ -18,7 +18,13 @@ from .financial_forward_witness import verify_record,sign_record
 
 def execution_index(source):
  from hepta_decision_attribution import read_private,strict
- raw=read_private(source['path'],32*1024**2)[:source['bytes']]
+ # The original ledger is append-only: its full size can exceed the frozen
+ # prefix. Keep a hard private-file bound without the obsolete 32 MiB ceiling.
+ # Do not weaken owner/mode/symlink checks or prefix SHA256 verification.
+ from hepta_decision_attribution import MAX_TOTAL
+ if type(source.get('bytes')) is not int or not 0 <= source['bytes'] <= MAX_TOTAL:
+  raise ContractError('FINANCIAL_LEDGER_PREFIX_SIZE')
+ raw=read_private(source['path'],MAX_TOTAL)[:source['bytes']]
  if len(raw)!=source['bytes'] or hashlib.sha256(raw).hexdigest()!=source['sha256']:raise ContractError('FINANCIAL_LEDGER_PREFIX_CHANGED')
  by_id={};by_command={};execution_commands={}
  for line in raw.splitlines():
