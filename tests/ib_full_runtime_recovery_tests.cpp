@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -78,6 +79,7 @@ struct Shared {
     std::map<std::string,unsigned> stages;
     std::atomic<unsigned> connectCount{0},orderCalls{0},accountCalls{0},positionCalls{0},openCalls{0},terminalCalls{0},execCalls{0};
     std::atomic<unsigned> injectedErrorsDequeued{0};
+    std::atomic<unsigned> positionEndsQueued{0}, positionEndsDequeued{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
     std::atomic<int> cashBalanceOverride{0};
@@ -133,7 +135,7 @@ public:
     bool ReqPositions()override {
         ++s->positionCalls;
         if(s->seeded){auto e=make(IBEventType::Position);e.key="BTC.USD";e.contract=contract(true);e.number=.01;events.push_back(e);}
-        if(!s->omitPositions)events.push_back(make(IBEventType::PositionEnd));return true;
+        if(!s->omitPositions){events.push_back(make(IBEventType::PositionEnd));++s->positionEndsQueued;}return true;
     }
     bool ReqAllOpenOrders()override{
         ++s->openCalls;
@@ -206,6 +208,7 @@ public:
     }
     bool TryDequeueEvent(IBEvent& e)override {
         if(events.empty())return false;e=events.front();events.pop_front();
+        if(e.type==IBEventType::PositionEnd)++s->positionEndsDequeued;
         const std::string injectedPrefix="OFFLINE_INJECTED:";
         if(e.type==IBEventType::Error&&e.value.compare(0,injectedPrefix.size(),injectedPrefix)==0)
             ++s->injectedErrorsDequeued;
@@ -461,7 +464,25 @@ struct Fixture {
         shared->reconnectCode=restore;shared->signal(1100);
         const auto until=ms()+6000;while(ms()<until&&shared->count("broker_reconnect_complete")==count&&!runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(5));
         std::string reason;runtime->HasFatalRuntimeError(&reason);
-        check(shared->count("broker_reconnect_complete")==count+1,"FULL_RECONNECT_FAILED: "+reason);
+        if(shared->count("broker_reconnect_complete")!=count+1) {
+            const auto audit=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
+            std::ostringstream diagnostic;
+            diagnostic<<"FULL_RECONNECT_FAILED: "<<reason
+                      <<" epoch="<<runtime->Adapter().GetConnectionEpoch()
+                      <<" account_calls="<<shared->accountCalls.load()
+                      <<" position_calls="<<shared->positionCalls.load()
+                      <<" position_ends_queued="<<shared->positionEndsQueued.load()
+                      <<" position_ends_dequeued="<<shared->positionEndsDequeued.load()
+                      <<" risk="<<audit.risk.reasonCode
+                      <<" account_complete="<<audit.risk.accountComplete
+                      <<" positions_complete="<<audit.risk.positionsComplete
+                      <<" active_complete="<<audit.active.complete
+                      <<" terminal_complete="<<audit.terminal.complete
+                      <<" barrier_complete="<<audit.barrierComplete
+                      <<" reconnect_refresh_dispatched="<<shared->count("broker_reconnect_refresh_dispatched")
+                      <<" reconnect_risk_dispatched="<<shared->count("broker_reconnect_recovery_risk_dispatched");
+            throw std::runtime_error(diagnostic.str());
+        }
         check(runtime->Adapter().GetConnectionEpoch()>oldEpoch,"full adapter epoch advanced");
         check(shared->orderCalls==0,"reconnect has no order methods");
         const auto audit=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
