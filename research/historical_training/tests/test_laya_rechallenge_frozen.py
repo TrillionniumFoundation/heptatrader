@@ -247,6 +247,30 @@ class RechallengeTests(unittest.TestCase):
         self.assertEqual(get_meta(db, "evaluation_trial"), 36)
         db.close()
 
+    def test_source_report_refresh_lag_only_allowed_with_actual_live_path(self):
+        from laya_cell.rechallenge_frozen import read_current_source
+        now = int(time.time()*1000)
+        status_path = self.root / "readiness.json"
+        write_once(status_path, {
+            "state": "READY_FOR_REVIEW_NOT_AUTHORIZATION",
+            "at_ms": now - 120000, "usable": 24, "unusable": 0,
+            "latest_quote_age_ms": 1000, "reasons": [],
+        })
+        quotes = [{"t": now - 360000 + i*5000,
+                   "receipt": "r%03d" % i} for i in range(72)]
+        quotes.append({"t": now - 1000, "receipt": "latest"})
+        with patch("laya_cell.resident_recent_source.read_recent_original_quotes",
+                   return_value=(quotes, [])):
+            good = read_current_source(self.config, status_path, now)
+        self.assertEqual(good["recent_quote_receipt"], "latest")
+        # A newly created 40-second hole is NOT made continuous by the
+        # earlier 24/24 report, even when the latest quote is fresh.
+        gapped = [q for q in quotes if not now-200000 < q["t"] < now-150000]
+        with patch("laya_cell.resident_recent_source.read_recent_original_quotes",
+                   return_value=(gapped, [])):
+            with self.assertRaisesRegex(ContractError, "RECENT_CAUSAL_PATH_GAP"):
+                read_current_source(self.config, status_path, now)
+
     def test_existing_scheduler_lease_prevents_race(self):
         with (self.control / "scheduler.lock").open("rb") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

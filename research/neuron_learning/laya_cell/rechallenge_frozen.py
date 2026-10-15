@@ -130,15 +130,24 @@ def read_current_source(config, status_path, now_ms):
     if (status.get("state") != "READY_FOR_REVIEW_NOT_AUTHORIZATION"
             or status.get("usable") != 24 or status.get("unusable") != 0
             or type(status.get("at_ms")) is not int
-            or not 0 <= now_ms - status["at_ms"] <= 90000
+            or not 0 <= now_ms - status["at_ms"] <= 300000
             or type(status.get("latest_quote_age_ms")) is not int
             or not 0 <= status["latest_quote_age_ms"] < 5000
             or status.get("reasons") != []):
         raise ContractError("RECHALLENGE_SOURCE_NOT_CONTINUOUS")
     from laya_cell.resident_recent_source import read_recent_original_quotes
     recent, pins = read_recent_original_quotes(config, now_ms)
-    if not recent or now_ms - recent[-1]["t"] >= 5000:
+    if not recent or not 0 <= now_ms - recent[-1]["t"] < 5000:
         raise ContractError("RECHALLENGE_LIVE_QUOTE_NOT_FRESH")
+    # Health summaries refresh slower than individual market quotes. Require
+    # a freshly rehashed causal six-minute path, rather than assuming a
+    # previously healthy report proves uninterrupted current source.
+    cutoff = now_ms - 360000
+    window = [q for q in recent if q["t"] >= cutoff]
+    if (not window or window[0]["t"] - cutoff > 30000
+            or any(b["t"] - a["t"] > 30000
+                   for a, b in zip(window, window[1:]))):
+        raise ContractError("RECHALLENGE_RECENT_CAUSAL_PATH_GAP")
     return {"readiness_sha256": sha_file(status_path),
             "recent_quote_count": len(recent),
             "recent_quote_receipt": recent[-1]["receipt"],
