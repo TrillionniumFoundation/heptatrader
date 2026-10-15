@@ -39,6 +39,14 @@ int main(){
    Must(!ConfirmReplay(duplicated,f,checked,reason)&&checked.uncertain,"duplicate child accepted");
    auto tampered=events;tampered[1].price+=.00005;
    Must(!ConfirmReplay(tampered,f,checked,reason)&&checked.uncertain,"changed stop accepted");
+   auto otherVenue=events;otherVenue[1].venue="SIMULATED";
+   Must(!ConfirmReplay(otherVenue,f,checked,reason)&&checked.uncertain,"wrong venue accepted");
+   auto otherSource=events;otherSource[0].source="UNTRUSTED";
+   Must(!ConfirmReplay(otherSource,f,checked,reason)&&checked.uncertain,"wrong source accepted");
+   auto otherInstrument=events;otherInstrument[0].instrument="BTC.USD";
+   Must(!ConfirmReplay(otherInstrument,f,checked,reason)&&checked.uncertain,"wrong instrument accepted");
+   auto otherTimestamp=events;otherTimestamp[1].tsMs+=1000;
+   Must(!ConfirmReplay(otherTimestamp,f,checked,reason)&&checked.uncertain,"wrong timestamp accepted");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
    auto foreign=events;foreign[0].eventType="place_send_attempt";

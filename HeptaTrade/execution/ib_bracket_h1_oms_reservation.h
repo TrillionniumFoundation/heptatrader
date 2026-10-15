@@ -95,11 +95,11 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
            e.account!=f.account || e.executionDomain!="PAPER") {
             out.uncertain=true;reason="H1_UNEXPECTED_ORIGINAL_COMMAND_EVENT";return false;
         }
-        bool isParent=e.orderId==parent.orderId &&
+        bool isParent=e.tsMs==parent.tsMs && e.source==parent.source && e.venue==parent.venue && e.instrument==parent.instrument && e.orderId==parent.orderId &&
             e.venueCorrelationId==parent.venueCorrelationId &&
             e.eventId==parent.eventId && e.side==parent.side &&
             e.qty==parent.qty && e.price==parent.price;
-        bool isChild=e.orderId==child.orderId &&
+        bool isChild=e.tsMs==child.tsMs && e.source==child.source && e.venue==child.venue && e.instrument==child.instrument && e.orderId==child.orderId &&
             e.venueCorrelationId==child.venueCorrelationId &&
             e.eventId==child.eventId && e.side==child.side &&
             e.qty==child.qty && e.price==child.price;
