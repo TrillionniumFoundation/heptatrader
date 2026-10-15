@@ -40,10 +40,14 @@
   requests and bounded resource denial causes. It reports both a rolling 12h
   denominator and a **strictly post-restoration** denominator.
 - The first *post-zram* matured request was still unscored: its specific guard
-  refusal was `HOST_FULL_MEMORY_PSI_PRESSURE` at avg60=0.16. At this writing,
-  no mature **post-R5-trigger-cutover** eligible sample has demonstrated a
-  sustained seal-rate improvement. Do not advertise projected improvements
-  as observed facts.
+  refusal was `HOST_FULL_MEMORY_PSI_PRESSURE` at avg60=0.16. The first
+  *post-R5 final cutover* flat-position request arrived 2026-10-15 09:13
+  device-local time. The new watcher invoked the unchanged frozen worker
+  at request ages 0.8, 14.8, 28.9 and 42.9 seconds. The request still
+  reached an immutable deadline miss because the original guard saw
+  `HOST_FULL_MEMORY_PSI_PRESSURE` (avg60=0.19). Source and signed-prediction
+  audit found 1 mature post-cutover opportunity, 0 valid commits.
+  No improvement can yet be claimed.
 
 ## Offline cost-aware training
 
@@ -97,6 +101,10 @@ Desktop Commander service were modified.
   supplied native fixture configurations were not claimed as passing.
 - Additional final deployment receipt:
   `~/.local/state/heptatrader/operator-evidence/value-original-request-trigger-r5-final-20261015/`.
-- There were no new mature post-cutover eligible original requests at the
-  R5 cutover verification checkpoint; preserve this as a pending
-  real-forward qualification, not an inferred improvement.
+- The initial R5 cutover checkpoint had no mature post-cutover eligible
+  original requests. Its first later request was **1/1 unsuccessful** despite
+  all four bounded retries; the new control worked, but sustained host memory
+  pressure prevented the original prediction. Keep the old signed-trial
+  validity and `60s` publication deadline unchanged rather than backfill.
+- Independent read-only first-request receipt:
+  `~/.local/state/heptatrader/operator-evidence/value-coverage-audit-20261015-r5/post-r5-first-mature.json`.
