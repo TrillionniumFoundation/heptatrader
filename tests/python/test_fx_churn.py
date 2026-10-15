@@ -1,9 +1,9 @@
 """Synthetic FX anti-churn controls and unchanged real base-driver contracts."""
-import copy,importlib.util,json,os,sys,tempfile,unittest
+import copy,importlib.util,json,os,sys,tempfile,unittest,warnings
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'scripts'))
 import hepta_fx_churn as f
-from install_fx_churn import collect_original_oms_open_attempts, release_slot_name, flat, wait_for_natural_flat
+from install_fx_churn import collect_original_oms_open_attempts, release_slot_name, flat, wait_for_natural_flat, validate_restarted_fx_service
 NOW=1800000000000
 
 def seed():return {'period_sha256':'a'*64,'last_exit_ms':NOW-3600000,'open_attempts':[]}
@@ -125,6 +125,41 @@ class NaturalFlatWaitTests(unittest.TestCase):
      wait_for_natural_flat(lambda:self.state(),lambda:'123','123',secs)
   with self.assertRaisesRegex(RuntimeError,'ORIGINAL_DRIVER_MISSING'):
    wait_for_natural_flat(lambda:self.state(position=0),lambda:'0','0',1)
+
+
+class InstallerRestartIdentityTests(unittest.TestCase):
+ def setup_service(self):
+  release=Path('/fixture/immutable-release')
+  manifest=release/'manifest.json'
+  driver=release/'heptatrader_attributed_driver.py'
+  current={'ActiveState':'active','MainPID':'202',
+      'ExecStart':'{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -B '+str(driver)+
+          ' --manifest '+str(manifest)+' ; ignore_errors=no ; pid=202 ; status=0/0 }'}
+  previous={'ActiveState':'active','MainPID':'101'}
+  return previous,current,release
+ def test_restart_proves_distinct_pid_and_exact_release_argv(self):
+  previous,current,release=self.setup_service()
+  with warnings.catch_warnings():
+   warnings.simplefilter('error',FutureWarning)
+   validate_restarted_fx_service(previous,current,release)
+ def test_inactive_same_pid_or_invalid_pid_refuse_completion(self):
+  previous,current,release=self.setup_service()
+  for field,value in (('ActiveState','failed'),('MainPID','101'),
+                      ('MainPID','0'),('MainPID','bogus')):
+   with self.subTest(field=field,value=value):
+    changed={**current,field:value}
+    with self.assertRaisesRegex(RuntimeError,'FX_RESTART_IDENTITY_NOT_VERIFIED'):
+     validate_restarted_fx_service(previous,changed,release)
+ def test_wrong_manifest_or_executable_cannot_be_reported_activated(self):
+  previous,current,release=self.setup_service()
+  for wrong in (
+      current['ExecStart'].replace('manifest.json','other.json'),
+      current['ExecStart'].replace('heptatrader_attributed_driver.py','foreign-driver.py'),
+      current['ExecStart'].replace(' -B ',' -B --disable-risk '),
+      current['ExecStart'].replace('path=/usr/bin/python3','path=/bin/sh')):
+   with self.subTest(case=wrong[:70]):
+    with self.assertRaisesRegex(RuntimeError,'FX_RESTART_IDENTITY_NOT_VERIFIED'):
+     validate_restarted_fx_service(previous,{**current,'ExecStart':wrong},release)
 
 
 class InstallerTwoPhaseTests(unittest.TestCase):
