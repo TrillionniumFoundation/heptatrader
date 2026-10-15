@@ -71,6 +71,20 @@ class StackedCiReachabilityTests(unittest.TestCase):
         self.assertIn('torch.version.cuda is None', python_steps[install_index]['run'])
         self.assertFalse(any('actions/cache@' in str(x) for x in ci['jobs']['core']['steps']))
 
+    def test_documentation_failure_precedes_heavy_cpu_torch_install(self):
+        steps = workflow('core-ci.yml')['jobs']['python']['steps']
+        docs = [(i, s) for i, s in enumerate(steps) if
+                'scripts/check_documentation.py' in s.get('run', '')]
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0][1].get('name'), 'Documentation links preflight')
+        install = next(i for i, s in enumerate(steps) if
+                       s.get('name') == 'Install pinned CPU research test dependency')
+        core = next(i for i, s in enumerate(steps) if
+                    s.get('name') == 'Python behavior and source tests once')
+        self.assertLess(docs[0][0], install)
+        self.assertLess(install, core)
+        self.assertNotIn('continue-on-error', docs[0][1])
+
     def test_native_feedback_does_not_wait_for_torch_or_python(self):
         ci = workflow('core-ci.yml')
         native = str(ci['jobs']['core'])
