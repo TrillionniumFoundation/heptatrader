@@ -92,3 +92,125 @@ https://www.interactivebrokers.com/docs/tws-api/doc/orders/place-order/adding-a-
    CTest pass, or this research header cannot close Issue #331.
 
 **Disposition: research-only / fail-closed / no transport / no auto-promotion.**
+
+## Follow-up: shadow parent+child native-wire binding and actual OMS disk replay
+
+The non-dispatching shadow now covers the official TWS parent-child transmission
+sequence **before the next real IB API integration**:
+
+- An original flat PAPER owner with one exclusive risk-increase decision,
+  exact account/conId/client ID, fresh same-epoch position and order snapshots,
+  and reserved consecutive native order IDs produces an **unsent** parent
+  `MKT/DAY/transmit=false` and opposite-side child
+  `STP/GTC/parentId=<original parent>/transmit=true`.
+- A fake TWS stages the parent without executing it, then simulates final-child
+  group release. Fake driver death retains the fake working stop. A fake TWS
+  restart **before** the child clears the held parent and prohibits replay.
+- New CTest `hepta_execution_bracket_shadow_tests` rejects wrong account,
+  owner, conId, original command, stale mixed broker epochs, active orders,
+  invalid grid/quantity, changed child identity, wrong permanent IDs,
+  partial parent or stop, unknown trigger method, disconnection, and any
+  ordinary exit lacking verified OCA protection. The final "protected" label
+  remains permanently false for real trading, regardless of fake status.
+- `hepta_execution_bracket_shadow_oms_tests` exercises the **existing
+  production OmsJournal implementation** on a disposable isolated filesystem
+  path. An actual critical `order_intent` is synced before the fake venue
+  can stage the parent; a SHA256 request fingerprint binds original command,
+  exact parent and child IDs, owner, account, quantity, stop and transmit
+  modes. Mutating stop price or child order ID invalidates the original
+  persisted fingerprint. On reopen, the exact command is replayed, but an
+  untransmitted parent is NEVER interpreted as protection or an excuse to
+  send an extra child. The test creates **no resident OMS event**.
+- A mock order `Submitted` and a matching permanent ID prove nothing about
+  future stop triggering or safe manually initiated close. Broker-level
+  parent/child atomicity, fill timing, FX GTC/STP availability, actual IBKR
+  stop simulation, unknown child delivery, and OCA overfill protection still
+  require original-owner, exact-account, isolated PAPER callbacks.
+
+This work deliberately does **not** add broker-send calls, order transport,
+parent/child fields to the production RPC, or an authority to stop Driver.
+IBKR specifically notes that untransmitted TWS orders can be cleared on TWS
+restart; the shadow state machine does not treat them as durable protection.
+
+Verified Pocket4: CMake Release build; CTest of shadow bracket, shadow OMS,
+original single-stop, and existing broker PAPER profile targets; C++11 strict
+warnings; ASan/UBSan for pure shadow bracket; no Gateway/Driver/Execution
+restart and no order network messages. This work is still **Draft** and
+**cannot** close Issue #331.
+
+## Live PAPER read-only contract/tick observation — not order approval
+
+A one-shot IBKR **PAPER-only** connection at local port `4002` was made with a
+separate bounded read-only client identity. `managedAccounts` confirmed PAPER
+(`DU...`, exact account never written into the report). The network egress
+method was restricted to TWS `START_API=71`, `REQ_CONTRACT_DATA=9`, and on
+a second independent session `REQ_MARKET_RULE=91`. No order, market data,
+portfolio mutation, or historical request was sent.
+
+The broker returned:
+
+| Read-only IB result | Exact evidence |
+| --- | --- |
+| Contract | `EUR / USD / CASH / IDEALPRO` |
+| Broker conId | `12087792` |
+| ContractDetails.minTick | `5e-05` |
+| ContractDetails.marketRuleIds | `3188` |
+| MarketRule 3188 price band | `lowEdge=0.0; increment=5e-05` |
+
+Receipts live in the private Pocket4 evidence root:
+`~/.local/state/heptatrader/operator-evidence/owner-stop-shadow-20261015-r1/`
+
+- `ib-paper-contract-details-probe.json`, SHA256
+  `424f4a2355e28ff52614078ee6769beb58080a3151d8244a225ca25c6a31c8b6`.
+- `ib-paper-market-rule3188-probe.json`, SHA256
+  `ab15fdc9ba3e7ad2e850b863ea14d8af47951875ec305f905b7170eafe72535e`.
+
+The exact-conId *shadow* stop and bracket now **refuse** a supplied price
+increment other than `0.00005` rather than silently using the old synthetic
+`0.00001`. If IB contract rules change in the future, these tests must be
+re-qualified from an independent current broker callback. A verified tick and
+market rule **do not** attest that the PAPER account accepts native GTC/STP,
+that the stop will be held by IB, or that an OCA/child prevents reversal.
+
+## Broker-paired shadow release and OMS evidence
+
+Added `hepta_execution_bracket_shadow_tests` and
+`hepta_execution_bracket_shadow_oms_tests` to the canonical core CTest lane.
+The shadow parent is MKT/DAY/transmit=false, and the child stop is
+STP/GTC/transmit=true with the exact parentId and consecutive broker-order-ID
+reservation in the same synthetic IB client. A fake TWS supports staged parent
+then child release, failure before release and driver death. Those are **mock
+behaviors**, not proof of TWS implementation or gap-free transmission.
+
+The existing `OmsJournal` class is exercised against a **disposable local
+ledger**, not the resident journal. The original critical intent is synced
+before simulated staging. SHA256 of a length-delimited canonical group binds
+parent and child order IDs, direction, reference stop price, quantity, account,
+owner, client ID, broker epoch and transmit flags. Tampered child price/ID
+cannot replay the original intent; the journal is reopened after a simulated
+restart. A lost untransmitted parent cannot be redispatched from the local
+journal alone.
+
+All paths remain research-only with no broker transport, no maintenance
+permission, no production order profile changes, and no automatic strategy
+selection. The final IBKR PAPER group, actual parent partial fills, failure
+unknown after child transmit, ordinary exit/OCA interactions, and persistent
+broker stop across a *real* Driver outage remain **unproven**.
+
+## Further negative evidence: unknown child transmission and original notional
+
+The OMS shadow test now writes **two real critical records** on its isolated
+journal path: a previously durable `order_intent` before the held parent and a
+`place_send_attempt` *before* the simulated final-child transmit. The intent
+and attempt share the same immutable SHA256 bound group. After a simulated
+crash with the child potentially already released, exact journal replay shows
+one intent plus one send attempt; it must recover as **UNKNOWN**. There is no
+new broker submission, no forged cancellation, no zero-fill claim and no
+maintenance permission. This is still synthetic venue evidence; testing the
+real uncertain-release outcome requires broker callback data in PAPER.
+
+Additional shadow refusal requires the original EUR/USD **USD 100,000
+reference-notional budget**, not just a <=100,000-EUR order quantity, and
+rejects unavailable / overflowing broker numeric order IDs. These are not
+production field/behavior changes: the original Execution send path remains
+unchanged in this PR.

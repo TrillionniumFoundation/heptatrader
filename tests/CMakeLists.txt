@@ -218,6 +218,20 @@ add_executable(hepta_execution_owner_stop_shadow_tests
     execution_owned_stop_shadow_tests.cpp)
 hepta_register_core_test(hepta_execution_owner_stop_shadow_tests)
 
+# Simulated native parent transmit=false / child transmit=true bracket group.
+# Still no broker transport or maintenance authority in this research target.
+add_executable(hepta_execution_bracket_shadow_tests
+    execution_bracket_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_bracket_shadow_tests)
+
+# Use the actual production OmsJournal on a temporary isolated path. Never
+# attach a source to the resident OMS ledger or contact a real broker.
+add_executable(hepta_execution_bracket_shadow_oms_tests
+    execution_bracket_shadow_oms_tests.cpp)
+target_link_libraries(hepta_execution_bracket_shadow_oms_tests PRIVATE
+    hepta_oms_journal OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_shadow_oms_tests)
+
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
     ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)

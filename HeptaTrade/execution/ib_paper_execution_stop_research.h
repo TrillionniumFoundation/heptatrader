@@ -99,6 +99,11 @@ inline StopProposal ProposeUnsentFxStop(
         s.minTick > 0.001 || !positive(s.brokerBid) ||
         !positive(s.brokerAsk) || s.brokerAsk < s.brokerBid)
         throw Refusal("EXACT_FX_FILL_QUOTE_GRID_REQUIRED");
+    // Exact PAPER conId 12087792 / market rule 3188 on 2026-10-15.
+    // Refuse changed ticks until new live broker contractDetails and rule
+    // evidence is independently requalified (research-only candidate).
+    if (s.minTick != 0.00005)
+        throw Refusal("FX_CONTRACT_MARKET_RULE_CHANGED");
     const double quantity = std::fabs(s.brokerQuantity);
     if (quantity > 100000.0 || std::floor(quantity) != quantity)
         throw Refusal("FX_QUANTITY_OUTSIDE_ORIGINAL_GRID");
