@@ -38,6 +38,33 @@ def coherent_idle(state):
 def economic_state(state):
  return {k:state.get(k) for k in ('position','pending','entries','exits','gross_pnl','entry_price','entry_price_basis','entry_at_ms')}
 
+def wait_for_natural_flat(read_state, owner_identity, original_pid, timeout_seconds,
+                          *, monotonic=time.monotonic, sleep=time.sleep):
+    """Wait for the original strategy's voluntary flat state, never place/close orders.
+
+    The official installer still obtains a fresh Broker position/order/owner
+    snapshot after stopping that exact original driver. This watch is only
+    an early, bounded file-level hint, not broker authorization.
+    """
+    if type(timeout_seconds) is not int or not 1<=timeout_seconds<=1800:
+        raise ValueError('FX_NATURAL_FLAT_WAIT_LIMIT')
+    if not original_pid or original_pid=='0':
+        raise RuntimeError('FX_ORIGINAL_DRIVER_MISSING')
+    deadline=monotonic()+timeout_seconds
+    while True:
+        if owner_identity()!=original_pid:
+            raise RuntimeError('FX_ORIGINAL_DRIVER_CHANGED_DURING_WAIT')
+        state=read_state()
+        if flat(state):
+            if owner_identity()!=original_pid:
+                raise RuntimeError('FX_ORIGINAL_DRIVER_CHANGED_DURING_WAIT')
+            return state
+        remaining=deadline-monotonic()
+        if remaining<=0:
+            raise RuntimeError('FX_NO_NATURAL_FLAT_WITHIN_BOUNDED_WINDOW')
+        sleep(min(.35,remaining))
+
+
 def release_slot_name(head, now, activate):
     # A stage-only artifact and a later flat activation cannot share a frozen
     # OMS seed: activation must consume a fresh original command window.
@@ -71,7 +98,12 @@ def collect_original_oms_open_attempts(blob, now, period_started_at):
     return attempts
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--evidence',type=Path,required=True);p.add_argument('--activate',action='store_true');a=p.parse_args();os.umask(0o077)
+ p=argparse.ArgumentParser();p.add_argument('--evidence',type=Path,required=True);p.add_argument('--activate',action='store_true')
+ p.add_argument('--wait-flat-seconds',type=int,default=0,
+                help='bounded local-only wait for natural flat before original broker-verified activation')
+ a=p.parse_args();os.umask(0o077)
+ if a.wait_flat_seconds<0 or a.wait_flat_seconds>1800 or (a.wait_flat_seconds and not a.activate):
+  raise RuntimeError('FX_NATURAL_FLAT_WAIT_SCOPE')
  h=Path.home();repo=Path(__file__).resolve().parents[1];scripts=repo/'scripts'
  if os.geteuid()==0:raise RuntimeError('USER_SERVICE_ONLY')
  if subprocess.check_output(['git','-C',str(repo),'status','--porcelain'],text=True).strip():raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
@@ -100,7 +132,20 @@ def main():
  # New-entry-only activation is performed exclusively at a real zero-exposure
  # boundary. Never stop an existing 100K FX position merely for installation.
  if a.activate and not flat(state):
-  raise RuntimeError('FX_ACTIVATION_REQUIRES_FLAT_AND_SETTLED_STATE')
+  if not a.wait_flat_seconds:
+   raise RuntimeError('FX_ACTIVATION_REQUIRES_FLAT_AND_SETTLED_STATE')
+  # State files are a hint only; lock, economic identity and native Broker
+  # checks after stopping the exact owner remain authoritative and unchanged.
+  def same_original_owner():
+   current=show(unit)
+   return (current.get('MainPID') if current.get('ActiveState')=='active'
+           else None)
+  state=wait_for_natural_flat(
+      lambda:read(state_path),same_original_owner,
+      before_unit['MainPID'],a.wait_flat_seconds)
+ if a.activate and (show(unit)['MainPID'] != before_unit['MainPID'] or
+                    not flat(state)):
+  raise RuntimeError('FX_DRIVER_OR_STATE_CHANGED_AFTER_WAIT')
  now=int(time.time()*1000);journal=h/'.local/state/heptatrader/execution/oms-journal.jsonl';blob=journal.read_bytes();blob=blob[:blob.rfind(b'\n')+1]
  attempts=collect_original_oms_open_attempts(blob,now,read(period)['started_at_ms'])
  seed={'period_sha256':old['period_sha256'],'last_exit_ms':now,'activation_ms':now,
