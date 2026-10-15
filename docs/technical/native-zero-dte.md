@@ -397,6 +397,32 @@ Execution is process-alive but still reports risk/account/position snapshots
 incomplete with IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE. The protected runtime
 has NOT recovered. A new option canary or three-line restart is not qualified.
 
+### 2026-10-15 R7: read-only observation is not PAPER authorization
+
+The `heptatrader.ib-runtime-observation.v1` serializer deliberately publishes
+`authorization_effect=NONE`, `paper_authorized=false`, and
+`live_authorized=false` for **every telemetry event**. These literals mean
+the *observation has no authorization effect*. They are **not** a broker
+permission flag, are **not** the owner-scoped `mutation_ready` health value,
+and cannot prove that live PAPER orders were disabled.
+
+R7 read-only OMS evidence recorded five EUR/USD entry sends, five
+flatten sends and ten broker execution callbacks after 09:20 local device
+time by the later 10:26 local checkpoint, while the runtime-observation
+record still carried those fixed false fields. An independent `recovery_barrier_complete=false` refers to the
+recovery-owner audit path; do not generalize it into a claim of zero normal
+PAPER traffic. To assess the actual current trading state, correlate the
+Execution service epoch with real OMS sends/fills, original command state,
+owner-scoped mutation health, broker positions and open orders.
+
+The separate callback diagnosis `risk.fx_cash_monitor_invalidated` records
+the subscription request ID, connection and risk generations and whether
+a committed checkpoint was present **without serializing balance values**.
+It is a diagnostic of why a committed risk generation becomes stale. The
+original fail-closed invalidation, new-epoch recovery rules and required
+reconciliation remain unchanged; R7's native test confirms a risk-increasing
+broker send is refused after a cash generation invalidation.
+
 ### Validation and installation boundaries
 
 Rebuilt local CTest: 59/59, with the two new native audit/trace suites; separately

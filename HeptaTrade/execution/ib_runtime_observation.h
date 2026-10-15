@@ -11,6 +11,11 @@
 // command/order identifiers or authorization effect, and is sampled from the
 // adapter's lock-bound recovery-audit snapshot rather than by joining unrelated
 // getters in userspace.
+// The serializer's literal paper_authorized=false / live_authorized=false
+// describe THIS telemetry record's lack of authorization effect. They DO NOT
+// assert that the running PAPER strategy is disabled or incapable of order
+// execution. Derive actual mutation readiness from owner-scoped execution
+// health and broker/OMS send and terminal evidence, never this record.
 struct IbRuntimeObservationSnapshot
 {
     std::uint64_t observedAtMs = 0;

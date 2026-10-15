@@ -974,9 +974,37 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
     const std::map<std::string, double>::const_iterator committed =
         m_authoritativeFxCashBalances.find(currency);
     if (committed == m_authoritativeFxCashBalances.end() ||
-        committed->second != parsed)
+        committed->second != parsed) {
+        // A subscription update is a freshness signal, never an account/position
+        // download boundary. Record the provenance of the invalidation without
+        // persisting currency balances or silently reopening broker authority.
+        // Only the first transition in a risk generation needs a diagnostic.
+        // Repeated subscription pushes after risk is already denied must not
+        // flood a bounded observability journal or look like new generations.
+        if (m_riskSnapshot.accountComplete ||
+            m_riskSnapshot.fxCashComplete ||
+            m_riskSnapshot.reasonCode !=
+                "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE")
+            EmitObsEvent(
+            "risk.fx_cash_monitor_invalidated",
+            "\"subscription_request_id\":" + std::to_string(event.id) +
+            ",\"connection_epoch\":" + std::to_string(m_connectionEpoch) +
+            ",\"account_generation\":" +
+                std::to_string(m_riskSnapshot.accountGeneration) +
+            ",\"positions_generation\":" +
+                std::to_string(m_riskSnapshot.positionsGeneration) +
+            ",\"fx_cash_generation\":" +
+                std::to_string(m_riskSnapshot.fxCashGeneration) +
+            ",\"previous_cash_checkpoint_present\":" +
+                (committed == m_authoritativeFxCashBalances.end() ?
+                    "false" : "true") +
+            ",\"account_complete_before\":" +
+                (m_riskSnapshot.accountComplete ? "true" : "false") +
+            ",\"fx_cash_complete_before\":" +
+                (m_riskSnapshot.fxCashComplete ? "true" : "false"));
         InvalidateRiskSnapshot(
             "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE");
+    }
     return true;
 }
 
