@@ -1,14 +1,15 @@
 # Core artifact acceptance and tagged release
 
-Status: CURRENT
-Applies to: broker-disabled core packages on disposable Linux CI VMs
+Status: CURRENT (tagged-release artifact acceptance; NOT an ordinary PR merge gate)
+Applies to: broker-disabled tagged core packages on disposable Linux CI VMs
 
 ## Producer and consumer identity
 
-The core workflow keeps the `core-runtime-exact-head` check context. It builds
-and runs native tests, then invokes `scripts/accept_core_release.py`. The tag
-workflow checks tag/VERSION equality, builds native tests and invokes the same
-driver. Rebuilding a tag is permitted, but its newly built package must pass
+The normal pull-request/push `core-runtime-exact-head` check builds and runs
+the native core tests via `scripts/dev_core.sh`; it does **not** run
+`scripts/accept_core_release.py` or authorize a trading deployment. The
+separate tagged-release workflow checks tag/VERSION equality, builds native
+tests and invokes the installed-artifact acceptance driver. Rebuilding a tag is permitted, but its newly built package must pass
 installed acceptance; another run's source-only green status is not substituted.
 
 The driver verifies the source checkout, runs the install/core Python partitions,
