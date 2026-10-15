@@ -3,6 +3,7 @@ import copy,importlib.util,json,os,sys,tempfile,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'scripts'))
 import hepta_fx_churn as f
+from install_fx_churn import collect_original_oms_open_attempts
 NOW=1800000000000
 
 def seed():return {'period_sha256':'a'*64,'last_exit_ms':NOW-3600000,'open_attempts':[]}
@@ -54,6 +55,46 @@ class PolicyTests(unittest.TestCase):
   with self.assertRaises(f.ChurnError):f.admission(c,state()['last_decision'],NOW)
  def test_serialized_restart_keeps_cooldown(self):
   c=confirmed();c['last_exit_ms']=NOW-1;c=json.loads(json.dumps(c));self.assertFalse(f.admission(c,state()['last_decision'],NOW)['allowed'])
+
+class InstallerOmsSeedTests(unittest.TestCase):
+ def record(self,event='place_sent',ts=NOW,command='original',instrument='EUR.USD',domain='PAPER'):
+  return {'event':event,'ts_ms':ts,'req_id':command,
+          'instrument':instrument,'execution_domain':domain}
+ def seed(self,*events,now=NOW,period=NOW-86400000):
+  return collect_original_oms_open_attempts(
+   b''.join((json.dumps(row,sort_keys=True)+'\n').encode() for row in events),now,period)
+ def test_duplicate_original_id_uses_later_actual_send(self):
+  # The send inside the rolling-hour window must not be aged out by an
+  # earlier, pre-window observation of exactly the same original identity.
+  old=self.record(ts=NOW-3700000)
+  fresh=self.record(ts=NOW-300000)
+  result=self.seed(old,fresh,period=NOW-86400000)
+  self.assertEqual(result,{'original':NOW-300000})
+ def test_outcome_later_than_send_retains_latest_bound(self):
+  send=self.record(ts=NOW-1100000)
+  outcome=self.record(event='place_outcome_uncertain',ts=NOW-200000)
+  self.assertEqual(self.seed(send,outcome),{'original':NOW-200000})
+ def test_filters_unrelated_and_outside_window_rows(self):
+  rows=[
+    self.record(instrument='BTC.USD'),
+    self.record(domain='LIVE'),
+    self.record(ts=NOW-86400001),
+    self.record(event='order_intent'),
+    self.record(ts=NOW-250000,command='correct'),
+  ]
+  self.assertEqual(self.seed(*rows),{'correct':NOW-250000})
+ def test_future_and_malformed_relevant_send_fail_closed(self):
+  for row in (self.record(ts=NOW+1),self.record(command=''),
+              self.record(ts='future'),self.record(ts=True)):
+   with self.subTest(row=row):
+    with self.assertRaisesRegex(ValueError,'UNVERIFIABLE_OR_FUTURE_FX_OPEN_ATTEMPT'):
+     self.seed(row)
+ def test_latest_event_must_stay_bounded_by_frozen_period(self):
+  old=self.record(ts=NOW-3700000)
+  later=self.record(ts=NOW-900000)
+  self.assertEqual(self.seed(old,later,period=NOW-1000000),{'original':NOW-900000})
+  self.assertEqual(self.seed(old,period=NOW-1000000),{})
+
 
 class ResumeActivationTests(unittest.TestCase):
  def test_stale_oct7_control_reseeds_from_original_oms(self):
