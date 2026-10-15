@@ -2,10 +2,68 @@
 No broker connection, trading configuration changes, model fit, or promotion.
 """
 from __future__ import annotations
-import argparse,json,time
+import argparse,fcntl,hashlib,json,os,time
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,atomic,write_once,canonical
 from .current100k import BEHAVIOR,validate_config,to_row
+
+def publish_incremental(root, payload, budget_bytes):
+    """One immutable receipt per settled episode; one bounded replaceable view.
+
+    Prior full dataset snapshots are preserved, but never counted against this
+    separate incremental budget. Readers must pin the current view by SHA256.
+    An episode whose result changes or disappears fails rather than rewriting
+    a previously learned reward.
+    """
+    if type(budget_bytes) is not int or not 16*1024**2 <= budget_bytes <= 512*1024**2:
+        raise EvidenceError('INCREMENTAL_STORAGE_BUDGET_INVALID')
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    store = root / 'incremental-v1'
+    store.mkdir(mode=0o700, exist_ok=True)
+    lock = store / 'publisher.lock'
+    with lock.open('a+b') as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        entries = store / 'episodes'
+        entries.mkdir(mode=0o700, exist_ok=True)
+        current = {}
+        for row in payload['rows']:
+            episode = row['episode_id']
+            if type(episode) is not str or not episode or len(episode) > 1024:
+                raise EvidenceError('INCREMENTAL_EPISODE_ID')
+            key = hashlib.sha256(episode.encode('utf-8')).hexdigest()
+            if key in current:
+                raise EvidenceError('INCREMENTAL_DUPLICATE_EPISODE')
+            current[key] = {'schema': 'heptatrader.current100k-episode.v1',
+                            'episode_id': episode, 'row_id': row['row_id'], 'row': row}
+        found = set()
+        for path in entries.iterdir():
+            if path.is_symlink() or not path.is_file() or not path.name.endswith('.json'):
+                raise EvidenceError('INCREMENTAL_ENTRY_INVALID')
+            found.add(path.stem)
+            if path.stem not in current or read(path) != current[path.stem]:
+                raise EvidenceError('INCREMENTAL_REWARD_REWRITTEN_OR_WITHDRAWN')
+        new_entries = [(entries / (key+'.json'), value)
+                       for key, value in current.items() if key not in found]
+        latest = store / 'dataset-current.json'
+        if latest.is_symlink() or (latest.exists() and not latest.is_file()):
+            raise EvidenceError('INCREMENTAL_VIEW_INVALID')
+        used = sum(path.stat().st_size for path in store.rglob('*') if path.is_file())
+        view_bytes = len(canonical(payload)) + 1
+        old_view_bytes = latest.stat().st_size if latest.exists() else 0
+        projected = (used - old_view_bytes + view_bytes
+                     + sum(len(canonical(value))+1 for _, value in new_entries))
+        if projected > budget_bytes:
+            raise EvidenceError('INCREMENTAL_STORAGE_BUDGET_NO_PRUNING')
+        vfs = os.statvfs(root)
+        if vfs.f_bavail * vfs.f_frsize < max(1024**3, projected-used+1024**3):
+            raise EvidenceError('FILESYSTEM_RESERVE')
+        for path, value in new_entries:
+            write_once(path, value)
+        atomic(latest, payload)
+        return latest, {'schema':'heptatrader.current100k-incremental-status.v1',
+                        'budget_bytes': budget_bytes, 'projected_used_bytes': projected,
+                        'durable_episodes': len(current), 'new_episodes': len(new_entries),
+                        'legacy_snapshots_preserved': True}
 
 def export(config):
     validate_config(config)
@@ -38,20 +96,13 @@ def export(config):
         'automatic_training':False,'automatic_selection':False,'trade_authority':False}
     payload['fingerprint']=digest(payload)
     root=Path(config['output_root'])
-    dataset=root/'datasets'/(payload['fingerprint']+'.json')
-    used=sum(p.stat().st_size for p in root.rglob('*') if p.is_file()) if root.exists() else 0
-    extra=0 if dataset.exists() else len(canonical(payload))+1
-    if used+extra>256*1024*1024:
-        raise EvidenceError('CONSUMER_STORAGE_BUDGET_NO_PRUNING')
-    root.mkdir(mode=0o700,parents=True,exist_ok=True)
-    space=__import__('os').statvfs(root)
-    if space.f_bavail*space.f_frsize-extra<1024*1024*1024:
-        raise EvidenceError('FILESYSTEM_RESERVE')
-    write_once(dataset,payload)
+    dataset,storage=publish_incremental(
+        root,payload,config.get('incremental_budget_bytes',128*1024*1024))
     status={'schema':'heptatrader.current100k-consumer-status.v1','at_ms':int(time.time()*1000),
         'state':'READY_VALUE_LABELS_NOT_EFFICACY' if rows else 'WAITING_CURRENT100K_SETTLED_LABELS',
         'dataset_path':str(dataset),'dataset_sha256':sha(dataset),'dataset_fingerprint':payload['fingerprint'],
         'row_count':len(rows),'current100k_net_targets':[row['net_usd'] for row in rows],
+        'incremental':storage,
         'observed_original_requests':len(requests),'bound_opens':len(bindings),
         'accounting_component':component,'source_ledger_prefix':report.get('source_prefix'),
         'old25k_rewards_imported':0,'automatic_training':False,'model_promoted':False,'broker_orders_sent':0}
