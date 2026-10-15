@@ -214,3 +214,61 @@ reference-notional budget**, not just a <=100,000-EUR order quantity, and
 rejects unavailable / overflowing broker numeric order IDs. These are not
 production field/behavior changes: the original Execution send path remains
 unchanged in this PR.
+
+## SDK-native order objects and actual PAPER contract capabilities
+
+The previous shadow objects did not exercise real TWS SDK `Order` and
+`Contract` types. Added `HeptaTrade/adapter_ib/ib_native_bracket_research.h`
+which accepts only a bounded verified PAPER pre-entry observation and produces
+real, in-process **IB SDK C++** native types. Tests are registered only if the
+existing `HEPTA_ENABLE_IBAPI=ON` build has already qualified the SDK and the
+Intel BID Decimal library. Production `OrderIntent`, Execution RPC,
+`PlaceOrderWithResult`, `EClient::placeOrder` and all live gateways are
+unchanged. No network sender is exposed from this header.
+
+The native pair sets:
+
+- EUR/USD `Contract` conId 12087792, IDEALPRO/CASH/USD.
+- Explicit broker account, original command-bound orderRefs, same broker
+  client and consecutive reserved order IDs.
+- Parent `MKT/DAY/transmit=false`; child `STP/GTC/parentId=<parent>`,
+  `transmit=true`, exact reverse action, full original quantity and
+  `auxPrice` snapped to the independently witnessed 0.00005 tick.
+- A **hypothetical** future stop OCA group, `ocaType=1` (cancel-with-block).
+  That group's ability to coexist with bracket activation, and its exact
+  behavior under ordinary strategy exits, are NOT verified by Broker.
+
+A second **non-dispatching** native SDK object `ProposeUnsentOcaExit` refuses
+ordinary close unless the original working stop already has fresh Broker
+attestation of the same group/account/client/owner, permanent order ID,
+exact position and full remaining stop quantity, same connection epochs,
+complete active orders, no unknown command and a durable no-new-entry fence.
+It creates a hypothetical `MKT/DAY` same-OCA `ocaType=1` closing order,
+but its `sendAuthority`, `mayStopDriver` and `automaticTradingEnabled`
+remain false. If the original stop is partially filled, cancelled, replaced,
+or non-OCA, ordinary close is REFUSED until independent recovery. This is a
+research-only candidate, not a production trading or stop execution feature.
+
+**Actual Pocket4 SDK compile+CTest:** separate native IB API ON build with
+pinned C++ SDK 10.30.01 and existing Intel BID Decimal static library:
+6/6 targeted tests pass, including native Decimal ABI, real SDK field mapping,
+original stop, bracket, OMS replay, and existing IB PAPER profile. The native
+shadow tests include wrong account/conId, LIVE, wrong market tick, unproven
+working OCA group, client-ID mismatch, stale broker epoch, pending command,
+partial stop and changed physical position. These tests never call
+`EClient::placeOrder`.
+
+**Third PAPER-only contract query:** `reqContractDetails` now independently
+confirmed that EUR/USD CASH on IDEALPRO advertises `MKT`, `STP`,
+`STPLMT`, `OCA`, `GTC` and `WHATIF` order capabilities. This establishes
+instrument-level advertised types, *not* account-level order acceptance, true
+server-held stop lifecycle, guaranteed stop triggering, or overfill prevention.
+
+- Pocket4 receipt: `~/.local/state/heptatrader/operator-evidence/owner-stop-shadow-20261015-r1/ib-paper-contract-order-types-probe.json`.
+- SHA256: `dcde19c060603327d9b97f87fc8aed46c5cf560011a1bffe6accf2521f243cd3`.
+- Allowlisted API outbound message codes: `71` and `9`; 0 orders sent.
+
+**Next real product blocker remains**: a single Execution-owned OMS-bound,
+restart-proof parent/child broker send, OCA-safe ordinary exit and real IBKR
+PAPER callbacks across order partials/unknown submission/driver death.
+No existing exposed FX trade was amended in this work. Issue #331 is OPEN.

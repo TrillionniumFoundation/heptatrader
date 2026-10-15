@@ -232,6 +232,16 @@ target_link_libraries(hepta_execution_bracket_shadow_oms_tests PRIVATE
     hepta_oms_journal OpenSSL::Crypto)
 hepta_register_core_test(hepta_execution_bracket_shadow_oms_tests)
 
+# Compile exact SDK Contract/Order types only in the already validated
+# native-IB-enabled lane. No placeOrder or native order sending code exists here.
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_ib_native_bracket_shadow_tests
+        ib_native_bracket_shadow_tests.cpp)
+    target_link_libraries(hepta_ib_native_bracket_shadow_tests PRIVATE
+        hepta_ibapi_client)
+    hepta_register_core_test(hepta_ib_native_bracket_shadow_tests)
+endif()
+
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
     ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
