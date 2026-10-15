@@ -218,6 +218,14 @@ add_executable(hepta_execution_owner_stop_shadow_tests
     execution_owned_stop_shadow_tests.cpp)
 hepta_register_core_test(hepta_execution_owner_stop_shadow_tests)
 
+# Parent, child and OCA refs must derive from one frozen ORIGINAL command
+# through the resident 45-byte H1 venue codec; purely identity, no sender.
+add_executable(hepta_execution_bracket_h1_identity_tests
+    ib_bracket_h1_identity_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_identity_tests PRIVATE
+    hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_identity_tests)
+
 # Simulated native parent transmit=false / child transmit=true bracket group.
 # Still no broker transport or maintenance authority in this research target.
 add_executable(hepta_execution_bracket_shadow_tests
