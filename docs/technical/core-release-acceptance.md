@@ -1,15 +1,21 @@
 # Core artifact acceptance and tagged release
 
-Status: CURRENT
-Applies to: broker-disabled core packages on disposable Linux CI VMs
+Status: CURRENT for tagged core release evidence only
+Applies to: broker-disabled core packages on disposable Linux release CI VMs;
+NOT a precondition for ordinary pull-request or source-only merges.
 
 ## Producer and consumer identity
 
-The core workflow keeps the `core-runtime-exact-head` check context. It builds
-and runs native tests, then invokes `scripts/accept_core_release.py`. The tag
-workflow checks tag/VERSION equality, builds native tests and invokes the same
-driver. Rebuilding a tag is permitted, but its newly built package must pass
-installed acceptance; another run's source-only green status is not substituted.
+The ordinary `core-ci.yml` workflow retains `core-runtime-exact-head`, builds
+and runs native tests, and separately runs the Python core/source partitions.
+It DOES NOT invoke `scripts/accept_core_release.py` or grant any PAPER/LIVE
+trading permission. The `release.yml` tagged workflow checks tag/VERSION
+identity, builds/tests native code, then invokes `scripts/accept_core_release.py`
+to qualify an installed core package. The process and simulator fixtures below
+belong to that tagged-artifact lane, not to every routine documentation, Python
+research, source-test or native PR. Rebuilding a tag is permitted, but its newly
+built package must pass installed acceptance; another run's source-only green
+status is not substituted.
 
 The driver verifies the source checkout, runs the install/core Python partitions,
 and requires source-bound structured generation I/O/cost evidence before packaging

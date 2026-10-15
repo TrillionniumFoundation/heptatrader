@@ -74,6 +74,16 @@ input attribution required before such independently specified learning work.
 
 ## Deployment and verification
 
+Read-only `install_decision_attribution.py --instrument EUR.USD --inspect-only`
+(or `BTC.USD`) checks the resident manifest, period and every pinned runtime
+file without requiring a flat position or querying the broker. Repeating
+installation of **byte-identical, active, already verified** attributed code
+is an idempotent `ALREADY_CURRENT_NOOP`: no state reads, evidence directory,
+service restart, order or owner mutation. A changed runtime is **not** silently
+reinstalled; it requires an independently qualified owner-safe upgrade path.
+Inspection and no-op never grant new trade authority. Only a first installation
+that really restarts a trading driver keeps the original flat requirement.
+
 `install_decision_attribution.py` requires a clean committed source, PAPER mode
 on port 4002, no operator reset hold, a flat/no-pending/unfenced target lane and an
 authoritative read-only snapshot. It copies the currently executed base and BTC

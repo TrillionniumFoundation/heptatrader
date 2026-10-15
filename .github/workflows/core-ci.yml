@@ -72,10 +72,19 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Fast documentation and diff preflight
+        run: |
+          python3 scripts/check_documentation.py
+          git diff --check
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
+      - name: Cache pinned CPU research pip downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ~/.cache/pip
+          key: heptatrader-cpu-pip-ubuntu24-torch2.8.0-${{ runner.arch }}
       - name: Install pinned CPU research test dependency
         run: |
           python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
@@ -87,5 +96,3 @@ jobs:
           set -euo pipefail
           python3 scripts/run_python_tests.py --lane core
           python3 scripts/run_python_tests.py --lane source
-          python3 scripts/check_documentation.py
-          git diff --check
