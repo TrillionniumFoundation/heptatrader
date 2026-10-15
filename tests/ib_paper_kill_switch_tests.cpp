@@ -1,6 +1,7 @@
 #include "execution/ib_paper_kill_switch.h"
 
 #include <cassert>
+#include <cstdlib>
 #include <cstdint>
 #include <fcntl.h>
 #include <iostream>
@@ -15,7 +16,11 @@ namespace
 {
 std::string MakeControlDirectory(const char* stem)
 {
-    std::string pattern = std::string("/tmp/") + stem + "-XXXXXX";
+    // Private fixture storage may be directed to a writable TMPDIR when
+    // /tmp is unavailable; production kill-switch paths are unaffected.
+    const char* configured = std::getenv("TMPDIR");
+    const std::string parent = configured && *configured ? configured : "/tmp";
+    std::string pattern = parent + "/" + stem + "-XXXXXX";
     assert(::mkdtemp(&pattern[0]) != nullptr);
     assert(::chmod(pattern.c_str(), 0750) == 0);
     return pattern;
