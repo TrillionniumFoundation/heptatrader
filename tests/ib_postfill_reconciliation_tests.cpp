@@ -43,7 +43,7 @@ struct IbPostFillReconciliationFixture {
     static constexpr double total=.2796508;
     std::string dir;ReplayBroker* broker;std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
     ExecutionOrderOwner owner;long id=0;IBContractLite btc,eur;
-    IbPostFillReconciliationFixture() {
+    explicit IbPostFillReconciliationFixture(bool issueSyntheticOrder = true) {
         char name[]="/tmp/hepta-postfill-XXXXXX";auto p=::mkdtemp(name);need(p,"temporary private state");dir=p;
         btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
         eur.symbol="EUR";eur.secType="CASH";eur.exchange="IDEALPRO";eur.currency="USD";
@@ -67,6 +67,7 @@ struct IbPostFillReconciliationFixture {
         need(runtime->m_adapter->ReqRiskRefresh(),"baseline risk");finishRisk(total);
         owner.instrument="BTC.USD";owner.side="SELL";owner.account="DU_TEST";owner.executionDomain="PAPER";
         owner.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'a');
+        if(!issueSyntheticOrder)return; // flat/no-live-order owner probe
         IBOrderLite order;order.action="SELL";order.orderType="MKT";order.totalQuantity=total;
         IBFinalOrderSendContext ctx;ctx.instrument="BTC.USD";ctx.timeInForce="IOC";ctx.exactReduceOnly=true;
         need(runtime->m_adapter->PlaceOrderCorrelated(btc,order,owner.venueCorrelationId,&id,&ctx),
@@ -102,6 +103,49 @@ struct IbPostFillReconciliationFixture {
         e.key="CashBalance:EUR";e.value="1000";push(e);push(event(IBEventType::AccountSummaryEnd));
         if(quantity!=0){e=event(IBEventType::PositionSnapshotItem);e.key="BTC.USD";e.number=quantity;e.contract=btc;push(e);}
         if(!omitEnd)push(event(IBEventType::PositionEnd));
+    }
+    void nonflatRejectedAuditMustNotScheduleReconnect() {
+        // Original account cash push arrived outside an account request.
+        // Coherent risk can be refreshed, but a new connection epoch remains
+        // required. An owner audit with nonzero physical exposure must not
+        // schedule a potentially disruptive reconnection before rejecting.
+        const auto before=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(before.risk.complete&&before.risk.positionsComplete,
+             "initial ordinary risk/positions complete");
+        need(before.risk.grossAbsolutePosition>0,
+             "nonflat real-position-shaped synthetic fixture");
+        auto cash=event(IBEventType::AccountValue);
+        cash.key="CashBalance:EUR";cash.value="1001";push(cash);
+        need(runtime->m_adapter->ReqRiskRefresh(),"coherent ordinary refresh");
+        finishRisk(total);
+        const auto coherent=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(coherent.risk.complete&&coherent.risk.coherentRefreshComplete &&
+             coherent.risk.grossAbsolutePosition>0,
+             "nonflat ordinary refresh completed despite sticky owner hold");
+        need(!runtime->m_recoveryAuditReconnectRequested.load(),
+             "no reconnect before owner audit probe");
+        const auto epoch=runtime->m_adapter->GetConnectionEpoch();
+        const auto snapshot=runtime->PolicyRecoveryAuditSnapshot();
+        need(snapshot.newConnectionEpochRequired && !snapshot.barrierComplete,
+             "owner audit must still explicitly refuse incomplete broker generation: "+
+                 snapshot.reasonCode + " active=" + std::to_string(snapshot.active.activeOrderIds.size()));
+        need(!runtime->m_recoveryAuditReconnectRequested.load(),
+             "rejected nonflat owner audit must not schedule hidden reconnect");
+        need(runtime->m_adapter->GetConnectionEpoch()==epoch &&
+             broker->connected && broker->places==0,
+             "rejected nonflat audit leaves broker epoch and sends unchanged");
+        // Recovery must remain possible if a separately proven full refresh
+        // later shows zero exposure and no active or pending Broker operations.
+        need(runtime->m_adapter->ReqRiskRefresh(),"flat risk refresh");
+        finishRisk(0);
+        const auto flat=runtime->PolicyRecoveryAuditSnapshot();
+        need(flat.newConnectionEpochRequired &&
+             flat.risk.complete && flat.risk.grossAbsolutePosition==0 &&
+             runtime->m_recoveryAuditReconnectRequested.load(),
+             "flat coherent owner audit may request new epoch after negative nonflat");
+        need(runtime->m_adapter->GetConnectionEpoch()==epoch &&
+             broker->connected && broker->places==0,
+             "unit requests a future reconnect but never performs Broker IO");
     }
     void rejectIncompleteEvidence(int scenario) {
         fill(scenario==2?.16509636:total,"synthetic-incomplete");
@@ -147,7 +191,14 @@ struct IbPostFillReconciliationFixture {
     }
 };
 int main(int argc,char**argv){
-    try{IbPostFillReconciliationFixture f;f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
+    try{IbPostFillReconciliationFixture f;
+        if(argc>1&&std::string(argv[1])=="--nonflat-owner-audit") {
+            IbPostFillReconciliationFixture nonflat(false);
+            nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
+            std::cout<<"PASS nonflat rejected owner audit did not enqueue broker reconnect\n";
+            return 0;
+        }
+        f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
         if(!(argc>1)){for(int k=0;k<3;++k){IbPostFillReconciliationFixture negative;negative.rejectIncompleteEvidence(k);}}
         std::cout<<"PASS partial/full, duplicate, missing End, position mismatch, missing terminal and fixed timeout; synthetic only\n";return 0;
     }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}

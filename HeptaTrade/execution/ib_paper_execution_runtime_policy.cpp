@@ -147,7 +147,26 @@ IbPaperExecutionRuntimeComposition::PolicyRecoveryAuditSnapshot()
     snapshot.postFillRiskReconciliationPending =
         snapshot.postFillRiskReconciliationPending ||
         m_postFillRiskRefreshPending.load();
-    if (snapshot.newConnectionEpochRequired)
+    // BeginRecoveryAuditBarrier can require a new epoch before the policy
+    // rejects a global owner audit for NONFLAT position. Never turn that
+    // *rejected* probe into a background Broker disconnect/reconnect. The
+    // complete, current, all-flat economic state must be proven BEFORE any
+    // reconnect scheduling, not after the RPC has returned Rejected.
+    bool safeToSchedule = snapshot.risk.complete &&
+        snapshot.risk.coherentRefreshComplete &&
+        snapshot.risk.accountComplete && snapshot.risk.positionsComplete &&
+        snapshot.risk.fxCashComplete &&
+        snapshot.risk.grossAbsolutePosition == 0.0 &&
+        snapshot.active.complete && snapshot.active.activeOrderIds.empty() &&
+        snapshot.terminal.complete &&
+        !snapshot.postFillRiskReconciliationPending &&
+        snapshot.terminalExposureGeneration <=
+            snapshot.riskAbsorbedExposureGeneration &&
+        snapshot.riskAbsorbedExposureGeneration == snapshot.exposureGeneration;
+    for (const auto& position : snapshot.positionQuantities)
+        if (position.first.empty() || position.second != 0.0)
+            safeToSchedule = false;
+    if (snapshot.newConnectionEpochRequired && safeToSchedule)
         m_recoveryAuditReconnectRequested.store(true);
     return snapshot;
 }
