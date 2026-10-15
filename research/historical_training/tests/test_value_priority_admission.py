@@ -50,14 +50,29 @@ class PriorityTest(unittest.TestCase):
   self.assertTrue(b);self.assertEqual(r,'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST')
   self.assertEqual(p['verified_periodic_intervals'],4)
   self.assertFalse(p['no_future_request_forged'] is False)
- def test_healthy_nonflat_outside_predicted_window_allows_evaluator(self):
+ def test_120s_producer_cannot_fit_nonpreemptible_240s_evaluator(self):
   self.rows(last_age_ms=10000,flat=False)
-  deny,reason,_=decision(self.policy,'evaluator',self.now)
-  self.assertFalse(deny);self.assertEqual(reason,'VALUE_PRIORITY_NO_ACTIVE_RESERVATION')
+  deny,reason,e=decision(self.policy,'evaluator',self.now)
+  self.assertTrue(deny);self.assertEqual(reason,'VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION')
+  self.assertEqual(e['background_max_nonpreemptible_ms'],250000)
+  self.assertTrue(e['next_original_request_is_only_estimated_not_evidence'])
  def test_verified_next_tick_within_60sec_blocks_evaluator(self):
   self.rows(last_age_ms=79000,flat=False)
   deny,reason,_=decision(self.policy,'evaluator',self.now)
-  self.assertTrue(deny);self.assertEqual(reason,'VALUE_PRIORITY_NEXT_ORIGINAL_REQUEST_WINDOW')
+  self.assertTrue(deny);self.assertEqual(reason,'VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION')
+ def test_original_240sec_budget_has_bounded_shutdown_reserve(self):
+  from historical_training.value_priority_admission import EVALUATION_BUDGET_MS
+  self.assertGreaterEqual(EVALUATION_BUDGET_MS,240000+5000+2000)
+ def test_next_scheduled_slot_after_trial_end_does_not_starve_evaluator(self):
+  self.rows(last_age_ms=10000,flat=False)
+  self.update_plan(input_end_ms=self.now+50000)
+  deny,reason,_=decision(self.policy,'evaluator',self.now)
+  self.assertFalse(deny);self.assertEqual(reason,'VALUE_PRIORITY_NO_ACTIVE_RESERVATION')
+ def test_irregular_nonflat_requests_allow_independent_evaluator(self):
+  self.rows(last_age_ms=10000,flat=False,interval_ms=117000)
+  deny,reason,proof=decision(self.policy,'evaluator',self.now)
+  self.assertFalse(deny);self.assertEqual(reason,'VALUE_PRIORITY_NO_ACTIVE_RESERVATION')
+  self.assertIsNone(proof['next_expected_from_historical_cadence_ms'])
  def test_unverified_next_slot_is_not_invented(self):
   self.rows(last_age_ms=110000,flat=False,interval_ms=70000)
   deny,reason,e=decision(self.policy,'evaluator',self.now)

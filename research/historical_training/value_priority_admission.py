@@ -12,9 +12,15 @@ from .common import EvidenceError
 
 EXPECTED_INTERVAL_MS=120000
 VALUE_DEADLINE_MS=60000
-RESERVE_BEFORE_MS=60000
+# Original frozen Laya evaluator.reap() allows 240s, then may spend 5s
+# waiting for worker shutdown and up to 2s on its next supervisor step.
+# Since the ORIGINAL Value producer fires ~every 120s, an evaluator launched
+# >60s before the next slot can still own the shared lock when it arrives.
+# Reserve its full *nonpreemptive* budget with fixed shutdown margin, not just
+# the Value prediction's own 60s deadline. Existing work is NEVER interrupted.
+EVALUATION_BUDGET_MS=250000
 MAX_SOURCE_STALE_MS=240000
-TRAINING_BUDGET_MS=600000
+TRAINING_BUDGET_MS=620000  # original 600s wait plus 15s termination margin
 MAX_FILE_BYTES=64*1024*1024
 READ_TAIL_BYTES=128*1024
 MIN_CADENCE_INTERVALS=4
@@ -135,12 +141,17 @@ def decision(config,role,now_ms):
            'latest_request_ms':t,'latest_was_flat':flat,
            'last_observed_age_ms':age,'verified_periodic_intervals':len(trail)-1 if regular else 0,
            'next_expected_from_historical_cadence_ms':next_slot if regular else None,
+           'next_original_request_is_only_estimated_not_evidence':True,
+           'background_max_nonpreemptible_ms':
+               TRAINING_BUDGET_MS if role=='trainer' else EVALUATION_BUDGET_MS,
+           'original_shared_flock_unmodified':True,
            'no_future_request_forged':True,'broker_orders_sent':0}
-    if role=='trainer' and regular and next_slot<now_ms+TRAINING_BUDGET_MS:
+    next_in_trial=regular and next_slot<plan['input_end_ms']
+    if role=='trainer' and next_in_trial and 0<=next_slot-now_ms<=TRAINING_BUDGET_MS:
         return True,'VALUE_PRIORITY_DEFER_NEW_LONG_TRAINING',proof
     if role=='evaluator':
         if flat and age<=VALUE_DEADLINE_MS:
             return True,'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST',proof
-        if regular and 0<=next_slot-now_ms<=RESERVE_BEFORE_MS:
-            return True,'VALUE_PRIORITY_NEXT_ORIGINAL_REQUEST_WINDOW',proof
+        if next_in_trial and 0<=next_slot-now_ms<=EVALUATION_BUDGET_MS:
+            return True,'VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION',proof
     return False,'VALUE_PRIORITY_NO_ACTIVE_RESERVATION',proof
