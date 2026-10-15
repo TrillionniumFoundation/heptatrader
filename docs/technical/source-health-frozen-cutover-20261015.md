@@ -14,7 +14,7 @@ Status: **STAGED ONLY** (2026-10-15). This is a one-service maintenance procedur
 The original frozen campaign is scheduled through **2026-10-15 17:38 UTC**. A new monitor cannot be activated merely because the historical 24 windows can no longer reach their promotion threshold. The program demands, simultaneously:
 
 1. The real UTC clock is past the original final sweep time;
-2. The **original** `complete.json` and `status.json` both exist, the same precommitted `campaign_id` appears in the original `plan.json`, and all 24 original slots are immutable OBSERVED/CENSORED terminal results;
+2. The **original** `complete.json` and `status.json` both exist, the same precommitted `campaign_id` appears in the original `plan.json`, and all 24 original slots are immutable OBSERVED/CENSORED terminal results **with exact original preregistered anchor order and SHA256-matching owner-private mode-0400 per-slot `final.json` receipts**;
 3. The campaign status remains `COMPLETE_PENDING_REVIEW`, with `finalized=24`, `observed+censored=24`, and no automatic promotion;
 4. The active service, period/config, exact producer path, source/cache hashes, complete candidate file inventory and old systemd unit hash still match the write-once stage;
 5. All execution, FX, BTC and Laya trainer service PIDs are active immediately before changing **only** the source-health unit.

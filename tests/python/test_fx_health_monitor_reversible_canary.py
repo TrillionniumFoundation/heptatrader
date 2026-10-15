@@ -115,17 +115,45 @@ class MonitorCanaryTests(unittest.TestCase):
     def test_all_twenty_four_original_slots_required(self):
         with tempfile.TemporaryDirectory() as t:
             r=Path(t); campaign="exact-original"
-            (r/"plan.json").write_text(json.dumps({"campaign_id":campaign}))
-            (r/"complete.json").write_text(json.dumps({"campaign_id":campaign}))
+            anchors=[1791457800+i*7200 for i in range(24)]
+            (r/"plan.json").write_text(json.dumps({"campaign_id":campaign,
+                        "anchors":anchors,"trade_authority":False,"automatic_promotion":False}))
+            assessment={"automatic_promotion":False,"economic_qualification":False}
+            (r/"complete.json").write_text(json.dumps({"campaign_id":campaign,
+                                                        "assessment":assessment}))
+            slots=[]
+            for i,anchor in enumerate(anchors):
+                state='OBSERVED' if i<10 else 'CENSORED'
+                row={"schema":"heptatrader.frozen-window-final.v1",
+                     "anchor":anchor,"campaign_id":campaign,"state":state,
+                     "broker_order_authority":False,
+                     "reason":None if state=='OBSERVED' else 'ORIGINAL_NO_RETRY'}
+                d=r/'slots'/str(anchor);d.mkdir(parents=True)
+                f=d/'final.json';f.write_text(json.dumps(row,sort_keys=True));f.chmod(0o400)
+                slots.append({"anchor":anchor,"state":state,
+                              "receipt_sha256":hashlib.sha256(f.read_bytes()).hexdigest()})
             result={"campaign_id":campaign,"planned":24,"finalized":24,
                     "observed":10,"censored":14,"phase":"COMPLETE_PENDING_REVIEW",
                     "automatic_promotion":False,"trade_authority":False,
-                    "slots":[{"state":"OBSERVED"}]*10+[{"state":"CENSORED"}]*14}
-            path=r/"status.json"; path.write_text(json.dumps(result))
+                    "candidate_unchanged":True,"old_smoke_excluded":True,
+                    "assessment":assessment,"slots":slots}
+            path=r/"status.json";path.write_text(json.dumps(result))
             self.assertEqual(m.frozen_terminal({"frozen":r},m.FINAL_UTC_MS+1)["observed"],10)
-            result["slots"][-1]={"state":"PENDING"}
+            last_slot=dict(result["slots"][-1])
+            result["slots"][-1]={"anchor":anchors[-1],"state":"PENDING"}
             path.write_text(json.dumps(result))
             with self.assertRaisesRegex(m.Stop,"TERMINAL_EVIDENCE_INVALID"):
+                m.frozen_terminal({"frozen":r},m.FINAL_UTC_MS+1)
+            result["slots"][-1]=last_slot
+            old_receipt=result["slots"][4]["receipt_sha256"]
+            result["slots"][4]["receipt_sha256"]='0'*64
+            path.write_text(json.dumps(result))
+            with self.assertRaisesRegex(m.Stop,"SLOT_RECEIPT_CHANGED"):
+                m.frozen_terminal({"frozen":r},m.FINAL_UTC_MS+1)
+            result["slots"][4]["receipt_sha256"]=old_receipt
+            path.write_text(json.dumps(result))
+            (r/'slots'/str(anchors[7])/'final.json').unlink()
+            with self.assertRaisesRegex(m.Stop,"SLOT_RECEIPT_CHANGED"):
                 m.frozen_terminal({"frozen":r},m.FINAL_UTC_MS+1)
 
     def test_staged_candidate_has_only_two_reviewed_changes(self):

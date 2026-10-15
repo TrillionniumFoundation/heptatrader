@@ -168,6 +168,35 @@ def frozen_terminal(p,now_ms=None):
          b.get("trade_authority") is False and
          a.get("campaign_id")==b.get("campaign_id")==c.get("campaign_id"),
          "ORIGINAL_CAMPAIGN_TERMINAL_EVIDENCE_INVALID")
+    anchors=c.get("anchors")
+    need(type(anchors) is list and len(anchors)==24 and
+         all(type(x) is int for x in anchors) and len(set(anchors))==24 and
+         [x.get("anchor") for x in slots]==anchors and
+         c.get("trade_authority") is False and
+         c.get("automatic_promotion") is False and
+         b.get("candidate_unchanged") is True and
+         b.get("old_smoke_excluded") is True and
+         a.get("assessment")==b.get("assessment"),
+         "ORIGINAL_CAMPAIGN_TERMINAL_EVIDENCE_INVALID")
+    # Bind all 24 original status entries to the actual frozen write-once
+    # final.json receipts; a forged aggregate 24/24 status is not terminality.
+    for entry in slots:
+        receipt=root/"slots"/str(entry["anchor"])/"final.json"
+        need(not receipt.parent.is_symlink() and receipt.is_file()
+             and not receipt.is_symlink() and
+             receipt.stat().st_uid==os.geteuid() and
+             stat.S_IMODE(receipt.stat().st_mode)==0o400 and
+             receipt.stat().st_size<=65536 and
+             type(entry.get("receipt_sha256")) is str and
+             sha(receipt)==entry["receipt_sha256"],
+             "ORIGINAL_CAMPAIGN_SLOT_RECEIPT_CHANGED")
+        row=json.loads(receipt.read_bytes())
+        need(row.get("schema")=="heptatrader.frozen-window-final.v1" and
+             row.get("campaign_id")==b["campaign_id"] and
+             row.get("anchor")==entry["anchor"] and
+             row.get("state")==entry["state"] and
+             row.get("broker_order_authority") is False,
+             "ORIGINAL_CAMPAIGN_SLOT_RECEIPT_CHANGED")
     return {"campaign_id":b["campaign_id"],"complete_sha256":sha(done),
             "status_sha256":sha(status),"plan_sha256":sha(plan),
             "observed":b["observed"],"censored":b["censored"]}
