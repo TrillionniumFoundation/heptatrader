@@ -2,7 +2,9 @@
 
 This lane restores the resident EUR/USD strategy's original entry semantics:
 BUY or SELL is eligible from one completed model decision at confidence >=0.62.
-The later FX opening hysteresis/cooldown adapter is not active. Existing
+The optional FX two-confirmation / 15-minute opening spacing / 10-minute
+post-close cooldown / two-opens-per-hour adapter has been retired and is
+rejected by the launcher. The original entry predicate is unchanged. Existing
 MAX_ADVERSE_MOVE, model-reversal CLOSE, HALT_REDUCE_ONLY, owner fencing, fresh
 quote checks, one-active-order limit, durable original-command reconciliation,
 PAPER-only mode and LIVE prohibition remain unchanged.
