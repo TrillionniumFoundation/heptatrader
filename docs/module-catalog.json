@@ -419,8 +419,6 @@
         "scripts/hepta_decision_attribution.py",
         "scripts/heptatrader_attributed_driver.py",
         "scripts/install_decision_attribution.py",
-        "scripts/hepta_fx_churn.py",
-        "scripts/install_fx_churn.py",
         "scripts/hepta_nav_assurance.py"
       ],
       "tests": [
@@ -440,7 +438,7 @@
         "tests/python/test_account_pnl.py",
         "tests/python/test_btc_entry_economics.py",
         "tests/python/test_decision_attribution.py",
-        "tests/python/test_fx_churn.py",
+        "tests/python/test_fx_original_no_churn.py",
         "tests/python/test_nav_assurance.py"
       ],
       "broker_mutation": "NONE",
