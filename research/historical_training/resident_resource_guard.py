@@ -266,6 +266,9 @@ def guarded_evaluator_class(base,gate):
 def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
         def step(self):
+            preflight=getattr(self,'queue_preflight',None)
+            held=preflight() if preflight is not None else None
+            if held is not None:return held
             if not gate.acquire({'role':'trainer'}):
                 report=getattr(gate,'last_admission',None)
                 return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',

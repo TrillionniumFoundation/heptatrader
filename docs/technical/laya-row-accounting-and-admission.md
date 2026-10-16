@@ -89,3 +89,18 @@ release is staged and hash-verified, NOT deployed. Existing trial38 was
 created independently by the old runtime, not this patch; its original dates
 and missed-window records are retained. Source completion, GPU validation,
 production cutover, and future-coverage acceptance are separate statuses.
+
+## Viable training queue and deferred formal registration
+
+When an original trial is irreversibly unable to qualify under its own unchanged
+censor limit, one new candidate may be trained. Its immutable artifact and row
+receipt are committed, but formal evaluation registration is deferred until the
+original trial actually closes. The original rule allowing only one PENDING
+trial remains enforced inside registration itself. Trial numbers, alpha spending,
+end times, missing outcomes and final assessments are not changed.
+
+At most one such completed candidate can wait. A viable pending evaluation or a
+waiting trained artifact is checked before acquiring the heavy-worker lease or
+rebuilding all rewards/quotes. This avoids wasting the shared lease on a known
+no-training iteration. Waiting candidates are reconciled after restart and the
+original trial's closure without repeating optimizer steps.

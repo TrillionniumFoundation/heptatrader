@@ -14,6 +14,7 @@ from .promotion import RULE,rule_for_trial
 from .promotion_power import PROTOCOL
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
+from .resident_queue import inspect as inspect_evaluation_queue
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
@@ -85,6 +86,10 @@ class Supervisor:
    old=read_json(path)
    if old['candidate_id']!=candidate['candidate_id']:raise ContractError('EVALUATION_CANDIDATE_CONFLICT')
    return
+  # The frozen rule still permits only one original PENDING trial.
+  # A trained artifact may wait, but does not create an overlapping trial.
+  if inspect_evaluation_queue(self.c)['pending_original_trials']:
+   return
   with self.db:
    trial=get_meta(self.db,'evaluation_trial',0)+1;put_meta(self.db,'evaluation_trial',trial)
   rule=rule_for_trial(trial,self.c.get('promotion_protocol'))
@@ -125,11 +130,37 @@ class Supervisor:
    # Lost children are not blindly restarted over partially written candidates.
    with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('FAILED',row['id']))
    write_once(self.root/'failures'/(row['id']+'.json'),{'reason':'INTERRUPTED_JOB_NO_COMMITTED_CANDIDATE','job_id':row['id'],'rows_remain_consumed':True})
+ def reconcile_evaluation_queue(self):
+  queue=inspect_evaluation_queue(self.c)
+  waiting=[row for row in self.db.execute("SELECT * FROM jobs WHERE status='COMPLETED' ORDER BY created_ms").fetchall()
+           if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
+  if waiting and queue['pending_original_trials']==0:
+   if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
+   queue=inspect_evaluation_queue(self.c)
+   waiting=[row for row in waiting if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
+  queue['deferred_training_candidates']=len(waiting)
+  return queue
+ def queue_preflight(self):
+  # Negative-only admission optimization; completing an already-trained
+  # artifact's deferred registration never takes GPU or training authority.
+  config_check(self.c)
+  queue=self.reconcile_evaluation_queue()
+  limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
+  if queue['deferred_training_candidates']:
+   return self.write_status(state='CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END',**queue)
+  if queue['viable_pending_evaluations']>=limit:
+   return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
+  return None
  def step(self):
   now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()
   self.storage=inspect_storage(self.c)
   if not self.storage['admission_ready']:
    return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
+  queue=self.reconcile_evaluation_queue()
+  if queue['deferred_training_candidates']:return self.write_status(state='CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END',**queue)
+  pending=queue['viable_pending_evaluations']
+  pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
+  if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
   rewards=rewards_current(self.c,now);atomic(self.root/'rewards-status.json',rewards)
   with self.db:
    for r in rewards['rewards']:
@@ -144,15 +175,12 @@ class Supervisor:
     write_once(self.root/'execution-rewards'/(r['reward_id']+'.json'),r)
     self.db.execute('INSERT OR IGNORE INTO execution_rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
    put_meta(self.db,'active_execution_reward_ids',[r['reward_id'] for r in rewards.get('execution_rewards',[])])
-  pending=sum(not (p.parent/'qualification.json').exists() for p in Path(self.c['evaluation_directory']).glob('*/plan.json'))
   dataset,rows,quality,_=collect(self.c,now)
   new=[]
   for r in rows:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
    if not self.db.execute('SELECT 1 FROM consumed_rows WHERE id=?',(key,)).fetchone():new.append((key,r))
-  state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,'pending_evaluations':pending,'reward_reason':rewards['reason']}
-  pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
-  if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**state)
+  state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,**queue,'reward_reason':rewards['reason']}
   last=get_meta(self.db,'last_job_created_ms',0)
   if now<last:raise ContractError('TRAINING_CLOCK_REGRESSION')
   if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
