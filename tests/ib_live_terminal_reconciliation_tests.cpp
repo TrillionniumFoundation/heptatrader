@@ -1,6 +1,7 @@
 #include "adapter_ib/ib_gateway_adapter.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
+#include "execution/ib_bracket_h1_oms_reservation.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -120,7 +121,8 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long GetLastValidOrderId() const override {return 41;}
+    long validOrderId = 41;
+    long GetLastValidOrderId() const override {return validOrderId;}
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
@@ -1146,7 +1148,136 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
+void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
+    // No placeOrder calls. The callback may only persist the exact research
+    // parent+stop IDs before returning; it grants no send/stop authority.
+    Fixture f;
+    const auto epoch=f.adapter.GetConnectionEpoch();
+    assert(epoch>0);
+    long parent=-1,child=-1;
+    std::string reason;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU-other",epoch,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1&&f.broker->places==0);
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch+1,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1);
+    f.broker->validOrderId=0;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long){return true;},parent,child,reason));
+    f.broker->validOrderId=std::numeric_limits<int>::max();
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
+    f.broker->validOrderId=41;
+    std::string temporary="/tmp/hepta-adapter-h1-lease-XXXXXX";
+    std::vector<char> file(temporary.begin(),temporary.end());file.push_back('\0');
+    const int fd=::mkstemp(file.data());assert(fd>=0);::close(fd);
+    assert(::unlink(file.data())==0);
+    OmsJournal j;assert(j.Init(file.data()));
+    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [&](long p,long c){
+            OmsJournalEvent a,b;
+            a.eventType="bracket_parent_reserved";a.orderId=p;
+            a.reqId="synthetic-owner-001";a.clientReqId=a.reqId;
+            a.account="DU123";a.executionDomain="PAPER";
+            a.source="SHADOW_NO_BROKER_EGRESS";
+            a.eventId="parent-001";a.requestHash="hash-group-001";
+            b=a;b.eventType="bracket_child_reserved";
+            b.orderId=c;b.eventId="child-001";
+            return j.AppendDurablePair(a,b)==OmsJournal::DurablePairResult::Committed;
+        },parent,child,reason));
+    assert(parent==41&&child==42&&f.broker->places==0);
+    int count=0;assert(j.Replay([&](const OmsJournalEvent& e){
+        ++count;
+        assert(e.reqId=="synthetic-owner-001" && e.account=="DU123");
+        assert((count==1 && e.orderId==41) ||
+               (count==2 && e.orderId==42));
+    })==2 && count==2);
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long){return false;},parent,child,reason));
+    assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN" &&
+           parent==-1 && child==-1);
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long)->bool{throw std::runtime_error("uncertain persistence");},
+        parent,child,reason));
+    assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN" &&
+           parent==-1 && child==-1);
+    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long p,long c){return p==47&&c==48;},
+        parent,child,reason));
+    assert(parent==47&&child==48&&f.broker->places==0);
+    f.adapter.Disconnect();
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long){return true;},parent,child,reason));
+    assert(f.broker->places==0);
+    assert(::unlink(file.data())==0);
+}
+
+void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
+    Fixture brokerFixture;
+    const std::uint64_t epoch=brokerFixture.adapter.GetConnectionEpoch();
+    std::string path="/tmp/hepta-adapter-owner-fence-XXXXXX";
+    std::vector<char> chars(path.begin(),path.end());chars.push_back('\0');
+    int fd=::mkstemp(chars.data());assert(fd>=0);::close(fd);
+    assert(::unlink(chars.data())==0);
+    OmsJournal journal;assert(journal.Init(chars.data()));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator owner(journal,callbacks);
+    AgentExecutionContext original;
+    original.agentId="owner-p4";original.sessionId="session-recovery-1";
+    original.toolCallId="h1-owner-reserved-001";
+    original.executionDomain="IB-PAPER:EUR.USD";
+    std::string reason;
+    assert(owner.EnterRecoveryOnlyOwner(original.agentId,original.sessionId,51,reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=original.agentId;frozen.sessionId=original.sessionId;
+    frozen.originalCommandKey=original.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=51;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    hepta_bracket_h1::Reservation pair;
+    long parent=-1,stop=-1;
+    bool attempted=false;
+    assert(brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [&](long a,long b) {
+            attempted=true;
+            frozen.parentOrderId=a;frozen.childOrderId=b;
+            return owner.ReserveResearchH1BracketForRecoveryOnlyOwner(
+                original,frozen,pair,reason);
+        },parent,stop,reason));
+    assert(attempted&&parent==41&&stop==42);
+    assert(pair.replayComplete&&!pair.sendAuthorized&&!pair.driverStopAllowed);
+    assert(brokerFixture.broker->places==0);
+    std::vector<OmsJournalEvent> events;
+    assert(journal.Replay([&](const OmsJournalEvent& e){
+        events.push_back(e);
+    })==3);
+    hepta_bracket_h1::Reservation recovered;
+    assert(hepta_bracket_h1::ConfirmReplay(events,frozen,recovered,reason));
+    assert(recovered.ids.parentRef.size()==45&&recovered.ids.childRef.size()==45);
+    {
+       ExecutionCoordinator fresh(journal,callbacks);
+       assert(fresh.RecoverFromJournal(reason));
+       assert(fresh.SessionOwnerRecoveryIngressFence(original.agentId,original.sessionId)==51);
+       long duplicateParent=-1,duplicateStop=-1;
+       assert(!brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+            [&](long a,long b){
+                auto wrong=frozen;wrong.parentOrderId=a;wrong.childOrderId=b;
+                return fresh.ReserveResearchH1BracketForRecoveryOnlyOwner(
+                    original,wrong,pair,reason);
+            },duplicateParent,duplicateStop,reason));
+       assert(duplicateParent==-1&&duplicateStop==-1);
+    }
+    assert(brokerFixture.broker->places==0);
+    assert(::unlink(chars.data())==0);
+}
 int main() {
+    TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
+    TestResearchNativeIdLeaseBindsActualCoordinatorFence();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();

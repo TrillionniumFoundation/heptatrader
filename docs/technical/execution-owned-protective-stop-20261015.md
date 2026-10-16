@@ -508,3 +508,54 @@ research `Reservation` object or merge this PR as protection.
 
 Only the isolated Pocket4 research worktree was changed; no
 resident services, commands, positions or model selectors were touched.
+
+## 2026-10-15 — Adapter-native parent/stop ID lease under original send mutex
+
+The next research-only link is now implemented in the EXISTING
+`HeptaIBGatewayAdapter`, not in a new Broker adapter or daemon.
+`ReserveResearchH1NativeIdPair` acquires the same `m_apiMutex` held by
+`PlaceOrderInternal`, rejects unknown/disconnected Broker epochs,
+non-PAPER/wrong account, invalid `nextValidId` and near-overflow IDs,
+then assigns two consecutive numbers from the maximum of the Broker's
+current `nextValidId` and the adapter's existing local seed.
+
+While holding that mutex, the method invokes a provided exact
+`durablePair(parentId, stopId)` callback. On the tested path, this callback
+is the real Coordinator's
+`ReserveResearchH1BracketForRecoveryOnlyOwner`: the Coordinator checks
+its durable Recovery-only Owner Fence and original command, then calls
+`OmsJournal::AppendDurablePair` to pin the H1 group. The returned pair
+always has **no broker-send, OCA-close or Driver-stop authority**.
+
+Before invoking any callback, the adapter consumes the two IDs in memory.
+If journal persistence returns false or throws, the IDs are not reused in
+that process, and the result remains UNKNOWN. This deliberately does not
+make a broker call. No change to normal `NextOrderId`/PlaceOrder code path
+occurs, and production never invokes this research-only method.
+
+The integration was verified in the existing native
+`hepta_ib_live_terminal_reconciliation_tests` using a fake IIBApiWrapper
+and the actual Coordinator + actual private scratch OmsJournal:
+- wrong account, stale broker epoch, disconnected socket, invalid or
+  near-overflow Broker ID reject before writing anything;
+- the first valid pair gets Broker IDs 41/42 and is critically synced;
+- failed callback consumes 43/44, throwing callback consumes 45/46;
+  the next valid pair gets 47/48 rather than recycling uncertain IDs;
+- a genuine Coordinator Recovery-only Fence is required before OMS writes;
+  after real Coordinator restart, the same original command cannot reserve
+  a second group, even if the Broker ID callback offers a fresh pair;
+- the fake Broker's actual PlaceOrder counter remains ZERO throughout.
+
+Pocket4 native IB-enabled hepta_ib_executiond and eight core
+Coordinator/OMS/PAPER/native-runtime CTests pass; the full runtime recovery
+test executes for ~43.5 s. The changed adapter test and integration checks
+are in the same *isolated* research working tree.
+
+**Unresolved release blocker:** This is an in-process lease, not a
+restart-proof global Broker order-ID ownership protocol. An actual Broker
+restart can offer an older `nextValidId` and only a verified full
+account-wide Broker order/position/terminal scan, coordinated with the
+live Execution owner and durable OMS generations, can rule out ID reuse.
+There is NO parent/stop `placeOrder` send path, no real broker acceptance,
+no OCA cancellation safety and no independent protection when Driver dies.
+Do not deploy as live protection or close Issue #331 on these tests.

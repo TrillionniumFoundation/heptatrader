@@ -1343,6 +1343,52 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
     }
 }
 
+bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
+    const std::string& exactPaperAccount,
+    std::uint64_t expectedConnectionEpoch,
+    const std::function<bool(long,long)>& durablePair,
+    long& parentId, long& stopId, std::string& reason)
+{
+    parentId=-1;stopId=-1;
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    if (!m_api || !m_connected || !m_api->IsConnected() ||
+        m_terminalTransportHalted || expectedConnectionEpoch==0 ||
+        expectedConnectionEpoch!=m_connectionEpoch ||
+        exactPaperAccount!=m_cfg.account || !IsPaperAccount(m_cfg.account) ||
+        !durablePair) {
+        reason="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE";
+        return false;
+    }
+    const long brokerNext=m_api->GetLastValidOrderId();
+    if (brokerNext<=0 || m_localOrderSeed<=0 ||
+        brokerNext>=std::numeric_limits<int>::max()-2 ||
+        m_localOrderSeed>=std::numeric_limits<int>::max()-2) {
+        reason="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE";
+        return false;
+    }
+    const long first=std::max(brokerNext,m_localOrderSeed);
+    if (first>=std::numeric_limits<int>::max()-2) {
+        reason="H1_NATIVE_BROKER_ID_PAIR_OVERFLOW";
+        return false;
+    }
+    // Hold the same adapter API lock as every normal PlaceOrder path.
+    // Pre-consume both IDs even on a failed/throwing durable callback:
+    // ambiguous OMS/connection outcome can never reuse them in this process.
+    m_localOrderSeed=first+2;
+    try {
+        if (!durablePair(first,first+1)) {
+            reason="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN";
+            return false;
+        }
+    } catch (...) {
+        reason="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN";
+        return false;
+    }
+    parentId=first;stopId=first+1;
+    reason.clear();
+    return true;
+}
+
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     long ibOrderId = GetLastValidOrderId();
