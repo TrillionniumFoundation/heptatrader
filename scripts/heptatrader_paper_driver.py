@@ -341,7 +341,10 @@ def record_correlated_close(state,pending,fill,position_after,*,partial=False):
         "instrument":INSTRUMENT,"original_command_id":command_id,
         "broker_order_id":pending.get("broker_order_id"),
         "broker_execution_id":execution_id,
+        "broker_execution_ids":list(fill.get("broker_execution_ids",[execution_id])),
         "venue_correlation_id":venue_id,
+        "broker_fill_quantity":float(fill.get("quantity",0.0)),
+        "broker_average_fill_price":float(fill.get("price",0.0)),
         "exit_trigger":dict(trigger),
         "position_before_send":pending.get("position_before_send"),
         "position_after_terminal_fill":float(position_after),
@@ -355,6 +358,8 @@ def record_correlated_close(state,pending,fill,position_after,*,partial=False):
     for prior in history:
         if isinstance(prior,dict) and prior.get("original_command_id")==command_id:
             if (prior.get("broker_execution_id")!=execution_id or
+                    prior.get("broker_execution_ids")!=receipt["broker_execution_ids"] or
+                    prior.get("venue_correlation_id")!=venue_id or
                     prior.get("exit_trigger")!=receipt["exit_trigger"]):
                 raise DriverError("original close command attribution mismatch")
             return

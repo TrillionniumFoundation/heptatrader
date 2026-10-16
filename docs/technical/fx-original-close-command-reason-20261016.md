@@ -30,9 +30,10 @@ When `inspect_pending` matches an *accepted* original CLOSE command to its
 correlated Broker execution and authoritative position (including
 terminal partial reductions), it adds a bounded record to
 `state["close_command_attribution"]`. It contains the original command,
-broker order ID, exact execution and venue correlation identities, previously
-frozen trigger, quantity/position boundaries and whether the fill is
-terminal/partial. Duplicate command/execution pairs are idempotent; a changed
+broker order ID, primary execution ID and the complete bounded list of
+original Broker execution IDs, venue correlation ID, Broker fill quantity
+and average price, previously frozen trigger, pre/post position and whether
+the fill is terminal/partial. Duplicate command/execution pairs are idempotent; a changed
 execution identity for the same command fails closed.
 
 Legacy CLOSE commands without a captured reason produce
@@ -61,7 +62,7 @@ PAPER position must not be changed as part of these source tests.
 ## Tests / validation
 
 On Pocket4, the original driver, 100k USD FX notional, PAPER profile and
-new original CLOSE attribution tests run together: **78/78 PASS**.
+new original CLOSE attribution tests run together: **79/79 PASS**.
 Additional adversarial coverage includes quote inversion/malformed numbers,
 malicious trigger labels, OPEN mislabeled as an exit, uncertain submit,
 accepted full CLOSE, original correlated execution IDs, terminal partial

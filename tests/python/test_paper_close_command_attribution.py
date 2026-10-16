@@ -115,6 +115,9 @@ class ExactCloseCommandProvenance(unittest.TestCase):
         receipt=history[0]
         self.assertEqual(receipt["original_command_id"],"orig-close-11")
         self.assertEqual(receipt["broker_execution_id"],"exec-orig-close-11")
+        self.assertEqual(receipt["broker_execution_ids"],["exec-orig-close-11"])
+        self.assertEqual(receipt["broker_average_fill_price"],1.119)
+        self.assertEqual(receipt["broker_fill_quantity"],25000)
         self.assertEqual(receipt["broker_order_id"],42)
         self.assertEqual(receipt["exit_trigger"],trigger)
         self.assertFalse(receipt["terminal_partial_exit"])
@@ -166,6 +169,18 @@ class ExactCloseCommandProvenance(unittest.TestCase):
         with self.assertRaisesRegex(d.DriverError,"attribution mismatch"):
             d.record_correlated_close(state,p,other,0)
         self.assertEqual(len(state["close_command_attribution"]),1)
+
+    def test_multiple_original_broker_executions_retain_full_exact_set(self):
+        state=closing_state()
+        pending={"command_id":"multi-fill-original","broker_order_id":108}
+        fill=correlated_fill("multi-fill-original",order=108)
+        fill["broker_execution_ids"]=["exec-multi-fill-original","exec-second-fill"]
+        d.record_correlated_close(state,pending,fill,0)
+        receipt=state["close_command_attribution"][0]
+        self.assertEqual(receipt["broker_execution_ids"],fill["broker_execution_ids"])
+        changed=dict(fill,broker_execution_ids=list(reversed(fill["broker_execution_ids"])))
+        with self.assertRaisesRegex(d.DriverError,"attribution mismatch"):
+            d.record_correlated_close(state,pending,changed,0)
 
     def test_corrupted_or_missing_broker_execution_must_not_mint_receipt(self):
         state=closing_state()
