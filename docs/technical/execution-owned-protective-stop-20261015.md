@@ -742,3 +742,38 @@ inventory, complete OMS/ID floor, independent risk admission and the
 same existing Adapter API lock. A positive isolated IBKR PAPER bracket,
 OCA-safe ordinary close, disconnect and Driver-death test remain
 mandatory before retiring Issue #331.
+
+## 2026-10-16 — Verify the actual IBKR SDK PLACE_ORDER wire encoder, offline
+
+The earlier H1 parent/stop mock verified the C++ `Order` fields but did
+not call the **real TWS C++ API's** `EClient::placeOrder` serializer.
+The new `hepta_ib_native_h1_sdk_wire_encoding_tests` uses the exact
+installed TWS 10.30 SDK, a `DefaultEWrapper`, and a subclass of
+`EClient` that overrides **every network egress method** to capture
+memory buffers; it owns no socket or `ETransport`. A simulated
+connection handshake never reaches a broker.
+
+For a synthetic frozen EUR/USD PAPER H1 group, it inspects two actual
+`PLACE_ORDER` opcode frames. The first is MKT/DAY with
+`transmit=false`, `parentId=0`; the second is STP/GTC with
+`transmit=true`, `parentId=<original parent>`, `ocaGroup=<H1 OCA>`,
+`ocaType=1`, stop auxPrice snapped to verified 0.00005, and exact
+synthetic account/conId/client/quantity. The SDK's Decimal textual
+serialization can have a non-integer representation even for integer
+quantity; the test checks full-token numeric equality rather than
+assuming the string is exactly `89200`.
+
+It then mutates **one SDK field at a time** and checks the encoded
+packet changes in exactly one corresponding token: parentId, transmit,
+ocaType, TIF, original H1 orderRef, OCA group and stop auxPrice. The
+test also verifies the wire's consecutive orderRef/transmit/parentId
+sequence and rejects duplicate H1 references.
+
+This is a **real SDK byte-encoding test only**, not a validated TWS
+handshake or Broker response. The stub uses an explicitly synthetic
+SDK server version (200), not a current broker-negotiated version.
+It cannot prove Broker accepts GTC/STP/OCA, persists an untransmitted
+parent, confirms Permanent IDs or will execute a stop after Driver
+death. Zero real `placeOrder`, no account network connection and no
+resident service changes. It is compiled only in the existing
+IB-API-enabled core CTest lane, and adds no production sender.
