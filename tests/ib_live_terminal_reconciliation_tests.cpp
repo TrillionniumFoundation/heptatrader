@@ -2,6 +2,7 @@
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
 #include "execution/ib_bracket_h1_oms_reservation.h"
+#include "execution/ib_bracket_h1_identity.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -1546,7 +1547,93 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
     assert(brokerFixture.broker->places==0);
     assert(::unlink(chars.data())==0);
 }
+
+// Real Adapter state only: immutable original H1 must map to the same
+// actual broker active-order inventory and coherent physical EUR cash risk.
+// The result CANNOT authorize a real ordinary OCA exit, even when complete.
+void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
+    Fixture f(true,false,true);
+    hepta_bracket_h1::FrozenBracket original;
+    original.originalCommandKey="actual-adapter-oca-001";
+    original.account="DU123";original.owner="owner-adapter";
+    original.sessionId="session-1";original.executionDomain="PAPER";
+    original.contractId=12087792;original.clientId=73;
+    original.parentOrderId=4100;original.childOrderId=4101;
+    original.connectionEpoch=f.adapter.GetConnectionEpoch();
+    original.positionGeneration=1;original.ownerFenceToken=23;
+    original.intentObservedAtMs=1792080000123ULL;
+    original.quantity=25000;original.side="BUY";
+    original.referencePrice=1.1205;original.stopPrice=1.11825;
+    original.minTick=.00005;
+    hepta_bracket_h1::BoundRefs h1;std::string reason;
+    assert(hepta_bracket_h1::BuildFrozenRefs(original,h1,reason));
+    IBH1OcaAdapterScopeObservation scope;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(!scope.maySendOrdinaryExit&&!scope.nativeStopBrokerWorkingProven);
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    auto e=f.Event(IBEventType::OpenOrder);e.id=original.childOrderId;
+    e.account=original.account;e.value="Submitted";
+    e.contract.symbol="EUR";e.contract.secType="CASH";
+    e.contract.currency="USD";e.contract.exchange="IDEALPRO";
+    e.order.orderRef=h1.childRef;e.order.orderType="STP";
+    e.order.action="SELL";e.order.totalQuantity=original.quantity;
+    e.order.auxPrice=original.stopPrice;
+    f.Push(e);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto orders=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(orders.complete);
+    assert(orders.activeOrderIds.count(original.childOrderId)==1);
+    assert(orders.activeOrderIdsByCorrelation.at(h1.childCorrelation)==
+           original.childOrderId);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(f.adapter.ReqRiskRefresh());
+    auto account=f.Event(IBEventType::AccountValue);
+    account.key="NetLiquidation:USD";account.value="1000";f.Push(account);
+    account.key="AccountReady:";account.value="true";f.Push(account);
+    account.key="CashBalance:EUR";account.value="-75000";f.Push(account);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto risk=f.adapter.GetAuthoritativeRiskSnapshot();
+    assert(risk.complete&&risk.coherentRefreshComplete&&risk.fxCashComplete);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(scope.originalAccountAndOrderSetConsistent);
+    assert(scope.brokerSignedFxPosition==25000);
+    assert(scope.exactStopNativeOrderId==original.childOrderId);
+    assert(scope.connectionEpoch==original.connectionEpoch);
+    assert(!scope.nativeStopBrokerWorkingProven&&!scope.stopPriceTriggerProven&&
+           !scope.accountSnapshotFreshnessProven&&!scope.maySendOrdinaryExit&&
+           !scope.mayStopDriver);
+    const auto valid=scope;
+    auto wrong=original;wrong.account="DU-OTHER";
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.clientId+=1;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.childOrderId+=2;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.quantity=24000;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    auto changed=h1;changed.childCorrelation="hepta-v1-sha256:"+std::string(64,'f');
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,changed,scope,reason));
+    // A second genuinely broker-active order invalidates the singleton proof.
+    const std::string other="hepta-v1-sha256:"+std::string(64,'a');
+    std::string encoded;assert(IbVenueCorrelationCodec::EncodeOrderRef(other,encoded,reason));
+    auto extra=e;extra.id=original.childOrderId+10;
+    extra.order.orderRef=encoded;
+    f.Push(extra);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ORIGINAL_ACTIVE_STOP_NOT_UNIQUE");
+    // A changed cash balance with no coherent account+position refresh
+    // invalidates the exact original PAPER risk proof, independently of
+    // what a cached order-status callback happened to report.
+    account.key="CashBalance:EUR";account.value="-75001";f.Push(account);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE");
+    assert(!scope.originalAccountAndOrderSetConsistent);
+    (void)valid;
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
 int main() {
+    TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();

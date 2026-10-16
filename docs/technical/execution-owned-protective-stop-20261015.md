@@ -1034,3 +1034,44 @@ protective acceptance, so PR stays Draft and Issue #331 remains P0 Open.
 
 Official API order metadata:
 https://www.interactivebrokers.com/docs/tws-api/ref/order
+
+## 2026-10-16 — actual Adapter-owned account-wide H1 OCA snapshot consistency
+
+Issue #331's original unsent OCA ordinary-close candidate used an entirely
+caller-populated `BrokerStopAndPositionEvidence`. A caller setting flags like
+`brokerPositionAuthoritative=true` was **not** proof of the current Broker.
+
+This iteration adds **read-only**
+`HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope`.
+It samples the Adapter's *actual* `BuildRecoveryAuditSnapshotLocked()`
+under the existing `m_apiMutex` (no alternate Broker client, owner, store or
+API request). It requires the exact PAPER account and configured client,
+EUR/USD CASH/IDEALPRO conId, canonical frozen Parent/Child/OCA H1 roles, a
+current complete active-order inventory containing **exactly one** broker
+order and mapping the original STOP H1 correlation to the original child ID,
+and a coherent complete account+positions+FX-cash risk refresh from the
+same epoch that has absorbed all known economic fills. It rejects pending
+postfill reconciliation, callback conflicts, missing FX position, another
+working order, altered Broker account/client, changed H1 or original quantity,
+incomplete source observations, changed cash balances and any stale epoch.
+
+The structured observation is intentionally **not** a Broker stop proof:
+its `nativeStopBrokerWorkingProven`,
+`stopPriceTriggerProven`, `accountSnapshotFreshnessProven`,
+`maySendOrdinaryExit` and `mayStopDriver` fields remain **false**
+even when all currently available account-wide projections agree. The
+existing Adapter correlation snapshot contains only orderRef / numeric ID;
+it does not contain the original full SDK stop openOrder status, permanent
+ID, remaining quantity, trigger, OCA server acceptance or a clock freshness
+receipt. Read time is not completion time. Positive native Broker callbacks
+and fresh owner-fenced account/position/order snapshot evidence are still
+required before any real OCA sibling can be admitted.
+
+Pocket4 actual IB-API-enabled CMake Release isolated test uses the existing
+fake Broker callbacks to populate the **real Adapter** (not a hand-filled
+snapshot struct); it demonstrates one exact H1 stop / EUR cash position
+consistency as advisory only, refuses every changed account, client, stop
+ID, quantity, H1, second active order and out-of-generation cash balance.
+It does not issue, cancel, or modify a Broker order and leaves resident
+PAPER drivers running. See the native `hepta_ib_live_terminal_reconciliation_tests`
+regression.

@@ -1,4 +1,5 @@
 ﻿#include "ib_gateway_adapter.h"
+#include "../execution/ib_bracket_h1_identity.h"
 #include "ib_venue_correlation.h"
 #include "../execution/ib_h1_native_id_restart_floor.h"
 #include <ctime>
@@ -530,6 +531,91 @@ IBAuthoritativeRecoveryAuditSnapshot
 HeptaIBGatewayAdapter::GetAuthoritativeRecoveryAuditSnapshot() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     return BuildRecoveryAuditSnapshotLocked();
+}
+
+bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
+    const hepta_bracket_h1::FrozenBracket& original,
+    const hepta_bracket_h1::BoundRefs& refs,
+    IBH1OcaAdapterScopeObservation& observation,
+    std::string& reason) const
+{
+    observation=IBH1OcaAdapterScopeObservation{};
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    if(!m_api || !m_api->IsConnected() || !m_connected ||
+       m_terminalTransportHalted ||
+       original.executionDomain!="PAPER" ||
+       original.account.empty() || original.account!=m_cfg.account ||
+       !IsPaperAccount(m_cfg.account) ||
+       original.clientId<=0 || original.clientId!=m_cfg.clientId ||
+       original.contractId!=12087792 ||
+       original.childOrderId<=0 ||
+       m_connectionEpoch==0 ||
+       m_connectionEpoch<original.connectionEpoch ||
+       m_cfg.authoritativeCashFxContracts.count("EUR.USD")!=1) {
+        reason="H1_OCA_ADAPTER_EXACT_ACCOUNT_OWNER_OR_CONTRACT_INVALID";
+        return false;
+    }
+    const InstrumentRef& fx=m_cfg.authoritativeCashFxContracts.at("EUR.USD");
+    if(fx.symbol!="EUR" || fx.secType!="CASH" ||
+       fx.currency!="USD" || fx.exchange!="IDEALPRO") {
+        reason="H1_OCA_ADAPTER_FX_CASH_CONTRACT_CHANGED";
+        return false;
+    }
+    if(!hepta_bracket_h1::VerifyFrozenRefs(original,refs,reason))
+        return false;
+    const IBAuthoritativeRecoveryAuditSnapshot snap=
+        BuildRecoveryAuditSnapshotLocked();
+    if(!m_eventStreamAuthoritative ||
+       !snap.active.complete || !snap.risk.complete ||
+       !snap.risk.coherentRefreshComplete ||
+       !snap.risk.accountComplete || !snap.risk.positionsComplete ||
+       !snap.risk.fxCashComplete ||
+       snap.active.generation==0 || snap.risk.generation==0 ||
+       snap.risk.accountGeneration==0 || snap.risk.positionsGeneration==0 ||
+       snap.risk.fxCashGeneration==0 ||
+       snap.active.connectionEpoch!=m_connectionEpoch ||
+       snap.risk.connectionEpoch!=m_connectionEpoch ||
+       snap.postFillRiskReconciliationPending ||
+       snap.exposureGeneration!=snap.riskAbsorbedExposureGeneration ||
+       snap.newConnectionEpochRequired ||
+       snap.callbackConflictMetricsSaturated || snap.callbackConflictCount!=0) {
+        reason="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE";
+        return false;
+    }
+    const auto id=snap.active.activeOrderIdsByCorrelation.find(
+        refs.childCorrelation);
+    if(snap.active.activeOrderIds.size()!=1 ||
+       snap.active.activeOrderIdsByCorrelation.size()!=1 ||
+       id==snap.active.activeOrderIdsByCorrelation.end() ||
+       id->second!=original.childOrderId ||
+       snap.active.activeOrderIds.count(original.childOrderId)!=1) {
+        reason="H1_OCA_ADAPTER_ORIGINAL_ACTIVE_STOP_NOT_UNIQUE";
+        return false;
+    }
+    const auto position=snap.positionQuantities.find("EUR.USD");
+    const double expected=original.side=="BUY" ?
+        original.quantity:-original.quantity;
+    if(position==snap.positionQuantities.end() ||
+       !std::isfinite(position->second) || position->second!=expected ||
+       snap.risk.grossAbsolutePosition < std::fabs(expected)) {
+        reason="H1_OCA_ADAPTER_PHYSICAL_FX_EXPOSURE_MISMATCH";
+        return false;
+    }
+    observation.originalAccountAndOrderSetConsistent=true;
+    observation.exactStopNativeOrderId=original.childOrderId;
+    observation.brokerSignedFxPosition=position->second;
+    observation.connectionEpoch=m_connectionEpoch;
+    observation.riskGeneration=snap.risk.generation;
+    observation.activeOrdersGeneration=snap.active.generation;
+    // No SDK order-type/stop-price/OCA callback status or refresh wall time
+    // is available in this adapter composite. Never qualify an actual exit.
+    observation.nativeStopBrokerWorkingProven=false;
+    observation.stopPriceTriggerProven=false;
+    observation.accountSnapshotFreshnessProven=false;
+    observation.maySendOrdinaryExit=false;
+    observation.mayStopDriver=false;
+    reason.clear();
+    return true;
 }
 
 IBAuthoritativeRecoveryAuditSnapshot
