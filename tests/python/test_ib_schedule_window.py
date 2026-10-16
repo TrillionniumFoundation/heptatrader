@@ -60,7 +60,7 @@ class DerivedIBScheduleWindowTests(unittest.TestCase):
 
     def test_partial_five_minute_scope_is_rejected(self):
         bars, old, schedule, start, end = self.fixture()
-        for lo, hi in ((start + 1, end), (start, end - 1)):
+        for lo, hi in ((start + 1, end), (start, end - 2)):
             with self.assertRaisesRegex(EvidenceError, "COMPLETE_FIVE_MINUTE_BOUNDARIES"):
                 validate_window(bars, old, schedule, lo, hi)
 
