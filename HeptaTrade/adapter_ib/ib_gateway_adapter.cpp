@@ -622,6 +622,30 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
             observation.sdkNativeStopUnfilledRemainingMatches=true;
             observation.sdkNativeStopRemainingQuantity=
                 latestStatus->second.number3;
+            // Exact SDK order identity AND physical position are not enough:
+            // all four independent Broker evidence legs must be recent on
+            // the SAME host monotonic clock, never supplied by an agent.
+            constexpr std::uint64_t kMaxAgeNs = 3000000000ULL;
+            const auto nowNs=static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            auto age = [&](std::uint64_t timestamp,std::uint64_t& ageMs) {
+                if(timestamp==0 || timestamp>nowNs ||
+                   nowNs-timestamp>kMaxAgeNs) return false;
+                ageMs=(nowNs-timestamp)/1000000ULL;
+                return true;
+            };
+            const bool a=age(m_h1AccountWideOrderEndMonotonicNs,
+                observation.activeOrderBarrierAgeMs);
+            const bool b=age(m_h1CoherentRiskEndMonotonicNs,
+                observation.coherentRiskBarrierAgeMs);
+            const bool c=age(nativeStop->second.queueIngressMonotonicNs,
+                observation.stopNativeEchoAgeMs);
+            const bool d=age(latestStatus->second.queueIngressMonotonicNs,
+                observation.stopRemainingStatusAgeMs);
+            observation.brokerObservationClockBounded = a && b && c && d &&
+                latestStatus->second.queueIngressMonotonicNs >=
+                    nativeStop->second.queueIngressMonotonicNs;
         }
     }
     observation.exactStopNativeOrderId=original.childOrderId;
@@ -629,8 +653,9 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
     observation.connectionEpoch=m_connectionEpoch;
     observation.riskGeneration=snap.risk.generation;
     observation.activeOrdersGeneration=snap.active.generation;
-    // No SDK order-type/stop-price/OCA callback status or refresh wall time
-    // is available in this adapter composite. Never qualify an actual exit.
+    // Bounded callback freshness does not prove the stop's real trigger,
+    // ongoing server-held availability or safe OCA cancellation/overfill.
+    // Never qualify any actual exit from this observation.
     observation.nativeStopBrokerWorkingProven=false;
     observation.stopPriceTriggerProven=false;
     observation.accountSnapshotFreshnessProven=false;
@@ -910,6 +935,7 @@ bool HeptaIBGatewayAdapter::BeginCoherentRiskRefresh(
     m_coherentRiskRefreshPositionGeneration = m_riskGeneration + 2;
     m_riskSnapshot.complete = false;
     m_riskSnapshot.coherentRefreshComplete = false;
+    m_h1CoherentRiskEndMonotonicNs = 0;
     m_coherentRiskRefreshDispatching = true;
     const bool accountDispatched = ReqAccountSummary();
     const bool positionsDispatched = accountDispatched && ReqPositions();
@@ -1009,6 +1035,7 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_h1NativeStopOpenOrderEchoes.clear();
     m_h1NativeStopOrderStatusEchoes.clear();
     m_h1NativeStopRefreshAccountWide = accountWide;
+    m_h1AccountWideOrderEndMonotonicNs = 0;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;

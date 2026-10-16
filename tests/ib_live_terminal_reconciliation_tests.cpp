@@ -13,6 +13,7 @@
 #include <limits>
 #include <atomic>
 #include <thread>
+#include <chrono>
 #include <memory>
 #include <new>
 #include <cstdlib>
@@ -1609,7 +1610,9 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     // Refresh the existing REAL Adapter with a synthetic full SDK callback,
     // not merely a manually populated active-order snapshot.
     auto originalSdk=e;
-    originalSdk.queueIngressMonotonicNs=555000;
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     auto& sdk=originalSdk.nativeOrder;
     sdk.present=true;
     sdk.contractId=12087792;sdk.orderId=original.childOrderId;
@@ -1655,8 +1658,68 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
         original,h1,scope,reason));
     assert(scope.sdkNativeStopUnfilledRemainingMatches &&
            scope.sdkNativeStopRemainingQuantity==original.quantity &&
+           scope.brokerObservationClockBounded &&
+           scope.activeOrderBarrierAgeMs<=3000 &&
+           scope.coherentRiskBarrierAgeMs<=3000 &&
+           scope.stopNativeEchoAgeMs<=3000 &&
+           scope.stopRemainingStatusAgeMs<=3000 &&
+           !scope.accountSnapshotFreshnessProven &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // Replacing status with a valid-but-old monotonically stamped callback
+    // must never yield a fresh account-wide protective diagnosis. The
+    // original order identity can remain the same without being current.
+    auto staleStatus=status;
+    staleStatus.queueIngressMonotonicNs=1;
+    f.Push(staleStatus);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(!scope.brokerObservationClockBounded &&
+           !scope.accountSnapshotFreshnessProven &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit);
+    // Reestablish fresh matching orderStatus before adverse mutations.
+    status.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.brokerObservationClockBounded &&
+           !scope.maySendOrdinaryExit);
+    // An SDK OpenOrder can match every original ID and be fully corroborated
+    // by a later fresh OrderStatus, yet its original ingress time is stale.
+    // This is a genuine liveness failure, not a stop-status identity failure.
+    auto staleSdk=originalSdk;
+    staleSdk.queueIngressMonotonicNs-=5000000000ULL;
+    nativeRefresh(staleSdk);
+    auto newerStatus=status;
+    newerStatus.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(newerStatus);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopEchoMatches &&
+           scope.sdkNativeStopUnfilledRemainingMatches &&
+           !scope.brokerObservationClockBounded &&
+           !scope.accountSnapshotFreshnessProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // New account-wide Broker source cycle may reestablish the diagnostic
+    // but cannot silently promote it into a live protective-stop permission.
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    nativeRefresh(originalSdk);
+    status.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.brokerObservationClockBounded &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit);
     status.nativeOrder.permanentId+=1;
     status.queueIngressMonotonicNs+=100;
     f.Push(status);
