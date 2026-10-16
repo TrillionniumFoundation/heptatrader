@@ -3,6 +3,7 @@ from __future__ import annotations
 import json,os,sqlite3
 from pathlib import Path
 from .integrity import ContractError,canonical,read_json,digest
+from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,checked_ids,verify_candidate
 
 
 def write_once(path,value):
@@ -39,6 +40,10 @@ def get_meta(db,key,default=None):
 def put_meta(db,key,value):db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',(key,json.dumps(value,sort_keys=True)))
 
 def admit_job(db,job_id,fingerprint,created_ms,job,rows):
+ if job.get('training_row_accounting_schema') is not None:
+  if job['training_row_accounting_schema']!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
+  checked_ids(rows,16)
+  if rows!=job.get('training_row_ids') or fingerprint!=digest(rows):raise ContractError('ROW_ACCOUNTING_JOB_BINDING')
  with db:
   if db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return False
   if any(db.execute('SELECT 1 FROM consumed_rows WHERE id=?',(r,)).fetchone() for r in rows):
@@ -50,8 +55,9 @@ def admit_job(db,job_id,fingerprint,created_ms,job,rows):
 
 def complete_job(db,job_id,candidate):
  with db:
-  r=db.execute('SELECT status,candidate_id FROM jobs WHERE id=?',(job_id,)).fetchone()
+  r=db.execute('SELECT status,candidate_id,payload FROM jobs WHERE id=?',(job_id,)).fetchone()
   if r is None:raise ContractError('NO_ADMITTED_JOB')
+  verify_candidate(json.loads(r['payload']),candidate)
   if r['status']=='COMPLETED':
    if r['candidate_id']!=candidate['candidate_id']:raise ContractError('JOB_CANDIDATE_CHANGED')
    return False
