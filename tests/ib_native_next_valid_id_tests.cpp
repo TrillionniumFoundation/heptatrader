@@ -78,6 +78,22 @@ int main() {
                     std::numeric_limits<std::int32_t>::max()) &&
                 otherClient.Get()==-1,
                 "exhausted 32-bit ID accepted instead of blocking allocation");
+        // An execution callback can be the ONLY delivered native ID witness
+        // after another client's fill; no openOrder/orderStatus is required.
+        IBNextValidOrderIdReadiness executionOnly;
+        Require(executionOnly.Observe(51) && executionOnly.Get()==51,
+                "execution-only test lacked original nextValidId");
+        Require(executionOnly.ObserveUsedOrderId(3000) &&
+                executionOnly.Get()==3001,
+                "execution-only native ID did not raise the send floor");
+        Require(!executionOnly.ObserveUsedOrderId(2999) &&
+                executionOnly.Get()==3001,
+                "old execution regressed the native order ID floor");
+        IBNextValidOrderIdReadiness noGrant;
+        Require(noGrant.ObserveUsedOrderId(5000) && noGrant.Get()==-1,
+                "execution-only evidence minted nextValidId authority");
+        Require(noGrant.Observe(2) && noGrant.Get()==5001,
+                "later genuine nextValidId ignored execution order ID");
         otherClient.Reset();
         Require(otherClient.Get()==-1 && otherClient.Observe(42) &&
                 otherClient.Get()==42,

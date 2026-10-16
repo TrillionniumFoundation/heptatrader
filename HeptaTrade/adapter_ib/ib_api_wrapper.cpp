@@ -1711,6 +1711,12 @@ public:
         PushEvent(std::move(event));
     }
     void execDetails(int requestId, const Contract& contract, const Execution& execution) override {
+        // A live or queried fill can identify a native order absent from the
+        // current openOrder/orderStatus callbacks. Burn that broker-native ID
+        // before publishing the event, even if the ingress queue later drops
+        // the callback. This never substitutes for an actual nextValidId.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(
+            static_cast<long>(execution.orderId));
         const double cumQty = DecimalFunctions::decimalToDouble(execution.cumQty);
         const double fillPx = (execution.avgPrice > 0.0 ? execution.avgPrice : execution.price);
         IBEvent executionEvent = MakeIBEvent(

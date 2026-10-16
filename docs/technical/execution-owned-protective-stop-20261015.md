@@ -818,3 +818,22 @@ The synthetic Broker places no protective orders in the new case. No running
 Execution, FX, BTC, Laya or Source Health unit was restarted or replaced.
 This change remains source-only research until the full Broker PAPER bracket,
 working stop and ordinary OCA exit lifecycle is demonstrated.
+
+
+## 2026-10-16 — execDetails-only native order ID high-water
+
+`ib_api_wrapper.cpp` now raises the atomic native order-ID high-water on
+original SDK `execDetails` callbacks **before** publishing their queued
+execution event. A fill can be the first or only delivered observation of a
+higher order ID, even when no matching `openOrder` or `orderStatus` arrives.
+The observed ID only **raises** the candidate floor. It never mints a
+`nextValidId` callback, a pair reservation, a Broker send, or authority
+for maintenance. Invalid/nonpositive and over-int32 IDs remain refused by
+`IBNextValidOrderIdReadiness`, including when the callback is historical.
+
+Pocket4 exact-source IBAPI-ON Release CTest: the real native readiness
+concurrency test and mock IB terminal reconciliation **2/2 passed**; the
+seven related Execution/OMS/IB tests also passed. Dedicated ASan+UBSan
+Debug build of those two native cases **2/2 passed**. This is still
+source-level callback wiring and offline test evidence, **not** an actual
+Broker execution fill or order placement.
