@@ -85,9 +85,11 @@ inline Result ProjectFrozenH1WorkingStop(
 {
     hepta_bracket_h1::Reservation original;
     std::string replayReason;
-    if(!hepta_bracket_h1::ConfirmReplay(originalOms,frozen,
-                                       original,replayReason) &&
-       !hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+    // An original ID reservation alone can NEVER establish a native stop
+    // callback's ownership. Both parent and child critically durable
+    // pre-send markers must exist before projecting any native H1 candidate.
+    // The generic replay still correctly refuses UNKNOWN Broker re-sends.
+    if(!hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
                                        originalOms,frozen,
                                        original,replayReason)) {
         reason="IB_H1_ORIGINAL_DURABLE_PAIR_UNVERIFIED";

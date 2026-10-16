@@ -66,9 +66,13 @@ static void ExactOriginalH1CallbackAndDurableOms(){
     OmsJournal journal;Require(journal.Init(file),"exact OMS init failed");
     Reservation reserved;
     Require(ReservePair(journal,f,reserved,reason),"durable frozen H1 pair missing");
+    Require(MarkPotentialSend(journal,reserved,false,reason),
+            "original parent durable pre-send missing");
+    Require(MarkPotentialSend(journal,reserved,true,reason),
+            "original child durable pre-send missing");
     std::vector<OmsJournalEvent> original;
-    Require(journal.Replay([&](const OmsJournalEvent& e){original.push_back(e);})==2,
-            "original H1 durable OMS proof missing");
+    Require(journal.Replay([&](const OmsJournalEvent& e){original.push_back(e);})==4,
+            "original H1 pair plus pre-send OMS proof missing");
     const auto event=ExactNativeH1OpenOrder(f,refs);
     const auto originalRecord=OriginalCallbackRecord(f);
     OmsJournalEvent accepted=originalRecord;
@@ -84,12 +88,12 @@ static void ExactOriginalH1CallbackAndDurableOms(){
             "H1 role/parent/native callback identity was lost");
     Require(journal.AppendDurableCritical(accepted),"H1 original callback not durably stored");
     std::vector<OmsJournalEvent> reopened;
-    Require(journal.Replay([&](const OmsJournalEvent& e){reopened.push_back(e);})==3,
+    Require(journal.Replay([&](const OmsJournalEvent& e){reopened.push_back(e);})==5,
             "H1 callback record did not roundtrip through native OMS");
-    Require(reopened[2].brokerBracket.version==2 &&
-            reopened[2].brokerBracket.orderRef==refs.childRef &&
-            reopened[2].brokerBracket.ocaGroup==refs.ocaGroup &&
-            reopened[2].brokerBracket.permanentOrderId==888871,
+    Require(reopened[4].brokerBracket.version==2 &&
+            reopened[4].brokerBracket.orderRef==refs.childRef &&
+            reopened[4].brokerBracket.ocaGroup==refs.ocaGroup &&
+            reopened[4].brokerBracket.permanentOrderId==888871,
             "H1 original native callback lost its durable permanent ID");
     auto rejectEvent=[&](const IBEvent& test,const char* label){
         auto output=originalRecord;
@@ -206,6 +210,14 @@ static void SubmittedH1EchoAfterDurablePotentialSends() {
             "original durable send records lost before Broker callback");
     auto record=OriginalCallbackRecord(f);
     const auto event=ExactNativeH1OpenOrder(f,refs);
+    // A native OpenOrder cannot be accepted as original-owner protection
+    // when the OMS contains only two reserved IDs and NO durable pre-send.
+    const std::vector<OmsJournalEvent> pairOnly(rows.begin(),rows.begin()+2);
+    auto noAttempt=OriginalCallbackRecord(f);
+    Require(ProjectFrozenH1WorkingStop(event,f,pairOnly,noAttempt,why)==
+                Result::Rejected && noAttempt.eventType.empty() &&
+                noAttempt.brokerBracket.version==0,
+            "original H1 stop candidate accepted without any durable send attempts");
     Require(ProjectFrozenH1WorkingStop(event,f,rows,record,why)==
                 Result::WorkingWitnessCandidate,
             "durable original parent/child sends plus exact native stop echo cannot reconcile");

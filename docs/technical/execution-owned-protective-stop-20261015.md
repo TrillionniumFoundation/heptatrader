@@ -906,3 +906,20 @@ These are read-only observation candidates, **not** proof of a live protective
 order across driver death or ordinary exit. `sendAuthorized=false` and
 `driverStopAllowed=false` remain unchanged. No native Broker placement,
 cancellation or maintenance permission was added.
+
+## 2026-10-16: no native H1 witness without both durable pre-send markers
+
+Research H1 Broker `OpenOrder(Submitted)` evidence may not be promoted to
+a working-stop *candidate* from two durable native order-ID reservations
+alone. The prior pair-only compatibility path produced such a candidate
+without a single durable original parent/child Broker send attempt. A real
+Pocket4 native IB-API-ON CTest reproduced this defect before the fix.
+
+The native H1 projector now requires the strict original pair followed by
+**both** exact fsynced parent and child `POSSIBLY_SENT` markers. A missing
+parent or child, swapped or forged marker, or an old candidate with only
+reserved IDs is rejected. Neither matching Broker-looking fields nor a
+positive permanent ID can replace the pre-send provenance. The separate
+strict full-journal replay continues to forbid retry of uncertain sends.
+This is a non-dispatching research-only evidence boundary, not a stop sender
+or authorization to stop drivers or modify active positions.
