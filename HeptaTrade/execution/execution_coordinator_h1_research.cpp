@@ -6,6 +6,26 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
     const hepta_bracket_h1::FrozenBracket& frozen,
     hepta_bracket_h1::Reservation& result, std::string& reason)
 {
+    return ReserveResearchH1BracketInternal(
+        originalOwner, frozen, nullptr, result, reason);
+}
+
+bool ExecutionCoordinator::ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+    const AgentExecutionContext& originalOwner,
+    const hepta_bracket_h1::FrozenBracket& frozenWithoutIds,
+    const H1UnsentNativeIdAllocator& localIdAllocator,
+    hepta_bracket_h1::Reservation& result, std::string& reason)
+{
+    return ReserveResearchH1BracketInternal(
+        originalOwner, frozenWithoutIds, &localIdAllocator, result, reason);
+}
+
+bool ExecutionCoordinator::ReserveResearchH1BracketInternal(
+    const AgentExecutionContext& originalOwner,
+    hepta_bracket_h1::FrozenBracket frozen,
+    const H1UnsentNativeIdAllocator* localIdAllocator,
+    hepta_bracket_h1::Reservation& result, std::string& reason)
+{
     result=hepta_bracket_h1::Reservation{};
     // Verify that the original command and BOTH agent/session identities
     // match the request made to the actual Coordinator. Caller-supplied
@@ -37,8 +57,9 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
         // The present owner map cannot attest that a colliding numeric
         // native Broker order ID belongs to a different IB client. Refuse
         // ambiguous reuse before writing any new shadow reservation.
-        if(owned.first==frozen.parentOrderId ||
-           owned.first==frozen.childOrderId) {
+        if(!localIdAllocator &&
+           (owned.first==frozen.parentOrderId ||
+            owned.first==frozen.childOrderId)) {
             reason="H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
             return false;
         }
@@ -53,6 +74,43 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
     if(prior!=m_requests.end()) {
         reason="H1_BRACKET_PRIOR_COMMAND_IDENTITY";
         return false;
+    }
+    // A new Owner-bound local pair is consumed only AFTER the durable
+    // recovery-only fence, mutation state, and original command identity
+    // have been independently checked while holding this same Coordinator
+    // mutex. This method itself has no Broker sender. The injected callback
+    // must be a trusted local-only adapter allocator, not an arbitrary
+    // user/Agent-supplied operation or proof of transport authority.
+    if(localIdAllocator) {
+        if(frozen.parentOrderId!=0 || frozen.childOrderId!=0) {
+            reason="H1_BRACKET_ADAPTER_PAIR_CALLER_IDS_NOT_ALLOWED";
+            return false;
+        }
+        bool priorOriginal=false;
+        const int replayed=m_journal.Replay([&](const OmsJournalEvent& e) {
+            if(e.reqId==originalOwner.toolCallId ||
+               e.clientReqId==originalOwner.toolCallId)
+                priorOriginal=true;
+        });
+        if(replayed<0 || priorOriginal) {
+            reason=replayed<0 ? "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
+                "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND";
+            return false;
+        }
+        long parent=-1, child=-1;
+        if(!(*localIdAllocator)(frozen.account, frozen.clientId,
+                frozen.connectionEpoch, parent, child, reason)) {
+            if(reason.empty())reason="H1_BRACKET_NATIVE_LOCAL_PAIR_UNAVAILABLE";
+            return false;
+        }
+        frozen.parentOrderId=parent;
+        frozen.childOrderId=child;
+        for(const auto& owned:m_orderOwners) {
+            if(owned.first==parent || owned.first==child) {
+                reason="H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
+                return false;
+            }
+        }
     }
     // Research events are CRITICAL and do not look like ordinary
     // order_intent. A journal prefix may exist after a crash. Before

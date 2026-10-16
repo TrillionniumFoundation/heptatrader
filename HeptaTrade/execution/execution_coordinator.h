@@ -184,6 +184,18 @@ public:
         const hepta_bracket_h1::FrozenBracket& frozen,
         hepta_bracket_h1::Reservation& result,
         std::string& reason);
+    // Research-only, non-dispatching Owner->native Adapter ID handoff.
+    // Only an internally trusted Adapter-local ID callback is eligible.
+    // A generic C++ callback is NOT independently verified as side-effect-free;
+    // never expose this research method to Agent or Broker send paths.
+    typedef std::function<bool(const std::string&, int, std::uint64_t,
+        long&, long&, std::string&)> H1UnsentNativeIdAllocator;
+    bool ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+        const AgentExecutionContext& originalOwner,
+        const hepta_bracket_h1::FrozenBracket& frozenWithoutIds,
+        const H1UnsentNativeIdAllocator& localIdAllocator,
+        hepta_bracket_h1::Reservation& result,
+        std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
                                      ExecutionControlStatusResult& result);
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);
@@ -234,6 +246,12 @@ public:
     static const char* StatusName(ExecutionCommandStatus status);
 
 private:
+    bool ReserveResearchH1BracketInternal(
+        const AgentExecutionContext& originalOwner,
+        hepta_bracket_h1::FrozenBracket frozen,
+        const H1UnsentNativeIdAllocator* localIdAllocator,
+        hepta_bracket_h1::Reservation& result,
+        std::string& reason);
     struct RequestRecord
     {
         ExecutionCommandStatus status = ExecutionCommandStatus::Uncertain;

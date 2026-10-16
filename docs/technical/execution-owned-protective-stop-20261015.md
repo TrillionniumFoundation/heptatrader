@@ -715,11 +715,30 @@ an exclusive original order group, or that the pair is durably present in the
 OMS before a future send. New higher broker IDs may arrive on the reader
 thread immediately after the local reservation; any future sender must recheck
 fresh broker floor under its actual transport lock, and treat an overtaken
-pair as unusable without blind regeneration. The current research-only
-Coordinator path still takes a frozen pair from its caller and does not invoke
-this allocator. It must not be connected to the active PAPER strategy until a
-single Owner-bound durable group handoff, failure recovery, native broker
-working stop and OCA close are independently proved.
+pair as unusable without blind regeneration. An additional research-only Coordinator path,
+`ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner`, now calls the
+adapter-local allocator via a narrow callback **only while holding the real
+Coordinator owner mutex**, after checking the original recovery-only Owner
+fence, session, command and mutation state. It refuses caller-preselected IDs,
+replays the original OMS before consuming IDs to prevent duplicate commands,
+then binds the returned parent/child pair through the existing
+`AppendDurablePair` and frozen H1 identity codec. A callback failure writes
+no new OMS pair. As a plain C++ callback it is **not** a security boundary:
+only a callback bound internally to `ReserveResearchUnsentH1LocalIdPair` is
+eligible for this research route, never an Agent-selected callback. A real
+write/flush error must remain UNKNOWN rather than
+induce blind broker resends. On Coordinator restart, the original durable
+command prevents a new allocation. Tests cross the actual Coordinator,
+original OMS and production IB Adapter against a wholly in-process fake
+Broker; they cover no-fence, preselected IDs, duplicate command, stale/missing
+nextValidId, correct callback recovery, owner restart, and no IB egress.
+
+The live strategy **does not invoke** this research-only handoff. A stored
+pair is not yet a TWS-accepted order-ID lease or proof that the Broker floor
+has not advanced in the meantime. No sender, native working stop, OCA close or
+risk-control release is enabled. Do not activate it on the current PAPER
+trading chain until exact original Owner, durable Broker send attempt, true
+PAPER openOrder/permanentId, and failure/ordinary-close recovery are proven.
 
 Native mock-Broker tests validate account/client/epoch and read-only refusals,
 shared ID cursor with ordinary mock sends, Broker floor advancement,

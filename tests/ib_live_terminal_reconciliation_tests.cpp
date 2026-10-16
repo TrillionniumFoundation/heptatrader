@@ -1,6 +1,7 @@
 #include "adapter_ib/ib_gateway_adapter.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
+#include "execution/ib_bracket_h1_oms_reservation.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -1312,7 +1313,116 @@ void TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress() {
         throw std::runtime_error("H1_LOCAL_PAIR_OVERFLOWED_SIGNED_TWS_ID");
 }
 
+void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
+    using namespace hepta_bracket_h1;
+    // This is a wholly in-process Broker mock plus a private temporary OMS.
+    // Even a successful pair reservation can NEVER send a real IB order.
+    Fixture fixture;
+    OmsJournal journal;
+    std::string templ="/tmp/Hepta-H1-LocalOwnerHandoff-XXXXXX";
+    std::vector<char> path(templ.begin(),templ.end());path.push_back('\0');
+    int fd=::mkstemp(path.data());
+    if(fd<0)throw std::runtime_error("H1_HANDOFF_SCRATCH_CREATE_FAILED");
+    ::close(fd);::unlink(path.data());
+    if(!journal.Init(path.data()))
+        throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_INIT_FAILED");
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator owner(journal,callbacks);
+    AgentExecutionContext ctx;
+    ctx.agentId="original-owner";ctx.sessionId="owner-session";
+    ctx.toolCallId="original-h1-entry-001";
+    ctx.executionDomain="IB-PAPER:EUR.USD";
+    FrozenBracket f;
+    f.originalCommandKey=ctx.toolCallId;f.account="DU123";
+    f.owner=ctx.agentId;f.sessionId=ctx.sessionId;
+    f.executionDomain="PAPER";f.side="BUY";
+    f.contractId=12087792;f.clientId=73;
+    f.parentOrderId=0;f.childOrderId=0;
+    f.connectionEpoch=fixture.adapter.GetConnectionEpoch();
+    f.positionGeneration=91;f.ownerFenceToken=31;
+    f.intentObservedAtMs=1792080000123ULL;
+    f.quantity=89200;f.referencePrice=1.1205;
+    f.stopPrice=1.11825;f.minTick=0.00005;
+    std::string reason;
+    hepta_bracket_h1::Reservation persisted;
+    int allocations=0;
+    ExecutionCoordinator::H1UnsentNativeIdAllocator nativeIds =
+        [&](const std::string& account,int clientId,std::uint64_t epoch,
+            long& parent,long& child,std::string& error)->bool {
+        ++allocations;
+        IBResearchH1LocalIdPair candidate;
+        if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+                account,clientId,epoch,candidate,error))return false;
+        if(candidate.sendAuthorized || candidate.brokerWorkingStopProven ||
+           candidate.paperAccount!=account ||
+           candidate.brokerClientId!=clientId ||
+           candidate.connectionEpoch!=epoch)return false;
+        parent=candidate.parentOrderId;child=candidate.childOrderId;
+        return true;
+    };
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=0 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_MISSING_OWNER_FENCE_ALLOCATED_IDS");
+    if(!owner.EnterRecoveryOnlyOwner(ctx.agentId,ctx.sessionId,31,reason))
+        throw std::runtime_error("H1_HANDOFF_OWNER_RECOVERY_FENCE_FAILED");
+    auto preselected=f;preselected.parentOrderId=9000;preselected.childOrderId=9001;
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,preselected,nativeIds,persisted,reason) || allocations!=0)
+        throw std::runtime_error("H1_HANDOFF_CALLER_PRESELECTED_NATIVE_IDS");
+    if(!owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=1 ||
+       persisted.frozen.parentOrderId!=41 ||
+       persisted.frozen.childOrderId!=42 ||
+       !persisted.replayComplete || persisted.sendAuthorized ||
+       persisted.driverStopAllowed || fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_NATIVE_ID_TO_DURABLE_OMS_MISMATCH");
+    std::vector<OmsJournalEvent> entries;
+    if(journal.Replay([&](const OmsJournalEvent& e){entries.push_back(e);})!=3)
+        throw std::runtime_error("H1_HANDOFF_DURABLE_OMS_PAIR_NOT_EXACT");
+    hepta_bracket_h1::Reservation checked;
+    if(!ConfirmReplay(entries,persisted.frozen,checked,reason) ||
+       checked.ids.childRef!=persisted.ids.childRef)
+        throw std::runtime_error("H1_HANDOFF_RESTART_CANNOT_BIND_ORIGINAL_PAIR");
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=1 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_DUPLICATE_BURNED_MORE_NATIVE_IDS");
+    // If the original Broker callback floor temporarily disappears, the
+    // next original command must leave NO prefix and consume NO local IDs.
+    auto secondCtx=ctx;secondCtx.toolCallId="original-h1-entry-002";
+    auto second=f;second.originalCommandKey=secondCtx.toolCallId;
+    fixture.broker->nextValidOrderId=0;
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            secondCtx,second,nativeIds,persisted,reason) ||
+       allocations!=2 || persisted.replayComplete ||
+       journal.Replay([](const OmsJournalEvent&) {})!=3)
+        throw std::runtime_error("H1_HANDOFF_NO_NEXTVALID_PERSISTED_FALSE_PAIR");
+    fixture.broker->nextValidOrderId=43;
+    if(!owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            secondCtx,second,nativeIds,persisted,reason) ||
+       allocations!=3 || persisted.frozen.parentOrderId!=43 ||
+       persisted.frozen.childOrderId!=44 || fixture.broker->places!=0 ||
+       journal.Replay([](const OmsJournalEvent&) {})!=5)
+        throw std::runtime_error("H1_HANDOFF_BROKER_FLOOR_RETURN_LOST_ID_CURSOR");
+    // The pre-send durable group must not mint another pair on Coordinator
+    // restart even if the caller still has a valid nextValidId callback.
+    {
+        ExecutionCoordinator recovered(journal,callbacks);
+        if(!recovered.RecoverFromJournal(reason))
+            throw std::runtime_error("H1_HANDOFF_RESTART_RECOVERY_FAILED");
+        auto old=f;
+        if(recovered.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+                ctx,old,nativeIds,persisted,reason) || allocations!=3 ||
+           fixture.broker->places!=0)
+            throw std::runtime_error("H1_HANDOFF_RESTART_CONSUMED_DUPLICATE_IDS");
+    }
+    if(::unlink(path.data())!=0)
+        throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_UNLINK_FAILED");
+}
+
 int main() {
+    TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
     TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();
     TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
