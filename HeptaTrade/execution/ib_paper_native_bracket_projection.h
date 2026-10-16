@@ -95,6 +95,14 @@ inline Result ProjectFrozenH1WorkingStop(
     }
     if(event.order.orderRef!=original.ids.childRef)
         return Result::Ignored; // not this frozen protection group
+    // No repeated old-epoch callback may be relabelled as a new observation.
+    // The permanent Broker order ID must survive every reconnect.
+    if(original.latestNativeOpenOrderEpoch!=0 &&
+       (event.connectionEpoch<=original.latestNativeOpenOrderEpoch ||
+        event.nativeOrder.permanentId!=original.latestNativeStopPermanentId)) {
+        reason="IB_H1_NATIVE_OPEN_ORDER_REATTEST_EPOCH_OR_PERMID_CHANGED";
+        return Result::Rejected;
+    }
     if(event.type!=IBEventType::OpenOrder || event.value!="Submitted") {
         // An event matching our exact H1 stop but not a live submitted
         // OpenOrder is NEGATIVE evidence. Do not silently treat an inactive,

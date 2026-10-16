@@ -15,6 +15,9 @@ struct Reservation {
     bool uncertain=false;
     bool sendAuthorized=false;
     bool driverStopAllowed=false;
+    // Strictly previous *observation* receipts; neither grants sending.
+    std::uint64_t latestNativeOpenOrderEpoch=0;
+    long latestNativeStopPermanentId=0;
 };
 inline OmsJournalEvent Intent(const FrozenBracket& f,const BoundRefs& b,bool child) {
     OmsJournalEvent e;
@@ -184,6 +187,8 @@ inline bool ConfirmReplayForOriginalNativeEcho(
     std::vector<OmsJournalEvent> beforeNative;
     beforeNative.reserve(records.size());
     unsigned int stage=0;
+    std::uint64_t lastObservedEpoch=0;
+    long stopPermanentId=0;
     for(const auto& e:records) {
         const bool original=e.reqId==frozen.originalCommandKey ||
                             e.clientReqId==frozen.originalCommandKey;
@@ -192,6 +197,53 @@ inline bool ConfirmReplayForOriginalNativeEcho(
             // borrowing either native ID or any frozen H1 role correlation.
             beforeNative.push_back(e);
             continue;
+        }
+        if(e.eventType=="broker_open_order_bracket" && stage==4) {
+            // A prior native OpenOrder candidate may already have been
+            // fsynced during an earlier connection. It is NOT a placement
+            // attempt, but it must be fully source/role/epoch attested before
+            // a NEW connection can correlate the original working stop.
+            const auto& b=e.brokerBracket;
+            const std::string expectedEventId=refs.childRef+"-"+
+                std::to_string(e.brokerConnectionEpoch)+"-"+
+                std::to_string(b.permanentOrderId);
+            if(e.reqId!=frozen.originalCommandKey ||
+               (!e.clientReqId.empty() &&
+                e.clientReqId!=frozen.originalCommandKey) ||
+               e.tsMs!=static_cast<long long>(frozen.intentObservedAtMs) ||
+               e.account!=frozen.account || e.traceId!=frozen.sessionId ||
+               e.strategy!=frozen.owner ||
+               e.source!="agent:"+frozen.owner ||
+               e.executionDomain!="PAPER" || e.venue!="IB" ||
+               e.instrument!="EUR.USD" || e.orderId!=frozen.childOrderId ||
+               e.side!=(frozen.side=="BUY"?"SELL":"BUY") ||
+               e.qty!=frozen.quantity || e.price!=frozen.stopPrice ||
+               e.requestHash!=refs.groupCorrelation ||
+               e.venueCorrelationId!=refs.childCorrelation ||
+               e.eventId!=expectedEventId ||
+               e.brokerCallbackType!="openOrder" ||
+               e.status!="Submitted" || !e.reason.empty() ||
+               !e.brokerExecutionId.empty() ||
+               e.brokerClientId!=frozen.clientId ||
+               e.brokerConnectionEpoch<frozen.connectionEpoch ||
+               e.brokerConnectionEpoch<=lastObservedEpoch ||
+               b.version!=2 || !b.ValidShape() ||
+               b.contractId!=frozen.contractId ||
+               b.parentOrderId!=frozen.parentOrderId ||
+               b.permanentOrderId<=0 ||
+               (stopPermanentId>0 &&
+                b.permanentOrderId!=stopPermanentId) ||
+               b.orderRef!=refs.childRef || b.ocaGroup!=refs.ocaGroup ||
+               b.transmit!=1 || b.ocaType!=1 || b.triggerMethod!=0 ||
+               b.timeInForce!="GTC" || b.quantity!=frozen.quantity ||
+               b.stopAuxPrice!=frozen.stopPrice) {
+                out.uncertain=true;
+                reason="H1_PRIOR_NATIVE_OPEN_ORDER_IDENTITY_UNVERIFIED";
+                return false;
+            }
+            stopPermanentId=b.permanentOrderId;
+            lastObservedEpoch=e.brokerConnectionEpoch;
+            continue; // Keep original OMS immutable; validate only this view.
         }
         if(e.eventType=="bracket_parent_reserved" && stage==0)stage=1;
         else if(e.eventType=="bracket_child_reserved" && stage==1)stage=2;
@@ -244,6 +296,8 @@ inline bool ConfirmReplayForOriginalNativeEcho(
         return false;
     }
     out=original;
+    out.latestNativeOpenOrderEpoch=lastObservedEpoch;
+    out.latestNativeStopPermanentId=stopPermanentId;
     // A positive native callback below may create ONLY an observation
     // candidate. Broker send disposition and ordinary exit remain unknown.
     out.uncertain=true;

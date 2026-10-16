@@ -303,6 +303,68 @@ static void NativeEchoAfterProcessRestartCannotMintAnotherSend() {
                 later.back().brokerBracket.version==2 &&
                 later.back().brokerBracket.permanentOrderId==broker.nativeOrder.permanentId,
                 "new-epoch Broker permanent ID lost in durable OMS replay");
+        // After a positive original OpenOrder was fsynced, another native
+        // Broker epoch can echo the SAME still-working stop. Never mistake
+        // that older callback for an extra placement/send attempt.
+        auto nextBroker=broker;
+        nextBroker.connectionEpoch=epoch+1;
+        nextBroker.queueIngressMonotonicNs+=1500;
+        auto nextRecord=OriginalCallbackRecord(f);
+        nextRecord.brokerConnectionEpoch=nextBroker.connectionEpoch;
+        Require(ProjectFrozenH1WorkingStop(nextBroker,f,later,nextRecord,why)==
+                    Result::WorkingWitnessCandidate,
+                "previously persisted original H1 OpenOrder blocks fresh broker reattestation");
+        auto rejectPrior=[&](std::vector<OmsJournalEvent> history,
+                             const char* whyRejected) {
+            auto candidate=OriginalCallbackRecord(f);
+            candidate.brokerConnectionEpoch=nextBroker.connectionEpoch;
+            Require(ProjectFrozenH1WorkingStop(nextBroker,f,history,
+                        candidate,why)==Result::Rejected &&
+                    candidate.eventType.empty() &&
+                    candidate.brokerBracket.version==0,whyRejected);
+        };
+        auto forged=later;
+        forged[4].source="foreign-broker-callback";
+        rejectPrior(forged,"unowned prior Broker callback was laundered");
+        forged=later;forged[4].brokerBracket.permanentOrderId++;
+        rejectPrior(forged,"tampered prior permanent ID was laundered");
+        forged=later;forged[4].brokerBracket.ocaGroup=refs.parentRef;
+        rejectPrior(forged,"tampered prior OCA group was laundered");
+        forged=later;forged[4].eventId="nonoriginal-callback-id";
+        rejectPrior(forged,"tampered prior callback identity was laundered");
+        forged=later;forged.push_back(forged[4]);
+        rejectPrior(forged,"same-epoch duplicate old Broker callback accepted");
+        auto duplicateEpoch=nextBroker;
+        duplicateEpoch.connectionEpoch=epoch;
+        auto duplicateRecord=OriginalCallbackRecord(f);
+        duplicateRecord.brokerConnectionEpoch=epoch;
+        Require(ProjectFrozenH1WorkingStop(duplicateEpoch,f,later,
+                    duplicateRecord,why)==Result::Rejected &&
+                duplicateRecord.eventType.empty(),
+                "old native Broker epoch reattested as a fresh stop");
+        auto differentPermanent=nextBroker;
+        differentPermanent.nativeOrder.permanentId++;
+        auto foreignPermanent=OriginalCallbackRecord(f);
+        foreignPermanent.brokerConnectionEpoch=nextBroker.connectionEpoch;
+        Require(ProjectFrozenH1WorkingStop(differentPermanent,f,later,
+                    foreignPermanent,why)==Result::Rejected &&
+                foreignPermanent.eventType.empty(),
+                "new Broker permanent ID replaced original protective stop");
+        Require(reopened.AppendDurableCritical(nextRecord),
+                "second observed Broker epoch was not durably retained");
+        std::vector<OmsJournalEvent> finalHistory;
+        Require(reopened.Replay([&](const OmsJournalEvent& e){
+                    finalHistory.push_back(e);})==6,
+                "second positive callback did not survive OMS reopen");
+        auto thirdEpoch=nextBroker;
+        thirdEpoch.connectionEpoch++;
+        thirdEpoch.queueIngressMonotonicNs+=500;
+        auto thirdRecord=OriginalCallbackRecord(f);
+        thirdRecord.brokerConnectionEpoch=thirdEpoch.connectionEpoch;
+        Require(ProjectFrozenH1WorkingStop(thirdEpoch,f,finalHistory,
+                    thirdRecord,why)==Result::WorkingWitnessCandidate &&
+                thirdRecord.brokerBracket.permanentOrderId==888871,
+                "two durable native epochs prevented a third original reattestation");
         Require(!generic.sendAuthorized&&!generic.driverStopAllowed,
                 "recovered H1 observation silently permitted Broker resend or driver stop");
     }

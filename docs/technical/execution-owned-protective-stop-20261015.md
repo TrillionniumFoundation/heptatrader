@@ -881,3 +881,28 @@ Actual Pocket4 proof: prior real IB-SDK Release CTest RED for two fsynced
 send markers plus exact positive OpenOrder; after source repair and negative
 controls, 11/11 relevant native Release tests and 2/2 H1 ASan/UBSan pass.
 No Broker place/cancel, production binary replacement or service restart.
+
+## 2026-10-16: H1 native stop reattestation after previously sealed callback
+
+An exact native Broker `OpenOrder(Submitted)` H1 stop callback may itself have
+been fsynced to OMS during an earlier Broker connection. The previous
+non-dispatching H1 replayer rejected that original callback as an unexpected
+additional order event and could never re-attest the **same** protective
+stop after reconnect. A real Pocket4 IB-API-ON Release CTest reproduced that
+rejection before the fix.
+
+The research replayer now accepts a historical native callback as *prior
+observation only* after the exact original pair and two critically durable
+pre-send records, and only with strict account, original Owner/session,
+Group/Stop H1 correlations, original child and parent native IDs, `Submitted`
+OpenOrder provenance, SDK client, positive permanent ID, OCA group/type,
+price/quantity and monotonic Broker connection epoch. Every prior callback
+remains on disk unchanged. The new callback must have a strictly newer epoch
+**and the same permanent ID**; a duplicate old epoch, substituted foreign
+account/OCA or changed permanent ID is refused. Two prior valid epochs still
+allow the third epoch's exact positive native observation.
+
+These are read-only observation candidates, **not** proof of a live protective
+order across driver death or ordinary exit. `sendAuthorized=false` and
+`driverStopAllowed=false` remain unchanged. No native Broker placement,
+cancellation or maintenance permission was added.
