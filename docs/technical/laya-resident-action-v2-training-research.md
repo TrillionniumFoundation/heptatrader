@@ -206,3 +206,65 @@ quote authenticity, fixed training cutoff, different parent identity,
 missing/tampered prediction bytes, duplicate anchor, pending-plan
 exclusion, signed row-digest identity and the genuine two-class
 16-example synthetic source case.
+
+## 2026-10-16 Pocket4 original-298 source: paired-weighting defect and repair
+
+The genuine closed-parent source was re-opened on Pocket4, with its original
+SHA256 (3d701e3795cb438b5ba38f3bb7c44bed83003e040108d1378d1084635157e4a9),
+manifest and exact canonical row digest rechecked. Across the **298 genuinely
+mature, already-observed TRAIN-only rows** there are 14 correct (ACT) and 284
+incorrect (ESCALATE). By whole UTC day the ACT counts are 3, 6, 5 respectively
+for October 7, 8 and 9. An October 7-only train cohort fails the existing
+minimum-four-real-ACT requirement and cannot be smuggled through via repeated
+samples, synthetic labels, or future outcome labels.
+
+Two defects were found in the FUTURE V2 research proposal, not the active V1
+trainer or frozen trial39:
+
+1. The naive first-positive/first-negative matcher chose all fourteen negative
+   rows from October 7, even for ACT rows on October 9; worst absolute
+   source-anchor separation was 213,267,293 ms (59.2 hours). New independently
+   source-verified same-UTC-day time matching, at least a full 300-second
+   nonoverlapping interval for every selected anchor and no more than a
+   one-hour pair lag, retains **13 disjoint true ACT/ESCALATE pairs** with
+   worst separation **761,287 ms (12.7 min)**. One actual positive lacks
+   a valid unused match and is not repeated. Matched negative distribution
+   by date is 3/5/5.
+2. Original V2 took an already-balanced 1:1 pair, then applied the population
+   inverse-frequency weights 298/(2*14)=10.642857 (ACT) and
+   298/(2*284)=0.524648 (ESCALATE). This **double-balances** training, giving
+   the ACT examples 95.302% of the effective class weight even within
+   a perfectly paired minibatch. That cannot plausibly fix the existing
+   grossly overconfident ACT output. The isolated V2 research objective now
+   requires exact paired class counts and uses equal-weight CE. Class-skew
+   is restored only at inference through the frozen full-training prior
+   log odds log(14/284); with equal raw logits the corrected TRAINING prior
+   is **14/298=4.698%**, not 50% or 95.3%.
+
+This behavior revision deliberately uses a new
+`heptatrader.laya-resident-action-v2-research.v2` profile. The immutable
+original row-ID, labels and availability timestamps all bind to that profile;
+swapping label identities without changing aggregate counts must fail.
+Unsupported single-class batches retain zero action gradients; mixed
+unpaired minibatches must refuse. Existing candidate/future-v1 profiles
+are never reinterpreted as new V2 profiles.
+
+Source/test locations:
+`research/neuron_learning/laya_cell/action_v2_temporal_pairing.py`,
+`scripts/research_laya_action_v2_prior_probe.py`,
+`tests/python/test_laya_action_v2_prior_math.py`, and
+`tests/python/test_laya_action_v2_temporal_pairing.py`.
+Actual bounded read-only evidence:
+`~/.local/state/heptatrader/operator-evidence/laya-action-v2-priorfix-20261016/original-298-prior-pair-audit.json`
+(report ID `3916123dab4baaf0e2368fa0627c369d241de4348e65ef259b1eaba004b48346`).
+
+**Crucial limitation:** The source probe performed **zero optimizer steps**.
+Full 298-row original frozen-parent action logits are not yet independently
+captured; the real CPU 32-row parent replay is distinct. Temperature and class
+prior adjustment alone do not prove calibrated future correctness, class
+discrimination, source generalization, or positive AFTER-COST PnL. These
+historical dates have already been studied and must not be relabelled as a
+new blind holdout. Genuine V2 fitting must use the actual frozen raw parent
+logits and a new versioned objective, then a separately preregistered FUTURE
+original-quote experiment. No live model, promotion, execution service,
+broker order, current Shadow campaign or historical trial was changed.
