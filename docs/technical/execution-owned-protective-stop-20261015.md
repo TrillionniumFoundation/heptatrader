@@ -646,3 +646,19 @@ made, and an `openOrder` callback candidate is not account-wide working
 protection. A real owner-fenced Broker sender, child accepted permId,
 unknown-submit recovery, OCA-safe normal exit, and driver-death proof remain
 P0 Issue #331 blockers.
+
+## 2026-10-16: native IB order-ID int32 boundary (source-only)
+
+The existing ordinary IB Adapter stores its next order ID as a Linux `long`,
+while the TWS `OrderId` wire value is int32. Before a real Broker submission,
+`NextOrderId()` now refuses a broker-reported next-valid ID or consumed
+local seed outside the positive signed-32-bit range, and the single-order
+submission path refuses the invalid sentinel before invoking the SDK.
+
+An isolated Pocket4 fake-Broker native test first reproduced a value greater
+than `INT32_MAX` reaching the local broker stub. After the fix, it verifies
+that such values never cause even a fake SDK send, that `INT32_MAX` remains
+representable, and that a subsequent exhausted allocation is rejected.
+IBAPI=ON Release regression 5/5 and ASan/UBSan native order lifecycle 1/1
+passed. This is a numeric safety fix, **not** Broker-native bracket ID
+reservation, stop activation, OMS boot recovery or trading authorization.

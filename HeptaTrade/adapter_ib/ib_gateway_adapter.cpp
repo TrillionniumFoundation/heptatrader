@@ -1345,10 +1345,17 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
 
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    long ibOrderId = GetLastValidOrderId();
-    if (ibOrderId > 0) {
-        if (m_localOrderSeed < ibOrderId) m_localOrderSeed = ibOrderId;
-    }
+    const long ibOrderId = GetLastValidOrderId();
+    const long brokerOrderIdMax =
+        static_cast<long>(std::numeric_limits<std::int32_t>::max());
+    // TWS OrderId is int32 even when this Linux host's long is 64-bit.
+    // Never downcast a newer broker floor or a depleted local seed into a
+    // wrapped/negative native order ID. Other production risk gates remain.
+    if (ibOrderId > brokerOrderIdMax) return -1;
+    if (ibOrderId > 0 && m_localOrderSeed < ibOrderId)
+        m_localOrderSeed = ibOrderId;
+    if (m_localOrderSeed < 1 || m_localOrderSeed > brokerOrderIdMax)
+        return -1;
     return m_localOrderSeed++;
 }
 

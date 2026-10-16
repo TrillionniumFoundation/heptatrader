@@ -82,6 +82,7 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
+    long nextValidOrderId=41;
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
@@ -120,7 +121,7 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long GetLastValidOrderId() const override {return 41;}
+    long GetLastValidOrderId() const override {return nextValidOrderId;}
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
@@ -1146,7 +1147,33 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
+void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
+    Fixture f;
+    f.broker->nextValidOrderId = 2147483648L; // exceeds TWS OrderId:int32
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long received=-1;
+    const bool admitted=f.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'f'),&received);
+    if(admitted || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("IB_NATIVE_ORDER_ID_EXCEEDS_32BIT_BROKER_RANGE");
+    Fixture nearLimit;
+    nearLimit.broker->nextValidOrderId=2147483647L;
+    const long last=nearLimit.Place();
+    if(last!=2147483647L || nearLimit.broker->places!=1)
+        throw std::runtime_error("NATIVE_ORDER_ID_MAX_VALID_VALUE_REFUSED");
+    long later=-1;
+    const bool replay=nearLimit.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'b'),&later);
+    if(replay || nearLimit.broker->places!=1 ||
+       nearLimit.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("NATIVE_ORDER_ID_EXHAUSTION_ALLOWED_SECOND_SEND");
+}
 int main() {
+    TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
