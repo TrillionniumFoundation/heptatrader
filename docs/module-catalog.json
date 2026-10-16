@@ -330,7 +330,8 @@
         "scripts/research_laya_price_year_gpu.py",
         "scripts/research_laya_price_original_one.py",
         "scripts/research_laya_price_original_shadow90.py",
-        "scripts/research_laya_original_asof_finality.py"
+        "scripts/research_laya_original_asof_finality.py",
+        "research/neuron_learning/laya_cell/action_v2_real_fit.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -354,7 +355,8 @@
         "tests/python/test_laya_resident_action_v2_closed_source.py",
         "tests/python/test_laya_action_v2_prior_math.py",
         "tests/python/test_laya_action_v2_temporal_pairing.py",
-        "tests/python/test_laya_evaluator_admission_receipt.py"
+        "tests/python/test_laya_evaluator_admission_receipt.py",
+        "tests/python/test_laya_action_v2_real_fit.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

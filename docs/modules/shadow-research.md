@@ -50,3 +50,5 @@ script to its artifact inputs/outputs, explains timestamp/unit and numeric
 rules, gives feature/resampling and bar algorithms, decision examples, durable
 history/runner boundaries and replay economics. The [finalization contract](../technical/shadow-finalization.md) defines the source-level final audit producer, fixture scope and remaining external evidence limits.
 Research status remains EXPERIMENTAL after this documentation and test work.
+
+Pocket4 genuine-parent Action V2 GPU research: [original-parent physical numerical mismatch](../technical/laya-action-v2-first-physical-parent-parity-20261016.md). No model fitting or trading qualification.
