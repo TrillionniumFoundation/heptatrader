@@ -53,8 +53,29 @@ trading authority without a newly frozen, genuinely prospective protocol.
 - The resident Pocket4 service and prior user worktree remain untouched.
   The existing `RefuseManualStop=yes` shield prevents an ordinary stop/restart.
   This is NOT a maintenance unlock, a Broker protective stop or a deployment.
-- Initial Pocket4 focused suite: **82 tests passed**, no skips. Wider suite
-  and exact new candidate release verification are separate evidence.
+- Pocket4 focused regression after source pin updates: **150 tests passed**;
+  separate cost-aware native adapter regressions: **13 tests passed**.
+- Full Pocket4 core lane: **3,803 tests passed**, no skips.
+  Full source/build-contract lane: **116 tests passed**, no skips.
+  `scripts/check_documentation.py` and Git diff whitespace checks passed.
+- Test environment must use a **short, executable, private** `TMPDIR`;
+  the initial long nested test path caused UNIX socket path limits and
+  directory-ownership fixture rejections. Neither failure is concealed:
+  logs are retained in
+  `~/.local/state/heptatrader/operator-evidence/close-durable-20261016/core.log`
+  and `close-durable-verified-20261016/core-shortpath.log`.
+  Both BTC and cost-aware research adapters retain exact new base SHA256
+  identity checks; they are NOT live-release updates.
+- Exact owner-private FX wrapper candidate was staged and `load_manifest()`
+  passed without an IB connection. Driver SHA256
+  `af0762b0ec8cf6bade99f410fb8de1b5a34d96be0b6bffd0c64a39fc34cea2c1`;
+  candidate manifest SHA256
+  `638d9476d232eb7ba9d71e49b1a1a29b70dcd15c53470519875a1adfac85e9e9`.
+  Candidate path:
+  `~/.local/share/heptatrader/decision-attribution/candidates/fx-close-cause-durable-af0762-v1/EUR.USD/`.
+- Existing running FX/BTC services still point to their prior immutable
+  releases and are guarded with `RefuseManualStop=yes`. No active process
+  was restarted, no Broker orders/cancels or model promotion were requested.
 
 ## Future controlled rollout requirements
 
