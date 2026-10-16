@@ -18,12 +18,14 @@ struct Reservation {
 };
 inline OmsJournalEvent Intent(const FrozenBracket& f,const BoundRefs& b,bool child) {
     OmsJournalEvent e;
-    e.eventType="order_intent";
+    e.eventType=child?"bracket_child_reserved":"bracket_parent_reserved";
     e.tsMs=static_cast<long long>(f.intentObservedAtMs);
     e.orderId=child?f.childOrderId:f.parentOrderId;
     e.reqId=f.originalCommandKey;
     e.eventId=(child?"stop:":"parent:") + b.groupCorrelation;
     e.account=f.account;
+    e.traceId=f.sessionId;
+    e.strategy=f.owner;
     e.source="SHADOW_NO_BROKER_EGRESS";
     e.executionDomain=f.executionDomain;
     e.venue="IB";
@@ -61,7 +63,7 @@ inline bool MarkPotentialSend(OmsJournal& journal, const Reservation& r,
         reason="H1_PAIR_NO_SAFE_DURABLE_PRE_SEND_SCOPE";return false;
     }
     auto e=Intent(r.frozen,r.ids,child);
-    e.eventType="place_send_attempt";
+    e.eventType=child?"bracket_child_send_attempt":"bracket_parent_send_attempt";
     e.eventId=(child?"possible-child:":"possible-parent:")+r.ids.groupCorrelation;
     e.status="POSSIBLY_SENT";
     // A successful ordinary Append can mean "queued" when critical fsync is
@@ -81,8 +83,22 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
     const OmsJournalEvent parent=Intent(f,b,false),child=Intent(f,b,true);
     unsigned int matchedParent=0,matchedChild=0;
     for(const auto& e:records) {
-        if(e.reqId!=f.originalCommandKey)continue;
-        if(e.eventType=="place_send_attempt" &&
+        // The legacy OMS has BOTH req_id and client_req_id. A duplicate
+        // command under the other alias is not a foreign, ignorable record.
+        // In particular, never hide a possible native send by changing only
+        // its req_id while retaining the original client_req_id.
+        const bool originalByEitherAlias =
+            e.reqId==f.originalCommandKey ||
+            e.clientReqId==f.originalCommandKey;
+        if(!originalByEitherAlias)continue;
+        if(e.reqId!=f.originalCommandKey ||
+           (!e.clientReqId.empty() && e.clientReqId!=f.originalCommandKey)) {
+            out.uncertain=true;
+            reason="H1_ORIGINAL_COMMAND_REQUEST_ALIAS_MISMATCH";
+            return false;
+        }
+        if((e.eventType=="bracket_parent_send_attempt" ||
+            e.eventType=="bracket_child_send_attempt") &&
            e.requestHash==b.groupCorrelation &&
            e.account==f.account &&
            e.status=="POSSIBLY_SENT") {
@@ -90,9 +106,11 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
             reason="H1_BROKER_SEND_UNCERTAIN_REQUIRES_ORIGINAL_BROKER_RECOVERY";
             return false;
         }
-        if(e.eventType!="order_intent" ||
+        if((e.eventType!="bracket_parent_reserved" &&
+            e.eventType!="bracket_child_reserved") ||
            e.requestHash!=b.groupCorrelation ||
-           e.account!=f.account || e.executionDomain!="PAPER") {
+           e.account!=f.account || e.traceId!=f.sessionId ||
+           e.strategy!=f.owner || e.executionDomain!="PAPER") {
             out.uncertain=true;reason="H1_UNEXPECTED_ORIGINAL_COMMAND_EVENT";return false;
         }
         // Shadow order_intent cannot carry positive Broker callback or
@@ -106,11 +124,13 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
             reason="H1_SHADOW_INTENT_CONTAINS_UNATTESTED_BROKER_EVIDENCE";
             return false;
         }
-        bool isParent=e.tsMs==parent.tsMs && e.source==parent.source && e.venue==parent.venue && e.instrument==parent.instrument && e.orderId==parent.orderId &&
+        bool isParent=e.eventType=="bracket_parent_reserved" &&
+            e.tsMs==parent.tsMs && e.source==parent.source && e.venue==parent.venue && e.instrument==parent.instrument && e.orderId==parent.orderId &&
             e.venueCorrelationId==parent.venueCorrelationId &&
             e.eventId==parent.eventId && e.side==parent.side &&
             e.qty==parent.qty && e.price==parent.price;
-        bool isChild=e.tsMs==child.tsMs && e.source==child.source && e.venue==child.venue && e.instrument==child.instrument && e.orderId==child.orderId &&
+        bool isChild=e.eventType=="bracket_child_reserved" &&
+            e.tsMs==child.tsMs && e.source==child.source && e.venue==child.venue && e.instrument==child.instrument && e.orderId==child.orderId &&
             e.venueCorrelationId==child.venueCorrelationId &&
             e.eventId==child.eventId && e.side==child.side &&
             e.qty==child.qty && e.price==child.price;

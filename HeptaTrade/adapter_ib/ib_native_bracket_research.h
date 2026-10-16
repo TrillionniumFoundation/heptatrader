@@ -3,6 +3,7 @@
 // cancelOrder, socket, queue, timer, session or trading authority is exposed.
 // Compiled only by a native-IB-enabled core test; never installed with Gateway.
 #include "../execution/ib_paper_execution_bracket_research.h"
+#include "../execution/ib_bracket_h1_oms_reservation.h"
 #include "Contract.h"
 #include "Order.h"
 #include "Decimal.h"
@@ -87,6 +88,53 @@ inline PreparedNativePair BuildNeverSentNativePair(
     return wire;
 }
 
+
+// Translate a Coordinator-durable H1 identity into actual native SDK
+// Contract/Order objects. No API placeOrder or approved Broker ID lease.
+inline PreparedNativePair BuildNeverSentNativeReservedH1Pair(
+    const hepta_execution_bracket_research::PreEntrySnapshot& observation,
+    const hepta_bracket_h1::Reservation& reservation,
+    std::uint64_t nowMs)
+{
+    using hepta_execution_bracket_research::Refusal;
+    const auto& f=reservation.frozen;
+    const auto& ids=reservation.ids;
+    std::string reason;
+    if (!reservation.replayComplete || reservation.uncertain ||
+        reservation.sendAuthorized || reservation.driverStopAllowed ||
+        !hepta_bracket_h1::VerifyFrozenRefs(f,ids,reason) ||
+        observation.account!=f.account ||
+        observation.owner!=f.owner ||
+        observation.originalCommandKey!=f.originalCommandKey ||
+        observation.executionDomain!=f.executionDomain ||
+        observation.contractId!=f.contractId ||
+        observation.clientId!=f.clientId ||
+        observation.reservedParentOrderId!=f.parentOrderId ||
+        observation.reservedChildOrderId!=f.childOrderId ||
+        observation.connectionEpoch!=f.connectionEpoch ||
+        observation.originalPositionGeneration!=f.positionGeneration ||
+        observation.observedAtMs!=f.intentObservedAtMs ||
+        observation.action!=f.side ||
+        observation.quantity!=f.quantity ||
+        (f.side=="BUY" ? observation.ask : observation.bid)!=f.referencePrice)
+        throw Refusal("IB_NATIVE_H1_ORIGINAL_RESERVATION_MISMATCH");
+    PreparedNativePair result=BuildNeverSentNativePair(observation,nowMs);
+    if(result.stop.auxPrice!=f.stopPrice)
+        throw Refusal("IB_NATIVE_H1_FROZEN_STOP_PRICE_MISMATCH");
+    result.parent.orderRef=ids.parentRef;
+    result.stop.orderRef=ids.childRef;
+    result.stop.ocaGroup=ids.ocaGroup;
+    if(result.parent.orderRef.size()!=45 ||
+       result.stop.orderRef.size()!=45 ||
+       result.stop.ocaGroup.size()!=45 ||
+       result.parent.orderRef==result.stop.orderRef ||
+       result.parent.orderRef==result.stop.ocaGroup ||
+       result.stop.orderRef==result.stop.ocaGroup ||
+       result.brokerSendEnabled || result.driverStopAuthorized ||
+       result.ordinaryExitWithoutOcaAllowed)
+        throw Refusal("IB_NATIVE_H1_BROKER_TRANSPORT_REFUSED");
+    return result;
+}
 
 // This is a research-only OCA sibling that cannot enter the broker transport.
 // A MARKET close without matching broker OCA can reverse a closed FX position.

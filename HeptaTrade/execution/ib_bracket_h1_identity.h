@@ -16,6 +16,7 @@ struct FrozenBracket {
     std::string originalCommandKey;
     std::string account;
     std::string owner;
+    std::string sessionId;
     std::string side;
     std::string executionDomain;
     long contractId = 0;
@@ -71,6 +72,7 @@ inline bool BuildFrozenRefs(const FrozenBracket& v, BoundRefs& out,
     if (v.executionDomain != "PAPER" || v.contractId != 12087792 ||
         v.account.compare(0, 2, "DU") != 0 ||
         !SafeText(v.account, 48) || !SafeText(v.owner, 96) ||
+        !SafeText(v.sessionId, 96) ||
         !SafeText(v.originalCommandKey, 96) ||
         (v.side != "BUY" && v.side != "SELL")) {
         reason = "BRACKET_H1_EXACT_PAPER_OWNER_SCOPE"; return false;
@@ -102,6 +104,7 @@ inline bool BuildFrozenRefs(const FrozenBracket& v, BoundRefs& out,
     Field(canonical,v.originalCommandKey);
     Field(canonical,v.account);
     Field(canonical,v.owner);
+    Field(canonical,v.sessionId);
     Field(canonical,v.executionDomain);
     Field(canonical,v.side);
     Field(canonical,std::to_string(v.contractId));

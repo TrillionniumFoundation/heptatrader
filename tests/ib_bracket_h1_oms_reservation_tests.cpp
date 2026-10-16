@@ -9,7 +9,7 @@ using namespace hepta_bracket_h1;
 static void Must(bool b,const char* s){if(!b)throw std::runtime_error(s);}
 static FrozenBracket Base(){
  FrozenBracket f;
- f.originalCommandKey="h1-shadow-001";f.account="DU-SYNTHETIC";f.owner="isolated-owner";
+ f.originalCommandKey="h1-shadow-001";f.account="DU-SYNTHETIC";f.owner="isolated-owner";f.sessionId="test-session";
  f.executionDomain="PAPER";f.side="BUY";f.contractId=12087792;f.clientId=991;
  f.parentOrderId=4100;f.childOrderId=4101;f.connectionEpoch=81;
  f.positionGeneration=91;f.ownerFenceToken=23;f.intentObservedAtMs=1792080000123ULL;
@@ -65,9 +65,22 @@ int main(){
    auto fakeEpoch=events;fakeEpoch[0].brokerConnectionEpoch=812;
    Must(!ConfirmReplay(fakeEpoch,f,checked,reason)&&checked.uncertain,
         "research intent carrying broker connection epoch accepted");
+   auto conflictingAlias=events;
+   conflictingAlias[1].clientReqId="different-original-command";
+   Must(!ConfirmReplay(conflictingAlias,f,checked,reason)&&checked.uncertain,
+        "original H1 child accepted with a foreign client_req_id alias");
+   auto aliasedSend=events;
+   auto foreignAttempt=events[1];
+   foreignAttempt.reqId="foreign-command";
+   foreignAttempt.clientReqId=f.originalCommandKey;
+   foreignAttempt.eventType="bracket_child_send_attempt";
+   foreignAttempt.status="POSSIBLY_SENT";
+   aliasedSend.push_back(foreignAttempt);
+   Must(!ConfirmReplay(aliasedSend,f,checked,reason)&&checked.uncertain,
+        "foreign req_id with original client_req_id hid a possible Broker send");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
-   auto foreign=events;foreign[0].eventType="place_send_attempt";
+   auto foreign=events;foreign[0].eventType="bracket_parent_send_attempt";
    Must(!ConfirmReplay(foreign,f,checked,reason)&&checked.uncertain,"unknown send accepted");
    Must(MarkPotentialSend(j,info,false,reason),"parent attempt not durable");
    Must(MarkPotentialSend(j,info,true,reason),"child attempt not durable");

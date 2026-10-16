@@ -233,6 +233,14 @@ target_link_libraries(hepta_execution_bracket_h1_oms_reservation_tests PRIVATE
     hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
 hepta_register_core_test(hepta_execution_bracket_h1_oms_reservation_tests)
 
+# Real Coordinator recovery-only ingress fence, native OMS pair,
+# restart replay and duplicate denial. No broker send path.
+add_executable(hepta_execution_coordinator_h1_recovery_fence_tests
+    execution_coordinator_h1_recovery_fence_tests.cpp)
+target_link_libraries(hepta_execution_coordinator_h1_recovery_fence_tests PRIVATE
+    hepta_execution_core hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_coordinator_h1_recovery_fence_tests)
+
 # Simulated native parent transmit=false / child transmit=true bracket group.
 # Still no broker transport or maintenance authority in this research target.
 add_executable(hepta_execution_bracket_shadow_tests
@@ -260,7 +268,7 @@ if(HEPTA_ENABLE_IBAPI)
     add_executable(hepta_ib_native_bracket_shadow_tests
         ib_native_bracket_shadow_tests.cpp)
     target_link_libraries(hepta_ib_native_bracket_shadow_tests PRIVATE
-        hepta_ibapi_client)
+        hepta_ibapi_client hepta_ib_order_state OpenSSL::Crypto)
     hepta_register_core_test(hepta_ib_native_bracket_shadow_tests)
     add_executable(hepta_ib_native_bracket_callback_tests
         ib_native_bracket_callback_tests.cpp)
