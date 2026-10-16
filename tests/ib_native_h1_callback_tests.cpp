@@ -189,6 +189,73 @@ static void ExactOriginalH1CallbackAndDurableOms(){
             "unknown Broker send was converted to working stop");
     Require(::unlink(file.c_str())==0,"scratch journal cleanup failed");
 }
+static void SubmittedH1EchoAfterDurablePotentialSends() {
+    using namespace hepta_native_bracket_projection;
+    const auto f=Frozen();std::string why;
+    BoundRefs refs;Require(BuildFrozenRefs(f,refs,why),"derive original role IDs");
+    std::string mask="/tmp/hepta-h1-positive-send-XXXXXX";
+    std::vector<char> tmp(mask.begin(),mask.end());tmp.push_back('\0');
+    int fd=::mkstemp(tmp.data());Require(fd>=0,"create native send scratch");
+    ::close(fd);Require(::unlink(tmp.data())==0,"unlink scratch before OMS init");
+    OmsJournal journal;Require(journal.Init(tmp.data()),"native send OMS init");
+    Reservation r;Require(ReservePair(journal,f,r,why),"native send reserve pair");
+    Require(MarkPotentialSend(journal,r,false,why),"durable parent attempt missing");
+    Require(MarkPotentialSend(journal,r,true,why),"durable child attempt missing");
+    std::vector<OmsJournalEvent> rows;
+    Require(journal.Replay([&](const OmsJournalEvent& e){rows.push_back(e);})==4,
+            "original durable send records lost before Broker callback");
+    auto record=OriginalCallbackRecord(f);
+    const auto event=ExactNativeH1OpenOrder(f,refs);
+    Require(ProjectFrozenH1WorkingStop(event,f,rows,record,why)==
+                Result::WorkingWitnessCandidate,
+            "durable original parent/child sends plus exact native stop echo cannot reconcile");
+    Require(!r.sendAuthorized && !r.driverStopAllowed,
+            "reconciled native callback minted order or stop authority");
+    Reservation generic;
+    Require(!ConfirmReplay(rows,f,generic,why)&&generic.uncertain,
+            "generic OMS replay was improperly allowed to resend after Broker attempts");
+    auto rejectLedger=[&](std::vector<OmsJournalEvent> evidence,
+                          const char* label){
+        auto dest=OriginalCallbackRecord(f);
+        std::string rejected;
+        Require(ProjectFrozenH1WorkingStop(event,f,evidence,dest,rejected)==
+                    Result::Rejected && !rejected.empty() &&
+                    dest.eventType.empty() && dest.brokerBracket.version==0,
+                label);
+    };
+    auto incomplete=rows;incomplete.pop_back();
+    rejectLedger(incomplete,"one durable send marker was treated as confirmed");
+    auto duplicate=rows;duplicate.push_back(rows.back());
+    rejectLedger(duplicate,"duplicate child send attempt accepted");
+    auto reversed=rows;std::swap(reversed[2],reversed[3]);
+    rejectLedger(reversed,"child marker preceding parent accepted");
+    auto changed=rows;changed[3].status="Submitted";
+    rejectLedger(changed,"pre-send marker forged Broker Submitted status");
+    changed=rows;changed[3].venueCorrelationId=refs.parentCorrelation;
+    rejectLedger(changed,"parent correlation substituted for child marker");
+    changed=rows;changed[3].orderId=f.parentOrderId;
+    rejectLedger(changed,"parent order ID substituted for child marker");
+    changed=rows;changed[2].brokerCallbackType="openOrder";
+    rejectLedger(changed,"synthetic send attempt masqueraded as native callback");
+    changed=rows;changed[2].clientReqId="foreign-original";
+    rejectLedger(changed,"foreign client_req_id alias on parent marker accepted");
+    changed=rows;auto foreign=rows[3];foreign.reqId="foreign-original";
+    foreign.clientReqId="foreign-original";changed.push_back(foreign);
+    rejectLedger(changed,"foreign command borrowed original stop H1 correlation");
+    changed=rows;auto unrelated=rows[2];
+    unrelated.reqId="unrelated-original";
+    unrelated.clientReqId="unrelated-original";
+    unrelated.requestHash=HashCanonical("other-H1-group");
+    unrelated.venueCorrelationId=HashCanonical("other-H1-parent-role");
+    unrelated.orderId=f.childOrderId+200;
+    unrelated.eventId="unrelated-send";
+    changed.push_back(unrelated);
+    auto disjoint=OriginalCallbackRecord(f);
+    Require(ProjectFrozenH1WorkingStop(event,f,changed,disjoint,why)==
+                Result::WorkingWitnessCandidate,
+            "unrelated historical send improperly blocks exact original native echo");
+    Require(::unlink(tmp.data())==0,"clean test OMS");
+}
 int main(){
   try {
     const auto f=Frozen();BoundRefs refs;std::string why;
@@ -209,6 +276,7 @@ int main(){
     malformed=evidence;malformed.version=1;
     Require(!malformed.ValidShape(),"H1 bypassed legacy v1 marker");
     ExactOriginalH1CallbackAndDurableOms();
+    SubmittedH1EchoAfterDurablePotentialSends();
     std::cout<<"ib_native_h1_callback=PASS\n";return 0;
   } catch(const std::exception& e){
     std::cerr<<"FAIL "<<e.what()<<'\n';return 1;

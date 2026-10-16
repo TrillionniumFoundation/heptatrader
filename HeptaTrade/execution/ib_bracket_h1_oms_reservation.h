@@ -169,4 +169,88 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
     out.frozen=f;out.ids=b;out.replayComplete=true;
     reason.clear();return true;
 }
+// A real Broker stop OpenOrder can arrive AFTER two durable POSSIBLY_SENT
+// markers. These markers stay UNKNOWN for resend/restart decisions; however,
+// the exact native callback may become a candidate witness if BOTH markers
+// and the original pair belong to one immutable H1 group in original order.
+// No sender, maintenance permit, or independent broker protection is inferred.
+inline bool ConfirmReplayForOriginalNativeEcho(
+    const std::vector<OmsJournalEvent>& records, const FrozenBracket& frozen,
+    Reservation& out, std::string& reason)
+{
+    out=Reservation{};
+    BoundRefs refs;
+    if(!BuildFrozenRefs(frozen,refs,reason))return false;
+    std::vector<OmsJournalEvent> beforeNative;
+    beforeNative.reserve(records.size());
+    unsigned int stage=0;
+    for(const auto& e:records) {
+        const bool original=e.reqId==frozen.originalCommandKey ||
+                            e.clientReqId==frozen.originalCommandKey;
+        if(!original) {
+            // ConfirmReplay will independently refuse a foreign command
+            // borrowing either native ID or any frozen H1 role correlation.
+            beforeNative.push_back(e);
+            continue;
+        }
+        if(e.eventType=="bracket_parent_reserved" && stage==0)stage=1;
+        else if(e.eventType=="bracket_child_reserved" && stage==1)stage=2;
+        else if(e.eventType=="bracket_parent_send_attempt" && stage==2)stage=3;
+        else if(e.eventType=="bracket_child_send_attempt" && stage==3)stage=4;
+        else {
+            out.uncertain=true;
+            reason="H1_NATIVE_ECHO_ORIGINAL_SEND_SEQUENCE_UNKNOWN";
+            return false;
+        }
+        if(e.eventType=="bracket_parent_send_attempt" ||
+           e.eventType=="bracket_child_send_attempt") {
+            const bool child=e.eventType=="bracket_child_send_attempt";
+            const OmsJournalEvent expected=Intent(frozen,refs,child);
+            if(e.reqId!=frozen.originalCommandKey ||
+               (!e.clientReqId.empty() &&
+                e.clientReqId!=frozen.originalCommandKey) ||
+               e.tsMs!=expected.tsMs || e.orderId!=expected.orderId ||
+               e.eventId!=(child?"possible-child:":"possible-parent:")+
+                          refs.groupCorrelation ||
+               e.account!=expected.account || e.traceId!=expected.traceId ||
+               e.strategy!=expected.strategy || e.source!=expected.source ||
+               e.executionDomain!=expected.executionDomain ||
+               e.venue!=expected.venue || e.instrument!=expected.instrument ||
+               e.side!=expected.side || e.qty!=expected.qty ||
+               e.price!=expected.price || e.status!="POSSIBLY_SENT" ||
+               !e.reason.empty() || e.requestHash!=expected.requestHash ||
+               e.venueCorrelationId!=expected.venueCorrelationId ||
+               e.brokerClientId!=-1 || e.brokerConnectionEpoch!=0 ||
+               !e.brokerCallbackType.empty() ||
+               !e.brokerExecutionId.empty() || e.brokerBracket.version!=0) {
+                out.uncertain=true;
+                reason="H1_NATIVE_ECHO_DURABLE_SEND_IDENTITY_MISMATCH";
+                return false;
+            }
+            // Do not drop send attempts from the immutable OMS! Only the
+            // candidate's local original-reservation view omits them.
+            continue;
+        }
+        beforeNative.push_back(e);
+    }
+    if(stage!=4) {
+        out.uncertain=true;
+        reason="H1_NATIVE_ECHO_PARENT_CHILD_SEND_RECEIPTS_INCOMPLETE";
+        return false;
+    }
+    Reservation original;
+    if(!ConfirmReplay(beforeNative,frozen,original,reason)) {
+        out.uncertain=true;
+        return false;
+    }
+    out=original;
+    // A positive native callback below may create ONLY an observation
+    // candidate. Broker send disposition and ordinary exit remain unknown.
+    out.uncertain=true;
+    out.sendAuthorized=false;
+    out.driverStopAllowed=false;
+    reason.clear();
+    return true;
+}
+
 } // namespace hepta_bracket_h1

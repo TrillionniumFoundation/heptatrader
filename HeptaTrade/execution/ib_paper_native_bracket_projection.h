@@ -86,6 +86,9 @@ inline Result ProjectFrozenH1WorkingStop(
     hepta_bracket_h1::Reservation original;
     std::string replayReason;
     if(!hepta_bracket_h1::ConfirmReplay(originalOms,frozen,
+                                       original,replayReason) &&
+       !hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+                                       originalOms,frozen,
                                        original,replayReason)) {
         reason="IB_H1_ORIGINAL_DURABLE_PAIR_UNVERIFIED";
         return Result::Rejected;

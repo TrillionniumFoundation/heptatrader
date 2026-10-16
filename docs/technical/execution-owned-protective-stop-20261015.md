@@ -837,3 +837,34 @@ seven related Execution/OMS/IB tests also passed. Dedicated ASan+UBSan
 Debug build of those two native cases **2/2 passed**. This is still
 source-level callback wiring and offline test evidence, **not** an actual
 Broker execution fill or order placement.
+
+## 2026-10-16: reconcile native H1 callback after durable send attempts
+
+The real H1 parent and STOP sender must persist a `POSSIBLY_SENT` marker
+**before** either native Broker API send. Generic `ConfirmReplay` correctly
+leaves this outcome UNKNOWN and denies reissue, but the existing native
+`OpenOrder(Submitted)` candidate projector previously rejected the exact
+same valid original history. That prevented later positive native callback
+correlation after either original send was attempted.
+
+The research-only `ConfirmReplayForOriginalNativeEcho` now accepts only the
+single ordered original *pair reservation, parent send attempt, child send
+attempt* sequence with exact account, Owner/session, ID, H1 role, quantity,
+price, source and frozen provenance. It requires both send markers, rejects
+missing, duplicate, swapped, forged Broker status, foreign alias or borrowed
+role, and then reruns the original strict reservation replay over the full
+history excluding **only** those two fully validated markers. It does not
+rewrite, delete or settle any original OMS record: the full journal remains
+UNKNOWN for resending and the returned research reservation stays uncertain.
+
+An exact native `OpenOrder(Submitted)` with permanent ID, parent linkage,
+OCA and original H1 receipt can now yield a **read-only candidate**. It is
+**not** proof of Broker-wide active orders, current position, ordinary OCA
+close safety or surviving protection after driver death; no order sender or
+maintenance grant has been added. The old pair-only shadow candidate path
+remains a non-authorizing compatibility case, not a live send qualification.
+
+Actual Pocket4 proof: prior real IB-SDK Release CTest RED for two fsynced
+send markers plus exact positive OpenOrder; after source repair and negative
+controls, 11/11 relevant native Release tests and 2/2 H1 ASan/UBSan pass.
+No Broker place/cancel, production binary replacement or service restart.
