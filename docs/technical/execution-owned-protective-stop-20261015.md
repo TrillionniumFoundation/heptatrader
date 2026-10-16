@@ -1203,3 +1203,96 @@ working protective stop and actual OCA normal-close/cancel/partial,
 unknown-send and Driver-death continuity proof can qualify protection.
 One accessible PAPER account remains actively shared with the original
 autonomous FX strategy: separate IB client IDs are not safe isolation.
+
+## 2026-10-16: bounded real IB PAPER **WhatIf-only** STP capability probe
+
+The only currently accessible DU PAPER account is simultaneously used by
+the original autonomous EUR/USD strategy. A distinct API clientId does
+**not** isolate actual account positions. Therefore DO NOT place a real
+Parent/Stop/OCA bracket as a supposed canary without an independently
+attested original-owner no-new-entry transaction and full broker rollback.
+
+To advance the remaining instrument/account approval uncertainty without
+an executable order, a separate **single-run** Python API research probe
+uses the installed real TWS API `EClient.placeOrder` with
+**`Order.whatIf=True`** on a bounded *standalone* STP order, not an H1
+Parent/Stop group: localhost PAPER/4002, one authoritative DU account,
+exact EUR/USD CASH/IDEALPRO conId 12087792, side SELL, 1,000 EUR,
+price on confirmed 0.00005 grid and below a fresh broker quote. The
+dedicated client ID is unrelated to the active Execution owner. The
+installed SDK source explicitly serializes the `whatIf` flag.
+A private write-once lease file is durably created before connection;
+retrying the same intent cannot issue another preview.
+
+**Actual Pocket4 IB PAPER response**: exactly one WhatIf opcode-3
+request after START_API 71; Broker openOrder callback echoed
+`whatIf=true`, conId, DU account, STP order type and a populated
+margin-change estimate. SDK order-state string was `PreSubmitted`.
+This is a **WhatIf preview response only, never a working protective
+order**. No execDetails callbacks; the native authoritative global
+active-order inventory was complete and contained 0 active IDs both
+before and after. No original Driver, OMS, native order owner or service
+was restarted or modified.
+
+Private exact receipt:
+`~/.local/state/heptatrader/operator-evidence/ib-paper-stp-whatif-20261016/whatif-preview-result.json`
+SHA256 `cb5de12a7dfce82c085230584a075b15b4e9a0b3083d847350bcf74455e3d655`.
+The one-shot lease is preserved in the same directory.
+IBKR market-data farm informational code 2105 was also received, not an
+error tied to the preview order ID, and was not treated as stop acceptance.
+
+The standalone preview code lives at `scripts/ib_paper_whatif_preview.py`
+with `tests/python/test_ib_paper_whatif_preview.py` to constrain one
+PAPER account, quote/tick, outbound opcodes and duplicate previews.
+It is NEVER called automatically by the resident Execution adapter.
+
+**Still NOT proven**: native H1 parent+child bracket acceptance,
+real permanent order IDs, real broker-held STP after Driver death,
+actual partial-fills, OCA cancellation/reversal protection, server-side
+trigger execution, ongoing stop revalidation or long outage behavior.
+Do not change active risk authority or close P0 Issue #331.
+
+## 2026-10-16 — Strict original PAPER WhatIf callback proof (no second Broker call)
+
+The sealed original nonexecuting `reqContractDetails` and standalone
+STP `WhatIf` receipt proves IBKR returned a preview, but the first
+script considered an order-ID-matching `orderStatus` sufficient to label
+`PREVIEW_RESPONSE_CAPTURED`. Its summary checked PAPER account by
+the broad DU prefix; it did **not** positively bind all order details
+to the exact requesting account and immutable order.
+
+The follow-up research script fixes this **without** making another
+PAPER request or changing the original sealed receipt. Positive result
+requires the broker's `openOrder` callback to echo **all** of:
+the exact original single DU account, cash EUR/USD conId 12087792,
+IDEALPRO exchange, clientId, 1,000 EUR amount, SELL STP, exact
+minTick-rounded stop price, DAY TIF, parentId=0, transmit=true,
+immutable orderRef, explicit `whatIf is True`, and non-working
+`PreSubmitted` status. Any foreign DU account, order ref, side,
+contract, client ID, TIF, quantity, parentId, stop, or status makes
+the preview UNKNOWN/FAILED. A matching `orderStatus` alone cannot
+qualify. A later terminal/filled status, matched Broker order error,
+execution callback, or after-request active-order inventory drift
+revokes the positive diagnostic.
+
+The quote admission is bounded on **both sides** of host clock time:
+an observed-at timestamp in the future or more than five seconds old
+is rejected. There is still only one O_EXCL one-shot receipt marker,
+not a Broker stop or an order. The original receipt is **not
+retroactively promoted** to the stricter new outcome because its
+stored summary lacks several native callback fields.
+
+Pocket4 local original SDK negative tests: **12/12 PASS**, including
+foreign same-prefix account, invalid native quantity/price/ref,
+orderStatus-only false positives, post-echo order error and terminal
+status revocation, and future-dated quotes. No WhatIf repeat, live
+Broker placeOrder, cancel, active order, Driver stop, restart or
+model promotion was performed for this source-only fix.
+
+This helps make a future broker positive canary defensible but does
+NOT qualify a real parent+child bracket, OCA, server-held stop,
+partial/cancel race or driver-death coverage. The only accessible
+PAPER account still hosts the autonomous EUR/USD strategy. Before any
+real executable canary, either a separate exact account or a true
+existing-Owner atomic no-new-entry/fence/flat transaction is mandatory.
+Issue #331 remains OPEN.
