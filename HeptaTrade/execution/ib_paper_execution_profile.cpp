@@ -1313,6 +1313,13 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     result.affectedCount = m_coordinator.FenceSessionOwner(
         command.context.agentId, command.context.sessionId);
+    // The fence synchronizes with the original coordinator Place/Flatten
+    // send boundary, but installing it does not terminate an already
+    // dispatched order or protect every owner of the Broker account.
+    // Report that difference on the EXISTING control API.
+    result.reasonCode = result.affectedCount ?
+        "SESSION_OWNER_FENCE_INSTALLED_OUTSTANDING_RISK" :
+        "SESSION_OWNER_FENCE_INSTALLED_NOT_A_STOP_PERMIT";
     std::string blockReason;
     result.mutationBlocked = m_coordinator.IsMutationBlocked(&blockReason);
     if (result.mutationBlocked &&

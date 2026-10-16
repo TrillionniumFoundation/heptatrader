@@ -189,6 +189,20 @@ class OmsReportTests(unittest.TestCase):
         self.assertNotIn("hepta_execution_place_latency_seconds_count", output)
         self.assertIn("hepta_execution_mutation_blocked 1", output)
 
+    def test_native_risk_dispatch_gauge_keeps_old_producer_absence_distinct(self):
+        old = self.execution_sample()
+        report.validate(old)
+        rendered = report.prometheus(old, report.report([old], 1000))
+        self.assertNotIn("hepta_execution_risk_mutation_dispatch_in_flight", rendered)
+        new = self.execution_sample()
+        new["execution_metrics"]["risk_mutation_dispatch_in_flight"] = True
+        report.validate(new)
+        rendered = report.prometheus(new, report.report([new], 1000))
+        self.assertIn("hepta_execution_risk_mutation_dispatch_in_flight 1", rendered)
+        new["execution_metrics"]["risk_mutation_dispatch_in_flight"] = 0
+        with self.assertRaises(ValueError):
+            report.validate(new)
+
     def test_real_cpp_execution_observation_wire_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, binary = Path(tmp)/"execution.cpp", Path(tmp)/"execution"

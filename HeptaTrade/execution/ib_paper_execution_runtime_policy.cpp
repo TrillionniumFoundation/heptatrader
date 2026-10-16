@@ -290,6 +290,14 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             std::string reason;
             const bool startupReadOnly = m_startupRecoveryReadOnly.load();
             const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason) || startupReadOnly;
+            // The existing Place/Flatten coordinator mutex is released at
+            // the actual Broker dispatch. Do not advertise mutation_ready
+            // from a stale flat/active-order snapshot during that gap.
+            const bool riskDispatchInFlight = !m_coordinator ||
+                m_coordinator->RuntimeObservation().riskMutationDispatchInFlight;
+            std::string guardReason;
+            const bool nativeNewRiskGuardBlocked = !m_killSwitch ||
+                m_killSwitch->BlocksRiskIncrease(guardReason);
             const auto risk = m_adapter->GetAuthoritativeRiskSnapshot();
             const auto orders = m_adapter->GetAuthoritativeCorrelationSnapshot();
             const bool snapshotsReady = risk.complete && risk.coherentRefreshComplete &&
@@ -300,6 +308,9 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             else if (fenced) reason = "SESSION_OWNER_FENCED";
             else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
             else if (blocked && reason.empty()) reason = "EXECUTION_MUTATION_BLOCKED";
+            else if (nativeNewRiskGuardBlocked)
+                reason = guardReason.empty() ? "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN" : guardReason;
+            else if (riskDispatchInFlight) reason = "RISK_MUTATION_DISPATCH_IN_FLIGHT";
             else if (authorizedConnectorCount != 1) reason = "IB_CONNECTION_UNAVAILABLE";
             else if (!snapshotsReady) reason = "AUTHORITATIVE_STATE_INCOMPLETE";
             health << ",\"startup_recovery_read_only\":" << (startupReadOnly ? "true" : "false")
@@ -308,8 +319,13 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
                    << ",\"mutation_blocked\":" << (blocked ? "true" : "false")
+                   << ",\"risk_mutation_dispatch_in_flight\":"
+                   << (riskDispatchInFlight ? "true" : "false")
+                   << ",\"native_new_risk_guard_blocked\":"
+                   << (nativeNewRiskGuardBlocked ? "true" : "false")
                    << ",\"mutation_ready\":"
-                   << (!fenced && !recoveryOnly && !blocked && snapshotsReady &&
+                   << (!fenced && !recoveryOnly && !blocked && !riskDispatchInFlight &&
+                       !nativeNewRiskGuardBlocked && snapshotsReady &&
                        authorizedConnectorCount == 1 ? "true" : "false")
                    << ",\"active_lease_continuation_supported\":" << (m_config.profile.UsesUserCrypto() ? "true" : "false")
                    << ",\"mutation_reason\":\"" << EscapeJson(reason)

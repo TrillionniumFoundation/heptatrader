@@ -140,6 +140,11 @@ def validate_execution(value):
     for flag in ("metrics_saturated", "mutation_blocked"):
         if type(value.get(flag)) is not bool:
             raise ValueError("invalid execution telemetry presence")
+    # Optional additive native field. Older installed producers omit it;
+    # omission is not interpreted as an idle/zero risk dispatch.
+    if ("risk_mutation_dispatch_in_flight" in value and
+            type(value["risk_mutation_dispatch_in_flight"]) is not bool):
+        raise ValueError("invalid native risk dispatch presence")
     for key in EXECUTION_GAUGES:
         uint(value.get(key))
     results = value.get("results")
@@ -405,6 +410,9 @@ def prometheus(latest, summary):
     lines.append(f"hepta_execution_metrics_present {int(execution is not None)}")
     if execution is not None:
         lines.append(f"hepta_execution_mutation_blocked {int(execution['mutation_blocked'])}")
+        if "risk_mutation_dispatch_in_flight" in execution:
+            lines.append("hepta_execution_risk_mutation_dispatch_in_flight "
+                         + str(int(execution["risk_mutation_dispatch_in_flight"])))
         lines.append(f"hepta_execution_metrics_saturated {int(execution['metrics_saturated'])}")
         for key in EXECUTION_GAUGES:
             lines.append(f"hepta_execution_{key} {execution[key]}")
