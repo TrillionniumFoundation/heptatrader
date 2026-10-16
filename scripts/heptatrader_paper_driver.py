@@ -304,19 +304,25 @@ def freeze_exit_trigger(command_id,reason,position,quote=None):
             "DRIVER_RECOVERY_OR_CANARY" if reason is not None else "UNATTRIBUTED",
         "trigger_at_ms":when,"position_at_trigger":float(position)}
     if quote is not None:
-        if (not isinstance(quote,dict) or
-                type(quote.get("observed_at_ms")) is not int or
-                not 0 < quote["observed_at_ms"] <= when):
-            raise DriverError("close trigger quote evidence invalid")
+        # This is OPTIONAL diagnostic evidence. An invalid/stale quote here
+        # must never prevent the original reduce-only CLOSE preparation and
+        # original-command reconciliation. The trading decision was already
+        # made by should_close() against the authoritative snapshot.
         try:
+            if (not isinstance(quote,dict) or
+                    type(quote.get("observed_at_ms")) is not int or
+                    not 0 < quote["observed_at_ms"] <= when):
+                raise ValueError("unverified quote timestamp")
             bid=float(quote["bid"]);ask=float(quote["ask"])
+            if (not math.isfinite(bid) or not math.isfinite(ask) or
+                    bid<=0 or ask<bid):
+                raise ValueError("unverified quote values")
         except (KeyError,ValueError,TypeError,OverflowError):
-            raise DriverError("close trigger quote evidence invalid") from None
-        if (not math.isfinite(bid) or not math.isfinite(ask) or
-                bid<=0 or ask<bid):
-            raise DriverError("close trigger quote evidence invalid")
-        record.update(quote_observed_at_ms=quote["observed_at_ms"],
-            quote_bid=bid,quote_ask=ask)
+            record["quote_evidence_status"]="UNVERIFIED_DIAGNOSTIC_OMITTED"
+        else:
+            record.update(quote_observed_at_ms=quote["observed_at_ms"],
+                quote_bid=bid,quote_ask=ask,
+                quote_evidence_status="VALIDATED")
     return record
 
 def record_correlated_close(state,pending,fill,position_after,*,partial=False):
