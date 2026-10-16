@@ -163,6 +163,92 @@ void TestSymlinkTraversalAndProductionOwnershipFailClosed()
     assert(::rmdir(parent.c_str()) == 0);
 }
 
+
+void TestNativeRuntimeReadsPrivateMaintenanceHold()
+{
+    const std::string control=MakeControlDirectory("hepta-runtime-control");
+    const std::string maintenance=MakeControlDirectory("hepta-maintenance-hold");
+    assert(::chmod(maintenance.c_str(),0700)==0);
+    const std::string hold=maintenance+"/maintenance-hold.json";
+    const auto open=[&]() {
+        std::shared_ptr<IbPaperKillSwitch> reader;
+        std::string reason;
+        assert(IbPaperKillSwitch::OpenAndPinForTesting(
+            control,::geteuid(),::getegid(),reader,reason,false,maintenance));
+        assert(reader && reason.empty());return reader;
+    };
+    auto monitor=open();
+    ExpectState(monitor,IbPaperKillSwitchState::Disarmed,"");
+    const auto write=[&](const std::string& value) {
+        const int fd=::open(hold.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+        assert(fd>=0);
+        assert(::fchmod(fd,0600)==0);
+        assert(::write(fd,value.data(),value.size())==static_cast<ssize_t>(value.size()));
+        assert(::fsync(fd)==0);
+        assert(::close(fd)==0);
+        const int d=::open(maintenance.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+        assert(d>=0 && ::fsync(d)==0 && ::close(d)==0);
+    };
+    const std::string valid="{\"schema\":\"heptatrader.operator-maintenance-hold.v1\","
+        "\"uid\":101,\"effect\":\"NEW_PAPER_RISK_HOLD_ONLY\","
+        "\"created_at_ms\":123}\n";
+    write(valid);
+    ExpectState(monitor,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_OPERATOR_MAINTENANCE_HOLD");
+    CreateMarker(control);
+    ExpectState(monitor,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_KILL_SWITCH_ENGAGED");
+    assert(::unlink((control+"/kill-switch").c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_OPERATOR_MAINTENANCE_HOLD");
+    monitor.reset();
+    monitor=open();
+    ExpectState(monitor,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_OPERATOR_MAINTENANCE_HOLD");
+    const pid_t child=::fork();assert(child>=0);
+    if(child==0) {
+        auto reopened=open();
+        ::_exit(reopened->Observe().state==IbPaperKillSwitchState::Engaged ? 0 : 1);
+    }
+    int childStatus=0;assert(::waitpid(child,&childStatus,0)==child);
+    assert(WIFEXITED(childStatus) && WEXITSTATUS(childStatus)==0);
+    // Native admission is shared across independently opened client readers.
+    const auto another=open();
+    ExpectState(another,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_OPERATOR_MAINTENANCE_HOLD");
+    assert(::chmod(hold.c_str(),0644)==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(hold.c_str())==0);
+    assert(::symlink("/dev/null",hold.c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(hold.c_str())==0);
+    write(valid);
+    assert(::link(hold.c_str(),(maintenance+"/foreign-hardlink").c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink((maintenance+"/foreign-hardlink").c_str())==0);
+    assert(::unlink(hold.c_str())==0);
+    const int fd=::open(hold.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    assert(fd>=0 && ::close(fd)==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(hold.c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Disarmed,"");
+    const std::string moved=maintenance+"-moved";
+    assert(::rename(maintenance.c_str(),moved.c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::symlink(moved.c_str(),maintenance.c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink(maintenance.c_str())==0);
+    monitor.reset();
+    assert(::rmdir(moved.c_str())==0);
+    assert(::rmdir(control.c_str())==0);
+}
+
 void TestPersistentOperatorMode()
 {
     const auto dir=MakeControlDirectory("hepta-persistent-unit");
@@ -219,6 +305,7 @@ void TestPersistentOperatorMode()
 int main()
 {
     TestPersistentOperatorMode();
+    TestNativeRuntimeReadsPrivateMaintenanceHold();
     TestExplicitUserReaderPreservesStateAndOwnerChecks();
     TestMarkerStatesAndMetadata();
     TestDirectoryReplacementIsStickyUncertain();
