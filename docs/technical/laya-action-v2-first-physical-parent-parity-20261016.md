@@ -79,3 +79,45 @@ lineage with source and module fingerprints.
 Research fitting, model superiority, prospective price/action
 accuracy and broker-authority claims remain UNPROVEN.
 This branch is for SOURCE DIAGNOSIS only.
+
+
+## Additional actual bounded same-input GPU/Math A/B
+
+A later original-Guard-acquired Pocket4 cell repeated the SAME original
+first input four times on the frozen gfx1150 parent. All four seven-class
+vectors were byte/float identical, maximum intra-run probability
+difference **0.0**. One deliberately scoped Math Attention-only
+forward was also byte/float identical to those four default ROCm
+forwards, drift **0.0** versus default. However every one of these
+physical results still differed from the historical sealed first parent
+vector by the same original **0.11482177674770355**, with historical
+top-1 class 6 and presently recomputed top-1 class 5.
+
+New immutable private negative receipt on Pocket4:
+
+  ~/.local/state/heptatrader/operator-evidence/action-v2-parent-intrarun-vs-math-20261016/parent-parity-mismatch-v1.json
+
+SHA256:
+  4ed411fc5517950b043a2a7599a91febcdc555c219aec676a49a55bb8216e6f3
+
+The result supplies evidence AGAINST a stochastic same-process default
+ROCm forward and AGAINST this isolated SDPA backend change alone
+explaining the historical mismatch. It does not prove that other GPU
+kernels or past runtime changes are innocent. All optimizer steps
+remain ZERO.
+
+A 50-second read-only memory/Swap monitor observed full-PSI avg60
+declining from .12 to .07 and **no additional pswpout activity** during
+that interval, although used Swap remained high. A subsequent bounded
+12-poll CPU/ROCm comparison run was unable to obtain the existing
+original shared heavy-worker admission: Value fresh-flat requests and
+full-PSI pressure (later .15 > .10) properly denied it. Therefore
+**NO CPU parent forward or CPU-vs-ROCm parity number exists** for this
+continuation; the separately coded CPU control remains unexecuted.
+Do not infer a CPU-vs-GPU finding or a GPU kernel root cause.
+
+Execution, Gateway, FX/BTC Drivers and Laya Trainer/Evaluator were
+read back active with their unchanged original MainPIDs after the
+successful math-only diagnostic. This work never touches native trade
+placement, frozen original trial data, production service configuration,
+model promotion or Laya v1 adapter output.

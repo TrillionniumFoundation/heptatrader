@@ -191,6 +191,61 @@ def real_fit(args, started):
                     cache.clear()
                 repeat_max=max(abs(x-y) for trial in same_input_replays[1:]
                                for x,y in zip(prob,trial))
+                # One scoped alternative backend, never a host- or service-wide
+                # ROCm setting change. If unavailable, retain it as an
+                # *unobserved* control, not a false numerical pass.
+                math_backend={"state":"UNAVAILABLE"}
+                try:
+                    from torch.nn.attention import sdpa_kernel, SDPBackend
+                    cache.clear()
+                    with sdpa_kernel([SDPBackend.MATH]):
+                        math_p,math_a=cell(**batch)
+                    if tuple(math_p.shape)!=(1,7):
+                        raise ContractError("V2_MATH_BACKEND_OUTPUT_SHAPE")
+                    math_probs=torch.softmax(math_p,dim=-1)[0].detach().cpu().tolist()
+                    math_backend={"state":"OBSERVED_MATH_ONLY",
+                                  "parent_probs":math_probs,
+                                  "drift_vs_historical":parent_probability_drift(
+                                       row["frozen_parent_probs"],math_probs),
+                                  "drift_vs_default":parent_probability_drift(prob,math_probs)}
+                except (RuntimeError,ImportError,AttributeError,ContractError) as diagnostic_exception:
+                    math_backend={"state":"FAILED_CONTROL",
+                                  "error_class":type(diagnostic_exception).__name__}
+                cache.clear()
+                # Independent backend check: same immutable checkpoint and
+                # original serialized input on CPU, with its own fresh model
+                # instance. No effect on the live model or original evidence.
+                cpu_control={"state":"NOT_AVAILABLE"}
+                try:
+                    cpu_started=time.monotonic()
+                    raw_cpu,tok_cpu,cpu_base_id=load_verified_laya(
+                        args.base,base_manifest,enforce_gpu=False)
+                    if cpu_base_id!=base_id:
+                        raise ContractError("V2_CPU_BASE_ID_MISMATCH")
+                    cpu_cell=ResidentDecisionCell(raw_cpu,cpu_base_id)
+                    cpu_cell.restore_parent(
+                        load_file(str(args.parent/"adapter.safetensors")),
+                        allow_scorer_only=True)
+                    cpu_cell.eval()
+                    cpu_batch=encode_rows(tok_cpu,[row])
+                    with torch.no_grad():
+                        cpu_p,cpu_a=cpu_cell(**cpu_batch)
+                    if tuple(cpu_p.shape)!=(1,7):
+                        raise ContractError("V2_CPU_PARENT_OUTPUT_SHAPE")
+                    cpu_probs=torch.softmax(cpu_p,dim=-1)[0].detach().cpu().tolist()
+                    cpu_control={
+                        "state":"OBSERVED_CPU_FROZEN_PARENT",
+                        "parent_probs":cpu_probs,
+                        "drift_vs_historical":parent_probability_drift(
+                            row["frozen_parent_probs"],cpu_probs),
+                        "drift_vs_default_gpu":parent_probability_drift(
+                            prob,cpu_probs),
+                        "wall_seconds":round(time.monotonic()-cpu_started,3),
+                    }
+                    del raw_cpu,cpu_cell,cpu_p,cpu_a
+                except (RuntimeError,ImportError,AttributeError,ContractError,OSError) as diagnostic_exception:
+                    cpu_control={"state":"FAILED_CONTROL",
+                                 "error_class":type(diagnostic_exception).__name__}
                 evidence={
                     "schema":"heptatrader.laya-v2-real-parent-parity-negative.v1",
                     "phase":"BEFORE_ANY_OPTIMIZER",
@@ -204,6 +259,10 @@ def real_fit(args, started):
                     "genuine_recomputed_parent_probs":prob,
                     "same_input_gpu_replay_probs":same_input_replays,
                     "same_input_gpu_replay_max_abs_difference":repeat_max,
+                    "isolated_math_only_attention_control":math_backend,
+                    "isolated_cpu_frozen_parent_control":cpu_control,
+                    "pinned_research_torch_version":torch.__version__,
+                    "pinned_research_rocm_version":torch.version.hip,
                     "probabilities_max_abs_difference":drift,
                     "reported_original_target_class":row["target_class"],
                     "original_parent_correct":row["parent_correct"],
