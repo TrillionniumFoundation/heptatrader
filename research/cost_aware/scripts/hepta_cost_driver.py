@@ -118,6 +118,12 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
         """Historical PAPER entry checks; original CLOSE intent remains untouched."""
         if kind == "OPEN":
             lifecycle_check()
+        if exit_reason is None:
+            # Legacy no-reason call shape must remain byte-for-byte compatible
+            # with pinned older adapters and in-memory test hosts.
+            return original["prepare_send"](state, path, binary, socket, token,
+                                            outbox, kind, quote, side)
+        # New real CLOSE reason must survive every non-authorizing adapter.
         return original["prepare_send"](state, path, binary, socket, token,
                                         outbox, kind, quote, side, exit_reason=exit_reason)
 
