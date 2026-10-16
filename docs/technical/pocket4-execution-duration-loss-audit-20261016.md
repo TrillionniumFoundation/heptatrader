@@ -84,3 +84,20 @@ fees and -$176.3248585275 net; one <5m episode was also net negative.
 - The source-only result on GitHub is a proposal; **the production trader and
   pinned model are not altered**. The Pocket4 main working tree's pre-existing
   uncommitted changes were not modified.
+
+## Follow-through: original CLOSE reason receipts and real active source version
+
+Follow-up real Pocket4 readback, **2026-10-16 ~07:15 PDT**:
+
+- PR #366 (original command-bound CLOSE reason, with the diagnostic-failure settlement fix) and PR #367 (balanced Laya v2 action research) are already merged into GitHub main. There is no need to reimplement or re-merge them.
+- The **active** EUR/USD systemd unit does **not** execute the repository main Python driver directly. It executes pinned `heptatrader_attributed_driver.py` with manifest pointing to the older base driver SHA256 `c1e4339f13a466759186bcf63ece5bff37b10c51157fdbd7bfe53402e0f2943d`. Its source predates the merged CLOSE receipt feature. Its original decision-attribution producer was healthy (2,427 written, zero drops/errors in the inspected window), but captures OPEN-bound model requests rather than driver-proven CLOSE reasons.
+- The merged, verified main driver base (SHA256 `8f37afb687d84996f10be9b357186dee8cd435f0b44ea200ced239e01c2edff8`) differs from the old pinned base in the original-CLOSE intent diagnostics and related callsites; a restart of the live owner has **not** occurred.
+- The new optional `--fx-driver-state` / `--btc-driver-state` evidence correlation is read-only and strict: actual command identity, all original broker execution IDs, broker order, terminal flat fill, nonpartial close, bounded fill quantity / average price, chronological quote + trigger + original send, supported original driver-issued reason. A mutable `last_exit_reason` is never accepted.
+- A Pocket4 run against the original OMS journal and current driver snapshots proved full PnL period/digest/accounting parity, and measured **0/357 EUR/USD** and **0/4 BTC/USD** closed roundtrips with an eligible original CLOSE reason. All **361 remain UNKNOWN** in the captured historical period; old history is never rewritten or guessed. Evidence root:
+  `~/.local/state/heptatrader/operator-evidence/pnl-close-reason-next-20261016/close-reason.json`.
+- Integration using the real merged driver `freeze_exit_trigger` + `record_correlated_close` proved a synthetic pre-send MODEL_REVERSAL intent can match one unique broker execution. Subsequent mutable state changes cannot change this attached reason. No fake or real Broker order was sent. After adding exact fill size/price crosschecks, **36/36** focused Pocket4 tests passed.
+- A **nonactive** FX candidate was staged with byte-pinned original attributed wrapper and observation component, plus the new main base at:
+  `~/.local/share/heptatrader/decision-attribution/candidates/fx-close-reason-20261016-v1/EUR.USD/`.
+  Candidate manifest SHA256 is `ca5a8b42c2d2b77ed952fb8a99205dc9d8427ce073975ac7dbc45601c163633f`; all three module file hashes agree with the manifest, permissions 0700 directory / 0600 files. No production unit points here and no service was restarted. This is source/materialization evidence, **not a broker-involved rollout**.
+
+The remaining *real* entry-to-exit provenance gate is a controlled future FX driver release cutover under proven flat/no-new-entry owner conditions, correct pre/post service epoch, and rollback. The next genuine future CLOSE should write a bounded exact receipt; only thereafter can independent OMS matching attribute MODEL_REVERSAL vs MAX_ADVERSE_MOVE, and only a forward economic evaluation can justify any change to exit rules. **Do not infer an automatic 15-minute hold from ex-post duration buckets.**
