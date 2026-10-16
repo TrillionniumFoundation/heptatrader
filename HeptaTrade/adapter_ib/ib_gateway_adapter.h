@@ -233,6 +233,13 @@ public:
     // Local-only adjacent native ID reservation, under the SAME adapter
     // send mutex and current nextValidId/foreign-openOrder floor as MKT sends.
     // Never a broker reservation, durable order group or execution permit.
+    // Import a VERIFIED native high-water from the existing Owner OMS
+    // before enabling ordinary order sends after an Adapter process restart.
+    // Only burns local IDs; cannot authorize a Broker send or protected stop.
+    bool AdoptDurableResearchH1NativeIdFloor(
+        const std::string& account, int brokerClientId,
+        std::uint64_t connectionEpoch, std::int64_t nextIdFloor,
+        std::string& reason);
     bool ReserveResearchUnsentH1LocalIdPair(
         const std::string& expectedPaperAccount, int expectedClientId,
         std::uint64_t expectedConnectionEpoch,

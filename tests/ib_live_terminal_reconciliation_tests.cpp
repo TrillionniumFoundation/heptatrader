@@ -1426,6 +1426,62 @@ void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
        persisted.frozen.childOrderId!=44 || fixture.broker->places!=0 ||
        journal.Replay([](const OmsJournalEvent&) {})!=5)
         throw std::runtime_error("H1_HANDOFF_BROKER_FLOOR_RETURN_LOST_ID_CURSOR");
+    // New Adapter process, same Mock Broker nextValidId=41: the Broker has
+    // never seen the UNSENT OMS reservations 41..44. Without recovery-floor
+    // adoption an unrelated ordinary order will reuse durable H1 numeric IDs.
+    Fixture freshAdapterAfterProcessRestart;
+    std::int64_t replayedH1Floor=0;
+    if(!owner.GetDurableResearchH1NativeIdFloor(
+            "DU123",replayedH1Floor,reason) || replayedH1Floor!=45)
+        throw std::runtime_error("H1_RESTART_OMS_DURABLE_NATIVE_FLOOR_MISSING");
+    if(freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU-FOREIGN",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason) ||
+       freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch()+1,
+            replayedH1Floor,reason) ||
+       freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",74,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason) ||
+       !freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason))
+        throw std::runtime_error("H1_RESTART_NATIVE_FLOOR_BROKER_SCOPE_INVALID");
+    const long ordinaryAfterRestart=freshAdapterAfterProcessRestart.Place(
+        "hepta-v1-sha256:"+std::string(64,'8'));
+    if(ordinaryAfterRestart<=44)
+        throw std::runtime_error("OMS_RESERVED_H1_NATIVE_IDS_REUSED_AFTER_RESTART");
+    // A crash can leave ONLY the parent reservation durably written.
+    // Even that prefix burns its native ID until authoritative reconciliation.
+    std::string partialMask="/tmp/Hepta-H1-PartialFloor-XXXXXX";
+    std::vector<char> partialPath(partialMask.begin(),partialMask.end());
+    partialPath.push_back('\0');
+    const int partialFd=::mkstemp(partialPath.data());
+    if(partialFd<0)throw std::runtime_error("H1_PARTIAL_FLOOR_SCRATCH_FAILED");
+    ::close(partialFd);::unlink(partialPath.data());
+    {
+        OmsJournal partial;
+        if(!partial.Init(partialPath.data()) ||
+           !partial.AppendDurableCritical(hepta_bracket_h1::Intent(
+               persisted.frozen,persisted.ids,false)))
+            throw std::runtime_error("H1_PARTIAL_PARENT_NOT_DURABLE");
+        ExecutionCoordinator partialOwner(partial,callbacks);
+        std::int64_t partialFloor=0;
+        if(!partialOwner.GetDurableResearchH1NativeIdFloor(
+               "DU123",partialFloor,reason) ||
+           partialFloor!=persisted.frozen.parentOrderId+1)
+            throw std::runtime_error("H1_PARTIAL_PARENT_ID_RECOVERY_WAS_LOST");
+        auto corrupted=hepta_bracket_h1::Intent(
+            persisted.frozen,persisted.ids,false);
+        corrupted.source="UNTRUSTED_BROKER_PROOF";
+        if(!partial.AppendDurableCritical(corrupted) ||
+           partialOwner.GetDurableResearchH1NativeIdFloor(
+               "DU123",partialFloor,reason) ||
+           reason!="H1_RECOVERED_NATIVE_ID_EVENT_INVALID")
+            throw std::runtime_error("H1_MALFORMED_ORIGINAL_PREFIX_MINTED_NATIVE_IDS");
+    }
+    if(::unlink(partialPath.data())!=0)
+        throw std::runtime_error("H1_PARTIAL_FLOOR_CLEANUP_FAILED");
     // The pre-send durable group must not mint another pair on Coordinator
     // restart even if the caller still has a valid nextValidId callback.
     {

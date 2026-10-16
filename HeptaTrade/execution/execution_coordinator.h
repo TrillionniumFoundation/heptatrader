@@ -190,6 +190,12 @@ public:
     // never expose this research method to Agent or Broker send paths.
     typedef std::function<bool(const std::string&, int, std::uint64_t,
         long&, long&, std::string&)> H1UnsentNativeIdAllocator;
+    // Read-only owner OMS high-water mark. Include even a partial original
+    // H1 pair: a crashed unsent reservation must not be reused by a normal
+    // IB order after the process-local Adapter cursor was reset.
+    bool GetDurableResearchH1NativeIdFloor(
+        const std::string& paperAccount, std::int64_t& nextIdFloor,
+        std::string& reason) const;
     bool ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
         const AgentExecutionContext& originalOwner,
         const hepta_bracket_h1::FrozenBracket& frozenWithoutIds,

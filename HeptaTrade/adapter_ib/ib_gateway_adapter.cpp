@@ -1343,6 +1343,28 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
     }
 }
 
+bool HeptaIBGatewayAdapter::AdoptDurableResearchH1NativeIdFloor(
+    const std::string& account, int brokerClientId,
+    std::uint64_t connectionEpoch, std::int64_t nextIdFloor,
+    std::string& reason)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    const std::int64_t exhausted=static_cast<std::int64_t>(
+        std::numeric_limits<std::int32_t>::max())+1;
+    if(connectionEpoch==0 || connectionEpoch!=m_connectionEpoch ||
+       brokerClientId<1 || brokerClientId!=m_cfg.clientId ||
+       account!=m_cfg.account || account.compare(0,2,"DU")!=0 ||
+       !m_connected || !m_api || !m_api->IsConnected() ||
+       m_api->GetConnectionEpoch()!=m_connectionEpoch ||
+       nextIdFloor<1 || nextIdFloor>exhausted ||
+       m_terminalTransportHalted) {
+        reason="IB_H1_RECOVERED_NATIVE_ID_SCOPE_INVALID";
+        return false;
+    }
+    if(m_localOrderSeed<nextIdFloor)m_localOrderSeed=nextIdFloor;
+    reason.clear();return true;
+}
+
 bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
     const std::string& expectedPaperAccount, int expectedClientId,
     std::uint64_t expectedConnectionEpoch,

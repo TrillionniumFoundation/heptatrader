@@ -1,5 +1,46 @@
 #include "execution_coordinator.h"
 #include "ib_bracket_h1_oms_reservation.h"
+#include <algorithm>
+#include <limits>
+
+bool ExecutionCoordinator::GetDurableResearchH1NativeIdFloor(
+    const std::string& paperAccount, std::int64_t& nextIdFloor,
+    std::string& reason) const
+{
+    nextIdFloor=1;
+    if(paperAccount.size()<3 || paperAccount.compare(0,2,"DU")!=0) {
+        reason="H1_RECOVERED_NATIVE_ID_ACCOUNT_NOT_PAPER";
+        return false;
+    }
+    const long maxId=static_cast<long>(
+        std::numeric_limits<std::int32_t>::max());
+    bool invalid=false;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const int rows=m_journal.Replay([&](const OmsJournalEvent& e){
+        if(e.account!=paperAccount)return;
+        const bool h1=e.eventType=="bracket_parent_reserved" ||
+            e.eventType=="bracket_child_reserved" ||
+            e.eventType=="bracket_parent_send_attempt" ||
+            e.eventType=="bracket_child_send_attempt";
+        if(!h1)return;
+        if(e.venue!="IB" || e.executionDomain!="PAPER" ||
+           e.source!="SHADOW_NO_BROKER_EGRESS" ||
+           e.orderId<1 || e.orderId>maxId) {
+            invalid=true;return;
+        }
+        // Conservative even for a lone durable parent after fsync failure.
+        // Never infer broker zero-fill or convert a prefix into a send permit.
+        nextIdFloor=std::max(nextIdFloor,
+            static_cast<std::int64_t>(e.orderId)+1);
+    });
+    if(rows<0 || invalid) {
+        nextIdFloor=1;
+        reason=rows<0 ? "H1_RECOVERED_NATIVE_ID_JOURNAL_UNAVAILABLE" :
+            "H1_RECOVERED_NATIVE_ID_EVENT_INVALID";
+        return false;
+    }
+    reason.clear();return true;
+}
 
 bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
     const AgentExecutionContext& originalOwner,

@@ -745,3 +745,30 @@ shared ID cursor with ordinary mock sends, Broker floor advancement,
 reconnect invalidation, missing `nextValidId`, no native send during the
 reservation itself, and the last two valid signed-int32 order IDs. The test
 `Broker` is an in-process fake; it is **not** IBKR PAPER acceptance evidence.
+
+## 2026-10-16: preserve unsent H1 native IDs across Adapter process restart
+
+IBKR `nextValidId` cannot include a locally reserved H1 parent/stop
+pair that was durably recorded in OMS but NEVER sent to TWS. A new Adapter
+used to return the same native order ID to an unrelated ordinary PAPER order
+after restart. An actual isolated Pocket4 Mock Broker/real OMS test reproduced
+`OMS_RESERVED_H1_NATIVE_IDS_REUSED_AFTER_RESTART` before the fix.
+
+The existing Execution Coordinator now reads the owner-private original OMS
+for the configured DU account and conservatively returns the maximum next
+native ID across H1 parent/child reservations and possible-send records.
+A lone durably written parent from a crashed `AppendDurablePair` still burns
+its ID. Unexpected/malformed H1 records refuse recovery; this does NOT turn
+an uncertain Broker send into a confirmed order or zero-fill. After the
+real `nextValidId` handshake, and **before** user PAPER IPC is marked ready,
+the Adapter adopts the recovered floor only for the exact configured account,
+client and connection epoch. This is a one-time local cursor synchronization;
+no Broker ID grant, API PlaceOrder, cancel or permission is issued.
+
+Pocket4 IBAPI-ON isolated Release validation: full `hepta_ib_executiond`
+compiled and five targeted native CTests passed, including the real 43-second
+runtime restart test. The `nextValidId`, Coordinator and adapter-local
+reconciliation tests also passed ASan+UBSan (3/3). Even this durable local
+ID-floor recovery is **not** an active working stop or a safe driver shutdown.
+Original P0 #331 still requires real broker-side child acceptance, owner-
+correlated permanent IDs, OCA-safe ordinary close and failure recovery.
