@@ -283,9 +283,96 @@ def crypto_market_cash_budget(ask, *, cash_limit=25000.0, base_limit=1.0, allow_
         raise DriverError("crypto market cash budget unavailable")
     return cash
 
-def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None,*,crypto_cash_limit=25000.0,crypto_base_limit=1.0):
+# Diagnostic provenance, NEVER an Execution order authorization or verified
+# counterfactual stop price. These are the ONLY close trigger labels emitted by
+# this driver. Old close commands without a label remain explicitly unknown.
+EXIT_TRIGGER_CODES=frozenset({
+    "HALT_REDUCE_ONLY", "MAX_ADVERSE_MOVE", "MODEL_REVERSAL",
+    "OWNER_RECOVERY_REDUCE_ONLY", "CRYPTO_CANARY_EXIT",
+})
+
+def freeze_exit_trigger(command_id,reason,position,quote=None):
+    if reason is not None and reason not in EXIT_TRIGGER_CODES:
+        raise DriverError("close trigger reason is not an original driver predicate")
+    when=now_ms()
+    record={"schema":"heptatrader.driver-close-trigger.v1",
+        "original_command_id":command_id,
+        "reason_code":reason if reason is not None else "LEGACY_UNATTRIBUTED",
+        "reason_source":"DRIVER_EVALUATED" if reason in
+            {"MAX_ADVERSE_MOVE","MODEL_REVERSAL","HALT_REDUCE_ONLY"} else
+            "DRIVER_RECOVERY_OR_CANARY" if reason is not None else "UNATTRIBUTED",
+        "trigger_at_ms":when,"position_at_trigger":float(position)}
+    if quote is not None:
+        if (not isinstance(quote,dict) or
+                type(quote.get("observed_at_ms")) is not int or
+                not 0 < quote["observed_at_ms"] <= when):
+            raise DriverError("close trigger quote evidence invalid")
+        try:
+            bid=float(quote["bid"]);ask=float(quote["ask"])
+        except (KeyError,ValueError,TypeError,OverflowError):
+            raise DriverError("close trigger quote evidence invalid") from None
+        if (not math.isfinite(bid) or not math.isfinite(ask) or
+                bid<=0 or ask<bid):
+            raise DriverError("close trigger quote evidence invalid")
+        record.update(quote_observed_at_ms=quote["observed_at_ms"],
+            quote_bid=bid,quote_ask=ask)
+    return record
+
+def record_correlated_close(state,pending,fill,position_after,*,partial=False):
+    """Driver-original reason correlated to an *observed* broker execution.
+
+    Not a signed OMS proof of stop trigger, and no retroactive attribution from
+    mutable last_exit_reason. Persisted only at the exact accepted terminal
+    order/position branch and kept bounded for operator attribution.
+    """
+    command_id=pending.get("command_id")
+    execution_id=fill.get("broker_execution_id")
+    venue_id=fill.get("venue_correlation_id")
+    if not all(isinstance(value,str) and value for value in
+               (command_id,execution_id,venue_id)):
+        raise DriverError("original close command/execution attribution missing")
+    trigger=pending.get("exit_trigger")
+    if (not isinstance(trigger,dict) or trigger.get("original_command_id")!=command_id or
+            trigger.get("schema")!="heptatrader.driver-close-trigger.v1"):
+        trigger={"schema":"heptatrader.driver-close-trigger.v1",
+            "original_command_id":command_id,
+            "reason_code":"LEGACY_UNATTRIBUTED","reason_source":"LEGACY_MISSING"}
+    receipt={"schema":"heptatrader.driver-close-command-attribution.v1",
+        "instrument":INSTRUMENT,"original_command_id":command_id,
+        "broker_order_id":pending.get("broker_order_id"),
+        "broker_execution_id":execution_id,
+        "venue_correlation_id":venue_id,
+        "exit_trigger":dict(trigger),
+        "position_before_send":pending.get("position_before_send"),
+        "position_after_terminal_fill":float(position_after),
+        "terminal_partial_exit":bool(partial),
+        "broker_terminal_observed":bool(fill.get("terminal")),
+        "recorded_at_ms":now_ms(),
+        "evidence_scope":"DRIVER_REPORTED_REASON_WITH_EXACT_BROKER_FILL_NOT_BROKER_CAUSAL_PROOF"}
+    history=state.setdefault("close_command_attribution",[])
+    if not isinstance(history,list):
+        raise DriverError("close attribution history corrupted")
+    for prior in history:
+        if isinstance(prior,dict) and prior.get("original_command_id")==command_id:
+            if (prior.get("broker_execution_id")!=execution_id or
+                    prior.get("exit_trigger")!=receipt["exit_trigger"]):
+                raise DriverError("original close command attribution mismatch")
+            return
+    history.append(receipt)
+    # Limit historical state growth without altering original Execution ledger.
+    if len(history)>64: del history[:-64]
+
+def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None,*,crypto_cash_limit=25000.0,crypto_base_limit=1.0,exit_reason=None):
     if state.get("pending") is not None:
         raise DriverError("original command pending; replacement preparation forbidden")
+    if kind!="CLOSE" and exit_reason is not None:
+        raise DriverError("exit trigger cannot be assigned to OPEN")
+    if kind=="CLOSE" and exit_reason is not None and exit_reason not in EXIT_TRIGGER_CODES:
+        raise DriverError("unknown close trigger code")
+    # Validate and timestamp the original observed trigger BEFORE preparing the
+    # signed HSR1 command: a bad quote must not mint an orphan Broker command.
+    close_trigger=(freeze_exit_trigger("ORIGINAL_COMMAND_NOT_YET_ASSIGNED",
+        exit_reason,state.get("position",0.0),quote) if kind=="CLOSE" else None)
     preview=cid("driver-preview")
     cash=None
     if kind=="OPEN":
@@ -312,6 +399,9 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
     pending={"kind":kind,"command_id":prepared["command_id"],"send_state":"PREPARED",
         "created_at_ms":now_ms(),"instrument":INSTRUMENT,"broker_order_id":None,"side":side,"reference_price":ref,
         "position_before_send":float(state.get("position",0.0))}
+    if kind=="CLOSE":
+        close_trigger["original_command_id"]=prepared["command_id"]
+        pending["exit_trigger"]=close_trigger
     if cash is not None:
         pending.update(quantity_mode="CASH",cash_quantity=cash,order_type="MKT",tif="IOC")
     elif kind=="OPEN":
@@ -434,6 +524,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         if fill_price and entry and old:
             closed_qty=min(abs(old),float(fill.get("quantity",QTY)))
             state["gross_pnl"]+=((fill_price-entry)*closed_qty if old>0 else (entry-fill_price)*closed_qty)
+        record_correlated_close(state,p,fill,pos)
         if INSTRUMENT=="BTC.USD":
             record_crypto_exit(state,p,fill)
             exits=state.get("crypto_exit_evidence",[])
@@ -458,6 +549,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             state["last_error"]="partial exit quantity/economic evidence mismatch"
             atomic_json(path,state);return
         state["gross_pnl"]+=((fill_price-entry)*reduced if old>0 else (entry-fill_price)*reduced)
+        record_correlated_close(state,p,fill,pos,partial=True)
         if INSTRUMENT=="BTC.USD": record_crypto_exit(state,p,fill)
         state["partial_exit_fills"]=int(state.get("partial_exit_fills",0))+1
         if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):
@@ -763,7 +855,8 @@ def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
     elif fill_price>0 and filled_quantity*fill_price>150.01:
         canary_violation="canary fill exceeded $150 notional"
     snap=snapshot(cli,state,path)
-    prepare_send(state,path,binary,socket,token,outbox,"CLOSE")
+    prepare_send(state,path,binary,socket,token,outbox,"CLOSE",
+        exit_reason="CRYPTO_CANARY_EXIT")
     deadline=time.monotonic()+65
     while state.get("pending") is not None and time.monotonic()<deadline:
         inspect_pending(state,path,binary,socket,token,outbox,snapshot(cli,state,path,False))
@@ -883,7 +976,8 @@ def main():
                 state["position"]=pos; state["halt_new_entries"]=True
                 model_worker=None
                 if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                        exit_reason="OWNER_RECOVERY_REDUCE_ONLY")
                 elif not snap["active"] and recovery_position_flat(snap):
                     recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
                 atomic_json(state_path,state)
@@ -907,7 +1001,8 @@ def main():
                 close,why=should_close(state,pos,q,None)
                 if close:
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                        q,exit_reason=why)
                     atomic_json(state_path,state)
                     if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
@@ -930,7 +1025,8 @@ def main():
                 close,why=should_close(state,pos,q,decision)
                 if close:
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                        q,exit_reason=why)
             elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and entry_candidate_allowed(decision):
                 guard=run([cli,"paper-on"],10)
                 if guard.returncode!=0: raise DriverError("paper guard release failed")
