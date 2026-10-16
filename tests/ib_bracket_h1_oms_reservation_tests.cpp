@@ -78,6 +78,21 @@ int main(){
    aliasedSend.push_back(foreignAttempt);
    Must(!ConfirmReplay(aliasedSend,f,checked,reason)&&checked.uncertain,
         "foreign req_id with original client_req_id hid a possible Broker send");
+   auto foreignGroup=events;
+   auto alien=events[1];alien.reqId="unrelated-command";
+   alien.clientReqId="unrelated-command";
+   foreignGroup.push_back(alien);
+   Must(!ConfirmReplay(foreignGroup,f,checked,reason)&&checked.uncertain,
+        "foreign command reused original H1 child correlation");
+   auto unrelated=events;
+   auto disjoint=events[0];disjoint.reqId="another-real-command";
+   disjoint.clientReqId="another-real-command";
+   disjoint.eventId="unrelated-other-event";
+   disjoint.requestHash="hepta-v1-sha256:0000000000000000000000000000000000000000000000000000000000000000";
+   disjoint.venueCorrelationId=disjoint.requestHash;
+   unrelated.push_back(disjoint);
+   Must(ConfirmReplay(unrelated,f,checked,reason),
+        "unrelated original record blocked by H1 scoped replay");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
    auto foreign=events;foreign[0].eventType="bracket_parent_send_attempt";

@@ -90,7 +90,18 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
         const bool originalByEitherAlias =
             e.reqId==f.originalCommandKey ||
             e.clientReqId==f.originalCommandKey;
-        if(!originalByEitherAlias)continue;
+        if(!originalByEitherAlias) {
+            // Unrelated original commands are ignorable only when they do
+            // not borrow this pair's immutable H1 venue identities.
+            if(e.requestHash==b.groupCorrelation ||
+               e.venueCorrelationId==parent.venueCorrelationId ||
+               e.venueCorrelationId==child.venueCorrelationId) {
+                out.uncertain=true;
+                reason="H1_FOREIGN_COMMAND_REUSES_FROZEN_IDENTITY";
+                return false;
+            }
+            continue;
+        }
         if(e.reqId!=f.originalCommandKey ||
            (!e.clientReqId.empty() && e.clientReqId!=f.originalCommandKey)) {
             out.uncertain=true;
