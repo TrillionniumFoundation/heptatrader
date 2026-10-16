@@ -145,12 +145,20 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 hold = _hold_value(_file(maint_fd, HOLD, 0o600))
                 marker = _file(ctrl_fd, SWITCH, 0o440)
-                if marker is not None and marker != b"engaged\n":
+                # Native Execution accepts a 0440 single-link marker even
+                # when the payload is empty. It creates empty markers on
+                # startup/recovery; that is an INDEPENDENT safety hold, not
+                # the ordinary CLI's exactly tagged pause.
+                independent_empty = marker == b""
+                other_native = marker is not None and marker not in (b"engaged\n", b"")
+                if other_native and action != "maintenance-status":
                     raise HoldError("UNKNOWN_EXISTING_NATIVE_KILLSWITCH")
                 if action == "paper-on":
                     if hold:
                         raise HoldError("BLOCKED_BY_PERSISTENT_MAINTENANCE_HOLD")
                     if marker is not None:
+                        if independent_empty:
+                            raise HoldError("INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE")
                         _unlink(ctrl_fd, SWITCH, 0o440)
                 elif action in ("pause", "maintenance-hold"):
                     if action == "maintenance-hold" and not hold:
@@ -173,7 +181,11 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                     _unlink(maint_fd, HOLD, 0o600)
                     hold = False
                     try:
-                        _unlink(ctrl_fd, SWITCH, 0o440)
+                        # Release only the operator's own tagged CLI marker.
+                        # Execution's zero-byte recovery marker is a separate
+                        # owner and must survive maintenance-release intact.
+                        if not independent_empty:
+                            _unlink(ctrl_fd, SWITCH, 0o440)
                     except Exception:
                         payload = {"schema": SCHEMA, "uid": os.geteuid(),
                                    "effect": "NEW_PAPER_RISK_HOLD_ONLY",
@@ -188,6 +200,11 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                         "persistent_hold": hold,
                         "native_kill_switch_engaged":
                             _file(ctrl_fd, SWITCH, 0o440) is not None,
+                        "native_marker_origin":
+                            ("ABSENT" if marker is None else
+                             "INDEPENDENT_EMPTY_NATIVE" if independent_empty else
+                             "CLI_TAGGED_PAUSE" if not other_native else
+                             "UNRECOGNIZED_INDEPENDENT_NATIVE"),
                         "may_stop_driver": False, "broker_orders_sent": 0}
             finally:
                 os.close(lock)
