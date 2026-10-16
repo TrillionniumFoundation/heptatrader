@@ -83,10 +83,13 @@ inline Result ProjectFrozenH1WorkingStop(
     const std::vector<OmsJournalEvent>& originalOms,
     OmsJournalEvent& record, std::string& reason)
 {
-    hepta_bracket_h1::Reservation original;
+    // Actual broker evidence necessarily follows BOTH durable send-attempt
+    // receipts. ConfirmReplay is intentionally for pre-send/no-retry only and
+    // would always reject a legitimate post-send broker callback.
+    hepta_bracket_h1::BrokerCallbackReplayProof original;
     std::string replayReason;
-    if(!hepta_bracket_h1::ConfirmReplay(originalOms,frozen,
-                                       original,replayReason)) {
+    if(!hepta_bracket_h1::ConfirmReplayForBrokerCallback(
+            originalOms,frozen,original,replayReason)) {
         reason="IB_H1_ORIGINAL_DURABLE_PAIR_UNVERIFIED";
         return Result::Rejected;
     }

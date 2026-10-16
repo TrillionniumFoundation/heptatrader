@@ -934,3 +934,56 @@ bound to Execution-owned current Broker order inventory, full no-new-entry
 fence, actual Broker permanent parent/child IDs and cancellation/partial fill
 lifecycle before enabling a genuine PAPER canary or claiming loss continuity.
 PR and Issue #331 must remain Draft / OPEN respectively.
+
+## 2026-10-16 — H1 v2 post-send Broker callback proof without retransmission
+
+An adversarial review of stacked PR #349 revealed a real integration
+dead-end: `ProjectFrozenH1WorkingStop` reused the pre-send/no-retry
+`ConfirmReplay` to validate a native `openOrder(Submitted)` callback.
+That original function correctly treats **any** durable
+`bracket_parent_send_attempt` or `bracket_child_send_attempt` as UNKNOWN
+and rejects new sending. Therefore a legitimate broker echo after an
+attempted pair transmission could never qualify even as a candidate.
+
+The fix does **not** weaken the restart/duplicate-send rule. The existing
+`ConfirmReplay` remains unchanged. A separate strictly read-only
+`ConfirmReplayForBrokerCallback` accepts a frozen original group only
+when the actual OMS replay shows, in exact order:
+
+1. One immutable original Parent reserved;
+2. One immutable original Child reserved;
+3. One original Parent `POSSIBLY_SENT` durable pre-send;
+4. One original Child `POSSIBLY_SENT` durable pre-send.
+
+Every pre-send must match original account, owner, session, H1 digest and
+role, order ID, quantity, stop price, timestamps, venue, source, original
+request alias and Broker-free provenance. The existing pre-send only
+`ConfirmReplay` is then re-used **over the reservation subset** to reject
+foreign account/native-ID/H1 reuse, duplicate parents/children and
+malformed immutable original intent.
+
+If either attempt is absent, reordered, duplicated, reassigned to another
+H1, spoofed through `client_req_id`, or changes stop price, the new
+projection is refused. In particular, native OMS v4 canonicalizes the
+legacy `client_req_id` to the original `req_id` during disk replay.
+The reconciler requires that **exact same original command**, not an
+empty or arbitrary foreign alias.
+
+Successful replay returns only `BrokerCallbackReplayProof` with
+`maySubmitOrRetry=false`, `mayStopDriver=false`, and
+`brokerWorkingStopProven=false`. Only an independently matched,
+same-epoch original native `openOrder(Submitted)` with exact parent/child
+Permanent IDs and OCA can become a **candidate**; full account-wide
+open-order/position, parent fill, OCA safe ordinary exit, stop trigger
+and continuing protection still require separate real Broker proof.
+
+Pocket4 independent IB-API-ON Release `hepta_ib_executiond` build and
+**12/12** relevant CTests passed, including original H1 no-retry,
+full runtime recovery (**45.45 s**), native callback, OMS durability,
+post-fill reconciliation and fake native bracket transport. Standalone
+C++11 warnings-as-errors AddressSanitizer/UBSan passed for the enhanced
+native H1 callback tests. No actual broker `placeOrder`, active stop,
+manual stop, service restart, account change or model promotion occurred.
+
+This is **not** a native stop-loss production release and does **not**
+close P0 Issue #331.

@@ -169,4 +169,101 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
     out.frozen=f;out.ids=b;out.replayComplete=true;
     reason.clear();return true;
 }
+
+// A send attempt must remain UNKNOWN for admission/retry, but positive native
+// Broker callback validation necessarily runs AFTER both pre-send records.
+// This independent read-only proof never upgrades the result to a send permit
+// and never clears UNKNOWN. The original ConfirmReplay remains fail-closed.
+struct BrokerCallbackReplayProof {
+    BoundRefs ids;
+    bool originalPairDurable = false;
+    bool exactParentAndChildPresendDurable = false;
+    bool brokerWorkingStopProven = false;
+    bool maySubmitOrRetry = false;
+    bool mayStopDriver = false;
+};
+inline bool ExactFrozenPresend(const OmsJournalEvent& observed,
+                              const OmsJournalEvent& intent,
+                              const BoundRefs& ids,bool child) {
+    return observed.eventType==(child?"bracket_child_send_attempt":
+                                     "bracket_parent_send_attempt") &&
+        observed.eventId==(child?"possible-child:":"possible-parent:")+
+                             ids.groupCorrelation &&
+        observed.status=="POSSIBLY_SENT" && observed.reason.empty() &&
+        observed.tsMs==intent.tsMs &&
+        observed.orderId==intent.orderId &&
+        observed.reqId==intent.reqId &&
+        // OMS v4 canonicalizes the legacy client_req_id alias to req_id.
+        // Require the SAME original command; never accept a foreign alias.
+        observed.clientReqId==intent.reqId &&
+        observed.account==intent.account &&
+        observed.traceId==intent.traceId &&
+        observed.strategy==intent.strategy &&
+        observed.source==intent.source &&
+        observed.executionDomain==intent.executionDomain &&
+        observed.venue==intent.venue &&
+        observed.instrument==intent.instrument &&
+        observed.side==intent.side && observed.qty==intent.qty &&
+        observed.price==intent.price &&
+        observed.requestHash==intent.requestHash &&
+        observed.venueCorrelationId==intent.venueCorrelationId &&
+        observed.brokerClientId==-1 &&
+        observed.brokerConnectionEpoch==0 &&
+        observed.brokerCallbackType.empty() &&
+        observed.brokerExecutionId.empty() &&
+        observed.brokerBracket.version==0;
+}
+inline bool ConfirmReplayForBrokerCallback(
+    const std::vector<OmsJournalEvent>& records,
+    const FrozenBracket& frozen,BrokerCallbackReplayProof& out,
+    std::string& reason) {
+    out=BrokerCallbackReplayProof{};
+    BoundRefs ids;
+    if(!BuildFrozenRefs(frozen,ids,reason))return false;
+    const auto parent=Intent(frozen,ids,false);
+    const auto child=Intent(frozen,ids,true);
+    // Strict original-owner sequence. Other original commands are retained
+    // for ConfirmReplay to reject any alias/group/native order ID collision.
+    unsigned int sequence=0;
+    std::vector<OmsJournalEvent> reservations;
+    reservations.reserve(records.size());
+    for(const auto& event:records){
+        const bool original=event.reqId==frozen.originalCommandKey ||
+            event.clientReqId==frozen.originalCommandKey;
+        if(!original){
+            reservations.push_back(event);
+            continue;
+        }
+        if(sequence==0 && event.eventType=="bracket_parent_reserved"){
+            reservations.push_back(event);
+            sequence=1;
+        } else if(sequence==1 && event.eventType=="bracket_child_reserved"){
+            reservations.push_back(event);
+            sequence=2;
+        } else if(sequence==2 &&
+                  ExactFrozenPresend(event,parent,ids,false)){
+            sequence=3;
+        } else if(sequence==3 &&
+                  ExactFrozenPresend(event,child,ids,true)){
+            sequence=4;
+        } else {
+            reason="H1_BROKER_CALLBACK_PRESEND_ORDER_OR_IDENTITY_INVALID";
+            return false;
+        }
+    }
+    if(sequence!=4){
+        reason="H1_BROKER_CALLBACK_BOTH_PRESENDS_REQUIRED";
+        return false;
+    }
+    Reservation reserved;
+    if(!ConfirmReplay(reservations,frozen,reserved,reason))
+        return false;
+    out.ids=reserved.ids;
+    out.originalPairDurable=true;
+    out.exactParentAndChildPresendDurable=true;
+    // No broker execution/working status is proven by OMS alone.
+    reason.clear();
+    return true;
+}
+
 } // namespace hepta_bracket_h1
