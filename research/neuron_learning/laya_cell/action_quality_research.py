@@ -95,6 +95,7 @@ def collect_closed(root):
                 raise ContractError("CALIBRATION_OVERLAPPING_OBSERVED_ANCHORS")
             seen.add(anchor)
             parent = probabilities(p["parent_probs"], 7)
+            candidate = probabilities(p["candidate_probs"], 7)
             action = probabilities(p["candidate_act_escalate_probs"], 2)
             target = obs.get("target_class")
             if type(target) is not int or not 0 <= target < 7:
@@ -110,6 +111,9 @@ def collect_closed(root):
             rows.append({"anchor_ms": anchor,
                          "utc_day": datetime.fromtimestamp(anchor / 1000, tz=timezone.utc).date().isoformat(),
                          "parent_confidence": max(parent),
+                         "parent_probabilities": list(parent),
+                         "candidate_probabilities": list(candidate),
+                         "target_class": target,
                          "parent_correct": parent_correct,
                          "raw_action_correct_probability": action[0],
                          "raw_action_brier": raw_brier,

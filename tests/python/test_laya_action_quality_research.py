@@ -105,7 +105,7 @@ class SealedEvidenceTests(unittest.TestCase):
             parent=[.4]+[.1]*6
             pred={"candidate_id":name,"plan_id":plan["plan_id"],"slot":i,"anchor_ms":anchor,
                   "created_at_ms":anchor+3000,"trained_until_ms":anchor-100000,
-                  "parent_probs":parent,"candidate_act_escalate_probs":[1.0,0.0]}
+                  "parent_probs":parent,"candidate_probs":list(parent),"candidate_act_escalate_probs":[1.0,0.0]}
             path=d/("prediction-%03d.json"%i);path.write_text(json.dumps(pred))
             obs={"candidate_id":name,"plan_id":plan["plan_id"],"slot":i,"status":"OBSERVED",
                  "target_class":0 if good else 1,"anchor_ms":anchor,"outcome_ms":anchor+300000,
