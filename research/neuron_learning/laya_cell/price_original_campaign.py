@@ -188,6 +188,90 @@ def grade(plan,slot,pred,bars,receipts,now_ms,source_pin_digest):
             "no_economic_alpha_or_prospective_power_claim":True}
 
 
+
+def verify_saved_outcome(plan, slot, outcome, sealed_prediction=None, prediction_file_sha256=None):
+    """Revalidate persisted research result BEFORE accepting it after restart.
+
+    The file bytes and the original causal quote receipt remain immutable.
+    This proves score/probability consistency and local cross-file identity,
+    not the historical oracle's truth or financial efficacy.
+    """
+    anchor=expected_anchor(plan,slot)
+    state_summary(plan,[outcome])
+    if sealed_prediction is None:
+        if (outcome["status"]!="CENSORED" or
+                sealed_prediction is not None or
+                prediction_file_sha256 is not None or
+                "prediction_id" in outcome or "prediction_sha256" in outcome or
+                not outcome["reason"].startswith((
+                    "MISSED_PRECOMMITTED_INPUT_SLOT",
+                    "NO_STRICT_CAUSAL_INPUT:"))):
+            raise ContractError("ORIGINAL_CAMPAIGN_CENSORED_WITHOUT_FORECAST_CHANGED")
+        return outcome
+    pred=sealed_prediction
+    if (not isinstance(pred,dict) or
+            pred.get("schema")!=PREDICTION_SCHEMA or
+            pred.get("prediction_id")!=digest({k:v for k,v in pred.items() if k!="prediction_id"}) or
+            pred.get("plan_id")!=plan["plan_id"] or
+            pred.get("slot")!=slot or pred.get("anchor_ms")!=anchor or
+            type(pred.get("created_at_ms")) is not int or
+            not anchor<=pred["created_at_ms"]<=anchor+INPUT_GRACE_MS or
+            type(pred.get("source_asof_ms")) is not int or
+            not anchor<=pred["source_asof_ms"]<=pred["created_at_ms"] or
+            type(pred.get("base_mid")) not in (int,float) or
+            not isfinite(pred["base_mid"]) or pred["base_mid"]<=0 or
+            type(pred.get("clip_count")) is not int or not 0<=pred["clip_count"]<=24 or
+            pred.get("model_sha256")!=plan["pinned_sources"]["model_weights"] or
+            pred.get("prior_probs")!=plan["training_prior_probs"] or
+            pred.get("trading_authority") is not False or
+            pred.get("model_promotion") is not False or
+            pred.get("broker_orders_sent")!=0 or
+            type(pred.get("source_snapshot_id")) is not str or
+            len(pred["source_snapshot_id"])!=64 or
+            type(pred.get("feature_vector_digest")) is not str or
+            len(pred["feature_vector_digest"])!=64):
+        raise ContractError("ORIGINAL_CAMPAIGN_SAVED_PREDICTION_CHANGED")
+    check_probs(pred["model_probs"])
+    check_probs(pred["prior_probs"])
+    if (type(prediction_file_sha256) is not str or len(prediction_file_sha256)!=64 or
+            outcome.get("prediction_sha256")!=prediction_file_sha256):
+        raise ContractError("ORIGINAL_CAMPAIGN_PREDICTION_FILE_SHA_CHANGED")
+    if "prediction_id" in outcome and outcome["prediction_id"]!=pred["prediction_id"]:
+        raise ContractError("ORIGINAL_CAMPAIGN_PREDICTION_ID_CHANGED")
+    if outcome["status"]=="CENSORED":
+        if (outcome["at_ms"]<anchor+HORIZON_MS or
+                outcome["reason"].startswith((
+                    "MISSED_PRECOMMITTED_INPUT_SLOT","NO_STRICT_CAUSAL_INPUT:")) or
+                "actual_class" in outcome or "model" in outcome or
+                "train_frequency_prior" in outcome):
+            raise ContractError("ORIGINAL_CAMPAIGN_CENSORED_WITH_FORECAST_CHANGED")
+        return outcome
+
+    due=anchor+HORIZON_MS
+    if (not due<=outcome["at_ms"]<=due+INPUT_GRACE_MS or
+            type(outcome.get("return_bps")) not in (int,float) or
+            not isfinite(outcome["return_bps"]) or
+            outcome["actual_class"]!=bisect_right(BIN_EDGES_BPS,outcome["return_bps"]) or
+            outcome.get("reason") is not None or
+            outcome.get("no_economic_alpha_or_prospective_power_claim") is not True or
+            outcome.get("prediction_id")!=pred["prediction_id"] or
+            type(outcome.get("source_pin_digest")) is not str or
+            len(outcome["source_pin_digest"])!=64):
+        raise ContractError("ORIGINAL_CAMPAIGN_PERSISTED_OUTCOME_CHANGED")
+    target=outcome["actual_class"]
+    for name,probs in (("model",pred["model_probs"]),
+                       ("train_frequency_prior",pred["prior_probs"])):
+        expected_brier=sum((v-float(k==target))**2 for k,v in enumerate(probs))
+        expected_nll=-log(max(probs[target],1e-12))
+        expected_hit=max(range(7),key=lambda k:probs[k])==target
+        actual=outcome[name]
+        if (abs(actual["brier"]-expected_brier)>1e-10 or
+                abs(actual["nll"]-expected_nll)>1e-10 or
+                actual["hit"] is not expected_hit):
+            raise ContractError("ORIGINAL_CAMPAIGN_PERSISTED_SCORE_CHANGED")
+    return outcome
+
+
 def state_summary(plan,results):
     check_plan(plan)
     seen=set();observed=censored=0

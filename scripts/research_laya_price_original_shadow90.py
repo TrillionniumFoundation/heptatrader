@@ -26,7 +26,8 @@ from laya_cell.price_original_live_features import original_closed_bars,original
 from laya_cell.price_year_gpu import (features_from_bars,fold_indices,class_prior,FEATURE_NAMES)
 from laya_cell.price_original_campaign import (
     SLOTS,HORIZON_MS,INPUT_GRACE_MS,SLOT_SPACING_MS,
-    check_plan,create_plan,expected_anchor,prediction,grade,state_summary)
+    check_plan,create_plan,expected_anchor,prediction,grade,state_summary,
+    verify_saved_outcome)
 from research_laya_price_year_gpu import model_for,metric_torch
 
 STOP=False
@@ -197,6 +198,10 @@ def outcome_list(root,plan):
             obj=read_json(p)
             if obj.get("slot")!=i or obj.get("plan_id")!=plan["plan_id"]:
                 raise ContractError("ORIGINAL_CAMPAIGN_OUTCOME_REPLACED")
+            predfile=root/("prediction-%03d.json"%i)
+            pred=read_json(predfile) if predfile.exists() else None
+            pred_sha=sha_file(predfile) if pred is not None else None
+            verify_saved_outcome(plan,i,obj,pred,pred_sha)
             outcomes.append(obj)
     return outcomes
 
@@ -240,7 +245,13 @@ def run(a):
         anchor=expected_anchor(plan,slot)
         output=a.evidence/("outcome-%03d.json"%slot)
         predfile=a.evidence/("prediction-%03d.json"%slot)
-        if output.exists():continue
+        if output.exists():
+            saved=read_json(output)
+            if predfile.exists():
+                verify_saved_outcome(plan,slot,saved,read_json(predfile),sha_file(predfile))
+            else:
+                verify_saved_outcome(plan,slot,saved)
+            continue
         pred=None
         if predfile.exists():
             pred=read_json(predfile)
