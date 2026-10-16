@@ -209,6 +209,12 @@ bool IbPaperKillSwitch::OpenAndPinUserOwned(
     }
     const bool authenticUserControl = !persistent.empty() &&
         (controlDirectory == runtime || controlDirectory == persistent);
+    if (!authenticUserControl)
+    {
+        result.reset();
+        reason = "IB_PAPER_USER_CONTROL_SCOPE_UNTRUSTED";
+        return false;
+    }
     const std::string maintenance = authenticUserControl ?
         persistent.substr(0, persistent.size() -
                           std::strlen("operator-control")) +

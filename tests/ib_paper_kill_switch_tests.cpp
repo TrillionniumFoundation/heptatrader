@@ -68,9 +68,10 @@ void TestExplicitUserReaderPreservesStateAndOwnerChecks()
     std::shared_ptr<IbPaperKillSwitch> reader;
     std::string reason;
     const bool opened = IbPaperKillSwitch::OpenAndPinUserOwned(control, reader, reason);
-    if (::geteuid() == 0 || ::getegid() == 0)
-    { assert(!opened); assert(::rmdir(control.c_str()) == 0); return; }
-    assert(opened);
+    assert(!opened);
+    assert(!reader);
+    assert(reason == "IB_PAPER_USER_CONTROL_SCOPE_UNTRUSTED");
+    reader = OpenForCurrentUser(control);
     ExpectState(reader, IbPaperKillSwitchState::Disarmed, "");
     CreateMarker(control);
     ExpectState(reader, IbPaperKillSwitchState::Engaged, "IB_PAPER_KILL_SWITCH_ENGAGED");
