@@ -402,6 +402,47 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
             fees[eid] = (fee, currency)
         except EvidenceError:
             fee_conflicts.add(eid)
+    # Native IB TWS API error 202 is the Broker's cancellation of an active
+    # order. It is NOT an orderStatus and does not erase the already executed
+    # quantity or synthesize zero-fill proof. Use only an exact original owner
+    # + venue correlation + same service/connection epoch execDetails witness
+    # to settle the cancelled UNFILLED REMAINDER of an executed command.
+    # Terminal orderStatus continues to take precedence when already present.
+    broker_cancel_202: dict[str, list[dict]] = {}
+    for event in events:
+        if event.get("event") != "broker_error" or event.get("risk_code") != "IB_ERROR_202":
+            continue
+        sent = by_correlation.get(event.get("venue_correlation_id"))
+        if sent is None:
+            continue
+        if (event.get("broker_callback_type") != "error" or
+                event.get("status") != "Cancelled" or
+                event.get("source") != "agent:" + owner["agent_id"] or
+                event.get("req_id") != sent["req_id"] or
+                event.get("client_req_id") != sent["req_id"] or
+                event.get("account") != period["account"] or
+                event.get("execution_domain") != "PAPER" or
+                event.get("instrument") != instrument or
+                # TWS error() callback has no owner client-id: the existing
+                # native adapter persists its deliberate (-1, 0) sentinels.
+                # Do not borrow a client ID from numeric orderId or accept
+                # a normal per-client error as the original Broker callback.
+                event.get("broker_client_id") != -1 or
+                event.get("broker_request_id") != 0 or
+                type(event.get("broker_error_code")) is not int or
+                event.get("broker_error_code") != 202 or
+                event.get("trace_id") != owner["session_id"] or
+                event.get("order_id") != sent["order_id"] or
+                side(event.get("side")) != side(sent["side"])):
+            raise EvidenceError("BROKER_CANCEL_202_BINDING_CONFLICT")
+        epoch = (event.get("broker_service_epoch"), event.get("broker_connection_epoch"))
+        if (not isinstance(epoch[0], str) or not epoch[0] or
+                not positive_int(epoch[1]) or
+                not positive_int(event.get("ts_ms")) or
+                not sent["ts_ms"] <= event["ts_ms"] <= now_ms):
+            raise EvidenceError("BROKER_CANCEL_202_TIME_OR_EPOCH_INVALID")
+        broker_cancel_202.setdefault(sent["req_id"], []).append(event)
+
     fee_missing = sorted(set(fills) - fees.keys())
     fee_currencies: dict[str, Decimal] = {}
     for eid, (fee, currency) in fees.items():
@@ -412,6 +453,7 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
     book = Book(quantity=number(opening["opening_quantity"]),
                 cost=number(opening["opening_mark"]) if number(opening["opening_quantity"]) else ZERO)
     unsettled: list[str] = []
+    broker_cancel_witnesses = []
     executions = []
     for sent in sorted(sends.values(), key=lambda e: (e["ts_ms"], e["req_id"])):
         points = sorted((f for f in fills.values() if f.command == sent["req_id"]), key=lambda f: f.cumulative)
@@ -457,11 +499,38 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                    abs(number(e.get("price")) - points[-1].average) > Decimal("0.000001") for e in terminal):
                 raise EvidenceError("TERMINAL_EXECUTION_TOTAL_CONFLICT")
         else:
-            unsettled.append(sent["req_id"])
+            matched = [
+                e for e in broker_cancel_202.get(sent["req_id"], [])
+                if any((e["broker_service_epoch"],e["broker_connection_epoch"]) in f.epochs
+                       for f in points)
+            ]
+            # A later nonterminal status could indicate reactivation; refuse
+            # to treat a prior cancel callback as the final working state.
+            stable = matched and not any(
+                e["ts_ms"] > max(v["ts_ms"] for v in matched)
+                and e.get("status") not in TERMINALS
+                for e in statuses[sent["req_id"]])
+            if stable:
+                witness = min(matched, key=lambda e: e["ts_ms"])
+                broker_cancel_witnesses.append({
+                    "command_id": sent["req_id"],
+                    "order_id": sent["order_id"],
+                    "venue_correlation_id": sent["venue_correlation_id"],
+                    "broker_service_epoch": witness["broker_service_epoch"],
+                    "broker_connection_epoch": witness["broker_connection_epoch"],
+                    "original_broker_error_at_ms": witness["ts_ms"],
+                    "original_execution_ids": [f.execution_id for f in points],
+                    "basis": "ORIGINAL_IB_API_ERROR_202_CANCELLED_UNFILLED_REMAINDER",
+                    "terminal_order_status_observed": False,
+                    "zero_fill_imputed": False})
+            else:
+                unsettled.append(sent["req_id"])
     return {"book": book, "fees_complete": fees_complete, "fee_missing_execution_ids": fee_missing,
             "fee_conflicting_execution_ids": sorted(fee_conflicts),
             "fees_known_by_currency": {c: amount(v) for c, v in sorted(fee_currencies.items())},
             "settlement_pending_command_ids": unsettled, "executions": executions,
+            "broker_cancel_witnesses_total": len(broker_cancel_witnesses),
+            "broker_cancel_witnesses": broker_cancel_witnesses[:128],
             "command_count": len(sends), "execution_count": len(fills),
             "status_subject_witnesses_total": len(recovered_status_witnesses),
             "status_subject_witnesses": [recovered_status_witnesses[k] for k in sorted(recovered_status_witnesses)][:128]}
