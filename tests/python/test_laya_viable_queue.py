@@ -75,7 +75,7 @@ class QueuePreflightTests(unittest.TestCase):
    def step(self):return 'ACTUAL_ADMISSION_PATH'
   self.assertEqual(guarded_trainer_class(Base,gate)().step(),'ACTUAL_ADMISSION_PATH')
   gate.acquire.assert_called_once();gate.release.assert_called_once()
- def test_viable_queue_skips_reward_and_quote_rebuild(self):
+ def test_viable_queue_syncs_rewards_but_skips_quote_rebuild(self):
   from unittest.mock import patch
   from laya_cell.resident import Supervisor
   from laya_cell.resident_store import database
@@ -83,9 +83,9 @@ class QueuePreflightTests(unittest.TestCase):
    s=Supervisor.__new__(Supervisor);s.c={'promotion_protocol':PROTOCOL};s.root=Path(td);s.storage=None
    s.db=database(s.root/'db')
    try:
-    with patch('laya_cell.resident.config_check'),patch('laya_cell.resident.bootstrap_still_off'),patch('laya_cell.resident.inspect_storage',return_value={'admission_ready':True}),patch.object(s,'reconcile_evaluation_queue',return_value={'pending_evaluations':2,'viable_pending_evaluations':1,'pending_original_trials':2,'futile_pending_trials':1,'deferred_training_candidates':0}),patch('laya_cell.resident.rewards_current',side_effect=AssertionError('No reward rebuild')),patch('laya_cell.resident.collect',side_effect=AssertionError('No quote rebuild')):
+    with patch('laya_cell.resident.config_check'),patch('laya_cell.resident.bootstrap_still_off'),patch('laya_cell.resident.inspect_storage',return_value={'admission_ready':True}),patch.object(s,'reconcile_evaluation_queue',return_value={'pending_evaluations':2,'viable_pending_evaluations':1,'pending_original_trials':2,'futile_pending_trials':1,'deferred_training_candidates':0}),patch('laya_cell.resident.rewards_current',return_value={'at_ms':1,'reason':'NO_COMPLETE_EXECUTION_EPISODE','rewards':[],'execution_rewards':[]}) as rewards,patch('laya_cell.resident.collect',side_effect=AssertionError('No quote rebuild')):
      result=s.step()
-    self.assertEqual(result['state'],'EVALUATING_BOUNDED_CANDIDATE_QUEUE')
+    self.assertEqual(result['state'],'EVALUATING_BOUNDED_CANDIDATE_QUEUE');rewards.assert_called_once()
     self.assertEqual(s.db.execute('select count(*) from consumed_rows').fetchone()[0],0)
    finally:s.db.close()
 
@@ -109,7 +109,7 @@ class DeferredRegistrationTests(unittest.TestCase):
   from unittest.mock import patch
   with tempfile.TemporaryDirectory() as td:
    s=self.supervisor(Path(td));queue={'pending_original_trials':1,'pending_evaluations':1,'viable_pending_evaluations':0,'deferred_training_candidates':1}
-   with patch('laya_cell.resident.config_check'),patch.object(s,'reconcile_evaluation_queue',return_value=queue),patch.object(s,'write_status',side_effect=lambda **k:k):
+   with patch('laya_cell.resident.config_check'),patch('laya_cell.resident.inspect_storage',return_value={'admission_ready':True}),patch.object(s,'sync_rewards'),patch.object(s,'reconcile_evaluation_queue',return_value=queue),patch.object(s,'write_status',side_effect=lambda **k:k):
     r=s.queue_preflight()
    self.assertEqual(r['state'],'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END')
  def test_original_closure_registers_one_completed_artifact(self):
