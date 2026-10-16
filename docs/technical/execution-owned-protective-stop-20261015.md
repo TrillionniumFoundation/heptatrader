@@ -662,3 +662,33 @@ representable, and that a subsequent exhausted allocation is rejected.
 IBAPI=ON Release regression 5/5 and ASan/UBSan native order lifecycle 1/1
 passed. This is a numeric safety fix, **not** Broker-native bracket ID
 reservation, stop activation, OMS boot recovery or trading authorization.
+
+## 2026-10-16: multi-client IB order ID readiness and last-hop refusal
+
+IBKR requires a new TWS order ID to exceed IDs observed through native
+`openOrder` / `orderStatus` callbacks in multi-client/master-client sessions,
+not just the latest `nextValidId`. The existing, atomically published
+`IBNextValidOrderIdReadiness` now tracks that second monotonic high-water mark.
+The `openOrder`, `orderStatus`, and `completedOrder` EWrapper callbacks update
+it before event publication. **Only the real `nextValidId` callback can make
+order allocation ready**: older high-ID callbacks cannot mint permission to
+send. Zero/invalid IDs are ignored. An observed `INT32_MAX` exhausts the
+native ID space instead of wrapping or reusing an existing ID. Reconnect
+resets both independent observations.
+
+The existing adapter recomputes the effective floor immediately before its
+Broker mutation call; the native `PlaceOrderWithTimeInForce` implementation
+also rechecks at the final transport boundary. A request overtaken by a
+newer native callback is locally refused **without SDK placeOrder**.
+Pocket4 fake-Broker test first reproduced a later broker floor (41→900)
+allowing a stale locally allocated order, then proved zero Broker sends
+following the fix. A second test verifies that a higher foreign order ID
+arriving before `nextValidId` cannot make the connection READY. Includes a
+multi-threaded high-water regression test and signed-32-bit exhaustion.
+
+This closes one allocation race window, **not** global atomicity against
+another client that sends concurrently after the last local check, and
+not the missing durable Execution-Owner parent+child Broker reservation.
+No Broker credentials, strategy risk policy, running services or positions
+were changed by this source-only patch. The native sender is not connected
+to the research H1 bracket or authorized to submit STOP/OCA pairs.

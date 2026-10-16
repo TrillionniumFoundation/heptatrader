@@ -1562,6 +1562,14 @@ public:
         }
         od.orderRef = o.orderRef;
 
+        // Last transport-side observation before the SDK placeOrder call.
+        // Independent EWrapper callbacks may raise this floor on the reader
+        // thread even while the adapter's mutex is held by the sender.
+        const long brokerFloor=m_nextValidOrderId.Get();
+        if (brokerFloor <= 0 || localOrderId < brokerFloor ||
+            localOrderId > static_cast<long>(
+                std::numeric_limits<std::int32_t>::max()))
+            return rejectLocal("IB_LOCAL_REJECT_ORDER_ID_STALE_BEFORE_EGRESS", 32110);
         Trace(BuildOrderTrace(localOrderId, ct, od));
         m_orderQuantities.Record(localOrderId, c, o);
         m_cancelNoticeWitness.Record(localOrderId, o);
@@ -1680,6 +1688,9 @@ public:
                      Decimal remaining, double avgFillPrice, int permId, int, double,
                      int clientId, const std::string& whyHeld,
                      double mktCapPrice) override {
+        // Broker-native orderStatus can carry an ID from another API client.
+        // Always update the highest observed TWS order ID before publication.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(static_cast<long>(oid));
         const double filledQuantity = DecimalFunctions::decimalToDouble(filled);
         const double remainingQuantity = DecimalFunctions::decimalToDouble(remaining);
         m_orderQuantities.ObserveOrderStatus(clientId, static_cast<long>(oid),
@@ -1771,6 +1782,8 @@ public:
         PushEvent(std::move(event));
     }
     void openOrder(OrderId orderId, const Contract& contract, const Order& order, const OrderState& state) override {
+        // Order IDs echoed by other clients also constrain our next send.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(static_cast<long>(orderId));
         IBEvent event = MakeIBEvent(
             IBEventType::OpenOrder,
             static_cast<long long>(orderId),
@@ -1793,6 +1806,10 @@ public:
     }
     void completedOrder(const Contract& contract, const Order& order,
                         const OrderState& state) override {
+        // CompletedOrder is additional native evidence, never an exemption
+        // from the strictly increasing broker order-ID constraint.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(
+            static_cast<long>(order.orderId));
         IBEvent event = MakeIBEvent(
             IBEventType::CompletedOrder,
             static_cast<long long>(order.orderId),

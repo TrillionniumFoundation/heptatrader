@@ -7,6 +7,8 @@
 #include <cstring>
 #include <ctime>
 #include <exception>
+#include <cstdint>
+#include <limits>
 namespace {
 std::string EscapeJson(const std::string& value) {
     std::string escaped;
@@ -380,6 +382,15 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
     const IBOrderRiskBaseline* baseline,
     long* outOrderId,
     const std::chrono::steady_clock::time_point& startedAt, bool* sendAttempted) {
+    // The SDK may receive another client's openOrder/orderStatus or a newer
+    // nextValidId after this adapter allocated orderId. Recheck the live
+    // composite Broker floor as late as possible; never send an overtaken ID.
+    // This is NOT a Broker-side atomic pair reservation or a stop permit.
+    const long brokerFloor = GetLastValidOrderId();
+    if (brokerFloor <= 0 || orderId < brokerFloor || orderId >
+            static_cast<long>(std::numeric_limits<std::int32_t>::max()))
+        return RejectOrder(contract, startedAt,
+                           "IB_NATIVE_ORDER_ID_STALE_BEFORE_SEND", std::string());
     if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_PLACE_MUTATION"))
         return false;
     if (sendAttempted) *sendAttempted = true;

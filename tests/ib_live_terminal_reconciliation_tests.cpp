@@ -1185,7 +1185,34 @@ void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
        nearLimit.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
         throw std::runtime_error("NATIVE_ORDER_ID_EXHAUSTION_ALLOWED_SECOND_SEND");
 }
+void TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend() {
+    Fixture f;
+    IBContractLite contract;
+    contract.symbol="EUR"; contract.secType="CASH";
+    contract.exchange="IDEALPRO"; contract.currency="USD";
+    IBOrderLite order;
+    order.action="BUY"; order.orderType="LMT";
+    order.lmtPrice=1.18; order.totalQuantity=1;
+    bool finalCheckWasCalled=false;
+    f.adapter.SetPrePlaceOrderSendCheck(
+        [&](const IBFinalOrderSendContext*, const IBContractLite&,
+            const IBOrderLite&, std::string*) {
+            finalCheckWasCalled=true;
+            // New native nextValidId or an observed foreign openOrder can
+            // raise the floor after adapter allocated the earlier local ID.
+            f.broker->nextValidOrderId=900;
+            return true;
+        });
+    long assigned=-1;
+    const bool sent=f.adapter.PlaceOrderCorrelated(contract,order,
+        "hepta-v1-sha256:"+std::string(64,'e'),&assigned);
+    if(!finalCheckWasCalled || sent || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!=
+           "IB_NATIVE_ORDER_ID_STALE_BEFORE_SEND")
+        throw std::runtime_error("FOREIGN_BROKER_ORDER_FLOOR_OVERRAN_RESERVED_ID");
+}
 int main() {
+    TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();

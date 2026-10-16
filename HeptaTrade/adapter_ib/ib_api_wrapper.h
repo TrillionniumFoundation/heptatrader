@@ -34,8 +34,21 @@ struct IBConnectParams {
 // previous Broker order set is empty or that a bracket may be submitted.
 class IBNextValidOrderIdReadiness final {
 public:
-    void Reset() noexcept { m_floor.store(-1, std::memory_order_release); }
-    long Get() const noexcept { return m_floor.load(std::memory_order_acquire); }
+    void Reset() noexcept {
+        m_floor.store(-1, std::memory_order_release);
+        m_maxObservedOrderId.store(-1, std::memory_order_release);
+    }
+    long Get() const noexcept {
+        // Only a real nextValidId establishes readiness. A high order ID
+        // observed via openOrder/orderStatus may RAISE, not mint, that floor.
+        const long granted = m_floor.load(std::memory_order_acquire);
+        if (granted <= 0) return -1;
+        const long seen = m_maxObservedOrderId.load(std::memory_order_acquire);
+        const long limit = static_cast<long>(
+            std::numeric_limits<std::int32_t>::max());
+        if (seen >= limit) return -1; // no positive int32 next ID remains
+        return seen >= granted ? seen + 1 : granted;
+    }
     bool Observe(long candidate) noexcept {
         if (candidate <= 0 ||
             candidate > static_cast<long>(std::numeric_limits<std::int32_t>::max()))
@@ -48,8 +61,24 @@ public:
         }
         return false;
     }
+    // IBKR multi-client order rule: a native openOrder/orderStatus callback
+    // may reveal a higher ID from another client or a reqAllOpenOrders
+    // snapshot. Observe it independently; never confuse it with nextValidId.
+    bool ObserveUsedOrderId(long usedOrderId) noexcept {
+        if (usedOrderId <= 0 || usedOrderId > static_cast<long>(
+                std::numeric_limits<std::int32_t>::max()))
+            return false;
+        long current = m_maxObservedOrderId.load(std::memory_order_acquire);
+        while (usedOrderId > current) {
+            if (m_maxObservedOrderId.compare_exchange_weak(
+                    current, usedOrderId, std::memory_order_acq_rel,
+                    std::memory_order_acquire)) return true;
+        }
+        return false;
+    }
 private:
     std::atomic<long> m_floor{-1};
+    std::atomic<long> m_maxObservedOrderId{-1};
 };
 
 // The SDK's numeric order id is client-scoped. Keep the quantity used for
