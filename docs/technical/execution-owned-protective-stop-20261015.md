@@ -565,3 +565,75 @@ accessor throwing an exception rejects native ID reservation with
 H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION. No ID is consumed by that
 failed read, no OMS write is attempted and no Broker order is sent.
 This adds no production send authority or independent stop protection.
+
+## Original native IB order-ID restart high-watermark — isolated audit
+
+The existing Adapter's research H1 pair lease consumes two native IDs under
+the normal API mutex before a durable OMS callback. This gives in-process
+exclusion, but the broker's nextValidId after TWS reconnect can be lower
+than *untransmitted* or UNKNOWN original group IDs. Reusing such IDs before
+exact broker/OMS reconciliation could associate a new child with the
+wrong parent.
+
+Added a strictly read-only `ib_h1_native_id_restart_floor.h` helper that
+replays the existing OMS critical `bracket_*_reserved` and
+`bracket_*_send_attempt` events, calculates the maximum observed
+native ID, and refuses malformed or orphaned reserved pairs. A future
+broker-side allocator **must** require the broker's fresh nextValidId to
+be strictly greater than this floor, and must still reconcile account-wide
+active/completed orders plus unknown transmissions before any send.
+
+This helper neither allocates IDs, mutates the live Adapter, places
+orders nor grants driver maintenance rights. No assertion of
+cross-restart Broker safety is possible from its test alone. A new
+Pocket4 native IB-enabled CTest uses an isolated real OmsJournal and
+verifies completed pair, potential child send, process restart, low/equal
+Broker nextValidId and a one-sided orphan. The test passed 1/1.
+The remaining production blocker is **wiring this independent recovery
+high-watermark into the exact Coordinator+Adapter native lease path** under
+the existing owner lock, followed by real PAPER Broker callbacks.
+
+## 2026-10-15 — Mandatory native Adapter H1 restart floor (research-only)
+
+After the H1 native-ID high-watermark audit, the existing
+`HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair` now requires
+the **original owner OmsJournal** argument; the older lease signature
+cannot silently bypass this check. While holding the same `m_apiMutex`
+as ordinary `NextOrderId` and native placement, it replays the original
+OMS **before** pre-consuming new parent and child IDs. It refuses:
+
+- A malformed H1 event, wrong PAPER/IB/EUR.USD provenance, duplicate
+  numeric native IDs, mismatched original command/group, incomplete
+  Parent/Stop pair or a child from another original request.
+- A broker `nextValidId` that is equal to or below the highest
+  persisted native H1 ID, including after an entirely NEW Adapter
+  instance is created with a reset in-memory order-ID seed.
+- ANY unreconciled `bracket_*_send_attempt`, even when the broker
+  suggests a higher order ID. Such an original order remains UNKNOWN:
+  no automatic resend or synthetic terminal/cancellation is created.
+
+The original adapter's ledger-persistence callback still runs only
+*after* these checks. Failed/throwing persistence consumes the
+in-memory ID pair rather than reusing it for an uncertain command.
+A positive read-only lease does not grant actual `placeOrder`,
+cancel, stop, flatten or Driver-stop authority.
+
+Actual isolated Pocket4 IB-API-enabled native Release build:
+13/13 targeted CTests passed, including 43.49-second full runtime
+recovery, native H1 pair, actual OMS journal, Coordinator owner fencing,
+broker callback/projection, IB PAPER profile and live-terminal
+reconciliation. SDK-disabled Execution compiled and 2/2 targeted
+tests passed. The high-watermark test was also compiled with C++11
+warnings-as-errors and executed under ASan/UBSan. A fresh mock Adapter
+process reopens the same OMS and rejects reused 41/42 before
+authorizing 43/44. No Broker orders were sent or cancelled.
+
+**Still not production-ready:** `GetLastValidOrderId()` is a cached
+API-observed value, not itself proof of a *currently complete*
+account-wide Broker active/terminal order inventory. There is not yet
+a reconnect-safe authority lease binding the exact production
+Coordinator/Adapter to all historical OMS generations and the Broker's
+fresh callbacks. Unsent TWS children, unknown submission, partial
+fills, OCA cancellation and actual stop continuity across Driver
+death must be positively tested on isolated PAPER, with original
+`permId` correlation, before any production activation.

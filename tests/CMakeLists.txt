@@ -241,6 +241,12 @@ target_link_libraries(hepta_execution_coordinator_h1_recovery_fence_tests PRIVAT
     hepta_execution_core hepta_ib_order_state OpenSSL::Crypto)
 hepta_register_core_test(hepta_execution_coordinator_h1_recovery_fence_tests)
 
+# Research-only OMS native-ID restart high-watermark (no Broker sender).
+add_executable(hepta_ib_h1_native_id_restart_floor_tests
+    ib_h1_native_id_restart_floor_tests.cpp)
+target_link_libraries(hepta_ib_h1_native_id_restart_floor_tests PRIVATE hepta_oms_journal)
+hepta_register_core_test(hepta_ib_h1_native_id_restart_floor_tests)
+
 # Simulated native parent transmit=false / child transmit=true bracket group.
 # Still no broker transport or maintenance authority in this research target.
 add_executable(hepta_execution_bracket_shadow_tests

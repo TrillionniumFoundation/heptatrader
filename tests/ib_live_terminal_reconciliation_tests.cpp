@@ -1160,40 +1160,43 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     assert(epoch>0);
     long parent=-1,child=-1;
     std::string reason;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU-other",epoch,
-        [](long,long){return true;},parent,child,reason));
-    assert(parent==-1&&child==-1&&f.broker->places==0);
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch+1,
-        [](long,long){return true;},parent,child,reason));
-    assert(parent==-1&&child==-1);
-    f.broker->nextValidFault=true;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
-        [](long,long){return true;},parent,child,reason));
-    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
-    f.broker->nextValidFault=false;
-    f.broker->validOrderId=0;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
-        [](long,long){return true;},parent,child,reason));
-    f.broker->validOrderId=std::numeric_limits<int>::max();
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
-        [](long,long){return true;},parent,child,reason));
-    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
-    f.broker->validOrderId=41;
     std::string temporary="/tmp/hepta-adapter-h1-lease-XXXXXX";
     std::vector<char> file(temporary.begin(),temporary.end());file.push_back('\0');
     const int fd=::mkstemp(file.data());assert(fd>=0);::close(fd);
     assert(::unlink(file.data())==0);
     OmsJournal j;assert(j.Init(file.data()));
-    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU-other",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1&&f.broker->places==0);
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch+1,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1);
+    f.broker->nextValidFault=true;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
+    f.broker->nextValidFault=false;
+    f.broker->validOrderId=0;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    f.broker->validOrderId=std::numeric_limits<int>::max();
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
+    f.broker->validOrderId=41;
+    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
         [&](long p,long c){
             OmsJournalEvent a,b;
             a.eventType="bracket_parent_reserved";a.orderId=p;
             a.reqId="synthetic-owner-001";a.clientReqId=a.reqId;
             a.account="DU123";a.executionDomain="PAPER";
-            a.source="SHADOW_NO_BROKER_EGRESS";
+            a.venue="IB";a.source="SHADOW_NO_BROKER_EGRESS";
             a.eventId="parent-001";a.requestHash="hash-group-001";
+            a.instrument="EUR.USD";a.side="BUY";a.qty=1000;a.price=1.1205;
+            a.venueCorrelationId="parent-H1-original";
             b=a;b.eventType="bracket_child_reserved";
             b.orderId=c;b.eventId="child-001";
+            b.side="SELL";b.price=1.11825;b.venueCorrelationId="stop-H1-original";
             return j.AppendDurablePair(a,b)==OmsJournal::DurablePairResult::Committed;
         },parent,child,reason));
     assert(parent==41&&child==42&&f.broker->places==0);
@@ -1203,24 +1206,108 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
         assert((count==1 && e.orderId==41) ||
                (count==2 && e.orderId==42));
     })==2 && count==2);
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    // New adapter process may see Broker nextValidId lower than its
+    // original OMS reservation. Must refuse BEFORE invoking the callback.
+    bool called=false;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+        [&](long,long){called=true;return true;},parent,child,reason));
+    assert(!called &&
+           reason=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
+    f.broker->validOrderId=43;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
         [](long,long){return false;},parent,child,reason));
     assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN" &&
            parent==-1 && child==-1);
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
         [](long,long)->bool{throw std::runtime_error("uncertain persistence");},
         parent,child,reason));
     assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN" &&
            parent==-1 && child==-1);
-    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
         [](long p,long c){return p==47&&c==48;},
         parent,child,reason));
     assert(parent==47&&child==48&&f.broker->places==0);
+    // A durable potentially-sent child cannot be reissued just because
+    // Broker nextValidId advanced past all native IDs.
+    OmsJournalEvent possible;
+    assert(j.Replay([&](const OmsJournalEvent& e){
+        if(e.eventType=="bracket_child_reserved")possible=e;
+    })==2);
+    possible.eventType="bracket_child_send_attempt";
+    possible.status="POSSIBLY_SENT";
+    assert(j.AppendDurableCritical(possible));
+    f.broker->validOrderId=60;
+    called=false;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+        [&](long,long){called=true;return true;},parent,child,reason));
+    assert(!called &&
+           reason=="H1_NATIVE_BROKER_SEND_UNKNOWN_REQUIRES_RECONCILIATION");
     f.adapter.Disconnect();
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(f.broker->places==0);
     assert(::unlink(file.data())==0);
+}
+
+void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
+    // Distinct IB Adapter/SDK instances and distinct OmsJournal readers, but
+    // the exact SAME durable original-account OMS path. No Broker writes.
+    std::string path="/tmp/hepta-native-id-restart-adapter-XXXXXX";
+    std::vector<char> chars(path.begin(),path.end());
+    chars.push_back('\0');
+    int fd=::mkstemp(chars.data());assert(fd>=0);::close(fd);
+    assert(::unlink(chars.data())==0);
+    auto durableGroup=[](OmsJournal& journal, const char* original,
+                         const char* group, long parent, long child) {
+        OmsJournalEvent first;
+        first.eventType="bracket_parent_reserved";
+        first.reqId=original;first.clientReqId=first.reqId;
+        first.account="DU123";first.executionDomain="PAPER";
+        first.instrument="EUR.USD";first.venue="IB";
+        first.source="SHADOW_NO_BROKER_EGRESS";
+        first.side="BUY";first.qty=1000;first.price=1.1205;
+        first.requestHash=group;first.orderId=parent;
+        first.eventId="parent-01";first.venueCorrelationId="parent-h1";
+        auto second=first;
+        second.eventType="bracket_child_reserved";
+        second.orderId=child;second.eventId="child-01";
+        second.side="SELL";second.price=1.11825;
+        second.venueCorrelationId="child-h1";
+        return journal.AppendDurablePair(first,second)==
+            OmsJournal::DurablePairResult::Committed;
+    };
+    {
+        OmsJournal journal;assert(journal.Init(chars.data()));
+        Fixture old;
+        const auto epoch=old.adapter.GetConnectionEpoch();
+        long p=-1,c=-1;std::string why;
+        assert(old.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+            journal,[&](long a,long b) {
+                return durableGroup(journal,"prior-command","prior-h1-group",a,b);
+            },p,c,why));
+        assert(p==41&&c==42&&old.broker->places==0);
+    }
+    {
+        OmsJournal journal;assert(journal.Init(chars.data()));
+        Fixture fresh; // Adapter local order seed reset, mock Broker still 41.
+        const auto epoch=fresh.adapter.GetConnectionEpoch();
+        long p=-1,c=-1;std::string why;bool called=false;
+        assert(fresh.broker->validOrderId==41);
+        assert(!fresh.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+            journal,[&](long,long){called=true;return true;},p,c,why));
+        assert(!called&&p==-1&&c==-1&&
+            why=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
+        fresh.broker->validOrderId=43;
+        assert(fresh.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+            journal,[&](long a,long b) {
+                return durableGroup(journal,"new-command","new-h1-group",a,b);
+            },p,c,why));
+        assert(p==43&&c==44&&fresh.broker->places==0);
+        int count=0;
+        assert(journal.Replay([&](const OmsJournalEvent&){++count;})==4);
+        assert(count==4);
+    }
+    assert(::unlink(chars.data())==0);
 }
 
 void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
@@ -1251,7 +1338,7 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
     hepta_bracket_h1::Reservation pair;
     long parent=-1,stop=-1;
     bool attempted=false;
-    assert(brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+    assert(brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,journal,
         [&](long a,long b) {
             attempted=true;
             frozen.parentOrderId=a;frozen.childOrderId=b;
@@ -1272,8 +1359,11 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
        ExecutionCoordinator fresh(journal,callbacks);
        assert(fresh.RecoverFromJournal(reason));
        assert(fresh.SessionOwnerRecoveryIngressFence(original.agentId,original.sessionId)==51);
+       // Above OMS floor, this remains a Coordinator original-command
+       // duplicate, rather than a low broker-nextValidId refusal.
+       brokerFixture.broker->validOrderId=43;
        long duplicateParent=-1,duplicateStop=-1;
-       assert(!brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+       assert(!brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,journal,
             [&](long a,long b){
                 auto wrong=frozen;wrong.parentOrderId=a;wrong.childOrderId=b;
                 return fresh.ReserveResearchH1BracketForRecoveryOnlyOwner(
@@ -1286,6 +1376,7 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
 }
 int main() {
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
+    TestResearchH1NativeLeaseAfterFreshAdapterRestart();
     TestResearchNativeIdLeaseBindsActualCoordinatorFence();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
