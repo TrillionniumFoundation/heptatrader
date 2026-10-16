@@ -692,3 +692,37 @@ not the missing durable Execution-Owner parent+child Broker reservation.
 No Broker credentials, strategy risk policy, running services or positions
 were changed by this source-only patch. The native sender is not connected
 to the research H1 bracket or authorized to submit STOP/OCA pairs.
+
+
+## 2026-10-16 — adapter-local H1 native ID pair handoff (unsent)
+
+The existing real IB Gateway adapter now exposes an **unsent, local-only**
+`ReserveResearchUnsentH1LocalIdPair` method. While holding the same
+`m_apiMutex` as ordinary order allocation, it checks the expected PAPER
+account, exact IB clientId and current connection epoch, the actual current
+`nextValidId`/observed-foreign-order composite floor, live wrapper identity,
+and the two-slot signed-int32 capacity. It burns exactly two consecutive
+local numeric IDs in the shared seed; single-ID ordinary sends cannot silently
+reuse those local numbers. No order, cancel, TWS request, or OMS journal write
+occurs in the method. A new or stale epoch, changed account/client, read-only
+or disconnected wrapper, missing Broker floor or exhausted int32 space is
+refused without producing a partial usable pair. The returned object contains
+`sendAuthorized=false` and `brokerWorkingStopProven=false` unconditionally.
+
+This is a **local ID handoff candidate, NOT a Broker reservation**. It does
+not establish that TWS has accepted those IDs, or that the Coordinator holds
+an exclusive original order group, or that the pair is durably present in the
+OMS before a future send. New higher broker IDs may arrive on the reader
+thread immediately after the local reservation; any future sender must recheck
+fresh broker floor under its actual transport lock, and treat an overtaken
+pair as unusable without blind regeneration. The current research-only
+Coordinator path still takes a frozen pair from its caller and does not invoke
+this allocator. It must not be connected to the active PAPER strategy until a
+single Owner-bound durable group handoff, failure recovery, native broker
+working stop and OCA close are independently proved.
+
+Native mock-Broker tests validate account/client/epoch and read-only refusals,
+shared ID cursor with ordinary mock sends, Broker floor advancement,
+reconnect invalidation, missing `nextValidId`, no native send during the
+reservation itself, and the last two valid signed-int32 order IDs. The test
+`Broker` is an in-process fake; it is **not** IBKR PAPER acceptance evidence.

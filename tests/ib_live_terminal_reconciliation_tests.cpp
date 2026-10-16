@@ -88,6 +88,7 @@ public:
     std::deque<IBEvent> events;
     bool Connect(const IBConnectParams& p) override {connectBudgetMs=p.handshakeTimeoutMs;connected=true;return true;}
     void SetConnectionEpoch(std::uint64_t value) override {epoch=value;}
+    std::uint64_t GetConnectionEpoch() const override {return epoch;}
     void Disconnect() override {connected=false;}
     bool IsConnected() const override {return connected;}
     const char* GetStatusString() const override {return "fixture";}
@@ -1211,7 +1212,108 @@ void TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend() {
            "IB_NATIVE_ORDER_ID_STALE_BEFORE_SEND")
         throw std::runtime_error("FOREIGN_BROKER_ORDER_FLOOR_OVERRAN_RESERVED_ID");
 }
+void TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress() {
+    Fixture f;
+    const auto epoch = f.adapter.GetConnectionEpoch();
+    IBResearchH1LocalIdPair pair;
+    std::string reason;
+    auto reserve=[&](const std::string& account, int clientId,
+                     std::uint64_t connectionEpoch) {
+        return f.adapter.ReserveResearchUnsentH1LocalIdPair(
+            account,clientId,connectionEpoch,pair,reason);
+    };
+    if (reserve("DU123",73,0) || pair.parentOrderId!=-1 ||
+        reserve("DU123",74,epoch) || pair.parentOrderId!=-1 ||
+        reserve("DU-FOREIGN",73,epoch) || pair.parentOrderId!=-1)
+        throw std::runtime_error("H1_LOCAL_PAIR_ACCEPTED_FOREIGN_OWNER_OR_EPOCH");
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=41 ||
+        pair.childOrderId!=42 || pair.brokerClientId!=73 ||
+        pair.connectionEpoch!=epoch || pair.paperAccount!="DU123" ||
+        pair.sendAuthorized || pair.brokerWorkingStopProven ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MINTED_NATIVE_SEND_AUTHORITY");
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=43 ||
+        pair.childOrderId!=44 || f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_REUSED_ALREADY_CONSUMED_ID");
+    f.broker->nextValidOrderId=900;
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=900 ||
+        pair.childOrderId!=901 || f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_IGNORED_RAISED_BROKER_FLOOR");
+    f.broker->nextValidOrderId=0;
+    if (reserve("DU123",73,epoch) || pair.parentOrderId!=-1 ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MINTED_ID_WITHOUT_NEXTVALID");
+    f.broker->nextValidOrderId=902;
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=902 ||
+        pair.childOrderId!=903)
+        throw std::runtime_error("H1_LOCAL_PAIR_FAILED_RECOVERY_AFTER_MISSING_FLOOR");
+    f.adapter.Disconnect();
+    if (reserve("DU123",73,epoch) || pair.parentOrderId!=-1 ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_BYPASSED_DISCONNECTED_OWNER");
+    // The same local cursor must be shared with existing ordinary single-ID
+    // submits. The only Place() here is the isolated mock Broker, not IBKR.
+    Fixture mixed;
+    const auto mixEpoch=mixed.adapter.GetConnectionEpoch();
+    if (!mixed.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,mixEpoch,pair,reason) || pair.parentOrderId!=41 ||
+        pair.childOrderId!=42 || mixed.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MIXED_SOURCE_PREPARE_FAILED");
+    const long ordinaryId=mixed.Place("hepta-v1-sha256:"+std::string(64,'c'));
+    if (ordinaryId!=43 || mixed.broker->places!=1 ||
+        !mixed.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,mixEpoch,pair,reason) ||
+        pair.parentOrderId!=44 || pair.childOrderId!=45 ||
+        mixed.broker->places!=1)
+        throw std::runtime_error("H1_LOCAL_PAIR_COLLIDED_WITH_REGULAR_ORDER_ID");
+    // Reconnect invalidates any old Broker epoch. The adapter may reserve
+    // local IDs only after the fresh wrapper reports its new nextValidId.
+    Fixture reconnecting;
+    const auto oldEpoch=reconnecting.adapter.GetConnectionEpoch();
+    if (!reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,oldEpoch,pair,reason))
+        throw std::runtime_error("H1_LOCAL_PAIR_BEFORE_RECONNECT_INVALID");
+    reconnecting.adapter.Disconnect();
+    if (!reconnecting.adapter.Connect() ||
+        reconnecting.adapter.GetConnectionEpoch()<=oldEpoch)
+        throw std::runtime_error("H1_LOCAL_PAIR_NEW_EPOCH_UNAVAILABLE");
+    if (reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,oldEpoch,pair,reason) || pair.parentOrderId!=-1)
+        throw std::runtime_error("H1_LOCAL_PAIR_STALE_EPOCH_GRANTED");
+    const auto newEpoch=reconnecting.adapter.GetConnectionEpoch();
+    if (!reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,newEpoch,pair,reason) ||
+        pair.parentOrderId!=43 || pair.childOrderId!=44 ||
+        reconnecting.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_NEW_EPOCH_REUSED_OLD_ID");
+    // Read-only connected client cannot claim native mutation reservations.
+    Broker* readOnlyBroker=new Broker();
+    HeptaIBGatewayAdapter readOnlyAdapter{
+        std::unique_ptr<IIBApiWrapper>(readOnlyBroker)};
+    HeptaIBConfig readCfg;readCfg.account="DU123";readCfg.clientId=73;
+    readCfg.readOnly=true;
+    if (!readOnlyAdapter.Init(readCfg) || !readOnlyAdapter.Connect() ||
+        readOnlyAdapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,readOnlyAdapter.GetConnectionEpoch(),pair,reason) ||
+        pair.parentOrderId!=-1 || readOnlyBroker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_READ_ONLY_CLIENT_GRANTED");
+
+    Fixture exhausted;
+    auto exEpoch=exhausted.adapter.GetConnectionEpoch();
+    exhausted.broker->nextValidOrderId=2147483646L;
+    if (!exhausted.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,exEpoch,pair,reason) ||
+        pair.parentOrderId!=2147483646L || pair.childOrderId!=2147483647L ||
+        exhausted.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_REJECTED_LAST_VALID_SIGNED_IDS");
+    if (exhausted.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,exEpoch,pair,reason) || pair.parentOrderId!=-1 ||
+        exhausted.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_OVERFLOWED_SIGNED_TWS_ID");
+}
+
 int main() {
+    TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();
     TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();

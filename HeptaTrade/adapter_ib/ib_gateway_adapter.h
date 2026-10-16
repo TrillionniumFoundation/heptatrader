@@ -193,6 +193,21 @@ struct IBFinalOrderSendContext {
     std::uint64_t quoteStaleAfterMs = 0;
 };
 
+// A two-ID allocation from the current Broker-client callback floor. This
+// changes only the adapter's local numeric seed: it creates NO IB order,
+// durable OMS reservation, working stop, exit permit, or send authorization.
+// The original Execution Owner must independently bind these values to one
+// durable H1 parent+child intent before any future broker transport.
+struct IBResearchH1LocalIdPair {
+    long parentOrderId = -1;
+    long childOrderId = -1;
+    int brokerClientId = -1;
+    std::uint64_t connectionEpoch = 0;
+    std::string paperAccount;
+    bool sendAuthorized = false;
+    bool brokerWorkingStopProven = false;
+};
+
 class HeptaIBGatewayAdapter {
 public:
     HeptaIBGatewayAdapter();
@@ -215,6 +230,13 @@ public:
     bool PollOnce(int timeoutMs);
     bool TryDequeueEvent(IBEvent& outEvent);
     long GetLastValidOrderId() const;
+    // Local-only adjacent native ID reservation, under the SAME adapter
+    // send mutex and current nextValidId/foreign-openOrder floor as MKT sends.
+    // Never a broker reservation, durable order group or execution permit.
+    bool ReserveResearchUnsentH1LocalIdPair(
+        const std::string& expectedPaperAccount, int expectedClientId,
+        std::uint64_t expectedConnectionEpoch,
+        IBResearchH1LocalIdPair& out, std::string& reason);
     bool ReqAccountSummary();
     bool ReqPositions();
     // Atomically starts a coherent account+positions generation. It rejects

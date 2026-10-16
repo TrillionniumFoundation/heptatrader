@@ -1343,6 +1343,53 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
     }
 }
 
+bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
+    const std::string& expectedPaperAccount, int expectedClientId,
+    std::uint64_t expectedConnectionEpoch,
+    IBResearchH1LocalIdPair& out, std::string& reason) {
+    out = IBResearchH1LocalIdPair();
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    if (expectedConnectionEpoch == 0 ||
+        expectedConnectionEpoch != m_connectionEpoch ||
+        expectedClientId < 1 || expectedClientId != m_cfg.clientId ||
+        expectedPaperAccount != m_cfg.account ||
+        m_cfg.account.compare(0, 2, "DU") != 0 ||
+        m_cfg.account.size() < 3 || m_cfg.readOnly ||
+        !m_connected || !m_api || !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        reason = "IB_H1_LOCAL_PAIR_BROKER_OWNER_EPOCH_UNVERIFIED";
+        return false;
+    }
+    const long floor = m_api->GetLastValidOrderId();
+    const long maxId = static_cast<long>(
+        std::numeric_limits<std::int32_t>::max());
+    // A pair must consume exactly two adjacent positive IDs, never wrap
+    // TWS signed int32, and never mint a pair before actual nextValidId.
+    if (floor <= 0 || floor >= maxId ||
+        m_localOrderSeed <= 0 || m_localOrderSeed >= maxId) {
+        reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_FLOOR_UNAVAILABLE";
+        return false;
+    }
+    const long first = std::max(floor, m_localOrderSeed);
+    if (first >= maxId) {
+        reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_EXHAUSTED";
+        return false;
+    }
+    // This changes ONLY our local allocation cursor. The next ordinary
+    // order follows the pair and no TWS socket or OMS writes occur here.
+    m_localOrderSeed = first + 2;
+    out.parentOrderId = first;
+    out.childOrderId = first + 1;
+    out.brokerClientId = expectedClientId;
+    out.connectionEpoch = expectedConnectionEpoch;
+    out.paperAccount = expectedPaperAccount;
+    out.sendAuthorized = false;
+    out.brokerWorkingStopProven = false;
+    reason.clear();
+    return true;
+}
+
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     const long ibOrderId = GetLastValidOrderId();
