@@ -443,6 +443,68 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
             raise EvidenceError("BROKER_CANCEL_202_TIME_OR_EPOCH_INVALID")
         broker_cancel_202.setdefault(sent["req_id"], []).append(event)
 
+    # Independent native Broker completedOrder(Filled) callbacks deliberately
+    # omit their connection-scoped numeric order ID (order_id=0). The original
+    # coordinator's reconciled-terminal event binds that same venue correlation
+    # back to the durable original command/order identity. Neither event by
+    # itself proves economic completion: require BOTH plus exact same-epoch
+    # full-subject execDetails, never derive a fill from an order ID or owner
+    # assertion alone. This is read-only accounting; it issues no orders.
+    completed_by_correlation: dict[str, list[dict]] = {}
+    owner_terminal_by_correlation: dict[str, list[dict]] = {}
+    for event in events:
+        kind = event.get("event")
+        if kind not in ("broker_completed_order", "order_owner_reconciled_terminal"):
+            continue
+        correlation = event.get("venue_correlation_id")
+        sent = by_correlation.get(correlation)
+        if sent is None:
+            continue
+        if kind == "broker_completed_order":
+            if (event.get("source") != "ib-api-callback" or
+                    event.get("broker_callback_type") != "completedOrder" or
+                    event.get("status") != "Filled" or
+                    event.get("risk_code") != "IB_FILLED_ECONOMIC_EVIDENCE_REQUIRED" or
+                    event.get("broker_error_code") != 0 or
+                    # Native completedOrder omits subject and carries a
+                    # synthetic zero client ID and zero numeric order ID.
+                    # Full account+instrument+side+client identity MUST come
+                    # from same-epoch original execDetails, not this callback.
+                    event.get("broker_client_id") != 0 or
+                    event.get("order_id") != 0 or
+                    event.get("account") != period["account"] or
+                    event.get("execution_domain") != "PAPER" or
+                    event.get("instrument") not in (None, "") or
+                    event.get("side") not in (None, "") or
+                    event.get("req_id") not in (None, "", sent["req_id"]) or
+                    event.get("trace_id") not in (None, "", owner["session_id"]) or
+                    not isinstance(event.get("broker_service_epoch"), str) or
+                    not event.get("broker_service_epoch") or
+                    not positive_int(event.get("broker_connection_epoch")) or
+                    not positive_int(event.get("ts_ms")) or
+                    not sent["ts_ms"] <= event["ts_ms"] <= now_ms):
+                continue
+            completed_by_correlation.setdefault(correlation, []).append(event)
+        else:
+            if (event.get("source") != "agent.tool:" + owner["agent_id"] or
+                    event.get("status") != "terminal" or
+                    event.get("risk_code") != "ORDER_OWNER_RECONCILED_TERMINAL" or
+                    event.get("account") != period["account"] or
+                    event.get("execution_domain") != "PAPER" or
+                    event.get("instrument") != instrument or
+                    side(event.get("side")) != side(sent["side"]) or
+                    event.get("trace_id") != owner["session_id"] or
+                    event.get("order_id") != sent["order_id"] or
+                    # The native owner reconciliation is a NEW read-only
+                    # control request, not the original placement command.
+                    # Its own request identity must be internally paired.
+                    not isinstance(event.get("req_id"), str) or
+                    not event.get("req_id") or
+                    event.get("client_req_id") != event.get("req_id") or
+                    not positive_int(event.get("ts_ms")) or
+                    not sent["ts_ms"] <= event["ts_ms"] <= now_ms):
+                continue
+            owner_terminal_by_correlation.setdefault(correlation, []).append(event)
     fee_missing = sorted(set(fills) - fees.keys())
     fee_currencies: dict[str, Decimal] = {}
     for eid, (fee, currency) in fees.items():
@@ -454,6 +516,7 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                 cost=number(opening["opening_mark"]) if number(opening["opening_quantity"]) else ZERO)
     unsettled: list[str] = []
     broker_cancel_witnesses = []
+    owner_terminal_witnesses = []
     executions = []
     for sent in sorted(sends.values(), key=lambda e: (e["ts_ms"], e["req_id"])):
         points = sorted((f for f in fills.values() if f.command == sent["req_id"]), key=lambda f: f.cumulative)
@@ -524,13 +587,53 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                     "terminal_order_status_observed": False,
                     "zero_fill_imputed": False})
             else:
-                unsettled.append(sent["req_id"])
+                # A native owner reconciliation may be proven by the Broker's
+                # later completedOrder(Filled) and full-subject execution in
+                # the SAME service+connection epoch. CompletedOrder order_id=0
+                # does not inherit the numeric order ID; the original owner
+                # terminal binds correlation+order ID independently.
+                corr = sent["venue_correlation_id"]
+                proof = None
+                for owner_event in owner_terminal_by_correlation.get(corr, []):
+                    if any(e["ts_ms"] > owner_event["ts_ms"] and
+                           e.get("status") not in TERMINALS
+                           for e in statuses[sent["req_id"]]):
+                        continue
+                    for completed in completed_by_correlation.get(corr, []):
+                        epoch = (completed["broker_service_epoch"],
+                                 completed["broker_connection_epoch"])
+                        if (completed["ts_ms"] > owner_event["ts_ms"] or
+                                not any(epoch in f.epochs for f in points)):
+                            continue
+                        proof = (owner_event, completed, epoch)
+                        break
+                    if proof is not None:
+                        break
+                if proof is None:
+                    unsettled.append(sent["req_id"])
+                else:
+                    owner_event, completed, epoch = proof
+                    owner_terminal_witnesses.append({
+                        "command_id": sent["req_id"],
+                        "original_order_id": sent["order_id"],
+                        "venue_correlation_id": corr,
+                        "native_owner_terminal_at_ms": owner_event["ts_ms"],
+                        "broker_completed_at_ms": completed["ts_ms"],
+                        "broker_service_epoch": epoch[0],
+                        "broker_connection_epoch": epoch[1],
+                        "original_execution_ids": [f.execution_id for f in points],
+                        "basis": "NATIVE_OWNER_RECONCILED_AND_BROKER_COMPLETED_FILLED_SAME_EPOCH_EXEC_DETAILS",
+                        "completed_order_numeric_id": 0,
+                        "zero_fill_imputed": False,
+                        "broker_orders_sent": 0})
     return {"book": book, "fees_complete": fees_complete, "fee_missing_execution_ids": fee_missing,
             "fee_conflicting_execution_ids": sorted(fee_conflicts),
             "fees_known_by_currency": {c: amount(v) for c, v in sorted(fee_currencies.items())},
             "settlement_pending_command_ids": unsettled, "executions": executions,
             "broker_cancel_witnesses_total": len(broker_cancel_witnesses),
             "broker_cancel_witnesses": broker_cancel_witnesses[:128],
+            "owner_terminal_witnesses_total": len(owner_terminal_witnesses),
+            "owner_terminal_witnesses": owner_terminal_witnesses[:128],
             "command_count": len(sends), "execution_count": len(fills),
             "status_subject_witnesses_total": len(recovered_status_witnesses),
             "status_subject_witnesses": [recovered_status_witnesses[k] for k in sorted(recovered_status_witnesses)][:128]}
