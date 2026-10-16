@@ -256,6 +256,58 @@ static void SubmittedH1EchoAfterDurablePotentialSends() {
             "unrelated historical send improperly blocks exact original native echo");
     Require(::unlink(tmp.data())==0,"clean test OMS");
 }
+static void NativeEchoAfterProcessRestartCannotMintAnotherSend() {
+    using namespace hepta_native_bracket_projection;
+    const auto f=Frozen();std::string why;
+    BoundRefs refs;Require(BuildFrozenRefs(f,refs,why),"restart H1 identities absent");
+    std::string pattern="/tmp/hepta-h1-reopen-XXXXXX";
+    std::vector<char> tmp(pattern.begin(),pattern.end());tmp.push_back('\0');
+    const int fd=::mkstemp(tmp.data());Require(fd>=0,"create restart ledger");
+    ::close(fd);Require(::unlink(tmp.data())==0,"prepare restart ledger");
+    {
+        OmsJournal first;
+        Require(first.Init(tmp.data()),"initial restart OMS open");
+        Reservation original;
+        Require(ReservePair(first,f,original,why),"restart pair not fsynced");
+        Require(MarkPotentialSend(first,original,false,why),"restart parent marker not durable");
+        Require(MarkPotentialSend(first,original,true,why),"restart child marker not durable");
+        Require(!original.sendAuthorized&&!original.driverStopAllowed,
+                "durable send intents already minted risk authority");
+    }
+    {
+        OmsJournal reopened;
+        Require(reopened.Init(tmp.data()),"restart OMS re-open refused");
+        std::vector<OmsJournalEvent> rows;
+        Require(reopened.Replay([&](const OmsJournalEvent& e){
+                    rows.push_back(e);})==4,
+                "restart discarded original parent/child send markers");
+        Reservation generic;
+        Require(!ConfirmReplay(rows,f,generic,why)&&generic.uncertain,
+                "restart incorrectly made uncertain Broker sends retryable");
+        const auto epoch=f.connectionEpoch+1;
+        auto broker=ExactNativeH1OpenOrder(f,refs);
+        broker.connectionEpoch=epoch;
+        broker.queueIngressMonotonicNs+=1000;
+        auto receipt=OriginalCallbackRecord(f);
+        receipt.brokerConnectionEpoch=epoch;
+        Require(ProjectFrozenH1WorkingStop(broker,f,rows,receipt,why)==
+                    Result::WorkingWitnessCandidate &&
+                receipt.brokerBracket.version==2 &&
+                receipt.brokerBracket.permanentOrderId==broker.nativeOrder.permanentId,
+                "restart cannot associate same original H1 with fresh Broker epoch");
+        Require(reopened.AppendDurableCritical(receipt),
+                "recovered candidate callback not durably recorded");
+        std::vector<OmsJournalEvent> later;
+        Require(reopened.Replay([&](const OmsJournalEvent& e){
+                    later.push_back(e);})==5 &&
+                later.back().brokerBracket.version==2 &&
+                later.back().brokerBracket.permanentOrderId==broker.nativeOrder.permanentId,
+                "new-epoch Broker permanent ID lost in durable OMS replay");
+        Require(!generic.sendAuthorized&&!generic.driverStopAllowed,
+                "recovered H1 observation silently permitted Broker resend or driver stop");
+    }
+    Require(::unlink(tmp.data())==0,"restart test ledger cleanup");
+}
 int main(){
   try {
     const auto f=Frozen();BoundRefs refs;std::string why;
@@ -277,6 +329,7 @@ int main(){
     Require(!malformed.ValidShape(),"H1 bypassed legacy v1 marker");
     ExactOriginalH1CallbackAndDurableOms();
     SubmittedH1EchoAfterDurablePotentialSends();
+    NativeEchoAfterProcessRestartCannotMintAnotherSend();
     std::cout<<"ib_native_h1_callback=PASS\n";return 0;
   } catch(const std::exception& e){
     std::cerr<<"FAIL "<<e.what()<<'\n';return 1;
