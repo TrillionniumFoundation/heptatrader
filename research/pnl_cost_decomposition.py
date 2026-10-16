@@ -131,6 +131,69 @@ def summary(episodes):
             "timed_episode_count": len(durations)}
 
 
+def duration_side_breakdown(episodes):
+    """Descriptive CLOSED-episode stratification; holding time is known only after exit.
+
+    Original-send to original-send duration is not execution latency or a
+    prospective trading feature. A bucket's post-hoc PnL never licenses a
+    new entry policy, model gradient, or selective backtest admission.
+    """
+    import math
+    bands = ("LT_5MIN", "5_TO_15MIN", "15_TO_60MIN", "GE_60MIN", "UNKNOWN")
+    groups = defaultdict(list)
+    for episode in episodes:
+        side = episode.get("opening_side")
+        if side not in ("BUY", "SELL"):
+            raise ValueError("EPISODE_UNKNOWN_OPENING_SIDE")
+        duration = episode.get("send_to_send_seconds")
+        if duration is None:
+            band = "UNKNOWN"
+        elif type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
+            raise ValueError("EPISODE_INVALID_ORIGINAL_SEND_DURATION")
+        elif duration < 300:
+            band = "LT_5MIN"
+        elif duration < 900:
+            band = "5_TO_15MIN"
+        elif duration < 3600:
+            band = "15_TO_60MIN"
+        else:
+            band = "GE_60MIN"
+        gross = decimal(episode["gross_usd"])
+        fees = decimal(episode["commissions_usd"])
+        net = decimal(episode["net_usd"])
+        if (not gross.is_finite() or not fees.is_finite() or
+                not net.is_finite() or fees < 0 or gross - fees != net):
+            raise ValueError("EPISODE_UNRECONCILED_NET")
+        groups[(side, band)].append((gross, fees, net))
+    output = {}
+    for (side, band), rows in sorted(groups.items()):
+        sums = [sum((r[k] for r in rows), ZERO) for k in range(3)]
+        key = side + ":" + band
+        output[key] = {
+            "closed_roundtrips": len(rows),
+            "gross_usd": text(sums[0]),
+            "reported_commissions_usd": text(sums[1]),
+            "net_usd": text(sums[2]),
+            "net_positive_roundtrips": sum(r[2] > ZERO for r in rows),
+            "gross_positive_but_net_nonpositive": sum(
+                r[0] > ZERO and r[2] <= ZERO for r in rows),
+        }
+    if (sum((x["closed_roundtrips"] for x in output.values()), 0) != len(episodes) or
+            any(sum((decimal(v[k]) for v in output.values()), ZERO) !=
+                sum((decimal(e[src]) for e in episodes), ZERO)
+                for k, src in (("gross_usd", "gross_usd"),
+                               ("reported_commissions_usd", "commissions_usd"),
+                               ("net_usd", "net_usd")))):
+        raise ValueError("EPISODE_BUCKET_RECONCILIATION_FAILED")
+    return {
+        "classification": "EX_POST_ONLY_NO_CAUSAL_POLICY_OR_PROSPECTIVE_ALPHA",
+        "duration_basis": "FIRST_TO_LAST_ORIGINAL_SEND_NOT_FILL_TIME",
+        "bands": list(bands),
+        "groups": output,
+        "reconciled_to_closed_episodes": True,
+    }
+
+
 def read_prefix(path):
     """Freeze a newline-complete prefix; never infer a transaction from a tail."""
     payload = Path(path).read_bytes()
@@ -194,7 +257,7 @@ def inspect(journal, period_path, snapshot_path=None):
             "unsettled_original_commands": len(ledger["settlement_pending_command_ids"]),
             "original_sent_time_missing_for_fills": missing_t,
             "open_episode": bool(open_episode),
-            "closed": stats}
+            "closed": stats, "duration_side": duration_side_breakdown(rounds)}
     if snapshot_path:
         s = json.loads(Path(snapshot_path).read_text())
         same_period = s.get("period_id") == period["period_id"]
