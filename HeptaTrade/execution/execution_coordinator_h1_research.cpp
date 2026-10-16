@@ -17,13 +17,18 @@ bool ExecutionCoordinator::GetDurableResearchH1NativeIdFloor(
     bool invalid=false;
     std::lock_guard<std::mutex> lock(m_mutex);
     const int rows=m_journal.Replay([&](const OmsJournalEvent& e){
-        if(e.account!=paperAccount)return;
+        // IB numeric order IDs belong to the native Broker client, NOT to
+        // one account. Original shadow journals have no attested client ID,
+        // so a changed DU account may not reuse a predecessor's unsent IDs.
+        // Burn the upper bound of every PAPER H1 reservation in this journal,
+        // regardless of the original account; malformed scope fails closed.
         const bool h1=e.eventType=="bracket_parent_reserved" ||
             e.eventType=="bracket_child_reserved" ||
             e.eventType=="bracket_parent_send_attempt" ||
             e.eventType=="bracket_child_send_attempt";
         if(!h1)return;
-        if(e.venue!="IB" || e.executionDomain!="PAPER" ||
+        if(e.account.size()<3 || e.account.compare(0,2,"DU")!=0 ||
+           e.venue!="IB" || e.executionDomain!="PAPER" ||
            e.source!="SHADOW_NO_BROKER_EGRESS" ||
            e.orderId<1 || e.orderId>maxId) {
             invalid=true;return;

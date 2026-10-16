@@ -123,6 +123,13 @@ int main(){
           identity,f,result,reason),"genuine owner token failed to reserve OMS pair");
     Must(result.replayComplete && !result.sendAuthorized &&
          !result.driverStopAllowed,"owner fence was used as Broker send permit");
+    // Unsigned original H1 IDs are Broker CLIENT-wide even if the account
+    // changed; no original journal event proves a different native client.
+    std::int64_t crossAccountFloor=0;
+    Must(coordinator.GetDurableResearchH1NativeIdFloor(
+          "DU-ANOTHER",crossAccountFloor,reason) &&
+         crossAccountFloor>f.childOrderId,
+         "H1_NATIVE_ID_REUSED_AFTER_PAPER_ACCOUNT_CHANGE");
     Must(!coordinator.ReserveResearchH1BracketForRecoveryOnlyOwner(
           identity,f,result,reason) &&
           reason=="H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND",

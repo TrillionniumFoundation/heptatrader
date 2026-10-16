@@ -754,9 +754,13 @@ used to return the same native order ID to an unrelated ordinary PAPER order
 after restart. An actual isolated Pocket4 Mock Broker/real OMS test reproduced
 `OMS_RESERVED_H1_NATIVE_IDS_REUSED_AFTER_RESTART` before the fix.
 
-The existing Execution Coordinator now reads the owner-private original OMS
-for the configured DU account and conservatively returns the maximum next
-native ID across H1 parent/child reservations and possible-send records.
+The existing Execution Coordinator reads the owner-private original OMS
+and conservatively returns the maximum next native ID across **all** valid
+PAPER/IB H1 parent/child reservations and possible-send records, including
+those recorded under another DU account. IB numeric IDs belong to the
+native Broker client, not a PAPER account; old H1 journal records do not
+attest a disjoint native client, so changing the DU account must not recycle
+an unsent original H1 order ID. Malformed non-PAPER H1 scope fails closed.
 A lone durably written parent from a crashed `AppendDurablePair` still burns
 its ID. Unexpected/malformed H1 records refuse recovery; this does NOT turn
 an uncertain Broker send into a confirmed order or zero-fill. After the
@@ -770,5 +774,11 @@ compiled and five targeted native CTests passed, including the real 43-second
 runtime restart test. The `nextValidId`, Coordinator and adapter-local
 reconciliation tests also passed ASan+UBSan (3/3). Even this durable local
 ID-floor recovery is **not** an active working stop or a safe driver shutdown.
+A Pocket4 exact-head negative test reproduced a fresh DU account receiving
+native ID 1 after a different DU account had durably reserved unsent H1 IDs
+in the same original OMS. The tested fix burns the previous numeric IDs on
+both accounts, rather than guessing that the old events came from another
+IB client; it never makes the runtime eligible for a Broker stop send.
+
 Original P0 #331 still requires real broker-side child acceptance, owner-
 correlated permanent IDs, OCA-safe ordinary close and failure recovery.
