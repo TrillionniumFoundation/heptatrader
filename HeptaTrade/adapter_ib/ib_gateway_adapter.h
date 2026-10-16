@@ -22,6 +22,10 @@
 #include "../risk/pre_trade_risk_engine.h"
 
 class OmsJournal;
+namespace hepta_bracket_h1 {
+struct FrozenBracket;
+struct BoundRefs;
+}
 
 struct HeptaIBRiskConfig {
     bool enableOrderSubmission = false;
@@ -171,6 +175,23 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
     std::string reasonCode;
 };
 
+// Read-only native Adapter sample against a frozen original H1 Stop.
+// This reports correlation/position consistency ONLY; it never proves
+// the SDK openOrder status/stop/OCA trigger or grants order-send authority.
+struct IBH1OcaAdapterScopeObservation {
+    bool originalAccountAndOrderSetConsistent = false;
+    bool nativeStopBrokerWorkingProven = false;
+    bool stopPriceTriggerProven = false;
+    bool accountSnapshotFreshnessProven = false;
+    bool maySendOrdinaryExit = false;
+    bool mayStopDriver = false;
+    long exactStopNativeOrderId = 0;
+    double brokerSignedFxPosition = 0.0;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t riskGeneration = 0;
+    std::uint64_t activeOrdersGeneration = 0;
+};
+
 struct IBPhysicalCryptoPositionObservation {
     bool complete = false;
     std::string account;
@@ -310,6 +331,14 @@ public:
     IBAuthoritativeRiskSnapshot GetAuthoritativeRiskSnapshot() const;
     IBAuthoritativeRecoveryAuditSnapshot
         GetAuthoritativeRecoveryAuditSnapshot() const;
+    // Research-only: sample real Adapter risk and account-wide active-order
+    // projections UNDER m_apiMutex. Cannot prove a working protective STOP,
+    // OCA venue acceptance, clock freshness or grant a send/stop permit.
+    bool InspectResearchH1OcaAccountScope(
+        const hepta_bracket_h1::FrozenBracket& original,
+        const hepta_bracket_h1::BoundRefs& refs,
+        IBH1OcaAdapterScopeObservation& observation,
+        std::string& reason) const;
     // Idempotently requires a broker epoch newer than the first recovery-audit
     // attempt. Runtime composition consumes newConnectionEpochRequired by
     // scheduling its in-process reconnect state machine; no service manager or
