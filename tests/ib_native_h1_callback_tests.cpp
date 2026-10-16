@@ -101,6 +101,10 @@ static void ExactOriginalH1CallbackAndDurableOms(){
     rejectEvent(wrong,"different H1 OCA accepted");
     wrong=event;wrong.nativeOrder.permanentId=0;
     rejectEvent(wrong,"missing permanent ID accepted");
+    wrong=event;wrong.nativeOrder.contractId=f.contractId+1;
+    rejectEvent(wrong,"mismatched native Contract.conId accepted");
+    wrong=event;wrong.nativeOrder.clientId=f.clientId+1;
+    rejectEvent(wrong,"mismatched native Broker client accepted");
     wrong=event;wrong.nativeOrder.parentId++;
     rejectEvent(wrong,"different parent ID accepted");
     wrong=event;wrong.nativeOrder.transmit=false;
