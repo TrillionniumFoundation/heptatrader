@@ -1637,8 +1637,36 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     nativeRefresh(originalSdk);
     assert(scope.sdkNativeStopEchoMatches &&
            scope.sdkNativeStopPermanentId==990001 &&
+           !scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==0 &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit&&!scope.mayStopDriver);
+    // Fresh SDK-native stop openOrder is not enough. Require a later bound
+    // native orderStatus with exactly zero filled and full remaining.
+    auto status=f.Event(IBEventType::OrderStatus);
+    status.id=original.childOrderId;status.key="Submitted";
+    status.value.clear();status.number=0.0;status.number2=0.0;
+    status.number3=original.quantity;
+    status.queueIngressMonotonicNs=originalSdk.queueIngressMonotonicNs+100;
+    status.nativeOrder.permanentId=originalSdk.nativeOrder.permanentId;
+    status.remainingQuantityKnown=true;
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==original.quantity &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    status.nativeOrder.permanentId+=1;
+    status.queueIngressMonotonicNs+=100;
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(!scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==0);
+    // A new account-wide refresh must also clear the prior complete-status
+    // witness, forcing new Broker callback evidence each epoch/generation.
+
     // Preserve all 1-order/position source invariants while corrupting only
     // SDK-native fields: no such callback may prove the frozen original stop.
     for(int variant=0;variant<11;++variant) {

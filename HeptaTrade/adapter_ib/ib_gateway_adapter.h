@@ -185,6 +185,9 @@ struct IBH1OcaAdapterScopeObservation {
     // admission or live-position protection signal.
     bool sdkNativeStopEchoMatches = false;
     long sdkNativeStopPermanentId = 0;
+    // Real orderStatus full-remaining corroboration; diagnostic only.
+    bool sdkNativeStopUnfilledRemainingMatches = false;
+    double sdkNativeStopRemainingQuantity = 0.0;
     bool stopPriceTriggerProven = false;
     bool accountSnapshotFreshnessProven = false;
     bool maySendOrdinaryExit = false;
@@ -540,6 +543,7 @@ private:
     // Ephemeral diagnostic SDK-native original stop echoes, collected only
     // during the exact account-wide open-order refresh and cleared on faults.
     std::map<long, IBEvent> m_h1NativeStopOpenOrderEchoes;
+    std::map<long, IBEvent> m_h1NativeStopOrderStatusEchoes;
     bool m_h1NativeStopRefreshAccountWide = false;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;

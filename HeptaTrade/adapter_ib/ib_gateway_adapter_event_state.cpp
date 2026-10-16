@@ -73,6 +73,7 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
     m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopOrderStatusEchoes.clear();
     m_h1NativeStopRefreshAccountWide = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
@@ -1384,6 +1385,25 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
             MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = decodeReason;
+        }
+    } else if (outEvent.type == IBEventType::OrderStatus &&
+               m_h1NativeStopRefreshAccountWide &&
+               outEvent.id > 0 && outEvent.id <= LONG_MAX) {
+        // Only the latest status of the exact current-epoch native stop.
+        // A later Cancelled/partial/status event replaces any earlier proof.
+        const long stopId=static_cast<long>(outEvent.id);
+        if (m_h1NativeStopOpenOrderEchoes.count(stopId)) {
+            if (outEvent.connectionEpoch==m_connectionEpoch &&
+                outEvent.brokerClientId==m_cfg.clientId &&
+                outEvent.account==m_cfg.account &&
+                outEvent.queueIngressMonotonicNs!=0) {
+                m_h1NativeStopOrderStatusEchoes[stopId]=outEvent;
+            } else {
+                m_h1NativeStopOrderStatusEchoes.erase(stopId);
+                MarkCallbackConflict(m_correlationRefreshConflict);
+                InvalidateCorrelationSnapshot(
+                    "H1_NATIVE_STOP_STATUS_SCOPE_CONFLICT");
+            }
         }
     } else if (outEvent.type == IBEventType::OpenOrderEnd && m_correlationRefreshPending) {
         m_correlationRefreshPending = false;
