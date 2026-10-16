@@ -1434,6 +1434,33 @@ void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
     if(!owner.GetDurableResearchH1NativeIdFloor(
             "DU123",replayedH1Floor,reason) || replayedH1Floor!=45)
         throw std::runtime_error("H1_RESTART_OMS_DURABLE_NATIVE_FLOOR_MISSING");
+    // Native order IDs are Broker CLIENT-scoped, not per DU account.
+    // Reconfigure the SAME client 73 to another PAPER account using a new
+    // in-process mock adapter. It may not reuse any locally reserved ID 41..44.
+    std::int64_t changedDuFloor=0;
+    if(!owner.GetDurableResearchH1NativeIdFloor(
+            "DU-ANOTHER",changedDuFloor,reason) || changedDuFloor!=45)
+        throw std::runtime_error("H1_CROSS_ACCOUNT_BROKER_CLIENT_FLOOR_REUSED");
+    Broker* changedBroker=new Broker();
+    HeptaIBGatewayAdapter changedAdapter{
+        std::unique_ptr<IIBApiWrapper>(changedBroker)};
+    HeptaIBConfig changedCfg;
+    changedCfg.account="DU-ANOTHER";
+    changedCfg.clientId=73;
+    changedCfg.readOnly=false;
+    if(!changedAdapter.Init(changedCfg) || !changedAdapter.Connect())
+        throw std::runtime_error("H1_CROSS_ACCOUNT_MOCK_ADAPTER_SETUP_FAILED");
+    const auto changedEpoch=changedAdapter.GetConnectionEpoch();
+    if(!changedAdapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU-ANOTHER",73,changedEpoch,changedDuFloor,reason))
+        throw std::runtime_error("H1_CROSS_ACCOUNT_DURABLE_ID_FLOOR_NOT_ADOPTED");
+    IBResearchH1LocalIdPair crossAccountPair;
+    if(!changedAdapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU-ANOTHER",73,changedEpoch,crossAccountPair,reason) ||
+       crossAccountPair.parentOrderId!=45 ||
+       crossAccountPair.childOrderId!=46 ||
+       crossAccountPair.sendAuthorized || changedBroker->places!=0)
+        throw std::runtime_error("H1_CROSS_ACCOUNT_NATIVE_ID_PAIR_REUSED_OR_SENT");
     if(freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
             "DU-FOREIGN",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
             replayedH1Floor,reason) ||
