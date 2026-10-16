@@ -20,6 +20,10 @@ SLOT_SPACING_MS=300000
 INPUT_GRACE_MS=60000
 MIN_OBSERVED=88
 MAX_CENSORED=2
+REQUIRED_PINS=frozenset({
+    "revised_bars","frozen_folds","model_weights","frozen_selection",
+    "frozen_protocol","feature_module","original_bridge",
+    "contract_module","runner","source_config"})
 
 
 def check_probs(p):
@@ -38,10 +42,23 @@ def check_plan(plan):
             plan.get("input_grace_ms")!=INPUT_GRACE_MS or
             plan.get("minimum_observed")!=MIN_OBSERVED or
             plan.get("maximum_censored")!=MAX_CENSORED or
+            type(plan.get("created_at_ms")) is not int or
             type(plan.get("start_ms")) is not int or
             plan["start_ms"]%SLOT_SPACING_MS!=0 or
+            not plan["created_at_ms"]+HORIZON_MS<=plan["start_ms"]<plan["created_at_ms"]+2*SLOT_SPACING_MS+1 or
+            plan.get("last_outcome_end_ms")!=plan["start_ms"]+SLOT_SPACING_MS*(SLOTS-1)+HORIZON_MS or
+            plan.get("selection_from_year_fold")!=13 or
+            plan.get("selected_family")!="tiny_mlp" or
+            type(plan.get("pinned_sources")) is not dict or
+            set(plan["pinned_sources"])!=REQUIRED_PINS or
+            any(type(v) is not str or len(v)!=64 or
+                any(c not in "0123456789abcdef" for c in v)
+                for v in plan["pinned_sources"].values()) or
             plan.get("trade_authority") is not False or
             plan.get("model_promotion") is not False or
+            plan.get("formal_laya_trial") is not False or
+            plan.get("original_asof_prior_shadow_unchanged") is not True or
+            plan.get("broker_orders_sent")!=0 or
             plan.get("historical_bar_source_is_revised") is not True or
             plan.get("live_source")!="ORIGINAL_VERIFIED_PAPER_QUOTES"):
         raise ContractError("ORIGINAL_CAMPAIGN_PLAN_CHANGED")
@@ -52,7 +69,7 @@ def check_plan(plan):
 def create_plan(now_ms, pins, prior, normalized_feature_hash):
     if type(now_ms) is not int or now_ms<=0:
         raise ContractError("ORIGINAL_CAMPAIGN_CLOCK")
-    if not isinstance(pins,dict) or len(pins)<8 or any(
+    if not isinstance(pins,dict) or set(pins)!=REQUIRED_PINS or any(
             type(v) is not str or len(v)!=64 or any(x not in "0123456789abcdef" for x in v)
             for v in pins.values()):
         raise ContractError("ORIGINAL_CAMPAIGN_PINS")
@@ -91,9 +108,17 @@ def prediction(plan,slot,feature,model_probs,now_ms,base_mid,source_pin_digest,c
             feature.get("source_kind")!="ORIGINAL_VERIFIED_PAPER_QUOTES" or
             feature.get("original_event_ticks_not_revised_ib_bars") is not True or
             feature.get("trade_authority") is not False or
-            feature.get("snapshot_id") is None or
+            type(feature.get("snapshot_id")) is not str or
+            len(feature["snapshot_id"])!=64 or
+            type(source_pin_digest) is not str or len(source_pin_digest)!=64 or
+            type(feature.get("features")) is not list or
+            len(feature["features"])!=24 or
+            any(type(v) not in (float,int) or not isfinite(v) for v in feature["features"]) or
             feature.get("future_outcome_was_not_required") is not True or
-            feature.get("asof_ms")>now_ms or feature.get("last_closed_bar_age_ms")>INPUT_GRACE_MS or
+            type(feature.get("asof_ms")) is not int or
+            not anchor<=feature["asof_ms"]<=now_ms or
+            type(feature.get("last_closed_bar_age_ms")) is not int or
+            not 0<=feature["last_closed_bar_age_ms"]<=INPUT_GRACE_MS or
             type(base_mid) not in (float,int) or not isfinite(base_mid) or base_mid<=0 or
             type(clip_count) is not int or not 0<=clip_count<=24):
         raise ContractError("ORIGINAL_CAMPAIGN_NONCAUSAL_INPUT")
@@ -123,7 +148,9 @@ def grade(plan,slot,pred,bars,receipts,now_ms,source_pin_digest):
             pred.get("model_promotion") is not False or
             pred.get("broker_orders_sent")!=0):
         raise ContractError("ORIGINAL_CAMPAIGN_PREDICTION_CHANGED")
-    if type(now_ms) is not int or now_ms<anchor+HORIZON_MS:
+    if type(now_ms) is not int:
+        raise ContractError("ORIGINAL_CAMPAIGN_OUTCOME_CLOCK")
+    if now_ms<anchor+HORIZON_MS:
         return None
     if len(bars)!=len(receipts):
         raise ContractError("ORIGINAL_CAMPAIGN_BAR_RECEIPT_LENGTH")
@@ -132,6 +159,10 @@ def grade(plan,slot,pred,bars,receipts,now_ms,source_pin_digest):
           "anchor_ms":anchor,"at_ms":now_ms,"prediction_id":pred["prediction_id"],
           "source_pin_digest":source_pin_digest,
           "automatic_trading":False,"broker_orders_sent":0,"model_promotion":False}
+    if now_ms>anchor+HORIZON_MS+INPUT_GRACE_MS:
+        # An old prediction must not receive a hindsight-success grade
+        # after its committed original-source outcome deadline passed.
+        return {**base,"status":"CENSORED","reason":"OUTCOME_COMMITTED_DEADLINE_MISSED"}
     if len(match)!=1:
         if now_ms < anchor+HORIZON_MS+INPUT_GRACE_MS:return None
         return {**base,"status":"CENSORED","reason":"NEXT_ORIGINAL_BAR_NOT_STRICTLY_COMPLETE"}
@@ -160,17 +191,59 @@ def grade(plan,slot,pred,bars,receipts,now_ms,source_pin_digest):
 def state_summary(plan,results):
     check_plan(plan)
     seen=set();observed=censored=0
+    observed_scores={"model":{"brier":0.0,"nll":0.0,"hits":0},
+                     "train_frequency_prior":{"brier":0.0,"nll":0.0,"hits":0}}
     for obj in results:
         slot=obj.get("slot")
         if (type(slot) is not int or not 0<=slot<SLOTS or slot in seen or
                 obj.get("plan_id")!=plan["plan_id"] or
-                obj.get("status") not in ("OBSERVED","CENSORED")):
+                obj.get("schema")!=OUTCOME_SCHEMA or
+                type(obj.get("at_ms")) is not int or
+                obj["at_ms"]<expected_anchor(plan,slot) or
+                obj.get("status") not in ("OBSERVED","CENSORED") or
+            obj.get("automatic_trading") is not False or
+            obj.get("model_promotion") is not False or
+            obj.get("broker_orders_sent")!=0 or
+            (obj.get("anchor_ms")!=expected_anchor(plan,slot))):
+
             raise ContractError("ORIGINAL_CAMPAIGN_OUTCOME_IDENTITY")
+        if obj["status"]=="OBSERVED":
+            if (type(obj.get("actual_class")) is not int or not 0<=obj["actual_class"]<7
+                    or type(obj.get("outcome_quote_receipt")) is not str
+                    or len(obj["outcome_quote_receipt"])!=64
+                    or obj.get("outcome_end_ms")!=expected_anchor(plan,slot)+HORIZON_MS
+                    or type(obj.get("prediction_id")) is not str
+                    or len(obj["prediction_id"])!=64):
+                raise ContractError("ORIGINAL_CAMPAIGN_OBSERVED_RECEIPT")
+            for key in ("model","train_frequency_prior"):
+                score=obj.get(key)
+                if (not isinstance(score,dict) or
+                        type(score.get("brier")) not in (float,int) or
+                        not isfinite(score["brier"]) or not 0<=score["brier"]<=2 or
+                        type(score.get("nll")) not in (float,int) or
+                        not isfinite(score["nll"]) or score["nll"]<0 or
+                        type(score.get("hit")) is not bool):
+                    raise ContractError("ORIGINAL_CAMPAIGN_OBSERVED_METRIC")
+                observed_scores[key]["brier"]+=score["brier"]
+                observed_scores[key]["nll"]+=score["nll"]
+                observed_scores[key]["hits"]+=int(score["hit"])
+        else:
+            if type(obj.get("reason")) is not str or not obj["reason"]:
+                raise ContractError("ORIGINAL_CAMPAIGN_CENSORED_REASON")
         seen.add(slot)
         observed+=obj["status"]=="OBSERVED"
         censored+=obj["status"]=="CENSORED"
+    observed_means={
+        key:{"mean_brier":values["brier"]/observed if observed else None,
+             "mean_nll":values["nll"]/observed if observed else None,
+             "top1_hits":values["hits"]}
+        for key,values in observed_scores.items()
+    }
     return {"observed":observed,"censored":censored,"recorded":len(seen),
             "minimum_88_of_90_possible":censored<=MAX_CENSORED,
+            "scores_on_observed_only":observed_means,
+            "no_favorable_window_selection":True,
             "research_source_coverage_only":True,
+            "statistical_qualification":False,"financial_alpha_proven":False,
             "formal_laya_qualification":False,"trade_authority":False,
             "broker_orders_sent":0}

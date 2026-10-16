@@ -84,13 +84,49 @@ separate, original, cost-aware economic/owner qualification.
 
 ## Review gate
 
-The current source-only contract has 28 focused adversarial CPU
+The source-only contract now has 38 focused adversarial CPU
 tests covering fixed slots, causal cutoffs, frozen priors, source
 proofs, anti-forgery, grade receipts, full outcome grace, no
-order authority, and archive-rotation fallback. Full repository
+order authority, observed-only Brier/NLL averages and source
+archive-rotation fallback. It refuses to score a missed original
+outcome as OBSERVED after its endpoint grace, even if the source
+has become complete in hindsight. A CENSORED outcome stays
+in the 90-slot coverage denominator and cannot silently increase
+observed-only model quality. Source receipts, experiment scope,
+training-model pins and status identities fail closed. Full repository
 regressions and any real standalone run must be verified
 independently; the user has not been told it is already active.
 
 An attempted full Pocket4 frozen-year-model preflight was
 blocked by the execution channel, NOT an OS resource denial.
 No long-lived campaign or new formal study was started.
+
+
+## Pocket4 original quote source-only probe
+
+At 2026-10-16T05:00:30Z a read-only original PAPER quote
+probe independently verified 8,978 quotes, 23 source-prefix
+proofs and 55 strictly complete five-minute buckets. The last
+complete bucket was 30.555 seconds old, within the registered
+60-second eligibility grace. The 24 model input features were
+constructed in 1.115 seconds without loading neural weights,
+writing a prediction, modifying the canonical trial or
+sending orders. The largest unnormalized absolute feature
+was 8.455 (not a standard-deviation measurement). This
+proves original source inputs were ready at that instant,
+not that the real Tiny MLP model was checked or launched.
+
+The probe is retained on Pocket4 under
+~/.local/state/heptatrader/operator-evidence/laya-year-original-shadow90-preflight-20261016/source-feature-readonly-v1.json.
+The contract now also validates the exact 90th fixed deadline,
+complete model/source pin names, research non-authority,
+strict as-of feature identity, and no nonfinite features.
+The research-only live status contains observed-only
+mean Brier, NLL and top-1 counts for MLP and frozen
+frequency prior; every CENSORED source window remains
+visible and cannot be retrospectively repaired.
+
+**No new Tiny MLP campaign was launched.** The separate
+real-model/normalizer execution preflight remains blocked
+by the execution channel. The already-running independent
+prequential-prior Shadow experiment remains untouched.
