@@ -1693,6 +1693,27 @@ void TestOwnerDurableOcaExitUsesActualLocalAdapterCursorWithoutSending() {
     if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
             forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
         throw std::runtime_error("H1_OCA_FORGED_BROKER_ERROR_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerServiceEpoch="foreign-native-broker-epoch";
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_SERVICE_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerRemainingQuantity=1.0;
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_QUANTITY_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerEconomics.version=1;
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_ECONOMICS_ACCEPTED");
     std::int64_t floor=0;
     if(!coordinator.GetDurableResearchH1NativeIdFloor(
             "DU-SECOND",floor,reason) || floor!=44)

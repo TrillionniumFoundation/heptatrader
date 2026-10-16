@@ -253,6 +253,10 @@ inline bool ConfirmReplayForOriginalNativeEcho(
                e.brokerConnectionEpoch!=lastObservedEpoch ||
                !e.status.empty() || !e.reason.empty() ||
                e.brokerErrorCode!=0 || e.brokerRequestId!=0 ||
+               !e.brokerServiceEpoch.empty() ||
+               e.brokerRemainingQuantity!=0.0 ||
+               e.brokerMarketCapPrice!=0.0 ||
+               !e.brokerEconomics.Absent() || !e.riskCode.empty() ||
                !e.brokerMessage.empty() || !e.brokerWhyHeld.empty() ||
                !e.brokerAdvancedOrderRejectJson.empty() ||
                !e.brokerCallbackType.empty() ||
