@@ -647,6 +647,16 @@ protection. A real owner-fenced Broker sender, child accepted permId,
 unknown-submit recovery, OCA-safe normal exit, and driver-death proof remain
 P0 Issue #331 blockers.
 
+2026-10-16 native callback regression: an SDK event with the **same frozen
+H1 child reference** but not `openOrder(Submitted)` (held, inactive, cancelled,
+filled or status-only) now produces an explicit `Rejected`/not-working
+observation without populating the Broker witness. It is no longer silently
+ignored as though positive protection might persist. An event for a different
+H1 parent/ref remains `Ignored`; this pure projector still does **not**
+manage the live order lifecycle or grant an order/maintenance permission.
+Pocket4 IBAPI-ON Release 5/5 focused tests and H1/OMS/nextValidId
+ASan+UBSan 3/3 passed following the original red-before/green-after test.
+
 ## 2026-10-16: native IB order-ID int32 boundary (source-only)
 
 The existing ordinary IB Adapter stores its next order ID as a Linux `long`,

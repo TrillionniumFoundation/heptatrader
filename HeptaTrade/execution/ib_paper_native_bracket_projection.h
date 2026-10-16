@@ -92,8 +92,13 @@ inline Result ProjectFrozenH1WorkingStop(
     }
     if(event.order.orderRef!=original.ids.childRef)
         return Result::Ignored; // not this frozen protection group
-    if(event.type!=IBEventType::OpenOrder || event.value!="Submitted")
-        return Result::Ignored; // numeric status/held/completed is NOT working
+    if(event.type!=IBEventType::OpenOrder || event.value!="Submitted") {
+        // An event matching our exact H1 stop but not a live submitted
+        // OpenOrder is NEGATIVE evidence. Do not silently treat an inactive,
+        // held, completed or status-only update as continued protection.
+        reason="IB_H1_ORIGINAL_STOP_NOT_WORKING_OPEN_ORDER";
+        return Result::Rejected;
+    }
     const auto& w=event.nativeOrder;
     const std::string action=frozen.side=="BUY"?"SELL":"BUY";
     if(!record.eventType.empty() || record.brokerBracket.version!=0 ||

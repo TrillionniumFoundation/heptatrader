@@ -117,6 +117,34 @@ static void ExactOriginalH1CallbackAndDurableOms(){
     rejectEvent(wrong,"numeric OrderStatus became Broker OpenOrder");
     wrong=event;wrong.value="PreSubmitted";
     rejectEvent(wrong,"PreSubmitted became active stop");
+    // A stopped/inactive original H1 bracket must NOT be a no-op state
+    // that a future caller could misread as continuing WORKING protection.
+    auto mustRejectOriginalStopState=[&](IBEvent changed,const char* label){
+        auto sink=originalRecord;
+        std::string refused;
+        Require(ProjectFrozenH1WorkingStop(changed,f,original,sink,refused)==
+                    Result::Rejected &&
+                refused=="IB_H1_ORIGINAL_STOP_NOT_WORKING_OPEN_ORDER" &&
+                sink.brokerBracket.version==0 && sink.eventType.empty(),label);
+    };
+    wrong=event;wrong.value="PreSubmitted";
+    mustRejectOriginalStopState(wrong,"PreSubmitted H1 child treated as ignorable");
+    wrong=event;wrong.value="Inactive";
+    mustRejectOriginalStopState(wrong,"Inactive H1 stop treated as ignorable");
+    wrong=event;wrong.value="Cancelled";
+    mustRejectOriginalStopState(wrong,"Cancelled H1 stop treated as ignorable");
+    wrong=event;wrong.value="Filled";
+    mustRejectOriginalStopState(wrong,"Filled H1 stop treated as still working");
+    wrong=event;wrong.type=IBEventType::OrderStatus;
+    mustRejectOriginalStopState(wrong,"H1 status-only event treated as working");
+    auto independent=event;
+    independent.order.orderRef=refs.parentRef;
+    auto ignoredRecord=originalRecord;std::string ignoredReason;
+    Require(ProjectFrozenH1WorkingStop(independent,f,original,
+                    ignoredRecord,ignoredReason)==Result::Ignored &&
+            ignoredRecord.eventType.empty() &&
+            ignoredRecord.brokerBracket.version==0,
+            "unrelated H1 parent falsely treated as a stop failure");
     auto output=originalRecord;output.traceId="foreign-session";
     Require(ProjectFrozenH1WorkingStop(event,f,original,output,reason)!=
                 Result::WorkingWitnessCandidate && output.brokerBracket.version==0,
