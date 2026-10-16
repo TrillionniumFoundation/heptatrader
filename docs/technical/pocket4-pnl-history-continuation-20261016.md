@@ -18,10 +18,10 @@
 
 ## Executable next sequence (Pocket4 only)
 
-1. Run `python3 -B -m unittest tests.python.test_pocket4_readonly_audit` from repository root; on failure fix tests, never patch evidence.
+1. Run `python3 -B -m unittest discover -s tests/python -p 'test_pocket4_readonly_audit.py' -v` from repository root; then `python3 -B scripts/run_python_tests.py --lane core`. On failure fix tests, never patch evidence. No training or broker connections are invoked by the new audit tests.
 2. Run `python3 -B -m research.historical_training.pocket4_readonly_audit --pnl ~/.local/state/heptatrader/pnl/snapshot.json --dataset ~/.local/state/heptatrader/neuron-learning/historical-offline/eurusd-5m-joined-1yr-20261014-r4/paired-bars.json --dataset-sha256 3988a917554fc7322ae06a38560d4a9c91b5137fceccdc561830ec4327987f12` while neither file is being rewritten. Capture stdout and exit status. No broker API involved.
 3. Account PnL: reconcile original opening NAV, dated funding/fees, stable FX valuation time with broker statements; do not widen tolerance to force acceptance. Continue to display strategy net independently.
-4. Diagnose cashhmds state on existing PAPER gateway with strictly read-only isolated history client. If disconnected, record status and stop. If healthy, fetch ONLY missing completed UTC windows from 2026-10-14 onward and separately fetch BID, ASK, MIDPOINT with existing rate limits, retries only after definitive failures. Verify duplicate-free exact overlaps and source revisions before joining.
+4. Diagnose cashhmds state on existing PAPER gateway with strictly read-only isolated history client. Official IBKR event 2105 means a genuinely disconnected HMDS farm and is **not** interchangeable with 2107 (idle/on-demand). Allow a bounded wait for a real 2106 (connected) or 2107 (idle) callback; if still 2105, record status and stop without dispatch, and diagnose broker connectivity / Gateway session. If healthy, fetch ONLY missing completed UTC windows from 2026-10-14 onward and separately fetch BID, ASK, MIDPOINT with existing rate limits, retries only after definitive failures. Verify duplicate-free exact overlaps and source revisions before joining. Do not assume real-time cashfarm implies historical cashhmds connectivity.
 5. Leave the existing one-year immutable historical training source intact. Compare no-trade baseline, simple linear, tiny MLP, and cost-conscious policies using chronological train/validation/test and actual commission receipts plus conservative slippage. Historical revisions never count as precommitted live forecasts.
 6. Do NOT train the ACT/ESCALATE action head on the all-negative 32-row set. Require mixed independently labeled examples, inspect logit scaling, then stage a new offline candidate without changes to original forward trials.
 7. Preserve current PAPER driver/service identities. No automatic candidate promotion; if any runtime or tests fail, retain the logs and original runtime.
@@ -31,4 +31,15 @@
 Original device evidence root:
 `/home/alex/.local/state/heptatrader/operator-evidence/pnl-train-readonly-audit-20261016-1792151033573649889/`
 
-New `pocket4_readonly_audit.py` is deliberately independent of the broker SDK and has no write calls; it reports arithmetic inconsistencies and historical spread-shape risks. It does **not** infer profitability, execution fills or account NAV. 
+New `pocket4_readonly_audit.py` is deliberately independent of the broker SDK and has no write calls; it reports arithmetic inconsistencies, stale broker marks, reported fee/ledger completeness, break-even deficit and historical spread-shape risks. It reads each input once and rejects symlinked or changing source files. Its fee-per-execution figure is **not** a per-round-trip cost. It does **not** infer profitability, execution fills or account NAV. 
+
+## Cost concentration at the previously captured closed-trade counts
+
+Previous driver evidence reported 354 EUR/USD and 4 BTC/USD closed roundtrips within the same reset period. Conditional on those counts matching the strategy period, the implied per-closed-trade gross / commissions / net were:
+
+| Strategy | gross per closed trade | reported commissions per closed trade | net per closed trade |
+|---|---:|---:|---:|
+| EUR/USD | -$2.83 | $4.00 | -$6.83 |
+| BTC/USD | +$14.67 | $58.97 | -$44.29 |
+
+This is an **aggregate period ratio**, not evidence of any individual trade's realized PnL or cause. Reconcile command identities and real execution fills before attributing performance to a decision path. Reported commissions explain about 63.6% of aggregate strategy net loss in magnitude; even before fees, period gross PnL was negative.
