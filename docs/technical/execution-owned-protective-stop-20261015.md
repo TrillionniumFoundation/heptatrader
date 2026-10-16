@@ -559,3 +559,9 @@ live Execution owner and durable OMS generations, can rule out ID reuse.
 There is NO parent/stop `placeOrder` send path, no real broker acceptance,
 no OCA cancellation safety and no independent protection when Driver dies.
 Do not deploy as live protection or close Issue #331 on these tests.
+
+A further negative test verifies that the Broker API's nextValidId
+accessor throwing an exception rejects native ID reservation with
+H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION. No ID is consumed by that
+failed read, no OMS write is attempted and no Broker order is sent.
+This adds no production send authority or independent stop protection.

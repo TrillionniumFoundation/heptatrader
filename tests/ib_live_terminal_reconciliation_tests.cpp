@@ -122,7 +122,11 @@ public:
         event=events.front();events.pop_front();return true;
     }
     long validOrderId = 41;
-    long GetLastValidOrderId() const override {return validOrderId;}
+    bool nextValidFault = false;
+    long GetLastValidOrderId() const override {
+        if(nextValidFault) throw std::runtime_error("broker ID unavailable");
+        return validOrderId;
+    }
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
@@ -1162,6 +1166,11 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch+1,
         [](long,long){return true;},parent,child,reason));
     assert(parent==-1&&child==-1);
+    f.broker->nextValidFault=true;
+    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
+    f.broker->nextValidFault=false;
     f.broker->validOrderId=0;
     assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
         [](long,long){return true;},parent,child,reason));

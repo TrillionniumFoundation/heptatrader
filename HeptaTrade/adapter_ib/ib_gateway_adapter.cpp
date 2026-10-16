@@ -1359,7 +1359,13 @@ bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
         reason="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE";
         return false;
     }
-    const long brokerNext=m_api->GetLastValidOrderId();
+    long brokerNext=-1;
+    try {
+        brokerNext=m_api->GetLastValidOrderId();
+    } catch (...) {
+        reason="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION";
+        return false;
+    }
     if (brokerNext<=0 || m_localOrderSeed<=0 ||
         brokerNext>=std::numeric_limits<int>::max()-2 ||
         m_localOrderSeed>=std::numeric_limits<int>::max()-2) {
