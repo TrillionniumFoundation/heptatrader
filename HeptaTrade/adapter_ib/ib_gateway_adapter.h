@@ -181,6 +181,10 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
 struct IBH1OcaAdapterScopeObservation {
     bool originalAccountAndOrderSetConsistent = false;
     bool nativeStopBrokerWorkingProven = false;
+    // A matching SDK openOrder echo is only a diagnostic; not an order
+    // admission or live-position protection signal.
+    bool sdkNativeStopEchoMatches = false;
+    long sdkNativeStopPermanentId = 0;
     bool stopPriceTriggerProven = false;
     bool accountSnapshotFreshnessProven = false;
     bool maySendOrdinaryExit = false;
@@ -533,6 +537,10 @@ private:
     bool m_correlationRefreshPending = false;
     bool m_correlationRefreshConflict = false;
     IBAuthoritativeCorrelationSnapshot m_correlationSnapshot;
+    // Ephemeral diagnostic SDK-native original stop echoes, collected only
+    // during the exact account-wide open-order refresh and cleared on faults.
+    std::map<long, IBEvent> m_h1NativeStopOpenOrderEchoes;
+    bool m_h1NativeStopRefreshAccountWide = false;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
     std::set<long> m_postFillReconciliationOrderIds;

@@ -1,5 +1,6 @@
 ﻿#include "ib_gateway_adapter.h"
 #include "../execution/ib_bracket_h1_identity.h"
+#include "ib_h1_native_stop_echo_research.h"
 #include "ib_venue_correlation.h"
 #include "../execution/ib_h1_native_id_restart_floor.h"
 #include <ctime>
@@ -566,6 +567,7 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
     const IBAuthoritativeRecoveryAuditSnapshot snap=
         BuildRecoveryAuditSnapshotLocked();
     if(!m_eventStreamAuthoritative ||
+       !m_h1NativeStopRefreshAccountWide ||
        !snap.active.complete || !snap.risk.complete ||
        !snap.risk.coherentRefreshComplete ||
        !snap.risk.accountComplete || !snap.risk.positionsComplete ||
@@ -602,6 +604,15 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
         return false;
     }
     observation.originalAccountAndOrderSetConsistent=true;
+    const auto nativeStop=m_h1NativeStopOpenOrderEchoes.find(
+        original.childOrderId);
+    if(nativeStop!=m_h1NativeStopOpenOrderEchoes.end() &&
+       hepta_ib_h1_native_stop_echo::MatchesOriginalSdkStop(
+           nativeStop->second,original,refs,m_connectionEpoch)) {
+        observation.sdkNativeStopEchoMatches=true;
+        observation.sdkNativeStopPermanentId=
+            nativeStop->second.nativeOrder.permanentId;
+    }
     observation.exactStopNativeOrderId=original.childOrderId;
     observation.brokerSignedFxPosition=position->second;
     observation.connectionEpoch=m_connectionEpoch;
@@ -984,6 +995,8 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_correlationRefreshConflict = false;
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
+    m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopRefreshAccountWide = accountWide;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
