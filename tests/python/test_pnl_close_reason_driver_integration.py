@@ -36,7 +36,8 @@ class RealDriverCloseBinding(unittest.TestCase):
         episodes = [{"end_command": "close-original-1", "last_original_send_ms": 3000,
                      "net_usd": "-6.50"}]
         executions = [{"command_id": "close-original-1",
-                       "execution_id": "exec-real-1", "order_id": 77}]
+                       "execution_id": "exec-real-1", "order_id": 77,
+                       "quantity": "25000", "price": "1.1002"}]
         result = close_reason_coverage(episodes, executions,
                                        state["close_command_attribution"], "EUR.USD")
         self.assertEqual(result["exact_original_reason_bound"], 1)
@@ -55,7 +56,8 @@ class RealDriverCloseBinding(unittest.TestCase):
         result = close_reason_coverage(
             [{"end_command": "old-close", "last_original_send_ms": 3000,
               "net_usd": "-1"}],
-            [{"command_id": "old-close", "execution_id": "exec-2", "order_id": 78}],
+            [{"command_id": "old-close", "execution_id": "exec-2", "order_id": 78,
+             "quantity": "1", "price": "1.1"}],
             state["close_command_attribution"], "EUR.USD")
         self.assertEqual(result["exact_original_reason_bound"], 0)
         self.assertEqual(result["unknown_or_unverified"], 1)
