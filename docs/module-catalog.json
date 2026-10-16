@@ -322,7 +322,9 @@
         "scripts/hepta_shadow_finalize.py",
         "scripts/research_laya_action_quality.py",
         "scripts/research_laya_price_quality.py",
-        "scripts/research_laya_price_shadow90.py"
+        "scripts/research_laya_price_shadow90.py",
+        "scripts/research_laya_price_gpu_ablation.py",
+        "scripts/research_laya_price_year_gpu.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -333,7 +335,9 @@
         "tests/python/test_official_source_formats.py",
         "tests/python/test_laya_price_prequential_research.py",
         "tests/python/test_laya_price_residual_research.py",
-        "tests/python/test_laya_price_future_shadow.py"
+        "tests/python/test_laya_price_future_shadow.py",
+        "tests/python/test_laya_price_gpu_ablation.py",
+        "tests/python/test_laya_price_year_gpu.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
