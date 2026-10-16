@@ -39,6 +39,76 @@ int main(){
    Must(!ConfirmReplay(duplicated,f,checked,reason)&&checked.uncertain,"duplicate child accepted");
    auto tampered=events;tampered[1].price+=.00005;
    Must(!ConfirmReplay(tampered,f,checked,reason)&&checked.uncertain,"changed stop accepted");
+   auto otherVenue=events;otherVenue[1].venue="SIMULATED";
+   Must(!ConfirmReplay(otherVenue,f,checked,reason)&&checked.uncertain,"wrong venue accepted");
+   auto otherSource=events;otherSource[0].source="UNTRUSTED";
+   Must(!ConfirmReplay(otherSource,f,checked,reason)&&checked.uncertain,"wrong source accepted");
+   auto otherInstrument=events;otherInstrument[0].instrument="BTC.USD";
+   Must(!ConfirmReplay(otherInstrument,f,checked,reason)&&checked.uncertain,"wrong instrument accepted");
+   auto otherTimestamp=events;otherTimestamp[1].tsMs+=1000;
+   Must(!ConfirmReplay(otherTimestamp,f,checked,reason)&&checked.uncertain,"wrong timestamp accepted");
+   auto fakeStatus=events;fakeStatus[1].status="Submitted";
+   Must(!ConfirmReplay(fakeStatus,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker Submitted status accepted");
+   auto fakeCallback=events;fakeCallback[0].brokerCallbackType="openOrder";
+   Must(!ConfirmReplay(fakeCallback,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker openOrder callback accepted");
+   auto fakeClient=events;fakeClient[1].brokerClientId=991;
+   Must(!ConfirmReplay(fakeClient,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker client identity accepted");
+   auto fakeReason=events;fakeReason[0].reason="BROKER_CONFIRMED";
+   Must(!ConfirmReplay(fakeReason,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker-claim reason accepted");
+   auto fakeBracket=events;fakeBracket[1].brokerBracket.version=1;
+   Must(!ConfirmReplay(fakeBracket,f,checked,reason)&&checked.uncertain,
+        "research intent carrying native broker bracket proof accepted");
+   auto fakeEpoch=events;fakeEpoch[0].brokerConnectionEpoch=812;
+   Must(!ConfirmReplay(fakeEpoch,f,checked,reason)&&checked.uncertain,
+        "research intent carrying broker connection epoch accepted");
+   auto conflictingAlias=events;
+   conflictingAlias[1].clientReqId="different-original-command";
+   Must(!ConfirmReplay(conflictingAlias,f,checked,reason)&&checked.uncertain,
+        "original H1 child accepted with a foreign client_req_id alias");
+   auto aliasedSend=events;
+   auto foreignAttempt=events[1];
+   foreignAttempt.reqId="foreign-command";
+   foreignAttempt.clientReqId=f.originalCommandKey;
+   foreignAttempt.eventType="bracket_child_send_attempt";
+   foreignAttempt.status="POSSIBLY_SENT";
+   aliasedSend.push_back(foreignAttempt);
+   Must(!ConfirmReplay(aliasedSend,f,checked,reason)&&checked.uncertain,
+        "foreign req_id with original client_req_id hid a possible Broker send");
+   auto foreignGroup=events;
+   auto alien=events[1];alien.reqId="unrelated-command";
+   alien.clientReqId="unrelated-command";
+   foreignGroup.push_back(alien);
+   Must(!ConfirmReplay(foreignGroup,f,checked,reason)&&checked.uncertain,
+        "foreign command reused original H1 child correlation");
+   auto unrelated=events;
+   auto disjoint=events[0];disjoint.reqId="another-real-command";
+   disjoint.clientReqId="another-real-command";
+   disjoint.eventId="unrelated-other-event";
+   disjoint.orderId=f.childOrderId+200;
+   disjoint.requestHash="hepta-v1-sha256:0000000000000000000000000000000000000000000000000000000000000000";
+   disjoint.venueCorrelationId=disjoint.requestHash;
+   unrelated.push_back(disjoint);
+   Must(ConfirmReplay(unrelated,f,checked,reason),
+        "unrelated original record blocked by H1 scoped replay");
+   auto foreignOrderIds=events;
+   auto aliasId=disjoint;aliasId.orderId=f.childOrderId;
+   foreignOrderIds.push_back(aliasId);
+   Must(!ConfirmReplay(foreignOrderIds,f,checked,reason)&&checked.uncertain,
+        "foreign original reused child native broker order id");
+   aliasId=disjoint;aliasId.orderId=f.parentOrderId;
+   foreignOrderIds=events;foreignOrderIds.push_back(aliasId);
+   Must(!ConfirmReplay(foreignOrderIds,f,checked,reason)&&checked.uncertain,
+        "foreign original reused parent native broker order id");
+   auto foreignOca=events;
+   auto aliasOca=disjoint;
+   aliasOca.venueCorrelationId=info.ids.ocaCorrelation;
+   foreignOca.push_back(aliasOca);
+   Must(!ConfirmReplay(foreignOca,f,checked,reason)&&checked.uncertain,
+        "foreign original reused H1 OCA correlation");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
    auto foreign=events;foreign[0].eventType="bracket_parent_send_attempt";

@@ -268,6 +268,13 @@ add_executable(hepta_ib_native_bracket_oms_tests
 target_link_libraries(hepta_ib_native_bracket_oms_tests PRIVATE hepta_oms_journal)
 hepta_register_core_test(hepta_ib_native_bracket_oms_tests)
 
+# H1 broker callback schema is a separate, unsent pure-OMS test.
+add_executable(hepta_ib_native_h1_callback_tests
+    ib_native_h1_callback_tests.cpp)
+target_link_libraries(hepta_ib_native_h1_callback_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_ib_native_h1_callback_tests)
+
 # Compile exact SDK Contract/Order types only in the already validated
 # native-IB-enabled lane. No placeOrder or native order sending code exists here.
 if(HEPTA_ENABLE_IBAPI)

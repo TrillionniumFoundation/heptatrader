@@ -34,6 +34,14 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
         return false;
     }
     for(const auto& owned:m_orderOwners) {
+        // The present owner map cannot attest that a colliding numeric
+        // native Broker order ID belongs to a different IB client. Refuse
+        // ambiguous reuse before writing any new shadow reservation.
+        if(owned.first==frozen.parentOrderId ||
+           owned.first==frozen.childOrderId) {
+            reason="H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
+            return false;
+        }
         if(owned.second.agentId==originalOwner.agentId &&
            owned.second.sessionId==originalOwner.sessionId) {
             reason="H1_BRACKET_EXISTING_OWNER_ORDER_UNKNOWN";
@@ -50,15 +58,42 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
     // order_intent. A journal prefix may exist after a crash. Before
     // admitting a new group, reject ANY recorded original req_id, including
     // orphaned attempts. No external Broker IO happens here.
+    // Before appending, use the *same* frozen H1 role derivation that will
+    // be written to OMS. A separate original command may not borrow this
+    // pair's Group, Parent, STOP, or OCA identity even with a new req_id.
+    // The Coordinator mutex protects this admission+append against another
+    // Coordinator request. This is not permission to contact the Broker.
+    hepta_bracket_h1::BoundRefs frozenIds;
+    if(!hepta_bracket_h1::BuildFrozenRefs(frozen,frozenIds,reason))
+        return false;
     bool collision=false;
+    bool venueIdentityCollision=false;
+    bool nativeOrderIdCollision=false;
     const int observed=m_journal.Replay([&](const OmsJournalEvent& e) {
+        // Native IDs are scoped to the Broker sender's client, but legacy
+        // journal events cannot reliably prove a disjoint original client.
+        // Fail closed on exact account/PAPER/IB numerical reuse.
+        if(e.account==frozen.account && e.executionDomain=="PAPER" &&
+           e.venue=="IB" &&
+           (e.orderId==frozen.parentOrderId ||
+            e.orderId==frozen.childOrderId)) nativeOrderIdCollision=true;
         if(e.reqId==originalOwner.toolCallId ||
            e.clientReqId==originalOwner.toolCallId) collision=true;
+        if(e.requestHash==frozenIds.groupCorrelation ||
+           e.requestHash==frozenIds.parentCorrelation ||
+           e.requestHash==frozenIds.childCorrelation ||
+           e.requestHash==frozenIds.ocaCorrelation ||
+           e.venueCorrelationId==frozenIds.groupCorrelation ||
+           e.venueCorrelationId==frozenIds.parentCorrelation ||
+           e.venueCorrelationId==frozenIds.childCorrelation ||
+           e.venueCorrelationId==frozenIds.ocaCorrelation)
+            venueIdentityCollision=true;
     });
-    if(observed<0 || collision) {
-        reason=observed<0 ?
-            "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
-            "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND";
+    if(observed<0 || collision || venueIdentityCollision || nativeOrderIdCollision) {
+        reason=observed<0 ? "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
+               collision ? "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND" :
+               venueIdentityCollision ? "H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION" :
+               "H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
         return false;
     }
     if(!hepta_bracket_h1::ReservePair(m_journal,frozen,result,reason)) {

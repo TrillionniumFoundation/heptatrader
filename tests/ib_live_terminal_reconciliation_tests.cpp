@@ -101,6 +101,7 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
+    long nextValidOrderId=41;
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
@@ -139,11 +140,10 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long validOrderId = 41;
     bool nextValidFault = false;
     long GetLastValidOrderId() const override {
         if(nextValidFault) throw std::runtime_error("broker ID unavailable");
-        return validOrderId;
+        return nextValidOrderId;
     }
 };
 struct Fixture {
@@ -1170,6 +1170,31 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
+void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
+    Fixture f;
+    f.broker->nextValidOrderId = 2147483648L; // exceeds TWS OrderId:int32
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long received=-1;
+    const bool admitted=f.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'f'),&received);
+    if(admitted || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("IB_NATIVE_ORDER_ID_EXCEEDS_32BIT_BROKER_RANGE");
+    Fixture nearLimit;
+    nearLimit.broker->nextValidOrderId=2147483647L;
+    const long last=nearLimit.Place();
+    if(last!=2147483647L || nearLimit.broker->places!=1)
+        throw std::runtime_error("NATIVE_ORDER_ID_MAX_VALID_VALUE_REFUSED");
+    long later=-1;
+    const bool replay=nearLimit.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'b'),&later);
+    if(replay || nearLimit.broker->places!=1 ||
+       nearLimit.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("NATIVE_ORDER_ID_EXHAUSTION_ALLOWED_SECOND_SEND");
+}
 void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     // No placeOrder calls. The callback may only persist the exact research
     // parent+stop IDs before returning; it grants no send/stop authority.
@@ -1194,14 +1219,14 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
         [](long,long){return true;},parent,child,reason));
     assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
     f.broker->nextValidFault=false;
-    f.broker->validOrderId=0;
+    f.broker->nextValidOrderId=0;
     assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
-    f.broker->validOrderId=std::numeric_limits<int>::max();
+    f.broker->nextValidOrderId=std::numeric_limits<int>::max();
     assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
-    f.broker->validOrderId=41;
+    f.broker->nextValidOrderId=41;
     assert(H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [&](long p,long c){
             OmsJournalEvent a,b;
@@ -1231,7 +1256,7 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
         [&](long,long){called=true;return true;},parent,child,reason));
     assert(!called &&
            reason=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
-    f.broker->validOrderId=43;
+    f.broker->nextValidOrderId=43;
     assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return false;},parent,child,reason));
     assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN" &&
@@ -1254,7 +1279,7 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     possible.eventType="bracket_child_send_attempt";
     possible.status="POSSIBLY_SENT";
     assert(j.AppendDurableCritical(possible));
-    f.broker->validOrderId=60;
+    f.broker->nextValidOrderId=60;
     called=false;
     assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [&](long,long){called=true;return true;},parent,child,reason));
@@ -1310,12 +1335,12 @@ void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
         Fixture fresh; // Adapter local order seed reset, mock Broker still 41.
         const auto epoch=fresh.adapter.GetConnectionEpoch();
         long p=-1,c=-1;std::string why;bool called=false;
-        assert(fresh.broker->validOrderId==41);
+        assert(fresh.broker->nextValidOrderId==41);
         assert(!H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
             journal,[&](long,long){called=true;return true;},p,c,why));
         assert(!called&&p==-1&&c==-1&&
             why=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
-        fresh.broker->validOrderId=43;
+        fresh.broker->nextValidOrderId=43;
         assert(H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
             journal,[&](long a,long b) {
                 return durableGroup(journal,"new-command","new-h1-group",a,b);
@@ -1391,7 +1416,7 @@ void TestResearchCoordinatorOwnedJournalCannotBeReplacedWithDecoy() {
         original.agentId,original.sessionId,17,reason));
     // The decoy has much larger native IDs; if it were used here, a
     // connected broker reporting nextValidId=41 would be rejected.
-    assert(fixture.broker->validOrderId==41);
+    assert(fixture.broker->nextValidOrderId==41);
     assert(coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
         fixture.adapter,original,frozen,reservation,parent,child,reason));
     assert(parent==43 && child==44); // failed no-fence attempt consumed 41/42
@@ -1511,7 +1536,7 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
        assert(fresh.SessionOwnerRecoveryIngressFence(original.agentId,original.sessionId)==51);
        // Above OMS floor, this remains a Coordinator original-command
        // duplicate, rather than a low broker-nextValidId refusal.
-       brokerFixture.broker->validOrderId=43;
+       brokerFixture.broker->nextValidOrderId=43;
        long duplicateParent=-1,duplicateStop=-1;
        assert(!fresh.ReserveResearchNativeH1ThroughOwnedJournal(
             brokerFixture.adapter,original,frozen,pair,
@@ -1522,6 +1547,7 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
     assert(::unlink(chars.data())==0);
 }
 int main() {
+    TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();
     TestResearchNativeIdLeaseBindsActualCoordinatorFence();
