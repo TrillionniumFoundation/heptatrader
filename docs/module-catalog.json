@@ -326,7 +326,8 @@
         "scripts/research_laya_price_gpu_ablation.py",
         "scripts/research_laya_price_year_gpu.py",
         "scripts/research_laya_price_original_one.py",
-        "scripts/research_laya_price_original_shadow90.py"
+        "scripts/research_laya_price_original_shadow90.py",
+        "scripts/research_laya_original_asof_finality.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -345,6 +346,7 @@
         "tests/python/test_laya_price_original_shadow_runner.py",
         "tests/python/test_laya_price_original_resume_integrity.py",
         "tests/python/test_laya_price_original_deadline_scheduler.py",
+        "tests/python/test_laya_original_quote_asof_finality.py",
         "tests/python/test_laya_evaluator_admission_receipt.py"
       ],
       "broker_mutation": "NONE",
