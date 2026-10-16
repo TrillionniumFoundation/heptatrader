@@ -464,3 +464,16 @@ semantics while adding explicit expected-move economics and anti-churn controls
 for new BTC longs only. It does not alter FX or slow partial risk liquidation.
 See [BTC entry economics](btc-entry-economics.md) for exact assumptions,
 original-command persistence, deployment conditions and evidence limitations.
+
+
+### Dedicated operator maintenance hold (Pocket4)
+
+The ordinary \`pause\` is not a safe maintenance permit: a resident Driver
+automatically invokes \`paper-on\` before an OPEN and could clear its temporary
+native kill-switch. The separate \`maintenance-hold\` command uses a durable
+private operator latch and original native kill-switch; an automatic \`paper-on\`
+fails until an explicit \`maintenance-release\`. See
+[\`paper-maintenance-latch-20261016.md\`](paper-maintenance-latch-20261016.md)
+for exact path, limitations and failure handling. **Even a confirmed latch
+never grants permission to stop any exposed Driver**; Broker-owner atomic
+no-new-entry and verified flat/no-pending/no-active orders are still required.

@@ -23,41 +23,17 @@ case "${1:-status}" in
     systemctl --user --no-pager status heptatrader-execution.service heptatrader-gateway.service
     if [[ -e "$runtime/control/kill-switch" ]]; then echo 'PAPER guard: engaged'; else echo 'PAPER guard: not engaged (service readiness still required)'; fi
     pnl_report --cached || true ;;
-  pause|paper-on)
-    if [[ "$1" == paper-on ]]; then
+  pause|paper-on|maintenance-hold|maintenance-release|maintenance-status)
+    # Resident Drivers may invoke paper-on automatically. They cannot clear
+    # a persistent operator maintenance hold. Native risk checks are unchanged.
+    if [[ "$1" == paper-on || "$1" == maintenance-release ]]; then
       systemctl --user is-active --quiet heptatrader-execution.service heptatrader-gateway.service
     fi
-    /usr/bin/python3 - "$runtime/control" "$1" <<'GUARD'
-import os, stat, sys
-from pathlib import Path
-path=Path(sys.argv[1]); action=sys.argv[2]
-expected=Path(f"/run/user/{os.geteuid()}/heptatrader/control")
-if os.geteuid()==0 or path!=expected: raise SystemExit("unexpected user control path")
-parent=path.parent.lstat()
-if not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=os.geteuid() or parent.st_mode&0o077:
-    raise SystemExit("unsafe user runtime parent")
-fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-try:
-    st=os.fstat(fd)
-    if st.st_uid!=os.geteuid() or st.st_gid!=os.getegid() or stat.S_IMODE(st.st_mode)!=0o750 or st.st_nlink!=2:
-        raise SystemExit("unsafe operator control directory")
-    try: marker=os.stat("kill-switch",dir_fd=fd,follow_symlinks=False)
-    except FileNotFoundError: marker=None
-    if marker is not None and (not stat.S_ISREG(marker.st_mode) or marker.st_nlink!=1 or
-        marker.st_uid!=os.geteuid() or marker.st_gid!=os.getegid() or stat.S_IMODE(marker.st_mode)!=0o440):
-        raise SystemExit("unsafe control marker; left unchanged")
-    named=path.lstat()
-    if (st.st_dev,st.st_ino)!=(named.st_dev,named.st_ino): raise SystemExit("control directory changed")
-    if action=="pause" and marker is None:
-        out=os.open("kill-switch",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o440,dir_fd=fd)
-        try: os.write(out,b"engaged\n"); os.fchmod(out,0o440); os.fsync(out)
-        finally: os.close(out)
-    elif action=="paper-on" and marker is not None:
-        os.unlink("kill-switch",dir_fd=fd)
-    os.fsync(fd)
-    print("PAPER new-risk guard engaged" if action=="pause" else "PAPER new-risk guard released; native risk/quote/identity checks remain active")
-finally: os.close(fd)
-GUARD
+    if [[ "$1" == maintenance-release ]]; then
+      systemctl --user is-active --quiet heptatrader-paper-driver.service heptatrader-crypto-driver.service
+    fi
+    helper="$(dirname "$(readlink -f "$0")")/hepta_maintenance_latch.py"
+    exec /usr/bin/python3 -B "$helper" "$1"
     ;;
   logs)
     exec journalctl --user -u heptatrader-execution.service -u heptatrader-gateway.service -n 60 --no-pager ;;
@@ -81,6 +57,6 @@ GUARD
       -c "mcp_servers.heptatrader.command=\"$prefix/libexec/heptatrader/hepta-user-mcp\"" \
       "You operate only the configured local IB PAPER simulator through the HeptaTrader MCP tools. Never request LIVE or change credentials, configuration, risk limits or kill switch. Obtain current tool schemas and authoritative state before acting. Use exact unqualified catalog names for tool_name, for example market.get_quote, without the heptatrader server prefix. A lost or uncertain send must be inspected under its original command ID, never resent as a new order. A quoted price or accepted request is not a fill. Do not place any order unless this user instruction explicitly asks for one. User instruction: $1" < /dev/null ;;
   *)
-    echo 'usage: heptatrader {start|restart|stop|status|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|paper-on|native <args>|session <args>|ask "instruction"}' >&2
+    echo 'usage: heptatrader {start|restart|stop|status|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|paper-on|maintenance-hold|maintenance-release|maintenance-status|native <args>|session <args>|ask "instruction"}' >&2
     exit 64 ;;
 esac
