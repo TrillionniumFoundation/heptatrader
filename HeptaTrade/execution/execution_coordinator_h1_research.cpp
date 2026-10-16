@@ -22,15 +22,24 @@ bool ExecutionCoordinator::GetDurableResearchH1NativeIdFloor(
         // so a changed DU account may not reuse a predecessor's unsent IDs.
         // Burn the upper bound of every PAPER H1 reservation in this journal,
         // regardless of the original account; malformed scope fails closed.
+        const bool exit=e.eventType=="bracket_oca_exit_reserved";
         const bool h1=e.eventType=="bracket_parent_reserved" ||
             e.eventType=="bracket_child_reserved" ||
             e.eventType=="bracket_parent_send_attempt" ||
-            e.eventType=="bracket_child_send_attempt";
+            e.eventType=="bracket_child_send_attempt" || exit;
         if(!h1)return;
         if(e.account.size()<3 || e.account.compare(0,2,"DU")!=0 ||
            e.venue!="IB" || e.executionDomain!="PAPER" ||
            e.source!="SHADOW_NO_BROKER_EGRESS" ||
-           e.orderId<1 || e.orderId>maxId) {
+           e.orderId<1 || e.orderId>maxId ||
+           // These are never broker-send receipts. Reject malformed local
+           // OCA EXIT markers rather than interpreting them as a safe zero.
+           (exit && (e.reqId.empty() || e.eventId.empty() ||
+               e.tsMs<=0 ||
+               e.requestHash.size()!=80 ||
+               e.requestHash.compare(0,16,"hepta-v1-sha256:")!=0 ||
+               e.venueCorrelationId.size()!=80 ||
+               e.venueCorrelationId.compare(0,16,"hepta-v1-sha256:")!=0))) {
             invalid=true;return;
         }
         // Conservative even for a lone durable parent after fsync failure.

@@ -967,13 +967,22 @@ refuse before publication. Its typed result always has
 **This is deliberately NOT a Broker stop/exit reservation, real Owner proof,
 exit command, durable OMS intent or risk authority.** The caller stop ID is
 not authenticated by this operation, and the newly consumed EXIT ID is not
-persisted in the original OMS. In particular, the current
-`GetDurableResearchH1NativeIdFloor` protects the parent/stop historical
-identities, but *not yet an unsent OCA EXIT ID from this new API* across a
-fresh adapter process. Do not permit actual OCA sending or even claim a
-restart-safe EXIT until that ID is durably bound to the original Owner/H1
-stop permanent ID, recovered and burned after a crash, and checked against
-Broker-global active orders/position plus actual OCA block behavior.
+persisted in the original OMS. The native OMS now recognizes
+`bracket_oca_exit_reserved` as an **unconditionally fsync'd critical event**;
+`GetDurableResearchH1NativeIdFloor` independently burns its native ID
+across DU accounts after process restart, rejecting malformed EXIT marker
+identity rather than treating a broken record as observed zero. Isolated
+Pocket4 tests prove a typed original EXIT ID in such a durable marker is
+not reused by a new adapter, and a malformed marker refuses native-floor
+recovery. **The local EXIT allocator does not itself emit this marker**:
+no released Owner-bound durable OCA EXIT writer or active Broker protective
+stop proves it is legitimate. Therefore the locally reserved exit ID is
+NOT crash-safe for future Broker sending yet. The future Owner must write
+this exact critical OMS event BEFORE any Broker exit mutation, replay it
+on restart, and independently bind its stop permanent ID and exact OCA
+working order status to the original account/order set. Do not permit
+actual OCA sending or claim exit continuity until those steps and a
+Broker-global position/active-order plus OCA block test pass.
 
 A separate exact native SDK field-width fix now accepts a SINGLE unsent
 OCA candidate at the last legal TWS `INT32_MAX` order ID rather than

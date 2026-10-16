@@ -478,6 +478,9 @@ bool OmsJournal::IsCriticalEventType(const std::string& eventType)
 {
     return eventType == "bracket_parent_reserved" ||
            eventType == "bracket_child_reserved" ||
+           // An unsent OCA EXIT native ID must be fsynced before it can be
+           // recovered as permanently consumed after a new adapter process.
+           eventType == "bracket_oca_exit_reserved" ||
            eventType == "bracket_parent_send_attempt" ||
            eventType == "bracket_child_send_attempt" ||
            eventType == "order_intent" || eventType == "place_send_attempt" ||

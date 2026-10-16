@@ -1629,6 +1629,75 @@ void TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending() {
         throw std::runtime_error("H1_OCA_SIGNED_NATIVE_ID_OVERFLOW_OR_SEND");
 }
 
+void TestDurableH1OcaExitNativeIdFloorAfterRestart() {
+    // Isolated OMS fixture. This is NOT a production EXIT marker writer or
+    // an actual Broker OCA placement. Prove only that a *future* critically
+    // durable exit-reserved event burns its numeric ID after process restart.
+    std::string templ="/tmp/Hepta-H1-OCA-Floor-XXXXXX";
+    std::vector<char> tmp(templ.begin(),templ.end());tmp.push_back('\0');
+    const int fd=::mkstemp(tmp.data());
+    if(fd<0) throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_CREATE_FAILED");
+    ::close(fd);::unlink(tmp.data());
+    const std::string path(tmp.data());
+    {
+        OmsJournal journal;
+        if(!journal.Init(path))
+            throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_OMS_FAILED");
+        OmsJournalEvent marker;
+        marker.eventType="bracket_oca_exit_reserved";
+        marker.tsMs=1792140000123LL;
+        marker.orderId=1000;
+        marker.account="DU123";
+        marker.executionDomain="PAPER";
+        marker.venue="IB";
+        marker.instrument="EUR.USD";
+        marker.source="SHADOW_NO_BROKER_EGRESS";
+        marker.reqId="original-h1-oca-scratch-001";
+        marker.eventId="unsent-original-oca-exit-001";
+        marker.requestHash="hepta-v1-sha256:"+std::string(64,'a');
+        marker.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'b');
+        marker.side="SELL";marker.qty=89200;marker.price=1.11825;
+        if(!journal.AppendDurableCritical(marker))
+            throw std::runtime_error("H1_OCA_FLOOR_CRITICAL_MARKER_WRITE_FAILED");
+        ExecutionCoordinatorCallbacks callbacks;
+        ExecutionCoordinator owner(journal,callbacks);
+        std::int64_t next=0;std::string reason;
+        if(!owner.GetDurableResearchH1NativeIdFloor(
+                "DU123",next,reason) || next!=1001)
+            throw std::runtime_error("H1_OCA_EXIT_DURABLE_NATIVE_ID_FLOOR_LOST");
+        // Broker numeric IDs are client-scoped even after selecting another
+        // DU account; the original unsent exit must not be reused.
+        if(!owner.GetDurableResearchH1NativeIdFloor(
+                "DU-SECOND",next,reason) || next!=1001)
+            throw std::runtime_error("H1_OCA_EXIT_DURABLE_CROSS_DU_FLOOR_LOST");
+        Fixture restarted;
+        const auto epoch=restarted.adapter.GetConnectionEpoch();
+        if(!restarted.adapter.AdoptDurableResearchH1NativeIdFloor(
+                "DU123",73,epoch,next,reason))
+            throw std::runtime_error("H1_OCA_EXIT_RESTART_ADOPT_FAILED");
+        IBResearchH1LocalIdPair afterRestart;
+        if(!restarted.adapter.ReserveResearchUnsentH1LocalIdPair(
+                "DU123",73,epoch,afterRestart,reason) ||
+           afterRestart.parentOrderId!=1001 ||
+           afterRestart.childOrderId!=1002 || restarted.broker->places!=0)
+            throw std::runtime_error("H1_OCA_EXIT_NATIVE_ID_REUSED_AFTER_OMS_RESTART");
+        // An invalid write-once EXIT marker is not an observed zero floor.
+        // Fail closed, rather than adopt a forged native cursor.
+        auto malformed=marker;
+        malformed.orderId=9000;
+        malformed.eventId.clear();
+        if(!journal.AppendDurableCritical(malformed))
+            throw std::runtime_error("H1_OCA_MALFORMED_CRITICAL_RECORD_NOT_RETAINED");
+        next=0;
+        if(owner.GetDurableResearchH1NativeIdFloor(
+                "DU123",next,reason) ||
+           reason!="H1_RECOVERED_NATIVE_ID_EVENT_INVALID" || next!=1)
+            throw std::runtime_error("H1_OCA_MALFORMED_RECORD_MINTED_NATIVE_FLOOR");
+    }
+    if(::unlink(path.c_str())!=0)
+        throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_UNLINK_FAILED");
+}
+
 void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
     Fixture fixture;
     IBResearchH1LocalIdPair pair;
@@ -1664,6 +1733,7 @@ void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
 
 int main() {
     TestAdapterReinitNeverReusesUnsentH1NativeIds();
+    TestDurableH1OcaExitNativeIdFloorAfterRestart();
     TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending();
     TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
     TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds();
