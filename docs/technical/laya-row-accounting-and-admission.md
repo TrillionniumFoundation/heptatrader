@@ -104,3 +104,54 @@ waiting trained artifact is checked before acquiring the heavy-worker lease or
 rebuilding all rewards/quotes. This avoids wasting the shared lease on a known
 no-training iteration. Waiting candidates are reconciled after restart and the
 original trial's closure without repeating optimizer steps.
+
+## Deployed follow-through on 2026-10-16 UTC
+
+This section supersedes the earlier staged-only status. The validated row and
+observed-request patch was deployed to both Laya supervisors. The subsequent
+viable/deferred queue update was deployed to Trainer only. Trading Execution,
+Gateway, EURUSD driver and BTC driver retained their original process identities.
+No trading model was selected or promoted.
+
+### Autonomous training, not a replay
+
+The live supervisor selected fresh eligible rows and committed candidate
+`387481b75280ce115161949ba2e2cd5ab8cef7770e9f1ecfe4d0b096543d56a6`.
+All 32 reserved rows participated in gradients, all 32 were applied and measured,
+and none rolled back. There were 16 steps on Pocket4 gfx1150, 74.287 seconds
+training time, and 1,590,521,344 bytes peak GPU allocation. Completed jobs rose
+from 37 to 38; the one historical failed job was retained. The new artifact
+was not registered as an overlapping formal trial or promoted.
+Candidate manifest SHA256: `181d9fa606dc697d890f4272fc852646af54fb4451be0f2f114e9738f44aeb13`.
+
+### One independently observed five-minute future window
+
+A separate operational check used the already frozen predecessor candidate
+`d0d410d3f78485d0996bd91a1b9e869c8adfec713938055c8ea141e68983fe3d`,
+not the newly trained candidate above. Input was 799 milliseconds old at
+selection; quote read took 538.646 milliseconds. Prediction was committed
+3,915 milliseconds after its quote anchor, before the five-minute outcome.
+The real outcome was observed with no path gap and a valid original quote
+receipt. This is one operational success, NOT an 88/90 coverage acceptance,
+a statistical qualification or a profit claim. Candidate interval hit was
+false, and action-head Brier was 2.0; calibration remains unresolved.
+
+### Live restart and retained evidence
+
+The deployed Trainer was gracefully drained and restarted after completing
+the candidate. Job identities, consumed-row count, candidate hash and trial
+counter were unchanged; the counter remains 38. It recovered exactly one
+waiting candidate and state `CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END`.
+Original trial38 keeps its original end time and missing-window records.
+The evaluator still collects its results; no retrospective repair was made.
+
+The final checks preserved 112 historical manifest/plan/qualification files,
+1,175 historical outcome/adapter files and all 38 current original plan hashes.
+The final code passed 3,437 core, 114 source, 705 historical-training and 50
+Laya/native-worker tests, with no skips. Twenty new queue/deferral tests cover
+the original trial bound and avoiding unnecessary shared-lock acquisition.
+
+Rollback copies are retained, but a downgrade while a new deferred candidate
+exists has NOT been validated: the old scheduler could register it too early.
+Do not claim old-version rollback acceptance from the successful new-version
+restart. Hosted CI status is independent of these Pocket4 test results.
