@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -309,6 +310,19 @@ def one_preview(bid:float,profile:dict|None=None)->dict:
         if thread:thread.join(timeout=2)
     return report
 
+def fsync_directory(path:Path)->None:
+    """Sync containing inode metadata; fsync(file) does not seal its name."""
+    flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd=os.open(path,flags)
+    try:
+        st=os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError("EVIDENCE_DIRECTORY_NOT_DIRECTORY")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--paper-whatif",action="store_true")
@@ -331,9 +345,15 @@ def main():
         ap.error("explicit --evidence-dir required")
     root=a.evidence_dir
     if root.is_symlink():raise RuntimeError("SYMLINKED_EVIDENCE_ROOT")
-    root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if root.parent.is_symlink() or not root.parent.is_dir():
+        raise RuntimeError("EVIDENCE_PARENT_MUST_PREEXIST")
+    # Do not silently mkdir arbitrary ancestor chains; their directory
+    # entries would remain uncommitted after fsync of only the leaf.
+    root.mkdir(mode=0o700,exist_ok=True)
     if root.stat().st_uid!=os.geteuid() or root.stat().st_mode & 0o077:
         raise RuntimeError("EVIDENCE_SCOPE_NOT_PRIVATE")
+    fsync_directory(root.parent)
+    fsync_directory(root)
     # Durable ONE-SHOT guard exists BEFORE ANY API preview attempt.
     lease=root/("whatif-preview-gtc-oca-executed-once.lock"
                 if a.paper_whatif_gtc_oca else "whatif-preview-executed-once.lock")
@@ -341,6 +361,9 @@ def main():
     with os.fdopen(fd,"w") as f:
         f.write(json.dumps({"scope":"ONE_PAPER_WHATIF", "created_ms":now})+"\n")
         f.flush();os.fsync(f.fileno())
+    # The marker's NAME must also survive power loss before first IB request.
+    # On failure, keep its (possibly visible) marker; never replay on uncertainty.
+    fsync_directory(root)
     before=observe_orders()
     receipt=one_preview(bid,profile)
     try:
@@ -366,6 +389,8 @@ def main():
                if a.paper_whatif_gtc_oca else "whatif-preview-result.json")
     fd=os.open(dest,os.O_EXCL|os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,"wb") as f:f.write(payload);f.flush();os.fsync(f.fileno())
+    # The private immutable original receipt also needs a persistent dentry.
+    fsync_directory(root)
     print(json.dumps({"status":receipt.get("status"),
         "paper_preview_not_protection":True,
         "broker_active_orders_equal":receipt.get("active_orders_equal"),

@@ -288,4 +288,82 @@ class PreviewBoundaries(unittest.TestCase):
             self.assertFalse((root/"whatif-preview-result.json").exists())
             self.assertFalse((root/"whatif-preview-executed-once.lock").exists())
 
+    def test_durable_directory_marker_precedes_any_broker_preview(self):
+        import time
+        attempts=[]
+        fsynced=[]
+        def read(tool):
+            if tool!="market.get_quote":raise AssertionError("unexpected tool")
+            return {"instrument":"EUR.USD","stale":False,
+                    "subscription_state":"active",
+                    "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+        original=p.fsync_directory
+        def seal(path):
+            fsynced.append(str(path))
+            return original(path)
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=read), \
+                 patch.object(p,"observe_orders",return_value={"count":0,"fingerprint":"ok"}), \
+                 patch.object(p,"one_preview",side_effect=lambda *args: (
+                     attempts.append(args) or {"status":"SYNTHETIC_PREVIEW",
+                     "exact_echo_verified":False,"execution_callbacks":0})), \
+                 patch.object(p,"fsync_directory",side_effect=seal), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                p.main()
+            self.assertEqual(attempts[0][1]["scope"],"gtc_oca")
+            self.assertEqual(fsynced,[str(root.parent),str(root),str(root),str(root)])
+            self.assertTrue((root/"whatif-gtc-oca-result.json").exists())
+
+    def test_marker_dir_fsync_failure_refuses_preview_and_reissue(self):
+        import time
+        invoked=[]
+        def fresh(tool):
+            if tool!="market.get_quote":raise AssertionError("unexpected tool")
+            return {"instrument":"EUR.USD","stale":False,
+                    "subscription_state":"active",
+                    "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            # Two directory fsyncs seal the evidence directory itself; the
+            # third secures the O_EXCL one-shot marker BEFORE any API request.
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=fresh), \
+                 patch.object(p,"fsync_directory",
+                              side_effect=[None,None,OSError("fsync directory unavailable")]), \
+                 patch.object(p,"observe_orders",side_effect=AssertionError("read after fsync failure")), \
+                 patch.object(p,"one_preview",side_effect=lambda *a: invoked.append(a)):
+                with self.assertRaisesRegex(OSError,"fsync directory unavailable"):
+                    p.main()
+            self.assertEqual(invoked,[])
+            self.assertTrue((root/"whatif-preview-gtc-oca-executed-once.lock").exists())
+            self.assertFalse((root/"whatif-gtc-oca-result.json").exists())
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=fresh), \
+                 patch.object(p,"one_preview",side_effect=lambda *a: invoked.append(a)):
+                with self.assertRaises(FileExistsError):
+                    p.main()
+            self.assertEqual(invoked,[])
+
+    def test_evidence_parent_required_without_creating_ancestor_chain(self):
+        import time
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"missing-parent"/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            fake_quote={"instrument":"EUR.USD","stale":False,
+                         "subscription_state":"active",
+                         "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",return_value=fake_quote), \
+                 patch.object(p,"one_preview",side_effect=AssertionError("preview sent")):
+                with self.assertRaisesRegex(RuntimeError,"EVIDENCE_PARENT_MUST_PREEXIST"):
+                    p.main()
+            self.assertFalse(root.parent.exists())
+
 if __name__=="__main__":unittest.main()

@@ -1333,3 +1333,29 @@ real OCA cancel/partial behavior, and driver-death continuity remain
 unverified. This shared PAPER account is actively used by the resident
 strategy; a different API client ID does NOT isolate the physical position.
 Issue #331 remains P0 OPEN.
+
+## 2026-10-16: durable one-shot WhatIf receipt names (no second Broker request)
+
+The two sealed PAPER WhatIf studies (#362 and #364) already exercised
+one real STP/DAY and one real STP/GTC+OCA preview. Their original
+Broker receipts are immutable. This update does **not** run those previews
+again or make any protective order active.
+
+The CLI previously synced each O_EXCL one-shot lock file, but not the
+containing directory. File-content fsync alone cannot guarantee that
+the newly created lock filename survives a sudden host crash, and a
+missing marker could allow another WhatIf request under uncertain Broker
+outcome. Now the evidence parent must pre-exist; the root directory
+creation is durably linked and the one-shot filename is fsynced via an
+O_DIRECTORY|O_NOFOLLOW directory descriptor **before** any Broker
+order inventory or WhatIf send. The original receipt filename is also
+directory-synced after its private file contents. A sync failure aborts
+before preview, retains any visible one-shot marker and refuses retries.
+
+Pocket4's pinned IB Python SDK regression: 19/19 tests PASS, including
+one-shot no-resend, injected directory-fsync failure before any mocked
+EClient action, receipt name persistence sequence, GTC+OCA callback echo
+and hostile wrong-account/order-status mutations. This is a narrow
+durability correction, **not** additional IBKR account approval or
+independent stop/maintenance qualification. No Broker API, strategy
+position or installed service changed in this test.
