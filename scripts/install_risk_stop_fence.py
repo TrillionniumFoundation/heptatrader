@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 GUARD_NAME = "95-risk-stop-continuity.conf"
-GUARD_TEXT = "[Unit]\nRefuseManualStop=yes\nPartOf=\n"
+GUARD_TEXT = "[Unit]\nRefuseManualStop=yes\n"
 RISK_UNITS = (
     "heptatrader-paper-driver.service",
     "heptatrader-crypto-driver.service",
@@ -27,6 +27,7 @@ RISK_UNITS = (
     "heptatrader-events.socket",
     "heptatrader-runtime.service",
     "ibgateway.service",
+    "heptatrader.target",
 )
 SHOW_PROPS = ("LoadState", "ActiveState", "SubState", "MainPID",
               "InvocationID", "RefuseManualStop", "PartOf")
@@ -68,8 +69,8 @@ def parse_show(output: str, *, is_socket: bool = False) -> dict[str, str]:
         if key not in SHOW_PROPS or key in d:
             raise StopFenceError("UNRECOGNIZED_SYSTEMD_PROPERTY")
         d[key] = value
-    # Socket units do not expose the service-only MainPID property on
-    # systemd 259. Their authenticated InvocationID is still required.
+    # Sockets and inactive target units need not expose service MainPID.
+    # An inactive target is valid: future manual start/stop must be shielded.
     if is_socket and "MainPID" not in d:
         d["MainPID"] = ""
     if set(d) != set(SHOW_PROPS):
@@ -85,18 +86,25 @@ def show_unit(name: str) -> dict[str, str]:
          *[flag for p in SHOW_PROPS for flag in ("-p", p)]],
         text=True, timeout=15,
     )
-    return parse_show(text, is_socket=name.endswith(".socket"))
+    return parse_show(text, is_socket=name.endswith((".socket", ".target")))
 
 
 def check_state(before: dict, after: dict, *, required: bool) -> None:
     for name, original in before.items():
         current = after[name]
-        if original["LoadState"] != "loaded" or original["ActiveState"] != "active":
+        is_target = name == "heptatrader.target"
+        if (original["LoadState"] != "loaded" or
+                (is_target and original["ActiveState"] not in ("active", "inactive")) or
+                (not is_target and original["ActiveState"] != "active")):
             raise StopFenceError("RISK_PATH_NOT_ACTIVE:" + name)
-        for key in ("LoadState", "ActiveState", "MainPID", "InvocationID"):
+        for key in ("LoadState", "ActiveState", "MainPID", "InvocationID", "PartOf"):
             if original[key] != current[key]:
-                raise StopFenceError("LIVE_RISK_PROCESS_CHANGED:" + name)
-        if required and (current["RefuseManualStop"] != "yes" or current["PartOf"]):
+                raise StopFenceError("LIVE_RISK_PROCESS_OR_DEPENDENCY_CHANGED:" + name)
+        # A drop-in cannot REMOVE PartOf= dependencies. We instead protect
+        # both endpoints of manual stop propagation: the exact target AND
+        # the individual eight risk-chain units. Dependency stops from a
+        # manager shutdown or external failure remain unprotected.
+        if required and current["RefuseManualStop"] != "yes":
             raise StopFenceError("EFFECTIVE_STOP_FENCE_NOT_INSTALLED:" + name)
 
 
@@ -168,8 +176,8 @@ def install(home: Path, *, persist_receipt=None) -> dict:
         after = {name: show_unit(name) for name in RISK_UNITS}
         check_state(before, after, required=True)
         report = {
-            "schema": "heptatrader.paper-stop-request-fence.v1",
-            "state": "MANUAL_AND_TARGET_STOP_REQUEST_SHIELDED_ONLY",
+            "schema": "heptatrader.paper-stop-request-fence.v2",
+            "state": "MANUAL_TARGET_AND_RISK_PATH_STOP_REQUESTS_SHIELDED_ONLY",
             "critical_limit": "NOT_INDEPENDENT_BROKER_PROTECTIVE_ORDER",
             "at_ms": int(time.time() * 1000),
             "mode": "PAPER",
@@ -179,7 +187,8 @@ def install(home: Path, *, persist_receipt=None) -> dict:
             "unit_dropins": paths,
             "install_status": original_states,
             "all_effective_refuse_manual_stop": True,
-            "all_effective_part_of_target_cleared": True,
+            "manual_target_stop_refused": True,
+            "existing_part_of_dependencies_preserved": True,
             "original_unit_invocations_preserved": True,
             "protected_services_restarted": 0,
             "broker_orders_sent": 0,
@@ -188,6 +197,7 @@ def install(home: Path, *, persist_receipt=None) -> dict:
                 "HOST_SHUTDOWN", "MANAGER_PROCESS_TERMINATION",
                 "DEPENDENCY_FAILURE", "SIGKILL", "NETWORK_OR_BROKER_FAILURE",
                 "BROKER_NATIVE_STOP_ABSENT",
+                "NONMANUAL_TARGET_DEPENDENCY_STOP",
             ],
         }
         # Include the private activation receipt in the SAME rollback scope.

@@ -27,21 +27,26 @@ def status(home, name):
     unit = home / ".config/systemd/user" / (name + ".d") / fence.GUARD_NAME
     armed = unit.exists() and unit.read_text() == fence.GUARD_TEXT
     return {
-        "LoadState": "loaded", "ActiveState": "active",
-        "SubState": "running", "MainPID": "31337",
-        "InvocationID": name + "-fixed", "RefuseManualStop": "yes" if armed else "no",
-        "PartOf": "" if armed else "heptatrader.target",
+        "LoadState": "loaded",
+        "ActiveState": "inactive" if name == "heptatrader.target" else "active",
+        "SubState": "dead" if name == "heptatrader.target" else "running",
+        "MainPID": "" if name == "heptatrader.target" else "31337",
+        "InvocationID": "" if name == "heptatrader.target" else name + "-fixed",
+        "RefuseManualStop": "yes" if armed else "no",
+        "PartOf": "" if name in ("ibgateway.service", "heptatrader.target")
+                  else "heptatrader.target",
     }
 
 
 class RiskStopFenceContract(unittest.TestCase):
     def test_exact_chain_and_broker_scope(self):
-        self.assertEqual(len(fence.RISK_UNITS), 8)
+        self.assertEqual(len(fence.RISK_UNITS), 9)
         self.assertIn("heptatrader-execution.socket", fence.RISK_UNITS)
         self.assertIn("heptatrader-events.socket", fence.RISK_UNITS)
         self.assertIn("heptatrader-runtime.service", fence.RISK_UNITS)
         self.assertIn("ibgateway.service", fence.RISK_UNITS)
-        self.assertEqual(fence.GUARD_TEXT, "[Unit]\nRefuseManualStop=yes\nPartOf=\n")
+        self.assertIn("heptatrader.target", fence.RISK_UNITS)
+        self.assertEqual(fence.GUARD_TEXT, "[Unit]\nRefuseManualStop=yes\n")
 
     def test_wrong_broker_profile_refused(self):
         with tempfile.TemporaryDirectory() as td:
@@ -93,13 +98,26 @@ class RiskStopFenceContract(unittest.TestCase):
         name = fence.RISK_UNITS[0]
         before = {name: status(Path("/nowhere"), name)}
         after = {name: {**before[name], "MainPID": "44",
-                        "RefuseManualStop": "yes", "PartOf": ""}}
-        with self.assertRaisesRegex(fence.StopFenceError, "LIVE_RISK_PROCESS_CHANGED"):
+                        "RefuseManualStop": "yes"}}
+        with self.assertRaisesRegex(fence.StopFenceError, "LIVE_RISK_PROCESS_OR_DEPENDENCY_CHANGED"):
             fence.check_state(before, after, required=True)
         after[name]["MainPID"] = before[name]["MainPID"]
-        after[name]["PartOf"] = "heptatrader.target"
+        after[name]["PartOf"] = "some-wrong.target"
+        with self.assertRaisesRegex(fence.StopFenceError, "LIVE_RISK_PROCESS_OR_DEPENDENCY_CHANGED"):
+            fence.check_state(before, after, required=True)
+        after[name]["PartOf"] = before[name]["PartOf"]
+        after[name]["RefuseManualStop"] = "no"
         with self.assertRaisesRegex(fence.StopFenceError, "EFFECTIVE_STOP_FENCE_NOT_INSTALLED"):
             fence.check_state(before, after, required=True)
+
+    def test_inactive_target_is_allowed_but_target_guard_required(self):
+        name = "heptatrader.target"
+        before = {name: status(Path("/nowhere"), name)}
+        self.assertEqual(before[name]["ActiveState"], "inactive")
+        after = {name: {**before[name], "RefuseManualStop": "yes"}}
+        fence.check_state(before, after, required=True)
+        with self.assertRaisesRegex(fence.StopFenceError, "EFFECTIVE_STOP_FENCE_NOT_INSTALLED"):
+            fence.check_state(before, before, required=True)
 
     def test_atomic_install_no_service_stop_and_idempotent(self):
         with tempfile.TemporaryDirectory() as td:

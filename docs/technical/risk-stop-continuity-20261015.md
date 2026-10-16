@@ -16,46 +16,70 @@ contains a 20 bp MAX_ADVERSE threshold, but the observed fill-to-fill
 difference was 64.61 bp. This does **not** establish a counterfactual
 20-bp execution price, the historical exit trigger, or who stopped the units.
 
-## Immediate no-stop design
+## Immediate manual-stop shield on live Pocket4
 
-The original user units use `PartOf=heptatrader.target`; a target stop
-propagates to the FX and BTC drivers, Execution, the two Execution sockets,
-the runtime directory oneshot and Tool Gateway. Some are also connected
-through `Requires`, so protecting only the driver is insufficient.
+The currently installed user units retain `PartOf=heptatrader.target`.
+A target stop can cascade to FX/BTC Drivers, Execution and its sockets,
+runtime oneshot and Gateway. This is the failure mode implicated in #331.
 
-For the **entire risk-exit runtime path**, the unit source removes that
-`PartOf` edge and enables `RefuseManualStop=yes`. The Pocket4 installer
-`scripts/install_risk_stop_fence.py` also shields the external
-`ibgateway.service`, which is not a repository-owned unit. Exact affected
-units are hardcoded; caller cannot choose arbitrary units.
+**Corrected design (verified on real systemd 259):** A drop-in may add
+`RefuseManualStop=yes`, but a dependency such as `PartOf=` **cannot
+be removed with an empty drop-in**. Systemd's official unit manual
+requires a full unit replacement to remove an existing dependency.
+The first installer correctly rejected the ineffective old drop-in and
+rolled back without stopping processes. This corrected installer does
+not use a fragile full-unit replacement while the owner is trading.
 
-The installer:
+Instead, install the same `[Unit] RefuseManualStop=yes` drop-in on
+**all eight existing risk-chain units AND `heptatrader.target` itself**.
+Direct user `systemctl stop`/restart of the shielded risk units is
+rejected; manual stopping or restarting the target is rejected too.
+Existing `PartOf` edges are **preserved**, not falsely reported removed.
+An inactive target may be shielded without starting it.
 
-- Requires the current user (non-root), the existing owner-private PAPER/4002
-  profile (no symlink or duplicate broker identity fields), and all eight
-  named units already active.
-- Publishes one identical user-owned `95-risk-stop-continuity.conf` drop-in
-  for each unit. Refuses symlinked/conflicting paths and never overwrites a
-  modified existing drop-in.
-- Runs only `systemctl --user daemon-reload`, **not** start, stop, restart,
-  enable, disable, an IB API command or any order command.
-- Re-reads effective `RefuseManualStop=yes` and empty `PartOf` on every
-  unit, checks original PID and InvocationID are unchanged, and preserves
-  an immutable local activation receipt.
-- The private write-once activation receipt is part of the **same install
-  transaction**: an ENOSPC/fsync failure must restore the original stop
-  policy, rather than leave a shield running with no audit identity. Partial
-  drop-ins and partial receipts are removed on failed writes.
-- Rolls back only its newly created exact-byte drop-ins if effective
-  verification or receipt persistence fails; it never attempts a service
-  stop during rollback. Pre-existing verified drop-ins remain unchanged.
+The installer `scripts/install_risk_stop_fence.py`:
 
-This means **direct `systemctl --user stop` of a shielded unit is rejected**.
-A manual stop of `heptatrader.target` also no longer propagates to the
-eight shielded units. On Pocket4 systemd 259 both properties were
-confirmed against an independent synthetic user unit and synthetic target:
-direct manual stop was rejected and stopping the test target left the
-test process alive.
+- Requires the current non-root owner, existing owner-private PAPER/4002
+  profile, eight already-active risk-chain units and a loaded target
+  (which can be active or inactive).
+- Publishes the owner-only `95-risk-stop-continuity.conf` drop-in for
+  each of nine exact names, including external `ibgateway.service` and
+  `heptatrader.target`. No arbitrary unit input is accepted.
+- Uses only `systemctl --user daemon-reload`, **not** stop/start/restart,
+  IB API calls, new orders, or changes to original unit ExecStart.
+- Re-reads effective `RefuseManualStop=yes` for all nine and verifies
+  exact original `PartOf`, active state, PID and InvocationID remain
+  unchanged. Existing conflicting/symlinked drop-ins are refused.
+- Persists a private, write-once activation receipt with the same rollback
+  boundary as all newly created drop-ins. On failure, only exact bytes
+  created by that run are removed, followed by another daemon-reload;
+  no risk service is stopped in rollback.
+
+**Real Pocket4 positive test:** independent synthetic service with
+`PartOf=<synthetic-target>` retained the same main PID while
+`systemctl --user stop <service>`, `stop <target>`, and
+`restart <target>` were all rejected. The synthetic units were
+removed after the test. The corrected installer then actually enabled
+the nine live stop-request guards without restarting any process;
+its immutable receipt is at
+
+`~/.local/state/heptatrader/operator-evidence/risk-stop-target-fence-activation-20261015/stop-shield-1792119183745602581.json`
+
+with SHA256
+`fa8d47eb53aa915db536263ee9f5f1f8b2f9f179686a18472c6f1990fee010d4`.
+
+An **independent second read** verified all nine unit modes/properties and
+identical 0600 owner-owned drop-ins. Pre- and post-install InvocationID
+and main PID match; Broker orders sent: zero.
+
+**Limits**: A manager shutdown, dependency-triggered (nonmanual) target
+stop, SIGKILL, system failure, service crashes and broker disconnects
+are not prevented. This manual stop-request shield is a concrete
+defense against repeating accidental operator/target stop, **not**
+an independent Broker-native protective stop.
+The versioned unit sources also remove `PartOf` for future releases,
+but this live drop-in install deliberately does not claim that the
+existing symlinked release source dependency was removed.
 
 **This deliberately changes maintenance semantics.** A normal rollout
 that stops one of these units now fails closed. Do not bypass the shield
