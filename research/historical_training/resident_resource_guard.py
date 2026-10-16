@@ -254,7 +254,22 @@ def evaluator_idle_poll_seconds(gate,tasks):
 def guarded_evaluator_class(base,gate):
     class GuardedEvaluator(base):
         def launch(self,path,slot):
-            if self.tasks or not gate.acquire({'plan':str(path),'slot':slot}):return
+            if self.tasks:
+                # Older frozen supervisor classes don't implement the new
+                # diagnostic method. Never crash their preexisting guard.
+                receipt=getattr(self,'record_admission_deferral',None)
+                if callable(receipt):
+                    receipt(path,slot,['PRIOR_EVALUATOR_CHILD_ACTIVE'])
+                return
+            if not gate.acquire({'plan':str(path),'slot':slot}):
+                prior=getattr(gate,'last_admission',None)
+                reasons=prior.get('reasons') if isinstance(prior,dict) else None
+                if not isinstance(reasons,list) or not reasons:
+                    reasons=['RESOURCE_ADMISSION_UNCLASSIFIED']
+                receipt=getattr(self,'record_admission_deferral',None)
+                if callable(receipt):
+                    receipt(path,slot,reasons)
+                return
             try:super().launch(path,slot)
             except Exception:gate.release();raise
         def reap(self):

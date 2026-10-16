@@ -344,7 +344,8 @@
         "tests/python/test_laya_price_original_campaign.py",
         "tests/python/test_laya_price_original_shadow_runner.py",
         "tests/python/test_laya_price_original_resume_integrity.py",
-        "tests/python/test_laya_price_original_deadline_scheduler.py"
+        "tests/python/test_laya_price_original_deadline_scheduler.py",
+        "tests/python/test_laya_evaluator_admission_receipt.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

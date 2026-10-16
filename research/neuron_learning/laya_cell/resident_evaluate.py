@@ -75,6 +75,39 @@ class Evaluator:
   self.stop=True
   for p,stream,started in self.tasks.values():
    if p.poll() is None:p.terminate()
+ def record_admission_deferral(self,path,slot,reasons):
+  """Preserve first actual admission refusal, NOT a terminal prediction failure.
+
+  Later attempts may still succeed within the frozen input window.
+  """
+  path=Path(path);plan=read_json(path)
+  if (type(slot) is not int or not 0<=slot<validate_plan_rule(plan)['slots']
+      or plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'})
+      or type(reasons) is not list or not reasons or len(reasons)>32
+      or any(type(reason) is not str or not reason for reason in reasons)):
+   raise ContractError('PREWARM_DENIAL_IDENTITY_OR_REASONS')
+  # A genuine OS/source error can contain a long path. Its occurrence must
+  # not crash the evaluator just because the human diagnostic was verbose.
+  # Bound the private evidence without changing the guard's refusal.
+  reason_codes=[reason[:160] for reason in reasons]
+  receipt=path.parent/f'admission-denial-{slot:03}.json'
+  if receipt.exists():
+   old=read_json(receipt)
+   if (old.get('schema')!='heptatrader.laya-evaluator-first-admission-denial.v1'
+       or old.get('plan_id')!=plan['plan_id']
+       or old.get('candidate_id')!=plan['candidate_id']
+       or old.get('slot')!=slot or old.get('automatic_trading') is not False
+       or old.get('first_denial_only') is not True):
+    raise ContractError('PREWARM_DENIAL_RECEIPT_CHANGED')
+   return
+  write_once(receipt,{
+   'schema':'heptatrader.laya-evaluator-first-admission-denial.v1',
+   'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],
+   'slot':slot,'at_ms':int(time.time()*1000),
+   'reason_codes':reason_codes,'reason_truncated':any(len(reason)>160 for reason in reasons),'first_denial_only':True,
+   'possible_retry_until_frozen_input_end':True,
+   'not_proof_of_every_failed_attempt':True,
+   'automatic_trading':False,'broker_orders_sent':0,'model_promoted':False})
  def launch(self,path,slot):
   key=(str(path),slot)
   stream=(path.parent/f'prediction-{slot:03}.log').open('a')
@@ -147,8 +180,21 @@ class Evaluator:
       write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
        'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now});continue
      if now>end:
+      first=path.parent/f'admission-denial-{slot:03}.json'
+      provenance={}
+      if first.exists():
+       denial=read_json(first)
+       if (denial.get('schema')!='heptatrader.laya-evaluator-first-admission-denial.v1'
+           or denial.get('plan_id')!=plan['plan_id']
+           or denial.get('candidate_id')!=plan['candidate_id']
+           or denial.get('slot')!=slot
+           or denial.get('automatic_trading') is not False):
+        raise ContractError('PREWARM_DENIAL_OUTCOME_IDENTITY')
+       provenance={'first_admission_denial_sha256':sha_file(first),
+        'first_admission_denial_reasons':denial['reason_codes'],
+        'not_proof_of_every_denial_attempt':True}
       write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
-       'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now});continue
+       'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance});continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
      if now<start-90000 or len(self.tasks)>=2:continue
      # An expired or failed earlier slot can become irrevocably censored
