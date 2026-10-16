@@ -704,3 +704,76 @@ callbacks, partial/cancel/reconnect proof, and continuous working stop
 through Driver downtime. The online EUR/USD PAPER position is untouched.
 PR #337, #341, #342 and this stacked research work remain nonproduction;
 Issue #331 stays OPEN.
+
+## 2026-10-15 — Native SDK H1 parent/stop wire-preparation and mock transport
+
+The existing Execution owner/OMS chain now has a **research-only** bridge
+from its frozen, durable H1 reservation to *native IBKR C++ SDK* `Contract`
+and `Order` fields. `ib_native_h1_pair_research.h` verifies the exact
+original frozen order H1 values (45-byte parent/child/OCA), account,
+conId 12087792, side, quantity, confirmed 3188 minTick `0.00005`,
+parent and child IDs, and constructs a `MKT/DAY/transmit=false` parent
+and reverse-side `STP/GTC/transmit=true` child with exact `parentId`.
+The proposed OCA group and `ocaType=1` are **not broker-qualified**.
+
+The **transport callback exists only under the
+`HEPTA_IB_NATIVE_BRACKET_FAKE_DISPATCH_TEST` compile definition**, set for
+a single native CTest binary and never for the installed execution adapter.
+It writes a critical fsynced `bracket_parent_send_attempt` before the
+first mocked `EClient::placeOrder` call and a separate critical fsynced
+`bracket_child_send_attempt` before the last mock call. The test uses
+actual native SDK Order objects and real isolated `OmsJournal` bytes
+but a fake EClient that cannot send network traffic.
+
+Positive local *call-order* and injected exceptions on parent and child
+were tested. In all cases the outcome stays **UNKNOWN or
+LocalCallsReturnedBrokerUnconfirmed**; no active server-held stop, no
+cancel/partial/OCA fill evidence, no retry permission and no Driver
+maintenance approval are produced. Replaying the journal prevents
+retransmission of both native IDs.
+
+Pocket4 IB-API-ON CMake Release eight relevant CTests PASS; independent
+C++11 warnings-as-errors test under AddressSanitizer+UBSan PASS. This is
+not a working native broker transport in production; **no actual
+EClient::placeOrder was invoked**, and no PAPER positions or resident
+services changed. Production integration must come only through the
+current Coordinator's authoritative owner fence, fresh broker order
+inventory, complete OMS/ID floor, independent risk admission and the
+same existing Adapter API lock. A positive isolated IBKR PAPER bracket,
+OCA-safe ordinary close, disconnect and Driver-death test remain
+mandatory before retiring Issue #331.
+
+## 2026-10-16 — Verify the actual IBKR SDK PLACE_ORDER wire encoder, offline
+
+The earlier H1 parent/stop mock verified the C++ `Order` fields but did
+not call the **real TWS C++ API's** `EClient::placeOrder` serializer.
+The new `hepta_ib_native_h1_sdk_wire_encoding_tests` uses the exact
+installed TWS 10.30 SDK, a `DefaultEWrapper`, and a subclass of
+`EClient` that overrides **every network egress method** to capture
+memory buffers; it owns no socket or `ETransport`. A simulated
+connection handshake never reaches a broker.
+
+For a synthetic frozen EUR/USD PAPER H1 group, it inspects two actual
+`PLACE_ORDER` opcode frames. The first is MKT/DAY with
+`transmit=false`, `parentId=0`; the second is STP/GTC with
+`transmit=true`, `parentId=<original parent>`, `ocaGroup=<H1 OCA>`,
+`ocaType=1`, stop auxPrice snapped to verified 0.00005, and exact
+synthetic account/conId/client/quantity. The SDK's Decimal textual
+serialization can have a non-integer representation even for integer
+quantity; the test checks full-token numeric equality rather than
+assuming the string is exactly `89200`.
+
+It then mutates **one SDK field at a time** and checks the encoded
+packet changes in exactly one corresponding token: parentId, transmit,
+ocaType, TIF, original H1 orderRef, OCA group and stop auxPrice. The
+test also verifies the wire's consecutive orderRef/transmit/parentId
+sequence and rejects duplicate H1 references.
+
+This is a **real SDK byte-encoding test only**, not a validated TWS
+handshake or Broker response. The stub uses an explicitly synthetic
+SDK server version (200), not a current broker-negotiated version.
+It cannot prove Broker accepts GTC/STP/OCA, persists an untransmitted
+parent, confirms Permanent IDs or will execute a stop after Driver
+death. Zero real `placeOrder`, no account network connection and no
+resident service changes. It is compiled only in the existing
+IB-API-enabled core CTest lane, and adds no production sender.
