@@ -71,3 +71,43 @@ closed episodes remain unassigned.
 
 Scientific limit: no ex-post duration bucket or historical bar backfill
 becomes proof of cost-positive live alpha. No model promotion authorized.
+
+## Final exact-baseline Core differential on Pocket4
+
+The new original driver SHA256 is
+`fa8d4d2e8a0255af62734b54285c8c90890499c25819d53e8cda9fe7d5eeead3`.
+The **repository source** BTC economics adapter and cost-aware research adapter
+now pin this exact reviewed base; the original live installed release pins
+have **not** been changed. The cost adapter forwards a non-null original
+`exit_reason` and keeps the legacy no-keyword call shape when reason is
+absent. The existing old close-provenance tests were updated so they no longer
+mistakenly require optional quote metadata to block risk exits.
+
+Using the **same Pocket4 machine, ROCm Python venv, `PYTHONPATH`, and nice
+priority**, a saved unmodified-main baseline and saved revised-head Core
+results were compared:
+
+| Source | Total Core tests | Failed tests | Import/runtime errors |
+| --- | ---: | ---: | ---: |
+| Unmodified main `155b17c` | 3,784 | 28 | 24 |
+| Candidate `6f8f6b1` | 3,789 | 28 | 24 |
+
+The 52 sorted distinct error/failure identities are **byte-identical** between
+these two runs. Incremental failure/error identities: **zero**. This is a
+**no-new-failures differential**, not a full green Core suite; baseline
+environment/self-hosted/C++ workflow errors remain real and unchanged.
+Additionally, 84 directly relevant trader/BTC/quote/receipt tests and 10
+cost-wrapper compatibility tests passed in isolation.
+
+Immutable-at-analysis local logs under:
+`~/.local/state/heptatrader/operator-evidence/close-failopen-core-20261016/`
+
+- `baseline-main-core.log`, SHA256
+  `364dc6f6a20f264e9a1899486ea47967323e40cfbb4e762654b79aa79cadcc3e`;
+- `candidate-final-parity-core.log`, SHA256
+  `7ea5f3d4b651f5a74cc9a3e85607159f83d3692d6ccff8230073a7774c38d815`;
+- `candidate-vs-base-issue-delta.txt` is empty.
+
+Thus the patch is source-integratable with the reviewed current baseline,
+while a live operator-managed FX Driver cutover remains separately not
+authorized by the maintenance-stop shield.
