@@ -62,3 +62,30 @@ configuration, drain only Laya supervisors, preserve existing trials, and compar
 historical artifact hashes and unrelated service identities after switching.
 Do not claim GPU training completion or improved forecast coverage solely from
 these unit tests or from systemd active state.
+
+## Actual Pocket4 GPU validation and deployment status
+
+An independent historical-data replay completed on Pocket4 gfx1150 using the
+original shared heavyweight lock and worker sandbox. It did not register a
+formal trial, update the live scheduling ledger, or promote a model.
+
+- 32 reserved rows, 32 backward-pass rows, 32 applied rows, 32 measured rows.
+- 16 optimizer steps; zero rolled-back rows.
+- Training wall time 73.108 seconds; total worker time 76.347 seconds.
+- Peak GPU allocation 1,590,521,344 bytes.
+- Candidate manifest SHA256: `91b358a5c4aa66e1cec67fbbc1b1f53ba2eccdb0753cc5b72bcb746df987b01f`.
+
+This is an implementation/receipt check, not out-of-sample forecast or profit
+evidence. The action-label fixture remained entirely ESCALATE; action-head
+calibration and generalization are not fixed by the accounting change.
+
+Post-validation checks retained 112 historical manifests/plans/qualifications
+and 1,175 historical outcome/adapter files byte-for-byte. Laya, Execution,
+Gateway, and both trading-driver process identities were unchanged.
+
+Production service-configuration preparation was blocked by the execution
+channel. No runtime unit was replaced, reloaded, stopped, or restarted. The
+release is staged and hash-verified, NOT deployed. Existing trial38 was
+created independently by the old runtime, not this patch; its original dates
+and missed-window records are retained. Source completion, GPU validation,
+production cutover, and future-coverage acceptance are separate statuses.
