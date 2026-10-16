@@ -30,3 +30,6 @@ Broker dispatch drain, same-account global order status across other
 IB client IDs, an owner-authorized maintenance STOP permit, or a Broker
 native protective STP/OCA surviving Driver death. P0 issue #331 stays open.
 This source patch neither sends an order nor restarts resident trading units.
+
+Production OpenAndPinUserOwned accepts only reviewed user-control paths.
+Temporary control directories remain test fixtures, not live entry paths.
