@@ -1437,6 +1437,82 @@ bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
     return true;
 }
 
+bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalOcaExitId(
+    const std::string& expectedPaperAccount, int expectedClientId,
+    std::uint64_t expectedConnectionEpoch, long originalStopOrderId,
+    IBResearchH1LocalExitId& out, std::string& reason)
+{
+    out = IBResearchH1LocalExitId();
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    const std::int64_t maxId =
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
+    // The caller's stop ID is NOT trusted Broker evidence. This is only an
+    // UNSENT local allocation; actual OCA parent/stop proof belongs to the
+    // exact Execution Owner and the Broker open-order inventory.
+    if (expectedConnectionEpoch == 0 ||
+        expectedConnectionEpoch != m_connectionEpoch ||
+        expectedClientId < 1 || expectedClientId != m_cfg.clientId ||
+        expectedPaperAccount != m_cfg.account ||
+        expectedPaperAccount.size() < 3 ||
+        expectedPaperAccount.compare(0, 2, "DU") != 0 ||
+        originalStopOrderId < 1 ||
+        // Do not let a caller-chosen high synthetic stop ID burn a large
+        // range of genuine native order IDs. The local cursor must already
+        // have consumed this stop ID in this process. This still does NOT
+        // prove a working Broker stop or original Owner authority.
+        static_cast<std::int64_t>(originalStopOrderId) >=
+            m_localOrderSeed ||
+        static_cast<std::int64_t>(originalStopOrderId) >= maxId ||
+        m_cfg.readOnly || !m_connected || !m_api ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        reason = "IB_H1_LOCAL_OCA_BROKER_OWNER_OR_STOP_SCOPE_INVALID";
+        return false;
+    }
+    const long floor = m_api->GetLastValidOrderId();
+    if (floor <= 0 || static_cast<std::int64_t>(floor) > maxId ||
+        m_localOrderSeed <= 0 || m_localOrderSeed > maxId) {
+        reason = "IB_H1_LOCAL_OCA_NATIVE_ID_FLOOR_UNAVAILABLE";
+        return false;
+    }
+    const std::int64_t first = std::max<std::int64_t>(
+        std::max<std::int64_t>(floor, m_localOrderSeed),
+        static_cast<std::int64_t>(originalStopOrderId) + 1);
+    if (first < 1 || first > maxId) {
+        reason = "IB_H1_LOCAL_OCA_NATIVE_ID_EXHAUSTED";
+        return false;
+    }
+    // Burn even if the callback raises its Broker floor during allocation;
+    // a failed local candidate is NOT permission to reuse a consumed ID.
+    m_localOrderSeed = first + 1;
+    const long verifiedFloor = m_api->GetLastValidOrderId();
+    if (verifiedFloor <= 0 ||
+        static_cast<std::int64_t>(verifiedFloor) > maxId ||
+        verifiedFloor < floor ||
+        static_cast<std::int64_t>(verifiedFloor) > first ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        if (verifiedFloor > 0 &&
+            static_cast<std::int64_t>(verifiedFloor) <= maxId &&
+            m_localOrderSeed < verifiedFloor)
+            m_localOrderSeed = verifiedFloor;
+        reason = "IB_H1_LOCAL_OCA_BROKER_FLOOR_CHANGED_BEFORE_RETURN";
+        return false;
+    }
+    out.orderId = static_cast<long>(first);
+    out.stopOrderId = originalStopOrderId;
+    out.brokerClientId = expectedClientId;
+    out.connectionEpoch = expectedConnectionEpoch;
+    out.paperAccount = expectedPaperAccount;
+    // Never mint Broker sends, fills, working protection or maintenance.
+    out.sendAuthorized = false;
+    out.maintenanceAuthorized = false;
+    reason.clear();
+    return true;
+}
+
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     const long ibOrderId = GetLastValidOrderId();

@@ -944,3 +944,43 @@ booleans do **not** prove a working PAPER stop, account-wide position/order
 coherence, or atomic OCA overfill prevention. Real IBKR API acknowledgement,
 original Execution Owner durable ordinary-exit identity, and a complete
 PAPER OCA close/partial/driver-death test remain necessary for #331.
+
+## 2026-10-16: adapter-local OCA EXIT numeric ID (UNSENT)
+
+One missing numeric link between the native H1 stop and a future Broker-OCA
+ordinary exit is now a *local-only* adapter operation:
+`HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalOcaExitId` consumes one
+positive signed 32-bit TWS order ID from **the exact same** `nextValidId`,
+observed foreign-order floor, and `m_localOrderSeed` protected by the adapter
+send mutex as the original H1 parent+child and ordinary PAPER orders.
+
+It requires the configured DU account, Broker client and current connection
+epoch, a connected writable PAPER adapter, and a caller stop numeric ID that
+has already fallen behind this adapter's consumed native cursor. An arbitrary
+huge synthetic stop ID cannot burn a large range of Broker order IDs. An
+asynchronous broker-floor jump before the second check invalidates the
+UNSENT allocation and permanently burns the attempted local ID. Reconnect,
+read-only mode, missing `nextValidId`, overflow and stale client identity
+refuse before publication. Its typed result always has
+`sendAuthorized=false` and `maintenanceAuthorized=false`.
+
+**This is deliberately NOT a Broker stop/exit reservation, real Owner proof,
+exit command, durable OMS intent or risk authority.** The caller stop ID is
+not authenticated by this operation, and the newly consumed EXIT ID is not
+persisted in the original OMS. In particular, the current
+`GetDurableResearchH1NativeIdFloor` protects the parent/stop historical
+identities, but *not yet an unsent OCA EXIT ID from this new API* across a
+fresh adapter process. Do not permit actual OCA sending or even claim a
+restart-safe EXIT until that ID is durably bound to the original Owner/H1
+stop permanent ID, recovered and burned after a crash, and checked against
+Broker-global active orders/position plus actual OCA block behavior.
+
+A separate exact native SDK field-width fix now accepts a SINGLE unsent
+OCA candidate at the last legal TWS `INT32_MAX` order ID rather than
+incorrectly requiring two spare native integers. It does not change the
+Broker's protective stop trigger or permit overfill-prone ordinary exits.
+
+Pocket4 isolated fake-Broker/real-IB-SDK regression verifies no order
+transmission, normal sends and unsent pair/exit sharing one cursor, an
+overtaking nextValidId, bad account/client/epoch, speculative huge stop IDs,
+and the final signed native ID. None of these tests contact IBKR.

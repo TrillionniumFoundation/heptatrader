@@ -1563,6 +1563,72 @@ void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
         throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_UNLINK_FAILED");
 }
 
+void TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending() {
+    Fixture fixture;
+    std::string reason;
+    auto epoch=fixture.adapter.GetConnectionEpoch();
+    IBResearchH1LocalIdPair group;
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,group,reason) ||
+       group.parentOrderId!=41 || group.childOrderId!=42)
+        throw std::runtime_error("H1_OCA_INITIAL_NATIVE_GROUP_UNAVAILABLE");
+    IBResearchH1LocalExitId exitId;
+    auto reserve=[&](const std::string& account,int client,
+                     std::uint64_t e,long afterStop) {
+        return fixture.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            account,client,e,afterStop,exitId,reason);
+    };
+    if(reserve("DU123",74,epoch,42) || exitId.orderId!=-1 ||
+       reserve("DU-OTHER",73,epoch,42) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch+1,42) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,0) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,9000) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,2147483647L) || exitId.orderId!=-1)
+        throw std::runtime_error("H1_OCA_UNVERIFIED_OWNER_STOP_OR_EPOCH_GOT_ID");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=43 ||
+       exitId.stopOrderId!=42 || exitId.brokerClientId!=73 ||
+       exitId.connectionEpoch!=epoch || exitId.paperAccount!="DU123" ||
+       exitId.sendAuthorized || exitId.maintenanceAuthorized ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_OCA_UNSENT_EXIT_MINTED_BROKER_AUTHORITY");
+    // Ordinary next-order ID shares the exact same local cursor.
+    const long ordinary=fixture.Place(
+        "hepta-v1-sha256:"+std::string(64,'d'));
+    if(ordinary!=44 || fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_EXIT_COLLIDED_WITH_ORDINARY_ID");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=45 ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_REPEATED_REQUEST_REUSED_NATIVE_ID");
+    fixture.broker->jumpFloorAfterNextRead=100;
+    if(reserve("DU123",73,epoch,42) || exitId.orderId!=-1 ||
+       reason!="IB_H1_LOCAL_OCA_BROKER_FLOOR_CHANGED_BEFORE_RETURN" ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_OVERTAKEN_BROKER_FLOOR_RETURNED_STALE_EXIT");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=100 ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_AFTER_FLOOR_JUMP_REUSED_EXIT_ID");
+    fixture.adapter.Disconnect();
+    if(reserve("DU123",73,epoch,42) || exitId.orderId!=-1)
+        throw std::runtime_error("H1_OCA_OLD_DISCONNECTED_EPOCH_GRANTED_ID");
+    // The final signed TWS ID can be consumed exactly once for an UNSENT
+    // exit candidate. No wrap, Broker send or automatic identity reissue.
+    Fixture nearLimit;
+    const auto highEpoch=nearLimit.adapter.GetConnectionEpoch();
+    nearLimit.broker->nextValidOrderId=2147483645L;
+    IBResearchH1LocalIdPair lastPair;
+    if(!nearLimit.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,highEpoch,lastPair,reason) ||
+       lastPair.parentOrderId!=2147483645L ||
+       lastPair.childOrderId!=2147483646L ||
+       !nearLimit.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            "DU123",73,highEpoch,lastPair.childOrderId,exitId,reason) ||
+       exitId.orderId!=2147483647L ||
+       nearLimit.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            "DU123",73,highEpoch,lastPair.childOrderId,exitId,reason) ||
+       exitId.orderId!=-1 || nearLimit.broker->places!=0)
+        throw std::runtime_error("H1_OCA_SIGNED_NATIVE_ID_OVERFLOW_OR_SEND");
+}
+
 void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
     Fixture fixture;
     IBResearchH1LocalIdPair pair;
@@ -1598,6 +1664,7 @@ void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
 
 int main() {
     TestAdapterReinitNeverReusesUnsentH1NativeIds();
+    TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending();
     TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
     TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds();
     TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();

@@ -7,6 +7,8 @@
 #include "Contract.h"
 #include "Order.h"
 #include "Decimal.h"
+#include <cstdint>
+#include <limits>
 #include <cmath>
 #include <utility>
 
@@ -228,7 +230,12 @@ inline UnsentNativeOcaExit ProposeUnsentOcaExitWithRefs(
         state.originalParentPermanentId < 1 ||
         state.stopPermanentId == state.originalParentPermanentId ||
         state.reservedExitOrderId <= state.stopOrderId ||
-        state.reservedExitOrderId >= 2147483646)
+        // A single OCA exit only consumes one signed TWS native ID.
+        // There is no need to reserve two extra integers; the last valid
+        // int32 ID is legal as an UNSENT candidate. The actual exit still
+        // requires an Owner-owned durable ID and live Broker working stop.
+        static_cast<std::int64_t>(state.reservedExitOrderId) >
+            static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max()))
         throw Refusal("OCA_STOP_PERM_ID_OR_EXIT_RESERVATION_MISMATCH");
     const double qty = group.parent.intent.totalQuantity;
     const double signedPosition =

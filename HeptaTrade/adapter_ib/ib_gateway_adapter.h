@@ -208,6 +208,20 @@ struct IBResearchH1LocalIdPair {
     bool brokerWorkingStopProven = false;
 };
 
+// One UNSENT exit ID from the SAME native order cursor as normal PAPER
+// submissions and the original H1 parent/child group. This is only a local
+// numeric allocation; a future Owner must still bind it to durable OMS and
+// re-attest the Broker working stop before it may dispatch an OCA sibling.
+struct IBResearchH1LocalExitId {
+    long orderId = -1;
+    long stopOrderId = -1;
+    int brokerClientId = -1;
+    std::uint64_t connectionEpoch = 0;
+    std::string paperAccount;
+    bool sendAuthorized = false;
+    bool maintenanceAuthorized = false;
+};
+
 class HeptaIBGatewayAdapter {
 public:
     HeptaIBGatewayAdapter();
@@ -244,6 +258,13 @@ public:
         const std::string& expectedPaperAccount, int expectedClientId,
         std::uint64_t expectedConnectionEpoch,
         IBResearchH1LocalIdPair& out, std::string& reason);
+    // This does not verify the caller's original stop: it only consumes one
+    // safe native integer strictly greater than the stop ID in the exact
+    // adapter/PAPER Broker epoch. Never a Broker/OMS send reservation.
+    bool ReserveResearchUnsentH1LocalOcaExitId(
+        const std::string& expectedPaperAccount, int expectedClientId,
+        std::uint64_t expectedConnectionEpoch, long originalStopOrderId,
+        IBResearchH1LocalExitId& out, std::string& reason);
     bool ReqAccountSummary();
     bool ReqPositions();
     // Atomically starts a coherent account+positions generation. It rejects

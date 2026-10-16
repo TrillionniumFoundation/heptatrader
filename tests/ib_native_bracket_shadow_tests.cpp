@@ -340,6 +340,14 @@ void H1NativeOcaSiblingOnlyAfterWorkingStop(const std::string& side) {
     Check(sameClose.exit.orderRef==out.exit.orderRef &&
           sameClose.exit.ocaGroup==out.exit.ocaGroup,
           "reconnected original stop changed idempotent H1 close identity");
+    // A single OCA sibling can use TWS's last valid signed int32 ID.
+    // No Broker send or durable exit identity is granted by this proposal.
+    auto maxNativeExit=state;
+    maxNativeExit.reservedExitOrderId=2147483647L;
+    const auto finalUnsentExit=ProposeUnsentH1OcaExit(r,maxNativeExit,100500);
+    Check(finalUnsentExit.exit.orderId==2147483647L &&
+          !finalUnsentExit.sendAuthority && !finalUnsentExit.mayStopDriver,
+          "valid final signed native exit ID was rejected or authorized");
     auto wrong=state;wrong.brokerOcaGroup=r.ids.parentRef;
     reject(wrong,"OCA_EXACT_ORIGINAL_ORDER_SCOPE_MISMATCH");
     wrong=state;wrong.originalStopOrderRef=legacy.stop.intent.orderRef;
