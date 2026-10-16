@@ -193,9 +193,10 @@ struct UnsentNativeOcaExit final {
     bool automaticTradingEnabled = false;
 };
 
-inline UnsentNativeOcaExit ProposeUnsentOcaExit(
+inline UnsentNativeOcaExit ProposeUnsentOcaExitWithRefs(
     const hepta_execution_bracket_research::BracketShadowPlan& group,
-    const BrokerOcaStopObservation& state, std::uint64_t nowMs)
+    const BrokerOcaStopObservation& state, std::uint64_t nowMs,
+    const std::string& expectedOcaGroup, const std::string& expectedExitRef)
 {
     using hepta_execution_bracket_research::Refusal;
     if (state.executionDomain != "PAPER" ||
@@ -203,8 +204,7 @@ inline UnsentNativeOcaExit ProposeUnsentOcaExit(
         state.originalCommandKey != group.originalCommandKey ||
         state.originalStopOrderRef != group.stop.intent.orderRef ||
         state.contractId != group.contractId || state.contractId != 12087792 ||
-        state.brokerOcaGroup !=
-            "HEPTA-FX-OCA-" + group.originalCommandKey ||
+        state.brokerOcaGroup != expectedOcaGroup ||
         state.brokerClientId != group.clientId)
         throw Refusal("OCA_EXACT_ORIGINAL_ORDER_SCOPE_MISMATCH");
     if (!state.originalEntryAndStopAttested ||
@@ -261,12 +261,88 @@ inline UnsentNativeOcaExit ProposeUnsentOcaExit(
     plan.exit.parentId = 0; // sibling OCA, not a second attached child
     plan.exit.ocaGroup = state.brokerOcaGroup;
     plan.exit.ocaType = 1;   // IB overfill-protecting cancel-with-block
-    plan.exit.orderRef = "HEPTA-OCA-CLOSE-" + group.originalCommandKey;
+    plan.exit.orderRef = expectedExitRef;
     // The OCA sibling is UNSENT. Never silently truncate an IB orderRef.
     if (plan.exit.orderRef.size() > 45)
         throw Refusal("OCA_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     plan.exit.transmit = true;
     return plan;
+}
+
+// Preserve the historical research-only legacy wrapper unchanged in meaning.
+inline UnsentNativeOcaExit ProposeUnsentOcaExit(
+    const hepta_execution_bracket_research::BracketShadowPlan& group,
+    const BrokerOcaStopObservation& state, std::uint64_t nowMs)
+{
+    return ProposeUnsentOcaExitWithRefs(group,state,nowMs,
+        "HEPTA-FX-OCA-"+group.originalCommandKey,
+        "HEPTA-OCA-CLOSE-"+group.originalCommandKey);
+}
+
+// Translate the SAME protected H1 stop into a distinct H1 ordinary-exit
+// sibling within its original OCA group. This is a pure native SDK proposal:
+// it has NO broker sender, order ID allocator, maintenance or trade authority.
+// Caller-supplied broker state booleans are synthetic here, not live proof.
+inline UnsentNativeOcaExit ProposeUnsentH1OcaExit(
+    const hepta_bracket_h1::Reservation& reserved,
+    const BrokerOcaStopObservation& state, std::uint64_t nowMs)
+{
+    using hepta_execution_bracket_research::Refusal;
+    const auto& f=reserved.frozen;
+    const auto& ids=reserved.ids;
+    std::string reason;
+    if(!reserved.replayComplete || reserved.uncertain ||
+       reserved.sendAuthorized || reserved.driverStopAllowed ||
+       !hepta_bracket_h1::VerifyFrozenRefs(f,ids,reason))
+        throw Refusal("H1_OCA_ORIGINAL_RESERVATION_UNVERIFIED");
+    // Keep the original native child permanent-ID and this same Broker
+    // connection's openOrder re-attestation bound to the OCA candidate.
+    // A caller-supplied working=true flag is not sufficient evidence.
+    if(reserved.latestNativeStopPermanentId<=0 ||
+       reserved.latestNativeStopPermanentId!=state.stopPermanentId ||
+       reserved.latestNativeOpenOrderEpoch==0 ||
+       reserved.latestNativeOpenOrderEpoch!=state.connectionEpoch)
+        throw Refusal("H1_OCA_NATIVE_PERM_ID_OR_REATTESTATION_MISMATCH");
+    hepta_execution_bracket_research::BracketShadowPlan group;
+    group.account=f.account;
+    group.owner=f.owner;
+    group.originalCommandKey=f.originalCommandKey;
+    group.contractId=f.contractId;
+    group.clientId=f.clientId;
+    group.connectionEpoch=f.connectionEpoch;
+    group.parent.intent.action=f.side;
+    group.parent.intent.totalQuantity=f.quantity;
+    group.stop.orderId=f.childOrderId;
+    group.stop.intent.orderRef=ids.childRef;
+    group.stop.intent.action=f.side=="BUY"?"SELL":"BUY";
+    group.stop.intent.totalQuantity=f.quantity;
+    group.stop.intent.auxPrice=f.stopPrice;
+
+    // The ordinary exit has a DIFFERENT 45-byte H1 role from parent/stop/OCA.
+    // This H1 exit identity is stable across a reconnected Broker epoch
+    // when the SAME original stop permanent ID and reserved exit ID are
+    // re-attested. A different exit or stop identity produces a different
+    // ref; no implicit order placement is possible.
+    std::string identity;
+    hepta_bracket_h1::Field(identity,"hepta-bracket-h1-oca-exit/v1");
+    hepta_bracket_h1::Field(identity,ids.groupCorrelation);
+    hepta_bracket_h1::Field(identity,std::to_string(state.reservedExitOrderId));
+    hepta_bracket_h1::Field(identity,std::to_string(state.stopPermanentId));
+    const std::string correlation=hepta_bracket_h1::HashCanonical(identity);
+    std::string exitRef;
+    if(!IbVenueCorrelationCodec::EncodeOrderRef(correlation,exitRef,reason) ||
+       exitRef.size()!=45 || exitRef==ids.parentRef ||
+       exitRef==ids.childRef || exitRef==ids.ocaGroup)
+        throw Refusal("H1_OCA_DISTINCT_EXIT_CORRELATION_INVALID");
+    const auto proposal=ProposeUnsentOcaExitWithRefs(
+        group,state,nowMs,ids.ocaGroup,exitRef);
+    if(proposal.sendAuthority || proposal.mayStopDriver ||
+       proposal.automaticTradingEnabled ||
+       proposal.exit.orderRef!=exitRef ||
+       proposal.exit.ocaGroup!=ids.ocaGroup ||
+       proposal.exit.ocaType!=1)
+        throw Refusal("H1_OCA_NO_BROKER_SEND_AUTHORITY");
+    return proposal;
 }
 
 } // namespace hepta_execution_bracket_native_research

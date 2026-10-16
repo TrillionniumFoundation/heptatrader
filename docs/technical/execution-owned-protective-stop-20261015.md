@@ -923,3 +923,24 @@ positive permanent ID can replace the pre-send provenance. The separate
 strict full-journal replay continues to forbid retry of uncertain sends.
 This is a non-dispatching research-only evidence boundary, not a stop sender
 or authorization to stop drivers or modify active positions.
+
+## 2026-10-16: H1 ordinary-exit OCA sibling native fields (unsent)
+
+The native SDK research adapter now constructs a **distinct 45-byte H1
+ordinary-exit orderRef** from the original frozen H1 group, one reserved exit
+order ID and the reattested original stop permanent order ID. The child stop
+and exit share the **same** H1 OCA group with `ocaType=1` (cancel-all-with-
+block), while an exit has `parentId=0`, type `MKT` and `tif=DAY`. The legacy
+`HEPTA-*` OCA research path keeps its existing public behavior. Native H1
+BUY/SELL positive and negative tests refuse stale epochs, unknown stop/permanent
+ID, changed owner/OCA group, pending entries, partial stop fills and altered
+frozen reference roles. A reconnect to the same original stop permanent ID
+must produce the **same** ordinary-exit H1 reference; never use the connection
+epoch as a new trade identity.
+
+This helper has **no** `placeOrder`, cancel, broker credentials, native exit
+reservation authority, or production wiring. Its synthetic Broker witness
+booleans do **not** prove a working PAPER stop, account-wide position/order
+coherence, or atomic OCA overfill prevention. Real IBKR API acknowledgement,
+original Execution Owner durable ordinary-exit identity, and a complete
+PAPER OCA close/partial/driver-death test remain necessary for #331.

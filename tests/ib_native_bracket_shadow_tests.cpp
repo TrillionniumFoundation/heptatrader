@@ -273,6 +273,108 @@ void H1NativeOriginalIdentity(const std::string& side) {
         throw std::runtime_error("substituted native child ID accepted");
     } catch(const hepta_execution_stop_research::Refusal&) {}
 }
+void H1NativeOcaSiblingOnlyAfterWorkingStop(const std::string& side) {
+    const auto snap=Original(side);
+    const auto legacy=ProposeUnsentBracket(snap,100500);
+    hepta_bracket_h1::FrozenBracket f;
+    f.originalCommandKey=snap.originalCommandKey;
+    f.account=snap.account; f.owner=snap.owner;
+    f.sessionId="isolated-h1-oca-session";
+    f.executionDomain=snap.executionDomain;
+    f.side=snap.action;f.contractId=snap.contractId;
+    f.clientId=snap.clientId;
+    f.parentOrderId=snap.reservedParentOrderId;
+    f.childOrderId=snap.reservedChildOrderId;
+    f.connectionEpoch=snap.connectionEpoch;
+    f.positionGeneration=snap.originalPositionGeneration;
+    f.ownerFenceToken=88;f.intentObservedAtMs=snap.observedAtMs;
+    f.quantity=snap.quantity;
+    f.referencePrice=side=="BUY"?snap.ask:snap.bid;
+    f.stopPrice=legacy.stop.intent.auxPrice;
+    f.minTick=snap.minTick;
+    hepta_bracket_h1::Reservation r;
+    std::string reason;
+    Check(hepta_bracket_h1::BuildFrozenRefs(f,r.ids,reason),
+          "H1 OCA original identity derivation failed");
+    r.frozen=f;r.replayComplete=true;
+    auto state=OcaState(legacy);
+    state.originalStopOrderRef=r.ids.childRef;
+    state.brokerOcaGroup=r.ids.ocaGroup;
+    r.latestNativeOpenOrderEpoch=state.connectionEpoch;
+    r.latestNativeStopPermanentId=state.stopPermanentId;
+    const auto out=ProposeUnsentH1OcaExit(r,state,100500);
+    Check(out.contract.conId==f.contractId &&
+          out.exit.orderId==state.reservedExitOrderId &&
+          out.exit.clientId==f.clientId && out.exit.account==f.account &&
+          out.exit.parentId==0 && out.exit.transmit &&
+          out.exit.orderType=="MKT" && out.exit.action==legacy.stop.intent.action &&
+          out.exit.tif=="DAY" && out.exit.ocaType==1 &&
+          out.exit.ocaGroup==r.ids.ocaGroup &&
+          out.exit.orderRef.size()==45 &&
+          out.exit.orderRef.compare(0,2,"H1")==0 &&
+          out.exit.orderRef!=r.ids.parentRef &&
+          out.exit.orderRef!=r.ids.childRef &&
+          out.exit.orderRef!=r.ids.ocaGroup &&
+          DecimalFunctions::decimalToDouble(out.exit.totalQuantity)==f.quantity &&
+          !out.sendAuthority && !out.mayStopDriver &&
+          !out.automaticTradingEnabled,
+          "H1 OCA sibling native identity/quantity/permissions invalid");
+    auto reject=[&](const BrokerOcaStopObservation& witness,
+                    const char* expected) {
+        try {(void)ProposeUnsentH1OcaExit(r,witness,100500);}
+        catch(const Refusal& e) {
+            Check(std::string(e.what())==expected,
+                  "wrong H1 OCA refusal identity");return;
+        }
+        throw std::runtime_error("untrusted H1 OCA evidence accepted");
+    };
+    // A reconnect with the SAME native stop permID must preserve the
+    // exact original close identity, even with a higher observation epoch.
+    auto renewed=state;
+    ++renewed.connectionEpoch;
+    renewed.positionConnectionEpoch=renewed.connectionEpoch;
+    renewed.activeOrdersConnectionEpoch=renewed.connectionEpoch;
+    auto reattested=r;
+    reattested.latestNativeOpenOrderEpoch=renewed.connectionEpoch;
+    const auto sameClose=ProposeUnsentH1OcaExit(reattested,renewed,100500);
+    Check(sameClose.exit.orderRef==out.exit.orderRef &&
+          sameClose.exit.ocaGroup==out.exit.ocaGroup,
+          "reconnected original stop changed idempotent H1 close identity");
+    auto wrong=state;wrong.brokerOcaGroup=r.ids.parentRef;
+    reject(wrong,"OCA_EXACT_ORIGINAL_ORDER_SCOPE_MISMATCH");
+    wrong=state;wrong.originalStopOrderRef=legacy.stop.intent.orderRef;
+    reject(wrong,"OCA_EXACT_ORIGINAL_ORDER_SCOPE_MISMATCH");
+    wrong=state;wrong.noNewEntriesAcknowledged=false;
+    reject(wrong,"OCA_ORIGINAL_STOP_OR_FENCE_UNPROVEN");
+    wrong=state;wrong.brokerOrderSetComplete=false;
+    reject(wrong,"OCA_ORIGINAL_STOP_OR_FENCE_UNPROVEN");
+    wrong=state;wrong.stopRemainingQuantity/=2;
+    reject(wrong,"OCA_PARTIAL_OR_REVERSED_EXPOSURE");
+    wrong=state;wrong.activeOrdersConnectionEpoch++;
+    reject(wrong,"OCA_BROKER_EPOCH_OR_FRESHNESS_MISMATCH");
+    wrong=state;wrong.stopPermanentId=0;
+    reject(wrong,"H1_OCA_NATIVE_PERM_ID_OR_REATTESTATION_MISMATCH");
+    wrong=state;++wrong.stopPermanentId;
+    reject(wrong,"H1_OCA_NATIVE_PERM_ID_OR_REATTESTATION_MISMATCH");
+    wrong=state;++wrong.connectionEpoch;
+    reject(wrong,"H1_OCA_NATIVE_PERM_ID_OR_REATTESTATION_MISMATCH");
+    auto insufficient=r;insufficient.latestNativeStopPermanentId=0;
+    bool refusedWithoutNativeStop=false;
+    try {(void)ProposeUnsentH1OcaExit(insufficient,state,100500);}
+    catch(const Refusal& e) {
+        refusedWithoutNativeStop=std::string(e.what())==
+            "H1_OCA_NATIVE_PERM_ID_OR_REATTESTATION_MISMATCH";
+    }
+    Check(refusedWithoutNativeStop,
+          "H1 OCA positive working flag hid missing Broker permID");
+    auto invalid=r;invalid.uncertain=true;
+    try {(void)ProposeUnsentH1OcaExit(invalid,state,100500);}
+    catch(const Refusal& e) {
+        Check(std::string(e.what())=="H1_OCA_ORIGINAL_RESERVATION_UNVERIFIED",
+              "unknown H1 reservation gave OCA exit");return;
+    }
+    throw std::runtime_error("unknown H1 reservation generated OCA exit");
+}
 void BadModeNoNative() {
     auto s=Original("BUY");s.executionDomain="LIVE";
     try { (void)BuildNeverSentNativePair(s,100500); }
@@ -287,6 +389,8 @@ int main() {
         NativeOcaSiblingOnlyAfterWorkingStop("SELL");
         RejectUnsafeOcaEvidence();
         H1NativeOriginalIdentity("BUY");H1NativeOriginalIdentity("SELL");
+        H1NativeOcaSiblingOnlyAfterWorkingStop("BUY");
+        H1NativeOcaSiblingOnlyAfterWorkingStop("SELL");
         BadContractNoNative(); LegacyOnePipTickRefused(); BadModeNoNative();
         std::cout<<"ib_native_bracket_shadow_fields=PASS\n";
         return 0;
