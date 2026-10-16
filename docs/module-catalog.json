@@ -321,7 +321,8 @@
         "scripts/validate_hepta_strategy_decision_receipt.py",
         "scripts/hepta_shadow_finalize.py",
         "scripts/research_laya_action_quality.py",
-        "scripts/research_laya_price_quality.py"
+        "scripts/research_laya_price_quality.py",
+        "scripts/research_laya_price_shadow90.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -329,7 +330,10 @@
         "tests/python/test_research_behavior.py",
         "tests/python/test_shadow_data_behavior.py",
         "tests/python/test_shadow_pipeline_integration.py",
-        "tests/python/test_official_source_formats.py"
+        "tests/python/test_official_source_formats.py",
+        "tests/python/test_laya_price_prequential_research.py",
+        "tests/python/test_laya_price_residual_research.py",
+        "tests/python/test_laya_price_future_shadow.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
