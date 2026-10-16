@@ -43,3 +43,20 @@ Previous driver evidence reported 354 EUR/USD and 4 BTC/USD closed roundtrips wi
 | BTC/USD | +$14.67 | $58.97 | -$44.29 |
 
 This is an **aggregate period ratio**, not evidence of any individual trade's realized PnL or cause. Reconcile command identities and real execution fills before attributing performance to a decision path. Reported commissions explain about 63.6% of aggregate strategy net loss in magnitude; even before fees, period gross PnL was negative.
+
+## 2026-10-16 06:20 PDT follow-up: real Pocket4 readback
+
+The initial disconnected-`cashhmds` result above remains valid for its original timestamp, but a **later distinct PAPER download session succeeded** with `cashhmds` 2106 CONNECTED and three 1,173-row MIDPOINT/BID/ASK responses. No orders were sent by the collector. This is not a reinterpretation of the old failed probe.
+
+- Immutable derived subwindow: `eurusd-5m-increment-20261016-proven-subwindow-v1`, 602 paired bars, 2026-10-13 21:15 to 2026-10-15 23:50 UTC; signed parent-range limitations retained in `coverage.json` / `derivation-proof.json` (a parent API interval is **not** claimed complete).
+- Forward-appended one-year data set: `eurusd-5m-joined-1yr-through-20261015-v1`, **73,739** complete 5-minute bars (570 new). New `paired-bars.json` SHA256 `124e5f20af474e238ea8df20f7dbf399bb1986df7135186ba353bf2bb5afbcd4`; 32 exact overlapped bars; zero merge conflicts, zero calendar missing according to the recorded source-window schedule. Old 73,169-bar source remains intact.
+- The actual `pocket4_readonly_audit` was run against this extended dataset and the live strategy PnL snapshot on the Pocket4 isolated PR worktree. Hash accepted; **48,091 / 73,739** bars (65.218%) have zero BID/ASK closing spread and cannot justify free fills; `reported_execution_fee_coverage=true` and account all-in NAV remains unknown.
+- At that observation the strategy period contained 719 EUR/USD and 24 BTC/USD executions, with combined **gross -$907.0444056525 / reported commissions $1,663.959070 / strategy net -$2,571.0034756525** (USD), flat. These are not account return figures and can change on the resident PAPER driver.
+- Pocket4 tests verified: **11 focused unit tests passed**; historical training suite **705 tests passed, 7 skipped**, when invoked with `PYTHONPATH=research:research/neuron_learning:scripts`. Initial plain `unittest discover` failed due to absent module search paths; it was a test launcher error, not a code regression.
+- Separate already-preserved incremental new-data cost screen: `operator-evidence/pr371-new570-incremental-cost-20261016/result.json`. The tested Ridge and momentum cases for 15/30/60-minute horizons supplied no positive net-alpha pass; zero simulated trades is no outperformance claim. A historical fixed simulation cannot establish real PAPER fill profitability.
+- A separately sealed episode-level PAPER fee attribution for an earlier snapshot reported **355 FX roundtrips (115 net winners) and 4 BTC roundtrips (0 net winners)**. See `operator-evidence/neuron-pnltrain-20261016-next/paper-cost-decomposition-final.json`; do not confuse that earlier capture with the latest snapshot.
+- Resident trainer now reports 39 completed and 1 failed, with **8 genuine exact-behavior-bound PnL rewards** and 361 separate execution rewards; those 361 are not automatically model-credit labels. A current trial remains pending and model promotion remains disabled.
+
+### Updated next action
+
+Do not redownload the year or repeat an already-complete Oct14-15 repair. Preserve these sources, use only **new subsequent completed UTC days** for future bounded IB backfills, and prioritize (a) genuine broker-cost net outcome labels, (b) the all-negative ACT target defect and target-blind temporally disjoint Laya examples, and (c) prospective original-quote evaluation before any change to order policy. This remains a **source-only research PR**, with zero model deployment and no IB order authority.
