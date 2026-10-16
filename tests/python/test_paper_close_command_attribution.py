@@ -57,32 +57,29 @@ class ExactCloseCommandProvenance(unittest.TestCase):
         self.assertEqual(state["pending"]["send_state"],"POSSIBLY_SENT")
         self.assertNotIn("close_command_attribution",state)
 
-    def test_invalid_trigger_is_rejected_before_preparing_original_command(self):
+    def test_invalid_reason_is_rejected_and_future_quote_omitted(self):
         state=closing_state()
         with patch.object(d,"paper_cmd") as send:
             with self.assertRaisesRegex(d.DriverError,"unknown close trigger"):
                 d.prepare_send(state,Path("/unused"),"b","s","t","o",
                                "CLOSE",exit_reason="ARBITRARY_UNVERIFIED_CAUSE")
-            with self.assertRaisesRegex(d.DriverError,"quote evidence invalid"):
-                d.prepare_send(state,Path("/unused"),"b","s","t","o",
-                               "CLOSE",{"bid":1.1,"ask":1.12,
-                                "observed_at_ms":d.now_ms()+10000},
-                               exit_reason="MAX_ADVERSE_MOVE")
             send.assert_not_called()
         self.assertIsNone(state["pending"])
+        evidence=d.freeze_exit_trigger("uncommitted","MAX_ADVERSE_MOVE",25000,
+            {"bid":1.1,"ask":1.12,"observed_at_ms":d.now_ms()+10000})
+        self.assertEqual(evidence["quote_evidence_status"],"UNVERIFIED_DIAGNOSTIC_OMITTED")
+        self.assertNotIn("quote_bid",evidence)
 
-    def test_inverted_or_malformed_quote_never_prepares_original_command(self):
-        state=closing_state()
-        with patch.object(d,"paper_cmd") as send:
-            for bad in (
-                {"observed_at_ms":d.now_ms()-20,"bid":1.125,"ask":1.12},
-                {"observed_at_ms":d.now_ms()-20,"bid":"not-a-number","ask":1.12},
-                {"observed_at_ms":d.now_ms()-20,"bid":1.125}):
-                with self.subTest(bad=bad):
-                    with self.assertRaisesRegex(d.DriverError,"quote evidence invalid"):
-                        d.prepare_send(state,Path("/unused"),"b","s","t","o",
-                                       "CLOSE",bad,exit_reason="MODEL_REVERSAL")
-            send.assert_not_called()
+    def test_inverted_or_malformed_quote_is_not_claimed_as_evidence(self):
+        for bad in (
+            {"observed_at_ms":d.now_ms()-20,"bid":1.125,"ask":1.12},
+            {"observed_at_ms":d.now_ms()-20,"bid":"not-a-number","ask":1.12},
+            {"observed_at_ms":d.now_ms()-20,"bid":1.125}):
+            with self.subTest(bad=bad):
+                evidence=d.freeze_exit_trigger("uncommitted","MODEL_REVERSAL",25000,bad)
+                self.assertEqual(evidence["reason_code"],"MODEL_REVERSAL")
+                self.assertEqual(evidence["quote_evidence_status"],"UNVERIFIED_DIAGNOSTIC_OMITTED")
+                self.assertNotIn("quote_observed_at_ms",evidence)
 
     def test_open_cannot_be_mislabeled_as_exit(self):
         state=closing_state()
