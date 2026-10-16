@@ -101,3 +101,47 @@ Follow-up real Pocket4 readback, **2026-10-16 ~07:15 PDT**:
   Candidate manifest SHA256 is `ca5a8b42c2d2b77ed952fb8a99205dc9d8427ce073975ac7dbc45601c163633f`; all three module file hashes agree with the manifest, permissions 0700 directory / 0600 files. No production unit points here and no service was restarted. This is source/materialization evidence, **not a broker-involved rollout**.
 
 The remaining *real* entry-to-exit provenance gate is a controlled future FX driver release cutover under proven flat/no-new-entry owner conditions, correct pre/post service epoch, and rollback. The next genuine future CLOSE should write a bounded exact receipt; only thereafter can independent OMS matching attribute MODEL_REVERSAL vs MAX_ADVERSE_MOVE, and only a forward economic evaluation can justify any change to exit rules. **Do not infer an automatic 15-minute hold from ex-post duration buckets.**
+
+## October 16 08:18 PDT continuation — guarded candidate not cut over
+
+Pocket4 direct SSH was healthy, and resident Gateway / Execution / FX PAPER /
+BTC PAPER / Laya trainer services all reported `active`. Exact current FX
+user-unit `InvocationID=45b83cd26dd94a0bbe7a4d73b57c1dc8`,
+`MainPID=4140608`, `RefuseManualStop=yes`.
+
+- The active attributed-driver bundle still pins old base driver hash
+  `c1e4339f13a466759186bcf63ece5bff37b10c51157fdbd7bfe53402e0f2943d`.
+- Previously staged isolated FX candidate
+  `~/.local/share/heptatrader/decision-attribution/candidates/fx-close-reason-20261016-v1/EUR.USD/`
+  pins newer base `8f37afb687d84996f10be9b357186dee8cd435f0b44ea200ced239e01c2edff8`,
+  wrapper `be66ae26e55169b7f9d2df733b377ade391e01a8805a25b12932d4846f2d8b77` and
+  observer `adfb8bf73d7cacd3305807ca168ed8c8355164bb8a8ac14512f3abbe2605a9fb`.
+  The **actual candidate manifest explicitly states `trading_behavior_changed: true`**
+  and `STAGED_NOT_ACTIVE_OR_AUTHORIZED_FOR_TRADING`; treat this as a consequential
+  change, not simply harmless observability, until exact branch/behavior parity
+  is proved.
+- The original FX state was `position=0`, `pending=null`, but
+  `halt_new_entries=false`. Flatness alone does **not** guarantee a safe
+  restart while a resident driver can open a fresh position between checks.
+- Current snapshot period strategy commission-net was still
+  **-$2,571.0034756525** USD, both asset ledgers flat; all **361 past CLOSE
+  reasons still UNKNOWN** and may not be rewritten from `last_exit_reason`.
+- After checking the isolated Pocket4 worktree against the current candidate,
+  **89/89 tests** passed (`tests.python.test_paper_driver`,
+  `tests.python.test_pnl_close_reason`,
+  `tests.python.test_pnl_duration_side`,
+  `tests.python.test_pnl_cost_decomposition`). Existing main's three dirty
+  tracked user files stayed unmodified. No production restart, order send,
+  policy change or model deployment was performed.
+
+### Exact remaining release step
+
+Create/verify the owner-controlled **no-new-entry** fence, reconcile the
+original FX order/position snapshot *and* pending sends under the same owner
+before transition, record existing PID and invocation epoch, prove branch-parity
+of all live order actions, atomically point the existing attributed-driver
+unit to the pinned candidate, restart through the service's supported owner
+maintenance path (never bypass `RefuseManualStop` blindly), verify new PID,
+actual frozen CLOSE receipt and durable original broker execution identity;
+otherwise restore the pinned original unit before reopening admissions.
+Until then, status is `STAGED_AND_TESTED_NOT_PRODUCTION_CUTOVER`.
