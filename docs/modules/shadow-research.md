@@ -50,3 +50,5 @@ script to its artifact inputs/outputs, explains timestamp/unit and numeric
 rules, gives feature/resampling and bar algorithms, decision examples, durable
 history/runner boundaries and replay economics. The [finalization contract](../technical/shadow-finalization.md) defines the source-level final audit producer, fixture scope and remaining external evidence limits.
 Research status remains EXPERIMENTAL after this documentation and test work.
+
+Action V2 closed-source Pocket4 historical CPU control: [frozen confidence research](../technical/laya-action-v2-frozen-original-confidence-20261016.md). Not a model release.
