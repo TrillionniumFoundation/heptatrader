@@ -1663,6 +1663,36 @@ void TestOwnerDurableOcaExitUsesActualLocalAdapterCursorWithoutSending() {
        recorded.sendAuthorized || recorded.maintenanceAuthorized ||
        fixture.broker->places!=0)
         throw std::runtime_error("H1_OWNER_EXIT_ADAPTER_ID_NOT_DURABLY_BOUND");
+    // A local UNSENT OCA ID receipt may not impersonate a Broker response.
+    // Replaying it with fabricated broker evidence must invalidate the
+    // original H1 stop's native attestation, not mint a usable EXIT state.
+    std::vector<OmsJournalEvent> ocaEvents;
+    if(journal.Replay([&](const OmsJournalEvent& e){ocaEvents.push_back(e);})!=7)
+        throw std::runtime_error("H1_OCA_EXPECTED_SEVEN_OWNER_AND_ORIGINAL_RECORDS");
+    hepta_bracket_h1::Reservation replayedStop;
+    if(!hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            ocaEvents,f,replayedStop,reason))
+        throw std::runtime_error("H1_OCA_CLEAN_REPLAY_NOT_ATTESTED");
+    auto forgedOca=ocaEvents;
+    bool modified=false;
+    for(auto& item:forgedOca) {
+        if(item.eventType=="bracket_oca_exit_reserved") {
+            item.reason="BROKER_STOP_WORKING_FAKE";
+            modified=true;
+        }
+    }
+    if(!modified || hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_REASON_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved") {
+            item.brokerErrorCode=201;
+            item.brokerMessage="BROKER_REJECTED_FAKE";
+        }
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_ERROR_ACCEPTED");
     std::int64_t floor=0;
     if(!coordinator.GetDurableResearchH1NativeIdFloor(
             "DU-SECOND",floor,reason) || floor!=44)

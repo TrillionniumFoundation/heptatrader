@@ -251,7 +251,11 @@ inline bool ConfirmReplayForOriginalNativeEcho(
                e.eventId!="unsent-oca-exit:"+refs.groupCorrelation ||
                e.brokerClientId!=frozen.clientId ||
                e.brokerConnectionEpoch!=lastObservedEpoch ||
-               !e.status.empty() || !e.brokerCallbackType.empty() ||
+               !e.status.empty() || !e.reason.empty() ||
+               e.brokerErrorCode!=0 || e.brokerRequestId!=0 ||
+               !e.brokerMessage.empty() || !e.brokerWhyHeld.empty() ||
+               !e.brokerAdvancedOrderRejectJson.empty() ||
+               !e.brokerCallbackType.empty() ||
                !e.brokerExecutionId.empty() || e.brokerBracket.version!=0) {
                 out.uncertain=true;
                 reason="H1_DURABLE_OCA_EXIT_IDENTITY_UNVERIFIED";
