@@ -130,3 +130,33 @@ visible and cannot be retrospectively repaired.
 real-model/normalizer execution preflight remains blocked
 by the execution channel. The already-running independent
 prequential-prior Shadow experiment remains untouched.
+
+## Restart and saved-outcome verification (source-only follow-through)
+
+A second static review found a genuine restart weakness in the proposed,
+*unlaunched* Tiny MLP campaign: previously existing outcome files were
+skipped without rechecking the corresponding saved forecast or its metrics.
+A damaged original-score receipt could therefore have been silently
+counted during restart even though no new prediction was permitted.
+
+The fail-closed read-only verifier now checks original plan and forecast
+identity, model hash, frozen training-frequency prior, the persisted
+prediction file SHA256, causal source/event timestamps, the hard endpoint
+grace, and the recorded outcome's exact seven-bin classification from
+the observed return. It recomputes both seven-class Brier and NLL and
+Top-1 using the SEALED model and prior probability vectors, rejecting
+subsequent metric edits. Preexisting missed-input slots must remain
+CENSORED with a bounded original reason; an original, committed
+prediction cannot be silently replaced by a 'missing input' excuse.
+The cross-file checks run BEFORE a completed slot is skipped and again
+when aggregating the saved slot state after restart.
+
+These checks prove local receipt consistency. They do not establish
+a trusted-signature boundary against an attacker who can replace every
+file, nor substitute for quote-archive source verification or a
+new actual model forecast. No existing original 90-slot Shadow plan
+or previously committed test result was modified.
+
+The added adversarial synthetic-file regression tests require no
+GPU, no real frozen Tiny MLP execution, and no broker connectivity.
+The new model CPU preflight and new Tiny MLP Shadow 90 remain NOT RUN.
