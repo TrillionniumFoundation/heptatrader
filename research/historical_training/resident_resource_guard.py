@@ -121,6 +121,59 @@ class Gate:
         if role not in ('trainer','evaluator'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
         self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
+        self.last_admission=None
+        if self.c.get('value_priority') is not None and role in ('trainer','evaluator'):
+            from .value_priority_admission import verify_policy
+            verify_policy(self.c['value_priority'])
+    def _priority_negative_preflight(self):
+        # Read the SHA256-pinned original Value producer BEFORE an expensive
+        # source-health refresh, but use this shortcut ONLY to refuse new
+        # background work. Every positive admission still requires the full
+        # original memory/PSI/source check, the one global flock and a second
+        # source+priority check after taking that flock.
+        manual=self.c.get('manual_hold_path')
+        if (self.c.get('value_priority') is None or self.draining or
+                (manual is not None and os.path.lexists(manual))):
+            return None
+        try:
+            from .value_priority_admission import decision
+            held,reason,proof=decision(
+                self.c['value_priority'],self.role,int(time.time()*1000))
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            held=True;reason='VALUE_PRIORITY_UNVERIFIED_SOURCE'
+            proof={'source':'UNVERIFIED','error_class':type(exc).__name__,
+                   'no_order_authority':True,'existing_workers_interrupted':False}
+        if not held:
+            return None
+        report={'schema':'heptatrader.resident-resource-admission.v1',
+                'at_ms':int(time.time()*1000),'role':self.role,
+                'admit_new_worker':False,'reasons':[reason],
+                'value_priority_evidence':proof,
+                'original_resource_and_quote_refresh_skipped_for_denial':True,
+                'original_resource_admission_not_claimed':True,
+                'automatic_trading':False,'existing_workers_interrupted':False,
+                'broker_orders_sent':0}
+        self.last_admission=report
+        atomic(self.root/(self.role+'-admission.json'),report)
+        return report
+    def _prioritize_background(self,report):
+        if not report['admit_new_worker'] or self.c.get('value_priority') is None:
+            self.last_admission=report
+            return report
+        try:
+            from .value_priority_admission import decision
+            held,reason,proof=decision(self.c['value_priority'],self.role,int(time.time()*1000))
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            held=True;reason='VALUE_PRIORITY_UNVERIFIED_SOURCE'
+            proof={'source':'UNVERIFIED','error_class':type(exc).__name__,
+                   'no_order_authority':True,'existing_workers_interrupted':False}
+        if held:
+            report['admit_new_worker']=False
+            report['reasons'].append(reason)
+        report['value_priority_evidence']=proof
+        self.last_admission=report
+        atomic(self.root/(self.role+'-admission.json'),report)
+        return report
     def check(self):
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
@@ -166,18 +219,36 @@ class Gate:
             report['admit_new_worker']=False;report['reasons'].append('SUPERVISOR_DRAIN_REQUESTED')
         report['role']=self.role;atomic(self.root/(self.role+'-admission.json'),report);return report
     def acquire(self,subject):
-        report=self.check()
+        fast_denial=self._priority_negative_preflight()
+        report=fast_denial if fast_denial is not None else self._prioritize_background(self.check())
         if report['admit_new_worker'] and not self.lease.acquire():
             report['admit_new_worker']=False;report['reasons']=['OTHER_RESEARCH_WORKER_ACTIVE']
-        # Recheck after taking the lease, closing competing admission and source-change windows.
+        # Recheck BOTH original admission and Value priority after taking the
+        # same original lease. Never stop another worker or extend any deadline.
         if report['admit_new_worker']:
-            report=self.check()
+            report=self._prioritize_background(self.check())
             if report['admit_new_worker']:return True
             self.lease.release()
+        self.last_admission=report
+        atomic(self.root/(self.role+'-admission.json'),report)
         name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')
         if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
         return False
     def release(self):self.lease.release()
+
+
+def evaluator_idle_poll_seconds(gate,tasks):
+    if tasks or gate.draining or gate.role!='evaluator' or not gate.c.get('value_priority'):
+        return 2
+    try:
+        from .value_priority_admission import decision
+        held,reason,_=decision(gate.c['value_priority'],'evaluator',int(time.time()*1000))
+    except (OSError,ValueError,TypeError,KeyError):
+        return 2
+    if held and reason in ('VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION',
+                          'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST'):
+        return 10
+    return 2
 
 
 def guarded_evaluator_class(base,gate):
@@ -196,7 +267,9 @@ def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
         def step(self):
             if not gate.acquire({'role':'trainer'}):
-                return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',resource_admission=gate.check())
+                report=getattr(gate,'last_admission',None)
+                return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',
+                                         resource_admission=report if report is not None else gate.check())
             try:return super().step()
             finally:gate.release()
     return GuardedTrainer
@@ -206,6 +279,14 @@ def verify_config(c):
     if c.get('schema')!='heptatrader.resident-admission-wrapper-config.v1' or c.get('trade_authority') is not False:
         raise EvidenceError('GUARD_CONFIG_SCOPE')
     if c.get('resource_rule')!=RESOURCE_RULE or c.get('max_heavy_workers')!=1:raise EvidenceError('RESOURCE_RULE_CHANGED')
+    if c.get('value_priority') is not None:
+        from .value_priority_admission import verify_policy,_load_pinned
+        verify_policy(c['value_priority'])
+        _load_pinned(c['value_priority'])
+        if set(c.get('guard_files_sha256',{}))!={
+            'common.py','resident_live_source.py','resident_resource_guard.py',
+            'value_priority_admission.py'}:
+            raise EvidenceError('PRIORITY_RUNTIME_NOT_PINNED')
     if sha(c['original_config'])!=c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
     original=read(c['original_config'])
     if original['automatic_trading'] is not False or original['period_sha256']!=c['period_sha256']:
@@ -224,7 +305,9 @@ def main():
     p.add_argument('--check-only',action='store_true');a=p.parse_args();os.umask(0o077)
     c=read(a.config);original=verify_config(c);gate=Gate(c,a.role)
     if a.check_only:
-        report=gate.check();print(json.dumps(report),flush=True)
+        fast=gate._priority_negative_preflight()
+        report=fast if fast is not None else gate._prioritize_background(gate.check())
+        print(json.dumps(report),flush=True)
         raise SystemExit(0 if report['admit_new_worker'] else 1)
     runtime=Path(original['runtime_directory']);sys.path[:0]=[str(runtime/'learn'),str(runtime/'scripts')]
     if a.role=='trainer':
@@ -259,7 +342,8 @@ def main():
                     atomic(service.root/'status.json',{'at_ms':failed_at,'state':'INDEPENDENT_EVALUATION_UNAVAILABLE',
                         'reason':str(exc),'promotion_performed':False,'broker_orders_sent':0})
             if gate.draining and (a.role=='trainer' or not service.tasks):break
-            for _ in range(30 if a.role=='trainer' else 2):
+            poll_seconds=30 if a.role=='trainer' else evaluator_idle_poll_seconds(gate,service.tasks)
+            for _ in range(poll_seconds):
                 if service.stop:break
                 time.sleep(1)
     finally:

@@ -13,6 +13,7 @@ from .resident_store import database,write_once,atomic,get_meta,put_meta,admit_j
 from .promotion import RULE,rule_for_trial
 from .promotion_power import PROTOCOL
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
+from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
@@ -61,6 +62,7 @@ class Supervisor:
     'active_pnl_reward_count':len(get_meta(self.db,'active_reward_ids',[])),
     'active_execution_reward_count':len(get_meta(self.db,'active_execution_reward_ids',[])),
     'execution_reward_is_not_model_credit':True,
+    'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT',
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
     'broker_orders_sent':0,'storage':self.storage,**extra}
@@ -156,14 +158,15 @@ class Supervisor:
   if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
   if len(new)<16:return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
-  chosen=new[-64:];row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
+  chosen=select_rows(new);row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
   if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')
   parent_id=parent['candidate_id'];generation=int(parent.get('generation',2))
   data_id=digest(dataset);dataset_path=self.root/'datasets'/(data_id+'.json');write_once(dataset_path,dataset)
   job_id=digest({'fingerprint':fingerprint,'parent':parent_id,'profile':self.c['profile'],'objective':self.c['objective']})
   job={**self.c,'schema':'heptatrader.laya-resident-job.v1','dataset':str(dataset_path),'dataset_sha256':sha_file(dataset_path),
-    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'parent_directory':self.c['initial_parent_directory'],
+    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':ROW_ACCOUNTING_SCHEMA,
+    'parent_directory':self.c['initial_parent_directory'],
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}
   job_path=self.root/'jobs'/(job_id+'.json');write_once(job_path,job)
