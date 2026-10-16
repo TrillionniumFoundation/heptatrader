@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -309,14 +310,183 @@ def one_preview(bid:float,profile:dict|None=None)->dict:
         if thread:thread.join(timeout=2)
     return report
 
+def fsync_directory(path:Path)->None:
+    """Sync containing inode metadata; fsync(file) does not seal its name."""
+    flags=os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd=os.open(path,flags)
+    try:
+        st=os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError("EVIDENCE_DIRECTORY_NOT_DIRECTORY")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+# A read-only account-isolation assessment for any future executable
+# bracket canary. A distinct API client ID is NOT an isolated portfolio;
+# this branch sends no broker orders even if two DU accounts are available.
+def exact_original_paper_account(path: Path) -> str:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or
+                st.st_mode & 0o077 or st.st_size > 65536):
+            raise RuntimeError("ORIGINAL_PAPER_PROFILE_NOT_PRIVATE")
+        data = os.read(fd, st.st_size).decode("utf-8", errors="strict")
+    finally:
+        os.close(fd)
+    matches = []
+    for line in data.splitlines():
+        if line.startswith("HEPTA_IB_PAPER_ACCOUNT="):
+            matches.append(line.split("=", 1)[1].strip())
+    if len(matches) != 1 or not (matches[0].startswith("DU") and
+                                3 <= len(matches[0]) <= 32 and
+                                matches[0].isalnum()):
+        raise RuntimeError("EXACT_ORIGINAL_PAPER_IDENTITY_UNAVAILABLE")
+    return matches[0]
+
+
+def classify_paper_isolation(managed: list[str], original: str) -> dict:
+    """Never emit actual account IDs, even in private receipts."""
+    if (not isinstance(managed, list) or not managed or
+            not isinstance(original, str) or
+            not original.startswith("DU") or
+            any(not isinstance(a, str) or not a.startswith("DU") or
+                len(a) > 32 or not a.isalnum() for a in managed) or
+            len(set(managed)) != len(managed) or
+            managed.count(original) != 1):
+        raise RuntimeError("PAPER_MANAGED_ACCOUNT_OR_OWNER_NOT_ATTESTED")
+    count = len(managed)
+    return {
+        "managed_paper_account_count": count,
+        "candidate_other_paper_account_count": count - 1,
+        "same_original_paper_account_observed": True,
+        "state": ("ONE_SHARED_PAPER_ACCOUNT_NO_EXECUTABLE_CANARY" if count == 1
+                  else "ADDITIONAL_PAPER_ACCOUNT_REQUIRES_INDEPENDENT_PORTFOLIO_PROOF"),
+        "can_submit_executable_canary": False,
+        "reason": ("NO_DISTINCT_BROKER_ACCOUNT" if count == 1
+                   else "BROKER_ACCOUNT_ISOLATION_AND_OWNERSHIP_UNPROVEN"),
+    }
+
+
+class PaperIsolationReadOnlyClient(EWrapper, EClient):
+    def __init__(self):
+        EWrapper.__init__(self)
+        EClient.__init__(self, self)
+        self.accounts_ready = threading.Event()
+        self.id_ready = threading.Event()
+        self.accounts = []
+        self.outbound_opcodes = []
+        self.broker_notice_codes = []
+
+    def sendMsg(self, message):
+        # Only the mandatory SDK START_API handshake. In particular,
+        # opcode 3 (PLACE_ORDER) can never leave this object.
+        opcode = int(message.split("\0")[0])
+        if opcode != 71:
+            raise RuntimeError("ISOLATION_ASSESSMENT_OUTBOUND_ORDER_FORBIDDEN")
+        self.outbound_opcodes.append(opcode)
+        return EClient.sendMsg(self, message)
+
+    def managedAccounts(self, accountsList):
+        self.accounts = [a.strip() for a in accountsList.split(",") if a.strip()]
+        self.accounts_ready.set()
+
+    def nextValidId(self, orderId):
+        self.id_ready.set()
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+        if len(self.broker_notice_codes) < 20:
+            self.broker_notice_codes.append(int(errorCode))
+
+
+def assess_isolated_paper_canary(evidence_dir: Path,
+                                  execution_env: Path | None = None) -> dict:
+    """One bounded localhost read; account details never returned or saved."""
+    execution_env = (execution_env or
+                     Path.home() / ".config/heptatrader/execution.env")
+    original = exact_original_paper_account(execution_env)
+    p = PaperIsolationReadOnlyClient()
+    thread = None
+    started = int(time.time() * 1000)
+    result = {
+        "schema": "heptatrader.paper-executable-canary-account-isolation.v1",
+        "connection": "127.0.0.1:4002",
+        "client_id": 8999,
+        "broker_orders_sent": 0,
+        "can_submit_executable_canary": False,
+        "whatif_requests_sent": 0,
+    }
+    try:
+        p.connect("127.0.0.1", PORT, 8999)
+        thread = threading.Thread(target=p.run, daemon=True)
+        thread.start()
+        if not p.accounts_ready.wait(7) or not p.id_ready.wait(7):
+            raise RuntimeError("PAPER_ACCOUNT_CALLBACK_TIMEOUT")
+        result.update(classify_paper_isolation(p.accounts, original))
+    except Exception as exc:
+        result.update(state="FAIL_CLOSED",
+                      reason=type(exc).__name__[:80])
+    finally:
+        try:
+            p.disconnect()
+        except Exception:
+            pass
+        if thread:
+            thread.join(timeout=2)
+        result["outbound_opcodes"] = p.outbound_opcodes
+        result["broker_notice_codes"] = p.broker_notice_codes
+        result["elapsed_ms"] = int(time.time() * 1000) - started
+    root = evidence_dir
+    if root.is_symlink() or root.parent.is_symlink() or not root.parent.is_dir():
+        raise RuntimeError("ISOLATION_EVIDENCE_PARENT_NOT_QUALIFIED")
+    root.mkdir(mode=0o700, exist_ok=True)
+    if root.stat().st_uid != os.geteuid() or root.stat().st_mode & 0o077:
+        raise RuntimeError("ISOLATION_EVIDENCE_NOT_PRIVATE")
+    fsync_directory(root.parent)
+    fsync_directory(root)
+    dest = root / ("paper-canary-isolation-" + str(time.time_ns()) + ".json")
+    raw = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
+    fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(raw)
+        f.flush()
+        os.fsync(f.fileno())
+    fsync_directory(root)
+    return {
+        "state": result["state"],
+        "managed_paper_account_count": result.get("managed_paper_account_count"),
+        "candidate_other_paper_account_count":
+            result.get("candidate_other_paper_account_count"),
+        "can_submit_executable_canary": False,
+        "broker_orders_sent": 0,
+        "whatif_requests_sent": 0,
+        "outbound_opcodes": p.outbound_opcodes,
+        "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+        "evidence_path": str(dest),
+    }
+
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--paper-whatif",action="store_true")
     ap.add_argument("--paper-whatif-gtc-oca",action="store_true")
+    ap.add_argument("--assess-paper-canary-isolation",action="store_true")
     ap.add_argument("--evidence-dir",type=Path)
     a=ap.parse_args()
     if a.paper_whatif and a.paper_whatif_gtc_oca:
         ap.error("only one nonexecuting WhatIf variant is allowed")
+    if a.assess_paper_canary_isolation:
+        if a.paper_whatif or a.paper_whatif_gtc_oca:
+            ap.error("canary account observation cannot combine with WhatIf")
+        if not a.evidence_dir:
+            ap.error("explicit --evidence-dir required")
+        print(json.dumps(assess_isolated_paper_canary(a.evidence_dir),
+                         sort_keys=True))
+        return
     profile=preview_profile("gtc_oca" if a.paper_whatif_gtc_oca else "standalone_day")
     quote=native_read("market.get_quote")
     now=int(time.time()*1000)
@@ -331,9 +501,15 @@ def main():
         ap.error("explicit --evidence-dir required")
     root=a.evidence_dir
     if root.is_symlink():raise RuntimeError("SYMLINKED_EVIDENCE_ROOT")
-    root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if root.parent.is_symlink() or not root.parent.is_dir():
+        raise RuntimeError("EVIDENCE_PARENT_MUST_PREEXIST")
+    # Do not silently mkdir arbitrary ancestor chains; their directory
+    # entries would remain uncommitted after fsync of only the leaf.
+    root.mkdir(mode=0o700,exist_ok=True)
     if root.stat().st_uid!=os.geteuid() or root.stat().st_mode & 0o077:
         raise RuntimeError("EVIDENCE_SCOPE_NOT_PRIVATE")
+    fsync_directory(root.parent)
+    fsync_directory(root)
     # Durable ONE-SHOT guard exists BEFORE ANY API preview attempt.
     lease=root/("whatif-preview-gtc-oca-executed-once.lock"
                 if a.paper_whatif_gtc_oca else "whatif-preview-executed-once.lock")
@@ -341,6 +517,9 @@ def main():
     with os.fdopen(fd,"w") as f:
         f.write(json.dumps({"scope":"ONE_PAPER_WHATIF", "created_ms":now})+"\n")
         f.flush();os.fsync(f.fileno())
+    # The marker's NAME must also survive power loss before first IB request.
+    # On failure, keep its (possibly visible) marker; never replay on uncertainty.
+    fsync_directory(root)
     before=observe_orders()
     receipt=one_preview(bid,profile)
     try:
@@ -366,6 +545,8 @@ def main():
                if a.paper_whatif_gtc_oca else "whatif-preview-result.json")
     fd=os.open(dest,os.O_EXCL|os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,"wb") as f:f.write(payload);f.flush();os.fsync(f.fileno())
+    # The private immutable original receipt also needs a persistent dentry.
+    fsync_directory(root)
     print(json.dumps({"status":receipt.get("status"),
         "paper_preview_not_protection":True,
         "broker_active_orders_equal":receipt.get("active_orders_equal"),

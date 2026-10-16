@@ -1333,3 +1333,71 @@ real OCA cancel/partial behavior, and driver-death continuity remain
 unverified. This shared PAPER account is actively used by the resident
 strategy; a different API client ID does NOT isolate the physical position.
 Issue #331 remains P0 OPEN.
+
+## 2026-10-16: durable one-shot WhatIf receipt names (no second Broker request)
+
+The two sealed PAPER WhatIf studies (#362 and #364) already exercised
+one real STP/DAY and one real STP/GTC+OCA preview. Their original
+Broker receipts are immutable. This update does **not** run those previews
+again or make any protective order active.
+
+The CLI previously synced each O_EXCL one-shot lock file, but not the
+containing directory. File-content fsync alone cannot guarantee that
+the newly created lock filename survives a sudden host crash, and a
+missing marker could allow another WhatIf request under uncertain Broker
+outcome. Now the evidence parent must pre-exist; the root directory
+creation is durably linked and the one-shot filename is fsynced via an
+O_DIRECTORY|O_NOFOLLOW directory descriptor **before** any Broker
+order inventory or WhatIf send. The original receipt filename is also
+directory-synced after its private file contents. A sync failure aborts
+before preview, retains any visible one-shot marker and refuses retries.
+
+Pocket4's pinned IB Python SDK regression: 19/19 tests PASS, including
+one-shot no-resend, injected directory-fsync failure before any mocked
+EClient action, receipt name persistence sequence, GTC+OCA callback echo
+and hostile wrong-account/order-status mutations. This is a narrow
+durability correction, **not** additional IBKR account approval or
+independent stop/maintenance qualification. No Broker API, strategy
+position or installed service changed in this test.
+
+## 2026-10-16 — Broker-managed PAPER account isolation for executable canary
+
+The real PAPER STP/GTC + OCA WhatIf preview confirmed only non-executing
+order-field acceptance. It did not establish a working broker-side stop
+or a separate account for positive parent/stop tests.
+
+A bounded read-only START_API-only query used dedicated clientId 8999,
+localhost:4002 and the existing private execution.env original PAPER
+account. It examined only the managedAccounts callback, without
+including any account ID in the receipt. The Broker returned exactly
+ONE managed DU PAPER account, matching the resident FX strategy.
+Rotating the API clientId does not isolate a position ledger.
+
+The existing scripts/ib_paper_whatif_preview.py now also accepts
+--assess-paper-canary-isolation with --evidence-dir. This operation is
+mutually exclusive with both WhatIf variants and never queries quotes,
+calls placeOrder, cancels orders or changes the old one-shot markers.
+Only outbound opcode 71 (START_API) is allowed. The original owner
+private PAPER identity must match a unique DU managed account.
+ONE_SHARED_PAPER_ACCOUNT_NO_EXECUTABLE_CANARY is returned when there
+is no other Broker account. Even if two managed PAPER accounts exist,
+they are only possible candidates pending independent proof of
+separate account ownership and position control. This option NEVER
+grants executable canary, order-send or maintenance authority.
+
+The real Pocket4 receipt is at:
+~/.local/state/heptatrader/operator-evidence/p0-executable-paper-canary-isolation-20261016/paper-canary-isolation-1792150149178351839.json
+SHA256:
+8ed6b25bd4aea94782785c4d18b1e9f6258b3577bdfadcb2f02d4bb428f7f56d
+
+No account identifiers appear in the receipt. The original sealed
+standalone DAY and GTC/OCA WhatIf receipts are unchanged.
+The original nineteen WhatIf controls and seven additional account
+scope, broker wire, CLI and receipt tests passed 26/26 on Pocket4.
+
+This is a genuine reason a positive executable bracket cannot
+currently be canaried without interfering with the autonomously
+trading original account. A different clientId or a mock callback
+does not satisfy real isolation, no-new-entry authority, OCA close
+coordination, or Broker stop survivability.
+Issue #331 remains P0 OPEN.

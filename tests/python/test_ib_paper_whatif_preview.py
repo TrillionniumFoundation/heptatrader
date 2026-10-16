@@ -288,4 +288,191 @@ class PreviewBoundaries(unittest.TestCase):
             self.assertFalse((root/"whatif-preview-result.json").exists())
             self.assertFalse((root/"whatif-preview-executed-once.lock").exists())
 
+    def test_durable_directory_marker_precedes_any_broker_preview(self):
+        import time
+        attempts=[]
+        fsynced=[]
+        def read(tool):
+            if tool!="market.get_quote":raise AssertionError("unexpected tool")
+            return {"instrument":"EUR.USD","stale":False,
+                    "subscription_state":"active",
+                    "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+        original=p.fsync_directory
+        def seal(path):
+            fsynced.append(str(path))
+            return original(path)
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=read), \
+                 patch.object(p,"observe_orders",return_value={"count":0,"fingerprint":"ok"}), \
+                 patch.object(p,"one_preview",side_effect=lambda *args: (
+                     attempts.append(args) or {"status":"SYNTHETIC_PREVIEW",
+                     "exact_echo_verified":False,"execution_callbacks":0})), \
+                 patch.object(p,"fsync_directory",side_effect=seal), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                p.main()
+            self.assertEqual(attempts[0][1]["scope"],"gtc_oca")
+            self.assertEqual(fsynced,[str(root.parent),str(root),str(root),str(root)])
+            self.assertTrue((root/"whatif-gtc-oca-result.json").exists())
+
+    def test_marker_dir_fsync_failure_refuses_preview_and_reissue(self):
+        import time
+        invoked=[]
+        def fresh(tool):
+            if tool!="market.get_quote":raise AssertionError("unexpected tool")
+            return {"instrument":"EUR.USD","stale":False,
+                    "subscription_state":"active",
+                    "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            # Two directory fsyncs seal the evidence directory itself; the
+            # third secures the O_EXCL one-shot marker BEFORE any API request.
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=fresh), \
+                 patch.object(p,"fsync_directory",
+                              side_effect=[None,None,OSError("fsync directory unavailable")]), \
+                 patch.object(p,"observe_orders",side_effect=AssertionError("read after fsync failure")), \
+                 patch.object(p,"one_preview",side_effect=lambda *a: invoked.append(a)):
+                with self.assertRaisesRegex(OSError,"fsync directory unavailable"):
+                    p.main()
+            self.assertEqual(invoked,[])
+            self.assertTrue((root/"whatif-preview-gtc-oca-executed-once.lock").exists())
+            self.assertFalse((root/"whatif-gtc-oca-result.json").exists())
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=fresh), \
+                 patch.object(p,"one_preview",side_effect=lambda *a: invoked.append(a)):
+                with self.assertRaises(FileExistsError):
+                    p.main()
+            self.assertEqual(invoked,[])
+
+    def test_evidence_parent_required_without_creating_ancestor_chain(self):
+        import time
+        with tempfile.TemporaryDirectory() as home:
+            root=Path(home)/"missing-parent"/"evidence"
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",str(root)]
+            fake_quote={"instrument":"EUR.USD","stale":False,
+                         "subscription_state":"active",
+                         "observed_at_ms":int(time.time()*1000),"bid":1.12362}
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",return_value=fake_quote), \
+                 patch.object(p,"one_preview",side_effect=AssertionError("preview sent")):
+                with self.assertRaisesRegex(RuntimeError,"EVIDENCE_PARENT_MUST_PREEXIST"):
+                    p.main()
+            self.assertFalse(root.parent.exists())
+
+class CanaryAccountIsolationBoundaries(unittest.TestCase):
+    def test_single_original_paper_account_never_admits_executable_canary(self):
+        state=p.classify_paper_isolation(["DU100"],"DU100")
+        self.assertEqual(state["managed_paper_account_count"],1)
+        self.assertEqual(state["candidate_other_paper_account_count"],0)
+        self.assertEqual(state["reason"],"NO_DISTINCT_BROKER_ACCOUNT")
+        self.assertEqual(state["state"],"ONE_SHARED_PAPER_ACCOUNT_NO_EXECUTABLE_CANARY")
+        self.assertIs(state["can_submit_executable_canary"],False)
+        self.assertNotIn("DU100",str(state))
+
+    def test_other_paper_account_is_only_a_candidate_not_authority(self):
+        state=p.classify_paper_isolation(["DU100","DU200"],"DU100")
+        self.assertEqual(state["candidate_other_paper_account_count"],1)
+        self.assertEqual(
+            state["reason"],"BROKER_ACCOUNT_ISOLATION_AND_OWNERSHIP_UNPROVEN")
+        self.assertFalse(state["can_submit_executable_canary"])
+        self.assertNotIn("DU200",str(state))
+
+    def test_wrong_original_duplicate_live_or_malformed_accounts_fail(self):
+        bad_cases=[
+            (["DU100"],"DU200"),(["DU100","DU100"],"DU100"),
+            (["U100"],"DU100"),([], "DU100"),
+            (["DU100","DUX-123"],"DU100"),
+            (["DU100",None],"DU100"),
+        ]
+        for managed,original in bad_cases:
+            with self.subTest(managed=managed,original=original):
+                with self.assertRaisesRegex(
+                    RuntimeError,"PAPER_MANAGED_ACCOUNT_OR_OWNER_NOT_ATTESTED"):
+                    p.classify_paper_isolation(managed,original)
+
+    def test_original_broker_profile_must_be_private_single_owner(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"execution.env"
+            path.write_text("HEPTA_IB_EXECUTION_MODE=PAPER\n"
+                            "HEPTA_IB_PAPER_ACCOUNT=DU100\n")
+            path.chmod(0o600)
+            self.assertEqual(p.exact_original_paper_account(path),"DU100")
+            path.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError,"NOT_PRIVATE"):
+                p.exact_original_paper_account(path)
+            path.chmod(0o600)
+            alias=Path(td)/"alias.env"
+            alias.symlink_to(path)
+            with self.assertRaises(OSError):
+                p.exact_original_paper_account(alias)
+            path.write_text("HEPTA_IB_PAPER_ACCOUNT=DU100\n"
+                            "HEPTA_IB_PAPER_ACCOUNT=DU200\n")
+            with self.assertRaisesRegex(RuntimeError,"IDENTITY_UNAVAILABLE"):
+                p.exact_original_paper_account(path)
+
+    def test_readonly_probe_permanently_blocks_placeorder_wire(self):
+        c=p.PaperIsolationReadOnlyClient()
+        with patch.object(EClient,"sendMsg",return_value=None) as native:
+            with self.assertRaisesRegex(RuntimeError,"ORDER_FORBIDDEN"):
+                c.sendMsg("3\0")
+            with self.assertRaisesRegex(RuntimeError,"ORDER_FORBIDDEN"):
+                c.sendMsg("91\0")
+            self.assertEqual(c.outbound_opcodes,[])
+            native.assert_not_called()
+
+    def test_cli_assessment_never_loads_quotes_or_sends_whatif(self):
+        with tempfile.TemporaryDirectory() as td:
+            argv=["ib_paper_whatif_preview.py","--assess-paper-canary-isolation",
+                  "--evidence-dir",td]
+            synthetic={"state":"ONE_SHARED_PAPER_ACCOUNT_NO_EXECUTABLE_CANARY",
+                       "can_submit_executable_canary":False}
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"assess_isolated_paper_canary",
+                              return_value=synthetic) as assess, \
+                 patch.object(p,"native_read",
+                              side_effect=AssertionError("quote requested")), \
+                 patch.object(p,"one_preview",
+                              side_effect=AssertionError("preview requested")), \
+                 contextlib.redirect_stdout(io.StringIO()) as stdout:
+                p.main()
+            assess.assert_called_once_with(Path(td))
+            self.assertIn("NO_EXECUTABLE_CANARY",stdout.getvalue())
+
+    def test_private_receipt_after_mock_broker_handshake(self):
+        class FakeReadOnly:
+            def __init__(self):
+                from threading import Event
+                self.accounts_ready=Event()
+                self.id_ready=Event()
+                self.accounts_ready.set();self.id_ready.set()
+                self.accounts=["DU100"]
+                self.outbound_opcodes=[71]
+                self.broker_notice_codes=[]
+            def connect(self,*a):pass
+            def run(self):pass
+            def disconnect(self):pass
+        with tempfile.TemporaryDirectory() as td:
+            parent=Path(td)
+            account=parent/"execution.env"
+            account.write_text("HEPTA_IB_PAPER_ACCOUNT=DU100\n")
+            account.chmod(0o600)
+            target=parent/"evidence"
+            with patch.object(p,"PaperIsolationReadOnlyClient",FakeReadOnly):
+                result=p.assess_isolated_paper_canary(target,account)
+            self.assertEqual(result["outbound_opcodes"],[71])
+            self.assertEqual(result["managed_paper_account_count"],1)
+            self.assertFalse(result["can_submit_executable_canary"])
+            self.assertEqual(result["broker_orders_sent"],0)
+            receipt=Path(result["evidence_path"]).read_text()
+            self.assertNotIn("DU100",receipt)
+            self.assertIn("NO_DISTINCT_BROKER_ACCOUNT",receipt)
+
+
 if __name__=="__main__":unittest.main()
