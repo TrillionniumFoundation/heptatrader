@@ -160,3 +160,47 @@ or previously committed test result was modified.
 The added adversarial synthetic-file regression tests require no
 GPU, no real frozen Tiny MLP execution, and no broker connectivity.
 The new model CPU preflight and new Tiny MLP Shadow 90 remain NOT RUN.
+
+
+## Fixed-spacing forecast and outcome scheduling repair
+
+The original source-only runner accepted 90 forecasts separated by
+exactly 300 seconds with exactly 300-second future outcomes, but
+originally processed one slot as a blocking pair: seal forecast,
+wait for its future settlement, then start the next slot. Since
+the prior outcome matures at the NEXT forecast anchor, an outcome
+receipt that needed its allowed 60-second grace could exhaust the
+next forecast's entire legal input window. This would produce
+avoidable cascading CENSORED original-source predictions even
+with a perfectly healthy Pocket4 quote feed.
+
+The runner now has a cooperative NONBLOCKING_DUE_INPUT_FIRST_V1
+time scheduler: registered fixed input windows and delayed outcome
+windows are tracked separately. At each real clock tick, it first
+handles open prospective forecasts, then matured future outcomes,
+and finally expiry bookkeeping for irreversibly late windows.
+This guarantees a still-valid forecast is prioritized over stale
+recovery work, including after many missed windows caused by a
+host restart. There is no change to the original fixed schedule,
+model weights, precommit deadlines, or 88/90 research-source
+coverage rule. Missing or invalid source proofs are still
+censored and never backfilled or promoted.
+
+A further deadline race was closed: source read initiation before
+the end-of-outcome grace does NOT qualify a score if the source
+read completes after the committed deadline. The runner now
+passes the **post-read current clock** into the frozen grade
+contract. Read-only focus tests exercise the input/outcome
+collision, exactly 60-second expiry, the first/last registered
+slots, stale backlog ordering, restart recovery, and a source
+reader crossing the expiry boundary. The original quote reader
+remains a single-process cooperative IO path: this is not a
+hard real-time scheduler and no worst-case host IO latency
+guarantee is claimed.
+
+All proposed new Tiny MLP research logic remains source-only and
+not launched; the existing separate 90-slot prior Shadow and
+trading/reward services remain unchanged. A new prospective
+Tiny MLP result requires the still-unpassed real frozen-weight
+and train-normalization CPU preflight and successful secure
+operator deployment. No new economic, alpha or trade claim.

@@ -331,3 +331,43 @@ def state_summary(plan,results):
             "statistical_qualification":False,"financial_alpha_proven":False,
             "formal_laya_qualification":False,"trade_authority":False,
             "broker_orders_sent":0}
+
+def pending_actions(plan, now_ms, predicted_slots, recorded_slots):
+    """Decide *nonblocking* due work from a complete immutable schedule.
+
+    Input precommit takes priority over a previous window's outcome whose
+    due timestamp is equal to the new input anchor. No outcome wait may
+    consume a newly opening input window. Returns actions, not authority.
+    """
+    check_plan(plan)
+    if (type(now_ms) is not int or
+            not isinstance(predicted_slots,set) or
+            not isinstance(recorded_slots,set) or
+            any(type(k) is not int or not 0<=k<SLOTS
+                for k in predicted_slots | recorded_slots)):
+        raise ContractError("ORIGINAL_CAMPAIGN_SCHEDULER_IDENTITY")
+    # Work with an expiring original-source deadline MUST outrank the
+    # backlog of old already-expired windows after a machine restart.
+    # Old windows are still permanently CENSORED, just written later.
+    fresh_inputs=[]
+    fresh_outcomes=[]
+    expired_inputs=[]
+    expired_outcomes=[]
+    for slot in range(SLOTS):
+        if slot in recorded_slots:
+            continue
+        anchor=plan["start_ms"]+slot*SLOT_SPACING_MS
+        if slot not in predicted_slots:
+            if now_ms>=anchor:
+                (expired_inputs if now_ms>anchor+INPUT_GRACE_MS
+                 else fresh_inputs).append(
+                     (slot,"CENSOR_INPUT" if now_ms>anchor+INPUT_GRACE_MS
+                      else "TRY_PREDICT"))
+        else:
+            due=anchor+HORIZON_MS
+            if now_ms>=due:
+                (expired_outcomes if now_ms>due+INPUT_GRACE_MS
+                 else fresh_outcomes).append(
+                     (slot,"CENSOR_OUTCOME" if now_ms>due+INPUT_GRACE_MS
+                      else "TRY_GRADE"))
+    return fresh_inputs+fresh_outcomes+expired_inputs+expired_outcomes

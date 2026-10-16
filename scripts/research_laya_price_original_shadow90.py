@@ -27,7 +27,7 @@ from laya_cell.price_year_gpu import (features_from_bars,fold_indices,class_prio
 from laya_cell.price_original_campaign import (
     SLOTS,HORIZON_MS,INPUT_GRACE_MS,SLOT_SPACING_MS,
     check_plan,create_plan,expected_anchor,prediction,grade,state_summary,
-    verify_saved_outcome)
+    verify_saved_outcome,pending_actions)
 from research_laya_price_year_gpu import model_for,metric_torch
 
 STOP=False
@@ -87,35 +87,20 @@ def asof_feature(c,asof,anchor):
     return original_feature_snapshot(quotes,pins,asof,require_fresh=True),quotes,pins
 
 
-def future_outcome(c,plan,slot,pred):
-    """Score only the next strictly completed bar. Never backfill a missed input."""
-    anchor=expected_anchor(plan,slot)
-    due=anchor+HORIZON_MS
-    while not STOP and int(time.time()*1000)<due+2500:
-        time.sleep(min(2,max(.02,(due+2500-int(time.time()*1000))/1000)))
-    if STOP:return None
-    # Give the original quote source the FULL registered 60-second endpoint
-    # grace. A read at due+16 seconds is not an authoritative absence.
-    last_error="ORIGINAL_SOURCE_OUTCOME_PENDING"
-    while not STOP and int(time.time()*1000)<due+INPUT_GRACE_MS:
-        now=int(time.time()*1000)
-        try:
-            quotes,pins=get_original_quotes(c,now,anchor)
-            bars,receipts=original_closed_bars(quotes,now)
-            outcome=grade(plan,slot,pred,bars,receipts,now,digest(pins))
-            if outcome is not None:return outcome
-        except ContractError as exc:
-            last_error=type(exc).__name__+":"+str(exc)[:120]
-        time.sleep(1)
-    if STOP:return None
-    now=int(time.time()*1000)
-    quotes,pins=get_original_quotes(c,now,anchor,full=True)
-    bars,receipts=original_closed_bars(quotes,now)
-    result=grade(plan,slot,pred,bars,receipts,now,digest(pins))
-    if result is None:
-        raise ContractError("ORIGINAL_CAMPAIGN_OUTCOME_UNAVAILABLE_AT_FINAL_DEADLINE:"+last_error)
-    return result
 
+def poll_due_outcome_once(config,plan,slot,pred):
+    """One source read, re-checking the REAL clock after it completes.
+
+    Entering the source read inside grace does not entitle a delayed
+    post-grace write to an OBSERVED receipt. The time passed to grade()
+    is the time the score can actually be committed.
+    """
+    anchor=expected_anchor(plan,slot)
+    source_asof=int(time.time()*1000)
+    quotes,pins=get_original_quotes(config,source_asof,anchor)
+    bars,receipts=original_closed_bars(quotes,source_asof)
+    commit_ms=int(time.time()*1000)
+    return grade(plan,slot,pred,bars,receipts,commit_ms,digest(pins))
 
 def prepare_assets(a,c):
     import torch
@@ -240,90 +225,127 @@ def run(a):
           "plan_id":plan["plan_id"],"start_ms":plan["start_ms"],
           "end_ms":plan["last_outcome_end_ms"],"model_sha256":pins["model_weights"],
           "no_trading":True}),flush=True)
-    for slot in range(SLOTS):
-        if STOP:break
-        anchor=expected_anchor(plan,slot)
-        output=a.evidence/("outcome-%03d.json"%slot)
-        predfile=a.evidence/("prediction-%03d.json"%slot)
-        if output.exists():
-            saved=read_json(output)
-            if predfile.exists():
-                verify_saved_outcome(plan,slot,saved,read_json(predfile),sha_file(predfile))
-            else:
-                verify_saved_outcome(plan,slot,saved)
-            continue
-        pred=None
-        if predfile.exists():
-            pred=read_json(predfile)
-        else:
-            now=int(time.time()*1000)
-            if now>anchor+INPUT_GRACE_MS:
-                write_once(output,{"schema":"heptatrader.laya-original-price-outcome.v1",
-                   "plan_id":plan["plan_id"],"slot":slot,"anchor_ms":anchor,
-                   "at_ms":now,"status":"CENSORED","reason":"MISSED_PRECOMMITTED_INPUT_SLOT",
-                   "automatic_trading":False,"broker_orders_sent":0,"model_promotion":False})
-            else:
-                # One fixed anchor, one fixed grace period, no hindsight input.
-                last_error="NO_COMPLETE_ORIGINAL_SOURCE_HISTORY"
-                while not STOP and int(time.time()*1000)<=anchor+INPUT_GRACE_MS:
-                    now=int(time.time()*1000)
-                    if now<anchor+3000:
-                        time.sleep(min(1,max(.05,(anchor+3000-now)/1000)))
-                        continue
-                    asof=int(time.time()*1000)
-                    try:
-                        feature,quotes,prefixes=asof_feature(c,asof,anchor)
-                        if feature["anchor_ms"]!=anchor:
-                            raise ContractError("ORIGINAL_CAMPAIGN_ANCHOR_CHANGED")
-                        bars,receipts=original_closed_bars(quotes,asof)
-                        if not bars or bars[-1]["time"]*1000!=anchor-HORIZON_MS:
-                            raise ContractError("ORIGINAL_CAMPAIGN_BASE_BAR_MISSING")
-                        import torch
-                        v=torch.tensor(feature["features"],dtype=torch.float32)
-                        scaled=(v-mu)/sd
-                        with torch.no_grad():
-                            scores=model(scaled.clamp(-6,6).reshape(1,-1)).softmax(-1)[0].tolist()
-                        created=int(time.time()*1000)
-                        pred=prediction(plan,slot,feature,scores,created,
-                            bars[-1]["midpoint"]["close"],digest(prefixes),
-                            int((scaled.abs()>6).sum()))
-                        write_once(predfile,pred)
-                        print("REAL_SOURCE_MLP_PREDICTION_SEALED",json.dumps({
-                            "slot":slot,"anchor_ms":anchor,"created_at_ms":created,
-                            "prediction_id":pred["prediction_id"],"clip_count":pred["clip_count"]}),flush=True)
-                        break
-                    except (ContractError,ValueError,KeyError,IndexError) as exc:
-                        last_error=type(exc).__name__+":"+str(exc)[:110]
-                        time.sleep(1)
-                if STOP:break
-                if pred is None:
-                    write_once(output,{"schema":"heptatrader.laya-original-price-outcome.v1",
-                        "plan_id":plan["plan_id"],"slot":slot,"anchor_ms":anchor,
-                        "at_ms":int(time.time()*1000),"status":"CENSORED",
-                        "reason":"NO_STRICT_CAUSAL_INPUT:"+last_error,
-                        "automatic_trading":False,"broker_orders_sent":0,"model_promotion":False})
-        if pred is not None:
-            try:
-                out=future_outcome(c,plan,slot,pred)
-                if STOP:break
-                if out is None:
-                    raise ContractError("ORIGINAL_CAMPAIGN_EVALUATION_STOPPED")
-                out["prediction_sha256"]=sha_file(predfile)
-                write_once(output,out)
-            except (ContractError,OSError,ValueError) as exc:
-                if STOP:break
-                write_once(output,{"schema":"heptatrader.laya-original-price-outcome.v1",
+    # Validate the WHOLE saved file set before scheduling any work.
+    # STOP/restart preserves committed prediction bytes and must not fill
+    # previously missed original windows in retrospect.
+    outcome_list(a.evidence,plan)
+    predicted={i for i in range(SLOTS) if
+               (a.evidence/("prediction-%03d.json"%i)).is_file()}
+    recorded={i for i in range(SLOTS) if
+              (a.evidence/("outcome-%03d.json"%i)).is_file()}
+    failed_reads={}
+    s=state_summary(plan,outcome_list(a.evidence,plan))
+    s.update(at_ms=int(time.time()*1000),last_slot=max(recorded,default=None),
+             state="RUNNING",model_promotion=False,
+             pending_forecasts=len(predicted-recorded),
+             scheduler="NONBLOCKING_DUE_INPUT_FIRST_V1")
+    write_status(a.evidence/"status.json",s)
+
+    # The old sequential scheduler waited for slot N's outcome at the
+    # exact time slot N+1's input was opening (spacing==horizon). Waiting
+    # for a full endpoint grace could consume the NEXT input's only
+    # opportunity. Poll independent due inputs and due outcomes, with new
+    # precommit always processed first. No extra threads or trade authority.
+    while not STOP and len(recorded)<SLOTS:
+        now=int(time.time()*1000)
+        actions=pending_actions(plan,now,predicted,recorded)
+        progress=False
+        for slot,action in actions:
+            if STOP:break
+            anchor=expected_anchor(plan,slot)
+            output=a.evidence/("outcome-%03d.json"%slot)
+            predfile=a.evidence/("prediction-%03d.json"%slot)
+
+            if action=="CENSOR_INPUT":
+                if predfile.exists():
+                    raise ContractError("ORIGINAL_CAMPAIGN_ORPHAN_INPUT_PREDICTION")
+                outcome={"schema":"heptatrader.laya-original-price-outcome.v1",
                     "plan_id":plan["plan_id"],"slot":slot,
-                    "anchor_ms":anchor,"status":"CENSORED",
+                    "anchor_ms":anchor,"at_ms":int(time.time()*1000),
+                    "status":"CENSORED",
+                    "reason":"MISSED_PRECOMMITTED_INPUT_SLOT:"+failed_reads.get(slot,"INPUT_NOT_PRECOMMITTED"),
+                    "automatic_trading":False,"broker_orders_sent":0,
+                    "model_promotion":False}
+                write_once(output,outcome)
+                recorded.add(slot);progress=True
+                continue
+
+            if action=="TRY_PREDICT":
+                if int(time.time()*1000)<anchor+3000:continue
+                try:
+                    asof=int(time.time()*1000)
+                    feature,quotes,prefixes=asof_feature(c,asof,anchor)
+                    if feature["anchor_ms"]!=anchor:
+                        raise ContractError("ORIGINAL_CAMPAIGN_ANCHOR_CHANGED")
+                    bars,_receipts=original_closed_bars(quotes,asof)
+                    if not bars or bars[-1]["time"]*1000!=anchor-HORIZON_MS:
+                        raise ContractError("ORIGINAL_CAMPAIGN_BASE_BAR_MISSING")
+                    import torch
+                    v=torch.tensor(feature["features"],dtype=torch.float32)
+                    scaled=(v-mu)/sd
+                    with torch.no_grad():
+                        probs=model(scaled.clamp(-6,6).reshape(1,-1)).softmax(-1)[0].tolist()
+                    created=int(time.time()*1000)
+                    if created>anchor+INPUT_GRACE_MS:
+                        raise ContractError("ORIGINAL_CAMPAIGN_INPUT_EXPIRED_BEFORE_SEAL")
+                    pred=prediction(plan,slot,feature,probs,created,
+                        bars[-1]["midpoint"]["close"],digest(prefixes),
+                        int((scaled.abs()>6).sum()))
+                    write_once(predfile,pred)
+                    predicted.add(slot);progress=True
+                    failed_reads.pop(slot,None)
+                    print("REAL_SOURCE_MLP_PREDICTION_SEALED",json.dumps({
+                      "slot":slot,"anchor_ms":anchor,"created_at_ms":created,
+                      "prediction_id":pred["prediction_id"],
+                      "clip_count":pred["clip_count"]}),flush=True)
+                except (ContractError,OSError,ValueError,KeyError,IndexError) as exc:
+                    failed_reads[slot]=type(exc).__name__+":"+str(exc)[:120]
+                continue
+
+            if slot not in predicted or not predfile.exists():
+                raise ContractError("ORIGINAL_CAMPAIGN_PREDICTION_SCHEDULER_DRIFT")
+            pred=read_json(predfile)
+            pred_sha=sha_file(predfile)
+
+            if action=="CENSOR_OUTCOME":
+                outcome={"schema":"heptatrader.laya-original-price-outcome.v1",
+                    "plan_id":plan["plan_id"],"slot":slot,"anchor_ms":anchor,
                     "at_ms":int(time.time()*1000),
-                    "prediction_sha256":sha_file(predfile),
-                    "reason":"ORIGINAL_SOURCE_OUTCOME_UNAVAILABLE:"+str(exc)[:100],
-                    "automatic_trading":False,"broker_orders_sent":0,"model_promotion":False})
-        s=state_summary(plan,outcome_list(a.evidence,plan))
-        s.update({"at_ms":int(time.time()*1000),"last_slot":slot,
-                  "state":"RUNNING","model_promotion":False})
-        write_status(a.evidence/"status.json",s)
-        print("REAL_SOURCE_MLP_SLOT",json.dumps({**s,"slot":slot}),flush=True)
+                    "prediction_id":pred["prediction_id"],
+                    "prediction_sha256":pred_sha,"status":"CENSORED",
+                    "reason":"OUTCOME_COMMITTED_DEADLINE_MISSED:"+failed_reads.get(slot,"NO_COMPLETE_ORIGINAL_RECEIPT"),
+                    "automatic_trading":False,"broker_orders_sent":0,
+                    "model_promotion":False}
+                verify_saved_outcome(plan,slot,outcome,pred,pred_sha)
+                write_once(output,outcome)
+                recorded.add(slot);progress=True
+                continue
+
+            if action!="TRY_GRADE":
+                raise ContractError("ORIGINAL_CAMPAIGN_UNDECLARED_SCHEDULER_ACTION")
+            try:
+                outcome=poll_due_outcome_once(c,plan,slot,pred)
+                if outcome is None:continue
+                outcome["prediction_sha256"]=pred_sha
+                verify_saved_outcome(plan,slot,outcome,pred,pred_sha)
+                write_once(output,outcome)
+                recorded.add(slot);progress=True
+            except (ContractError,OSError,ValueError,KeyError,IndexError) as exc:
+                failed_reads[slot]=type(exc).__name__+":"+str(exc)[:120]
+
+        if progress:
+            s=state_summary(plan,outcome_list(a.evidence,plan))
+            s.update(at_ms=int(time.time()*1000),
+                     last_slot=max(recorded,default=None),state="RUNNING",
+                     pending_forecasts=len(predicted-recorded),
+                     model_promotion=False,scheduler="NONBLOCKING_DUE_INPUT_FIRST_V1")
+            write_status(a.evidence/"status.json",s)
+            print("REAL_SOURCE_MLP_PROGRESS",json.dumps({
+                "observed":s["observed"],"censored":s["censored"],
+                "recorded":s["recorded"],"open_forecasts":len(predicted-recorded)}),flush=True)
+        if not STOP and len(recorded)<SLOTS:
+            time.sleep(.5)
+
     s=state_summary(plan,outcome_list(a.evidence,plan))
     final="STOPPED_RECOVERABLE" if STOP else (
        "ORIGINAL_SOURCE_90_COVERAGE_PASSED_ONLY" if s["observed"]>=88 and s["censored"]<=2
