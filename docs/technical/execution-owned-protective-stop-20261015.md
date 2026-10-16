@@ -725,7 +725,20 @@ an exclusive original order group, or that the pair is durably present in the
 OMS before a future send. New higher broker IDs may arrive on the reader
 thread immediately after the local reservation; any future sender must recheck
 fresh broker floor under its actual transport lock, and treat an overtaken
-pair as unusable without blind regeneration. An additional research-only Coordinator path,
+pair as unusable without blind regeneration.
+
+Before returning an unsent pair, the adapter now performs a **second** SDK
+composite-floor and connection-identity read while still under its local send
+mutex. If the floor has overtaken the parent ID, regressed, disappeared, or
+the wrapper disconnected, that allocation fails and both consumed local IDs
+remain burned. A future call must obtain a fresh Broker floor rather than
+persist stale parent/stop numbers. Real Pocket4 mock-Broker native CTest
+reproduced the old failure at floor 41→900, then passed cases for floor
+loss and 41→42, 41→43, and 41→900 advancement. The native IBAPI-ON Release
+12-target suite and ASan/UBSan two-target suite pass. This narrows a local
+race only: a different IB client may still consume an ID **after** the
+second sample. There is no global Broker-atomic allocation, proof of a
+working STP, or new sender authority. An additional research-only Coordinator path,
 `ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner`, now calls the
 adapter-local allocator via a narrow callback **only while holding the real
 Coordinator owner mutex**, after checking the original recovery-only Owner

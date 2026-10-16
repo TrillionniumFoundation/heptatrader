@@ -1408,6 +1408,24 @@ bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
     // This changes ONLY our local allocation cursor. The next ordinary
     // order follows the pair and no TWS socket or OMS writes occur here.
     m_localOrderSeed = first + 2;
+    // An asynchronous openOrder/orderStatus/nextValidId callback can raise
+    // the SDK's composite floor BETWEEN the initial read and this return,
+    // even though we hold the adapter send mutex (the SDK callback does not).
+    // Refuse such a stale, UNSENT pair before the Coordinator can persist it.
+    // Burn the consumed local IDs regardless; a later call may retry with a
+    // fresh floor but there is still NO broker-atomic reservation or sender.
+    const long verifiedFloor = m_api->GetLastValidOrderId();
+    if (verifiedFloor <= 0 || verifiedFloor > maxId ||
+        verifiedFloor < floor || verifiedFloor > first ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        if (verifiedFloor > 0 && verifiedFloor <= maxId &&
+            m_localOrderSeed < verifiedFloor)
+            m_localOrderSeed = verifiedFloor;
+        reason = "IB_H1_LOCAL_PAIR_BROKER_FLOOR_CHANGED_BEFORE_RETURN";
+        return false;
+    }
     out.parentOrderId = static_cast<long>(first);
     out.childOrderId = static_cast<long>(first + 1);
     out.brokerClientId = expectedClientId;

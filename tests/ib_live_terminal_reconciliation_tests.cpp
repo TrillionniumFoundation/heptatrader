@@ -83,7 +83,8 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
-    long nextValidOrderId=41;
+    mutable long nextValidOrderId=41;
+    mutable long jumpFloorAfterNextRead=0; // deterministic mock of EReader callback
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
@@ -123,7 +124,16 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long GetLastValidOrderId() const override {return nextValidOrderId;}
+    long GetLastValidOrderId() const override {
+        // Test an asynchronous Broker callback raising the native floor
+        // BETWEEN the research reservation's first and second reads.
+        const long before=nextValidOrderId;
+        if(jumpFloorAfterNextRead!=0) {
+            nextValidOrderId=jumpFloorAfterNextRead;
+            jumpFloorAfterNextRead=0;
+        }
+        return before;
+    }
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
@@ -1213,6 +1223,34 @@ void TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend() {
            "IB_NATIVE_ORDER_ID_STALE_BEFORE_SEND")
         throw std::runtime_error("FOREIGN_BROKER_ORDER_FLOOR_OVERRAN_RESERVED_ID");
 }
+void TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds() {
+    // Model an asynchronous EReader floor change immediately after the
+    // initial SDK floor read, before the unsent ID pair is published.
+    // An SDK connection losing readiness is also a refused reservation.
+    for (const long observed : {-1L, 42L, 43L, 900L}) {
+        Fixture f;
+        const auto epoch=f.adapter.GetConnectionEpoch();
+        IBResearchH1LocalIdPair pair;
+        std::string reason;
+        f.broker->jumpFloorAfterNextRead=observed;
+        const bool granted=f.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason);
+        if(granted || pair.parentOrderId!=-1 || f.broker->places!=0 ||
+           reason!="IB_H1_LOCAL_PAIR_BROKER_FLOOR_CHANGED_BEFORE_RETURN")
+            throw std::runtime_error(
+                "H1_UNSENT_PAIR_RETURNED_STALE_ID_AFTER_BROKER_FLOOR_JUMP");
+        if(observed<0) f.broker->nextValidOrderId=900;
+        const long expected=observed<0 ? 900 :
+                            (observed<=43 ? 43 : observed);
+        if(!f.adapter.ReserveResearchUnsentH1LocalIdPair(
+                "DU123",73,epoch,pair,reason) ||
+           pair.parentOrderId!=expected ||
+           pair.childOrderId!=expected+1 ||
+           pair.sendAuthorized || pair.brokerWorkingStopProven ||
+           f.broker->places!=0)
+            throw std::runtime_error("H1_LATE_BROKER_FLOOR_RETRY_REUSED_ID");
+    }
+}
 void TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress() {
     Fixture f;
     const auto epoch = f.adapter.GetConnectionEpoch();
@@ -1561,6 +1599,7 @@ void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
 int main() {
     TestAdapterReinitNeverReusesUnsentH1NativeIds();
     TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
+    TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds();
     TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();
     TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
