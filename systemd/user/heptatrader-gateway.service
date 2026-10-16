@@ -1,8 +1,8 @@
 [Unit]
+RefuseManualStop=yes
 Description=HeptaTrader user Tool Gateway
 Requires=heptatrader-runtime.service
 After=heptatrader-runtime.service heptatrader-execution.service
-PartOf=heptatrader.target
 [Service]
 Type=simple
 ExecStart=%h/.local/share/heptatrader/current/bin/hepta-tool-gatewayd

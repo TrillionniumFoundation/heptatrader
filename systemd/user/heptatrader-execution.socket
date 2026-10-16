@@ -1,8 +1,8 @@
 [Unit]
+RefuseManualStop=yes
 Description=HeptaTrader user execution socket
 Requires=heptatrader-runtime.service
 After=heptatrader-runtime.service
-PartOf=heptatrader.target
 [Socket]
 ListenStream=%t/heptatrader/execution.sock
 FileDescriptorName=execution

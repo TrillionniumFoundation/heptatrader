@@ -1,8 +1,8 @@
 [Unit]
+RefuseManualStop=yes
 Description=HeptaTrader resident autonomous PAPER strategy driver
 Wants=heptatrader-execution.service heptatrader-gateway.service
 After=heptatrader-execution.service heptatrader-gateway.service
-PartOf=heptatrader.target
 
 [Service]
 Type=simple
