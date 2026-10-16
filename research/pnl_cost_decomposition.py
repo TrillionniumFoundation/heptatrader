@@ -250,6 +250,25 @@ def close_reason_coverage(episodes, executions, receipts, instrument):
                 any(x.get("order_id") != rec.get("broker_order_id") for x in observed)):
             blocked["ORIGINAL_EXECUTION_IDENTITY_NOT_PROVEN"] += 1
             continue
+        try:
+            summed_quantity = sum((decimal(x["quantity"]) for x in observed), ZERO)
+            reported_quantity = decimal(rec["broker_fill_quantity"])
+            weighted_price = (sum((decimal(x["quantity"]) * decimal(x["price"])
+                                   for x in observed), ZERO) / summed_quantity)
+            reported_price = decimal(rec["broker_average_fill_price"])
+            tolerance_qty = max(Decimal("0.0000001"),
+                                summed_quantity * Decimal("0.000000001"))
+            tolerance_price = (Decimal("0.000005") if instrument == "EUR.USD"
+                               else Decimal("0.05"))
+            economics_match = (all(v.is_finite() and v > ZERO for v in (
+                summed_quantity, reported_quantity, weighted_price, reported_price))
+                and abs(summed_quantity - reported_quantity) <= tolerance_qty
+                and abs(weighted_price - reported_price) <= tolerance_price)
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            economics_match = False
+        if not economics_match:
+            blocked["CLOSE_FILL_QUANTITY_OR_PRICE_UNRECONCILED"] += 1
+            continue
         trigger_at, recorded_at, sent_at = (trigger.get("trigger_at_ms"),
                                            rec.get("recorded_at_ms"),
                                            episode.get("last_original_send_ms"))
