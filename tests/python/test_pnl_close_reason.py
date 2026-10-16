@@ -14,13 +14,14 @@ from pnl_cost_decomposition import close_reason_coverage, read_bounded_driver_re
 def fixture():
     episodes = [{"end_command": "cmd-close", "last_original_send_ms": 3000,
                  "net_usd": "-3.50"}]
-    fills = [{"command_id": "cmd-close", "execution_id": "exec-1", "order_id": 17}]
+    fills = [{"command_id": "cmd-close", "execution_id": "exec-1", "order_id": 17, "quantity": "100", "price": "1.10"}]
     receipts = [{
         "schema": "heptatrader.driver-close-command-attribution.v1",
         "instrument": "EUR.USD", "original_command_id": "cmd-close",
         "broker_order_id": 17, "broker_execution_id": "exec-1",
         "broker_execution_ids": ["exec-1"], "terminal_partial_exit": False,
         "broker_terminal_observed": True, "position_after_terminal_fill": 0,
+        "broker_fill_quantity": 100.0, "broker_average_fill_price": 1.10,
         "recorded_at_ms": 5000,
         "exit_trigger": {
             "schema": "heptatrader.driver-close-trigger.v1",
@@ -91,6 +92,23 @@ class ExactReasonTests(unittest.TestCase):
     def test_partial_exit_cannot_backdate_flat_reason(self):
         e, f, r = fixture()
         r[0]["terminal_partial_exit"] = True
+        self.assertEqual(self.check(e, f, r)["exact_original_reason_bound"], 0)
+
+    def test_tampered_quantity_never_qualifies(self):
+        e, f, r = fixture()
+        r[0]["broker_fill_quantity"] = 99.
+        self.assertEqual(self.check(e, f, r)["nonqualifying_reasons"]
+                         ["CLOSE_FILL_QUANTITY_OR_PRICE_UNRECONCILED"], 1)
+
+    def test_tampered_price_never_qualifies(self):
+        e, f, r = fixture()
+        r[0]["broker_average_fill_price"] = 1.105
+        self.assertEqual(self.check(e, f, r)["nonqualifying_reasons"]
+                         ["CLOSE_FILL_QUANTITY_OR_PRICE_UNRECONCILED"], 1)
+
+    def test_missing_execution_economics_never_qualifies(self):
+        e, f, r = fixture()
+        f[0].pop("price")
         self.assertEqual(self.check(e, f, r)["exact_original_reason_bound"], 0)
 
     def test_last_exit_reason_is_never_evidence(self):
