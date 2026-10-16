@@ -93,6 +93,18 @@ def observe_orders():
     return {"count":len(ids),"fingerprint":hashlib.sha256(
         json.dumps(sorted(str(v) for v in ids),separators=(",",":")).encode()).hexdigest()}
 
+def require_fresh_quote_observation(quote:dict,now_ms:int)->float:
+    if not isinstance(quote,dict) or quote.get("instrument")!="EUR.USD" or (
+        quote.get("stale") is not False or
+        quote.get("subscription_state")!="active"):
+        raise RuntimeError("MARKET_QUOTE_NOT_FRESH")
+    observed=quote.get("observed_at_ms")
+    if type(observed) is not int or not 0 <= now_ms-observed <= 5000:
+        raise RuntimeError("QUOTE_CLOCK_NOT_BOUND")
+    bid=float(quote["bid"])
+    synthetic_stop_price(bid)
+    return bid
+
 class PreviewClient(EWrapper,EClient):
     def __init__(self):
         EWrapper.__init__(self);EClient.__init__(self,self)
@@ -109,6 +121,10 @@ class PreviewClient(EWrapper,EClient):
         self.order_states=[]
         self.executions=0
         self.order_status_callbacks=[]
+        self.expected_account=""
+        self.expected_stop_price=None
+        self.exact_preview_echoes=0
+        self.invalid_preview_echoes=0
     def sendMsg(self,msg):
         code=int(msg.split("\0")[0])
         if code not in (71,3):
@@ -129,14 +145,44 @@ class PreviewClient(EWrapper,EClient):
         self.next_ready.set()
     def openOrder(self,orderId,contract,order,orderState):
         if orderId==self.expected_order_id and self.allow_preview:
-            self.order_states.append({
-                "state":str(getattr(orderState,"status",""))[:70],
-                "echoed_whatIf":bool(getattr(order,"whatIf",False)),
+            state=str(getattr(orderState,"status",""))[:70]
+            try:
+                exact_qty=Decimal(str(getattr(order,"totalQuantity",None)))==QTY
+            except (ValueError,TypeError,ArithmeticError):
+                exact_qty=False
+            echo={
+                "state":state,
+                "echoed_whatIf":getattr(order,"whatIf",None) is True,
                 "echoed_account_is_paper":str(getattr(order,"account","")).startswith("DU"),
+                "echoed_exact_account":bool(self.expected_account) and getattr(order,"account",None)==self.expected_account,
                 "contract_id_valid":getattr(contract,"conId",None)==CONID,
+                "contract_scope_valid":(getattr(contract,"secType",None)=="CASH" and
+                    getattr(contract,"symbol",None)=="EUR" and
+                    getattr(contract,"currency",None)=="USD" and
+                    getattr(contract,"exchange",None)=="IDEALPRO"),
                 "order_type_STP":getattr(order,"orderType",None)=="STP",
+                "action_SELL":getattr(order,"action",None)=="SELL",
+                "quantity_exact":exact_qty,
+                "tif_DAY":getattr(order,"tif",None)=="DAY",
+                "no_parent":getattr(order,"parentId",None) in (0,None),
+                "transmit_flag":getattr(order,"transmit",None) is True,
+                "client_id_exact":getattr(order,"clientId",None)==CLIENT_ID,
+                "order_ref_exact":getattr(order,"orderRef",None)=="HEPTA-WHATIF-20261016-ONE-SHOT",
+                "stop_price_exact":(self.expected_stop_price is not None and
+                    getattr(order,"auxPrice",None)==self.expected_stop_price),
                 "margin_available":bool(str(getattr(orderState,"initMarginChange","")).strip())
-            })
+            }
+            required=("echoed_whatIf","echoed_exact_account","contract_id_valid",
+                      "contract_scope_valid","order_type_STP","action_SELL",
+                      "quantity_exact","tif_DAY","no_parent","transmit_flag",
+                      "client_id_exact","order_ref_exact","stop_price_exact")
+            valid=state=="PreSubmitted" and all(echo[key] for key in required)
+            echo["exact_nonworking_whatif_echo"]=valid
+            self.order_states.append(echo)
+            if valid:
+                self.exact_preview_echoes+=1
+            else:
+                self.invalid_preview_echoes+=1
             self.preview_ready.set()
     def orderStatus(self,orderId,status,filled,remaining,*args):
         if orderId==self.expected_order_id:
@@ -152,6 +198,20 @@ class PreviewClient(EWrapper,EClient):
                 "code":int(errorCode)})
         if reqId==self.expected_order_id and int(errorCode) not in ERRORS_INFO:
             self.preview_ready.set()
+
+def exact_preview_callback_attested(app:PreviewClient)->bool:
+    # orderStatus alone is not a complete broker WHATIF echo. Even when
+    # openOrder matches, actual/terminal status invalidates a preview claim.
+    request_errors=any(
+        error["request_id_match"] and error["code"] not in ERRORS_INFO
+        for error in app.broker_error_codes)
+    unexpected_status=any(
+        status!="PreSubmitted" for status in app.order_status_callbacks)
+    return (app.preview_ready.is_set() and app.exact_preview_echoes>0 and
+            app.invalid_preview_echoes==0 and
+            app.sent_preview==1 and app.message_codes==[71,3] and
+            app.executions==0 and not request_errors and
+            not unexpected_status)
 
 def one_preview(bid:float)->dict:
     app=PreviewClient()
@@ -175,22 +235,34 @@ def one_preview(bid:float)->dict:
             raise RuntimeError("BROKER_PAPER_ACCOUNT_AND_NATIVE_ID_NOT_VERIFIED")
         c,o=exact_whatif_order(app.paper_account,bid,app.next_id)
         app.expected_order_id=app.next_id
+        app.expected_account=app.paper_account
+        app.expected_stop_price=o.auxPrice
         app.allow_preview=True
         app.placeOrder(app.expected_order_id,c,o)
         app.preview_ready.wait(12)
-        report.update(status="PREVIEW_RESPONSE_CAPTURED" if app.preview_ready.is_set()
-                      else "PREVIEW_OUTCOME_UNKNOWN",
-                      submitted_as_whatif=True,
-                      broker_sdk_orders_attempted=app.sent_preview,
-                      raw_outbound_opcodes=app.message_codes,
-                      callbacks=app.order_states,
-                      order_statuses=app.order_status_callbacks,
-                      broker_error_codes=app.broker_error_codes,
-                      execution_callbacks=app.executions,
-                      native_order_id_sha256=hashlib.sha256(
-                          str(app.expected_order_id).encode()).hexdigest())
+        broker_error_for_preview=any(
+            e["request_id_match"] and e["code"] not in ERRORS_INFO
+            for e in app.broker_error_codes)
+        preview_exact=exact_preview_callback_attested(app)
+        report.update(
+            status=("PREVIEW_EXACT_ECHO_CONFIRMED_NONWORKING" if preview_exact
+                    else "PREVIEW_ECHO_MISMATCH_OR_UNKNOWN"),
+            exact_echo_verified=preview_exact,
+            exact_echo_count=app.exact_preview_echoes,
+            invalid_echo_count=app.invalid_preview_echoes,
+            request_id_error=broker_error_for_preview,
+            submitted_as_whatif=True,
+            broker_sdk_orders_attempted=app.sent_preview,
+            raw_outbound_opcodes=app.message_codes,
+            callbacks=app.order_states,
+            order_statuses=app.order_status_callbacks,
+            broker_error_codes=app.broker_error_codes,
+            execution_callbacks=app.executions,
+            native_order_id_sha256=hashlib.sha256(
+                str(app.expected_order_id).encode()).hexdigest())
         if app.executions:
             report["status"]="UNEXPECTED_REAL_EXECUTION_FATAL"
+            report["exact_echo_verified"]=False
         # No accepted working protection conclusion is possible from whatIf.
     except Exception as exc:
         report.update(status="PREVIEW_FAILED_OR_UNKNOWN",
@@ -208,12 +280,9 @@ def main():
     ap.add_argument("--evidence-dir",type=Path)
     a=ap.parse_args()
     quote=native_read("market.get_quote")
-    if quote.get("instrument")!="EUR.USD" or quote.get("stale") is not False or quote.get("subscription_state")!="active":
-        raise RuntimeError("MARKET_QUOTE_NOT_FRESH")
     now=int(time.time()*1000)
-    if not isinstance(quote.get("observed_at_ms"),int) or now-quote["observed_at_ms"]>5000:
-        raise RuntimeError("QUOTE_CLOCK_NOT_BOUND")
-    price=synthetic_stop_price(float(quote["bid"]))
+    bid=require_fresh_quote_observation(quote,now)
+    price=synthetic_stop_price(bid)
     if not a.paper_whatif:
         print(json.dumps({"dry_run":True,"whatIf":True,"price":price,
                           "contract_id":CONID,"quantity_eur":str(QTY)},sort_keys=True))
@@ -232,16 +301,24 @@ def main():
         f.write(json.dumps({"scope":"ONE_PAPER_WHATIF", "created_ms":now})+"\n")
         f.flush();os.fsync(f.fileno())
     before=observe_orders()
-    receipt=one_preview(float(quote["bid"]))
+    receipt=one_preview(bid)
     try:
         after=observe_orders()
         receipt["active_orders_before_count"]=before["count"]
         receipt["active_orders_after_count"]=after["count"]
         receipt["active_orders_equal"]=before==after
         receipt["active_broker_orders_affected"]="NONE_OBSERVED" if before==after else "DRIFT_OR_UNKNOWN"
+        if before!=after and receipt.get("exact_echo_verified"):
+            # The resident strategy may change orders independently, so
+            # never attribute a drift to WhatIf or claim clean non-effect.
+            receipt["status"]="PREVIEW_ACCOUNT_ORDER_SET_CHANGED_OR_UNKNOWN"
+            receipt["exact_echo_verified"]=False
     except Exception as exc:
         receipt["active_broker_orders_affected"]="UNVERIFIED"
         receipt["post_observer_failure"]=type(exc).__name__
+        if receipt.get("exact_echo_verified"):
+            receipt["status"]="PREVIEW_ACCOUNT_ORDER_SET_UNVERIFIED"
+            receipt["exact_echo_verified"]=False
     receipt["recorded_at_ms"]=int(time.time()*1000)
     payload=(json.dumps(receipt,indent=2,sort_keys=True)+"\n").encode()
     dest=root/"whatif-preview-result.json"
