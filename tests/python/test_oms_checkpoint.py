@@ -114,6 +114,36 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertTrue(hot)
         self.assertTrue(all(value["req_id"] == "uncertain-command" for value in hot))
 
+
+    def test_original_account_fence_is_retained_in_generation_hot_replay(self) -> None:
+        control = event("account_new_entry_fenced", "account-control", "",
+                        status="fenced", risk_code="ACCOUNT_NEW_ENTRY_FENCED")
+        control.update(account="DU123", execution_domain="PAPER",
+                       venue="IB", instrument="", side="")
+        self.write_events(self.baseline() + [control])
+        lifecycle.build_generation(self.journal, self.store, stopped=True)
+        current = json.loads((self.store / "CURRENT").read_text())
+        folder = self.store / current["generation"]
+        lines = [json.loads(s) for s in (folder / "hot-replay.jsonl").read_text().splitlines()]
+        preserved = [r for r in lines if r["event"] == "account_new_entry_fenced"]
+        self.assertEqual(len(preserved), 1)
+        self.assertTrue(all(preserved[0].get(k) == v for k, v in control.items()))
+        self.assertEqual(preserved[0]["account"], "DU123")
+        next_event = event("broker_order_status", "other-command", "",
+                           status="Submitted")
+        with self.journal.open("a") as stream:
+            stream.write(json.dumps(next_event) + "\n")
+        lifecycle.build_generation(self.journal, self.store, stopped=True)
+        again = json.loads((self.store / "CURRENT").read_text())
+        hot_again = self.store / again["generation"] / "hot-replay.jsonl"
+        events_again = [json.loads(row) for row in hot_again.read_text().splitlines()]
+        matching = [row for row in events_again
+                    if row["event"] == "account_new_entry_fenced"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["account"], "DU123")
+        self.assertEqual(lifecycle.verify_generation(self.store)["result"], "PASS")
+        self.assertEqual(lifecycle.verify_generation(self.store)["result"], "PASS")
+
     def test_production_control_ids_remain_inert_historical_metadata(self) -> None:
         import hepta_oms_lifecycle as rotation
         self.store = Path(str(self.journal) + ".generations")

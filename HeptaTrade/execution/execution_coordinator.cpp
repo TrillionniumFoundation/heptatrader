@@ -406,6 +406,11 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
             return IdempotencyConflictLocked(context, existing->second.orderId);
         return DuplicateResultLocked(context);
     }
+    // Account-global admission applies across distinct FX and Crypto agent
+    // sessions, after exact idempotent existing-command lookup.
+    if (m_accountNewEntryFences.count(context.account))
+        return RefuseBeforeIntent(context, "ACCOUNT_NEW_ENTRY_FENCED",
+            "native account owner disabled new risk across all sessions", -1);
     if (m_fencedSessionOwners.find(OwnerKey(context.agentId, context.sessionId)) !=
         m_fencedSessionOwners.end())
         return RefuseBeforeIntent(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
@@ -581,6 +586,7 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_requests.Clear();
     m_orderOwners.clear();
     m_fencedSessionOwners.clear();
+    m_accountNewEntryFences.clear();
     m_recoveryOnlySessionOwners.clear();
     m_resumedRecoveryIngress.clear();
     m_placeSendAttempts.clear();
@@ -1416,6 +1422,56 @@ bool ExecutionCoordinator::GetCommandStatus(
     out.reasonCode = found->second.reasonCode;
     out.detail = found->second.detail;
     return true;
+}
+
+bool ExecutionCoordinator::EnterAccountNewEntryFence(
+    const AgentExecutionContext& context, std::size_t& outstanding,
+    std::string& reason)
+{
+    outstanding = 0;
+    if (context.agentId.empty() || context.sessionId.empty() ||
+        context.toolCallId.empty() || context.account.empty())
+    {
+        reason = "ACCOUNT_NEW_ENTRY_FENCE_CONTEXT_INVALID";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_accountNewEntryFences.insert(context.account).second)
+    {
+        // Install the in-memory stop while holding the coordinator lock,
+        // BEFORE the persistent append; an allocation failure cannot happen
+        // after a successful journal write and reopen new entry. On append
+        // failure retain this local hold AND use the established global
+        // journal-failure mutation block. Report success only after durable
+        // fsync, never on the in-memory reservation alone.
+        if (!AppendOrBlockLocked(BuildEvent(context,
+                "account_new_entry_fenced", -1, "", "", 0.0, 0.0,
+                "fenced", "account-wide new-entry admission blocked",
+                "ACCOUNT_NEW_ENTRY_FENCED"), "OMS_ACCOUNT_NEW_ENTRY_FENCE_WRITE_FAILED"))
+        {
+            reason = "OMS_ACCOUNT_NEW_ENTRY_FENCE_WRITE_FAILED";
+            return false;
+        }
+    }
+    // Deliberately conservative: a venue callback outside the coordinator
+    // mutex has already crossed the send-attempt boundary. A fence cannot
+    // retroactively cancel it, or infer a Broker-global zero from local state.
+    for (const auto& item : m_orderOwners)
+        if (item.second.account == context.account) ++outstanding;
+    for (const auto& item : m_requests)
+        if (item.second.context.account == context.account &&
+            item.second.status == ExecutionCommandStatus::Uncertain)
+            ++outstanding;
+    if (m_riskMutationDispatchInFlight) ++outstanding;
+    reason = outstanding ? "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING" :
+        "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT";
+    return true;
+}
+
+bool ExecutionCoordinator::IsAccountNewEntryFenced(const std::string& account) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return !account.empty() && m_accountNewEntryFences.count(account) != 0;
 }
 
 std::size_t ExecutionCoordinator::FenceSessionOwner(

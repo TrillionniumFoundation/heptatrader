@@ -25,6 +25,7 @@ bool ControlLane(ExecutionServiceOperation operation)
         operation == ExecutionServiceOperation::QueryCommandStatus ||
         operation == ExecutionServiceOperation::RecoveryQueryCommandStatus ||
         operation == ExecutionServiceOperation::FenceSessionOwner ||
+        operation == ExecutionServiceOperation::FenceAccountNewEntries ||
         operation == ExecutionServiceOperation::ReleaseSessionOwnerFence;
 }
 

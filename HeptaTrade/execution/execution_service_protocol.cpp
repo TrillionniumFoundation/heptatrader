@@ -384,6 +384,7 @@ bool ExecutionServiceProtocol::EncodeRequest(const ExecutionServiceRequest& requ
     else if (request.operation == ExecutionServiceOperation::QueryCommandStatus ||
              request.operation == ExecutionServiceOperation::RecoveryQueryCommandStatus ||
              request.operation == ExecutionServiceOperation::FenceSessionOwner ||
+             request.operation == ExecutionServiceOperation::FenceAccountNewEntries ||
              request.operation == ExecutionServiceOperation::ReleaseSessionOwnerFence ||
              request.operation == ExecutionServiceOperation::AuditSessionLease ||
              request.operation == ExecutionServiceOperation::AuditSessionOwner ||
@@ -484,6 +485,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
     else if (kind == static_cast<unsigned int>(ExecutionServiceOperation::QueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryQueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceSessionOwner) ||
+             kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceAccountNewEntries) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReleaseSessionOwnerFence) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionLease) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionOwner) ||
@@ -662,6 +664,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
     else if (kind == static_cast<unsigned int>(ExecutionServiceOperation::QueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::RecoveryQueryCommandStatus) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceSessionOwner) ||
+             kind == static_cast<unsigned int>(ExecutionServiceOperation::FenceAccountNewEntries) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::ReleaseSessionOwnerFence) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionLease) ||
              kind == static_cast<unsigned int>(ExecutionServiceOperation::AuditSessionOwner) ||

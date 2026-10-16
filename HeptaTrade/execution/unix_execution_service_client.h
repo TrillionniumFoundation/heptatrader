@@ -33,6 +33,8 @@ public:
         const FlattenPositionCommand& command) override;
     ExecutionControlStatusResult QueryCommandStatus(
         const ExecutionControlCommand& command) override;
+    ExecutionControlStatusResult FenceAccountNewEntries(
+        const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult FenceSessionOwner(
         const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReleaseSessionOwnerFence(

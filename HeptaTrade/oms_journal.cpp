@@ -487,6 +487,7 @@ bool OmsJournal::IsCriticalEventType(const std::string& eventType)
            eventType == "place_outcome_uncertain" ||
            eventType == "status" ||
            eventType == "cancel" || eventType == "reject" || eventType == "risk_blocked" ||
+           eventType == "account_new_entry_fenced" ||
            eventType == "session_owner_fenced" || eventType == "session_owner_fence_release" ||
            eventType == "order_owner_reconciled_terminal" ||
            eventType == "execution_projection_failed" ||

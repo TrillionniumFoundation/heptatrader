@@ -907,6 +907,9 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
             request.control.context.sessionId);
         return ExecutionControlResult(m_controlAuthority->QueryCommandStatus(request.control));
     }
+    if (request.operation == ExecutionServiceOperation::FenceAccountNewEntries)
+        return ExecutionControlResult(
+            m_controlAuthority->FenceAccountNewEntries(request.control));
     if (request.operation == ExecutionServiceOperation::FenceSessionOwner)
     {
         RevokePreviewPermitsForOwner(request.control.context.agentId,

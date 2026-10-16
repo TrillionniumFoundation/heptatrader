@@ -560,6 +560,36 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
     ::unlink(journalPath.c_str()); ::rmdir(directory.c_str());
 }
 }
+
+void AccountNewEntryFenceWireAndUnsupportedAuthorityFailClosed()
+{
+    Fixture f;
+    const auto identity=f.server.ServiceIdentity();
+    ExecutionServiceRequest req;
+    req.operation=ExecutionServiceOperation::FenceAccountNewEntries;
+    req.control=Control("account-entry-control-wire");
+    req.expectedServiceEpoch=identity.serviceEpoch;
+    req.expectedServiceFencingGeneration=identity.serviceFencingGeneration;
+    std::string encoded,reencoded,reason;
+    Check(ExecutionServiceProtocol::EncodeRequest(req,encoded,reason),
+          "account entry fence request encode failed");
+    ExecutionServiceRequest decoded;
+    Check(ExecutionServiceProtocol::DecodeRequest(encoded,decoded,reason),
+          "account entry fence request decode failed");
+    Check(decoded.operation==ExecutionServiceOperation::FenceAccountNewEntries,
+          "account fence native operation silently changed");
+    Check(decoded.control.context.account==req.control.context.account,
+          "account fence request lost owner account binding");
+    Check(ExecutionServiceProtocol::EncodeRequest(decoded,reencoded,reason) &&
+          encoded==reencoded,"account entry fence wire not canonical");
+    UnixExecutionServiceClient client(f.path);
+    const auto actual=client.FenceAccountNewEntries(req.control);
+    Check(actual.status==ExecutionCommandStatus::Rejected,
+          "unconfigured authority unexpectedly installed global account hold");
+    Check(actual.reasonCode=="ACCOUNT_NEW_ENTRY_FENCE_UNAVAILABLE",
+          "unconfigured authority returned a false account hold acceptance");
+}
+
 int main() {
     try {
         CashOrderWireIsOptionalBoundAndNonAmbiguous();
@@ -574,6 +604,7 @@ int main() {
         ExpiredQueuedCommandNeverDispatches();
         StopDoesNotDeadlockCallbackOrAbandonAuthority();
         RealCoordinatorFenceSeesInFlightAndRemainsDurable();
+        AccountNewEntryFenceWireAndUnsupportedAuthorityFailClosed();
         std::cout << "Execution IPC scheduling, deadlines, shutdown and durable owner fencing passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

@@ -219,6 +219,10 @@ def _project_hot(events: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[tup
     active_owner_event: dict[int, int] = {}
     fence_event: dict[tuple[str, str], int] = {}
     recovery_event: dict[tuple[str, str], int] = {}
+    # The native account-level no-new-entry event is non-releasable in v1.
+    # Keep the ORIGINAL durable event in every checkpoint hot replay:
+    # losing it at compaction would silently reopen all PAPER sessions.
+    account_entry_fence_event: dict[str, int] = {}
     terminal_fence_event: int | None = None
     projection_failure_event: int | None = None
     send_attempts: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -238,6 +242,13 @@ def _project_hot(events: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[tup
             elif kind == "session_owner_recovery_only":
                 recovery_only[owner] = event.get("status", "")
                 recovery_event[owner] = sequence - 1
+        if kind == "account_new_entry_fenced":
+            account = event.get("account", "")
+            if not isinstance(account, str) or not account:
+                raise GenerationError("OMS_ACCOUNT_NEW_ENTRY_FENCE_ACCOUNT_INVALID")
+            # Preserve one durable original event per account, never infer
+            # admission from a compressed command-index line.
+            account_entry_fence_event.setdefault(account, sequence - 1)
         order_id = event.get("order_id", -1)
         if kind in {"place_sent", "place_activated", "flatten_sent"} and order_id >= 0 and agent:
             active_owners[order_id] = {
@@ -280,6 +291,7 @@ def _project_hot(events: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[tup
     selected: set[int] = set(active_owner_event.values())
     selected.update(fence_event.values())
     selected.update(recovery_event.values())
+    selected.update(account_entry_fence_event.values())
     if terminal_fence_event is not None:
         selected.add(terminal_fence_event)
     if projection_failure_event is not None:
