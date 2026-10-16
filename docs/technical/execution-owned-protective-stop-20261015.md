@@ -1296,3 +1296,40 @@ PAPER account still hosts the autonomous EUR/USD strategy. Before any
 real executable canary, either a separate exact account or a true
 existing-Owner atomic no-new-entry/fence/flat transaction is mandatory.
 Issue #331 remains OPEN.
+
+
+## 2026-10-16 — Real IBKR PAPER nonexecuting GTC/OCA WhatIf
+
+Reused the existing one-shot IBKR PAPER WhatIf script; no alternative
+runtime, order sender or connected account was added. The new, separately
+gated --paper-whatif-gtc-oca variant uses dedicated client ID 8995, exact
+EUR/USD CASH IDEALPRO conId 12087792, 1,000 EUR SELL STP, fresh native
+quote and 0.00005 broker tick, GTC TIF, OCA Type 1 and a fixed 45-byte
+H1-shaped *diagnostic* group. WhatIf remains TRUE on the pinned Python
+SDK wire. This group is NOT an authorized original parent/child H1.
+
+Actual bounded single PAPER WhatIf returned original Broker openOrder echo
+with exact account/conId/orderRef/client/quantity/price, echoed GTC and
+OCA group/Type 1, whatIf TRUE, status PreSubmitted (NONWORKING), margin
+response, zero executions, and global active-order count 0 before and
+after. No active stop or protective bracket was created. Informational
+market farm message 2105 referred to a different request ID.
+
+Pocket4 private O_EXCL/fsynced one-time evidence:
+~/.local/state/heptatrader/operator-evidence/ib-paper-stp-gtc-oca-whatif-20261016/whatif-gtc-oca-result.json
+
+SHA256: af633b04a6cb718388a6456c658519d095952accdf1dd6f49edd8d9be7bd6dec
+
+The new variant uses a separate durable one-shot lock/receipt; the
+previous original STP/DAY WhatIf receipt remains immutable. The pinned
+Python SDK unit lane passed 16/16, including false account/client/ref,
+wrong OCA/TIF, terminal/filled order, invalid native price and duplicate
+CLI attempt refusing any second preview. Real IBKR order count remained
+zero, no live position changed, and resident risk units did not restart.
+
+The result qualifies only hypothetical STP/GTC+OCA account field
+compatibility. Native H1 parent/child send, original Broker permanent IDs,
+real OCA cancel/partial behavior, and driver-death continuity remain
+unverified. This shared PAPER account is actively used by the resident
+strategy; a different API client ID does NOT isolate the physical position.
+Issue #331 remains P0 OPEN.
