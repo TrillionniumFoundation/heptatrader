@@ -27,7 +27,7 @@ def validate_window(bars, old_bars, schedule, start, end):
     """Validate only source/temporal facts; no labels or model scores."""
     if not 0 < start < end or end >= int(datetime.now(timezone.utc).timestamp()):
         raise EvidenceError("DERIVED_HISTORICAL_WINDOW_ONLY")
-    if start % 300 or (end + 1) % 300:
+    if start % 300 or end % 300 not in (0, 299):
         raise EvidenceError("DERIVED_COMPLETE_FIVE_MINUTE_BOUNDARIES_REQUIRED")
     zone = schedule["timezone"]
     a = parse_session(schedule["start"], zone)
