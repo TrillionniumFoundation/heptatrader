@@ -287,6 +287,8 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                 command.context.agentId, command.context.sessionId);
             const bool recoveryOnly = !m_coordinator || m_coordinator->IsSessionOwnerRecoveryOnly(
                 command.context.agentId, command.context.sessionId);
+            const bool accountEntryFenced = !m_coordinator ||
+                m_coordinator->IsAccountNewEntryFenced(command.context.account);
             std::string reason;
             const bool startupReadOnly = m_startupRecoveryReadOnly.load();
             const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason) || startupReadOnly;
@@ -307,6 +309,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             if (startupReadOnly) reason = StartupRecoveryReadOnlyReason();
             else if (fenced) reason = "SESSION_OWNER_FENCED";
             else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
+            else if (accountEntryFenced) reason = "ACCOUNT_NEW_ENTRY_FENCED";
             else if (blocked && reason.empty()) reason = "EXECUTION_MUTATION_BLOCKED";
             else if (nativeNewRiskGuardBlocked)
                 reason = guardReason.empty() ? "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN" : guardReason;
@@ -318,13 +321,15 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << (m_adapter->GetAuthoritativeTerminalCorrelationSnapshot().complete ? "true" : "false")
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
+                   << ",\"account_new_entry_fenced\":" << (accountEntryFenced ? "true" : "false")
                    << ",\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"risk_mutation_dispatch_in_flight\":"
                    << (riskDispatchInFlight ? "true" : "false")
                    << ",\"native_new_risk_guard_blocked\":"
                    << (nativeNewRiskGuardBlocked ? "true" : "false")
                    << ",\"mutation_ready\":"
-                   << (!fenced && !recoveryOnly && !blocked && !riskDispatchInFlight &&
+                   << (!fenced && !recoveryOnly && !accountEntryFenced && !blocked &&
+                       !riskDispatchInFlight &&
                        !nativeNewRiskGuardBlocked && snapshotsReady &&
                        authorizedConnectorCount == 1 ? "true" : "false")
                    << ",\"active_lease_continuation_supported\":" << (m_config.profile.UsesUserCrypto() ? "true" : "false")

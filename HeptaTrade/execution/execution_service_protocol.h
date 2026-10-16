@@ -21,7 +21,8 @@ enum class ExecutionServiceOperation
     RecoveryAuditOwner = 13,
     TerminalizeRecoveryOwner = 14,
     AuditSessionOwner = 15,
-    AuditSessionLease = 16
+    AuditSessionLease = 16,
+    FenceAccountNewEntries = 17
 };
 
 struct ExecutionServiceRequest

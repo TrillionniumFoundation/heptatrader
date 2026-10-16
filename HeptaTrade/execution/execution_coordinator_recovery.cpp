@@ -6,7 +6,18 @@
 bool ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked(
     const OmsJournalEvent& event, const std::string& agentId)
 {
-    if (event.eventType == "session_owner_fenced")
+    if (event.eventType == "account_new_entry_fenced")
+    {
+        if (agentId.empty() || event.account.empty() ||
+            event.reqId.empty() || event.traceId.empty() ||
+            event.status != "fenced" ||
+            event.riskCode != "ACCOUNT_NEW_ENTRY_FENCED" ||
+            event.orderId != -1)
+            BlockMutationsLocked("OMS_ACCOUNT_NEW_ENTRY_FENCE_RECOVERY_INVALID");
+        else
+            m_accountNewEntryFences.insert(event.account);
+    }
+    else if (event.eventType == "session_owner_fenced")
         m_fencedSessionOwners.insert(OwnerKey(agentId, event.traceId));
     else if (event.eventType == "session_owner_recovery_only")
     {

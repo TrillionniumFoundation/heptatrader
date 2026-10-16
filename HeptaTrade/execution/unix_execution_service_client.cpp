@@ -172,6 +172,18 @@ UnixExecutionServiceClient::TerminalizeRecoveryOwnerWithIdentity(
         command, identity,
         ExecutionServiceOperation::TerminalizeRecoveryOwner));
 }
+ExecutionControlStatusResult UnixExecutionServiceClient::FenceAccountNewEntries(
+    const ExecutionControlCommand& command)
+{
+    ExecutionServiceIdentity identity;
+    std::string reason;
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::FenceAccountNewEntries));
+}
+
 ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     const ExecutionControlCommand& command)
 {

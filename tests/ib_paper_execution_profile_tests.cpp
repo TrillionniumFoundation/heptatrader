@@ -1184,6 +1184,60 @@ void TestConfiguredUserOwnerResumeScopesAreIndependent()
 }
 
 
+
+void TestAccountNewEntryFenceRequiresConfiguredNativeCustodian()
+{
+    if (::geteuid()==0 || ::getegid()==0) return;
+    const std::string path=FixtureTemporaryPath("account-native-fence");
+    OmsJournal journal;assert(journal.Init(path));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(journal,callbacks);
+    auto config=MixedCryptoProfileForTest();
+    config.userCryptoAgentId="user-agent";
+    config.userCryptoSessionId="crypto-owner";
+    std::string reason;
+    assert(config.Validate(reason));
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    std::shared_ptr<IbPaperKillSwitchReader> guard(
+        new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(
+        coordinator,config,policyCallbacks,guard);
+    ExecutionControlCommand command;
+    command.context.agentId="user-agent";
+    command.context.sessionId="crypto-owner";
+    command.context.account=config.account;
+    command.context.venue="IB";
+    command.context.executionDomain="PAPER";
+    command.context.toolCallId="account-no-new-entry";
+
+    for (int scenario=0;scenario<5;++scenario) {
+        auto wrong=command;
+        if(scenario==0)wrong.context.agentId="foreign-agent";
+        if(scenario==1)wrong.context.sessionId="fx-owner";
+        if(scenario==2)wrong.context.account="DU_OTHER";
+        if(scenario==3)wrong.context.executionDomain="IB-PAPER:EUR.USD";
+        if(scenario==4)wrong.recoveryIngressFence=1;
+        const auto denied=policy.FenceAccountNewEntries(wrong);
+        assert(denied.status==ExecutionCommandStatus::Rejected);
+        assert(denied.reasonCode=="ACCOUNT_NEW_ENTRY_FENCE_OWNER_UNAUTHORIZED" ||
+               denied.reasonCode=="IB_PAPER_CONTROL_CONTEXT_INVALID");
+        assert(!coordinator.IsAccountNewEntryFenced(config.account));
+    }
+    const auto accepted=policy.FenceAccountNewEntries(command);
+    assert(accepted.status==ExecutionCommandStatus::Accepted);
+    assert(accepted.affectedCount==0);
+    assert(accepted.reasonCode=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT");
+    assert(coordinator.IsAccountNewEntryFenced(config.account));
+    command.context.toolCallId="account-no-new-entry-idempotent";
+    const auto repeated=policy.FenceAccountNewEntries(command);
+    assert(repeated.status==ExecutionCommandStatus::Accepted);
+    assert(repeated.affectedCount==0);
+    ExecutionCoordinator restarted(journal,callbacks);
+    assert(restarted.RecoverFromJournal(reason));
+    assert(restarted.IsAccountNewEntryFenced(config.account));
+    ::unlink(path.c_str());
+}
+
 void TestObservationProfileCannotBorrowTradingAuthority()
 {
     if (::geteuid()==0 || ::getegid()==0) return;
@@ -1221,6 +1275,7 @@ void TestObservationProfileCannotBorrowTradingAuthority()
 int main()
 {
     TestObservationProfileCannotBorrowTradingAuthority();
+    TestAccountNewEntryFenceRequiresConfiguredNativeCustodian();
     TestFxCashRestartCatchUpZeroFillApiCancellation();
     TestFxCashRestartCatchUpBindsReusedOrderIdToPostCheckpointSend();
     TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence();

@@ -172,6 +172,13 @@ public:
                                 std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
                                      ExecutionControlStatusResult& result);
+    // Original coordinator-owned, account-wide no-new-entry admission.
+    // Durable OMS event and all Place mutations synchronize on m_mutex.
+    // Returns local outstanding evidence, NEVER Broker-global stop authority.
+    // Deliberately no release operation until Broker-independent recovery is qualified.
+    bool EnterAccountNewEntryFence(const AgentExecutionContext& context,
+                                   std::size_t& outstanding, std::string& reason);
+    bool IsAccountNewEntryFenced(const std::string& account) const;
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);
     bool IsSessionOwnerFenced(const std::string& agentId, const std::string& sessionId) const;
     bool IsSessionOwnerRecoveryOnly(const std::string& agentId,
@@ -478,6 +485,7 @@ private:
     // Logical reads may populate the bounded historical cache under m_mutex.
     mutable RequestRecordStore m_requests;
     std::unordered_map<long, ExecutionOrderOwner> m_orderOwners;
+    std::unordered_set<std::string> m_accountNewEntryFences;
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>
         m_recoveryOnlySessionOwners;

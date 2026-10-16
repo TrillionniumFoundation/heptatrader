@@ -656,6 +656,162 @@ void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock()
     std::remove(path.c_str());
 }
 
+
+void TestAccountNewEntryFencePersistsAcrossSessions()
+{
+    const std::string path=TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    int sends=0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement=VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&,const std::string&) {
+            ++sends;return VenuePlaceResult::Submitted(800 + sends);
+        });
+    ExecutionCoordinator coordinator(journal,callbacks);
+    AgentExecutionContext custodian=MakePlace("maint-account-1").context;
+    custodian.account="DU123";custodian.venue="IB";
+    custodian.executionDomain="PAPER";
+    std::size_t outstanding=777;
+    std::string reason;
+    assert(coordinator.EnterAccountNewEntryFence(
+        custodian,outstanding,reason));
+    assert(outstanding==0);
+    assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT");
+    assert(coordinator.IsAccountNewEntryFenced("DU123"));
+    assert(!coordinator.IsAccountNewEntryFenced("DU_FOREIGN"));
+    auto crypto=MakePlace("crypto-new-after-maint");
+    crypto.context.agentId="crypto-owner";
+    crypto.context.sessionId="crypto-session";
+    crypto.context.executionDomain="PAPER";
+    const auto rejected=coordinator.PlaceOrder(crypto);
+    assert(rejected.status==ExecutionCommandStatus::Rejected);
+    assert(rejected.reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
+    auto fx=MakePlace("fx-new-after-maint");
+    fx.context.agentId="fx-other-owner";
+    fx.context.sessionId="fx-session";
+    fx.context.executionDomain="IB-PAPER:EUR.USD";
+    assert(coordinator.PlaceOrder(fx).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
+    assert(sends==0);
+    auto foreign=MakePlace("foreign-account");
+    foreign.context.account="DU_OTHER";
+    assert(coordinator.PlaceOrder(foreign).status==ExecutionCommandStatus::Accepted);
+    assert(sends==1);
+    custodian.toolCallId="maint-account-repeat";
+    assert(coordinator.EnterAccountNewEntryFence(custodian,outstanding,reason));
+    assert(outstanding==0); // The foreign account is not scope of this lock.
+    ExecutionCoordinator recovered(journal,callbacks);
+    assert(recovered.RecoverFromJournal(reason));
+    assert(recovered.IsAccountNewEntryFenced("DU123"));
+    assert(!recovered.IsAccountNewEntryFenced("DU_OTHER"));
+    auto later=MakePlace("post-restart-btc");
+    later.context.agentId="third-agent";
+    later.context.sessionId="new-session";
+    assert(recovered.PlaceOrder(later).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
+    assert(sends==1);
+    ::unlink(path.c_str());
+}
+
+void TestAccountNewEntryFenceReportsInFlightAndDoesNotResend()
+{
+    const std::string path=TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    std::mutex gate;
+    std::condition_variable changed;
+    bool entered=false,release=false;
+    int sends=0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement=VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
+            {
+                std::lock_guard<std::mutex> lock(gate);
+                entered=true;++sends;
+            }
+            changed.notify_all();
+            std::unique_lock<std::mutex> lock(gate);
+            changed.wait(lock,[&]{return release;});
+            return VenuePlaceResult::Submitted(980);
+        });
+    ExecutionCoordinator coordinator(journal,callbacks);
+    auto old=MakePlace("original-risk-already-dispatched");
+    auto running=std::async(std::launch::async,[&] {
+        return coordinator.PlaceOrder(old);
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        assert(changed.wait_for(lock,std::chrono::seconds(2),
+                                [&]{return entered;}));
+    }
+    assert(coordinator.RuntimeObservation().riskMutationDispatchInFlight);
+    AgentExecutionContext control=old.context;
+    control.toolCallId="account-fence-during-send";
+    std::size_t outstanding=0;
+    std::string reason;
+    assert(coordinator.EnterAccountNewEntryFence(control,outstanding,reason));
+    assert(outstanding>=1);
+    assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING");
+    auto competing=MakePlace("different-session-must-reject");
+    competing.context.agentId="other";
+    competing.context.sessionId="session2";
+    assert(coordinator.PlaceOrder(competing).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
+    assert(sends==1);
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        release=true;
+    }
+    changed.notify_all();
+    assert(running.get().status==ExecutionCommandStatus::Accepted);
+    assert(!coordinator.RuntimeObservation().riskMutationDispatchInFlight);
+    assert(sends==1);
+    assert(coordinator.IsAccountNewEntryFenced("DU123"));
+    assert(coordinator.PlaceOrder(
+        MakePlace("new-after-original-return")).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
+    ExecutionCoordinator recovered(journal,callbacks);
+    assert(recovered.RecoverFromJournal(reason));
+    assert(recovered.IsAccountNewEntryFenced("DU123"));
+    assert(sends==1);
+    ::unlink(path.c_str());
+}
+
+
+void TestAccountNewEntryFenceJournalFailureFailsClosed()
+{
+    const std::string path=TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    struct stat original{};
+    assert(::stat(path.c_str(),&original)==0);
+    CoordinatorSyncFault::device=original.st_dev;
+    CoordinatorSyncFault::inode=original.st_ino;
+    int sends=0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement=VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&,const std::string&) {
+            ++sends;return VenuePlaceResult::Submitted(999);
+        });
+    ExecutionCoordinator coordinator(journal,callbacks);
+    AgentExecutionContext context=MakePlace("account-fence-fsync-fault").context;
+    std::size_t pending=0;
+    std::string reason;
+    CoordinatorSyncFault::armed.store(true);
+    const bool accepted=coordinator.EnterAccountNewEntryFence(
+        context,pending,reason);
+    CoordinatorSyncFault::armed.store(false);
+    assert(!accepted);
+    assert(reason=="OMS_ACCOUNT_NEW_ENTRY_FENCE_WRITE_FAILED");
+    assert(coordinator.IsAccountNewEntryFenced("DU123"));
+    assert(coordinator.IsMutationBlocked());
+    auto command=MakePlace("different-owner-after-fence-write-failure");
+    command.context.agentId="different-owner";
+    command.context.sessionId="different-session";
+    const auto refused=coordinator.PlaceOrder(command);
+    assert(refused.status==ExecutionCommandStatus::Rejected);
+    assert(sends==0);
+    assert(journal.GetHealthSnapshot().writePoisoned);
+    ::unlink(path.c_str());
+}
+
 void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit()
 {
     const std::string empty =

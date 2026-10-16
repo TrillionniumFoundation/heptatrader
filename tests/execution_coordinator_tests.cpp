@@ -45,6 +45,9 @@ int main(int argc, char** argv)
     TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
     TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock();
     TestReconnectFenceRefusesVenueDispatchInFlight();
+    TestAccountNewEntryFencePersistsAcrossSessions();
+    TestAccountNewEntryFenceReportsInFlightAndDoesNotResend();
+    TestAccountNewEntryFenceJournalFailureFailsClosed();
     TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock();
     TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();

@@ -1190,6 +1190,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
     if (m_coordinator.IsMutationBlocked(&blockedReason))
         return Reject(command.context, -1,
             blockedReason.empty() ? "MUTATION_BLOCKED" : blockedReason);
+    if (m_coordinator.IsAccountNewEntryFenced(command.context.account))
+        return Reject(command.context, -1, "ACCOUNT_NEW_ENTRY_FENCED");
     if (m_coordinator.IsSessionOwnerFenced(
             command.context.agentId, command.context.sessionId))
         return Reject(command.context, -1, "SESSION_OWNER_FENCED");
@@ -1300,6 +1302,41 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::QueryCommandStatus
     result.orderId = target.orderId;
     result.reasonCode = target.reasonCode;
     result.detail = target.detail;
+    result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
+    return result;
+}
+
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::FenceAccountNewEntries(
+    const ExecutionControlCommand& command)
+{
+    // The original authenticated Crypto custodian owner is the ONLY
+    // account-wide native PAPER maintenance signer. An arbitrary FX
+    // strategy session cannot freeze or unlock the shared Broker account.
+    ExecutionControlStatusResult result(BeginControl(command));
+    if (result.status == ExecutionCommandStatus::Rejected) return result;
+    if (!m_config.userScope || !IsConfiguredCryptoOwner(command) ||
+        command.context.venue != "IB" || command.context.account != m_account ||
+        command.context.executionDomain != "PAPER")
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "ACCOUNT_NEW_ENTRY_FENCE_OWNER_UNAUTHORIZED";
+        return result;
+    }
+    std::size_t outstanding = 0;
+    std::string reason;
+    if (!m_coordinator.EnterAccountNewEntryFence(
+            command.context, outstanding, reason))
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = reason.empty() ?
+            "ACCOUNT_NEW_ENTRY_FENCE_FAILED" : reason;
+        return result;
+    }
+    result.status = ExecutionCommandStatus::Accepted;
+    result.affectedCount = outstanding;
+    result.reasonCode = reason;
+    // A successful *entry* fence may coexist with pending Broker sends,
+    // active or unknown orders. Never claim a stop permit here.
     result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
     return result;
 }

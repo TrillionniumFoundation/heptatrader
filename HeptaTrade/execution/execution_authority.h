@@ -361,6 +361,17 @@ public:
     virtual ~ExecutionControlAuthority() = default;
     virtual ExecutionControlStatusResult QueryCommandStatus(
         const ExecutionControlCommand& command) = 0;
+    // Optional native-only account admission operation. Unsupported service
+    // authorities fail closed; this never authorizes maintenance STOP.
+    virtual ExecutionControlStatusResult FenceAccountNewEntries(
+        const ExecutionControlCommand& command)
+    {
+        ExecutionControlStatusResult result;
+        result.commandId = command.context.toolCallId;
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "ACCOUNT_NEW_ENTRY_FENCE_UNAVAILABLE";
+        return result;
+    }
     virtual ExecutionControlStatusResult FenceSessionOwner(
         const ExecutionControlCommand& command) = 0;
     virtual ExecutionControlStatusResult ReleaseSessionOwnerFence(
