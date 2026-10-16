@@ -27,6 +27,31 @@ struct IBConnectParams {
     int handshakeTimeoutMs = 20000;
 };
 
+// The SDK nextValidId callback is produced by EReader while the adapter
+// queries its floor from another thread. Use one monotonic atomic identity:
+// an invalid/duplicate/out-of-order callback is never a ready-to-send token.
+// Reset occurs at the transport generation boundary, never as proof that the
+// previous Broker order set is empty or that a bracket may be submitted.
+class IBNextValidOrderIdReadiness final {
+public:
+    void Reset() noexcept { m_floor.store(-1, std::memory_order_release); }
+    long Get() const noexcept { return m_floor.load(std::memory_order_acquire); }
+    bool Observe(long candidate) noexcept {
+        if (candidate <= 0 ||
+            candidate > static_cast<long>(std::numeric_limits<std::int32_t>::max()))
+            return false;
+        long current = m_floor.load(std::memory_order_acquire);
+        while (candidate > current) {
+            if (m_floor.compare_exchange_weak(current, candidate,
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return true;
+        }
+        return false;
+    }
+private:
+    std::atomic<long> m_floor{-1};
+};
+
 // The SDK's numeric order id is client-scoped. Keep the quantity used for
 // synthetic execution statuses separate from callbacks for another client or
 // account; otherwise an unrelated terminal callback can erase our send.

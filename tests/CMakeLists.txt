@@ -289,6 +289,12 @@ add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
 
+# Thread-safe SDK nextValidId admission to the existing IB adapter.
+# This is a local callback-to-reader regression, no Broker IO.
+add_executable(hepta_ib_native_next_valid_id_tests
+    ib_native_next_valid_id_tests.cpp)
+hepta_register_core_test(hepta_ib_native_next_valid_id_tests)
+
 add_executable(hepta_ib_live_terminal_reconciliation_tests
     ib_live_terminal_reconciliation_tests.cpp)
 target_link_libraries(hepta_ib_live_terminal_reconciliation_tests

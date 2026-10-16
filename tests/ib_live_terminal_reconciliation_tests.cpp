@@ -126,7 +126,8 @@ public:
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
     Fixture(bool finishBootstrap=true, bool cryptoScope=false, bool cashScope=false,
-            const std::string& observabilityPath=std::string()):broker(new Broker()),adapter(
+            const std::string& observabilityPath=std::string(),
+            bool requireNextValidId=true):broker(new Broker()),adapter(
         std::unique_ptr<IIBApiWrapper>(broker), [this]() {
             broker=new Broker();return std::unique_ptr<IIBApiWrapper>(broker);
         }) {
@@ -134,6 +135,7 @@ struct Fixture {
         cfg.observabilityLogPath=observabilityPath;
         cfg.risk.enableOrderSubmission=true;cfg.risk.maxDailyOrders=100;
         cfg.risk.duplicateOrderWindowSec=0;cfg.risk.maxPriceDeviationBps=0;
+        cfg.risk.requireNextValidId=requireNextValidId;
         if(cryptoScope) {
             IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
             cfg.authoritativeCryptoContracts["BTC.USD"]=c;
@@ -1160,6 +1162,17 @@ void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
     if(admitted || f.broker->places!=0 ||
        f.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
         throw std::runtime_error("IB_NATIVE_ORDER_ID_EXCEEDS_32BIT_BROKER_RANGE");
+    // Even when the old optional pre-risk flag is disabled, the native
+    // allocator may not mint arbitrary ID 1 without a real Broker floor.
+    Fixture noBrokerFloor(true,false,false,std::string(),false);
+    noBrokerFloor.broker->nextValidOrderId=0;
+    long missing=-1;
+    const bool madeUp=noBrokerFloor.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'d'),&missing);
+    if(madeUp || noBrokerFloor.broker->places!=0 ||
+       noBrokerFloor.adapter.GetLastRejectReason()!=
+           "IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("ORDER_ID_MINTED_WITHOUT_NEXT_VALID_CALLBACK");
     Fixture nearLimit;
     nearLimit.broker->nextValidOrderId=2147483647L;
     const long last=nearLimit.Place();

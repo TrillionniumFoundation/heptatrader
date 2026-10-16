@@ -1350,8 +1350,10 @@ long HeptaIBGatewayAdapter::NextOrderId() {
         static_cast<long>(std::numeric_limits<std::int32_t>::max());
     // TWS OrderId is int32 even when this Linux host's long is 64-bit.
     // Never downcast a newer broker floor or a depleted local seed into a
-    // wrapped/negative native order ID. Other production risk gates remain.
-    if (ibOrderId > brokerOrderIdMax) return -1;
+    // wrapped/negative native order ID. A missing nextValidId cannot mint
+    // numeric order ID 1 even when an optional pre-risk flag was disabled.
+    // This is independent of the final broker-send risk/Owner admission.
+    if (ibOrderId <= 0 || ibOrderId > brokerOrderIdMax) return -1;
     if (ibOrderId > 0 && m_localOrderSeed < ibOrderId)
         m_localOrderSeed = ibOrderId;
     if (m_localOrderSeed < 1 || m_localOrderSeed > brokerOrderIdMax)
