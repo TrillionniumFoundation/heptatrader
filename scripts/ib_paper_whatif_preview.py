@@ -8,6 +8,7 @@ This probes account-level STP margin validation, NOT bracket/stop protection.
 """
 from __future__ import annotations
 import argparse
+import base64
 from decimal import Decimal
 import hashlib
 import json
@@ -31,6 +32,26 @@ QTY=Decimal("1000")
 MARKET_TICK=0.00005
 ERRORS_INFO={2104,2106,2107,2158}
 
+SCOPE_GTC_OCA = "GTC_OCA_NONEXECUTING"
+# This is a diagnostic-only H1-shaped group, NOT an original trading
+# command, nor an authorization to send an OCA bracket or protective stop.
+OCA_GROUP_WHATIF = "H1" + base64.urlsafe_b64encode(
+    hashlib.sha256(b"heptatrader.paper.whatif.gtc_oca.20261016").digest()
+).decode("ascii").rstrip("=")
+assert len(OCA_GROUP_WHATIF)==45
+
+def preview_profile(scope:str="standalone_day")->dict:
+    if scope == "standalone_day":
+        return {"scope":scope, "client_id":CLIENT_ID, "tif":"DAY",
+                "order_ref":"HEPTA-WHATIF-20261016-ONE-SHOT",
+                "oca_group":"", "oca_type":0}
+    if scope == "gtc_oca":
+        return {"scope":scope, "client_id":8995, "tif":"GTC",
+                "order_ref":"HEPTA-WHATIF-GTC-OCA-20261016",
+                "oca_group":OCA_GROUP_WHATIF, "oca_type":1}
+    raise ValueError("UNKNOWN_PAPER_WHATIF_SCOPE")
+
+
 def synthetic_stop_price(bid:float)->float:
     if not math.isfinite(bid) or not 0.8 < bid < 1.6:
         raise ValueError("UNQUALIFIED_EURUSD_QUOTE")
@@ -39,11 +60,12 @@ def synthetic_stop_price(bid:float)->float:
         raise ValueError("STOP_WOULD_TRIGGER_IMMEDIATELY")
     return round(result,5)
 
-def exact_whatif_order(account:str, bid:float, order_id:int):
+def exact_whatif_order(account:str, bid:float, order_id:int, profile:dict|None=None):
     if not isinstance(account,str) or not account.startswith("DU") or len(account)>32:
         raise ValueError("PAPER_ACCOUNT_UNQUALIFIED")
     if not 1<=order_id<2147483640:
         raise ValueError("BROKER_NATIVE_ORDER_ID_UNQUALIFIED")
+    profile=profile or preview_profile()
     contract=Contract()
     contract.conId=CONID
     contract.secType="CASH";contract.symbol="EUR"
@@ -51,11 +73,13 @@ def exact_whatif_order(account:str, bid:float, order_id:int):
     order=Order()
     order.action="SELL";order.orderType="STP"
     order.totalQuantity=QTY;order.auxPrice=synthetic_stop_price(bid)
-    order.tif="DAY";order.account=account
+    order.tif=profile["tif"];order.account=account
     order.whatIf=True
     order.transmit=True
-    order.orderRef="HEPTA-WHATIF-20261016-ONE-SHOT"
-    order.clientId=CLIENT_ID
+    order.ocaGroup=profile["oca_group"]
+    order.ocaType=profile["oca_type"]
+    order.orderRef=profile["order_ref"]
+    order.clientId=profile["client_id"]
     order.orderId=order_id
     if not order.whatIf or order.parentId not in (0,None):
         raise ValueError("WHATIF_ORDER_FLAG_REQUIRED")
@@ -106,8 +130,9 @@ def require_fresh_quote_observation(quote:dict,now_ms:int)->float:
     return bid
 
 class PreviewClient(EWrapper,EClient):
-    def __init__(self):
+    def __init__(self, profile:dict|None=None):
         EWrapper.__init__(self);EClient.__init__(self,self)
+        self.profile=profile or preview_profile()
         self.account_ready=threading.Event()
         self.next_ready=threading.Event()
         self.preview_ready=threading.Event()
@@ -164,17 +189,21 @@ class PreviewClient(EWrapper,EClient):
                 "action_SELL":getattr(order,"action",None)=="SELL",
                 "quantity_exact":exact_qty,
                 "tif_DAY":getattr(order,"tif",None)=="DAY",
+                "tif_scope_exact":getattr(order,"tif",None)==self.profile["tif"],
+                "oca_scope_exact":(getattr(order,"ocaGroup",None)==self.profile["oca_group"] and
+                    getattr(order,"ocaType",None)==self.profile["oca_type"]),
                 "no_parent":getattr(order,"parentId",None) in (0,None),
                 "transmit_flag":getattr(order,"transmit",None) is True,
-                "client_id_exact":getattr(order,"clientId",None)==CLIENT_ID,
-                "order_ref_exact":getattr(order,"orderRef",None)=="HEPTA-WHATIF-20261016-ONE-SHOT",
+                "client_id_exact":getattr(order,"clientId",None)==self.profile["client_id"],
+                "order_ref_exact":getattr(order,"orderRef",None)==self.profile["order_ref"],
                 "stop_price_exact":(self.expected_stop_price is not None and
                     getattr(order,"auxPrice",None)==self.expected_stop_price),
                 "margin_available":bool(str(getattr(orderState,"initMarginChange","")).strip())
             }
             required=("echoed_whatIf","echoed_exact_account","contract_id_valid",
                       "contract_scope_valid","order_type_STP","action_SELL",
-                      "quantity_exact","tif_DAY","no_parent","transmit_flag",
+                      "quantity_exact","tif_scope_exact","oca_scope_exact",
+                      "no_parent","transmit_flag",
                       "client_id_exact","order_ref_exact","stop_price_exact")
             valid=state=="PreSubmitted" and all(echo[key] for key in required)
             echo["exact_nonworking_whatif_echo"]=valid
@@ -213,27 +242,33 @@ def exact_preview_callback_attested(app:PreviewClient)->bool:
             app.executions==0 and not request_errors and
             not unexpected_status)
 
-def one_preview(bid:float)->dict:
-    app=PreviewClient()
+def one_preview(bid:float,profile:dict|None=None)->dict:
+    profile=profile or preview_profile()
+    app=PreviewClient(profile)
     thread=None
     report={"schema":"heptatrader.ibkr-paper-single-stp-whatif.v1",
             "broker_order_preview_only":True,
             "real_bracket_submitted":False,
             "native_stop_protection_proven":False,
             "risk_owner_unchanged":True,
-            "paper_client_id":CLIENT_ID,
+            "paper_client_id":profile["client_id"],
+            "preview_variant":profile["scope"],
+            "preview_tif":profile["tif"],
+            "preview_oca_group_sha256":hashlib.sha256(
+                profile["oca_group"].encode()).hexdigest() if profile["oca_group"] else "",
+            "preview_oca_type":profile["oca_type"],
             "what_if_true":True,
             "quantity_eur":str(QTY),
             "contract_id":CONID,
             "stop_price":synthetic_stop_price(bid),
             "active_broker_orders_affected":"UNVERIFIED"}
     try:
-        app.connect("127.0.0.1",PORT,CLIENT_ID)
+        app.connect("127.0.0.1",PORT,profile["client_id"])
         thread=threading.Thread(target=app.run,daemon=True)
         thread.start()
         if not app.account_ready.wait(7) or not app.next_ready.wait(7) or not app.paper_account:
             raise RuntimeError("BROKER_PAPER_ACCOUNT_AND_NATIVE_ID_NOT_VERIFIED")
-        c,o=exact_whatif_order(app.paper_account,bid,app.next_id)
+        c,o=exact_whatif_order(app.paper_account,bid,app.next_id,profile)
         app.expected_order_id=app.next_id
         app.expected_account=app.paper_account
         app.expected_stop_price=o.auxPrice
@@ -277,15 +312,20 @@ def one_preview(bid:float)->dict:
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--paper-whatif",action="store_true")
+    ap.add_argument("--paper-whatif-gtc-oca",action="store_true")
     ap.add_argument("--evidence-dir",type=Path)
     a=ap.parse_args()
+    if a.paper_whatif and a.paper_whatif_gtc_oca:
+        ap.error("only one nonexecuting WhatIf variant is allowed")
+    profile=preview_profile("gtc_oca" if a.paper_whatif_gtc_oca else "standalone_day")
     quote=native_read("market.get_quote")
     now=int(time.time()*1000)
     bid=require_fresh_quote_observation(quote,now)
     price=synthetic_stop_price(bid)
-    if not a.paper_whatif:
+    if not a.paper_whatif and not a.paper_whatif_gtc_oca:
         print(json.dumps({"dry_run":True,"whatIf":True,"price":price,
-                          "contract_id":CONID,"quantity_eur":str(QTY)},sort_keys=True))
+                          "contract_id":CONID,"quantity_eur":str(QTY),
+                          "variant":profile["scope"]},sort_keys=True))
         return
     if not a.evidence_dir:
         ap.error("explicit --evidence-dir required")
@@ -295,13 +335,14 @@ def main():
     if root.stat().st_uid!=os.geteuid() or root.stat().st_mode & 0o077:
         raise RuntimeError("EVIDENCE_SCOPE_NOT_PRIVATE")
     # Durable ONE-SHOT guard exists BEFORE ANY API preview attempt.
-    lease=root/"whatif-preview-executed-once.lock"
+    lease=root/("whatif-preview-gtc-oca-executed-once.lock"
+                if a.paper_whatif_gtc_oca else "whatif-preview-executed-once.lock")
     fd=os.open(lease,os.O_EXCL|os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,"w") as f:
         f.write(json.dumps({"scope":"ONE_PAPER_WHATIF", "created_ms":now})+"\n")
         f.flush();os.fsync(f.fileno())
     before=observe_orders()
-    receipt=one_preview(bid)
+    receipt=one_preview(bid,profile)
     try:
         after=observe_orders()
         receipt["active_orders_before_count"]=before["count"]
@@ -321,7 +362,8 @@ def main():
             receipt["exact_echo_verified"]=False
     receipt["recorded_at_ms"]=int(time.time()*1000)
     payload=(json.dumps(receipt,indent=2,sort_keys=True)+"\n").encode()
-    dest=root/"whatif-preview-result.json"
+    dest=root/("whatif-gtc-oca-result.json"
+               if a.paper_whatif_gtc_oca else "whatif-preview-result.json")
     fd=os.open(dest,os.O_EXCL|os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,"wb") as f:f.write(payload);f.flush();os.fsync(f.fileno())
     print(json.dumps({"status":receipt.get("status"),

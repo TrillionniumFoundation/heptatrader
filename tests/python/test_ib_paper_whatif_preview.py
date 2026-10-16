@@ -1,5 +1,9 @@
 """Fail-closed unit controls for a single IBKR PAPER WhatIf-only preview."""
 import unittest
+import tempfile
+import contextlib
+import io
+from pathlib import Path
 import inspect
 from decimal import Decimal
 from types import SimpleNamespace
@@ -170,5 +174,118 @@ class PreviewBoundaries(unittest.TestCase):
                 q["observed_at_ms"]=t
                 with self.assertRaises(RuntimeError):
                     p.require_fresh_quote_observation(q,now)
+
+    def test_gtc_oca_whatif_sdk_native_fields_are_nonexecuting(self):
+        scope=p.preview_profile("gtc_oca")
+        self.assertEqual(scope["client_id"],8995)
+        self.assertEqual(scope["tif"],"GTC")
+        self.assertEqual(scope["oca_type"],1)
+        self.assertEqual(len(scope["oca_group"]),45)
+        self.assertTrue(scope["oca_group"].startswith("H1"))
+        contract,order=p.exact_whatif_order("DU-SYNTHETIC",1.12362,9001,scope)
+        self.assertEqual(contract.conId,12087792)
+        self.assertEqual(contract.secType,"CASH")
+        self.assertEqual(contract.exchange,"IDEALPRO")
+        self.assertTrue(order.whatIf)
+        self.assertTrue(order.transmit)
+        self.assertFalse(order.parentId)
+        self.assertEqual(order.tif,"GTC")
+        self.assertEqual(order.ocaGroup,scope["oca_group"])
+        self.assertEqual(order.ocaType,1)
+        self.assertEqual(order.action,"SELL")
+        self.assertEqual(order.orderType,"STP")
+        self.assertEqual(order.totalQuantity,Decimal("1000"))
+        self.assertEqual(order.clientId,8995)
+        self.assertEqual(order.orderRef,scope["order_ref"])
+        self.assertLess(order.auxPrice,1.12362)
+        self.assertNotEqual(order.ocaGroup,p.preview_profile()["oca_group"])
+
+    def test_gtc_oca_exact_echo_and_hostile_mutations(self):
+        scope=p.preview_profile("gtc_oca")
+        def make():
+            c,o=p.exact_whatif_order("DU-SYNTHETIC",1.12362,9001,scope)
+            app=p.PreviewClient(scope)
+            app.expected_order_id=9001
+            app.expected_account="DU-SYNTHETIC"
+            app.expected_stop_price=o.auxPrice
+            app.allow_preview=True
+            app.sent_preview=1
+            app.message_codes=[71,3]
+            state=SimpleNamespace(status="PreSubmitted",initMarginChange="250")
+            return app,c,o,state
+        app,c,o,state=make()
+        app.openOrder(9001,c,o,state)
+        self.assertTrue(p.exact_preview_callback_attested(app))
+        self.assertEqual(app.order_states[0]["oca_scope_exact"],True)
+        self.assertEqual(app.order_states[0]["tif_scope_exact"],True)
+        for attr,value in (("ocaGroup","H1OTHER"),
+                           ("ocaType",2),("tif","DAY"),
+                           ("clientId",8994),("orderRef","H1FOREIGN"),
+                           ("whatIf",False),("parentId",23),
+                           ("transmit",False),("orderType","MKT")):
+            with self.subTest(attr=attr):
+                app,c,o,state=make()
+                setattr(o,attr,value)
+                app.openOrder(9001,c,o,state)
+                self.assertFalse(p.exact_preview_callback_attested(app))
+                self.assertEqual(app.invalid_preview_echoes,1)
+        app,c,o,state=make()
+        c.conId=13579
+        app.openOrder(9001,c,o,state)
+        self.assertFalse(p.exact_preview_callback_attested(app))
+        app,c,o,state=make()
+        app.openOrder(9001,c,o,state)
+        app.orderStatus(9001,"Filled",0,1000)
+        self.assertFalse(p.exact_preview_callback_attested(app))
+
+    def test_gtc_oca_one_shot_and_unknown_scope_refuse(self):
+        with self.assertRaises(ValueError):
+            p.preview_profile("live")
+        app=p.PreviewClient(p.preview_profile("gtc_oca"))
+        with patch.object(EClient,"sendMsg",return_value=None):
+            with self.assertRaises(RuntimeError):
+                app.sendMsg("3\0")
+            app.allow_preview=True
+            app.sendMsg("3\0")
+            with self.assertRaises(RuntimeError):
+                app.sendMsg("3\0")
+            self.assertEqual(app.sent_preview,1)
+            self.assertEqual(app.message_codes,[3])
+
+    def test_gtc_oca_cli_one_shot_lock_does_not_resend(self):
+        quote={"instrument":"EUR.USD","stale":False,
+               "subscription_state":"active","observed_at_ms":0,"bid":1.12362}
+        runs=[]
+        def fake_read(tool):
+            import time
+            if tool!="market.get_quote":
+                raise AssertionError("unapproved read")
+            q=dict(quote)
+            q["observed_at_ms"]=int(time.time()*1000)
+            return q
+        def fake_preview(bid,profile):
+            runs.append(profile["scope"])
+            return {"status":"PREVIEW_ACCOUNT_ONLY_FAKE",
+                    "exact_echo_verified":False,
+                    "preview_variant":profile["scope"],
+                    "broker_order_preview_only":True,
+                    "execution_callbacks":0}
+        with tempfile.TemporaryDirectory() as folder:
+            argv=["ib_paper_whatif_preview.py","--paper-whatif-gtc-oca",
+                  "--evidence-dir",folder]
+            with patch.object(p.sys,"argv",argv), \
+                 patch.object(p,"native_read",side_effect=fake_read), \
+                 patch.object(p,"observe_orders",return_value={"count":0,"fingerprint":"x"}), \
+                 patch.object(p,"one_preview",side_effect=fake_preview), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                p.main()
+                with self.assertRaises(FileExistsError):
+                    p.main()
+            root=Path(folder)
+            self.assertEqual(runs,["gtc_oca"])
+            self.assertTrue((root/"whatif-preview-gtc-oca-executed-once.lock").exists())
+            self.assertTrue((root/"whatif-gtc-oca-result.json").exists())
+            self.assertFalse((root/"whatif-preview-result.json").exists())
+            self.assertFalse((root/"whatif-preview-executed-once.lock").exists())
 
 if __name__=="__main__":unittest.main()
