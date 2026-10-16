@@ -565,3 +565,30 @@ accessor throwing an exception rejects native ID reservation with
 H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION. No ID is consumed by that
 failed read, no OMS write is attempted and no Broker order is sent.
 This adds no production send authority or independent stop protection.
+
+## Original native IB order-ID restart high-watermark — isolated audit
+
+The existing Adapter's research H1 pair lease consumes two native IDs under
+the normal API mutex before a durable OMS callback. This gives in-process
+exclusion, but the broker's nextValidId after TWS reconnect can be lower
+than *untransmitted* or UNKNOWN original group IDs. Reusing such IDs before
+exact broker/OMS reconciliation could associate a new child with the
+wrong parent.
+
+Added a strictly read-only `ib_h1_native_id_restart_floor.h` helper that
+replays the existing OMS critical `bracket_*_reserved` and
+`bracket_*_send_attempt` events, calculates the maximum observed
+native ID, and refuses malformed or orphaned reserved pairs. A future
+broker-side allocator **must** require the broker's fresh nextValidId to
+be strictly greater than this floor, and must still reconcile account-wide
+active/completed orders plus unknown transmissions before any send.
+
+This helper neither allocates IDs, mutates the live Adapter, places
+orders nor grants driver maintenance rights. No assertion of
+cross-restart Broker safety is possible from its test alone. A new
+Pocket4 native IB-enabled CTest uses an isolated real OmsJournal and
+verifies completed pair, potential child send, process restart, low/equal
+Broker nextValidId and a one-sided orphan. The test passed 1/1.
+The remaining production blocker is **wiring this independent recovery
+high-watermark into the exact Coordinator+Adapter native lease path** under
+the existing owner lock, followed by real PAPER Broker callbacks.
