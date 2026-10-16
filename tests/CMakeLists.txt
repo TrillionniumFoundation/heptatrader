@@ -297,6 +297,12 @@ if(HEPTA_ENABLE_IBAPI)
     target_link_libraries(hepta_ib_native_h1_pair_transport_tests PRIVATE
         hepta_ibapi_client hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
     hepta_register_core_test(hepta_ib_native_h1_pair_transport_tests)
+    # H1 OCA ordinary-exit candidate: fake Broker witness, NO send path.
+    add_executable(hepta_ib_native_h1_oca_exit_tests
+        ib_native_h1_oca_exit_tests.cpp)
+    target_link_libraries(hepta_ib_native_h1_oca_exit_tests PRIVATE
+        hepta_ibapi_client hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_h1_oca_exit_tests)
 endif()
 
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp

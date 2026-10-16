@@ -987,3 +987,50 @@ manual stop, service restart, account change or model promotion occurred.
 
 This is **not** a native stop-loss production release and does **not**
 close P0 Issue #331.
+
+## 2026-10-16 — Frozen H1 OCA normal-close race negative control
+
+Issue #331's native Parent+Stop admission is not complete until ordinary
+strategy CLOSE and the working protective STP cannot both overfill or later
+reverse the CASH EUR/USD account. The existing legacy `HEPTA-OCA-*`
+helper is intentionally not production-compatible with the 45-byte H1
+venue codec.
+
+`ib_native_h1_oca_exit_research.h` creates an **UNSENT native SDK**
+ordinary-close candidate using a fourth H1 role
+`hepta-bracket-h1-role/v1 + <frozen-group> + ORDINARY_EXIT`.
+Parent, Stop, OCA group, and Ordinary Exit identities remain distinct,
+reproducible and bound to the original immutable group.
+
+Construction requires fresh same-epoch full-account Broker position and
+active orders, exact original entry execution evidence and permanent ID,
+the original stop still `Submitted`, exact stop permanent ID / action /
+price / full remaining quantity, original Broker-attested OCA group with
+`ocaType=1`, no pending cancel/replace, no unknown original command,
+an independently attested no-new-entry fence, an exact separately reserved
+native exit ID and matching owner/account/client. A changed TWS epoch or
+replayed old callback cannot pass a new snapshot. Zero or partially
+closed exposure, stop partial fill, canceled stop, unverified OCA, wrong
+broker permanent ID, extra open orders, stale quote/order epoch and
+unreserved exit ID all fail closed.
+
+The proposed ordinary exit uses MKT/DAY, parentId=0, matching H1 OCA
+group with cancel-with-block (type 1), and correct opposite direction
+and entire remaining original size. Every result explicitly has
+`sendAuthority=false`, `workingProtectionProven=false`,
+`mayRetry=false` and `maintenanceAuthority=false`. The supplied
+Broker evidence is synthetic and this is **NOT a live broker owner
+admission or a send API**. Actual OCA type-1 broker semantics do not
+guarantee stop triggering, execution price, or protection during outage.
+
+Pocket4 CMake Release IBAPI-ON selected **12/12 CTests PASS** including
+full Runtime Recovery 43.45s. Independent native C++11 strict
+`-Wall -Wextra -Werror` AddressSanitizer/UBSan PASS.
+No actual `EClient::placeOrder`, no Broker cancel/OCA modification, no
+position mutation, and no resident unit restarts. The existing 9-unit
+PAPER manual-stop shield remains separately deployed from merged PR #347.
+The IBKR PAPER account still has no independently proven STP/OCA
+protective acceptance, so PR stays Draft and Issue #331 remains P0 Open.
+
+Official API order metadata:
+https://www.interactivebrokers.com/docs/tws-api/ref/order
