@@ -367,6 +367,25 @@ def record_correlated_close(state,pending,fill,position_after,*,partial=False):
     # Limit historical state growth without altering original Execution ledger.
     if len(history)>64: del history[:-64]
 
+def record_close_diagnostic(state,pending,fill,position_after,*,partial=False):
+    """Never turn nonauthoritative attribution into a broker settlement gate.
+
+    Called only AFTER original command, execution and position reconciliation
+    succeeded. The strict recorder still rejects false/conflicting evidence;
+    its failure is reported without inventing a receipt or blocking the already
+    confirmed close. Order, owner and risk validation exceptions are NOT caught.
+    """
+    try:
+        record_correlated_close(state,pending,fill,position_after,partial=partial)
+    except Exception as exc:
+        state['last_close_attribution_error']={
+            'schema':'heptatrader.close-attribution-diagnostic-error.v1',
+            'original_command_id':pending.get('command_id'),
+            'exception_type':type(exc).__name__,
+            'reason':str(exc)[:256],
+            'observed_at_ms':now_ms(),
+            'evidence_scope':'DIAGNOSTIC_FAILURE_NOT_BROKER_STATE'}
+
 def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None,*,crypto_cash_limit=25000.0,crypto_base_limit=1.0,exit_reason=None):
     if state.get("pending") is not None:
         raise DriverError("original command pending; replacement preparation forbidden")
@@ -445,6 +464,7 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
 
 def inspect_pending(state,path,binary,socket,token,outbox,snap):
     p=state.get("pending")
+    if p is None:return  # A reconciled command is never counted or queried twice.
     if p.get("send_state")=="DEFINITELY_REJECTED":
         before=p.get("position_before_send");current=float(snap["position"])
         if (type(before) not in (int,float) or not math.isfinite(float(before)) or
@@ -525,11 +545,11 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         else: state["last_error"]=""
     elif (p["kind"]=="CLOSE" and abs(pos)<QUANTITY_TOLERANCE and not active and fill is not None and
             payload.get("command_status")=="accepted"):
+        record_close_diagnostic(state,p,fill,pos)
         entry=state.get("entry_price"); old=float(state.get("position",0))
         if fill_price and entry and old:
             closed_qty=min(abs(old),float(fill.get("quantity",QTY)))
             state["gross_pnl"]+=((fill_price-entry)*closed_qty if old>0 else (entry-fill_price)*closed_qty)
-        record_correlated_close(state,p,fill,pos)
         if INSTRUMENT=="BTC.USD":
             record_crypto_exit(state,p,fill)
             exits=state.get("crypto_exit_evidence",[])
@@ -553,8 +573,8 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         if not entry or abs(reduced-float(fill["quantity"]))>QUANTITY_TOLERANCE:
             state["last_error"]="partial exit quantity/economic evidence mismatch"
             atomic_json(path,state);return
+        record_close_diagnostic(state,p,fill,pos,partial=True)
         state["gross_pnl"]+=((fill_price-entry)*reduced if old>0 else (entry-fill_price)*reduced)
-        record_correlated_close(state,p,fill,pos,partial=True)
         if INSTRUMENT=="BTC.USD": record_crypto_exit(state,p,fill)
         state["partial_exit_fills"]=int(state.get("partial_exit_fills",0))+1
         if INSTRUMENT=="BTC.USD" and not state.get("halt_new_entries"):

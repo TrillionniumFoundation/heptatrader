@@ -72,3 +72,22 @@ re-execution identities. No real Broker orders were sent by tests.
 **Still separate P0:** systemd manual-stop shield is installed and active;
 independent Broker-native stop/parent+child/OCA working protection across
 Driver outage is not yet proven. Keep [#331](https://github.com/TrillionniumFoundation/heptatrader/issues/331) OPEN.
+
+## Diagnostic isolation correction (2026-10-16)
+
+The initial source could raise on corrupted/conflicting attribution history after
+adding the realized fill PnL but before clearing the pending command. An offline
+Pocket4 regression reproduced a confirmed flat Broker fixture remaining pending
+and a -25 USD fill counted as -50 USD after two polls. This was a synthetic
+regression, not a claim of a new real account loss.
+
+The strict diagnostic recorder still rejects conflicting records. A narrowly
+scoped caller now stores a bounded diagnostic error and completes the already
+authenticated Broker reconciliation instead. It does not catch command, owner,
+position, risk or Broker evidence validation. Unproven fills still remain pending.
+Corrupted historic diagnostics are retained; no successful receipt is invented.
+Seven additional tests cover full/partial closes, repeated polls, a conflicting
+receipt, unexpected diagnostic failure, unproven fills and healthy attribution.
+
+Source merge does not deploy this Driver or qualify broker-native stops. The
+existing pinned FX/BTC services remain unchanged pending controlled rollout.

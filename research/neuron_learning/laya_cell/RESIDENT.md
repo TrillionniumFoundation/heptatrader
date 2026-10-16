@@ -167,3 +167,18 @@ canonical Agentd enrollment.
 Stopping the three new Laya services leaves PAPER and the frozen bootstrap alone.
 The committed candidate, inputs, native proof and missed windows remain available
 for diagnosis. No schema flag, local metric or JSON status enables LIVE trading.
+
+## Independent reward bookkeeping
+
+Reward/settlement synchronization runs before the candidate queue and heavy-worker
+admission checks, under the existing scheduler lock. Waiting for a frozen trial,
+a prepared candidate, or a free GPU must not freeze observed execution rewards.
+The same process replays at most once per 60-second monotonic interval; a restart
+refreshes immediately. `reward_sync_at_ms` reports source-refresh time separately
+from service liveness. Conflicting reward identities roll back database updates;
+an unavailable source clears current eligibility without deleting prior evidence.
+
+This does not take the GPU lease, collect new training quotes, reserve training
+rows, overlap frozen evaluations, change promotion rules, or send orders. Existing
+storage bounds remain effective. Observed execution rewards remain distinct from
+input-bound model credit; negative and unbound outcomes are not discarded.

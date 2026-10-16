@@ -202,4 +202,74 @@ class ExactCloseCommandProvenance(unittest.TestCase):
         self.assertEqual(state["close_command_attribution"][-1]["original_command_id"],
                          "receipt-69")
 
+class DiagnosticIsolationTests(unittest.TestCase):
+    def scenario(self,remaining=0.0):
+        state=closing_state()
+        state['close_command_attribution']={'invalid':'original diagnostic preserved'}
+        state['pending']={'kind':'CLOSE','command_id':'confirmed-close',
+            'broker_order_id':42,'position_before_send':25000.0}
+        row=correlated_fill('confirmed-close',quantity=25000-remaining)
+        snapshot={'position':remaining,'active':[],'orders':{'recent_orders':[row]}}
+        returned={'ok':True,'result':{'payload':{'authoritative':True,
+            'command_id':'confirmed-close','command_status':'accepted','order_id':42}}}
+        return state,snapshot,returned
+
+    def reconcile(self,state,snapshot,returned):
+        with patch.object(d,'paper_cmd',return_value=returned) as query,patch.object(d,'atomic_json'):
+            d.inspect_pending(state,Path('/unused'),'b','s','t','o',snapshot)
+        return query
+
+    def test_corrupt_diagnostic_cannot_block_broker_confirmed_close(self):
+        state,snap,result=self.scenario();original=copy.deepcopy(state['close_command_attribution'])
+        query=self.reconcile(state,snap,result)
+        self.assertIsNone(state['pending']);self.assertEqual(state['position'],0.0)
+        self.assertEqual(state['exits'],1);self.assertEqual(state['closed_trades'],1)
+        self.assertAlmostEqual(state['gross_pnl'],-25.0)
+        self.assertEqual(state['close_command_attribution'],original)
+        self.assertEqual(state['last_close_attribution_error']['original_command_id'],'confirmed-close')
+        self.assertEqual(query.call_count,1)
+
+    def test_repeated_poll_cannot_double_count_confirmed_fill(self):
+        state,snap,result=self.scenario();self.reconcile(state,snap,result)
+        saved=copy.deepcopy(state);query=self.reconcile(state,snap,result)
+        self.assertEqual(state,saved);query.assert_not_called()
+        self.assertAlmostEqual(state['gross_pnl'],-25.0)
+
+    def test_partial_fill_reconciles_and_keeps_remaining_exit_available(self):
+        state,snap,result=self.scenario(15000.0);self.reconcile(state,snap,result)
+        self.assertIsNone(state['pending']);self.assertEqual(state['position'],15000.0)
+        self.assertAlmostEqual(state['gross_pnl'],-10.0)
+        self.assertTrue(state['halt_new_entries']);self.assertEqual(state['risk_halt_reason'],'PARTIAL_FLATTEN')
+        self.assertEqual(state['partial_exit_fills'],1)
+
+    def test_conflicting_old_diagnostic_is_retained_not_used_as_order_authority(self):
+        state,snap,result=self.scenario()
+        prior={'original_command_id':'confirmed-close','broker_execution_id':'wrong-old-id'}
+        state['close_command_attribution']=[prior.copy()]
+        self.reconcile(state,snap,result)
+        self.assertIsNone(state['pending']);self.assertEqual(state['close_command_attribution'],[prior])
+        self.assertIn('mismatch',state['last_close_attribution_error']['reason'])
+
+    def test_unexpected_diagnostic_exception_is_bounded_and_not_a_close_gate(self):
+        state,snap,result=self.scenario()
+        with patch.object(d,'record_correlated_close',side_effect=RuntimeError('x'*1000)):
+            self.reconcile(state,snap,result)
+        self.assertIsNone(state['pending']);self.assertAlmostEqual(state['gross_pnl'],-25.0)
+        self.assertEqual(state['last_close_attribution_error']['exception_type'],'RuntimeError')
+        self.assertLessEqual(len(state['last_close_attribution_error']['reason']),256)
+
+    def test_unproven_fill_still_waits_despite_diagnostic_isolation(self):
+        state,snap,result=self.scenario();snap['orders']['recent_orders'][0]['broker_execution_ambiguous']=True
+        with patch.object(d,'record_correlated_close') as record:
+            self.reconcile(state,snap,result)
+        record.assert_not_called();self.assertIsNotNone(state['pending'])
+        self.assertEqual(state['gross_pnl'],0);self.assertEqual(state['exits'],0)
+
+    def test_healthy_diagnostic_remains_exact(self):
+        state,snap,result=self.scenario();state['close_command_attribution']=[]
+        self.reconcile(state,snap,result)
+        self.assertNotIn('last_close_attribution_error',state)
+        self.assertEqual(state['close_command_attribution'][0]['broker_execution_id'],'exec-confirmed-close')
+        self.assertIsNone(state['pending'])
+
 if __name__=="__main__":unittest.main()

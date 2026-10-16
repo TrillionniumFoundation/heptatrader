@@ -19,6 +19,7 @@ from .resident_queue import inspect as inspect_evaluation_queue
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
 MAX_PENDING_EVALUATIONS=2
+REWARD_SYNC_INTERVAL_SECONDS=60
 
 
 def config_check(config):
@@ -63,6 +64,8 @@ class Supervisor:
     'active_pnl_reward_count':len(get_meta(self.db,'active_reward_ids',[])),
     'active_execution_reward_count':len(get_meta(self.db,'active_execution_reward_ids',[])),
     'execution_reward_is_not_model_credit':True,
+    'reward_sync_at_ms':get_meta(self.db,'last_reward_sync_ms'),
+    'reward_sync_interval_seconds':REWARD_SYNC_INTERVAL_SECONDS,
     'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT',
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
@@ -140,10 +143,43 @@ class Supervisor:
    waiting=[row for row in waiting if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
   queue['deferred_training_candidates']=len(waiting)
   return queue
+ def sync_rewards(self,now=None):
+  """Bookkeeping under the scheduler lock, never the heavy-worker lease.
+
+  The same loop may call both queue_preflight and step. A monotonic cache
+  avoids repeating a full ledger replay, but never survives process restart.
+  All reward rows and current IDs commit together; conflicts retain old state.
+  """
+  if now is None:now=int(time.time()*1000)
+  tick=time.monotonic();previous=getattr(self,'_reward_sync_tick',None)
+  if (previous is not None and 0<=tick-previous<REWARD_SYNC_INTERVAL_SECONDS
+      and now>=self._reward_snapshot['at_ms']):
+   return self._reward_snapshot
+  rewards=rewards_current(self.c,now)
+  with self.db:
+   for r in rewards['rewards']:
+    stored=self.db.execute('SELECT payload FROM rewards WHERE id=?',(r['reward_id'],)).fetchone()
+    if stored and stored[0]!=canonical(r).decode():raise ContractError('REWARD_ID_CONFLICT')
+    self.db.execute('INSERT OR IGNORE INTO rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
+   for r in rewards.get('execution_rewards',[]):
+    stored=self.db.execute('SELECT payload FROM execution_rewards WHERE id=?',(r['reward_id'],)).fetchone()
+    if stored and stored[0]!=canonical(r).decode():raise ContractError('EXECUTION_REWARD_ID_CONFLICT')
+    write_once(self.root/'execution-rewards'/(r['reward_id']+'.json'),r)
+    self.db.execute('INSERT OR IGNORE INTO execution_rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
+   put_meta(self.db,'active_reward_ids',[r['reward_id'] for r in rewards['rewards']])
+   put_meta(self.db,'active_execution_reward_ids',[r['reward_id'] for r in rewards.get('execution_rewards',[])])
+   put_meta(self.db,'last_reward_sync_ms',rewards['at_ms'])
+  atomic(self.root/'rewards-status.json',rewards)
+  self._reward_snapshot=rewards;self._reward_sync_tick=tick
+  return rewards
  def queue_preflight(self):
   # Negative-only admission optimization; completing an already-trained
   # artifact's deferred registration never takes GPU or training authority.
   config_check(self.c)
+  self.storage=inspect_storage(self.c)
+  if not self.storage['admission_ready']:
+   return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
+  self.sync_rewards()
   queue=self.reconcile_evaluation_queue()
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if queue['deferred_training_candidates']:
@@ -156,25 +192,12 @@ class Supervisor:
   self.storage=inspect_storage(self.c)
   if not self.storage['admission_ready']:
    return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
+  rewards=self.sync_rewards(now)
   queue=self.reconcile_evaluation_queue()
   if queue['deferred_training_candidates']:return self.write_status(state='CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END',**queue)
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
-  rewards=rewards_current(self.c,now);atomic(self.root/'rewards-status.json',rewards)
-  with self.db:
-   for r in rewards['rewards']:
-    stored=self.db.execute('SELECT payload FROM rewards WHERE id=?',(r['reward_id'],)).fetchone()
-    if stored and stored[0]!=canonical(r).decode():raise ContractError('REWARD_ID_CONFLICT')
-    self.db.execute('INSERT OR IGNORE INTO rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
-  with self.db:put_meta(self.db,'active_reward_ids',[r['reward_id'] for r in rewards['rewards']])
-  with self.db:
-   for r in rewards.get('execution_rewards',[]):
-    previous=self.db.execute('SELECT payload FROM execution_rewards WHERE id=?',(r['reward_id'],)).fetchone()
-    if previous and previous[0]!=canonical(r).decode():raise ContractError('EXECUTION_REWARD_ID_CONFLICT')
-    write_once(self.root/'execution-rewards'/(r['reward_id']+'.json'),r)
-    self.db.execute('INSERT OR IGNORE INTO execution_rewards VALUES (?,?)',(r['reward_id'],canonical(r).decode()))
-   put_meta(self.db,'active_execution_reward_ids',[r['reward_id'] for r in rewards.get('execution_rewards',[])])
   dataset,rows,quality,_=collect(self.c,now)
   new=[]
   for r in rows:
