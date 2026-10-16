@@ -34,6 +34,14 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
         return false;
     }
     for(const auto& owned:m_orderOwners) {
+        // The present owner map cannot attest that a colliding numeric
+        // native Broker order ID belongs to a different IB client. Refuse
+        // ambiguous reuse before writing any new shadow reservation.
+        if(owned.first==frozen.parentOrderId ||
+           owned.first==frozen.childOrderId) {
+            reason="H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
+            return false;
+        }
         if(owned.second.agentId==originalOwner.agentId &&
            owned.second.sessionId==originalOwner.sessionId) {
             reason="H1_BRACKET_EXISTING_OWNER_ORDER_UNKNOWN";
@@ -60,7 +68,15 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
         return false;
     bool collision=false;
     bool venueIdentityCollision=false;
+    bool nativeOrderIdCollision=false;
     const int observed=m_journal.Replay([&](const OmsJournalEvent& e) {
+        // Native IDs are scoped to the Broker sender's client, but legacy
+        // journal events cannot reliably prove a disjoint original client.
+        // Fail closed on exact account/PAPER/IB numerical reuse.
+        if(e.account==frozen.account && e.executionDomain=="PAPER" &&
+           e.venue=="IB" &&
+           (e.orderId==frozen.parentOrderId ||
+            e.orderId==frozen.childOrderId)) nativeOrderIdCollision=true;
         if(e.reqId==originalOwner.toolCallId ||
            e.clientReqId==originalOwner.toolCallId) collision=true;
         if(e.requestHash==frozenIds.groupCorrelation ||
@@ -73,10 +89,11 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
            e.venueCorrelationId==frozenIds.ocaCorrelation)
             venueIdentityCollision=true;
     });
-    if(observed<0 || collision || venueIdentityCollision) {
+    if(observed<0 || collision || venueIdentityCollision || nativeOrderIdCollision) {
         reason=observed<0 ? "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
                collision ? "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND" :
-               "H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION";
+               venueIdentityCollision ? "H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION" :
+               "H1_BRACKET_NATIVE_ORDER_ID_COLLISION";
         return false;
     }
     if(!hepta_bracket_h1::ReservePair(m_journal,frozen,result,reason)) {

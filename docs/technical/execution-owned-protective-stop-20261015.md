@@ -585,3 +585,31 @@ Boundary tests cover 64/96-byte safe original keys for BUY and SELL, and
 refuse invalid 97-byte keys, while maintaining the existing no-send,
 no-driver-stop flags. This is type translation and NOT actual IB order
 placement, an IB accepted stop, or authority for maintenance.
+
+## 2026-10-16: reject ambiguous native-order-ID reuse (research only)
+
+This research Coordinator now checks existing owned native IDs and original
+OMS history before writing H1 bracket reservations. A foreign command on the
+same PAPER/IB account may have a distinct H1 group and still collide with
+one of the reserved numeric parent/child order IDs. This is a **refusal**,
+not a new TWS order-ID allocator. The exact Broker-client owner of legacy
+records is not independently attested, so an ambiguous collision cannot be
+considered a safe reservation.
+
+The scoped H1 OMS replay independently refuses a foreign command reusing a
+frozen parent or child numeric native order ID, or any frozen Group/Parent/
+Stop/OCA correlation. A truly disjoint prior command with a different native
+order ID still replays without blocking the pair. Existing experimental
+`HEPTA-*` references are not eligible for real sends.
+
+Independent Pocket4 proof: IB-API-ON Release/Ninja 11/11 native CTests pass,
+including the exact Coordinator and OMS tests; ASan/UBSan 2/2 pass. The
+foreign numeric-ID negative controls were real red-before/green-after tests,
+not just a source-code assertion. No broker placement/cancellation, no
+production service restart, and no new Owner permission were involved.
+
+**Still blocked:** durable reservation of actual Broker next-valid IDs under
+the exact verified client/connection, owner-fenced parent+child transport,
+Broker working-stop permanent-ID callbacks, OCA-safe ordinary close, and
+post-crash original Broker order-set reattestation. No deployment or stop
+permission derives from this research result.

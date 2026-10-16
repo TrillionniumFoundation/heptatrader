@@ -94,10 +94,23 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
             // Unrelated original commands are ignorable only when they do
             // not borrow this pair's immutable H1 venue identities.
             if(e.requestHash==b.groupCorrelation ||
+               e.requestHash==b.parentCorrelation ||
+               e.requestHash==b.childCorrelation ||
+               e.requestHash==b.ocaCorrelation ||
+               e.venueCorrelationId==b.groupCorrelation ||
                e.venueCorrelationId==parent.venueCorrelationId ||
-               e.venueCorrelationId==child.venueCorrelationId) {
+               e.venueCorrelationId==child.venueCorrelationId ||
+               e.venueCorrelationId==b.ocaCorrelation) {
                 out.uncertain=true;
                 reason="H1_FOREIGN_COMMAND_REUSES_FROZEN_IDENTITY";
+                return false;
+            }
+            if(e.account==f.account && e.executionDomain=="PAPER" &&
+               e.venue=="IB" &&
+               (e.orderId==parent.orderId ||
+                e.orderId==child.orderId)) {
+                out.uncertain=true;
+                reason="H1_FOREIGN_COMMAND_REUSES_NATIVE_ORDER_ID";
                 return false;
             }
             continue;

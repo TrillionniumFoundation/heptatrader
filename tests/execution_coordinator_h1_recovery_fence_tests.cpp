@@ -47,6 +47,9 @@ static void ForeignH1IdentityAdmission(int borrowedRole) {
     foreign.reqId="unrelated-original-command";
     foreign.clientReqId=foreign.reqId;
     foreign.eventId="unrelated-original-event";
+    // Role 0 really is an independent native IB order ID; the old fixture
+    // inherited the frozen child ID even when hashes were disjoint.
+    foreign.orderId=frozen.childOrderId+200;
     const std::string otherGroup=HashCanonical("foreign-unrelated-group");
     const std::string otherRef=HashCanonical("foreign-unrelated-venue-ref");
     foreign.requestHash=otherGroup;
@@ -61,13 +64,17 @@ static void ForeignH1IdentityAdmission(int borrowedRole) {
     if(borrowedRole==6)foreign.venueCorrelationId=binding.parentCorrelation;
     if(borrowedRole==7)foreign.venueCorrelationId=binding.childCorrelation;
     if(borrowedRole==8)foreign.venueCorrelationId=binding.ocaCorrelation;
+    if(borrowedRole==9)foreign.orderId=frozen.parentOrderId;
+    if(borrowedRole==10)foreign.orderId=frozen.childOrderId;
     Must(journal.AppendDurableCritical(foreign),"collision-foreign-evidence-write");
     const bool admitted=coordinator.ReserveResearchH1BracketForRecoveryOnlyOwner(
          owner,frozen,output,reason);
     if(shouldReject) {
         Must(!admitted &&
-             reason=="H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION",
-             "foreign command borrowed frozen H1 group or child without refusal");
+             reason==(borrowedRole<=8 ?
+                "H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION" :
+                "H1_BRACKET_NATIVE_ORDER_ID_COLLISION"),
+             "foreign command borrowed frozen H1 correlation or native order ID");
         Must(!output.sendAuthorized && !output.driverStopAllowed,
              "foreign event minted send/stop authority");
     } else {
@@ -82,7 +89,7 @@ static void ForeignH1IdentityAdmission(int borrowedRole) {
 int main(){
  try{
     ForeignH1IdentityAdmission(0); // independent historical command allowed
-    for(int role=1;role<=8;++role) ForeignH1IdentityAdmission(role);
+    for(int role=1;role<=10;++role) ForeignH1IdentityAdmission(role);
     std::string name="/tmp/Hepta-H1-OwnerFence-XXXXXX";
     std::vector<char> path(name.begin(),name.end());path.push_back('\0');
     int fd=::mkstemp(path.data());Must(fd>=0,"temp-file");

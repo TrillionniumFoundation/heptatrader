@@ -88,11 +88,27 @@ int main(){
    auto disjoint=events[0];disjoint.reqId="another-real-command";
    disjoint.clientReqId="another-real-command";
    disjoint.eventId="unrelated-other-event";
+   disjoint.orderId=f.childOrderId+200;
    disjoint.requestHash="hepta-v1-sha256:0000000000000000000000000000000000000000000000000000000000000000";
    disjoint.venueCorrelationId=disjoint.requestHash;
    unrelated.push_back(disjoint);
    Must(ConfirmReplay(unrelated,f,checked,reason),
         "unrelated original record blocked by H1 scoped replay");
+   auto foreignOrderIds=events;
+   auto aliasId=disjoint;aliasId.orderId=f.childOrderId;
+   foreignOrderIds.push_back(aliasId);
+   Must(!ConfirmReplay(foreignOrderIds,f,checked,reason)&&checked.uncertain,
+        "foreign original reused child native broker order id");
+   aliasId=disjoint;aliasId.orderId=f.parentOrderId;
+   foreignOrderIds=events;foreignOrderIds.push_back(aliasId);
+   Must(!ConfirmReplay(foreignOrderIds,f,checked,reason)&&checked.uncertain,
+        "foreign original reused parent native broker order id");
+   auto foreignOca=events;
+   auto aliasOca=disjoint;
+   aliasOca.venueCorrelationId=info.ids.ocaCorrelation;
+   foreignOca.push_back(aliasOca);
+   Must(!ConfirmReplay(foreignOca,f,checked,reason)&&checked.uncertain,
+        "foreign original reused H1 OCA correlation");
    auto moved=f;moved.ownerFenceToken+=1;
    Must(!ConfirmReplay(events,moved,checked,reason)&&checked.uncertain,"different owner fence accepted");
    auto foreign=events;foreign[0].eventType="bracket_parent_send_attempt";
