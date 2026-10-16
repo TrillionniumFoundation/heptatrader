@@ -106,3 +106,31 @@ All research files and receipts live under Pocket4
 ~/.local/state/heptatrader/operator-evidence/.
 No part of the implementation should be installed into the trading
 model-selection or order-execution service without separate proof.
+
+## First actual future operational receipt (2026-10-16 UTC)
+
+The bounded source-only 90-slot cell actually started on Pocket4 and
+precommitted its first prediction 1.406 seconds after a real original quote
+anchor, before a five-minute observed future outcome. A separate scorer
+subsequently recorded slot 0 as OBSERVED with no source path gap. The
+original quote showed -0.401129 bps (class 3). The as-of online prior
+hit class 3, Brier 0.527522 and NLL 1.010038; the training-only static
+prior missed, Brier 0.776295 and NLL 1.507901. The source-only
+result is **1 OBSERVED / 0 CENSORED of 90 scheduled**, not a 90-slot
+coverage pass, not a paired neural model comparison, and not proof of
+statistical/economic performance. The runner has no trade authority.
+
+Evidence is under
+~/.local/state/heptatrader/operator-evidence/laya-price-shadow90-20261016/.
+The first-slot independent hash and causal timing recheck is recorded in
+~/.local/state/heptatrader/operator-evidence/laya-action-calibration-20261016/price-shadow90-first-future-proof.json.
+
+A separate Pocket4 research probe evaluated a small, train-only standardized
+16-feature seven-class logistic head on disjoint five-minute anchors from
+previously recorded real PAPER datasets. It selected an L2-regularized
+feature model on 51 validation examples and showed only a *small* Brier
+improvement on 46 later holdout anchors (0.659359 static prior versus
+0.656351 fitted model); NLL 1.287011 versus 1.280679, and both had
+24/46 Top-1 hits. Those short, possibly correlated sessions are not
+sufficient to promote another model. Its experiment receipt is kept outside
+production as price-raw-feature-logistic-20261016.json.
