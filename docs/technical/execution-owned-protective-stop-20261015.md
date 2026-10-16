@@ -993,3 +993,47 @@ Pocket4 isolated fake-Broker/real-IB-SDK regression verifies no order
 transmission, normal sends and unsent pair/exit sharing one cursor, an
 overtaking nextValidId, bad account/client/epoch, speculative huge stop IDs,
 and the final signed native ID. None of these tests contact IBKR.
+
+## 2026-10-16: original Owner durably binds an UNSENT OCA Exit ID
+
+The original `ExecutionCoordinator` now includes a **research-only**
+`ReserveResearchH1OcaExitForRecoveryOnlyOwner` method. It holds the existing
+Coordinator mutex, requires the authentic recovery-only Owner/session/token,
+and replays the same immutable H1 parent+child OMS pair, both critically synced
+possible-send markers, and the exact already-fsynced native stop
+`OpenOrder(Submitted)` witness (same original permanent ID and Broker epoch).
+Without any one of these it **does not call** the Adapter's ID allocator.
+
+The only accepted allocator output is the exact matching **local, UNSENT**
+Adapter receipt (DU account, native client, Broker epoch and original child ID,
+with both authority flags false). The single EXIT ID must be distinct from
+all prior PAPER/IB native order IDs, including those under another DU account.
+Its separate 45-byte H1 Exit correlation uses the exact same frozen Group +
+EXIT ID + original Stop permanent ID encoding as the native SDK research OCA
+sibling. The Coordinator appends a *single critically fsynced*, owner-bound
+`bracket_oca_exit_reserved` marker to the existing OMS before returning any
+EXIT ID. It cannot send, cancel or flatten an IB order.
+
+Restart recovery includes the EXIT marker in the native ID high-water, even
+if the Broker did not see it. A repeated original request refuses **before**
+consuming another ID. Original stop callback reattestation can still read a
+single exact EXIT marker without interpreting it as a new native Broker send;
+missing/duplicated/mismatched EXIT records fail closed. Invalid Broker epoch,
+stop permanent ID, recovery-only fence, source identity or a stale/mismatched
+Adapter receipt cannot authorize an allocation. After a failed critical write,
+no Broker mutation occurs and no ID is returned to the caller.
+
+Pocket4 native test proof is intentionally bounded: an isolated synthetic
+native stop echo and the *real* `OmsJournal`/Coordinator plus an in-process
+fake `IIBApiWrapper` exercising the *real* Adapter's local ID cursor (ordinary
+PAPER ID allocation shares that cursor). No production service/binary is
+replaced, no original Broker credentials or actual IBKR PAPER connection are
+used, and all returned send/maintenance authority flags remain false.
+
+**Not qualified:** The recorded synthetic stop does NOT attest an actual
+account-wide working Broker stop, the Owner-bound EXIT marker is not an
+actual IBKR OCA/close request, and this code supplies no OCA cancellation or
+partial-fill race guarantees. An actual single-owner native send/cancel,
+Broker callback correlation, ordinary-exit overfill test and driver-death
+continuity remain P0 Issue #331 requirements. Do not use this research helper
+in the current PAPER trading or maintenance path.

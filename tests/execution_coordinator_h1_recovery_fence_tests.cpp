@@ -86,8 +86,138 @@ static void ForeignH1IdentityAdmission(int borrowedRole) {
     Must(::unlink(path.c_str())==0,"collision-journal-cleanup");
 }
 
+
+static void OwnerDurableOcaExitAfterOriginalNativeStop() {
+    auto f=Example();auto owner=Context();
+    std::string mask="/tmp/Hepta-H1-Owner-OCA-XXXXXX";
+    std::vector<char> tmp(mask.begin(),mask.end());tmp.push_back('\0');
+    const int fd=::mkstemp(tmp.data());Must(fd>=0,"OCA-temp");
+    ::close(fd);Must(::unlink(tmp.data())==0,"OCA-temp-unlink");
+    const std::string path(tmp.data());
+    OmsJournal journal;Must(journal.Init(path),"OCA-owner-original-journal");
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator ownerCoordinator(journal,callbacks);
+    std::string reason;Reservation original;
+    Must(ownerCoordinator.EnterRecoveryOnlyOwner(
+            owner.agentId,owner.sessionId,f.ownerFenceToken,reason),
+         "OCA owner recovery-only fence missing");
+    int allocatorCalls=0;
+    const auto allocator=[&](const std::string& account,int client,
+         std::uint64_t epoch,long stop,
+         ExecutionCoordinator::H1LocalOcaExitReceipt& out,
+         std::string& why)->bool {
+        ++allocatorCalls;
+        if(account!=f.account || client!=f.clientId ||
+           epoch!=f.connectionEpoch || stop!=f.childOrderId) {
+            why="TEST_ADAPTER_SCOPE_INVALID";return false;
+        }
+        out.orderId=f.childOrderId+3;out.stopOrderId=stop;
+        out.paperAccount=account;out.brokerClientId=client;
+        out.connectionEpoch=epoch;
+        return true;  // LOCAL number only, no IB egress.
+    };
+    using Exit=ExecutionCoordinator::H1LocalOcaExitReceipt;
+    Exit exit;std::string exitCorrelation;
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99881,allocator,exit,exitCorrelation,reason)
+         && allocatorCalls==0,
+         "OCA exit ID allocated before any original H1 pair");
+    Must(ownerCoordinator.ReserveResearchH1BracketForRecoveryOnlyOwner(
+            owner,f,original,reason),"OCA original H1 pair not durable");
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99881,allocator,exit,exitCorrelation,reason)
+         && allocatorCalls==0,
+         "OCA exit ID allocated before parent/child send records");
+    Must(MarkPotentialSend(journal,original,false,reason),
+         "OCA original parent attempt not fsynced");
+    Must(MarkPotentialSend(journal,original,true,reason),
+         "OCA original child attempt not fsynced");
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99881,allocator,exit,exitCorrelation,reason)
+         && allocatorCalls==0,
+         "OCA exit ID allocated without Broker native stop echo");
+    OmsJournalEvent e=Intent(f,original.ids,true);
+    e.eventType="broker_open_order_bracket";
+    e.source="agent:"+f.owner;
+    e.brokerClientId=f.clientId;
+    e.brokerConnectionEpoch=f.connectionEpoch;
+    e.brokerCallbackType="openOrder";
+    e.status="Submitted";
+    e.eventId=original.ids.childRef+"-"+
+        std::to_string(f.connectionEpoch)+"-99881";
+    auto& b=e.brokerBracket;
+    b.version=2;b.contractId=f.contractId;
+    b.parentOrderId=f.parentOrderId;
+    b.permanentOrderId=99881;
+    b.transmit=1;b.ocaType=1;b.triggerMethod=0;
+    b.orderRef=original.ids.childRef;
+    b.ocaGroup=original.ids.ocaGroup;
+    b.timeInForce="GTC";b.quantity=f.quantity;
+    b.stopAuxPrice=f.stopPrice;
+    Must(b.ValidShape(),"OCA native callback fixture invalid");
+    Must(journal.AppendDurableCritical(e),
+         "OCA prior Broker native OpenOrder echo not fsynced");
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch+1,99881,allocator,
+           exit,exitCorrelation,reason) && allocatorCalls==0,
+         "stale native OCA epoch allocated an ID");
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99882,allocator,
+           exit,exitCorrelation,reason) && allocatorCalls==0,
+         "substituted original stop permanent ID allocated an exit");
+    Must(ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99881,allocator,
+           exit,exitCorrelation,reason),
+         "Owner did not make local OCA EXIT ID durable");
+    Must(allocatorCalls==1 && exit.orderId==f.childOrderId+3 &&
+         !exit.sendAuthorized && !exit.maintenanceAuthorized &&
+         exitCorrelation.compare(0,16,"hepta-v1-sha256:")==0,
+         "OCA local EXIT returned a Broker/send permission");
+    std::vector<OmsJournalEvent> entries;
+    Must(journal.Replay([&](const OmsJournalEvent& rec){
+             entries.push_back(rec);})==7,
+         "OCA local ID marker was not retained in original OMS");
+    Must(entries.back().eventType=="bracket_oca_exit_reserved" &&
+         entries.back().orderId==exit.orderId &&
+         entries.back().venueCorrelationId==exitCorrelation &&
+         entries.back().brokerConnectionEpoch==f.connectionEpoch,
+         "OCA exit marker was not exactly bound to original Broker epoch");
+    std::int64_t floor=0;
+    Must(ownerCoordinator.GetDurableResearchH1NativeIdFloor(
+           "DU-OTHER",floor,reason) && floor==exit.orderId+1,
+         "OCA local EXIT native ID was not burned across DU accounts");
+    Reservation replay;
+    Must(ConfirmReplayForOriginalNativeEcho(entries,f,replay,reason) &&
+         replay.latestNativeStopPermanentId==99881 &&
+         replay.latestNativeOpenOrderEpoch==f.connectionEpoch &&
+         !replay.sendAuthorized && !replay.driverStopAllowed,
+         "OCA marker broke reattestation of original Broker stop");
+    Must(!ownerCoordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+           owner,f,f.connectionEpoch,99881,allocator,
+           exit,exitCorrelation,reason) && allocatorCalls==1 &&
+         reason=="H1_OCA_EXIT_ALREADY_DURABLE_NO_REISSUE",
+         "duplicate OCA Exit marker allocated a second native ID");
+    {
+        OmsJournal restartedJournal;
+        Must(restartedJournal.Init(path),"OCA restart OMS open failed");
+        ExecutionCoordinator restarted(restartedJournal,callbacks);
+        Must(restarted.GetDurableResearchH1NativeIdFloor(
+               "DU-OTHER",floor,reason) && floor==f.childOrderId+4,
+             "OCA native Exit ID reused after original OMS reopen");
+        Must(restarted.EnterRecoveryOnlyOwner(
+               owner.agentId,owner.sessionId,f.ownerFenceToken,reason),
+             "OCA restart did not establish a recovery-only fence");
+        Must(!restarted.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+               owner,f,f.connectionEpoch,99881,allocator,
+               exit,exitCorrelation,reason) && allocatorCalls==1,
+             "reopened original OMS minted a second OCA exit ID");
+    }
+    Must(::unlink(path.c_str())==0,"OCA source journal cleanup failed");
+}
+
 int main(){
  try{
+    OwnerDurableOcaExitAfterOriginalNativeStop();
     ForeignH1IdentityAdmission(0); // independent historical command allowed
     for(int role=1;role<=10;++role) ForeignH1IdentityAdmission(role);
     std::string name="/tmp/Hepta-H1-OwnerFence-XXXXXX";

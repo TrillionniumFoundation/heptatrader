@@ -217,3 +217,151 @@ bool ExecutionCoordinator::ReserveResearchH1BracketInternal(
     }
     return true; // no send authorization is returned
 }
+
+// Isolated research only: bind an adapter-consumed UNSENT numeric OCA EXIT ID
+// to the same original Owner and critically durable OMS before returning it.
+// Absolutely no native IB send, cancel, trading, or maintenance permission.
+bool ExecutionCoordinator::ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+    const AgentExecutionContext& originalOwner,
+    const hepta_bracket_h1::FrozenBracket& frozen,
+    std::uint64_t nativeBrokerEpoch, long stopPermanentId,
+    const H1UnsentNativeOcaExitAllocator& adapterLocalAllocator,
+    H1LocalOcaExitReceipt& result, std::string& exitCorrelation,
+    std::string& reason)
+{
+    result=H1LocalOcaExitReceipt{};
+    exitCorrelation.clear();
+    if(!adapterLocalAllocator || originalOwner.agentId.empty() ||
+       originalOwner.sessionId.empty() || originalOwner.toolCallId.empty() ||
+       originalOwner.agentId!=frozen.owner ||
+       originalOwner.sessionId!=frozen.sessionId ||
+       originalOwner.toolCallId!=frozen.originalCommandKey ||
+       originalOwner.executionDomain!="IB-PAPER:EUR.USD" ||
+       nativeBrokerEpoch==0 || stopPermanentId<=0 ||
+       frozen.intentObservedAtMs>
+           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        reason="H1_OCA_EXIT_ORIGINAL_OWNER_OR_EPOCH_INVALID";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto owner=m_recoveryOnlySessionOwners.find(
+        OwnerKey(originalOwner.agentId,originalOwner.sessionId));
+    if(owner==m_recoveryOnlySessionOwners.end() || owner->second==0 ||
+       owner->second!=frozen.ownerFenceToken) {
+        reason="H1_OCA_EXIT_COORDINATOR_RECOVERY_FENCE_MISSING";
+        return false;
+    }
+    if(m_mutationBlocked || m_paperTerminalFencePresent ||
+       m_riskMutationDispatchInFlight || m_venueDispatchesInFlight!=0 ||
+       !m_cancelPreflightsInFlight.empty()) {
+        reason="H1_OCA_EXIT_COORDINATOR_MUTATION_IN_FLIGHT";
+        return false;
+    }
+    hepta_bracket_h1::BoundRefs refs;
+    if(!hepta_bracket_h1::BuildFrozenRefs(frozen,refs,reason))return false;
+
+    std::vector<OmsJournalEvent> original;
+    original.reserve(24);
+    bool oversized=false,priorExit=false;
+    const int replayed=m_journal.Replay([&](const OmsJournalEvent& e){
+        const bool sameOriginal=e.reqId==frozen.originalCommandKey ||
+            e.clientReqId==frozen.originalCommandKey;
+        const bool borrowed=e.requestHash==refs.groupCorrelation ||
+            e.venueCorrelationId==refs.parentCorrelation ||
+            e.venueCorrelationId==refs.childCorrelation ||
+            e.venueCorrelationId==refs.ocaCorrelation;
+        const bool originalNativeId=e.venue=="IB" &&
+            e.executionDomain=="PAPER" &&
+            (e.orderId==frozen.parentOrderId ||
+             e.orderId==frozen.childOrderId);
+        if(e.eventType=="bracket_oca_exit_reserved" &&
+           (sameOriginal || borrowed))priorExit=true;
+        if(sameOriginal || borrowed || originalNativeId) {
+            if(original.size()>=96)oversized=true;
+            else original.push_back(e);
+        }
+    });
+    if(replayed<0 || oversized || priorExit) {
+        reason=replayed<0 ? "H1_OCA_EXIT_ORIGINAL_JOURNAL_UNAVAILABLE" :
+            oversized ? "H1_OCA_EXIT_ORIGINAL_EVIDENCE_UNBOUNDED" :
+                        "H1_OCA_EXIT_ALREADY_DURABLE_NO_REISSUE";
+        return false;
+    }
+    hepta_bracket_h1::Reservation attested;
+    if(!hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            original,frozen,attested,reason) ||
+       attested.latestNativeOpenOrderEpoch!=nativeBrokerEpoch ||
+       attested.latestNativeStopPermanentId!=stopPermanentId ||
+       attested.sendAuthorized || attested.driverStopAllowed) {
+        reason="H1_OCA_EXIT_ORIGINAL_NATIVE_STOP_NOT_REATTESTED";
+        return false;
+    }
+
+    // Callback must be bound by the caller to the real Adapter-local UNSENT
+    // native cursor. The typed result is validated independently: a generic
+    // callback is never an authority to contact the Broker.
+    H1LocalOcaExitReceipt local;
+    if(!adapterLocalAllocator(frozen.account,frozen.clientId,
+            nativeBrokerEpoch,frozen.childOrderId,local,reason)) {
+        if(reason.empty())reason="H1_OCA_EXIT_LOCAL_NATIVE_ID_UNAVAILABLE";
+        return false;
+    }
+    if(local.paperAccount!=frozen.account ||
+       local.brokerClientId!=frozen.clientId ||
+       local.connectionEpoch!=nativeBrokerEpoch ||
+       local.stopOrderId!=frozen.childOrderId ||
+       local.orderId<=frozen.childOrderId ||
+       local.orderId>std::numeric_limits<std::int32_t>::max() ||
+       local.sendAuthorized || local.maintenanceAuthorized) {
+        reason="H1_OCA_EXIT_LOCAL_ADAPTER_RECEIPT_UNVERIFIED";
+        return false;
+    }
+    std::string correlation;
+    if(!hepta_bracket_h1::BuildResearchH1OcaExitCorrelation(
+            frozen,refs,local.orderId,stopPermanentId,correlation,reason))
+        return false;
+    bool duplicateNativeId=false,foreignCorrelation=false;
+    const int tested=m_journal.Replay([&](const OmsJournalEvent& e){
+        // Legacy OMS does not prove that a numeric IB ID belongs to a
+        // different native Broker client, even across different DU accounts.
+        if(e.venue=="IB" && e.executionDomain=="PAPER" &&
+           e.orderId==local.orderId)duplicateNativeId=true;
+        if(e.venueCorrelationId==correlation ||
+           e.requestHash==correlation)foreignCorrelation=true;
+    });
+    if(tested<0 || duplicateNativeId || foreignCorrelation) {
+        reason=tested<0 ? "H1_OCA_EXIT_NATIVE_ID_JOURNAL_UNAVAILABLE" :
+            duplicateNativeId ? "H1_OCA_EXIT_NATIVE_ID_ALREADY_CONSUMED" :
+                                "H1_OCA_EXIT_CORRELATION_ALREADY_USED";
+        return false;
+    }
+    OmsJournalEvent event;
+    event.eventType="bracket_oca_exit_reserved";
+    event.tsMs=static_cast<long long>(frozen.intentObservedAtMs);
+    event.orderId=local.orderId;
+    event.reqId=frozen.originalCommandKey;
+    event.clientReqId=frozen.originalCommandKey;
+    event.eventId="unsent-oca-exit:"+refs.groupCorrelation;
+    event.account=frozen.account;
+    event.traceId=frozen.sessionId;
+    event.strategy=frozen.owner;
+    event.source="SHADOW_NO_BROKER_EGRESS";
+    event.executionDomain="PAPER";
+    event.venue="IB";
+    event.instrument="EUR.USD";
+    event.side=frozen.side=="BUY"?"SELL":"BUY";
+    event.qty=frozen.quantity;
+    event.price=frozen.stopPrice;
+    event.requestHash=refs.groupCorrelation;
+    event.venueCorrelationId=correlation;
+    event.brokerClientId=frozen.clientId;
+    event.brokerConnectionEpoch=nativeBrokerEpoch;
+    if(!m_journal.AppendDurableCritical(event)) {
+        reason="H1_OCA_EXIT_CRITICAL_OMS_FSYNC_UNCERTAIN";
+        return false;
+    }
+    result=local;
+    exitCorrelation=correlation;
+    reason.clear();
+    return true;
+}

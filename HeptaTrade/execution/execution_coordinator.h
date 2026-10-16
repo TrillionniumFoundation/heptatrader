@@ -202,6 +202,28 @@ public:
         const H1UnsentNativeIdAllocator& localIdAllocator,
         hepta_bracket_h1::Reservation& result,
         std::string& reason);
+    // Non-dispatching local Adapter EXIT ID -> critically durable original
+    // OMS reservation. This does NOT authorize a Broker order, OCA close,
+    // stop cancellation, risk change, or service maintenance.
+    struct H1LocalOcaExitReceipt {
+        long orderId = -1;
+        long stopOrderId = -1;
+        int brokerClientId = -1;
+        std::uint64_t connectionEpoch = 0;
+        std::string paperAccount;
+        bool sendAuthorized = false;
+        bool maintenanceAuthorized = false;
+    };
+    typedef std::function<bool(const std::string&, int, std::uint64_t,
+        long, H1LocalOcaExitReceipt&, std::string&)>
+        H1UnsentNativeOcaExitAllocator;
+    bool ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+        const AgentExecutionContext& originalOwner,
+        const hepta_bracket_h1::FrozenBracket& frozen,
+        std::uint64_t nativeBrokerEpoch, long stopPermanentId,
+        const H1UnsentNativeOcaExitAllocator& adapterLocalAllocator,
+        H1LocalOcaExitReceipt& result, std::string& exitCorrelation,
+        std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
                                      ExecutionControlStatusResult& result);
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);

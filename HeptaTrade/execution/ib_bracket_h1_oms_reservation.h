@@ -172,6 +172,35 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
     out.frozen=f;out.ids=b;out.replayComplete=true;
     reason.clear();return true;
 }
+// Local-only OCA exit reference. This shares the exact immutable digest with
+// the unsent native SDK OCA sibling, but does NOT grant order-send authority.
+inline bool BuildResearchH1OcaExitCorrelation(
+    const FrozenBracket& f, const BoundRefs& refs,
+    long exitOrderId, long stopPermanentId,
+    std::string& correlation, std::string& reason)
+{
+    correlation.clear();
+    if(exitOrderId<=f.childOrderId ||
+       exitOrderId>std::numeric_limits<std::int32_t>::max() ||
+       stopPermanentId<=0) {
+        reason="H1_OCA_EXIT_NATIVE_ORDER_OR_STOP_ID_INVALID";return false;
+    }
+    std::string identity;
+    Field(identity,"hepta-bracket-h1-oca-exit/v1");
+    Field(identity,refs.groupCorrelation);
+    Field(identity,std::to_string(exitOrderId));
+    Field(identity,std::to_string(stopPermanentId));
+    const std::string candidate=HashCanonical(identity);
+    std::string encoded;
+    if(!IbVenueCorrelationCodec::EncodeOrderRef(candidate,encoded,reason) ||
+       encoded.size()!=45 || encoded==refs.parentRef ||
+       encoded==refs.childRef || encoded==refs.ocaGroup) {
+        reason="H1_OCA_EXIT_ROLE_CORRELATION_INVALID";return false;
+    }
+    correlation=candidate;
+    reason.clear();return true;
+}
+
 // A real Broker stop OpenOrder can arrive AFTER two durable POSSIBLY_SENT
 // markers. These markers stay UNKNOWN for resend/restart decisions; however,
 // the exact native callback may become a candidate witness if BOTH markers
@@ -189,6 +218,7 @@ inline bool ConfirmReplayForOriginalNativeEcho(
     unsigned int stage=0;
     std::uint64_t lastObservedEpoch=0;
     long stopPermanentId=0;
+    bool exitAlreadyReserved=false;
     for(const auto& e:records) {
         const bool original=e.reqId==frozen.originalCommandKey ||
                             e.clientReqId==frozen.originalCommandKey;
@@ -196,6 +226,38 @@ inline bool ConfirmReplayForOriginalNativeEcho(
             // ConfirmReplay will independently refuse a foreign command
             // borrowing either native ID or any frozen H1 role correlation.
             beforeNative.push_back(e);
+            continue;
+        }
+        if(e.eventType=="bracket_oca_exit_reserved" && stage==4 &&
+           stopPermanentId>0 && !exitAlreadyReserved) {
+            // An EXIT local-ID marker is not another stop send. Reattest the
+            // exact old stop after reconnect without forgetting the burned ID.
+            std::string correlation,why;
+            if(!BuildResearchH1OcaExitCorrelation(frozen,refs,e.orderId,
+                    stopPermanentId,correlation,why) ||
+               e.reqId!=frozen.originalCommandKey ||
+               (!e.clientReqId.empty() &&
+                e.clientReqId!=frozen.originalCommandKey) ||
+               e.tsMs!=static_cast<long long>(frozen.intentObservedAtMs) ||
+               e.account!=frozen.account || e.traceId!=frozen.sessionId ||
+               e.strategy!=frozen.owner ||
+               e.source!="SHADOW_NO_BROKER_EGRESS" ||
+               e.executionDomain!="PAPER" || e.venue!="IB" ||
+               e.instrument!="EUR.USD" ||
+               e.side!=(frozen.side=="BUY"?"SELL":"BUY") ||
+               e.qty!=frozen.quantity || e.price!=frozen.stopPrice ||
+               e.requestHash!=refs.groupCorrelation ||
+               e.venueCorrelationId!=correlation ||
+               e.eventId!="unsent-oca-exit:"+refs.groupCorrelation ||
+               e.brokerClientId!=frozen.clientId ||
+               e.brokerConnectionEpoch!=lastObservedEpoch ||
+               !e.status.empty() || !e.brokerCallbackType.empty() ||
+               !e.brokerExecutionId.empty() || e.brokerBracket.version!=0) {
+                out.uncertain=true;
+                reason="H1_DURABLE_OCA_EXIT_IDENTITY_UNVERIFIED";
+                return false;
+            }
+            exitAlreadyReserved=true;
             continue;
         }
         if(e.eventType=="broker_open_order_bracket" && stage==4) {
