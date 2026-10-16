@@ -18,6 +18,22 @@
 #include <stdexcept>
 #include <unistd.h>
 
+// Tests only. The Adapter native OMS lease is intentionally private to
+// ExecutionCoordinator; these negative-control tests still exercise its
+// internal failure/exception paths, but no real client can call this seam.
+struct H1NativeLeaseTestAccess {
+    template<typename Callback>
+    static bool Reserve(HeptaIBGatewayAdapter& adapter,
+        const std::string& account,std::uint64_t epoch,
+        const OmsJournal& journal,const Callback& commit,
+        long& parent,long& child,std::string& reason,
+        int expectedClientId=-1) {
+        return adapter.ReserveResearchH1NativeIdPair(
+            account,epoch,journal,std::function<bool(long,long)>(commit),
+            parent,child,reason,expectedClientId);
+    }
+};
+
 namespace { bool failNextCancelAllocation = false; }
 void* operator new(std::size_t size) {
     if (failNextCancelAllocation) { failNextCancelAllocation = false; throw std::bad_alloc(); }
@@ -1167,26 +1183,26 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     const int fd=::mkstemp(file.data());assert(fd>=0);::close(fd);
     assert(::unlink(file.data())==0);
     OmsJournal j;assert(j.Init(file.data()));
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU-other",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU-other",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(parent==-1&&child==-1&&f.broker->places==0);
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch+1,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch+1,j,
         [](long,long){return true;},parent,child,reason));
     assert(parent==-1&&child==-1);
     f.broker->nextValidFault=true;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
     f.broker->nextValidFault=false;
     f.broker->validOrderId=0;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     f.broker->validOrderId=std::numeric_limits<int>::max();
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
     f.broker->validOrderId=41;
-    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [&](long p,long c){
             OmsJournalEvent a,b;
             a.eventType="bracket_parent_reserved";a.orderId=p;
@@ -1211,21 +1227,21 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     // New adapter process may see Broker nextValidId lower than its
     // original OMS reservation. Must refuse BEFORE invoking the callback.
     bool called=false;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [&](long,long){called=true;return true;},parent,child,reason));
     assert(!called &&
            reason=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
     f.broker->validOrderId=43;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return false;},parent,child,reason));
     assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN" &&
            parent==-1 && child==-1);
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long)->bool{throw std::runtime_error("uncertain persistence");},
         parent,child,reason));
     assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN" &&
            parent==-1 && child==-1);
-    assert(f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long p,long c){return p==47&&c==48;},
         parent,child,reason));
     assert(parent==47&&child==48&&f.broker->places==0);
@@ -1240,12 +1256,12 @@ void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
     assert(j.AppendDurableCritical(possible));
     f.broker->validOrderId=60;
     called=false;
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [&](long,long){called=true;return true;},parent,child,reason));
     assert(!called &&
            reason=="H1_NATIVE_BROKER_SEND_UNKNOWN_REQUIRES_RECONCILIATION");
     f.adapter.Disconnect();
-    assert(!f.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,j,
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
         [](long,long){return true;},parent,child,reason));
     assert(f.broker->places==0);
     assert(::unlink(file.data())==0);
@@ -1283,7 +1299,7 @@ void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
         Fixture old;
         const auto epoch=old.adapter.GetConnectionEpoch();
         long p=-1,c=-1;std::string why;
-        assert(old.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        assert(H1NativeLeaseTestAccess::Reserve(old.adapter,"DU123",epoch,
             journal,[&](long a,long b) {
                 return durableGroup(journal,"prior-command","prior-h1-group",a,b);
             },p,c,why));
@@ -1295,12 +1311,12 @@ void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
         const auto epoch=fresh.adapter.GetConnectionEpoch();
         long p=-1,c=-1;std::string why;bool called=false;
         assert(fresh.broker->validOrderId==41);
-        assert(!fresh.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        assert(!H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
             journal,[&](long,long){called=true;return true;},p,c,why));
         assert(!called&&p==-1&&c==-1&&
             why=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
         fresh.broker->validOrderId=43;
-        assert(fresh.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,
+        assert(H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
             journal,[&](long a,long b) {
                 return durableGroup(journal,"new-command","new-h1-group",a,b);
             },p,c,why));
