@@ -65,11 +65,38 @@ class StackedCiReachabilityTests(unittest.TestCase):
                          step.get('name') == 'Python behavior and source tests once')
         self.assertLess(cache_index, install_index)
         self.assertLess(install_index, run_index)
-        self.assertNotIn('if', python_steps[install_index])
-        self.assertNotIn('if', python_steps[run_index])
+        self.assertEqual(python_steps[install_index].get('if'),
+                         "steps.scope.outputs.run_full == 'true'")
+        self.assertEqual(python_steps[run_index].get('if'),
+                         "steps.scope.outputs.run_full == 'true'")
         self.assertIn('torch==2.8.0', python_steps[install_index]['run'])
         self.assertIn('torch.version.cuda is None', python_steps[install_index]['run'])
         self.assertFalse(any('actions/cache@' in str(x) for x in ci['jobs']['core']['steps']))
+
+    def test_markdown_only_can_avoid_dependencies_but_source_never_skips(self):
+        ci = workflow('core-ci.yml')
+        for job in ci['jobs'].values():
+            scopes = [step for step in job['steps'] if step.get('id') == 'scope']
+            self.assertEqual(len(scopes), 1)
+            self.assertIn('git -c http.version=HTTP/1.1 fetch', scopes[0]['run'])
+            self.assertIn('python3 -B scripts/ci_scope.py --base', scopes[0]['run'])
+            self.assertIn('run_full=true', scopes[0]['run'])
+            self.assertIn('run_full=false', scopes[0]['run'])
+            self.assertIn('github.event.pull_request.base.sha', scopes[0]['env']['BASE_SHA'])
+            self.assertFalse(any('if' in job for job in ci['jobs'].values()))
+        native = next(step for step in ci['jobs']['core']['steps']
+                      if step['name'] == 'Native build and behavior tests')
+        self.assertEqual(native.get('if'), "steps.scope.outputs.run_full == 'true'")
+        python = ci['jobs']['python']['steps']
+        docs = next(step for step in python
+                    if step['name'] == 'Documentation links preflight')
+        self.assertNotIn('if', docs)
+        self.assertTrue(all(step.get('if') == "steps.scope.outputs.run_full == 'true'"
+                            for step in python if step['name'] in (
+                                'Install build dependencies',
+                                'Cache CPU research dependency downloads',
+                                'Install pinned CPU research test dependency',
+                                'Python behavior and source tests once')))
 
     def test_documentation_failure_precedes_heavy_cpu_torch_install(self):
         steps = workflow('core-ci.yml')['jobs']['python']['steps']
