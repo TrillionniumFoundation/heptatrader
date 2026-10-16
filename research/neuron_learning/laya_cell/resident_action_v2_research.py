@@ -191,3 +191,59 @@ def research_action_recommendation(profile, prob_parent_correct):
     return {"signal":"RESEARCH_ONLY_ACT_CANDIDATE" if prob_parent_correct>=5/6
                      else "ESCALATE_RESEARCH_ONLY",
             "model_or_trade_permission":False}
+
+
+
+def v2_action_inference(action_logits, profile):
+    """Numerical research-only output for a FUTURE explicitly versioned model.
+
+    The exact frozen train-only temperature that defines the v2 ACTION
+    training loss must also define its inference probabilities. The v1
+    resident_predict/raw action head remains completely untouched.
+    One-class training, nonfinite logits and major OOD margins abstain.
+    Temperature normalization alone is NOT held-out probability calibration.
+    """
+    import torch
+    p=_check_profile(profile)
+    if (not torch.is_tensor(action_logits) or
+            action_logits.ndim!=2 or not 1<=len(action_logits)<=4096 or
+            action_logits.shape[-1]!=2 or
+            not action_logits.is_floating_point() or
+            not torch.isfinite(action_logits).all()):
+        raise ContractError("V2_ACTION_INFERENCE_BAD_LOGITS")
+    n=len(action_logits)
+    if not p["action_optimizer_admitted"]:
+        return {"schema":"heptatrader.laya-action-v2-inference-research.v1",
+                "status":"NO_TRAINING_SUPPORT_ALL_ESCALATE",
+                "frozen_profile_id":p["profile_id"],
+                "training_only_temperature":None,
+                "action_correct_probs":None,
+                "recommendations":["ESCALATE_ONLY_NO_BALANCED_TRAINING"]*n,
+                "temperature_scaling_does_not_prove_calibration":True,
+                "model_or_trade_permission":False}
+    t=p["action_temperature_training_only"]
+    # Difference in float64 avoids overflow from otherwise finite float32
+    # upstream logit extremes. A dramatic training-vs-inference shift is a
+    # reason to abstain, not to emit fake 100%-confident ACT.
+    z=action_logits.detach().to(torch.float64)
+    margins=(z[:,0]-z[:,1]).abs()
+    too_far=(margins>10*t).tolist()
+    probs=torch.softmax(z/t,dim=-1)[:,0].tolist()
+    suggestions=[]
+    valid=[]
+    for probability,uncertain in zip(probs,too_far):
+        if uncertain:
+            valid.append(None)
+            suggestions.append("ESCALATE_OOD_ACTION_LOGIT_SHIFT")
+        else:
+            valid.append(probability)
+            suggestions.append(research_action_recommendation(p,probability)["signal"])
+    return {"schema":"heptatrader.laya-action-v2-inference-research.v1",
+            "status":"FROZEN_TRAIN_TEMPERATURE_RESEARCH_ONLY",
+            "frozen_profile_id":p["profile_id"],
+            "training_only_temperature":t,
+            "action_correct_probs":valid,
+            "recommendations":suggestions,
+            "ood_abstentions":sum(bool(i) for i in too_far),
+            "temperature_scaling_does_not_prove_calibration":True,
+            "model_or_trade_permission":False}

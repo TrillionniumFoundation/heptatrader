@@ -100,3 +100,109 @@ the closed 298-example retrospective study, and trial39 pending
 forecast hashes without using its outcomes to refit a new model.
 The result is DO_NOT_OPTIMIZE_ACTION_HEAD_WITH_SINGLE_LABEL;
 PRICE_ONLY_REMAINS_POSSIBLE.
+
+
+## Real Pocket4 frozen-parent CPU Logit replay (no optimizer)
+
+A further model-level test verified the *actual* v1 frozen predecessor
+rather than inferring raw logits from saturated saved probability vectors.
+On Pocket4, using the original SHA-pinned train job config and all 32
+exactly registered, genuinely mature training rows, the CPU model
+loaded the original 644 MB pretrained weights and froze the stored
+parent adapter. No GPU, optimizer step or trial write was performed.
+
+Results: frozen parent ACT top-1 **32/32**, genuine labels ACT:ESCALATE
+**0:32**. Actual ACT-minus-ESCALATE raw Logit margin:
+min **2,526.815**, mean **2,627.890**, max **2,698.618**.
+Absolute raw-margin **training-only P90 = 2,672.294**.
+The recomputed raw CE mean **2,627.890** closely matches the
+original frozen v1 training-step action loss ~2,627.841.
+
+Immutable local evidence:
+~/.local/state/heptatrader/operator-evidence/laya-original-quote-asof-forensics-20261016/action-v2-real-parent-cpu-32row-logits.json
+
+This *still does not admit action training*: the real parent label
+distribution is one-class. v2 must not refit from trial39 pending
+evaluation results and must not substitute synthetic ACT labels.
+
+## v2 frozen train/inference temperature coherence
+
+Additional NONPRODUCTION source-only research function:
+resident_action_v2_research.v2_action_inference.
+
+If a separate future training population has enough genuine
+ACT and ESCALATE examples, the inference function consumes the exact
+hash-bound, training-only P90 temperature used by the action CE.
+It normalizes raw ACT/ESCALATE logits with that temperature in
+float64, preserving very large common logit offsets. It emits
+an explicit *research-only* ACT proposal only when normalized
+correctness probability meets the already declared cost-based
+5/6 threshold; it never grants execution or model authority.
+
+If action optimization was refused for the genuine one-class cohort,
+the function returns **NO action probabilities** and only
+ESCALATE_ONLY_NO_BALANCED_TRAINING. If future raw margins exceed
+10 times the frozen training margin, it ABSTAINS on those rows.
+Replacing the frozen temperature after fitting fails closed.
+**Temperature scaling by itself is not validated probability
+calibration**: it still needs a separate genuinely future outcome
+study. Current v1 raw output, 90-window research, trial39 and
+execution remain untouched.
+
+28 synthetic adversarial CPU tests exercise these boundaries:
+7 new cases cover train-versus-inference temperature equality,
+single-class abstention, out-of-distribution abstention, spoofed
+temperature, extreme common offsets, absence of trade permission,
+and finite/bounded inputs. The v2 implementation has NOT been
+wired into the running original v1 prediction or training service.
+
+## Real future-v2 training-only source now frozen on Pocket4
+
+To avoid artificial ACT class balancing and future label leakage,
+we audited **all 38 closed historical Laya evaluation plans** using
+their actual SHA-bound prediction/outcome files. Exactly
+**298 genuine OBSERVED future results** came from **26 closed plans**
+and **all share the same frozen predecessor identity**:
+76d6b1bf3d1b00505277c88a6d93159f3f17fe2511a65f21fc99647cf56b8ff6.
+The true frozen-parent correctness labels were **14 ACT and
+284 ESCALATE**. The one still-live trial39 was wholly excluded.
+
+An immutable data-only frozen candidate is now written to:
+~/.local/state/heptatrader/operator-evidence/laya-original-quote-asof-forensics-20261016/action-v2-real-closed-parent298-trainonly.json
+
+Precommitted training cutoff: **1792144194352 milliseconds**,
+the creation timestamp of the already existing trial39 plan. All
+298 original source outcomes were available and CLOSED by this
+cutoff; later future examples cannot enter this training file.
+The hash-bound training-population manifest is:
+a6457e18d362989fda2cacb110550538ac985508106439b20d1f4608c631fab3.
+Its canonical row population digest is:
+0ccc69e270f6d5159b63edf80e9f815acf472019761e9fad813a37b3ff20c589.
+
+The reusable read-only collector (code-only and run without
+GPU or trial mutation) is:
+research/neuron_learning/laya_cell/resident_action_v2_closed_source.py
+and scripts/research_laya_action_v2_closed_train_source.py.
+It checks plan IDs and final qualification identities, source cutoff,
+genuine parent ID, original prediction file SHA, quote input identity
+and chronology, valid original bid/ask and closing midpoint, exact
+seven-bin future price label, parent Brier, original Action Brier,
+and duplicate anchor exclusion. It seals the complete original input,
+future label and per-record SHA evidence under one immutable digest.
+
+This source opens a genuine ACT/ESCALATE two-class v2 *training
+possibility* without taking any labels from trial39. It is
+**not proof of model efficacy or a trained adapter**.
+The original 32-row trial39 gradient population remains 0:32 and
+is never reclassified or rewritten. The new 298-row population
+must only train a NEW explicitly versioned model and cannot be
+scored against those same 298 rows as prospective validation.
+A new independently precommitted market future window is required.
+Neither v1 trainer nor currently running evaluation/Shadow unit
+was modified. No new v2 GPU fitting or new model authority claimed.
+
+11 new adversarial source tests cover original price label and
+quote authenticity, fixed training cutoff, different parent identity,
+missing/tampered prediction bytes, duplicate anchor, pending-plan
+exclusion, signed row-digest identity and the genuine two-class
+16-example synthetic source case.
