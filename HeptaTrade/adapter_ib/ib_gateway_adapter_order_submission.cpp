@@ -489,6 +489,9 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
             OrderDetailJson(decision.detail));
 
     const long orderId = NextOrderId();
+    if (orderId <= 0)
+        return RejectOrder(contract, startedAt,
+                           "IB_NATIVE_ORDER_ID_OUT_OF_RANGE", std::string());
     IBOrderRiskBaseline baseline;
     bool hasBaseline = false;
     if (!BuildOrderRiskBaseline(

@@ -742,3 +742,195 @@ inventory, complete OMS/ID floor, independent risk admission and the
 same existing Adapter API lock. A positive isolated IBKR PAPER bracket,
 OCA-safe ordinary close, disconnect and Driver-death test remain
 mandatory before retiring Issue #331.
+
+## 2026-10-16: reconciled Recovery-only owner and OMS alias negative control
+
+The uncommitted Pocket4 owner-fence candidate was independently captured as
+an unchanged private patch and re-applied in a new worktree based on #337's
+latest protected H1 OMS code (`678a0c9`), retaining the existing rejection
+of forged `Submitted`, native broker callback and other shadow-intent proof.
+The parallel developer's original worktree was NOT reset or overwritten.
+
+In this research-only lane the real ExecutionCoordinator mutex verifies the
+persisted recovery-only owner/session ingress fence and refuses duplicate
+original commands before the existing OMS syncs a distinct
+`bracket_parent_reserved` / `bracket_child_reserved` event pair. Research
+attempt markers are named `bracket_*_send_attempt`; neither name is an
+ordinary executable `place_send_attempt` nor any Broker placeOrder permit.
+A restart recovers the original owner fence, refuses stale epochs and
+must not mint another H1 parent/stop reservation.
+
+An additional physically reproduced issue was found in OMS replay: a record
+whose `req_id` matched the original command could retain a *different*
+`client_req_id` alias, or a `bracket_child_send_attempt` could hide behind a
+foreign `req_id` with the original `client_req_id`. Both records were ignored
+or accepted by the old checker. The same native CTest went RED before repair.
+Replay now evaluates BOTH aliases, rejects disagreement as UNKNOWN, and
+continues to reject forged Broker callback/Submitted attributes and
+original-source, timestamp, venue and instrument drift.
+
+Real Pocket4 validation: native IB SDK enabled, isolated Release build,
+**13/13** existing and new Coordinator/OMS/Bracket/PAPER tests passed,
+including the full runtime recovery test (43.50 seconds). Separate
+ASan/UBSan build passed **3/3** H1 identity, OMS and real Coordinator
+owner-fence tests. No existing Execution, FX, BTC or Gateway process was
+stopped, restarted or replaced. No real broker order was sent or cancelled.
+
+**Still not qualified:** external broker-native ID allocation/send, the
+original Owner's two-order transport and positive PAPER openOrder/permId
+proof, OCA ordinary-exit overlap, reconnect unknown-submit recovery and
+actual ongoing protection after Driver death. `sendAuthorized=false`,
+`driverStopAllowed=false` and Issue #331 remains OPEN. Research code is
+not a substitute for a live protective stop or a production release.
+
+## 2026-10-16 — Coordinator original-H1 admission collision boundary
+
+The research-only, recovery-owner-fenced Coordinator now derives the **same**
+immutable H1 Group/Parent/Stop/OCA correlations before attempting a durable
+OMS parent/child reservation. Its existing exact journal replay checks both
+original request aliases **and** identity reuse by any other request: a
+foreign event borrowing the frozen group digest or any of the three H1 roles
+is refused, before either new reservation record is appended. Unrelated
+historical requests do not block the original command. This is an additional
+identity/admission boundary under the existing Coordinator mutex, **not** an
+account-wide Broker ownership proof, cross-process lock or send authorization.
+
+Pocket4 native IBSDK-ON Release negative test reproduced RED on the preceding
+exact head: a foreign original command could borrow the H1 group and cause a
+new pair reservation. After repair the positive owner-fence and all eight
+foreign-role collision variants, plus a disjoint-history control, passed.
+The bounded native regression suite passed **15/15**, and exact H1/Coordinator
+ASan+UBSan passed **3/3**. These tests use isolated OMS files and no Broker
+orders; existing real positions, services and Kill Switch were unchanged.
+Broker send, OCA-safe ordinary exit and real original-client reattestation
+remain open under Issue #331.
+
+## 2026-10-16 — Native H1 long original command compatibility
+
+The native **unsent** H1 parent+STP adapter previously called the legacy
+`HEPTA-PARENT-` / `HEPTA-STOP-` preparer before replacing those refs with H1.
+This rejected an otherwise valid 64-character frozen original key because
+legacy display refs exceed IBKR's 45-byte limit. The native mapping now uses
+the **same** original Broker/Owner/flatness/quote/size/tick/20bp-stop policy
+through a common validated plan that accepts *caller-verified* H1 parent/stop
+refs; the original legacy wrapper still rejects oversized legacy refs.
+The optional OCA grouping is supplied as the same validated 45-byte H1 ref.
+Boundary tests cover 64/96-byte safe original keys for BUY and SELL, and
+refuse invalid 97-byte keys, while maintaining the existing no-send,
+no-driver-stop flags. This is type translation and NOT actual IB order
+placement, an IB accepted stop, or authority for maintenance.
+
+## 2026-10-16: reject ambiguous native-order-ID reuse (research only)
+
+This research Coordinator now checks existing owned native IDs and original
+OMS history before writing H1 bracket reservations. A foreign command on the
+same PAPER/IB account may have a distinct H1 group and still collide with
+one of the reserved numeric parent/child order IDs. This is a **refusal**,
+not a new TWS order-ID allocator. The exact Broker-client owner of legacy
+records is not independently attested, so an ambiguous collision cannot be
+considered a safe reservation.
+
+The scoped H1 OMS replay independently refuses a foreign command reusing a
+frozen parent or child numeric native order ID, or any frozen Group/Parent/
+Stop/OCA correlation. A truly disjoint prior command with a different native
+order ID still replays without blocking the pair. Existing experimental
+`HEPTA-*` references are not eligible for real sends.
+
+Independent Pocket4 proof: IB-API-ON Release/Ninja 11/11 native CTests pass,
+including the exact Coordinator and OMS tests; ASan/UBSan 2/2 pass. The
+foreign numeric-ID negative controls were real red-before/green-after tests,
+not just a source-code assertion. No broker placement/cancellation, no
+production service restart, and no new Owner permission were involved.
+
+**Still blocked:** durable reservation of actual Broker next-valid IDs under
+the exact verified client/connection, owner-fenced parent+child transport,
+Broker working-stop permanent-ID callbacks, OCA-safe ordinary close, and
+post-crash original Broker order-set reattestation. No deployment or stop
+permission derives from this research result.
+
+## 2026-10-16 — Separate H1 native OpenOrder candidate projection and OMS v2 witness
+
+A genuine 45-byte H1 child ref is incompatible with the existing
+`HEPTA-STOP-`-only `ProjectOriginalWorkingStop` and v1 native bracket receipt
+shape; silently reusing the v1 positive callback would either drop the H1
+event or falsely assert original-owner protection. This change keeps the
+existing v1 producer and parser intact and adds an **additive version-2 H1
+bracket witness shape** (canonical 45-byte H1 child and distinct H1 OCA group,
+strict contract/parent/permanent-ID, transmitted STP, GTC, owner-independent
+market-rule shape). Version 2 shape is NOT sufficient to prove protection.
+
+The **pure, research-only** `ProjectFrozenH1WorkingStop` requires a complete
+original frozen H1 Parent+Child pair in the existing OMS journal (including
+replay refusal for partial, changed or POSSIBLY_SENT records), and also
+requires the original Owner/session/command/account/contract/client/epoch,
+actual native SDK-origin `openOrder(Submitted)` fields, parent/permanent IDs,
+quantities, trigger, original 20bp stop and exact H1 Parent/Stop/OCA derived
+roles. It refuses foreign pre-bound OMS request hashes, correlation IDs,
+existing Broker status/callback/event IDs, held/partial/uncertain callbacks
+and false positive standalone H1 shape. It **never changes** the existing
+production callback routing or grants a PlaceOrder, maintenance permit, Driver
+stop or automatic model promotion.
+
+Pocket4 isolated, IBAPI-ON Release verification exercised the actual existing
+`OmsJournal::AppendDurablePair`, the new pure projector, an exact durable
+version-2 Broker candidate record and actual v4 OMS journal replay, with
+negative callback/OMS mutation cases. Native regression **16/16** and
+H1/v1 OMS + identity ASan/UBSan **3/3** passed. No real Broker call was
+made, and an `openOrder` callback candidate is not account-wide working
+protection. A real owner-fenced Broker sender, child accepted permId,
+unknown-submit recovery, OCA-safe normal exit, and driver-death proof remain
+P0 Issue #331 blockers.
+
+## 2026-10-16: native IB order-ID int32 boundary (source-only)
+
+The existing ordinary IB Adapter stores its next order ID as a Linux `long`,
+while the TWS `OrderId` wire value is int32. Before a real Broker submission,
+`NextOrderId()` now refuses a broker-reported next-valid ID or consumed
+local seed outside the positive signed-32-bit range, and the single-order
+submission path refuses the invalid sentinel before invoking the SDK.
+
+An isolated Pocket4 fake-Broker native test first reproduced a value greater
+than `INT32_MAX` reaching the local broker stub. After the fix, it verifies
+that such values never cause even a fake SDK send, that `INT32_MAX` remains
+representable, and that a subsequent exhausted allocation is rejected.
+IBAPI=ON Release regression 5/5 and ASan/UBSan native order lifecycle 1/1
+passed. This is a numeric safety fix, **not** Broker-native bracket ID
+reservation, stop activation, OMS boot recovery or trading authorization.
+
+## 2026-10-15 — Reconciled latest H1 Broker callback + native transport research
+
+The protected PAPER stop-request shield has been separately merged into
+`main` via PR #347 and was verified effective for all nine Pocket4
+risk-path and target units with no process restart. That mitigation only
+blocks **manual** stop requests; it is NOT a broker-native protective order.
+
+This branch deliberately combines the latest root H1 research from PR #337
+with the Coordinator-owned OMS native-ID lease and test-only IB SDK parent
+and child transport of PRs #341, #342, #344 and #346. The merge occurred
+on a separate worktree, preserving the original source trees. The stricter
+root checks were retained for original command alias mismatch, H1 role
+collisions, native ID int32 limits, untrusted positive Broker witness fields
+and exact frozen H1 `openOrder(Submitted)` comparison. The owner-only
+Adapter/Coordinator OMS bridge, restart high-watermark, durable pre-send
+barriers and mock EClient parent/child transaction were also retained.
+
+Pocket4 native IBAPI-ON Release CMake compiled `hepta_ib_executiond`.
+11 targeted CTests passed, including exact frozen H1 parent/child replay,
+fake SDK send failure on either leg, original Broker openOrder v2 candidate,
+existing native bracket, Coordinator Fence, OMS v4 durability, ID high-watermark,
+PAPER profile and terminal reconciliation. Five additional native core CTests
+passed: original Decimal ABI, Coordinator, original native bracket callback,
+post-fill reconciliation and full runtime restart (44.47 seconds).
+IBAPI-OFF `hepta_ib_executiond` compiled and two compatibility tests passed.
+Strict C++11 AddressSanitizer/UBSan runs passed for the H1 mock native
+transport and frozen H1 Broker callback. Docs checks and Git diff checks pass.
+
+**Non-qualification:** There has been NO actual
+`EClient::placeOrder` call, active stop or OCA accepted by IBKR, nor any
+real Driver restart. The latest v2 H1 `openOrder` projector is an isolated
+candidate and does not grant production Broker order authority or maintenance
+permission. The exact original account's native bracket send still must be
+bound to Execution-owned current Broker order inventory, full no-new-entry
+fence, actual Broker permanent parent/child IDs and cancellation/partial fill
+lifecycle before enabling a genuine PAPER canary or claiming loss continuity.
+PR and Issue #331 must remain Draft / OPEN respectively.

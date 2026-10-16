@@ -18,9 +18,6 @@ struct Reservation {
 };
 inline OmsJournalEvent Intent(const FrozenBracket& f,const BoundRefs& b,bool child) {
     OmsJournalEvent e;
-    // Research reservation IDs are NOT ordinary executable
-    // order_intent records: the existing Coordinator replayer must not
-    // mistake a parent+child for two authorized place commands.
     e.eventType=child?"bracket_child_reserved":"bracket_parent_reserved";
     e.tsMs=static_cast<long long>(f.intentObservedAtMs);
     e.orderId=child?f.childOrderId:f.parentOrderId;
@@ -86,7 +83,44 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
     const OmsJournalEvent parent=Intent(f,b,false),child=Intent(f,b,true);
     unsigned int matchedParent=0,matchedChild=0;
     for(const auto& e:records) {
-        if(e.reqId!=f.originalCommandKey)continue;
+        // The legacy OMS has BOTH req_id and client_req_id. A duplicate
+        // command under the other alias is not a foreign, ignorable record.
+        // In particular, never hide a possible native send by changing only
+        // its req_id while retaining the original client_req_id.
+        const bool originalByEitherAlias =
+            e.reqId==f.originalCommandKey ||
+            e.clientReqId==f.originalCommandKey;
+        if(!originalByEitherAlias) {
+            // Unrelated original commands are ignorable only when they do
+            // not borrow this pair's immutable H1 venue identities.
+            if(e.requestHash==b.groupCorrelation ||
+               e.requestHash==b.parentCorrelation ||
+               e.requestHash==b.childCorrelation ||
+               e.requestHash==b.ocaCorrelation ||
+               e.venueCorrelationId==b.groupCorrelation ||
+               e.venueCorrelationId==parent.venueCorrelationId ||
+               e.venueCorrelationId==child.venueCorrelationId ||
+               e.venueCorrelationId==b.ocaCorrelation) {
+                out.uncertain=true;
+                reason="H1_FOREIGN_COMMAND_REUSES_FROZEN_IDENTITY";
+                return false;
+            }
+            if(e.account==f.account && e.executionDomain=="PAPER" &&
+               e.venue=="IB" &&
+               (e.orderId==parent.orderId ||
+                e.orderId==child.orderId)) {
+                out.uncertain=true;
+                reason="H1_FOREIGN_COMMAND_REUSES_NATIVE_ORDER_ID";
+                return false;
+            }
+            continue;
+        }
+        if(e.reqId!=f.originalCommandKey ||
+           (!e.clientReqId.empty() && e.clientReqId!=f.originalCommandKey)) {
+            out.uncertain=true;
+            reason="H1_ORIGINAL_COMMAND_REQUEST_ALIAS_MISMATCH";
+            return false;
+        }
         if((e.eventType=="bracket_parent_send_attempt" ||
             e.eventType=="bracket_child_send_attempt") &&
            e.requestHash==b.groupCorrelation &&
@@ -99,18 +133,28 @@ inline bool ConfirmReplay(const std::vector<OmsJournalEvent>& records,
         if((e.eventType!="bracket_parent_reserved" &&
             e.eventType!="bracket_child_reserved") ||
            e.requestHash!=b.groupCorrelation ||
-           e.account!=f.account ||
-           e.traceId!=f.sessionId || e.strategy!=f.owner ||
-           e.executionDomain!="PAPER") {
+           e.account!=f.account || e.traceId!=f.sessionId ||
+           e.strategy!=f.owner || e.executionDomain!="PAPER") {
             out.uncertain=true;reason="H1_UNEXPECTED_ORIGINAL_COMMAND_EVENT";return false;
         }
+        // Shadow order_intent cannot carry positive Broker callback or
+        // Submitted/filled evidence. Only an independently matched broker
+        // callback may ever establish working protection; no sender exists here.
+        if(!e.status.empty() || !e.reason.empty() ||
+           !e.brokerCallbackType.empty() || e.brokerClientId!=-1 ||
+           e.brokerConnectionEpoch!=0 || !e.brokerExecutionId.empty() ||
+           e.brokerBracket.version!=0) {
+            out.uncertain=true;
+            reason="H1_SHADOW_INTENT_CONTAINS_UNATTESTED_BROKER_EVIDENCE";
+            return false;
+        }
         bool isParent=e.eventType=="bracket_parent_reserved" &&
-            e.orderId==parent.orderId &&
+            e.tsMs==parent.tsMs && e.source==parent.source && e.venue==parent.venue && e.instrument==parent.instrument && e.orderId==parent.orderId &&
             e.venueCorrelationId==parent.venueCorrelationId &&
             e.eventId==parent.eventId && e.side==parent.side &&
             e.qty==parent.qty && e.price==parent.price;
         bool isChild=e.eventType=="bracket_child_reserved" &&
-            e.orderId==child.orderId &&
+            e.tsMs==child.tsMs && e.source==child.source && e.venue==child.venue && e.instrument==child.instrument && e.orderId==child.orderId &&
             e.venueCorrelationId==child.venueCorrelationId &&
             e.eventId==child.eventId && e.side==child.side &&
             e.qty==child.qty && e.price==child.price;

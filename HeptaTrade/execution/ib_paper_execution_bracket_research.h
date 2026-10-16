@@ -69,13 +69,17 @@ struct BracketShadowPlan final {
     bool ordinaryExitCompatible = false;
 };
 
-inline BracketShadowPlan ProposeUnsentBracket(
-    const PreEntrySnapshot& s, std::uint64_t nowMs)
+// Common ORIGINAL Broker/Owner/quote policy, independent of the legacy
+// human-readable orderRef. Only the H1 adapter supplies separately verified
+// references here; this does not permit transmitting orders.
+inline BracketShadowPlan ProposeUnsentBracketWithRefs(
+    const PreEntrySnapshot& s, std::uint64_t nowMs,
+    const std::string& parentRef, const std::string& stopRef)
 {
     if (s.executionDomain != "PAPER" ||
         s.account.size() < 3 || s.account.compare(0, 2, "DU") != 0 ||
         s.owner.empty() || s.originalCommandKey.empty() ||
-        s.originalCommandKey.size() > 80 ||
+        s.originalCommandKey.size() > 96 ||
         !std::all_of(s.originalCommandKey.begin(), s.originalCommandKey.end(),
             [](unsigned char c) { return std::isalnum(c) || c=='-' || c=='_' || c=='.'; }) ||
         s.contractId != 12087792)
@@ -141,7 +145,7 @@ inline BracketShadowPlan ProposeUnsentBracket(
     p.parent.intent.action = s.action;
     p.parent.intent.orderType = "MKT";
     p.parent.intent.totalQuantity = s.quantity;
-    p.parent.intent.orderRef = "HEPTA-PARENT-" + s.originalCommandKey;
+    p.parent.intent.orderRef = parentRef;
     p.stop.orderId = s.reservedChildOrderId;
     p.stop.parentId = p.parent.orderId;
     p.stop.transmit = true;
@@ -150,13 +154,26 @@ inline BracketShadowPlan ProposeUnsentBracket(
     p.stop.intent.orderType = "STP";
     p.stop.intent.totalQuantity = s.quantity;
     p.stop.intent.auxPrice = stop;
-    p.stop.intent.orderRef = "HEPTA-STOP-" + s.originalCommandKey;
+    p.stop.intent.orderRef = stopRef;
     // Research-only refs do NOT satisfy the existing production H1 codec.
     // At minimum, reject values the broker cannot retain without truncation.
-    if (p.parent.intent.orderRef.size() > 45 ||
+    if (p.parent.intent.orderRef.empty() || p.stop.intent.orderRef.empty() ||
+        p.parent.intent.orderRef.size() > 45 ||
         p.stop.intent.orderRef.size() > 45)
         throw Refusal("BRACKET_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
     return p;
+}
+
+// Legacy shadow retains its historical original-command and orderRef
+// restrictions. Long ORIGINAL commands are valid only through verified H1.
+inline BracketShadowPlan ProposeUnsentBracket(
+    const PreEntrySnapshot& s, std::uint64_t nowMs)
+{
+    if (s.originalCommandKey.size() > 80)
+        throw Refusal("BRACKET_EXACT_PAPER_SCOPE_REQUIRED");
+    return ProposeUnsentBracketWithRefs(
+        s, nowMs, "HEPTA-PARENT-" + s.originalCommandKey,
+        "HEPTA-STOP-" + s.originalCommandKey);
 }
 
 enum class BracketPhase {

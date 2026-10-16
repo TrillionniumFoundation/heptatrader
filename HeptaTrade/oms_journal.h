@@ -32,30 +32,47 @@ struct IbBracketCallbackEvidence {
     double quantity = 0.0;
     double stopAuxPrice = 0.0;
 
+    static bool CanonicalH1Ref(const std::string& ref) {
+        // Unpadded base64url of exactly 32 bytes has 43 characters. The
+        // last sextet contains two unused zero bits; reject noncanonical
+        // aliases rather than treating prefix-only H1 as valid evidence.
+        static const std::string alphabet=
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        if (ref.size()!=45 || ref.compare(0,2,"H1")!=0) return false;
+        for(std::size_t i=2;i<ref.size();++i)
+            if(alphabet.find(ref[i])==std::string::npos) return false;
+        const auto last=alphabet.find(ref.back());
+        return last!=std::string::npos && last%4==0;
+    }
     bool ValidShape() const {
-        static const std::string prefix = "HEPTA-STOP-";
-        if (version != 1 || contractId != 12087792 ||
-            parentOrderId <= 0 || permanentOrderId <= 0 ||
-            transmit != 1 || ocaType != 1 || triggerMethod != 0 ||
-            timeInForce != "GTC" ||
-            orderRef.compare(0, prefix.size(), prefix) != 0 ||
-            orderRef.size() <= prefix.size() || orderRef.size() > 45 ||
-            ocaGroup != "HEPTA-FX-OCA-" + orderRef.substr(prefix.size()) ||
-            !std::isfinite(quantity) || quantity <= 0 || quantity > 100000 ||
-            std::floor(quantity) != quantity ||
-            !std::isfinite(stopAuxPrice) || stopAuxPrice <= 0) return false;
-        // This legacy research-only reference is intentionally bounded to
-        // the IBKR 45-byte orderRef budget. A future production sender must
-        // instead use the existing exact H1 venue correlation codec.
-        for (std::size_t i=prefix.size(); i<orderRef.size(); ++i) {
-            const char c=orderRef[i];
-            if (!((c>='a'&&c<='z') || (c>='A'&&c<='Z') ||
-                  (c>='0'&&c<='9') || c=='-' || c=='_' || c=='.'))
+        if ((version!=1 && version!=2) || contractId!=12087792 ||
+            parentOrderId<=0 || permanentOrderId<=0 || transmit!=1 ||
+            ocaType!=1 || triggerMethod!=0 || timeInForce!="GTC" ||
+            !std::isfinite(quantity) || quantity<=0 || quantity>100000 ||
+            std::floor(quantity)!=quantity ||
+            !std::isfinite(stopAuxPrice) || stopAuxPrice<=0) return false;
+        if(version==1) {
+            // Preserve the exact legacy research-only v1 shape.
+            static const std::string prefix="HEPTA-STOP-";
+            if(orderRef.compare(0,prefix.size(),prefix)!=0 ||
+               orderRef.size()<=prefix.size() || orderRef.size()>45 ||
+               ocaGroup!="HEPTA-FX-OCA-"+orderRef.substr(prefix.size()))
                 return false;
+            for(std::size_t i=prefix.size();i<orderRef.size();++i) {
+                const char c=orderRef[i];
+                if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+                     (c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'))
+                    return false;
+            }
+        } else {
+            // v2 is H1 field SHAPE ONLY; an actual candidate requires a
+            // separate, exact original-OMS + SDK openOrder projection.
+            if(!CanonicalH1Ref(orderRef) || !CanonicalH1Ref(ocaGroup) ||
+               orderRef==ocaGroup) return false;
         }
-        const double ticks = stopAuxPrice / 0.00005;
+        const double ticks=stopAuxPrice/0.00005;
         return std::isfinite(ticks) &&
-            std::fabs(ticks-std::round(ticks)) < 1.e-7;
+               std::fabs(ticks-std::round(ticks))<1.e-7;
     }
 };
 
