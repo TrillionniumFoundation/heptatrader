@@ -194,6 +194,118 @@ def duration_side_breakdown(episodes):
     }
 
 
+
+def close_reason_coverage(episodes, executions, receipts, instrument):
+    """Correlate DRIVER-REPORTED future CLOSE reasons with exact OMS fills.
+
+    No exit reason is derived from holding time, a mutable 'last_exit_reason',
+    or an adjacent model decision. This is not broker-native stop evidence.
+    """
+    if instrument not in ("EUR.USD", "BTC.USD") or not isinstance(receipts, list) or len(receipts) > 64:
+        raise ValueError("CLOSE_REASON_SOURCE_SCOPE")
+    by_command = defaultdict(list)
+    for fill in executions:
+        key, execution_id = fill.get("command_id"), fill.get("execution_id")
+        if not isinstance(key, str) or not isinstance(execution_id, str) or not execution_id:
+            raise ValueError("CLOSE_REASON_UNIDENTIFIABLE_EXECUTION")
+        by_command[key].append(fill)
+    record_by_command = {}
+    for receipt in receipts:
+        if not isinstance(receipt, dict) or receipt.get("schema") != "heptatrader.driver-close-command-attribution.v1":
+            raise ValueError("CLOSE_REASON_MALFORMED_RECORD")
+        key = receipt.get("original_command_id")
+        if not isinstance(key, str) or not key:
+            raise ValueError("CLOSE_REASON_MISSING_COMMAND")
+        if key in record_by_command:
+            raise ValueError("CLOSE_REASON_DUPLICATE_COMMAND")
+        record_by_command[key] = receipt
+    buckets = defaultdict(lambda: {"roundtrips": 0, "net_usd": ZERO})
+    blocked = defaultdict(int)
+    matched = 0
+    for episode in episodes:
+        key = episode["end_command"]
+        rec = record_by_command.get(key)
+        if rec is None:
+            blocked["NO_EXACT_CLOSE_RECEIPT"] += 1
+            continue
+        trigger = rec.get("exit_trigger")
+        if (rec.get("instrument") != instrument or
+                not isinstance(trigger, dict) or
+                trigger.get("schema") != "heptatrader.driver-close-trigger.v1" or
+                trigger.get("original_command_id") != key):
+            blocked["RECEIPT_COMMAND_OR_INSTRUMENT_CONFLICT"] += 1
+            continue
+        if (rec.get("terminal_partial_exit") is not False or
+                rec.get("broker_terminal_observed") is not True or
+                decimal(rec.get("position_after_terminal_fill", "NaN")) != ZERO):
+            blocked["NOT_FLAT_TERMINAL_FILL"] += 1
+            continue
+        observed = by_command.get(key, [])
+        ids = [x["execution_id"] for x in observed]
+        claimed = rec.get("broker_execution_ids")
+        if (not ids or len(ids) != len(set(ids)) or not isinstance(claimed, list) or
+                not claimed or len(claimed) != len(set(claimed)) or
+                set(ids) != set(claimed) or
+                rec.get("broker_execution_id") not in ids or
+                any(x.get("order_id") != rec.get("broker_order_id") for x in observed)):
+            blocked["ORIGINAL_EXECUTION_IDENTITY_NOT_PROVEN"] += 1
+            continue
+        trigger_at, recorded_at, sent_at = (trigger.get("trigger_at_ms"),
+                                           rec.get("recorded_at_ms"),
+                                           episode.get("last_original_send_ms"))
+        if (type(trigger_at) is not int or type(recorded_at) is not int or
+                type(sent_at) is not int or
+                not 0 < trigger_at <= sent_at <= recorded_at or
+                (trigger.get("quote_observed_at_ms") is not None and
+                 (type(trigger["quote_observed_at_ms"]) is not int or
+                  not 0 < trigger["quote_observed_at_ms"] <= trigger_at))):
+            blocked["CAUSAL_TRIGGER_TIMESTAMP_NOT_PROVEN"] += 1
+            continue
+        reason = trigger.get("reason_code")
+        authority = trigger.get("reason_source")
+        if not ((reason in {"MAX_ADVERSE_MOVE", "MODEL_REVERSAL", "HALT_REDUCE_ONLY"}
+                 and authority == "DRIVER_EVALUATED") or
+                (reason in {"OWNER_RECOVERY_REDUCE_ONLY", "CRYPTO_CANARY_EXIT"}
+                 and authority == "DRIVER_RECOVERY_OR_CANARY")):
+            blocked["MISSING_OR_UNSUPPORTED_ORIGINAL_REASON"] += 1
+            continue
+        # Exact recorded execution IDs + original driver's pre-send reason,
+        # NOT proof that the exchange executed a native stop trigger.
+        buckets[reason]["roundtrips"] += 1
+        buckets[reason]["net_usd"] += decimal(episode["net_usd"])
+        matched += 1
+    if matched + sum(blocked.values()) != len(episodes):
+        raise ValueError("CLOSE_REASON_DENOMINATOR")
+    return {
+        "scope": "EXACT_DRIVER_INTENT_AND_OMS_EXECUTION_IDS_NOT_BROKER_CAUSAL_PROOF",
+        "historical_unattributed_not_repaired": True,
+        "closed_episodes": len(episodes),
+        "exact_original_reason_bound": matched,
+        "unknown_or_unverified": len(episodes) - matched,
+        "reason_buckets": {code: {"roundtrips": value["roundtrips"],
+                                 "net_usd": text(value["net_usd"])}
+                           for code, value in sorted(buckets.items())},
+        "nonqualifying_reasons": dict(sorted(blocked.items())),
+        "unmatched_retained_recent_receipts": len(set(record_by_command) -
+                                                  {x["end_command"] for x in episodes}),
+        "never_trade_authority": True,
+    }
+
+
+def read_bounded_driver_receipts(path, instrument):
+    """One local driver snapshot read: optional historical evidence, never order input."""
+    p = Path(path)
+    if p.is_symlink() or not p.is_file():
+        raise ValueError("CLOSE_REASON_UNSAFE_STATE_PATH")
+    data = p.read_bytes()
+    if not data or len(data) > 1024 * 1024:
+        raise ValueError("CLOSE_REASON_STATE_SIZE")
+    document = json.loads(data)
+    if document.get("instrument") != instrument or not isinstance(document.get("close_command_attribution", []), list):
+        raise ValueError("CLOSE_REASON_STATE_WRONG_INSTRUMENT")
+    return document.get("close_command_attribution", []), hashlib.sha256(data).hexdigest()
+
+
 def read_prefix(path):
     """Freeze a newline-complete prefix; never infer a transaction from a tail."""
     payload = Path(path).read_bytes()
@@ -205,7 +317,7 @@ def read_prefix(path):
     return events, hashlib.sha256(prefix).hexdigest(), len(prefix), len(payload) - full
 
 
-def inspect(journal, period_path, snapshot_path=None):
+def inspect(journal, period_path, snapshot_path=None, driver_states=None):
     period_bytes = Path(period_path).read_bytes()
     period = json.loads(period_bytes)
     validate_period(period)
@@ -258,6 +370,11 @@ def inspect(journal, period_path, snapshot_path=None):
             "original_sent_time_missing_for_fills": missing_t,
             "open_episode": bool(open_episode),
             "closed": stats, "duration_side": duration_side_breakdown(rounds)}
+        if driver_states and instrument in driver_states:
+            receipts, driver_state_sha = read_bounded_driver_receipts(driver_states[instrument], instrument)
+            output["instruments"][instrument]["close_reason"] = close_reason_coverage(
+                rounds, ledger["executions"], receipts, instrument)
+            output["instruments"][instrument]["close_reason"]["driver_state_sha256"] = driver_state_sha
     if snapshot_path:
         s = json.loads(Path(snapshot_path).read_text())
         same_period = s.get("period_id") == period["period_id"]
@@ -290,11 +407,15 @@ def main():
     parser.add_argument("--journal", type=Path, required=True)
     parser.add_argument("--period", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--fx-driver-state", type=Path)
+    parser.add_argument("--btc-driver-state", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     # Match production build_report's 40-digit Decimal replay context exactly.
     with localcontext(prec=40):
-        result = inspect(args.journal, args.period, args.snapshot)
+        sources = {k: v for k, v in (("EUR.USD", args.fx_driver_state),
+                                     ("BTC.USD", args.btc_driver_state)) if v is not None}
+        result = inspect(args.journal, args.period, args.snapshot, sources)
     args.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
