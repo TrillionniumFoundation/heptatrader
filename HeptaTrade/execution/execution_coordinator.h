@@ -21,6 +21,8 @@
 #include <unordered_set>
 #include <vector>
 
+class HeptaIBGatewayAdapter;
+
 namespace hepta_bracket_h1 {
 struct FrozenBracket;
 struct Reservation;
@@ -184,6 +186,15 @@ public:
         const hepta_bracket_h1::FrozenBracket& frozen,
         hepta_bracket_h1::Reservation& result,
         std::string& reason);
+    // Research-only authoritative OMS handoff. Accepts NO caller-selected
+    // journal; always passes this Coordinator's exact m_journal into the
+    // Adapter while its send mutex is held. Does not authorize broker orders.
+    bool ReserveResearchNativeH1ThroughOwnedJournal(
+        HeptaIBGatewayAdapter& adapter,
+        const AgentExecutionContext& originalOwner,
+        const hepta_bracket_h1::FrozenBracket& frozen,
+        hepta_bracket_h1::Reservation& result,
+        long& parentId, long& stopId, std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
                                      ExecutionControlStatusResult& result);
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);

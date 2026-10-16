@@ -230,7 +230,8 @@ public:
         std::uint64_t expectedConnectionEpoch,
         const OmsJournal& exactOwnerJournal,
         const std::function<bool(long,long)>& durablePair,
-        long& parentId, long& stopId, std::string& reason);
+        long& parentId, long& stopId, std::string& reason,
+        int expectedExactBrokerClientId = -1);
     bool ReqAccountSummary();
     bool ReqPositions();
     // Atomically starts a coherent account+positions generation. It rejects

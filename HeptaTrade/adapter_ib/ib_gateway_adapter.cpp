@@ -1349,7 +1349,8 @@ bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
     std::uint64_t expectedConnectionEpoch,
     const OmsJournal& exactOwnerJournal,
     const std::function<bool(long,long)>& durablePair,
-    long& parentId, long& stopId, std::string& reason)
+    long& parentId, long& stopId, std::string& reason,
+    int expectedExactBrokerClientId)
 {
     parentId=-1;stopId=-1;
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
@@ -1357,6 +1358,9 @@ bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
         m_terminalTransportHalted || expectedConnectionEpoch==0 ||
         expectedConnectionEpoch!=m_connectionEpoch ||
         exactPaperAccount!=m_cfg.account || !IsPaperAccount(m_cfg.account) ||
+        (expectedExactBrokerClientId != -1 &&
+         (expectedExactBrokerClientId <= 0 ||
+          expectedExactBrokerClientId != m_cfg.clientId)) ||
         !durablePair) {
         reason="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE";
         return false;

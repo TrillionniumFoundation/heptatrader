@@ -637,3 +637,70 @@ fresh callbacks. Unsent TWS children, unknown submission, partial
 fills, OCA cancellation and actual stop continuity across Driver
 death must be positively tested on isolated PAPER, with original
 `permId` correlation, before any production activation.
+
+## 2026-10-15 — Coordinator-owned OMS handed to the real native Adapter
+
+The prior Adapter research lease accepted a caller-supplied OmsJournal.
+That was unsafe as an eventual Broker authorizer: a valid but unrelated
+journal could omit old reserved/possibly-sent parent/child IDs. This
+follow-up adds an **explicitly non-dispatching** Coordinator member
+`ReserveResearchNativeH1ThroughOwnedJournal`. Unlike the raw Adapter
+test helper, it accepts NO journal parameter; it always supplies the
+existing Coordinator's `m_journal` to the Adapter native ID floor scan.
+It then calls the existing Coordinator
+`ReserveResearchH1BracketForRecoveryOnlyOwner` to validate the exact
+agent/session/command, current durable Recovery-only fence, absence of
+in-flight risk mutations and original-command duplication before
+persisting the H1 parent/child pair.
+
+The bound handoff further checks the actual configured IB PAPER account,
+connection epoch and Broker clientId under the native Adapter's existing
+`m_apiMutex`, with ID pair preconsumption before the callback. It
+preserves the durable UNKNOWN/no-retransmit constraints and does not
+create an alternate OMS writer, process, TCP endpoint or trading command.
+
+The Coordinator method deliberately does not acquire its mutex before
+the Adapter API lock; the existing normal PlaceOrder dispatch releases
+the Coordinator lock before the venue call, and the binding's callback
+takes the Coordinator mutex only after obtaining the Adapter lock.
+Broader production lock-order and service lifecycle audit remains
+required before enabling a real sender.
+
+### Pocket4 adversarial validation
+
+The original live-terminal adapter test was upgraded to use the actual
+Coordinator-owned binding and to reject a different actual Broker clientId.
+A second test creates TWO valid OmsJournal files: the Coordinator-owned
+one and a foreign decoy containing much higher native IDs. Missing
+Recovery-only owner authority is refused; the successful owned request
+uses ONLY the Coordinator journal; the decoy's records remain untouched.
+Another test launches two concurrent submissions of the same original
+H1 command: exactly one may acquire the durable group, the other is
+rejected, with zero Broker calls. The relevant test repeated **25
+independent runs without failures**.
+
+Actual Pocket4 IB-API-ON Release compilation of `hepta_ib_executiond`
+and 8/8 native Coordinator/OMS/Adapter/PAPER targeted CTests PASS,
+including the 44.48-second full runtime recovery test. IB-API-OFF
+Execution and adapter test also compile and pass. The same test linked
+against the existing original H1/OMS libraries; no research stub took
+over the production callback path.
+
+### Still blocking actual Broker qualification
+
+This method and the original Adapter lease are **research-only** with
+no placement call and no driver stop authorization. The legacy direct
+Adapter research helper still takes a journal supplied by its C++
+caller and is unsuitable as a privileged production entrypoint.
+It must be made inaccessible or require the same verified owner
+capability before any Broker transport can be enabled. In addition,
+the owner-supplied recovery-only fence intentionally blocks normal
+risk-increasing entry; it is NOT the final live protection authority
+for already-exposed positions.
+
+A real release still needs exact immutable Broker-order ID ownership,
+PAPER parent-child and OCA submission, complete active/completed order
+callbacks, partial/cancel/reconnect proof, and continuous working stop
+through Driver downtime. The online EUR/USD PAPER position is untouched.
+PR #337, #341, #342 and this stacked research work remain nonproduction;
+Issue #331 stays OPEN.

@@ -10,6 +10,8 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <atomic>
+#include <thread>
 #include <memory>
 #include <new>
 #include <cstdlib>
@@ -1310,6 +1312,135 @@ void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
     assert(::unlink(chars.data())==0);
 }
 
+void TestResearchCoordinatorOwnedJournalCannotBeReplacedWithDecoy() {
+    // Two unrelated durable OMS files exist. Only the one structurally owned
+    // by the actual Coordinator can participate in this H1 native lease.
+    Fixture fixture;
+    const auto epoch=fixture.adapter.GetConnectionEpoch();
+    std::string first="/tmp/hepta-h1-actual-owner-XXXXXX";
+    std::string second="/tmp/hepta-h1-foreign-decoy-XXXXXX";
+    std::vector<char> path1(first.begin(),first.end()),path2(second.begin(),second.end());
+    path1.push_back('\0');path2.push_back('\0');
+    int fd=::mkstemp(path1.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(path1.data())==0);
+    fd=::mkstemp(path2.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(path2.data())==0);
+    OmsJournal actual;assert(actual.Init(path1.data()));
+    OmsJournal decoy;assert(decoy.Init(path2.data()));
+    OmsJournalEvent foreign;
+    foreign.eventType="bracket_parent_reserved";
+    foreign.reqId="FOREIGN-SESSION";foreign.clientReqId=foreign.reqId;
+    foreign.account="DU123";foreign.executionDomain="PAPER";
+    foreign.venue="IB";foreign.instrument="EUR.USD";
+    foreign.source="SHADOW_NO_BROKER_EGRESS";foreign.side="BUY";
+    foreign.qty=1000;foreign.price=1.1205;
+    foreign.requestHash="foreign-group";
+    foreign.traceId="foreign-session";foreign.strategy="foreign-owner";
+    foreign.orderId=990;foreign.eventId="foreign-parent";
+    foreign.venueCorrelationId="foreign-h1-parent";
+    auto foreignChild=foreign;
+    foreignChild.eventType="bracket_child_reserved";
+    foreignChild.orderId=991;foreignChild.side="SELL";
+    foreignChild.price=1.11825;
+    foreignChild.eventId="foreign-child";
+    foreignChild.venueCorrelationId="foreign-h1-child";
+    assert(decoy.AppendDurablePair(foreign,foreignChild)==
+           OmsJournal::DurablePairResult::Committed);
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(actual,callbacks);
+    AgentExecutionContext original;
+    original.agentId="h1-owner";original.sessionId="h1-session";
+    original.toolCallId="original-h1-journal-bound-1";
+    original.executionDomain="IB-PAPER:EUR.USD";
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=original.agentId;frozen.sessionId=original.sessionId;
+    frozen.originalCommandKey=original.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=17;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    std::string reason;
+    hepta_bracket_h1::Reservation reservation;
+    long parent=-1,child=-1;
+    // An unrelated valid OMS cannot give the Coordinator a Recovery-only
+    // ingress fence. The absence of a caller journal argument also prevents
+    // a decoy from replacing its actual journal.
+    assert(!coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+        fixture.adapter,original,frozen,reservation,parent,child,reason));
+    assert(parent==-1 && child==-1);
+    assert(fixture.broker->places==0);
+    assert(coordinator.EnterRecoveryOnlyOwner(
+        original.agentId,original.sessionId,17,reason));
+    // The decoy has much larger native IDs; if it were used here, a
+    // connected broker reporting nextValidId=41 would be rejected.
+    assert(fixture.broker->validOrderId==41);
+    assert(coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+        fixture.adapter,original,frozen,reservation,parent,child,reason));
+    assert(parent==43 && child==44); // failed no-fence attempt consumed 41/42
+    assert(!reservation.sendAuthorized && !reservation.driverStopAllowed);
+    assert(fixture.broker->places==0);
+    int actualCount=0,decoyCount=0;
+    assert(actual.Replay([&](const OmsJournalEvent&){++actualCount;})==3);
+    assert(decoy.Replay([&](const OmsJournalEvent&){++decoyCount;})==2);
+    assert(actualCount==3 && decoyCount==2);
+    assert(::unlink(path1.data())==0 && ::unlink(path2.data())==0);
+}
+
+void TestConcurrentResearchH1OwnerBoundReservationNeverDuplicates() {
+    Fixture f;
+    const auto epoch=f.adapter.GetConnectionEpoch();
+    std::string pattern="/tmp/h1-native-bound-parallel-XXXXXX";
+    std::vector<char> tmp(pattern.begin(),pattern.end());tmp.push_back('\0');
+    int fd=::mkstemp(tmp.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(tmp.data())==0);
+    OmsJournal originalJournal;assert(originalJournal.Init(tmp.data()));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(originalJournal,callbacks);
+    AgentExecutionContext context;
+    context.agentId="parallel-owner";context.sessionId="parallel-session";
+    context.toolCallId="parallel-h1-01";
+    context.executionDomain="IB-PAPER:EUR.USD";
+    std::string reason;
+    assert(coordinator.EnterRecoveryOnlyOwner(
+        context.agentId,context.sessionId,211,reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=context.agentId;frozen.sessionId=context.sessionId;
+    frozen.originalCommandKey=context.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=211;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    std::atomic<int> successes(0),refusals(0);
+    std::atomic<bool> go(false);
+    auto call=[&]() {
+        while (!go.load()) std::this_thread::yield();
+        hepta_bracket_h1::Reservation result;
+        long parent=-1,child=-1;
+        std::string why;
+        if(coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+            f.adapter,context,frozen,result,parent,child,why)) {
+            assert(parent==41 && child==42);
+            assert(result.replayComplete &&
+                   !result.sendAuthorized && !result.driverStopAllowed);
+            ++successes;
+        } else {
+            assert(parent==-1 && child==-1);
+            ++refusals;
+        }
+    };
+    std::thread first(call), second(call);
+    go.store(true);
+    first.join();second.join();
+    assert(successes==1 && refusals==1);
+    int count=0;
+    assert(originalJournal.Replay([&](const OmsJournalEvent&){++count;})==3);
+    assert(count==3 && f.broker->places==0);
+    assert(::unlink(tmp.data())==0);
+}
 void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
     Fixture brokerFixture;
     const std::uint64_t epoch=brokerFixture.adapter.GetConnectionEpoch();
@@ -1337,15 +1468,18 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
     frozen.stopPrice=1.11825;frozen.minTick=.00005;
     hepta_bracket_h1::Reservation pair;
     long parent=-1,stop=-1;
-    bool attempted=false;
-    assert(brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,journal,
-        [&](long a,long b) {
-            attempted=true;
-            frozen.parentOrderId=a;frozen.childOrderId=b;
-            return owner.ReserveResearchH1BracketForRecoveryOnlyOwner(
-                original,frozen,pair,reason);
-        },parent,stop,reason));
-    assert(attempted&&parent==41&&stop==42);
+    // No journal may be supplied to the Coordinator-owned handoff. Unlike
+    // the earlier raw adapter helper, only the Coordinator's actual OMS
+    // enters the protected native lease under the same adapter send mutex.
+    auto wrongClient=frozen;wrongClient.clientId=74;
+    assert(!owner.ReserveResearchNativeH1ThroughOwnedJournal(
+        brokerFixture.adapter,original,wrongClient,pair,parent,stop,reason) &&
+        reason=="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE" &&
+        parent==-1&&stop==-1);
+    assert(owner.ReserveResearchNativeH1ThroughOwnedJournal(
+        brokerFixture.adapter,original,frozen,pair,parent,stop,reason));
+    assert(parent==41&&stop==42);
+    frozen.parentOrderId=parent;frozen.childOrderId=stop;
     assert(pair.replayComplete&&!pair.sendAuthorized&&!pair.driverStopAllowed);
     assert(brokerFixture.broker->places==0);
     std::vector<OmsJournalEvent> events;
@@ -1363,12 +1497,9 @@ void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
        // duplicate, rather than a low broker-nextValidId refusal.
        brokerFixture.broker->validOrderId=43;
        long duplicateParent=-1,duplicateStop=-1;
-       assert(!brokerFixture.adapter.ReserveResearchH1NativeIdPair("DU123",epoch,journal,
-            [&](long a,long b){
-                auto wrong=frozen;wrong.parentOrderId=a;wrong.childOrderId=b;
-                return fresh.ReserveResearchH1BracketForRecoveryOnlyOwner(
-                    original,wrong,pair,reason);
-            },duplicateParent,duplicateStop,reason));
+       assert(!fresh.ReserveResearchNativeH1ThroughOwnedJournal(
+            brokerFixture.adapter,original,frozen,pair,
+            duplicateParent,duplicateStop,reason));
        assert(duplicateParent==-1&&duplicateStop==-1);
     }
     assert(brokerFixture.broker->places==0);
@@ -1378,6 +1509,8 @@ int main() {
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();
     TestResearchNativeIdLeaseBindsActualCoordinatorFence();
+    TestResearchCoordinatorOwnedJournalCannotBeReplacedWithDecoy();
+    TestConcurrentResearchH1OwnerBoundReservationNeverDuplicates();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
