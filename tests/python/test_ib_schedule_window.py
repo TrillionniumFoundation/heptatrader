@@ -1,10 +1,14 @@
 """Pure contract tests; no IB connection, historical data, or live state."""
 from datetime import datetime, timedelta, timezone
 import unittest
+import sys
+from pathlib import Path
 
-from research.historical_training.derive_ib_schedule_window import (
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "research"))
+from historical_training.derive_ib_schedule_window import (
     utc_epoch, validate_window)
-from research.historical_training.common import EvidenceError
+from historical_training.common import EvidenceError
 
 
 class DerivedIBScheduleWindowTests(unittest.TestCase):
