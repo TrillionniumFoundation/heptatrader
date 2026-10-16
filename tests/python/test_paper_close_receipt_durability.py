@@ -113,7 +113,12 @@ class DurableCloseReceipts(unittest.TestCase):
         self.assertEqual(len(self.single()),70)
 
     def test_durable_io_failure_cannot_block_confirmed_close(self):
-        from tests.python.test_paper_close_command_attribution import correlated_fill
+        def correlated_fill(cmd):
+            return {"order_id":42,"command_id":cmd,"side":"SELL",
+                    "venue_correlation_id":"hepta-v1-sha256:"+hashlib.sha256(cmd.encode()).hexdigest(),
+                    "broker_execution_id":"exec-"+cmd,
+                    "broker_execution_ambiguous":False,"economic_fill":True,
+                    "filled_quantity":25000,"average_fill_price":1.119,"terminal":True}
         cmd="original-close-io-error"
         state={"pending":{"kind":"CLOSE","command_id":cmd,"broker_order_id":42,
                           "send_state":"ACKNOWLEDGED","position_before_send":25000.0,
