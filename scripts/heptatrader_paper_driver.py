@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,fcntl,json,math,os,signal,stat,subprocess,tempfile,threading,time,uuid
+import argparse,fcntl,hashlib,json,math,os,signal,stat,subprocess,tempfile,threading,time,uuid
 from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
@@ -8,6 +8,7 @@ FX_TARGET_NOTIONAL_USD=100000.0
 FX_MAX_QUANTITY=100000.0
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
 NATIVE_ENDPOINT=None
+CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
 QUANTITY_TOLERANCE=1e-9
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
@@ -362,10 +363,71 @@ def record_correlated_close(state,pending,fill,position_after,*,partial=False):
                     prior.get("venue_correlation_id")!=venue_id or
                     prior.get("exit_trigger")!=receipt["exit_trigger"]):
                 raise DriverError("original close command attribution mismatch")
-            return
+            return prior
     history.append(receipt)
     # Limit historical state growth without altering original Execution ledger.
     if len(history)>64: del history[:-64]
+    return receipt
+
+def persist_close_receipt(folder, receipt):
+    """Owner-private create-only CLOSE intent evidence; not Broker authority.
+
+    The accepted original CLOSE remains reconciled even when this optional
+    diagnostic cannot be written. A crash after fsync and before the normal
+    Driver state write is handled by exact content comparison on replay.
+    """
+    cmd=receipt.get("original_command_id") if isinstance(receipt,dict) else None
+    if (receipt.get("schema")!="heptatrader.driver-close-command-attribution.v1"
+            or not isinstance(cmd,str) or not 1<=len(cmd)<=128
+            or receipt.get("instrument")!=INSTRUMENT):
+        raise DriverError("durable close receipt scope invalid")
+    folder=Path(folder)
+    private_dir(folder)
+    name=hashlib.sha256(cmd.encode("utf-8")).hexdigest()+".json"
+    payload=(json.dumps(receipt,sort_keys=True,separators=(",",":"),
+                        ensure_ascii=False,allow_nan=False)+"\n").encode("utf-8")
+    if not 0<len(payload)<=65536:
+        raise DriverError("durable close receipt bounds")
+    dirfd=os.open(folder,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        try:
+            fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,
+                       0o600,dir_fd=dirfd)
+        except FileExistsError:
+            fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=dirfd)
+            try:
+                st=os.fstat(fd)
+                if (not stat.S_ISREG(st.st_mode) or st.st_nlink!=1 or
+                        st.st_uid!=os.geteuid() or
+                        stat.S_IMODE(st.st_mode)!=0o600 or not 0<st.st_size<=65536):
+                    raise DriverError("unsafe existing close receipt")
+                old=b""
+                while len(old)<st.st_size:
+                    piece=os.read(fd,st.st_size-len(old))
+                    if not piece:raise DriverError("short existing close receipt")
+                    old+=piece
+            finally:
+                os.close(fd)
+            existing=strict_json(old.decode("utf-8"))
+            def stable(value):
+                return {k:v for k,v in value.items() if k!="recorded_at_ms"}
+            if stable(existing)!=stable(receipt):
+                raise DriverError("conflicting immutable close receipt")
+            return "EXACT_EXISTING"
+        try:
+            view=memoryview(payload)
+            while view:
+                n=os.write(fd,view)
+                if n<=0:raise DriverError("short durable close receipt write")
+                view=view[n:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(dirfd)
+        return "FSYNCED_CREATE_ONLY"
+    finally:
+        os.close(dirfd)
+
 
 def record_close_diagnostic(state,pending,fill,position_after,*,partial=False):
     """Never turn nonauthoritative attribution into a broker settlement gate.
@@ -376,7 +438,9 @@ def record_close_diagnostic(state,pending,fill,position_after,*,partial=False):
     confirmed close. Order, owner and risk validation exceptions are NOT caught.
     """
     try:
-        record_correlated_close(state,pending,fill,position_after,partial=partial)
+        receipt=record_correlated_close(state,pending,fill,position_after,partial=partial)
+        if CLOSE_RECEIPT_ROOT is not None:
+            persist_close_receipt(CLOSE_RECEIPT_ROOT,receipt)
     except Exception as exc:
         state['last_close_attribution_error']={
             'schema':'heptatrader.close-attribution-diagnostic-error.v1',
@@ -896,7 +960,7 @@ def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
     return 0
 
 def main():
-    global INSTRUMENT,QTY,NATIVE_ENDPOINT,QUANTITY_TOLERANCE
+    global INSTRUMENT,QTY,NATIVE_ENDPOINT,QUANTITY_TOLERANCE,CLOSE_RECEIPT_ROOT
     ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true")
     ap.add_argument("--reconcile-only",action="store_true")
     ap.add_argument("--recover-owner",action="store_true")
@@ -911,6 +975,7 @@ def main():
     QTY=1.0 if crypto else FX_MAX_QUANTITY;QUANTITY_TOLERANCE=1e-10 if crypto else 1e-9
     home=Path.home(); state_dir=home/".local/state/heptatrader"/("crypto-driver" if crypto else "paper-driver"); private_dir(state_dir)
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
+    CLOSE_RECEIPT_ROOT=state_dir/"close-command-receipts"
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     cli=str(home/".local/bin/heptatrader"); binary=str(home/".local/share/heptatrader/current/bin/hepta-paper-command")
     sessionctl=str(home/".local/share/heptatrader/current/bin/hepta-sessionctl")

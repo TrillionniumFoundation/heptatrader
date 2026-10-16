@@ -18,7 +18,7 @@ class AdmissionRegression(unittest.TestCase):
    (root/'evaluation').mkdir()
    rows=[{'sample_id':str(i),'horizon_sec':300,'outcome_receipt_digest':str(i)} for i in range(64)]
    fake=MagicMock();fake.wait.return_value=1
-   rewards={'rewards':[],'execution_rewards':[],'reason':'TEST_ONLY'}
+   rewards={'rewards':[],'execution_rewards':[],'reason':'TEST_ONLY','at_ms':123456789}
    with patch.object(resident,'config_check'),patch.object(resident,'bootstrap_still_off'),        patch.object(resident,'inspect_storage',return_value={'admission_ready':True}),        patch.object(resident,'rewards_current',return_value=rewards),        patch.object(resident,'collect',return_value=({},rows,{'window':{}},None)),        patch.object(resident,'read_json',return_value={'candidate_id':'b'*64,'generation':2}),        patch.object(resident,'sha_file',return_value='c'*64),        patch.object(resident.subprocess,'Popen',return_value=fake),        patch.object(s,'candidate_done',return_value=False),patch.object(s,'write_status',side_effect=lambda **k:k):
     s.step()
    job=json.loads(s.db.execute('SELECT payload FROM jobs').fetchone()[0])
