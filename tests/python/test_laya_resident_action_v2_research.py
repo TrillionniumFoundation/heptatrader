@@ -123,13 +123,62 @@ class ActionTrainingV2Tests(unittest.TestCase):
         value.backward()
         self.assertTrue(torch.isfinite(x.grad).all())
         self.assertGreater(float(x.grad.abs().sum()),0)
+    def test_future_v2_inference_uses_exact_frozen_train_temperature(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        a=logits(16,margin=5000.)
+        x=v2_action_inference(a,p)
+        self.assertEqual(x["training_only_temperature"],5000.)
+        self.assertAlmostEqual(x["action_correct_probs"][0],1/(1+math.exp(-1)),places=6)
+        self.assertTrue(all(sig=="ESCALATE_RESEARCH_ONLY" for sig in x["recommendations"]))
+        self.assertFalse(x["model_or_trade_permission"])
+    def test_real_v1_single_class_must_refuse_any_v2_inference_probabilities(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.unbalanced,mag=2672.)
+        x=v2_action_inference(logits(32,margin=2672.),p)
+        self.assertIsNone(x["action_correct_probs"])
+        self.assertEqual(x["recommendations"],["ESCALATE_ONLY_NO_BALANCED_TRAINING"]*32)
+        self.assertEqual(x["status"],"NO_TRAINING_SUPPORT_ALL_ESCALATE")
+    def test_out_of_train_distribution_logits_abstain(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        x=v2_action_inference(torch.tensor([[100000.,0.],[3000.,-3000.]]),p)
+        self.assertEqual(x["ood_abstentions"],1)
+        self.assertIsNone(x["action_correct_probs"][0])
+        self.assertEqual(x["recommendations"][0],"ESCALATE_OOD_ACTION_LOGIT_SHIFT")
+        self.assertIsNotNone(x["action_correct_probs"][1])
+    def test_future_training_temperature_cannot_be_swapped_during_inference(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        forged={**p,"action_temperature_training_only":1}
+        with self.assertRaisesRegex(ContractError,"PROFILE_CHANGED"):
+            v2_action_inference(logits(16),forged)
+    def test_extreme_absolute_logit_offset_does_not_forge_confidence(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        x=v2_action_inference(torch.tensor([[1e19,1e19]],dtype=torch.float32),p)
+        self.assertAlmostEqual(x["action_correct_probs"][0],.5,places=6)
+        self.assertEqual(x["recommendations"],["ESCALATE_RESEARCH_ONLY"])
+    def test_research_act_is_not_trade_or_model_permission(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        x=v2_action_inference(torch.tensor([[6000.,-6000.]]),p)
+        self.assertEqual(x["recommendations"][0],"RESEARCH_ONLY_ACT_CANDIDATE")
+        self.assertFalse(x["model_or_trade_permission"])
+    def test_future_logits_must_be_finite_and_bounded_batch(self):
+        from laya_cell.resident_action_v2_research import v2_action_inference
+        p=self.policy(self.balanced,mag=5000.)
+        for raw in (torch.tensor([[float('inf'),0.]]),
+                    torch.zeros(0,2),torch.zeros(2,3)):
+            with self.assertRaisesRegex(ContractError,"INFERENCE_BAD_LOGITS"):
+                v2_action_inference(raw,p)
     def test_action_numeric_loss_never_dominates_primary_loss(self):
         p=self.policy(self.balanced)
         x=logits(16).requires_grad_()
         target=torch.tensor([True,False]*8)
         primary=torch.tensor(.1)
         value=balanced_action_loss(x,target,primary,p)
-        self.assertLessEqual(float(value),.1*MAX_ACTION_LOSS_FRACTION+1e-6)
+        self.assertLessEqual(float(value.detach()),.1*MAX_ACTION_LOSS_FRACTION+1e-6)
     def test_frozen_profile_tampering_rejected(self):
         p=self.policy(self.balanced)
         q={**p,"action_temperature_training_only":1.0}
