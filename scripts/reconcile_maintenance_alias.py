@@ -37,12 +37,14 @@ def _regular(path: Path, uid: int, mode: int, expected: bytes) -> str | None:
     try:
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or
-                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode or
+                info.st_size != len(expected)):
             return "FILE_IDENTITY_UNSAFE"
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             now = os.fstat(fd)
-            if (now.st_dev, now.st_ino) != (info.st_dev, info.st_ino):
+            if ((now.st_dev, now.st_ino) != (info.st_dev, info.st_ino) or
+                    now.st_size != len(expected)):
                 return "FILE_CHANGED_DURING_READ"
             chunks = []
             while True:
