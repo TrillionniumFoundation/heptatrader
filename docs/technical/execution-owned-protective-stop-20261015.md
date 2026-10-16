@@ -1194,3 +1194,46 @@ parent, confirms Permanent IDs or will execute a stop after Driver
 death. Zero real `placeOrder`, no account network connection and no
 resident service changes. It is compiled only in the existing
 IB-API-enabled core CTest lane, and adds no production sender.
+
+## 2026-10-16 — Native IB H1 stop witness clock bounds (diagnostic only)
+
+A correctly matched IB native `openOrder` permanent ID, original H1
+correlation and full-unfilled `orderStatus` do **not** prove that the
+source event is current. The previous OCA Adapter read could return
+correct original identities from an old callback generation without
+exposing the elapsed time of its account-wide and risk barriers.
+
+The real Adapter now retains **host-monotonic** completion timestamps
+for the full `ReqAllOpenOrders` / `OpenOrderEnd` cycle and coherent
+Broker account + positions + FX CASH risk refresh. These records are
+cleared on refresh restart or invalidation. During an exact H1 stop
+observation it also verifies the ingress timestamps of the actual
+SDK `openOrder` and following fully unfilled `orderStatus`, requiring
+all four times to be bounded to <=3 seconds on the same host monotonic
+clock, non-future, and status not earlier than native openOrder.
+
+The new `brokerObservationClockBounded` result and four age counters
+are **diagnostic**. No clock evidence implies ongoing venue-held stop,
+execution price trigger, physical OCA cancellation semantics, future
+Broker connectivity or Driver-death risk authority. Existing
+`nativeStopBrokerWorkingProven`, `accountSnapshotFreshnessProven`,
+`maySendOrdinaryExit` and `mayStopDriver` remain false even when
+clock bounds and every original ID match.
+
+Native SDK-ON Pocket4 Release `hepta_ib_executiond` built, and all
+9/9 targeted CTests passed including original OMS/Coordinator/PAPER
+chain and full runtime recovery (43.49 seconds). Updated real Adapter
+callback test proves: a matching stop with fresh four-leg Broker
+observations is bounded; a forged stale status is not; an old native
+openOrder paired with a fresh fully unfilled status **still fails**
+the clock bound even while original Permanent ID and H1 correlation
+match; refreshing from a new complete account-wide source may restore
+the diagnostic but NEVER permission to trade. CMake test build keeps
+`-UNDEBUG` so actual negative assertions run. No native IBKR order
+or cancel requests were sent and no resident services were restarted.
+
+**Still P0:** Only a fully authorized, broker-attested positive PAPER
+working protective stop and actual OCA normal-close/cancel/partial,
+unknown-send and Driver-death continuity proof can qualify protection.
+One accessible PAPER account remains actively shared with the original
+autonomous FX strategy: separate IB client IDs are not safe isolation.

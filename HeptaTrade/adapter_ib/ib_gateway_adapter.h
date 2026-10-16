@@ -196,6 +196,13 @@ struct IBH1OcaAdapterScopeObservation {
     // Real orderStatus full-remaining corroboration; diagnostic only.
     bool sdkNativeStopUnfilledRemainingMatches = false;
     double sdkNativeStopRemainingQuantity = 0.0;
+    // Diagnostic only: actual monotonic callback/barrier ages (never grant
+    // order-send, live-stop or maintenance authority).
+    bool brokerObservationClockBounded = false;
+    std::uint64_t activeOrderBarrierAgeMs = 0;
+    std::uint64_t coherentRiskBarrierAgeMs = 0;
+    std::uint64_t stopNativeEchoAgeMs = 0;
+    std::uint64_t stopRemainingStatusAgeMs = 0;
     bool stopPriceTriggerProven = false;
     bool accountSnapshotFreshnessProven = false;
     bool maySendOrdinaryExit = false;
@@ -554,6 +561,8 @@ private:
     std::map<long, IBEvent> m_h1NativeStopOpenOrderEchoes;
     std::map<long, IBEvent> m_h1NativeStopOrderStatusEchoes;
     bool m_h1NativeStopRefreshAccountWide = false;
+    std::uint64_t m_h1AccountWideOrderEndMonotonicNs = 0;
+    std::uint64_t m_h1CoherentRiskEndMonotonicNs = 0;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
     std::map<long, int> m_pendingActiveOrderClientIds;

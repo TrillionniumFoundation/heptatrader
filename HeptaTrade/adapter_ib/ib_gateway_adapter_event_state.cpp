@@ -75,7 +75,8 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_pendingActiveOrderClientIds.clear();
     m_h1NativeStopOpenOrderEchoes.clear();
     m_h1NativeStopOrderStatusEchoes.clear();
-    m_h1NativeStopRefreshAccountWide=false;
+    m_h1NativeStopRefreshAccountWide = false;
+    m_h1AccountWideOrderEndMonotonicNs = 0;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -251,6 +252,7 @@ HeptaIBGatewayAdapter::GetAuthoritativeTerminalCorrelationSnapshot() const {
 }
 
 void HeptaIBGatewayAdapter::InvalidateRiskSnapshot(const std::string& reason) {
+    m_h1CoherentRiskEndMonotonicNs = 0;
     m_coherentRiskRefreshPending = false;
     m_coherentRiskRefreshForRecoveryAudit = false;
     m_accountRefreshPending = false;
@@ -1308,6 +1310,10 @@ void HeptaIBGatewayAdapter::CompleteCoherentRiskRefreshIfReady() {
         m_riskSnapshot.fxCashGeneration != 0;
     m_riskSnapshot.complete = complete;
     m_riskSnapshot.coherentRefreshComplete = complete;
+    // A previously complete account/position view cannot be fresh proof
+    // of a later order list. Liveness is a separate diagnostic, never send.
+    m_h1CoherentRiskEndMonotonicNs =
+        complete ? CallbackMonotonicNs() : 0;
     if (complete) {
         m_riskSnapshot.riskAbsorbedExposureGeneration =
             m_coherentRiskRefreshExposureGeneration;
@@ -1509,6 +1515,10 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             m_correlationSnapshot.activeOrderIds.clear();
             m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
         }
+        m_h1AccountWideOrderEndMonotonicNs =
+            m_h1NativeStopRefreshAccountWide &&
+            m_correlationSnapshot.complete ?
+                CallbackMonotonicNs() : 0;
         m_pendingCorrelationOrderIds.clear();
         m_pendingActiveOrderIds.clear();
         m_pendingActiveOrderClientIds.clear();

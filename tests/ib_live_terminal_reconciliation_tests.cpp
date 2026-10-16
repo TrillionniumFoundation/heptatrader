@@ -13,6 +13,7 @@
 #include <limits>
 #include <atomic>
 #include <thread>
+#include <chrono>
 #include <memory>
 #include <new>
 #include <cstdlib>
@@ -1709,7 +1710,9 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     // Refresh the existing REAL Adapter with a synthetic full SDK callback,
     // not merely a manually populated active-order snapshot.
     auto originalSdk=e;
-    originalSdk.queueIngressMonotonicNs=555000;
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     auto& sdk=originalSdk.nativeOrder;
     sdk.present=true;
     sdk.contractId=12087792;sdk.orderId=original.childOrderId;
@@ -1755,12 +1758,48 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
         original,h1,scope,reason));
     assert(scope.sdkNativeStopUnfilledRemainingMatches &&
            scope.sdkNativeStopRemainingQuantity==original.quantity &&
+           scope.brokerObservationClockBounded &&
+           scope.activeOrderBarrierAgeMs<=3000 &&
+           scope.coherentRiskBarrierAgeMs<=3000 &&
+           scope.stopNativeEchoAgeMs<=3000 &&
+           scope.stopRemainingStatusAgeMs<=3000 &&
+           !scope.accountSnapshotFreshnessProven &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit && !scope.mayStopDriver);
-    // Contradictory positive permanent-ID callbacks are tested in the
-    // separate dedicated Adapter fixture. They poison the same-epoch
-    // callback-conflict counter: subsequent positive refreshes here would
-    // otherwise incorrectly assume same-epoch requalification is possible.
+    // A historical SDK STOP echo plus a new unfilled status can match all
+    // order IDs and quantities, yet cannot establish fresh Broker protection.
+    auto staleSdk=originalSdk;
+    staleSdk.queueIngressMonotonicNs-=5000000000ULL;
+    nativeRefresh(staleSdk);
+    auto newerStatus=status;
+    newerStatus.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(newerStatus);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopEchoMatches &&
+           scope.sdkNativeStopUnfilledRemainingMatches &&
+           !scope.brokerObservationClockBounded &&
+           !scope.accountSnapshotFreshnessProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // A full original account-wide refresh can re-qualify only the
+    // diagnostic's four-source clock bound; never grant order authority.
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    nativeRefresh(originalSdk);
+    status.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.brokerObservationClockBounded &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // A contradictory positive permanent-ID event is covered in the
+    // dedicated isolated fixture. Never requalify that conflict in-place.
     // A new account-wide refresh must also clear the prior complete-status
     // witness, forcing new Broker callback evidence each epoch/generation.
 
