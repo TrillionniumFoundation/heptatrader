@@ -95,6 +95,13 @@ class AliasTest(unittest.TestCase):
         self.helper.chmod(0o644)
         self.assertEqual(self.inspect()["state"], "CANDIDATE_RELEASE_UNSAFE")
 
+    def test_changed_candidate_size_fails_before_read(self):
+        self.use(self.new)
+        self.new.chmod(0o644)
+        self.new.write_bytes(WRAP + b"unexpected-extra-content")
+        self.new.chmod(0o555)
+        self.assertEqual(self.inspect()["state"], "CANDIDATE_RELEASE_UNSAFE")
+
     def test_foreign_alias_denied(self):
         self.use(self.helper)
         self.assertEqual(self.inspect()["state"], "UNEXPECTED_CLI_TARGET")
