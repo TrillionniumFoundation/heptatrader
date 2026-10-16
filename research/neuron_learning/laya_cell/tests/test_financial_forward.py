@@ -1,9 +1,9 @@
 """Synthetic falsification fixtures, never real prospective performance claims."""
-import copy,hashlib,json,math,tempfile,time,unittest
+import copy,hashlib,json,math,os,tempfile,time,unittest
 from pathlib import Path
 from laya_cell.integrity import ContractError,digest,canonical
 from laya_cell.financial_forward_protocol import RULE,validate_plan,score_case,assessment,feature_text,huber
-from laya_cell.financial_forward_evaluate import read_prediction
+from laya_cell.financial_forward_evaluate import read_prediction,execution_index
 
 T=1791380000000
 
@@ -27,6 +27,28 @@ def fixture(p=None):
   'realized_net_usd':'-11.50','actual_commissions_usd':'4','realized_gross_usd':'-7.50'}
  reward['reward_id']=digest(reward)
  return p,b,pred,reward,t+1100,t+60000
+
+class LedgerPrefixSizeTests(unittest.TestCase):
+ def test_execution_ledger_over_32_mib_keeps_private_scope(self):
+  from hepta_decision_attribution import MAX_TOTAL
+  self.assertGreater(MAX_TOTAL, 32*1024**2)
+  with tempfile.TemporaryDirectory() as td:
+   path=Path(td)/'oms-journal.jsonl'
+   row=(json.dumps({'event':'broker_execution','broker_execution_id':'fixture-e1',
+                    'ts_ms':123456,'execution_domain':'PAPER','instrument':'EUR.USD',
+                    'req_id':'fixture-c1'},sort_keys=True)+'\n').encode()
+   with path.open('wb') as f:
+    f.write(row)
+    f.truncate(257*1024**2)
+   os.chmod(path,0o600)
+   prefix={'path':str(path),'bytes':len(row),'sha256':hashlib.sha256(row).hexdigest()}
+   self.assertEqual(execution_index(prefix)[1]['fixture-c1'],123456)
+   os.chmod(path,0o644)
+   with self.assertRaisesRegex(ValueError,'ATTRIBUTION_FILE_SCOPE'):execution_index(prefix)
+ def test_oversized_prefix_refused_without_read(self):
+  from hepta_decision_attribution import MAX_TOTAL
+  with self.assertRaisesRegex(ContractError,'FINANCIAL_LEDGER_PREFIX_SIZE'):
+   execution_index({'path':'/nonexistent','bytes':MAX_TOTAL+1,'sha256':'0'*64})
 
 class PlanTests(unittest.TestCase):
  def test_plan_is_prospective(self):self.assertEqual(validate_plan(plan())['trial'],1)

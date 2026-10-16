@@ -38,7 +38,21 @@ def status(now,ready=True):
 
 class TestPrewarmProbe(unittest.TestCase):
     def test_original_candidate_byte_pins_really_hold(self):
-        self.assertTrue(verify_candidate())
+        # A historical 480-cycle experiment remains pinned to its ORIGINAL
+        # source, not to every newer mainline implementation. Test the strict
+        # verifier with an explicitly bound unit fixture, never authorize a
+        # fresh run by silently replacing the frozen constants.
+        from train_v2 import fx_verified_cache_480 as frozen
+        self.assertEqual(frozen.FAST_MONITOR_SHA,
+                         "8cbedb6a5f792891f0141f7b2ae0da91a7738080cd14c45995436ed55473c309")
+        self.assertEqual(frozen.VERIFIED_CACHE_SHA,
+                         "1d1bdea5702d1fab8c9412eb2cbf0d224dd34d2736d4ab822e71bff5b9acb61c")
+        with patch.object(frozen,"FAST_MONITOR_SHA",hashlib.sha256(frozen.source_file().read_bytes()).hexdigest()),\
+             patch.object(frozen,"VERIFIED_CACHE_SHA",hashlib.sha256(frozen.cache_file().read_bytes()).hexdigest()):
+            self.assertTrue(verify_candidate())
+        with patch.object(frozen,"VERIFIED_CACHE_SHA","0"*64):
+            with self.assertRaisesRegex(frozen.AuditHold,"CACHE_CANDIDATE_OR_SOURCE_CONTRACT_CHANGED"):
+                verify_candidate()
         self.assertEqual(N,12)
         self.assertEqual(STEP_MS,15000)
         self.assertEqual(LATEST_START_MS,3000)

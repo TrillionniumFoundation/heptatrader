@@ -75,6 +75,15 @@ class VerifiedSealedReadinessCache:
                 _, stored, _, _ = self._cached.pop(name)
                 self._cached_records -= len(stored)
 
+        # The canonical inventory is in ascending segment order. If that
+        # inventory is larger than either cache bound, caching an older miss
+        # ahead of our retained suffix would evict the NEXT still-cached
+        # segment; by the end of the scan this repeats for every segment and
+        # turns the cache into 0 hits. Preserve the verified recent suffix:
+        # earlier uncached segments are still strictly read on EVERY pass.
+        sealed_indexes = {str(path): i for i,path in enumerate(feed_paths[:len(sealed)])}
+        cache_floor = min((sealed_indexes[name] for name in self._cached), default=0)
+
         merged = {}
         prefixes = list(pages)
         wall_ms = int(time.time() * 1000)
@@ -102,12 +111,13 @@ class VerifiedSealedReadinessCache:
                     raise ContractError("SOURCE_ARCHIVE_PREFIX_CHANGED")
                 if pin is not None:
                     self.sealed_misses += 1
-                    old = self._cached.pop(key, None)
-                    if old is not None:
-                        self._cached_records -= len(old[1])
-                    self._cached[key] = (header, records, prefix, wall_ms)
-                    self._cached_records += len(records)
-                    self._trim()
+                    if index >= cache_floor:
+                        old = self._cached.pop(key, None)
+                        if old is not None:
+                            self._cached_records -= len(old[1])
+                        self._cached[key] = (header, records, prefix, wall_ms)
+                        self._cached_records += len(records)
+                        self._trim()
                 else:
                     self.unsealed_reparsed += 1
             # Keep the same per-segment checks for both cache-hit and miss.

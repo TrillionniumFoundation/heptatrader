@@ -1,0 +1,160 @@
+# Laya ACT/ESCALATE calibration — Pocket4 research only
+
+## Problem and measured cause
+
+ACT in this module means confidence in the frozen predecessor's seven-bin
+interval forecast, **not** BUY/SELL and not permission to submit orders.
+No trading, canonical owner, current evaluation rule, or frozen model
+is changed by this work.
+
+Read-only inspection found 298 original OBSERVED outcomes in 37 closed
+plans, dated Oct 7–9, 2026 UTC, and excluded one pending trial.
+The parent was correct only 14 times (4.7%). The existing action head
+assigned ACT probability 1.0 to all 298 forecasts. Its average Brier
+loss was 1.90604 versus 0.09396 for always ESCALATE.
+
+The actual Pocket4 gfx1150 read-only GPU diagnostic on 32 real mature
+training rows measured ACT logits +1,148.89 to +1,228.83 and ESCALATE
+logits -1,470.18 to -1,377.92, producing a gap of +2,526.81 to
++2,698.62. All 32 targets were ESCALATE. Weighted action gradient
+norm was 0.31810 versus price-gradient norm 0.14064; combined norm
+was only 0.34781, below the existing 1.0 cap. The scorer and action
+adapters had distinct trainable parameters in this sample, so the
+numeric auxiliary loss alone does not prove price-head damage.
+
+GPU evidence:
+~/.local/state/heptatrader/operator-evidence/laya-action-calibration-20261016/action-logits-gradient.json
+
+## Fixed chronological calibration design
+
+The read-only source module is at
+research/neuron_learning/laya_cell/action_quality_research.py;
+the reproducible CLI is scripts/research_laya_action_quality.py.
+They verify plan/qualification identity, prediction/outcome hashes,
+causal timestamps, target alignment, probability normalization,
+duplicate anchors, and exclusion of pending formal trials.
+
+The 298 old observations were separated by complete UTC date:
+
+| Training | Validation | Independent test |
+| --- | --- | --- |
+| Oct 7: 62 rows | Oct 8: 116 rows | Oct 9: 120 rows |
+
+Train-only smoothed confidence priors with 1, 2 or 4 bins were compared
+with always ESCALATE. Validation Brier, never the third-day test,
+selected four bins, with fitted parent-correct probabilities
+0.09677, 0.06250, 0.03226 and 0.03125.
+
+| Third-day 120-row test | Brier, lower is better |
+| --- | ---: |
+| Original saturated action head | 1.916667 |
+| Always ESCALATE | 0.083333 |
+| One-bin train-only prior | 0.080046 |
+| Two-bin train-only prior | 0.077297 |
+| Four-bin model chosen on validation | 0.077418 |
+
+The two-bin result is reported but must not be substituted after
+observing its test score. **All** calibrated models suggested ACT
+zero times. Thus the observed improvement is probability calibration,
+NOT proof of useful action discrimination or economic improvement.
+
+The profile's proxy costs (wrong ACT 3, ESCALATE 0.5) imply that
+parent correctness must exceed 5/6 before suggesting ACT.
+No fitted bin qualifies. This is not execution PnL.
+
+Historical report ID:
+9754f43971ffbaea07b510b1513c076034b39544866005eb180ff160afe5f56c
+Selected research model ID:
+5c1579cc6380b7c1ab34e190ccc7ce01b24586cbb76043aa908ec09b833e9f54
+
+## Deployment and next evidence
+
+This module has no optimizer, no model promotion, no order/driver APIs,
+and no registration into the real Laya evaluation queue. It preserves
+the active trial38 cutoff, all previously missed outcomes, and
+the original 88/90 future-coverage requirement. No original production
+action logits or predictions have been replaced by these estimates.
+
+A future version must make an immutable pre-event calibration seal,
+prove time-valid real original-source predictions and delayed outcome
+observations, retain every censored window, and compare with the
+always-ESCALATE baseline prospectively. The three historical dates
+alone cannot establish statistical or financial efficacy.
+
+A proposed prospective runner was not executed or authorized; its
+unexecuted source is archived separately in operator evidence rather
+than deployed into the trading environment. All HeptaTrader
+training and execution remain on Pocket4.
+
+## Upstream issue: seven-bin price distribution and quality
+
+A second read-only Pocket4 investigation measured primary **seven-bin**
+price probabilities, not just ACT/ESCALATE. The original
+basis-point edges remain (-10, -3, -1, +1, +3, +10).
+No label mapping or frozen outcome is modified.
+
+On 298 closed observations from Oct 7–9 UTC, no actual future label
+fell in class 0 (returns below -10 basis points). Yet the frozen
+parent predicted class 0 as top-1 **183 times**, and the candidate's
+top-1 prediction was identical to the parent on **all 298 slots**.
+The parent was correct only 14 times. This demonstrates a severe
+out-of-sample distribution mismatch, but does not alone prove
+an incorrect numeric label mapping: volatility and the pretrained
+base's data population could differ.
+
+The SHA-validated evidence reader now returns original frozen
+parent/candidate seven-bin vectors and target class as well as the
+existing ACT evidence. Re-running the original action-quality CLI
+after the extension generated byte-identical original reports
+(SHA256 711fde019802829e858b97e8fb78171151612706537ed2f326ffe2fba491e324).
+
+Reproducible code is in
+research/neuron_learning/laya_cell/price_quality_research.py
+and scripts/research_laya_price_quality.py.
+It uses the same original closed-population and the same frozen
+UTC-day separation: Oct 7 (62 training), Oct 8 (116 validation),
+Oct 9 (120 independent test).
+
+Dirichlet smoothing of the seven-class **training-only** frequencies
+was chosen by validation Brier among a fixed grid. The selected
+smoothing was 0.5. No test label participated in selection.
+
+| Third-day 120-row test | Brier | NLL | Top-1 |
+| --- | ---: | ---: | ---: |
+| Frozen parent | 0.990881 | 2.361973 | 5/120 |
+| Trained candidate | 0.990804 | 2.361728 | 5/120 |
+| Uniform seven-bin probabilities | 0.857143 | 1.945910 | 0/120* |
+| Training-frequency prior | **0.754412** | **1.481955** | **28/120** |
+| One-hot middle class (diagnostic only) | 1.033333 | 14.276028 | 58/120 |
+
+* The uniform model has equal probability for all classes; a
+fixed lowest-index Top-1 tie break produces 0/120 here. Its
+Brier/NLL remain meaningful, but tie-broken accuracy is not a
+useful decision rule. Middle one-hot is very overconfident when
+wrong, explaining its poor NLL despite higher hard-label accuracy.
+
+A second predeclared grid mixed the frozen neural probabilities
+with the training-only prior at 0%, 1%, 5%, 10%, 20%, 50%, 100%.
+Selection used validation Brier only. For **both** parent and
+candidate, validation chose **0% neural contribution**; even 1%
+worsened validation Brier. This does not imply all future models
+lack information, only that the present frozen models failed this
+historical test.
+
+Next substantive model work should start with auditing base
+training class distribution, bin ordering, horizon, label/source
+time units, and robustness across volatility regimes. A new
+training architecture should be evaluated prospectively against
+a separately frozen training-only frequency baseline with full
+Brier/NLL, original outcome timestamps, and every missed slot
+retained. Micro-loss improvements or more candidate counts are
+not proof of an economic or predictive edge.
+
+Price research report ID:
+936fe09de0f84de4aab8c7b18ea51f2337a5f08e884a56f3ab70a83bf5d2e6cb
+Pocket4 evidence:
+~/.local/state/heptatrader/operator-evidence/laya-action-calibration-20261016/price-seven-bin-quality-report-with-blend.json
+
+This module is read-only research with no trading authority,
+model promotion, candidate retraining, original trial38 modification,
+or rollout to another machine.

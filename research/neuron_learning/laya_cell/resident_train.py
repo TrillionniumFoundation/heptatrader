@@ -14,6 +14,7 @@ from .resident_model import ResidentDecisionCell,PROFILE,answer_targets,action_l
 from .dataset import rows_for_training,verify_source_prefixes,encode_rows
 from .native import NativePorts
 from .train import supervised_loss,verify_old_learner_inactive,verify_baseline
+from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,row_id,batches,receipt,checked_ids
 
 OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
  'auxiliary_teacher_weight':.1,'action_loss_weight':.01,
@@ -56,8 +57,10 @@ def run_job(c,*,old_learner_verified=False):
  if sha_file(dataset_path)!=c['dataset_sha256']:raise ContractError('DATASET_CHANGED')
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
- allowed=set(c['training_row_ids']);rows=[r for r in rows if digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']]) in allowed]
- if not 16<=len(rows)<=64 or len(rows)!=len(allowed):raise ContractError('TRAINING_ROW_SET_CHANGED')
+ if c.get('training_row_accounting_schema')!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
+ allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
+ if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')
+ training_batches=batches(rows)
  device=require_pocket4_gpu();torch.cuda.reset_peak_memory_stats()
  raw,tok,base_id=load_verified_laya(base,read_json(base/'base-manifest.json'))
  if base_id!=parent['base_id']:raise ContractError('PARENT_BASE_MISMATCH')
@@ -76,8 +79,8 @@ def run_job(c,*,old_learner_verified=False):
  optimizer=torch.optim.AdamW([p for p in cell.parameters() if p.requires_grad],lr=.0001,weight_decay=0.)
  steps=[];cell.train(True);seen_action=set();applied_action=0
  # Disjoint two-row batches, no inflated unique-sample count from overlapping slices.
- for offset in range(0,min(len(rows),32),2):
-  selected=rows[offset:offset+2];batch={k:v.to(device) for k,v in encode_rows(tok,selected).items()}
+ for selected in training_batches:
+  batch={k:v.to(device) for k,v in encode_rows(tok,selected).items()}
   truth=torch.tensor([r['target_class'] for r in selected],device=device)
   tm=torch.tensor([r['teacher_probs'] is not None for r in selected],device=device)
   teacher=torch.tensor([r['teacher_probs'] or [0.]*7 for r in selected],device=device)
@@ -96,7 +99,8 @@ def run_job(c,*,old_learner_verified=False):
   if not applied:cell.restore_trainable(saved);optimizer.load_state_dict(opt)
   elif am.any():applied_action+=1
   seen_action.update(digest([r['sample_id'],r['horizon_sec']]) for r,v in zip(selected,action_values) if v is not None)
-  step={'applied':applied,'loss':float(loss.detach()),'price_loss':float(price_loss.detach()),
+  step={'applied':applied,'training_row_ids':[row_id(r) for r in selected],
+   'loss':float(loss.detach()),'price_loss':float(price_loss.detach()),
    'action_loss':float(act_loss.detach()),'action_labels':int(am.sum()),'gradient_digest':gradient,'norm':norm}
   steps.append(step);print(json.dumps({'step':len(steps),**{k:step[k] for k in ('applied','price_loss','action_loss','action_labels')}}),flush=True)
  cell.eval();cell.assert_frozen();brier=[];after_scores=[]
@@ -127,6 +131,7 @@ def run_job(c,*,old_learner_verified=False):
   'torch_version':torch.__version__,'rocm_version':torch.version.hip,'wall_seconds':time.monotonic()-started,
   'max_gpu_allocated_bytes':torch.cuda.max_memory_allocated(),'native_binary_sha256':c['native_binary_sha256'],
   'utility':utility,'plasticity':proposal,'measurement':measurement,'steps':steps,'exclusions':exclusions,
+  'row_accounting':receipt(c['training_row_ids'],steps,[row_id(r) for r in rows]),
   'status':'REQUIRES_INDEPENDENT_FUTURE_EVALUATION','pnl_reward_used':False,
   'pnl_note':'REMOTE_BEHAVIOR_REWARDS_CANNOT_BE_LAYA_POLICY_GRADIENT',
   'automatic_cutover':False,'broker_orders_sent':0,'canonical_owner_activation_claimed':False}

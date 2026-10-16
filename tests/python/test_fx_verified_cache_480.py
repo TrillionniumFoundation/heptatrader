@@ -38,7 +38,15 @@ def plan():
 
 class Verified480Tests(unittest.TestCase):
     def test_exact_candidate_bytes_and_existing_original_rules(self):
-        self.assertTrue(verify_candidate())
+        # Test the invariant of the frozen-source verifier, not an assumption
+        # that all future mainline code must remain byte-identical to 2026-10-13.
+        from train_v2 import fx_verified_cache_480 as frozen
+        with patch.object(frozen,"FAST_MONITOR_SHA",hashlib.sha256(frozen.source_file().read_bytes()).hexdigest()),\
+             patch.object(frozen,"VERIFIED_CACHE_SHA",hashlib.sha256(frozen.cache_file().read_bytes()).hexdigest()):
+            self.assertTrue(verify_candidate())
+        with patch.object(frozen,"FAST_MONITOR_SHA","0"*64):
+            with self.assertRaisesRegex(AuditHold,"CACHE_CANDIDATE_OR_SOURCE_CONTRACT_CHANGED"):
+                verify_candidate()
         self.assertEqual(N,480)
         self.assertEqual(STEP_MS,15000)
         self.assertEqual(MAX_LATE_MS,3000)

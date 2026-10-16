@@ -319,7 +319,9 @@
         "scripts/hepta_official_source_capture.py",
         "scripts/hepta_strategy_contracts.py",
         "scripts/validate_hepta_strategy_decision_receipt.py",
-        "scripts/hepta_shadow_finalize.py"
+        "scripts/hepta_shadow_finalize.py",
+        "scripts/research_laya_action_quality.py",
+        "scripts/research_laya_price_quality.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -420,6 +422,7 @@
         "scripts/heptatrader_attributed_driver.py",
         "scripts/install_decision_attribution.py",
         "scripts/install_risk_stop_fence.py",
+        "scripts/hepta_maintenance_exposure_preflight.py",
         "scripts/hepta_nav_assurance.py"
       ],
       "tests": [

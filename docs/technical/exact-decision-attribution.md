@@ -74,6 +74,17 @@ input attribution required before such independently specified learning work.
 
 ## Deployment and verification
 
+For an already installed PAPER attribution producer,
+`install_decision_attribution.py --instrument EUR.USD --inspect-only`
+(or `BTC.USD`) checks the exact active unit command, private manifest,
+period and immutable runtime hashes **without** contacting a broker or
+restarting a service. Reinstalling **byte-identical** code on an active
+attributed lane returns `ALREADY_CURRENT_NOOP` even when nonflat or under
+an operator opening hold. A differing runtime refuses in place and requires
+separate owner-safe continuity qualification; the first actual installation
+continues to require the original flat/clear conditions. Neither inspection
+nor an idempotent no-op authorizes new risk or model promotion.
+
 `install_decision_attribution.py` requires a clean committed source, PAPER mode
 on port 4002, no operator reset hold, a flat/no-pending/unfenced target lane and an
 authoritative read-only snapshot. It copies the currently executed base and BTC
