@@ -9,6 +9,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
+import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -23,17 +26,47 @@ def decimal(value):
     return v
 
 
-def load(path: Path):
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("UNSAFE_OR_MISSING_INPUT:" + str(path))
+MAX_SOURCE_BYTES = 128 * 1024 * 1024
+
+
+def read_stable(path: Path) -> bytes:
+    """Read once from a regular file; detect concurrent append/rewrite and symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("SOURCE_OPEN_FAILED:" + str(path)) from error
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_SOURCE_BYTES:
+            raise ValueError("UNSAFE_OR_OVERSIZED_SOURCE:" + str(path))
+        raw = source.read(MAX_SOURCE_BYTES + 1)
+        after = os.fstat(source.fileno())
+        if (len(raw) > MAX_SOURCE_BYTES or
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise ValueError("SOURCE_CHANGED_DURING_READ")
+    return raw
+
+
+def decode_strict(raw: bytes):
     def unique_pairs(pairs):
-        d = {}
-        for k, v in pairs:
-            if k in d:
-                raise ValueError("DUPLICATE_JSON_KEY:" + k)
-            d[k] = v
-        return d
-    return json.loads(path.read_text(encoding="utf-8"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError("NONFINITE_JSON")), object_pairs_hook=unique_pairs)
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("DUPLICATE_JSON_KEY:" + key)
+            value[key] = item
+        return value
+
+    def invalid_constant(_):
+        raise ValueError("NONFINITE_JSON")
+
+    return json.loads(raw, parse_constant=invalid_constant,
+                      object_pairs_hook=unique_pairs)
+
+
+def load(path: Path):
+    return decode_strict(read_stable(path))
 
 
 def audit_pnl(report):
@@ -49,10 +82,30 @@ def audit_pnl(report):
         computed = sum((decimal(item[key]) for item in components), Decimal(0))
         if abs(actual - computed) > Decimal("0.000001"):
             raise ValueError("TOTALS_MISMATCH:" + key)
+    if abs(decimal(totals["gross_total_pnl"]) -
+           decimal(totals["realized_gross_pnl"]) -
+           decimal(totals["unrealized_gross_pnl"])) > Decimal("0.000001"):
+        raise ValueError("TOTALS_REALIZED_UNREALIZED_MISMATCH")
     for item in components:
         if abs(decimal(item["gross_total_pnl"]) - decimal(item["fees_paid"]) - decimal(item["net_total_pnl"])) > Decimal("0.000001"):
             raise ValueError("COMPONENT_FEE_MISMATCH:" + str(item.get("instrument")))
+        if abs(decimal(item["gross_total_pnl"]) - decimal(item["realized_gross_pnl"]) -
+               decimal(item["unrealized_gross_pnl"])) > Decimal("0.000001"):
+            raise ValueError("COMPONENT_REALIZED_UNREALIZED_MISMATCH:" + str(item.get("instrument")))
+    all_reported_fees = (totals.get("fees_complete") is True and
+                         all(item.get("fees_complete") is True for item in components))
+    complete_strategy_ledger = (report.get("complete") is True and
+                                all(item.get("ledger_complete") is True and
+                                    item.get("valuation_complete") is True
+                                    for item in components))
+    valid_until_ms = report.get("valid_until_ms")
+    quote_fresh = (type(valid_until_ms) is int and
+                   valid_until_ms > int(time.time() * 1000))
     return {
+        "reported_execution_fee_coverage": all_reported_fees,
+        "complete_strategy_ledger": complete_strategy_ledger,
+        "mark_current_at_audit": quote_fresh,
+        "account_nav_is_not_implied": True,
         "period_id": report["period_id"],
         "observed_at_ms": report["observed_at_ms"],
         "currency": report["currency"],
@@ -68,6 +121,12 @@ def audit_pnl(report):
             "net": str(decimal(item["net_total_pnl"])),
             "execution_count": item["execution_count"],
             "fee_coverage": item.get("fees_complete") is True,
+            "excluded_costs": item.get("excluded_costs", []),
+            "additional_net_pnl_required_to_break_even": str(
+                max(Decimal(0), -decimal(item["net_total_pnl"]))),
+            "fee_per_execution_not_per_roundtrip": (
+                str(decimal(item["fees_paid"]) / decimal(item["execution_count"]))
+                if item["execution_count"] else None),
         } for item in components],
     }
 
@@ -75,14 +134,14 @@ def audit_pnl(report):
 def audit_bars(dataset, expected_sha):
     if expected_sha is not None and len(expected_sha) != 64:
         raise ValueError("BAD_EXPECTED_SHA256")
-    raw = dataset.read_bytes()
+    raw = read_stable(dataset)
     sha = hashlib.sha256(raw).hexdigest()
     if expected_sha is not None and sha != expected_sha:
         raise ValueError("DATASET_SHA256_MISMATCH")
     # Input is a retained IB historical bar research artifact, not an executable
     # tick-accurate spread or a point-in-time forecasting evidence source.
-    d = load(dataset)
-    if not d.get("research_only_revised_not_contemporaneous"):
+    d = decode_strict(raw)
+    if d.get("research_only_revised_not_contemporaneous") is not True:
         raise ValueError("HISTORICAL_SOURCE_CLASSIFICATION_MISSING")
     rows = d["bars"]
     if not rows:
