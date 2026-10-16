@@ -58,6 +58,12 @@ class DerivedIBScheduleWindowTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "DERIVED_INTERVAL_OUTSIDE_RETURNED_BROKER_HEADER"):
             validate_window(bars, old, schedule, start - 3600, end)
 
+    def test_partial_five_minute_scope_is_rejected(self):
+        bars, old, schedule, start, end = self.fixture()
+        for lo, hi in ((start + 1, end), (start, end - 1)):
+            with self.assertRaisesRegex(EvidenceError, "COMPLETE_FIVE_MINUTE_BOUNDARIES"):
+                validate_window(bars, old, schedule, lo, hi)
+
     def test_schedule_missing_tail_is_rejected(self):
         bars, old, schedule, start, end = self.fixture()
         schedule["sessions"][0]["end"] = "20261014-19:55:00"
