@@ -1,11 +1,14 @@
 import json
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from research.historical_training import pocket4_readonly_audit as audit
-from research.historical_training.pocket4_readonly_audit import audit_bars, audit_pnl
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "research"))
+from historical_training import pocket4_readonly_audit as audit
+from historical_training.pocket4_readonly_audit import audit_bars, audit_pnl
 
 
 class Pocket4AuditTests(unittest.TestCase):
