@@ -704,3 +704,41 @@ callbacks, partial/cancel/reconnect proof, and continuous working stop
 through Driver downtime. The online EUR/USD PAPER position is untouched.
 PR #337, #341, #342 and this stacked research work remain nonproduction;
 Issue #331 stays OPEN.
+
+## 2026-10-15 — Native SDK H1 parent/stop wire-preparation and mock transport
+
+The existing Execution owner/OMS chain now has a **research-only** bridge
+from its frozen, durable H1 reservation to *native IBKR C++ SDK* `Contract`
+and `Order` fields. `ib_native_h1_pair_research.h` verifies the exact
+original frozen order H1 values (45-byte parent/child/OCA), account,
+conId 12087792, side, quantity, confirmed 3188 minTick `0.00005`,
+parent and child IDs, and constructs a `MKT/DAY/transmit=false` parent
+and reverse-side `STP/GTC/transmit=true` child with exact `parentId`.
+The proposed OCA group and `ocaType=1` are **not broker-qualified**.
+
+The **transport callback exists only under the
+`HEPTA_IB_NATIVE_BRACKET_FAKE_DISPATCH_TEST` compile definition**, set for
+a single native CTest binary and never for the installed execution adapter.
+It writes a critical fsynced `bracket_parent_send_attempt` before the
+first mocked `EClient::placeOrder` call and a separate critical fsynced
+`bracket_child_send_attempt` before the last mock call. The test uses
+actual native SDK Order objects and real isolated `OmsJournal` bytes
+but a fake EClient that cannot send network traffic.
+
+Positive local *call-order* and injected exceptions on parent and child
+were tested. In all cases the outcome stays **UNKNOWN or
+LocalCallsReturnedBrokerUnconfirmed**; no active server-held stop, no
+cancel/partial/OCA fill evidence, no retry permission and no Driver
+maintenance approval are produced. Replaying the journal prevents
+retransmission of both native IDs.
+
+Pocket4 IB-API-ON CMake Release eight relevant CTests PASS; independent
+C++11 warnings-as-errors test under AddressSanitizer+UBSan PASS. This is
+not a working native broker transport in production; **no actual
+EClient::placeOrder was invoked**, and no PAPER positions or resident
+services changed. Production integration must come only through the
+current Coordinator's authoritative owner fence, fresh broker order
+inventory, complete OMS/ID floor, independent risk admission and the
+same existing Adapter API lock. A positive isolated IBKR PAPER bracket,
+OCA-safe ordinary close, disconnect and Driver-death test remain
+mandatory before retiring Issue #331.

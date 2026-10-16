@@ -281,6 +281,15 @@ if(HEPTA_ENABLE_IBAPI)
     target_link_libraries(hepta_ib_native_bracket_callback_tests PRIVATE
         hepta_ibapi_client)
     hepta_register_core_test(hepta_ib_native_bracket_callback_tests)
+    # SDK-native H1 parent/child ordered calls to a FAKE EClient, with actual
+    # OmsJournal fsync attempts. Test-only compile flag never on real adapter.
+    add_executable(hepta_ib_native_h1_pair_transport_tests
+        ib_native_h1_pair_transport_tests.cpp)
+    target_compile_definitions(hepta_ib_native_h1_pair_transport_tests PRIVATE
+        HEPTA_IB_NATIVE_BRACKET_FAKE_DISPATCH_TEST=1)
+    target_link_libraries(hepta_ib_native_h1_pair_transport_tests PRIVATE
+        hepta_ibapi_client hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_h1_pair_transport_tests)
 endif()
 
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
