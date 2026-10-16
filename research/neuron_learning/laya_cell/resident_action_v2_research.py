@@ -13,7 +13,7 @@ from collections import Counter
 
 from .integrity import ContractError, digest
 
-SCHEMA = "heptatrader.laya-resident-action-v2-research.v1"
+SCHEMA = "heptatrader.laya-resident-action-v2-research.v2"
 MIN_TRAIN_ROWS = 16
 MIN_EACH_LABEL = 4
 MAX_TRAIN_ROWS = 4096
@@ -72,10 +72,14 @@ def decide_train_only_action(rows, *, cutoff_ms, parent_action_logits):
             "training_rows":len(rows),
             "labels":{"ACT_correct":counts[0],"ESCALATE_wrong":counts[1]},
             "training_row_ids_digest":digest([r["row_id"] for r in rows]),
+            "training_row_labels_digest":digest([[r["row_id"],r["anchor_ms"],
+                r["future_outcome_available_ms"],r["parent_correct"]] for r in rows]),
             "action_temperature_training_only":scale if admits else None,
             "training_p90_abs_action_logit_margin":scale,
             "action_optimizer_admitted":admits,
             "action_refusal_reason":None if admits else "NO_BOTH_TRUE_ACTION_LABELS",
+            "paired_action_loss":"UNWEIGHTED_EQUAL_CLASS_PAIRS",
+            "inference_prior_correction":"FROZEN_UNPAIRED_TRAIN_LABEL_COUNTS",
             "price_learning_not_disallowed":True,
             "raw_pretrained_action_logit_interface_unchanged":True,
             "action_head_trade_permission":False,
@@ -91,7 +95,11 @@ def _check_profile(profile):
             profile.get("action_head_trade_permission") is not False or
             profile.get("price_learning_not_disallowed") is not True or
             profile.get("raw_pretrained_action_logit_interface_unchanged") is not True or
-            type(profile.get("action_optimizer_admitted")) is not bool):
+            type(profile.get("action_optimizer_admitted")) is not bool or
+            profile.get("paired_action_loss")!="UNWEIGHTED_EQUAL_CLASS_PAIRS" or
+            profile.get("inference_prior_correction")!="FROZEN_UNPAIRED_TRAIN_LABEL_COUNTS" or
+            type(profile.get("training_row_labels_digest")) is not str or
+            len(profile["training_row_labels_digest"])!=64):
         raise ContractError("V2_ACTION_FROZEN_PROFILE_CHANGED")
     counts=profile["labels"]
     if (type(counts.get("ACT_correct")) is not int or
@@ -121,7 +129,9 @@ def stratified_action_pairs(rows, profile):
     if not p["action_optimizer_admitted"]:
         return []
     if (not isinstance(rows,list) or len(rows)!=p["training_rows"] or
-            digest([r["row_id"] for r in rows])!=p["training_row_ids_digest"]):
+            digest([r["row_id"] for r in rows])!=p["training_row_ids_digest"] or
+            digest([[r["row_id"],r["anchor_ms"],r["future_outcome_available_ms"],
+                     r["parent_correct"]] for r in rows])!=p["training_row_labels_digest"]):
         raise ContractError("V2_ACTION_STRATIFIED_TRAINING_ROWS_CHANGED")
     act=[i for i,r in enumerate(rows) if r["parent_correct"] is True]
     escalate=[i for i,r in enumerate(rows) if r["parent_correct"] is False]
@@ -160,15 +170,16 @@ def balanced_action_loss(action_logits, parent_correct, primary_price_loss, prof
         # Individual minibatches may have one label; use frozen global
         # weights, but forbid a false two-class claim at batch level.
         return action_logits.sum()*0.0
-    total=p["training_rows"]
-    weights=torch.tensor([
-        total/(2*p["labels"]["ACT_correct"]),
-        total/(2*p["labels"]["ESCALATE_wrong"])],
-        device=action_logits.device,dtype=action_logits.dtype)
-    # Runtime logits need not be clipped or modified at inference; this
-    # is the loss of a future, separately versioned action calibration.
+    # Only genuine one-to-one pairs enter this auxiliary minibatch.
+    # Reapplying inverse full-population class weights here would DOUBLE
+    # balance the data: with 14 ACT and 284 ESCALATE originals, each
+    # already-paired ACT row would carry ~20x the ESCALATE weight.
+    if int(counts[0]) != int(counts[1]):
+        raise ContractError("V2_ACTION_REQUIRES_EQUAL_CLASS_PAIRS")
+    # This is not a calibrated population probability objective. Inference
+    # separately restores the frozen training-population prior odds.
     scaled=action_logits/p["action_temperature_training_only"]
-    ce=F.cross_entropy(scaled,targets,weight=weights)
+    ce=F.cross_entropy(scaled,targets)
     # Numeric dominance cap with detached factors. Do NOT replace genuine
     # price gradients or silently reweight labels using future observations.
     with torch.no_grad():
@@ -228,7 +239,12 @@ def v2_action_inference(action_logits, profile):
     z=action_logits.detach().to(torch.float64)
     margins=(z[:,0]-z[:,1]).abs()
     too_far=(margins>10*t).tolist()
-    probs=torch.softmax(z/t,dim=-1)[:,0].tolist()
+    # An equal-class pair fit uses 50:50 sampling, not the true prevalence.
+    # Restore the immutable full-training-source prior odds at inference;
+    # this is a necessary prior adjustment, NOT a future calibration claim.
+    label_counts=p["labels"]
+    prior_odds=math.log(label_counts["ACT_correct"]/label_counts["ESCALATE_wrong"])
+    probs=torch.sigmoid((z[:,0]-z[:,1])/t + prior_odds).tolist()
     suggestions=[]
     valid=[]
     for probability,uncertain in zip(probs,too_far):
@@ -239,9 +255,11 @@ def v2_action_inference(action_logits, profile):
             valid.append(probability)
             suggestions.append(research_action_recommendation(p,probability)["signal"])
     return {"schema":"heptatrader.laya-action-v2-inference-research.v1",
-            "status":"FROZEN_TRAIN_TEMPERATURE_RESEARCH_ONLY",
+            "status":"FROZEN_TRAIN_TEMPERATURE_AND_PRIOR_RESEARCH_ONLY",
             "frozen_profile_id":p["profile_id"],
             "training_only_temperature":t,
+            "training_only_act_prior":p["labels"]["ACT_correct"]/p["training_rows"],
+            "prior_correction_not_future_calibration":True,
             "action_correct_probs":valid,
             "recommendations":suggestions,
             "ood_abstentions":sum(bool(i) for i in too_far),

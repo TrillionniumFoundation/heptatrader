@@ -323,6 +323,7 @@
         "scripts/research_laya_action_quality.py",
         "scripts/research_laya_action_v2_preflight.py",
         "scripts/research_laya_action_v2_closed_train_source.py",
+        "scripts/research_laya_action_v2_prior_probe.py",
         "scripts/research_laya_price_quality.py",
         "scripts/research_laya_price_shadow90.py",
         "scripts/research_laya_price_gpu_ablation.py",
@@ -351,6 +352,8 @@
         "tests/python/test_laya_original_quote_asof_finality.py",
         "tests/python/test_laya_resident_action_v2_research.py",
         "tests/python/test_laya_resident_action_v2_closed_source.py",
+        "tests/python/test_laya_action_v2_prior_math.py",
+        "tests/python/test_laya_action_v2_temporal_pairing.py",
         "tests/python/test_laya_evaluator_admission_receipt.py"
       ],
       "broker_mutation": "NONE",
