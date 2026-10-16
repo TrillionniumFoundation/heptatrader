@@ -71,10 +71,36 @@ static void ExactOriginalH1CallbackAndDurableOms(){
             "original H1 durable OMS proof missing");
     const auto event=ExactNativeH1OpenOrder(f,refs);
     const auto originalRecord=OriginalCallbackRecord(f);
+    OmsJournalEvent early=originalRecord;
+    Require(ProjectFrozenH1WorkingStop(event,f,original,early,reason)!=
+                Result::WorkingWitnessCandidate &&
+                early.brokerBracket.version==0,
+            "Broker Submitted callback was accepted without a native send attempt");
+    // Original no-retry replay must remain closed once any send might have
+    // reached the broker; callback proof is deliberately separate.
+    Require(MarkPotentialSend(journal,reserved,false,reason),
+            "original parent pre-send could not be durably recorded");
+    Require(MarkPotentialSend(journal,reserved,true,reason),
+            "original child pre-send could not be durably recorded");
+    original.clear();
+    Require(journal.Replay([&](const OmsJournalEvent& e){original.push_back(e);})==4,
+            "native send attempts did not survive original OMS replay");
+    Reservation neverResend;
+    Require(!ConfirmReplay(original,f,neverResend,reason) &&
+                neverResend.uncertain && !neverResend.sendAuthorized,
+            "normal restart path permitted reissue of a possibly-sent H1 pair");
+    BrokerCallbackReplayProof brokerReplay;
+    Require(ConfirmReplayForBrokerCallback(original,f,brokerReplay,reason) &&
+                brokerReplay.originalPairDurable &&
+                brokerReplay.exactParentAndChildPresendDurable &&
+                !brokerReplay.brokerWorkingStopProven &&
+                !brokerReplay.maySubmitOrRetry &&
+                !brokerReplay.mayStopDriver,
+            "original pre-send proof incorrectly grants protective/broker send authority");
     OmsJournalEvent accepted=originalRecord;
     Require(ProjectFrozenH1WorkingStop(event,f,original,accepted,reason)==
                 Result::WorkingWitnessCandidate,
-            "exact H1 original broker OpenOrder was not projected");
+            "exact H1 native OpenOrder after BOTH durable sends was not projected");
     Require(accepted.brokerBracket.version==2 &&
             accepted.brokerBracket.ValidShape() &&
             accepted.brokerBracket.orderRef==refs.childRef &&
@@ -84,12 +110,12 @@ static void ExactOriginalH1CallbackAndDurableOms(){
             "H1 role/parent/native callback identity was lost");
     Require(journal.AppendDurableCritical(accepted),"H1 original callback not durably stored");
     std::vector<OmsJournalEvent> reopened;
-    Require(journal.Replay([&](const OmsJournalEvent& e){reopened.push_back(e);})==3,
-            "H1 callback record did not roundtrip through native OMS");
-    Require(reopened[2].brokerBracket.version==2 &&
-            reopened[2].brokerBracket.orderRef==refs.childRef &&
-            reopened[2].brokerBracket.ocaGroup==refs.ocaGroup &&
-            reopened[2].brokerBracket.permanentOrderId==888871,
+    Require(journal.Replay([&](const OmsJournalEvent& e){reopened.push_back(e);})==5,
+            "H1 original send + callback record did not roundtrip through native OMS");
+    Require(reopened[4].brokerBracket.version==2 &&
+            reopened[4].brokerBracket.orderRef==refs.childRef &&
+            reopened[4].brokerBracket.ocaGroup==refs.ocaGroup &&
+            reopened[4].brokerBracket.permanentOrderId==888871,
             "H1 original native callback lost its durable permanent ID");
     auto rejectEvent=[&](const IBEvent& test,const char* label){
         auto output=originalRecord;
@@ -159,6 +185,42 @@ static void ExactOriginalH1CallbackAndDurableOms(){
     Require(ProjectFrozenH1WorkingStop(event,f,possible,output,reason)==
                 Result::Rejected && output.brokerBracket.version==0,
             "unknown Broker send was converted to working stop");
+    auto rejectOms=[&](std::vector<OmsJournalEvent> damaged,const char* label){
+        auto output=originalRecord;
+        BrokerCallbackReplayProof proof;
+        Require(!ConfirmReplayForBrokerCallback(damaged,f,proof,reason) &&
+                !proof.originalPairDurable &&
+                !proof.maySubmitOrRetry,
+                label);
+        Require(ProjectFrozenH1WorkingStop(event,f,damaged,output,reason)==
+                    Result::Rejected &&
+                    output.brokerBracket.version==0 &&
+                    output.eventType.empty(),
+                label);
+    };
+    auto badSequence=original;badSequence.erase(badSequence.begin()+2);
+    rejectOms(badSequence,"child callback accepted without original parent send");
+    badSequence=original;badSequence.pop_back();
+    rejectOms(badSequence,"child callback accepted without original child send");
+    badSequence=original;std::swap(badSequence[2],badSequence[3]);
+    rejectOms(badSequence,"reversed parent/child send order accepted");
+    badSequence=original;badSequence.push_back(badSequence[3]);
+    rejectOms(badSequence,"duplicate broker child send attempt accepted");
+    badSequence=original;badSequence[3].price+=0.00005;
+    rejectOms(badSequence,"modified child stop price accepted");
+    badSequence=original;badSequence[2].venueCorrelationId=refs.childCorrelation;
+    rejectOms(badSequence,"parent send carrying child H1 accepted");
+    badSequence=original;badSequence[3].reqId="foreign";
+    badSequence[3].clientReqId=f.originalCommandKey;
+    rejectOms(badSequence,"original command alias laundering accepted");
+    badSequence=original;badSequence[3].eventId="some-other-child-send";
+    rejectOms(badSequence,"child send noncanonical identity accepted");
+    badSequence=original;auto foreign=badSequence[3];
+    foreign.reqId="foreign";foreign.clientReqId.clear();
+    foreign.requestHash="other-hash";
+    foreign.venueCorrelationId=refs.childCorrelation;
+    badSequence.push_back(foreign);
+    rejectOms(badSequence,"foreign command borrowed frozen child H1");
     Require(::unlink(file.c_str())==0,"scratch journal cleanup failed");
 }
 int main(){
