@@ -23,8 +23,8 @@ from hepta_cost_policy import (CostError, FORECAST_VERSION, MODEL_ID, HORIZONS,
     dec, digest, validate_forecast)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
-BASE_DRIVER_SHA256 = "af0762b0ec8cf6bade99f410fb8de1b5a34d96be0b6bffd0c64a39fc34cea2c1"
-BASE_COMMIT = "387a1ed0373e298d0c38c37999ddc3975f8dfc37"
+BASE_DRIVER_SHA256 = "fa8d4d2e8a0255af62734b54285c8c90890499c25819d53e8cda9fe7d5eeead3"
+BASE_COMMIT = "3d0ea24d659ed2bb718930c41205621356774873"
 CANDIDATE_SCHEMA = {
     "type": "object", "required": ["action", "confidence", "rationale", "horizon_sec", "scenarios", "invalidation_price"],
     "additionalProperties": False,
@@ -114,11 +114,12 @@ def attach(driver, _local_training_compat_path=None, *, capture_factory=Capture,
             return False
         return original["entry_candidate_allowed"](decision)
 
-    def prepare_send(state, path, binary, socket, token, outbox, kind, quote=None, side=None):
-        """Historical PAPER strategy plus lifecycle fencing; no resident cost gate."""
+    def prepare_send(state, path, binary, socket, token, outbox, kind, quote=None, side=None, *, exit_reason=None):
+        """Historical PAPER entry checks; original CLOSE intent remains untouched."""
         if kind == "OPEN":
             lifecycle_check()
-        return original["prepare_send"](state, path, binary, socket, token, outbox, kind, quote, side)
+        return original["prepare_send"](state, path, binary, socket, token,
+                                        outbox, kind, quote, side, exit_reason=exit_reason)
 
     def paper_cmd(binary, socket, token, outbox, operation, extra):
         if operation == "submit":
