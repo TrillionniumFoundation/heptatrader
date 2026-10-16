@@ -613,3 +613,36 @@ the exact verified client/connection, owner-fenced parent+child transport,
 Broker working-stop permanent-ID callbacks, OCA-safe ordinary close, and
 post-crash original Broker order-set reattestation. No deployment or stop
 permission derives from this research result.
+
+## 2026-10-16 — Separate H1 native OpenOrder candidate projection and OMS v2 witness
+
+A genuine 45-byte H1 child ref is incompatible with the existing
+`HEPTA-STOP-`-only `ProjectOriginalWorkingStop` and v1 native bracket receipt
+shape; silently reusing the v1 positive callback would either drop the H1
+event or falsely assert original-owner protection. This change keeps the
+existing v1 producer and parser intact and adds an **additive version-2 H1
+bracket witness shape** (canonical 45-byte H1 child and distinct H1 OCA group,
+strict contract/parent/permanent-ID, transmitted STP, GTC, owner-independent
+market-rule shape). Version 2 shape is NOT sufficient to prove protection.
+
+The **pure, research-only** `ProjectFrozenH1WorkingStop` requires a complete
+original frozen H1 Parent+Child pair in the existing OMS journal (including
+replay refusal for partial, changed or POSSIBLY_SENT records), and also
+requires the original Owner/session/command/account/contract/client/epoch,
+actual native SDK-origin `openOrder(Submitted)` fields, parent/permanent IDs,
+quantities, trigger, original 20bp stop and exact H1 Parent/Stop/OCA derived
+roles. It refuses foreign pre-bound OMS request hashes, correlation IDs,
+existing Broker status/callback/event IDs, held/partial/uncertain callbacks
+and false positive standalone H1 shape. It **never changes** the existing
+production callback routing or grants a PlaceOrder, maintenance permit, Driver
+stop or automatic model promotion.
+
+Pocket4 isolated, IBAPI-ON Release verification exercised the actual existing
+`OmsJournal::AppendDurablePair`, the new pure projector, an exact durable
+version-2 Broker candidate record and actual v4 OMS journal replay, with
+negative callback/OMS mutation cases. Native regression **16/16** and
+H1/v1 OMS + identity ASan/UBSan **3/3** passed. No real Broker call was
+made, and an `openOrder` callback candidate is not account-wide working
+protection. A real owner-fenced Broker sender, child accepted permId,
+unknown-submit recovery, OCA-safe normal exit, and driver-death proof remain
+P0 Issue #331 blockers.
