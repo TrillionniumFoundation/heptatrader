@@ -570,3 +570,18 @@ ASan+UBSan passed **3/3**. These tests use isolated OMS files and no Broker
 orders; existing real positions, services and Kill Switch were unchanged.
 Broker send, OCA-safe ordinary exit and real original-client reattestation
 remain open under Issue #331.
+
+## 2026-10-16 — Native H1 long original command compatibility
+
+The native **unsent** H1 parent+STP adapter previously called the legacy
+`HEPTA-PARENT-` / `HEPTA-STOP-` preparer before replacing those refs with H1.
+This rejected an otherwise valid 64-character frozen original key because
+legacy display refs exceed IBKR's 45-byte limit. The native mapping now uses
+the **same** original Broker/Owner/flatness/quote/size/tick/20bp-stop policy
+through a common validated plan that accepts *caller-verified* H1 parent/stop
+refs; the original legacy wrapper still rejects oversized legacy refs.
+The optional OCA grouping is supplied as the same validated 45-byte H1 ref.
+Boundary tests cover 64/96-byte safe original keys for BUY and SELL, and
+refuse invalid 97-byte keys, while maintaining the existing no-send,
+no-driver-stop flags. This is type translation and NOT actual IB order
+placement, an IB accepted stop, or authority for maintenance.

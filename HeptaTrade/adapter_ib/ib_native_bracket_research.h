@@ -24,12 +24,13 @@ struct PreparedNativePair final {
 // Accept authoritative flat snapshot + frozen broker rule, not an untrusted
 // serialized OrderIntent. The prototype itself performs original side/size/
 // order-id/quote/owner checks before constructing SDK types.
-inline PreparedNativePair BuildNeverSentNativePair(
-    const hepta_execution_bracket_research::PreEntrySnapshot& observation,
-    std::uint64_t nowMs)
+// This helper only translates a plan already checked by the original
+// Broker/Owner/quote policy; the public wrappers below enforce that policy.
+inline PreparedNativePair NativeFromValidatedShadowPlan(
+    const hepta_execution_bracket_research::BracketShadowPlan& p,
+    const std::string& ocaGroup)
 {
     using namespace hepta_execution_bracket_research;
-    const BracketShadowPlan p = ProposeUnsentBracket(observation, nowMs);
     PreparedNativePair wire;
     wire.contract.conId = p.contractId;
     wire.contract.symbol = "EUR";
@@ -71,7 +72,7 @@ inline PreparedNativePair BuildNeverSentNativePair(
     wire.stop.outsideRth = false;
     // Future OCA design candidate: original protective child and ordinary
     // exit share a broker OCA group with block. Not PAPER qualified yet.
-    wire.stop.ocaGroup = "HEPTA-FX-OCA-" + p.originalCommandKey;
+    wire.stop.ocaGroup = ocaGroup;
     wire.stop.ocaType = 1; // cancel-with-block. NO exit authorization.
 
     if (wire.parent.totalQuantity == UNSET_DECIMAL ||
@@ -83,11 +84,22 @@ inline PreparedNativePair BuildNeverSentNativePair(
         wire.parent.orderId <= 0 || wire.stop.parentId != wire.parent.orderId ||
         wire.stop.orderId <= wire.parent.orderId ||
         !std::isfinite(wire.stop.auxPrice) || wire.stop.auxPrice <= 0.0 ||
-        wire.stop.account != wire.parent.account)
+        wire.stop.account != wire.parent.account ||
+        wire.stop.ocaGroup.empty() || wire.stop.ocaGroup.size() > 45)
         throw Refusal("IB_NATIVE_BRACKET_DECIMAL_OR_PARENT_ID_MISMATCH");
     return wire;
 }
 
+
+inline PreparedNativePair BuildNeverSentNativePair(
+    const hepta_execution_bracket_research::PreEntrySnapshot& observation,
+    std::uint64_t nowMs)
+{
+    const auto plan=hepta_execution_bracket_research::ProposeUnsentBracket(
+        observation,nowMs);
+    return NativeFromValidatedShadowPlan(
+        plan,"HEPTA-FX-OCA-"+plan.originalCommandKey);
+}
 
 // Translate a Coordinator-durable H1 identity into actual native SDK
 // Contract/Order objects. No API placeOrder or approved Broker ID lease.
@@ -118,9 +130,14 @@ inline PreparedNativePair BuildNeverSentNativeReservedH1Pair(
         observation.quantity!=f.quantity ||
         (f.side=="BUY" ? observation.ask : observation.bid)!=f.referencePrice)
         throw Refusal("IB_NATIVE_H1_ORIGINAL_RESERVATION_MISMATCH");
-    PreparedNativePair result=BuildNeverSentNativePair(observation,nowMs);
-    if(result.stop.auxPrice!=f.stopPrice)
+    // Never invoke the legacy HEPTA-* ref producer as a prerequisite for
+    // native H1. It rejects valid long original commands before H1 encoding.
+    // Both modes use exactly the same Broker/Owner/quote/stop-price policy.
+    const auto plan=hepta_execution_bracket_research::ProposeUnsentBracketWithRefs(
+        observation,nowMs,ids.parentRef,ids.childRef);
+    if(plan.stop.intent.auxPrice!=f.stopPrice)
         throw Refusal("IB_NATIVE_H1_FROZEN_STOP_PRICE_MISMATCH");
+    PreparedNativePair result=NativeFromValidatedShadowPlan(plan,ids.ocaGroup);
     result.parent.orderRef=ids.parentRef;
     result.stop.orderRef=ids.childRef;
     result.stop.ocaGroup=ids.ocaGroup;

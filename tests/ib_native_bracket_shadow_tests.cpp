@@ -192,8 +192,8 @@ void RejectUnsafeOcaEvidence() {
     RequireOcaRefusal(wideGroup,OcaState(wideGroup),
                       "OCA_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT");
 }
-void H1NativeOriginalIdentity() {
-    auto snap=Original("BUY");
+void H1NativeOriginalIdentity(const std::string& side) {
+    auto snap=Original(side);
     hepta_bracket_h1::FrozenBracket f;
     f.originalCommandKey=snap.originalCommandKey;
     f.account=snap.account; f.owner=snap.owner;
@@ -206,7 +206,8 @@ void H1NativeOriginalIdentity() {
     f.positionGeneration=snap.originalPositionGeneration;
     f.ownerFenceToken=88;
     f.intentObservedAtMs=snap.observedAtMs;
-    f.quantity=snap.quantity; f.referencePrice=snap.ask;
+    f.quantity=snap.quantity;
+    f.referencePrice=side=="BUY"?snap.ask:snap.bid;
     f.stopPrice=hepta_execution_bracket_research::ProposeUnsentBracket(
         snap,100500).stop.intent.auxPrice;
     f.minTick=snap.minTick;
@@ -225,6 +226,41 @@ void H1NativeOriginalIdentity() {
           "H1 native SDK order refs mismatched");
     Check(!wire.brokerSendEnabled && !wire.driverStopAuthorized,
           "native H1 mapping acquired Broker rights");
+    // A valid long original command belongs in the 45-byte H1 role refs.
+    // The H1 path must not first reject a longer legacy HEPTA-* string.
+    for(int width=64;width<=96;width+=32) {
+    auto longSnap=snap;
+    longSnap.originalCommandKey=std::string(width,'a');
+    auto longReservation=r;
+    longReservation.frozen.originalCommandKey=longSnap.originalCommandKey;
+    Check(hepta_bracket_h1::BuildFrozenRefs(
+          longReservation.frozen,longReservation.ids,reason),
+          "valid long original command failed frozen H1 derivation");
+    auto longNative=BuildNeverSentNativeReservedH1Pair(
+        longSnap,longReservation,100500);
+    Check(longNative.parent.orderRef==longReservation.ids.parentRef &&
+          longNative.stop.orderRef==longReservation.ids.childRef &&
+          longNative.stop.ocaGroup==longReservation.ids.ocaGroup &&
+          longNative.parent.orderRef.size()==45 &&
+          longNative.stop.orderRef.size()==45 &&
+          !longNative.brokerSendEnabled && !longNative.driverStopAuthorized,
+          "H1 native order rejected a legal long original command");
+    bool rejectedLegacy=false;
+    try { (void)BuildNeverSentNativePair(longSnap,100500); }
+    catch(const Refusal& e) {
+        rejectedLegacy=width>80 ?
+            std::string(e.what())=="BRACKET_EXACT_PAPER_SCOPE_REQUIRED" :
+            std::string(e.what())=="BRACKET_SHADOW_ORDER_REF_EXCEEDS_IB_LIMIT";
+    }
+    Check(rejectedLegacy,"legacy long ref silently accepted");
+    }
+    auto tooLong=snap;
+    tooLong.originalCommandKey=std::string(97,'a');
+    auto invalid=r;
+    invalid.frozen.originalCommandKey=tooLong.originalCommandKey;
+    Check(!hepta_bracket_h1::BuildFrozenRefs(
+        invalid.frozen,invalid.ids,reason),
+        "oversized H1 original key crossed frozen identity bound");
     r.uncertain=true;
     try {
         (void)BuildNeverSentNativeReservedH1Pair(snap,r,100500);
@@ -250,7 +286,7 @@ int main() {
         NativeOcaSiblingOnlyAfterWorkingStop("BUY");
         NativeOcaSiblingOnlyAfterWorkingStop("SELL");
         RejectUnsafeOcaEvidence();
-        H1NativeOriginalIdentity();
+        H1NativeOriginalIdentity("BUY");H1NativeOriginalIdentity("SELL");
         BadContractNoNative(); LegacyOnePipTickRefused(); BadModeNoNative();
         std::cout<<"ib_native_bracket_shadow_fields=PASS\n";
         return 0;
