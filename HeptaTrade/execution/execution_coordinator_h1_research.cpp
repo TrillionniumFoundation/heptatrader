@@ -50,15 +50,33 @@ bool ExecutionCoordinator::ReserveResearchH1BracketForRecoveryOnlyOwner(
     // order_intent. A journal prefix may exist after a crash. Before
     // admitting a new group, reject ANY recorded original req_id, including
     // orphaned attempts. No external Broker IO happens here.
+    // Before appending, use the *same* frozen H1 role derivation that will
+    // be written to OMS. A separate original command may not borrow this
+    // pair's Group, Parent, STOP, or OCA identity even with a new req_id.
+    // The Coordinator mutex protects this admission+append against another
+    // Coordinator request. This is not permission to contact the Broker.
+    hepta_bracket_h1::BoundRefs frozenIds;
+    if(!hepta_bracket_h1::BuildFrozenRefs(frozen,frozenIds,reason))
+        return false;
     bool collision=false;
+    bool venueIdentityCollision=false;
     const int observed=m_journal.Replay([&](const OmsJournalEvent& e) {
         if(e.reqId==originalOwner.toolCallId ||
            e.clientReqId==originalOwner.toolCallId) collision=true;
+        if(e.requestHash==frozenIds.groupCorrelation ||
+           e.requestHash==frozenIds.parentCorrelation ||
+           e.requestHash==frozenIds.childCorrelation ||
+           e.requestHash==frozenIds.ocaCorrelation ||
+           e.venueCorrelationId==frozenIds.groupCorrelation ||
+           e.venueCorrelationId==frozenIds.parentCorrelation ||
+           e.venueCorrelationId==frozenIds.childCorrelation ||
+           e.venueCorrelationId==frozenIds.ocaCorrelation)
+            venueIdentityCollision=true;
     });
-    if(observed<0 || collision) {
-        reason=observed<0 ?
-            "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
-            "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND";
+    if(observed<0 || collision || venueIdentityCollision) {
+        reason=observed<0 ? "H1_BRACKET_ORIGINAL_JOURNAL_UNAVAILABLE" :
+               collision ? "H1_BRACKET_EXISTING_OR_ORPHANED_ORIGINAL_COMMAND" :
+               "H1_BRACKET_FOREIGN_FROZEN_H1_IDENTITY_COLLISION";
         return false;
     }
     if(!hepta_bracket_h1::ReservePair(m_journal,frozen,result,reason)) {

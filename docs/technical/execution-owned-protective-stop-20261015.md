@@ -548,3 +548,25 @@ proof, OCA ordinary-exit overlap, reconnect unknown-submit recovery and
 actual ongoing protection after Driver death. `sendAuthorized=false`,
 `driverStopAllowed=false` and Issue #331 remains OPEN. Research code is
 not a substitute for a live protective stop or a production release.
+
+## 2026-10-16 — Coordinator original-H1 admission collision boundary
+
+The research-only, recovery-owner-fenced Coordinator now derives the **same**
+immutable H1 Group/Parent/Stop/OCA correlations before attempting a durable
+OMS parent/child reservation. Its existing exact journal replay checks both
+original request aliases **and** identity reuse by any other request: a
+foreign event borrowing the frozen group digest or any of the three H1 roles
+is refused, before either new reservation record is appended. Unrelated
+historical requests do not block the original command. This is an additional
+identity/admission boundary under the existing Coordinator mutex, **not** an
+account-wide Broker ownership proof, cross-process lock or send authorization.
+
+Pocket4 native IBSDK-ON Release negative test reproduced RED on the preceding
+exact head: a foreign original command could borrow the H1 group and cause a
+new pair reservation. After repair the positive owner-fence and all eight
+foreign-role collision variants, plus a disjoint-history control, passed.
+The bounded native regression suite passed **15/15**, and exact H1/Coordinator
+ASan+UBSan passed **3/3**. These tests use isolated OMS files and no Broker
+orders; existing real positions, services and Kill Switch were unchanged.
+Broker send, OCA-safe ordinary exit and real original-client reattestation
+remain open under Issue #331.
