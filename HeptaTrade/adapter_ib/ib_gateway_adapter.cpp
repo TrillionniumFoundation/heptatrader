@@ -1,5 +1,6 @@
 ﻿#include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
+#include "../execution/ib_h1_native_id_restart_floor.h"
 #include <ctime>
 #include <cmath>
 #include <sstream>
@@ -1346,6 +1347,7 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
 bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
     const std::string& exactPaperAccount,
     std::uint64_t expectedConnectionEpoch,
+    const OmsJournal& exactOwnerJournal,
     const std::function<bool(long,long)>& durablePair,
     long& parentId, long& stopId, std::string& reason)
 {
@@ -1372,6 +1374,16 @@ bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
         reason="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE";
         return false;
     }
+    // The same API mutex protects normal NextOrderId/PlaceOrder. Before
+    // leasing a new H1 group, the caller's original owner OMS must replay
+    // completely, contain only paired identities, and prove that the fresh
+    // broker nextValidId is beyond EVERY native H1 ID ever reserved.
+    // Any POSSIBLY_SENT original child remains UNKNOWN even with a higher ID,
+    // until an independent complete broker order/execution reconciliation.
+    const auto history=hepta_h1_restart_floor::Inspect(exactOwnerJournal);
+    if (!hepta_h1_restart_floor::AuthorizeResearchIdFloor(
+            history,brokerNext,reason))
+        return false;
     const long first=std::max(brokerNext,m_localOrderSeed);
     if (first>=std::numeric_limits<int>::max()-2) {
         reason="H1_NATIVE_BROKER_ID_PAIR_OVERFLOW";

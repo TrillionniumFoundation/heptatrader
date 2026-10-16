@@ -21,6 +21,8 @@
 #include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
+class OmsJournal;
+
 struct HeptaIBRiskConfig {
     bool enableOrderSubmission = false;
     double maxOrderQuantity = 1.0;
@@ -218,11 +220,15 @@ public:
     // RESEARCH-ONLY native ID lease, under the same m_apiMutex used by
     // actual PlaceOrderInternal. The callback MUST durably bind the exact
     // pair to the existing OMS/Coordinator before it may return true.
+    // Requires the original Coordinator/Owner's pinned OMS, not a caller
+    // reconstructed order list. Incomplete parent/child records, an old
+    // broker nextValidId, or an unreconciled POSSIBLY_SENT always refuse.
     // Failure consumes the in-memory pair and is permanently UNKNOWN; no
     // sender, replay permit or maintenance authority is exposed.
     bool ReserveResearchH1NativeIdPair(
         const std::string& exactPaperAccount,
         std::uint64_t expectedConnectionEpoch,
+        const OmsJournal& exactOwnerJournal,
         const std::function<bool(long,long)>& durablePair,
         long& parentId, long& stopId, std::string& reason);
     bool ReqAccountSummary();
