@@ -782,3 +782,29 @@ IB client; it never makes the runtime eligible for a Broker stop send.
 
 Original P0 #331 still requires real broker-side child acceptance, owner-
 correlated permanent IDs, OCA-safe ordinary close and failure recovery.
+
+## 2026-10-16: prevent same-adapter Init from reusing unsent H1 Broker IDs
+
+The existing IB Adapter reserves H1 parent/child IDs locally under its native
+send mutex. Previously `Init()` reset the local `m_localOrderSeed` to 1 on every
+call; TWS `nextValidId` cannot see a parent/child pair reserved only in OMS.
+A repeated `Init()` while still connected, or a disconnected reconfiguration
+of the same Adapter with a different DU PAPER account, could therefore reuse
+an unsent native ID under the same Broker client.
+
+`Init()` now holds the Adapter API mutex, rejects configuration changes while
+its own SDK connection is active, and retains the adapter-lifetime ID cursor
+through explicit disconnect/reconfiguration/reconnect (even across DU accounts).
+A newly constructed Adapter starts with the ordinary default cursor of 1;
+process restart still requires the previously implemented verified OMS H1
+floor adoption before normal PAPER mutation startup. This does **not** invent
+Broker-side atomic ID reservation or grant native STP send authority.
+
+Independent **Pocket4** IB-API-ON Release validation reproduced the old
+`H1_CONNECTED_INIT_RESET_NATIVE_RESERVATION` failing CTest, then passed
+13/13 relevant CTests including the full runtime-recovery scenario (~43.5s).
+Separate ASan/UBSan `hepta_ib_live_terminal_reconciliation_tests` passed.
+The synthetic Broker places no protective orders in the new case. No running
+Execution, FX, BTC, Laya or Source Health unit was restarted or replaced.
+This change remains source-only research until the full Broker PAPER bracket,
+working stop and ordinary OCA exit lifecycle is demonstrated.

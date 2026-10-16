@@ -186,6 +186,11 @@ HeptaIBGatewayAdapter::~HeptaIBGatewayAdapter() {
 }
 
 bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // Reconfiguration inside the same connected Broker generation could
+    // reset the local native order cursor after UNSENT H1 reservations.
+    // Require explicit disconnect/reconnect; never mutate a live config.
+    if (m_connected || (m_api && m_api->IsConnected())) return false;
     std::map<std::string, std::string> fxInstrumentByBaseCurrency;
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              cfg.authoritativeCashFxContracts.begin();
@@ -229,7 +234,9 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_todayOrderCount = 0;
     m_consecutiveErrorCount = 0;
     m_dayOfYear = -1;
-    m_localOrderSeed = 1;
+    // The adapter lifetime may include reconnects and offline Init calls.
+    // Keep every previously consumed local native ID burnt for this client;
+    // only a NEW adapter object starts with the constructor's cursor of 1.
     m_lastReferencePrice = 0.0;
     m_lastReferencePriceTs = 0;
     m_lastOrderSig.clear();

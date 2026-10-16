@@ -1525,7 +1525,41 @@ void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
         throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_UNLINK_FAILED");
 }
 
+void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
+    Fixture fixture;
+    IBResearchH1LocalIdPair pair;
+    std::string reason;
+    auto epoch=fixture.adapter.GetConnectionEpoch();
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason) ||
+       pair.parentOrderId!=41 || pair.childOrderId!=42)
+        throw std::runtime_error("H1_REINIT_INITIAL_PAIR_UNAVAILABLE");
+    HeptaIBConfig same; same.account="DU123";
+    same.clientId=73; same.readOnly=false;
+    // A connected reconfiguration must not silently reset the local cursor,
+    // broker client, connection identity, or original unsent H1 reservation.
+    if(fixture.adapter.Init(same))
+        throw std::runtime_error("H1_CONNECTED_INIT_RESET_NATIVE_RESERVATION");
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason) ||
+       pair.parentOrderId!=43 || pair.childOrderId!=44)
+        throw std::runtime_error("H1_CONNECTED_INIT_LOST_LOCAL_ID_FLOOR");
+    fixture.adapter.Disconnect();
+    // The numeric order sequence is Broker-client scoped even if a second
+    // DU PAPER account is configured after an explicit disconnect.
+    same.account="DU-SECOND";
+    if(!fixture.adapter.Init(same) || !fixture.adapter.Connect())
+        throw std::runtime_error("H1_DISCONNECTED_RECONFIGURE_RECONNECT_FAILED");
+    epoch=fixture.adapter.GetConnectionEpoch();
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU-SECOND",73,epoch,pair,reason) ||
+       pair.parentOrderId!=45 || pair.childOrderId!=46 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_DISCONNECTED_INIT_REUSED_UNSENT_IDS");
+}
+
 int main() {
+    TestAdapterReinitNeverReusesUnsentH1NativeIds();
     TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
     TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();
     TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
