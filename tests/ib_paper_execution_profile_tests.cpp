@@ -805,7 +805,10 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
     assert(status.get().status == ExecutionCommandStatus::Accepted);
     auto fence = std::async(std::launch::async, [&] { return policy.FenceSessionOwner(control); });
     assert(fence.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
-    assert(fence.get().status == ExecutionCommandStatus::Accepted);
+    const auto installed = fence.get();
+    assert(installed.status == ExecutionCommandStatus::Accepted);
+    assert(installed.affectedCount >= 1);
+    assert(installed.reasonCode == "SESSION_OWNER_FENCE_INSTALLED_OUTSTANDING_RISK");
     const auto release = policy.ReleaseSessionOwnerFence(control);
     assert(release.status == ExecutionCommandStatus::Rejected);
     assert(release.reasonCode == "IB_PAPER_CONTROL_BUSY");

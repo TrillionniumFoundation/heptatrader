@@ -537,7 +537,9 @@ void TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock()
     // The durable send boundary has been crossed but the order owner cannot be
     // projected until the provider returns. Fencing must not report a false
     // zero or allow the fence to be released through that gap.
+    assert(coordinator.RuntimeObservation().riskMutationDispatchInFlight);
     assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);
+    assert(coordinator.RuntimeObservation().riskMutationDispatchInFlight);
     assert(coordinator.IsSessionOwnerFenced("agent-a", "session-1"));
     std::string reason;
     assert(!coordinator.AuditAndReleaseSessionOwnerFence(
@@ -557,6 +559,7 @@ void TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock()
     const ExecutionCommandResult placed = placeFuture.get();
     assert(placed.status == ExecutionCommandStatus::Accepted);
     assert(placed.orderId == 903);
+    assert(!coordinator.RuntimeObservation().riskMutationDispatchInFlight);
 
     ExecutionOrderOwner owner;
     assert(coordinator.GetOrderOwner(903, owner));
@@ -606,6 +609,7 @@ void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock()
     const FlattenPositionCommand command =
         MakeFlatten("fence-flatten-dispatch-race");
     const AuthoritativeFlattenPlan plan = MakeFlattenPlan(command);
+    assert(!coordinator.RuntimeObservation().riskMutationDispatchInFlight);
     auto flattenFuture = std::async(std::launch::async, [&]() {
         return coordinator.ExecuteAuthoritativeFlatten(command, plan);
     });
@@ -615,8 +619,10 @@ void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock()
             gate, std::chrono::seconds(2), [&]() { return entered; }));
     }
 
+    assert(coordinator.RuntimeObservation().riskMutationDispatchInFlight);
     assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);
     assert(coordinator.IsSessionOwnerFenced("agent-a", "session-1"));
+    assert(coordinator.RuntimeObservation().riskMutationDispatchInFlight);
     std::string reason;
     assert(!coordinator.AuditAndReleaseSessionOwnerFence(
         "agent-a", "session-1", true, reason));
@@ -635,6 +641,7 @@ void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock()
     const ExecutionCommandResult flattened = flattenFuture.get();
     assert(flattened.status == ExecutionCommandStatus::Accepted);
     assert(flattened.orderId == 904);
+    assert(!coordinator.RuntimeObservation().riskMutationDispatchInFlight);
 
     ExecutionOrderOwner owner;
     assert(coordinator.GetOrderOwner(904, owner));

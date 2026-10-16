@@ -864,6 +864,7 @@ ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
     result.fencedOwners = m_fencedSessionOwners.size();
     result.recoveryOnlyOwners = m_recoveryOnlySessionOwners.size();
     result.retainedSendAttempts = m_placeSendAttempts.size();
+    result.riskMutationDispatchInFlight = m_riskMutationDispatchInFlight;
     result.mutationBlocked = m_mutationBlocked;
     return result;
 }

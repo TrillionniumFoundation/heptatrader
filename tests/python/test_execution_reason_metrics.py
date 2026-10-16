@@ -33,6 +33,7 @@ int main() {
         return VenueFlattenResult::Submitted(42);
     };
     ExecutionRuntimeObservation execution; execution.present = true;
+    execution.riskMutationDispatchInFlight = true;
     auto& op = execution.operations[0];
     for (const auto reason : {"OMS_NEW_ENTRY_CAPACITY_EXHAUSTED", "IDEMPOTENCY_KEY_CONFLICT",
                              "PRIVATE_TOKEN_OR_ACCOUNT_MUST_NOT_BE_A_LABEL", ""}) {
@@ -81,6 +82,7 @@ class ExecutionReasonMetricsTests(unittest.TestCase):
         self.assertEqual(self.names, report.EXECUTION_REASONS)
         metrics = copy.deepcopy(self.sample["execution_metrics"])
         report.validate_execution(metrics)
+        self.assertIs(metrics["risk_mutation_dispatch_in_flight"], True)
         self.assertEqual(sum(metrics["reason_counts"][0]), 4)
         self.assertEqual(metrics["reason_counts"][2][1], 1)
 
@@ -92,6 +94,7 @@ class ExecutionReasonMetricsTests(unittest.TestCase):
         self.assertIn('hepta_execution_command_reasons_total{operation="flatten",reason="EXCEPTION"} 1', text)
         self.assertNotIn("PRIVATE_TOKEN_OR_ACCOUNT", text)
         self.assertIn("hepta_execution_reason_metrics_present 1", text)
+        self.assertIn("hepta_execution_risk_mutation_dispatch_in_flight 1", text)
 
     def test_old_producer_absence_is_not_observed_zero(self):
         sample = copy.deepcopy(self.sample)

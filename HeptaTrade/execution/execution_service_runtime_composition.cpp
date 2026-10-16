@@ -211,6 +211,9 @@ public:
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         result.affectedCount = m_coordinator.FenceSessionOwner(
             command.context.agentId, command.context.sessionId);
+        result.reasonCode = result.affectedCount ?
+            "SESSION_OWNER_FENCE_INSTALLED_OUTSTANDING_RISK" :
+            "SESSION_OWNER_FENCE_INSTALLED_NOT_A_STOP_PERMIT";
         std::string blockReason;
         result.mutationBlocked = m_coordinator.IsMutationBlocked(&blockReason);
         if (result.mutationBlocked && blockReason == "OMS_SESSION_FENCE_JOURNAL_FAILED")

@@ -198,6 +198,9 @@ struct ExecutionRuntimeObservation
     std::uint64_t fencedOwners = 0;
     std::uint64_t recoveryOnlyOwners = 0;
     std::uint64_t retainedSendAttempts = 0;
+    // Same-mutex account-local send/flatten dispatch visibility. A fenced
+    // owner with an outstanding send is never maintenance-quiescent.
+    bool riskMutationDispatchInFlight = false;
     bool mutationBlocked = false;
 };
 
@@ -244,6 +247,8 @@ inline std::string ExecutionCapacityObservation(
         << ",\"fenced_owners\":" << execution.fencedOwners
         << ",\"recovery_only_owners\":" << execution.recoveryOnlyOwners
         << ",\"retained_send_attempts\":" << execution.retainedSendAttempts
+        << ",\"risk_mutation_dispatch_in_flight\":"
+        << (execution.riskMutationDispatchInFlight ? "true" : "false")
         << ",\"mutation_blocked\":" << (execution.mutationBlocked ? "true" : "false");
     const char* names[] = {"place_latency", "cancel_latency", "flatten_latency"};
     for (std::size_t i = 0; i < execution.operations.size(); ++i)
