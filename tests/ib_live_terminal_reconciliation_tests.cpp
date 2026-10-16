@@ -1,6 +1,7 @@
 #include "adapter_ib/ib_gateway_adapter.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
+#include "execution/ib_bracket_h1_oms_reservation.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -82,11 +83,14 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
+    mutable long nextValidOrderId=41;
+    mutable long jumpFloorAfterNextRead=0; // deterministic mock of EReader callback
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
     bool Connect(const IBConnectParams& p) override {connectBudgetMs=p.handshakeTimeoutMs;connected=true;return true;}
     void SetConnectionEpoch(std::uint64_t value) override {epoch=value;}
+    std::uint64_t GetConnectionEpoch() const override {return epoch;}
     void Disconnect() override {connected=false;}
     bool IsConnected() const override {return connected;}
     const char* GetStatusString() const override {return "fixture";}
@@ -120,12 +124,22 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long GetLastValidOrderId() const override {return 41;}
+    long GetLastValidOrderId() const override {
+        // Test an asynchronous Broker callback raising the native floor
+        // BETWEEN the research reservation's first and second reads.
+        const long before=nextValidOrderId;
+        if(jumpFloorAfterNextRead!=0) {
+            nextValidOrderId=jumpFloorAfterNextRead;
+            jumpFloorAfterNextRead=0;
+        }
+        return before;
+    }
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
     Fixture(bool finishBootstrap=true, bool cryptoScope=false, bool cashScope=false,
-            const std::string& observabilityPath=std::string()):broker(new Broker()),adapter(
+            const std::string& observabilityPath=std::string(),
+            bool requireNextValidId=true):broker(new Broker()),adapter(
         std::unique_ptr<IIBApiWrapper>(broker), [this]() {
             broker=new Broker();return std::unique_ptr<IIBApiWrapper>(broker);
         }) {
@@ -133,6 +147,7 @@ struct Fixture {
         cfg.observabilityLogPath=observabilityPath;
         cfg.risk.enableOrderSubmission=true;cfg.risk.maxDailyOrders=100;
         cfg.risk.duplicateOrderWindowSec=0;cfg.risk.maxPriceDeviationBps=0;
+        cfg.risk.requireNextValidId=requireNextValidId;
         if(cryptoScope) {
             IBContractLite c;c.symbol="BTC";c.secType="CRYPTO";c.exchange="PAXOS";c.currency="USD";
             cfg.authoritativeCryptoContracts["BTC.USD"]=c;
@@ -1146,7 +1161,760 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
+void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
+    Fixture f;
+    f.broker->nextValidOrderId = 2147483648L; // exceeds TWS OrderId:int32
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long received=-1;
+    const bool admitted=f.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'f'),&received);
+    if(admitted || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("IB_NATIVE_ORDER_ID_EXCEEDS_32BIT_BROKER_RANGE");
+    // Even when the old optional pre-risk flag is disabled, the native
+    // allocator may not mint arbitrary ID 1 without a real Broker floor.
+    Fixture noBrokerFloor(true,false,false,std::string(),false);
+    noBrokerFloor.broker->nextValidOrderId=0;
+    long missing=-1;
+    const bool madeUp=noBrokerFloor.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'d'),&missing);
+    if(madeUp || noBrokerFloor.broker->places!=0 ||
+       noBrokerFloor.adapter.GetLastRejectReason()!=
+           "IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("ORDER_ID_MINTED_WITHOUT_NEXT_VALID_CALLBACK");
+    Fixture nearLimit;
+    nearLimit.broker->nextValidOrderId=2147483647L;
+    const long last=nearLimit.Place();
+    if(last!=2147483647L || nearLimit.broker->places!=1)
+        throw std::runtime_error("NATIVE_ORDER_ID_MAX_VALID_VALUE_REFUSED");
+    long later=-1;
+    const bool replay=nearLimit.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'b'),&later);
+    if(replay || nearLimit.broker->places!=1 ||
+       nearLimit.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("NATIVE_ORDER_ID_EXHAUSTION_ALLOWED_SECOND_SEND");
+}
+void TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend() {
+    Fixture f;
+    IBContractLite contract;
+    contract.symbol="EUR"; contract.secType="CASH";
+    contract.exchange="IDEALPRO"; contract.currency="USD";
+    IBOrderLite order;
+    order.action="BUY"; order.orderType="LMT";
+    order.lmtPrice=1.18; order.totalQuantity=1;
+    bool finalCheckWasCalled=false;
+    f.adapter.SetPrePlaceOrderSendCheck(
+        [&](const IBFinalOrderSendContext*, const IBContractLite&,
+            const IBOrderLite&, std::string*) {
+            finalCheckWasCalled=true;
+            // New native nextValidId or an observed foreign openOrder can
+            // raise the floor after adapter allocated the earlier local ID.
+            f.broker->nextValidOrderId=900;
+            return true;
+        });
+    long assigned=-1;
+    const bool sent=f.adapter.PlaceOrderCorrelated(contract,order,
+        "hepta-v1-sha256:"+std::string(64,'e'),&assigned);
+    if(!finalCheckWasCalled || sent || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!=
+           "IB_NATIVE_ORDER_ID_STALE_BEFORE_SEND")
+        throw std::runtime_error("FOREIGN_BROKER_ORDER_FLOOR_OVERRAN_RESERVED_ID");
+}
+void TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds() {
+    // Model an asynchronous EReader floor change immediately after the
+    // initial SDK floor read, before the unsent ID pair is published.
+    // An SDK connection losing readiness is also a refused reservation.
+    for (const long observed : {-1L, 42L, 43L, 900L}) {
+        Fixture f;
+        const auto epoch=f.adapter.GetConnectionEpoch();
+        IBResearchH1LocalIdPair pair;
+        std::string reason;
+        f.broker->jumpFloorAfterNextRead=observed;
+        const bool granted=f.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason);
+        if(granted || pair.parentOrderId!=-1 || f.broker->places!=0 ||
+           reason!="IB_H1_LOCAL_PAIR_BROKER_FLOOR_CHANGED_BEFORE_RETURN")
+            throw std::runtime_error(
+                "H1_UNSENT_PAIR_RETURNED_STALE_ID_AFTER_BROKER_FLOOR_JUMP");
+        if(observed<0) f.broker->nextValidOrderId=900;
+        const long expected=observed<0 ? 900 :
+                            (observed<=43 ? 43 : observed);
+        if(!f.adapter.ReserveResearchUnsentH1LocalIdPair(
+                "DU123",73,epoch,pair,reason) ||
+           pair.parentOrderId!=expected ||
+           pair.childOrderId!=expected+1 ||
+           pair.sendAuthorized || pair.brokerWorkingStopProven ||
+           f.broker->places!=0)
+            throw std::runtime_error("H1_LATE_BROKER_FLOOR_RETRY_REUSED_ID");
+    }
+}
+void TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress() {
+    Fixture f;
+    const auto epoch = f.adapter.GetConnectionEpoch();
+    IBResearchH1LocalIdPair pair;
+    std::string reason;
+    auto reserve=[&](const std::string& account, int clientId,
+                     std::uint64_t connectionEpoch) {
+        return f.adapter.ReserveResearchUnsentH1LocalIdPair(
+            account,clientId,connectionEpoch,pair,reason);
+    };
+    if (reserve("DU123",73,0) || pair.parentOrderId!=-1 ||
+        reserve("DU123",74,epoch) || pair.parentOrderId!=-1 ||
+        reserve("DU-FOREIGN",73,epoch) || pair.parentOrderId!=-1)
+        throw std::runtime_error("H1_LOCAL_PAIR_ACCEPTED_FOREIGN_OWNER_OR_EPOCH");
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=41 ||
+        pair.childOrderId!=42 || pair.brokerClientId!=73 ||
+        pair.connectionEpoch!=epoch || pair.paperAccount!="DU123" ||
+        pair.sendAuthorized || pair.brokerWorkingStopProven ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MINTED_NATIVE_SEND_AUTHORITY");
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=43 ||
+        pair.childOrderId!=44 || f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_REUSED_ALREADY_CONSUMED_ID");
+    f.broker->nextValidOrderId=900;
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=900 ||
+        pair.childOrderId!=901 || f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_IGNORED_RAISED_BROKER_FLOOR");
+    f.broker->nextValidOrderId=0;
+    if (reserve("DU123",73,epoch) || pair.parentOrderId!=-1 ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MINTED_ID_WITHOUT_NEXTVALID");
+    f.broker->nextValidOrderId=902;
+    if (!reserve("DU123",73,epoch) || pair.parentOrderId!=902 ||
+        pair.childOrderId!=903)
+        throw std::runtime_error("H1_LOCAL_PAIR_FAILED_RECOVERY_AFTER_MISSING_FLOOR");
+    f.adapter.Disconnect();
+    if (reserve("DU123",73,epoch) || pair.parentOrderId!=-1 ||
+        f.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_BYPASSED_DISCONNECTED_OWNER");
+    // The same local cursor must be shared with existing ordinary single-ID
+    // submits. The only Place() here is the isolated mock Broker, not IBKR.
+    Fixture mixed;
+    const auto mixEpoch=mixed.adapter.GetConnectionEpoch();
+    if (!mixed.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,mixEpoch,pair,reason) || pair.parentOrderId!=41 ||
+        pair.childOrderId!=42 || mixed.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_MIXED_SOURCE_PREPARE_FAILED");
+    const long ordinaryId=mixed.Place("hepta-v1-sha256:"+std::string(64,'c'));
+    if (ordinaryId!=43 || mixed.broker->places!=1 ||
+        !mixed.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,mixEpoch,pair,reason) ||
+        pair.parentOrderId!=44 || pair.childOrderId!=45 ||
+        mixed.broker->places!=1)
+        throw std::runtime_error("H1_LOCAL_PAIR_COLLIDED_WITH_REGULAR_ORDER_ID");
+    // Reconnect invalidates any old Broker epoch. The adapter may reserve
+    // local IDs only after the fresh wrapper reports its new nextValidId.
+    Fixture reconnecting;
+    const auto oldEpoch=reconnecting.adapter.GetConnectionEpoch();
+    if (!reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,oldEpoch,pair,reason))
+        throw std::runtime_error("H1_LOCAL_PAIR_BEFORE_RECONNECT_INVALID");
+    reconnecting.adapter.Disconnect();
+    if (!reconnecting.adapter.Connect() ||
+        reconnecting.adapter.GetConnectionEpoch()<=oldEpoch)
+        throw std::runtime_error("H1_LOCAL_PAIR_NEW_EPOCH_UNAVAILABLE");
+    if (reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,oldEpoch,pair,reason) || pair.parentOrderId!=-1)
+        throw std::runtime_error("H1_LOCAL_PAIR_STALE_EPOCH_GRANTED");
+    const auto newEpoch=reconnecting.adapter.GetConnectionEpoch();
+    if (!reconnecting.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,newEpoch,pair,reason) ||
+        pair.parentOrderId!=43 || pair.childOrderId!=44 ||
+        reconnecting.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_NEW_EPOCH_REUSED_OLD_ID");
+    // Read-only connected client cannot claim native mutation reservations.
+    Broker* readOnlyBroker=new Broker();
+    HeptaIBGatewayAdapter readOnlyAdapter{
+        std::unique_ptr<IIBApiWrapper>(readOnlyBroker)};
+    HeptaIBConfig readCfg;readCfg.account="DU123";readCfg.clientId=73;
+    readCfg.readOnly=true;
+    if (!readOnlyAdapter.Init(readCfg) || !readOnlyAdapter.Connect() ||
+        readOnlyAdapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,readOnlyAdapter.GetConnectionEpoch(),pair,reason) ||
+        pair.parentOrderId!=-1 || readOnlyBroker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_READ_ONLY_CLIENT_GRANTED");
+
+    Fixture exhausted;
+    auto exEpoch=exhausted.adapter.GetConnectionEpoch();
+    exhausted.broker->nextValidOrderId=2147483646L;
+    if (!exhausted.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,exEpoch,pair,reason) ||
+        pair.parentOrderId!=2147483646L || pair.childOrderId!=2147483647L ||
+        exhausted.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_REJECTED_LAST_VALID_SIGNED_IDS");
+    if (exhausted.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,exEpoch,pair,reason) || pair.parentOrderId!=-1 ||
+        exhausted.broker->places!=0)
+        throw std::runtime_error("H1_LOCAL_PAIR_OVERFLOWED_SIGNED_TWS_ID");
+    // A pair may legally consume MAX-1 and MAX. The next ordinary send
+    // must refuse, not wrap the local cursor to a positive Broker order ID.
+    IBContractLite exhaustedContract;
+    exhaustedContract.symbol="EUR";
+    exhaustedContract.secType="CASH";
+    exhaustedContract.exchange="IDEALPRO";
+    exhaustedContract.currency="USD";
+    IBOrderLite exhaustedOrder;
+    exhaustedOrder.action="BUY";
+    exhaustedOrder.orderType="LMT";
+    exhaustedOrder.lmtPrice=1.18;
+    exhaustedOrder.totalQuantity=1;
+    long exhaustedAssigned=-1;
+    if (exhausted.adapter.PlaceOrderCorrelated(
+            exhaustedContract, exhaustedOrder,
+            "hepta-v1-sha256:"+std::string(64,'f'),
+            &exhaustedAssigned) ||
+        exhaustedAssigned>0 || exhausted.broker->places!=0 ||
+        exhausted.adapter.GetLastRejectReason()!=
+            "IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("H1_LOCAL_PAIR_EXHAUSTION_ALLOWED_ORDINARY_SEND");
+}
+
+void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {
+    using namespace hepta_bracket_h1;
+    // This is a wholly in-process Broker mock plus a private temporary OMS.
+    // Even a successful pair reservation can NEVER send a real IB order.
+    Fixture fixture;
+    OmsJournal journal;
+    std::string templ="/tmp/Hepta-H1-LocalOwnerHandoff-XXXXXX";
+    std::vector<char> path(templ.begin(),templ.end());path.push_back('\0');
+    int fd=::mkstemp(path.data());
+    if(fd<0)throw std::runtime_error("H1_HANDOFF_SCRATCH_CREATE_FAILED");
+    ::close(fd);::unlink(path.data());
+    if(!journal.Init(path.data()))
+        throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_INIT_FAILED");
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator owner(journal,callbacks);
+    AgentExecutionContext ctx;
+    ctx.agentId="original-owner";ctx.sessionId="owner-session";
+    ctx.toolCallId="original-h1-entry-001";
+    ctx.executionDomain="IB-PAPER:EUR.USD";
+    FrozenBracket f;
+    f.originalCommandKey=ctx.toolCallId;f.account="DU123";
+    f.owner=ctx.agentId;f.sessionId=ctx.sessionId;
+    f.executionDomain="PAPER";f.side="BUY";
+    f.contractId=12087792;f.clientId=73;
+    f.parentOrderId=0;f.childOrderId=0;
+    f.connectionEpoch=fixture.adapter.GetConnectionEpoch();
+    f.positionGeneration=91;f.ownerFenceToken=31;
+    f.intentObservedAtMs=1792080000123ULL;
+    f.quantity=89200;f.referencePrice=1.1205;
+    f.stopPrice=1.11825;f.minTick=0.00005;
+    std::string reason;
+    hepta_bracket_h1::Reservation persisted;
+    int allocations=0;
+    ExecutionCoordinator::H1UnsentNativeIdAllocator nativeIds =
+        [&](const std::string& account,int clientId,std::uint64_t epoch,
+            long& parent,long& child,std::string& error)->bool {
+        ++allocations;
+        IBResearchH1LocalIdPair candidate;
+        if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+                account,clientId,epoch,candidate,error))return false;
+        if(candidate.sendAuthorized || candidate.brokerWorkingStopProven ||
+           candidate.paperAccount!=account ||
+           candidate.brokerClientId!=clientId ||
+           candidate.connectionEpoch!=epoch)return false;
+        parent=candidate.parentOrderId;child=candidate.childOrderId;
+        return true;
+    };
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=0 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_MISSING_OWNER_FENCE_ALLOCATED_IDS");
+    if(!owner.EnterRecoveryOnlyOwner(ctx.agentId,ctx.sessionId,31,reason))
+        throw std::runtime_error("H1_HANDOFF_OWNER_RECOVERY_FENCE_FAILED");
+    auto preselected=f;preselected.parentOrderId=9000;preselected.childOrderId=9001;
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,preselected,nativeIds,persisted,reason) || allocations!=0)
+        throw std::runtime_error("H1_HANDOFF_CALLER_PRESELECTED_NATIVE_IDS");
+    if(!owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=1 ||
+       persisted.frozen.parentOrderId!=41 ||
+       persisted.frozen.childOrderId!=42 ||
+       !persisted.replayComplete || persisted.sendAuthorized ||
+       persisted.driverStopAllowed || fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_NATIVE_ID_TO_DURABLE_OMS_MISMATCH");
+    std::vector<OmsJournalEvent> entries;
+    if(journal.Replay([&](const OmsJournalEvent& e){entries.push_back(e);})!=3)
+        throw std::runtime_error("H1_HANDOFF_DURABLE_OMS_PAIR_NOT_EXACT");
+    hepta_bracket_h1::Reservation checked;
+    if(!ConfirmReplay(entries,persisted.frozen,checked,reason) ||
+       checked.ids.childRef!=persisted.ids.childRef)
+        throw std::runtime_error("H1_HANDOFF_RESTART_CANNOT_BIND_ORIGINAL_PAIR");
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            ctx,f,nativeIds,persisted,reason) || allocations!=1 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_HANDOFF_DUPLICATE_BURNED_MORE_NATIVE_IDS");
+    // If the original Broker callback floor temporarily disappears, the
+    // next original command must leave NO prefix and consume NO local IDs.
+    auto secondCtx=ctx;secondCtx.toolCallId="original-h1-entry-002";
+    auto second=f;second.originalCommandKey=secondCtx.toolCallId;
+    fixture.broker->nextValidOrderId=0;
+    if(owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            secondCtx,second,nativeIds,persisted,reason) ||
+       allocations!=2 || persisted.replayComplete ||
+       journal.Replay([](const OmsJournalEvent&) {})!=3)
+        throw std::runtime_error("H1_HANDOFF_NO_NEXTVALID_PERSISTED_FALSE_PAIR");
+    fixture.broker->nextValidOrderId=43;
+    if(!owner.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            secondCtx,second,nativeIds,persisted,reason) ||
+       allocations!=3 || persisted.frozen.parentOrderId!=43 ||
+       persisted.frozen.childOrderId!=44 || fixture.broker->places!=0 ||
+       journal.Replay([](const OmsJournalEvent&) {})!=5)
+        throw std::runtime_error("H1_HANDOFF_BROKER_FLOOR_RETURN_LOST_ID_CURSOR");
+    // New Adapter process, same Mock Broker nextValidId=41: the Broker has
+    // never seen the UNSENT OMS reservations 41..44. Without recovery-floor
+    // adoption an unrelated ordinary order will reuse durable H1 numeric IDs.
+    Fixture freshAdapterAfterProcessRestart;
+    std::int64_t replayedH1Floor=0;
+    if(!owner.GetDurableResearchH1NativeIdFloor(
+            "DU123",replayedH1Floor,reason) || replayedH1Floor!=45)
+        throw std::runtime_error("H1_RESTART_OMS_DURABLE_NATIVE_FLOOR_MISSING");
+    // Native order IDs are Broker CLIENT-scoped, not per DU account.
+    // Reconfigure the SAME client 73 to another PAPER account using a new
+    // in-process mock adapter. It may not reuse any locally reserved ID 41..44.
+    std::int64_t changedDuFloor=0;
+    if(!owner.GetDurableResearchH1NativeIdFloor(
+            "DU-ANOTHER",changedDuFloor,reason) || changedDuFloor!=45)
+        throw std::runtime_error("H1_CROSS_ACCOUNT_BROKER_CLIENT_FLOOR_REUSED");
+    Broker* changedBroker=new Broker();
+    HeptaIBGatewayAdapter changedAdapter{
+        std::unique_ptr<IIBApiWrapper>(changedBroker)};
+    HeptaIBConfig changedCfg;
+    changedCfg.account="DU-ANOTHER";
+    changedCfg.clientId=73;
+    changedCfg.readOnly=false;
+    if(!changedAdapter.Init(changedCfg) || !changedAdapter.Connect())
+        throw std::runtime_error("H1_CROSS_ACCOUNT_MOCK_ADAPTER_SETUP_FAILED");
+    const auto changedEpoch=changedAdapter.GetConnectionEpoch();
+    if(!changedAdapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU-ANOTHER",73,changedEpoch,changedDuFloor,reason))
+        throw std::runtime_error("H1_CROSS_ACCOUNT_DURABLE_ID_FLOOR_NOT_ADOPTED");
+    IBResearchH1LocalIdPair crossAccountPair;
+    if(!changedAdapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU-ANOTHER",73,changedEpoch,crossAccountPair,reason) ||
+       crossAccountPair.parentOrderId!=45 ||
+       crossAccountPair.childOrderId!=46 ||
+       crossAccountPair.sendAuthorized || changedBroker->places!=0)
+        throw std::runtime_error("H1_CROSS_ACCOUNT_NATIVE_ID_PAIR_REUSED_OR_SENT");
+    if(freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU-FOREIGN",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason) ||
+       freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch()+1,
+            replayedH1Floor,reason) ||
+       freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",74,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason) ||
+       !freshAdapterAfterProcessRestart.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",73,freshAdapterAfterProcessRestart.adapter.GetConnectionEpoch(),
+            replayedH1Floor,reason))
+        throw std::runtime_error("H1_RESTART_NATIVE_FLOOR_BROKER_SCOPE_INVALID");
+    const long ordinaryAfterRestart=freshAdapterAfterProcessRestart.Place(
+        "hepta-v1-sha256:"+std::string(64,'8'));
+    if(ordinaryAfterRestart<=44)
+        throw std::runtime_error("OMS_RESERVED_H1_NATIVE_IDS_REUSED_AFTER_RESTART");
+    // A crash can leave ONLY the parent reservation durably written.
+    // Even that prefix burns its native ID until authoritative reconciliation.
+    std::string partialMask="/tmp/Hepta-H1-PartialFloor-XXXXXX";
+    std::vector<char> partialPath(partialMask.begin(),partialMask.end());
+    partialPath.push_back('\0');
+    const int partialFd=::mkstemp(partialPath.data());
+    if(partialFd<0)throw std::runtime_error("H1_PARTIAL_FLOOR_SCRATCH_FAILED");
+    ::close(partialFd);::unlink(partialPath.data());
+    {
+        OmsJournal partial;
+        if(!partial.Init(partialPath.data()) ||
+           !partial.AppendDurableCritical(hepta_bracket_h1::Intent(
+               persisted.frozen,persisted.ids,false)))
+            throw std::runtime_error("H1_PARTIAL_PARENT_NOT_DURABLE");
+        ExecutionCoordinator partialOwner(partial,callbacks);
+        std::int64_t partialFloor=0;
+        if(!partialOwner.GetDurableResearchH1NativeIdFloor(
+               "DU123",partialFloor,reason) ||
+           partialFloor!=persisted.frozen.parentOrderId+1)
+            throw std::runtime_error("H1_PARTIAL_PARENT_ID_RECOVERY_WAS_LOST");
+        auto corrupted=hepta_bracket_h1::Intent(
+            persisted.frozen,persisted.ids,false);
+        corrupted.source="UNTRUSTED_BROKER_PROOF";
+        if(!partial.AppendDurableCritical(corrupted) ||
+           partialOwner.GetDurableResearchH1NativeIdFloor(
+               "DU123",partialFloor,reason) ||
+           reason!="H1_RECOVERED_NATIVE_ID_EVENT_INVALID")
+            throw std::runtime_error("H1_MALFORMED_ORIGINAL_PREFIX_MINTED_NATIVE_IDS");
+    }
+    if(::unlink(partialPath.data())!=0)
+        throw std::runtime_error("H1_PARTIAL_FLOOR_CLEANUP_FAILED");
+    // The pre-send durable group must not mint another pair on Coordinator
+    // restart even if the caller still has a valid nextValidId callback.
+    {
+        ExecutionCoordinator recovered(journal,callbacks);
+        if(!recovered.RecoverFromJournal(reason))
+            throw std::runtime_error("H1_HANDOFF_RESTART_RECOVERY_FAILED");
+        auto old=f;
+        if(recovered.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+                ctx,old,nativeIds,persisted,reason) || allocations!=3 ||
+           fixture.broker->places!=0)
+            throw std::runtime_error("H1_HANDOFF_RESTART_CONSUMED_DUPLICATE_IDS");
+    }
+    if(::unlink(path.data())!=0)
+        throw std::runtime_error("H1_HANDOFF_SCRATCH_OMS_UNLINK_FAILED");
+}
+
+void TestOwnerDurableOcaExitUsesActualLocalAdapterCursorWithoutSending() {
+    // Real Adapter + Coordinator/OMS classes, in-process fake IB wrapper.
+    // The Broker echo below is an explicitly SYNTHETIC positive fixture.
+    Fixture fixture;
+    const std::uint64_t epoch=fixture.adapter.GetConnectionEpoch();
+    std::string filename="/tmp/Hepta-H1-Owner-Exit-XXXXXX";
+    std::vector<char> path(filename.begin(),filename.end());path.push_back('\0');
+    const int fd=::mkstemp(path.data());
+    if(fd<0)throw std::runtime_error("H1_OWNER_EXIT_OMS_SCRATCH_FAILED");
+    ::close(fd);::unlink(path.data());
+    OmsJournal journal;
+    if(!journal.Init(path.data()))
+        throw std::runtime_error("H1_OWNER_EXIT_OMS_INIT_FAILED");
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(journal,callbacks);
+    AgentExecutionContext owner;
+    owner.agentId="original-owner";owner.sessionId="h1-exit-session";
+    owner.toolCallId="native-h1-exit-original-001";
+    owner.executionDomain="IB-PAPER:EUR.USD";
+    hepta_bracket_h1::FrozenBracket f;
+    f.originalCommandKey=owner.toolCallId;
+    f.account="DU123";f.owner=owner.agentId;f.sessionId=owner.sessionId;
+    f.executionDomain="PAPER";f.side="BUY";
+    f.contractId=12087792;f.clientId=73;
+    f.connectionEpoch=epoch;f.positionGeneration=91;
+    f.ownerFenceToken=31;f.intentObservedAtMs=1792080000123ULL;
+    f.quantity=89200;f.referencePrice=1.1205;
+    f.stopPrice=1.11825;f.minTick=.00005;
+    std::string reason;
+    if(!coordinator.EnterRecoveryOnlyOwner(
+            owner.agentId,owner.sessionId,f.ownerFenceToken,reason))
+        throw std::runtime_error("H1_OWNER_EXIT_RECOVERY_FENCE_MISSING");
+    const ExecutionCoordinator::H1UnsentNativeIdAllocator pairAllocator=
+        [&](const std::string& account,int clientId,std::uint64_t generation,
+            long& parent,long& child,std::string& error)->bool {
+        IBResearchH1LocalIdPair pair;
+        if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+                account,clientId,generation,pair,error))return false;
+        if(pair.sendAuthorized || pair.brokerWorkingStopProven ||
+           pair.paperAccount!=account || pair.brokerClientId!=clientId ||
+           pair.connectionEpoch!=generation)return false;
+        parent=pair.parentOrderId;child=pair.childOrderId;return true;
+    };
+    hepta_bracket_h1::Reservation pair;
+    if(!coordinator.ReserveResearchH1BracketFromAdapterForRecoveryOnlyOwner(
+            owner,f,pairAllocator,pair,reason) ||
+       pair.frozen.parentOrderId!=41 || pair.frozen.childOrderId!=42 ||
+       pair.sendAuthorized || fixture.broker->places!=0)
+        throw std::runtime_error("H1_OWNER_EXIT_LOCAL_PARENT_CHILD_IDS_NOT_DURABLE");
+    f=pair.frozen;
+    if(!hepta_bracket_h1::MarkPotentialSend(journal,pair,false,reason) ||
+       !hepta_bracket_h1::MarkPotentialSend(journal,pair,true,reason))
+        throw std::runtime_error("H1_OWNER_EXIT_UNSENT_PRESEND_MARKERS_MISSING");
+    OmsJournalEvent synthetic=hepta_bracket_h1::Intent(f,pair.ids,true);
+    synthetic.eventType="broker_open_order_bracket";
+    synthetic.source="agent:"+f.owner;
+    synthetic.brokerClientId=f.clientId;
+    synthetic.brokerConnectionEpoch=f.connectionEpoch;
+    synthetic.brokerCallbackType="openOrder";
+    synthetic.status="Submitted";
+    synthetic.eventId=pair.ids.childRef+"-"+
+        std::to_string(f.connectionEpoch)+"-88333";
+    auto& bracket=synthetic.brokerBracket;
+    bracket.version=2;bracket.contractId=f.contractId;
+    bracket.parentOrderId=f.parentOrderId;
+    bracket.permanentOrderId=88333;
+    bracket.transmit=1;bracket.ocaType=1;bracket.triggerMethod=0;
+    bracket.orderRef=pair.ids.childRef;
+    bracket.ocaGroup=pair.ids.ocaGroup;
+    bracket.timeInForce="GTC";
+    bracket.quantity=f.quantity;bracket.stopAuxPrice=f.stopPrice;
+    if(!bracket.ValidShape() || !journal.AppendDurableCritical(synthetic))
+        throw std::runtime_error("H1_OWNER_EXIT_SYNTHETIC_OMS_ECHO_FAILED");
+    int exitAllocations=0;
+    const ExecutionCoordinator::H1UnsentNativeOcaExitAllocator exitAllocator=
+        [&](const std::string& account,int clientId,std::uint64_t generation,
+            long stop,ExecutionCoordinator::H1LocalOcaExitReceipt& out,
+            std::string& error)->bool {
+        ++exitAllocations;
+        IBResearchH1LocalExitId candidate;
+        if(!fixture.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+                account,clientId,generation,stop,candidate,error))return false;
+        out.orderId=candidate.orderId;
+        out.stopOrderId=candidate.stopOrderId;
+        out.brokerClientId=candidate.brokerClientId;
+        out.connectionEpoch=candidate.connectionEpoch;
+        out.paperAccount=candidate.paperAccount;
+        out.sendAuthorized=candidate.sendAuthorized;
+        out.maintenanceAuthorized=candidate.maintenanceAuthorized;
+        return true;
+    };
+    ExecutionCoordinator::H1LocalOcaExitReceipt recorded;
+    std::string exitCorrelation;
+    if(!coordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+            owner,f,epoch,88333,exitAllocator,
+            recorded,exitCorrelation,reason) ||
+       exitAllocations!=1 || recorded.orderId!=43 ||
+       recorded.sendAuthorized || recorded.maintenanceAuthorized ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_OWNER_EXIT_ADAPTER_ID_NOT_DURABLY_BOUND");
+    // A local UNSENT OCA ID receipt may not impersonate a Broker response.
+    // Replaying it with fabricated broker evidence must invalidate the
+    // original H1 stop's native attestation, not mint a usable EXIT state.
+    std::vector<OmsJournalEvent> ocaEvents;
+    if(journal.Replay([&](const OmsJournalEvent& e){ocaEvents.push_back(e);})!=7)
+        throw std::runtime_error("H1_OCA_EXPECTED_SEVEN_OWNER_AND_ORIGINAL_RECORDS");
+    hepta_bracket_h1::Reservation replayedStop;
+    if(!hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            ocaEvents,f,replayedStop,reason))
+        throw std::runtime_error("H1_OCA_CLEAN_REPLAY_NOT_ATTESTED");
+    auto forgedOca=ocaEvents;
+    bool modified=false;
+    for(auto& item:forgedOca) {
+        if(item.eventType=="bracket_oca_exit_reserved") {
+            item.reason="BROKER_STOP_WORKING_FAKE";
+            modified=true;
+        }
+    }
+    if(!modified || hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_REASON_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved") {
+            item.brokerErrorCode=201;
+            item.brokerMessage="BROKER_REJECTED_FAKE";
+        }
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_ERROR_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerServiceEpoch="foreign-native-broker-epoch";
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_SERVICE_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerRemainingQuantity=1.0;
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_QUANTITY_ACCEPTED");
+    forgedOca=ocaEvents;
+    for(auto& item:forgedOca)
+        if(item.eventType=="bracket_oca_exit_reserved")
+            item.brokerEconomics.version=1;
+    if(hepta_bracket_h1::ConfirmReplayForOriginalNativeEcho(
+            forgedOca,f,replayedStop,reason) || !replayedStop.uncertain)
+        throw std::runtime_error("H1_OCA_FORGED_BROKER_ECONOMICS_ACCEPTED");
+    std::int64_t floor=0;
+    if(!coordinator.GetDurableResearchH1NativeIdFloor(
+            "DU-SECOND",floor,reason) || floor!=44)
+        throw std::runtime_error("H1_OWNER_EXIT_DURABLE_ID_FLOOR_LOST");
+    if(coordinator.ReserveResearchH1OcaExitForRecoveryOnlyOwner(
+            owner,f,epoch,88333,exitAllocator,
+            recorded,exitCorrelation,reason) || exitAllocations!=1)
+        throw std::runtime_error("H1_OWNER_EXIT_DUPLICATE_CONSUMED_ADAPTER_ID");
+    Fixture freshAdapter;
+    if(!freshAdapter.adapter.AdoptDurableResearchH1NativeIdFloor(
+            "DU123",73,freshAdapter.adapter.GetConnectionEpoch(),
+            floor,reason))
+        throw std::runtime_error("H1_OWNER_EXIT_RESTART_ID_FLOOR_NOT_ADOPTED");
+    IBResearchH1LocalIdPair next;
+    if(!freshAdapter.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,freshAdapter.adapter.GetConnectionEpoch(),next,reason) ||
+       next.parentOrderId!=44 || next.childOrderId!=45 ||
+       freshAdapter.broker->places!=0)
+        throw std::runtime_error("H1_OWNER_EXIT_RESTART_REUSED_LOCAL_EXIT_ID");
+    if(::unlink(path.data())!=0)
+        throw std::runtime_error("H1_OWNER_EXIT_SCRATCH_CLEANUP_FAILED");
+}
+
+void TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending() {
+    Fixture fixture;
+    std::string reason;
+    auto epoch=fixture.adapter.GetConnectionEpoch();
+    IBResearchH1LocalIdPair group;
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,group,reason) ||
+       group.parentOrderId!=41 || group.childOrderId!=42)
+        throw std::runtime_error("H1_OCA_INITIAL_NATIVE_GROUP_UNAVAILABLE");
+    IBResearchH1LocalExitId exitId;
+    auto reserve=[&](const std::string& account,int client,
+                     std::uint64_t e,long afterStop) {
+        return fixture.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            account,client,e,afterStop,exitId,reason);
+    };
+    if(reserve("DU123",74,epoch,42) || exitId.orderId!=-1 ||
+       reserve("DU-OTHER",73,epoch,42) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch+1,42) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,0) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,9000) || exitId.orderId!=-1 ||
+       reserve("DU123",73,epoch,2147483647L) || exitId.orderId!=-1)
+        throw std::runtime_error("H1_OCA_UNVERIFIED_OWNER_STOP_OR_EPOCH_GOT_ID");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=43 ||
+       exitId.stopOrderId!=42 || exitId.brokerClientId!=73 ||
+       exitId.connectionEpoch!=epoch || exitId.paperAccount!="DU123" ||
+       exitId.sendAuthorized || exitId.maintenanceAuthorized ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_OCA_UNSENT_EXIT_MINTED_BROKER_AUTHORITY");
+    // Ordinary next-order ID shares the exact same local cursor.
+    const long ordinary=fixture.Place(
+        "hepta-v1-sha256:"+std::string(64,'d'));
+    if(ordinary!=44 || fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_EXIT_COLLIDED_WITH_ORDINARY_ID");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=45 ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_REPEATED_REQUEST_REUSED_NATIVE_ID");
+    fixture.broker->jumpFloorAfterNextRead=100;
+    if(reserve("DU123",73,epoch,42) || exitId.orderId!=-1 ||
+       reason!="IB_H1_LOCAL_OCA_BROKER_FLOOR_CHANGED_BEFORE_RETURN" ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_OVERTAKEN_BROKER_FLOOR_RETURNED_STALE_EXIT");
+    if(!reserve("DU123",73,epoch,42) || exitId.orderId!=100 ||
+       fixture.broker->places!=1)
+        throw std::runtime_error("H1_OCA_AFTER_FLOOR_JUMP_REUSED_EXIT_ID");
+    fixture.adapter.Disconnect();
+    if(reserve("DU123",73,epoch,42) || exitId.orderId!=-1)
+        throw std::runtime_error("H1_OCA_OLD_DISCONNECTED_EPOCH_GRANTED_ID");
+    // The final signed TWS ID can be consumed exactly once for an UNSENT
+    // exit candidate. No wrap, Broker send or automatic identity reissue.
+    Fixture nearLimit;
+    const auto highEpoch=nearLimit.adapter.GetConnectionEpoch();
+    nearLimit.broker->nextValidOrderId=2147483645L;
+    IBResearchH1LocalIdPair lastPair;
+    if(!nearLimit.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,highEpoch,lastPair,reason) ||
+       lastPair.parentOrderId!=2147483645L ||
+       lastPair.childOrderId!=2147483646L ||
+       !nearLimit.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            "DU123",73,highEpoch,lastPair.childOrderId,exitId,reason) ||
+       exitId.orderId!=2147483647L ||
+       nearLimit.adapter.ReserveResearchUnsentH1LocalOcaExitId(
+            "DU123",73,highEpoch,lastPair.childOrderId,exitId,reason) ||
+       exitId.orderId!=-1 || nearLimit.broker->places!=0)
+        throw std::runtime_error("H1_OCA_SIGNED_NATIVE_ID_OVERFLOW_OR_SEND");
+}
+
+void TestDurableH1OcaExitNativeIdFloorAfterRestart() {
+    // Isolated OMS fixture. This is NOT a production EXIT marker writer or
+    // an actual Broker OCA placement. Prove only that a *future* critically
+    // durable exit-reserved event burns its numeric ID after process restart.
+    std::string templ="/tmp/Hepta-H1-OCA-Floor-XXXXXX";
+    std::vector<char> tmp(templ.begin(),templ.end());tmp.push_back('\0');
+    const int fd=::mkstemp(tmp.data());
+    if(fd<0) throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_CREATE_FAILED");
+    ::close(fd);::unlink(tmp.data());
+    const std::string path(tmp.data());
+    {
+        OmsJournal journal;
+        if(!journal.Init(path))
+            throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_OMS_FAILED");
+        OmsJournalEvent marker;
+        marker.eventType="bracket_oca_exit_reserved";
+        marker.tsMs=1792140000123LL;
+        marker.orderId=1000;
+        marker.account="DU123";
+        marker.executionDomain="PAPER";
+        marker.venue="IB";
+        marker.instrument="EUR.USD";
+        marker.source="SHADOW_NO_BROKER_EGRESS";
+        marker.reqId="original-h1-oca-scratch-001";
+        marker.eventId="unsent-original-oca-exit-001";
+        marker.requestHash="hepta-v1-sha256:"+std::string(64,'a');
+        marker.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'b');
+        marker.side="SELL";marker.qty=89200;marker.price=1.11825;
+        if(!journal.AppendDurableCritical(marker))
+            throw std::runtime_error("H1_OCA_FLOOR_CRITICAL_MARKER_WRITE_FAILED");
+        ExecutionCoordinatorCallbacks callbacks;
+        ExecutionCoordinator owner(journal,callbacks);
+        std::int64_t next=0;std::string reason;
+        if(!owner.GetDurableResearchH1NativeIdFloor(
+                "DU123",next,reason) || next!=1001)
+            throw std::runtime_error("H1_OCA_EXIT_DURABLE_NATIVE_ID_FLOOR_LOST");
+        // Broker numeric IDs are client-scoped even after selecting another
+        // DU account; the original unsent exit must not be reused.
+        if(!owner.GetDurableResearchH1NativeIdFloor(
+                "DU-SECOND",next,reason) || next!=1001)
+            throw std::runtime_error("H1_OCA_EXIT_DURABLE_CROSS_DU_FLOOR_LOST");
+        Fixture restarted;
+        const auto epoch=restarted.adapter.GetConnectionEpoch();
+        if(!restarted.adapter.AdoptDurableResearchH1NativeIdFloor(
+                "DU123",73,epoch,next,reason))
+            throw std::runtime_error("H1_OCA_EXIT_RESTART_ADOPT_FAILED");
+        IBResearchH1LocalIdPair afterRestart;
+        if(!restarted.adapter.ReserveResearchUnsentH1LocalIdPair(
+                "DU123",73,epoch,afterRestart,reason) ||
+           afterRestart.parentOrderId!=1001 ||
+           afterRestart.childOrderId!=1002 || restarted.broker->places!=0)
+            throw std::runtime_error("H1_OCA_EXIT_NATIVE_ID_REUSED_AFTER_OMS_RESTART");
+        // An invalid write-once EXIT marker is not an observed zero floor.
+        // Fail closed, rather than adopt a forged native cursor.
+        auto malformed=marker;
+        malformed.orderId=9000;
+        malformed.eventId.clear();
+        if(!journal.AppendDurableCritical(malformed))
+            throw std::runtime_error("H1_OCA_MALFORMED_CRITICAL_RECORD_NOT_RETAINED");
+        next=0;
+        if(owner.GetDurableResearchH1NativeIdFloor(
+                "DU123",next,reason) ||
+           reason!="H1_RECOVERED_NATIVE_ID_EVENT_INVALID" || next!=1)
+            throw std::runtime_error("H1_OCA_MALFORMED_RECORD_MINTED_NATIVE_FLOOR");
+    }
+    if(::unlink(path.c_str())!=0)
+        throw std::runtime_error("H1_OCA_FLOOR_SCRATCH_UNLINK_FAILED");
+}
+
+void TestAdapterReinitNeverReusesUnsentH1NativeIds() {
+    Fixture fixture;
+    IBResearchH1LocalIdPair pair;
+    std::string reason;
+    auto epoch=fixture.adapter.GetConnectionEpoch();
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason) ||
+       pair.parentOrderId!=41 || pair.childOrderId!=42)
+        throw std::runtime_error("H1_REINIT_INITIAL_PAIR_UNAVAILABLE");
+    HeptaIBConfig same; same.account="DU123";
+    same.clientId=73; same.readOnly=false;
+    // A connected reconfiguration must not silently reset the local cursor,
+    // broker client, connection identity, or original unsent H1 reservation.
+    if(fixture.adapter.Init(same))
+        throw std::runtime_error("H1_CONNECTED_INIT_RESET_NATIVE_RESERVATION");
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU123",73,epoch,pair,reason) ||
+       pair.parentOrderId!=43 || pair.childOrderId!=44)
+        throw std::runtime_error("H1_CONNECTED_INIT_LOST_LOCAL_ID_FLOOR");
+    fixture.adapter.Disconnect();
+    // The numeric order sequence is Broker-client scoped even if a second
+    // DU PAPER account is configured after an explicit disconnect.
+    same.account="DU-SECOND";
+    if(!fixture.adapter.Init(same) || !fixture.adapter.Connect())
+        throw std::runtime_error("H1_DISCONNECTED_RECONFIGURE_RECONNECT_FAILED");
+    epoch=fixture.adapter.GetConnectionEpoch();
+    if(!fixture.adapter.ReserveResearchUnsentH1LocalIdPair(
+            "DU-SECOND",73,epoch,pair,reason) ||
+       pair.parentOrderId!=45 || pair.childOrderId!=46 ||
+       fixture.broker->places!=0)
+        throw std::runtime_error("H1_DISCONNECTED_INIT_REUSED_UNSENT_IDS");
+}
+
 int main() {
+    TestAdapterReinitNeverReusesUnsentH1NativeIds();
+    TestDurableH1OcaExitNativeIdFloorAfterRestart();
+    TestOwnerDurableOcaExitUsesActualLocalAdapterCursorWithoutSending();
+    TestResearchH1OcaExitUsesSameNativeBrokerFloorWithoutSending();
+    TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms();
+    TestUnsentH1PairCannotReturnOvertakenNativeBrokerIds();
+    TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress();
+    TestBrokerFloorRaisesAfterLocalIdAllocationCannotReachSend();
+    TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();

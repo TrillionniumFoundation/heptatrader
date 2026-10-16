@@ -213,10 +213,87 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+# Issue #331: shadow-only broker stop contract, no transport or live install.
+add_executable(hepta_execution_owner_stop_shadow_tests
+    execution_owned_stop_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_owner_stop_shadow_tests)
+
+# Parent, child and OCA refs must derive from one frozen ORIGINAL command
+# through the resident 45-byte H1 venue codec; purely identity, no sender.
+add_executable(hepta_execution_bracket_h1_identity_tests
+    ib_bracket_h1_identity_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_identity_tests PRIVATE
+    hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_identity_tests)
+
+# Experimental H1-bracket durable pair on real OMS (no broker send path).
+add_executable(hepta_execution_bracket_h1_oms_reservation_tests
+    ib_bracket_h1_oms_reservation_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_oms_reservation_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_oms_reservation_tests)
+
+# Real Coordinator recovery-only ingress fence, native OMS pair,
+# restart replay and duplicate denial. No broker send path.
+add_executable(hepta_execution_coordinator_h1_recovery_fence_tests
+    execution_coordinator_h1_recovery_fence_tests.cpp)
+target_link_libraries(hepta_execution_coordinator_h1_recovery_fence_tests PRIVATE
+    hepta_execution_core hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_coordinator_h1_recovery_fence_tests)
+
+# Simulated native parent transmit=false / child transmit=true bracket group.
+# Still no broker transport or maintenance authority in this research target.
+add_executable(hepta_execution_bracket_shadow_tests
+    execution_bracket_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_bracket_shadow_tests)
+
+# Use the actual production OmsJournal on a temporary isolated path. Never
+# attach a source to the resident OMS ledger or contact a real broker.
+add_executable(hepta_execution_bracket_shadow_oms_tests
+    execution_bracket_shadow_oms_tests.cpp)
+target_link_libraries(hepta_execution_bracket_shadow_oms_tests PRIVATE
+    hepta_oms_journal OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_shadow_oms_tests)
+
+# Additive v4 record from a Broker-backed original native child openOrder;
+# test the actual, unmodified-in-production OmsJournal implementation.
+add_executable(hepta_ib_native_bracket_oms_tests
+    ib_native_bracket_oms_tests.cpp)
+target_link_libraries(hepta_ib_native_bracket_oms_tests PRIVATE hepta_oms_journal)
+hepta_register_core_test(hepta_ib_native_bracket_oms_tests)
+
+# H1 broker callback schema is a separate, unsent pure-OMS test.
+add_executable(hepta_ib_native_h1_callback_tests
+    ib_native_h1_callback_tests.cpp)
+target_link_libraries(hepta_ib_native_h1_callback_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_ib_native_h1_callback_tests)
+
+# Compile exact SDK Contract/Order types only in the already validated
+# native-IB-enabled lane. No placeOrder or native order sending code exists here.
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_ib_native_bracket_shadow_tests
+        ib_native_bracket_shadow_tests.cpp)
+    target_link_libraries(hepta_ib_native_bracket_shadow_tests PRIVATE
+        hepta_ibapi_client hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_bracket_shadow_tests)
+    add_executable(hepta_ib_native_bracket_callback_tests
+        ib_native_bracket_callback_tests.cpp)
+    target_link_libraries(hepta_ib_native_bracket_callback_tests PRIVATE
+        hepta_ibapi_client)
+    hepta_register_core_test(hepta_ib_native_bracket_callback_tests)
+endif()
+
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
     ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
+
+# Thread-safe SDK nextValidId admission to the existing IB adapter.
+# This is a local callback-to-reader regression, no Broker IO.
+add_executable(hepta_ib_native_next_valid_id_tests
+    ib_native_next_valid_id_tests.cpp)
+hepta_register_core_test(hepta_ib_native_next_valid_id_tests)
 
 add_executable(hepta_ib_live_terminal_reconciliation_tests
     ib_live_terminal_reconciliation_tests.cpp)

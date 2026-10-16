@@ -186,6 +186,11 @@ HeptaIBGatewayAdapter::~HeptaIBGatewayAdapter() {
 }
 
 bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // Reconfiguration inside the same connected Broker generation could
+    // reset the local native order cursor after UNSENT H1 reservations.
+    // Require explicit disconnect/reconnect; never mutate a live config.
+    if (m_connected || (m_api && m_api->IsConnected())) return false;
     std::map<std::string, std::string> fxInstrumentByBaseCurrency;
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              cfg.authoritativeCashFxContracts.begin();
@@ -229,7 +234,9 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_todayOrderCount = 0;
     m_consecutiveErrorCount = 0;
     m_dayOfYear = -1;
-    m_localOrderSeed = 1;
+    // The adapter lifetime may include reconnects and offline Init calls.
+    // Keep every previously consumed local native ID burnt for this client;
+    // only a NEW adapter object starts with the constructor's cursor of 1.
     m_lastReferencePrice = 0.0;
     m_lastReferencePriceTs = 0;
     m_lastOrderSig.clear();
@@ -1343,13 +1350,187 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
     }
 }
 
+bool HeptaIBGatewayAdapter::AdoptDurableResearchH1NativeIdFloor(
+    const std::string& account, int brokerClientId,
+    std::uint64_t connectionEpoch, std::int64_t nextIdFloor,
+    std::string& reason)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    const std::int64_t exhausted=static_cast<std::int64_t>(
+        std::numeric_limits<std::int32_t>::max())+1;
+    if(connectionEpoch==0 || connectionEpoch!=m_connectionEpoch ||
+       brokerClientId<1 || brokerClientId!=m_cfg.clientId ||
+       account!=m_cfg.account || account.compare(0,2,"DU")!=0 ||
+       !m_connected || !m_api || !m_api->IsConnected() ||
+       m_api->GetConnectionEpoch()!=m_connectionEpoch ||
+       nextIdFloor<1 || nextIdFloor>exhausted ||
+       m_terminalTransportHalted) {
+        reason="IB_H1_RECOVERED_NATIVE_ID_SCOPE_INVALID";
+        return false;
+    }
+    if(m_localOrderSeed<nextIdFloor)m_localOrderSeed=nextIdFloor;
+    reason.clear();return true;
+}
+
+bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
+    const std::string& expectedPaperAccount, int expectedClientId,
+    std::uint64_t expectedConnectionEpoch,
+    IBResearchH1LocalIdPair& out, std::string& reason) {
+    out = IBResearchH1LocalIdPair();
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    if (expectedConnectionEpoch == 0 ||
+        expectedConnectionEpoch != m_connectionEpoch ||
+        expectedClientId < 1 || expectedClientId != m_cfg.clientId ||
+        expectedPaperAccount != m_cfg.account ||
+        m_cfg.account.compare(0, 2, "DU") != 0 ||
+        m_cfg.account.size() < 3 || m_cfg.readOnly ||
+        !m_connected || !m_api || !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        reason = "IB_H1_LOCAL_PAIR_BROKER_OWNER_EPOCH_UNVERIFIED";
+        return false;
+    }
+    const long floor = m_api->GetLastValidOrderId();
+    const long maxId = static_cast<long>(
+        std::numeric_limits<std::int32_t>::max());
+    // A pair must consume exactly two adjacent positive IDs, never wrap
+    // TWS signed int32, and never mint a pair before actual nextValidId.
+    if (floor <= 0 || floor >= maxId ||
+        m_localOrderSeed <= 0 || m_localOrderSeed >= maxId) {
+        reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_FLOOR_UNAVAILABLE";
+        return false;
+    }
+    const std::int64_t first = std::max<std::int64_t>(floor, m_localOrderSeed);
+    if (first >= maxId) {
+        reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_EXHAUSTED";
+        return false;
+    }
+    // This changes ONLY our local allocation cursor. The next ordinary
+    // order follows the pair and no TWS socket or OMS writes occur here.
+    m_localOrderSeed = first + 2;
+    // An asynchronous openOrder/orderStatus/nextValidId callback can raise
+    // the SDK's composite floor BETWEEN the initial read and this return,
+    // even though we hold the adapter send mutex (the SDK callback does not).
+    // Refuse such a stale, UNSENT pair before the Coordinator can persist it.
+    // Burn the consumed local IDs regardless; a later call may retry with a
+    // fresh floor but there is still NO broker-atomic reservation or sender.
+    const long verifiedFloor = m_api->GetLastValidOrderId();
+    if (verifiedFloor <= 0 || verifiedFloor > maxId ||
+        verifiedFloor < floor || verifiedFloor > first ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        if (verifiedFloor > 0 && verifiedFloor <= maxId &&
+            m_localOrderSeed < verifiedFloor)
+            m_localOrderSeed = verifiedFloor;
+        reason = "IB_H1_LOCAL_PAIR_BROKER_FLOOR_CHANGED_BEFORE_RETURN";
+        return false;
+    }
+    out.parentOrderId = static_cast<long>(first);
+    out.childOrderId = static_cast<long>(first + 1);
+    out.brokerClientId = expectedClientId;
+    out.connectionEpoch = expectedConnectionEpoch;
+    out.paperAccount = expectedPaperAccount;
+    out.sendAuthorized = false;
+    out.brokerWorkingStopProven = false;
+    reason.clear();
+    return true;
+}
+
+bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalOcaExitId(
+    const std::string& expectedPaperAccount, int expectedClientId,
+    std::uint64_t expectedConnectionEpoch, long originalStopOrderId,
+    IBResearchH1LocalExitId& out, std::string& reason)
+{
+    out = IBResearchH1LocalExitId();
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    const std::int64_t maxId =
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
+    // The caller's stop ID is NOT trusted Broker evidence. This is only an
+    // UNSENT local allocation; actual OCA parent/stop proof belongs to the
+    // exact Execution Owner and the Broker open-order inventory.
+    if (expectedConnectionEpoch == 0 ||
+        expectedConnectionEpoch != m_connectionEpoch ||
+        expectedClientId < 1 || expectedClientId != m_cfg.clientId ||
+        expectedPaperAccount != m_cfg.account ||
+        expectedPaperAccount.size() < 3 ||
+        expectedPaperAccount.compare(0, 2, "DU") != 0 ||
+        originalStopOrderId < 1 ||
+        // Do not let a caller-chosen high synthetic stop ID burn a large
+        // range of genuine native order IDs. The local cursor must already
+        // have consumed this stop ID in this process. This still does NOT
+        // prove a working Broker stop or original Owner authority.
+        static_cast<std::int64_t>(originalStopOrderId) >=
+            m_localOrderSeed ||
+        static_cast<std::int64_t>(originalStopOrderId) >= maxId ||
+        m_cfg.readOnly || !m_connected || !m_api ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        reason = "IB_H1_LOCAL_OCA_BROKER_OWNER_OR_STOP_SCOPE_INVALID";
+        return false;
+    }
+    const long floor = m_api->GetLastValidOrderId();
+    if (floor <= 0 || static_cast<std::int64_t>(floor) > maxId ||
+        m_localOrderSeed <= 0 || m_localOrderSeed > maxId) {
+        reason = "IB_H1_LOCAL_OCA_NATIVE_ID_FLOOR_UNAVAILABLE";
+        return false;
+    }
+    const std::int64_t first = std::max<std::int64_t>(
+        std::max<std::int64_t>(floor, m_localOrderSeed),
+        static_cast<std::int64_t>(originalStopOrderId) + 1);
+    if (first < 1 || first > maxId) {
+        reason = "IB_H1_LOCAL_OCA_NATIVE_ID_EXHAUSTED";
+        return false;
+    }
+    // Burn even if the callback raises its Broker floor during allocation;
+    // a failed local candidate is NOT permission to reuse a consumed ID.
+    m_localOrderSeed = first + 1;
+    const long verifiedFloor = m_api->GetLastValidOrderId();
+    if (verifiedFloor <= 0 ||
+        static_cast<std::int64_t>(verifiedFloor) > maxId ||
+        verifiedFloor < floor ||
+        static_cast<std::int64_t>(verifiedFloor) > first ||
+        !m_api->IsConnected() ||
+        m_api->GetConnectionEpoch() != m_connectionEpoch ||
+        m_terminalTransportHalted) {
+        if (verifiedFloor > 0 &&
+            static_cast<std::int64_t>(verifiedFloor) <= maxId &&
+            m_localOrderSeed < verifiedFloor)
+            m_localOrderSeed = verifiedFloor;
+        reason = "IB_H1_LOCAL_OCA_BROKER_FLOOR_CHANGED_BEFORE_RETURN";
+        return false;
+    }
+    out.orderId = static_cast<long>(first);
+    out.stopOrderId = originalStopOrderId;
+    out.brokerClientId = expectedClientId;
+    out.connectionEpoch = expectedConnectionEpoch;
+    out.paperAccount = expectedPaperAccount;
+    // Never mint Broker sends, fills, working protection or maintenance.
+    out.sendAuthorized = false;
+    out.maintenanceAuthorized = false;
+    reason.clear();
+    return true;
+}
+
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    long ibOrderId = GetLastValidOrderId();
-    if (ibOrderId > 0) {
-        if (m_localOrderSeed < ibOrderId) m_localOrderSeed = ibOrderId;
-    }
-    return m_localOrderSeed++;
+    const long ibOrderId = GetLastValidOrderId();
+    const long brokerOrderIdMax =
+        static_cast<long>(std::numeric_limits<std::int32_t>::max());
+    // TWS OrderId is int32 even when this Linux host's long is 64-bit.
+    // Never downcast a newer broker floor or a depleted local seed into a
+    // wrapped/negative native order ID. A missing nextValidId cannot mint
+    // numeric order ID 1 even when an optional pre-risk flag was disabled.
+    // This is independent of the final broker-send risk/Owner admission.
+    if (ibOrderId <= 0 || ibOrderId > brokerOrderIdMax) return -1;
+    if (ibOrderId > 0 && m_localOrderSeed < ibOrderId)
+        m_localOrderSeed = ibOrderId;
+    if (m_localOrderSeed < 1 || m_localOrderSeed > brokerOrderIdMax)
+        return -1;
+    // The cursor is widened so returning INT32_MAX does not increment a
+    // 32-bit long past its signed representable range on Windows.
+    return static_cast<long>(m_localOrderSeed++);
 }
 
 bool HeptaIBGatewayAdapter::IsSameTradingDay() const {

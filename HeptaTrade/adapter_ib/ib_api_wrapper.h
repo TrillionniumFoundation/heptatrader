@@ -27,6 +27,60 @@ struct IBConnectParams {
     int handshakeTimeoutMs = 20000;
 };
 
+// The SDK nextValidId callback is produced by EReader while the adapter
+// queries its floor from another thread. Use one monotonic atomic identity:
+// an invalid/duplicate/out-of-order callback is never a ready-to-send token.
+// Reset occurs at the transport generation boundary, never as proof that the
+// previous Broker order set is empty or that a bracket may be submitted.
+class IBNextValidOrderIdReadiness final {
+public:
+    void Reset() noexcept {
+        m_floor.store(-1, std::memory_order_release);
+        m_maxObservedOrderId.store(-1, std::memory_order_release);
+    }
+    long Get() const noexcept {
+        // Only a real nextValidId establishes readiness. A high order ID
+        // observed via openOrder/orderStatus may RAISE, not mint, that floor.
+        const long granted = m_floor.load(std::memory_order_acquire);
+        if (granted <= 0) return -1;
+        const long seen = m_maxObservedOrderId.load(std::memory_order_acquire);
+        const long limit = static_cast<long>(
+            std::numeric_limits<std::int32_t>::max());
+        if (seen >= limit) return -1; // no positive int32 next ID remains
+        return seen >= granted ? seen + 1 : granted;
+    }
+    bool Observe(long candidate) noexcept {
+        if (candidate <= 0 ||
+            candidate > static_cast<long>(std::numeric_limits<std::int32_t>::max()))
+            return false;
+        long current = m_floor.load(std::memory_order_acquire);
+        while (candidate > current) {
+            if (m_floor.compare_exchange_weak(current, candidate,
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return true;
+        }
+        return false;
+    }
+    // IBKR multi-client order rule: a native openOrder/orderStatus callback
+    // may reveal a higher ID from another client or a reqAllOpenOrders
+    // snapshot. Observe it independently; never confuse it with nextValidId.
+    bool ObserveUsedOrderId(long usedOrderId) noexcept {
+        if (usedOrderId <= 0 || usedOrderId > static_cast<long>(
+                std::numeric_limits<std::int32_t>::max()))
+            return false;
+        long current = m_maxObservedOrderId.load(std::memory_order_acquire);
+        while (usedOrderId > current) {
+            if (m_maxObservedOrderId.compare_exchange_weak(
+                    current, usedOrderId, std::memory_order_acq_rel,
+                    std::memory_order_acquire)) return true;
+        }
+        return false;
+    }
+private:
+    std::atomic<long> m_floor{-1};
+    std::atomic<long> m_maxObservedOrderId{-1};
+};
+
 // The SDK's numeric order id is client-scoped. Keep the quantity used for
 // synthetic execution statuses separate from callbacks for another client or
 // account; otherwise an unrelated terminal callback can erase our send.
@@ -90,6 +144,30 @@ enum class IBEventType {
     CommissionReport // appended: retain existing enum values
 };
 
+// Additive evidence captured DIRECTLY from SDK openOrder/completedOrder.
+// Unlike OrderIntent, these fields carry original TWS bracket/OCA attributes.
+// A false "present" bit (including orderStatus/execDetails callbacks) MUST
+// NEVER be treated as a protected working child order. No trading authority.
+struct IBBrokerNativeOrderWitness {
+    bool present = false;
+    long contractId = 0;
+    long orderId = 0;
+    long permanentId = 0;
+    long parentId = 0;
+    int clientId = -1;
+    bool transmit = false;
+    std::string account;
+    std::string action;
+    std::string orderType;
+    std::string timeInForce;
+    std::string orderRef;
+    std::string ocaGroup;
+    int ocaType = 0;
+    int triggerMethod = 0;
+    double stopAuxPrice = 0.0;
+    double totalQuantity = 0.0;
+};
+
 struct IBEvent {
     IBEventType type = IBEventType::None;
     long long id = 0;
@@ -123,6 +201,7 @@ struct IBEvent {
     IbEconomicEvidence economics;
     IBContractLite contract;
     IBOrderLite order;
+    IBBrokerNativeOrderWitness nativeOrder; // SDK callback only, never synthetic policy admission
     std::uint64_t overflowGeneration = 0;
     std::uint64_t droppedEventCount = 0;
     // Producer-side steady-clock timestamp taken immediately before queue

@@ -193,6 +193,35 @@ struct IBFinalOrderSendContext {
     std::uint64_t quoteStaleAfterMs = 0;
 };
 
+// A two-ID allocation from the current Broker-client callback floor. This
+// changes only the adapter's local numeric seed: it creates NO IB order,
+// durable OMS reservation, working stop, exit permit, or send authorization.
+// The original Execution Owner must independently bind these values to one
+// durable H1 parent+child intent before any future broker transport.
+struct IBResearchH1LocalIdPair {
+    long parentOrderId = -1;
+    long childOrderId = -1;
+    int brokerClientId = -1;
+    std::uint64_t connectionEpoch = 0;
+    std::string paperAccount;
+    bool sendAuthorized = false;
+    bool brokerWorkingStopProven = false;
+};
+
+// One UNSENT exit ID from the SAME native order cursor as normal PAPER
+// submissions and the original H1 parent/child group. This is only a local
+// numeric allocation; a future Owner must still bind it to durable OMS and
+// re-attest the Broker working stop before it may dispatch an OCA sibling.
+struct IBResearchH1LocalExitId {
+    long orderId = -1;
+    long stopOrderId = -1;
+    int brokerClientId = -1;
+    std::uint64_t connectionEpoch = 0;
+    std::string paperAccount;
+    bool sendAuthorized = false;
+    bool maintenanceAuthorized = false;
+};
+
 class HeptaIBGatewayAdapter {
 public:
     HeptaIBGatewayAdapter();
@@ -215,6 +244,27 @@ public:
     bool PollOnce(int timeoutMs);
     bool TryDequeueEvent(IBEvent& outEvent);
     long GetLastValidOrderId() const;
+    // Local-only adjacent native ID reservation, under the SAME adapter
+    // send mutex and current nextValidId/foreign-openOrder floor as MKT sends.
+    // Never a broker reservation, durable order group or execution permit.
+    // Import a VERIFIED native high-water from the existing Owner OMS
+    // before enabling ordinary order sends after an Adapter process restart.
+    // Only burns local IDs; cannot authorize a Broker send or protected stop.
+    bool AdoptDurableResearchH1NativeIdFloor(
+        const std::string& account, int brokerClientId,
+        std::uint64_t connectionEpoch, std::int64_t nextIdFloor,
+        std::string& reason);
+    bool ReserveResearchUnsentH1LocalIdPair(
+        const std::string& expectedPaperAccount, int expectedClientId,
+        std::uint64_t expectedConnectionEpoch,
+        IBResearchH1LocalIdPair& out, std::string& reason);
+    // This does not verify the caller's original stop: it only consumes one
+    // safe native integer strictly greater than the stop ID in the exact
+    // adapter/PAPER Broker epoch. Never a Broker/OMS send reservation.
+    bool ReserveResearchUnsentH1LocalOcaExitId(
+        const std::string& expectedPaperAccount, int expectedClientId,
+        std::uint64_t expectedConnectionEpoch, long originalStopOrderId,
+        IBResearchH1LocalExitId& out, std::string& reason);
     bool ReqAccountSummary();
     bool ReqPositions();
     // Atomically starts a coherent account+positions generation. It rejects
@@ -459,7 +509,8 @@ private:
     int m_errorFuseScore = 0;
     std::time_t m_circuitBreakerTripTs = 0;
     int m_dayOfYear = -1;
-    long m_localOrderSeed = 1;
+    // Store the exhausted int32 TWS sentinel without overflowing a 32-bit long.
+    std::int64_t m_localOrderSeed = 1;
 
     double m_lastReferencePrice = 0.0;
     std::time_t m_lastReferencePriceTs = 0;

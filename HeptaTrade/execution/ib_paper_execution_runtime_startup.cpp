@@ -309,6 +309,19 @@ bool IbPaperExecutionRuntimeComposition::StartAdapterAndBuildSnapshots(std::stri
     const std::chrono::steady_clock::time_point connectDeadline = std::min(
         deadline, started + std::chrono::milliseconds(m_config.initialConnectTimeoutMs));
     if (!InitializeAdapterAndConnect(reason, connectDeadline)) return false;
+    // The SDK's nextValidId does NOT account for H1 parent/child IDs that
+    // reached original OMS but were never transmitted. Burn those native IDs
+    // on process restart BEFORE the execution socket can become mutation-ready.
+    if (m_config.profile.userScope && !m_config.profile.observationOnly) {
+        std::int64_t durableH1NextId=1;
+        if (!m_coordinator ||
+            !m_coordinator->GetDurableResearchH1NativeIdFloor(
+                m_config.profile.account,durableH1NextId,reason) ||
+            !m_adapter->AdoptDurableResearchH1NativeIdFloor(
+                m_config.profile.account,m_config.profile.clientId,
+                m_adapter->GetConnectionEpoch(),durableH1NextId,reason))
+            return false;
+    }
     if (!WaitForStartupUpstream(reason, deadline)) return false;
     if (!WaitForAuthoritativeSnapshots(reason, deadline)) {
         m_startupBrokerPhase.store(false);

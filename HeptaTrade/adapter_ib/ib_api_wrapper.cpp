@@ -680,6 +680,7 @@ std::uint64_t IBMarketDataAdmissionState::Generation() const {
 #include "CommissionReport.h"
 #include "OrderCancel.h"
 #include "OrderState.h"
+#include "ib_native_bracket_callback_research.h"
 
 class EWrapperDefault : public EWrapper {
 public:
@@ -966,8 +967,7 @@ public:
         m_params = p;
         m_orderQuantities.Reset(m_connectionEpoch.load(), p.clientId, p.account);
         m_cancelNoticeWitness.Reset(m_connectionEpoch.load(), p.clientId, p.account);
-        m_gotNextValidId = false;
-        m_lastValidOrderId = -1;
+        m_nextValidOrderId.Reset();
         m_status = "IB_CONNECTING";
         Trace("IB_CONNECTING host=" + m_params.host + " port=" + std::to_string(m_params.port) + " clientId=" + std::to_string(m_params.clientId));
         try {
@@ -1003,7 +1003,7 @@ public:
                     m_client.reqIds(1);
                     lastReqIds = now;
                 }
-                if (m_gotNextValidId.load()) {
+                if (m_nextValidOrderId.Get() > 0) {
                     m_status = "IB_CONNECTED";
                     m_client.reqMarketDataType(m_marketDataType);
                     Trace("IB_CONNECTED marketDataType=" + std::to_string(m_marketDataType));
@@ -1018,8 +1018,7 @@ public:
                 m_reader->stop();
                 m_reader.reset();
             }
-            m_gotNextValidId = false;
-            m_lastValidOrderId = -1;
+            m_nextValidOrderId.Reset();
             return false;
         }
         catch (const std::exception& ex) {
@@ -1030,8 +1029,7 @@ public:
                 m_reader->stop();
                 m_reader.reset();
             }
-            m_gotNextValidId = false;
-            m_lastValidOrderId = -1;
+            m_nextValidOrderId.Reset();
             Trace(m_status);
             return false;
         }
@@ -1091,8 +1089,7 @@ public:
             m_reader->stop();
             m_reader.reset();
         }
-        m_gotNextValidId = false;
-        m_lastValidOrderId = -1;
+        m_nextValidOrderId.Reset();
         m_orderQuantities.Reset(0, -1, std::string());
         m_cancelNoticeWitness.Reset(0, -1, std::string());
         m_eventIngressAdmissionActive.store(false,
@@ -1565,6 +1562,14 @@ public:
         }
         od.orderRef = o.orderRef;
 
+        // Last transport-side observation before the SDK placeOrder call.
+        // Independent EWrapper callbacks may raise this floor on the reader
+        // thread even while the adapter's mutex is held by the sender.
+        const long brokerFloor=m_nextValidOrderId.Get();
+        if (brokerFloor <= 0 || localOrderId < brokerFloor ||
+            localOrderId > static_cast<long>(
+                std::numeric_limits<std::int32_t>::max()))
+            return rejectLocal("IB_LOCAL_REJECT_ORDER_ID_STALE_BEFORE_EGRESS", 32110);
         Trace(BuildOrderTrace(localOrderId, ct, od));
         m_orderQuantities.Record(localOrderId, c, o);
         m_cancelNoticeWitness.Record(localOrderId, o);
@@ -1623,13 +1628,17 @@ public:
     }
 
     long GetLastValidOrderId() const override {
-        return m_lastValidOrderId;
+        return m_nextValidOrderId.Get();
     }
 
     // ---- EWrapper events ----
     void nextValidId(OrderId oid) override {
-        m_gotNextValidId = true;
-        m_lastValidOrderId = static_cast<long>(oid);
+        // An invalid, duplicate or regressing SDK callback is not a new
+        // broker order-ID grant. Store the floor before publishing the event.
+        if (!m_nextValidOrderId.Observe(static_cast<long>(oid))) {
+            Trace("nextValidId_ignored=" + std::to_string((long long)oid));
+            return;
+        }
         Trace("nextValidId=" + std::to_string((long long)oid));
         PushEvent(MakeIBEvent(IBEventType::NextValidId, static_cast<long long>(oid), "", "", 0.0));
     }
@@ -1676,9 +1685,12 @@ public:
     void tickString(TickerId, TickType, const std::string&) override {}
     void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
     void orderStatus(OrderId oid, const std::string& status, Decimal filled,
-                     Decimal remaining, double avgFillPrice, int, int, double,
+                     Decimal remaining, double avgFillPrice, int permId, int, double,
                      int clientId, const std::string& whyHeld,
                      double mktCapPrice) override {
+        // Broker-native orderStatus can carry an ID from another API client.
+        // Always update the highest observed TWS order ID before publication.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(static_cast<long>(oid));
         const double filledQuantity = DecimalFunctions::decimalToDouble(filled);
         const double remainingQuantity = DecimalFunctions::decimalToDouble(remaining);
         m_orderQuantities.ObserveOrderStatus(clientId, static_cast<long>(oid),
@@ -1692,10 +1704,19 @@ public:
             remainingQuantity);
         event.whyHeld = whyHeld;
         event.brokerClientId = clientId;
+        // orderStatus contains no original parent/OCA/contract payload.
+        // Store only permId. Never mark it as a complete SDK order witness.
+        event.nativeOrder.permanentId = permId;
         event.marketCapPrice = mktCapPrice;
         PushEvent(std::move(event));
     }
     void execDetails(int requestId, const Contract& contract, const Execution& execution) override {
+        // A live or queried fill can identify a native order absent from the
+        // current openOrder/orderStatus callbacks. Burn that broker-native ID
+        // before publishing the event, even if the ingress queue later drops
+        // the callback. This never substitutes for an actual nextValidId.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(
+            static_cast<long>(execution.orderId));
         const double cumQty = DecimalFunctions::decimalToDouble(execution.cumQty);
         const double fillPx = (execution.avgPrice > 0.0 ? execution.avgPrice : execution.price);
         IBEvent executionEvent = MakeIBEvent(
@@ -1767,6 +1788,8 @@ public:
         PushEvent(std::move(event));
     }
     void openOrder(OrderId orderId, const Contract& contract, const Order& order, const OrderState& state) override {
+        // Order IDs echoed by other clients also constrain our next send.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(static_cast<long>(orderId));
         IBEvent event = MakeIBEvent(
             IBEventType::OpenOrder,
             static_cast<long long>(orderId),
@@ -1777,6 +1800,9 @@ public:
         event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));
@@ -1786,6 +1812,10 @@ public:
     }
     void completedOrder(const Contract& contract, const Order& order,
                         const OrderState& state) override {
+        // CompletedOrder is additional native evidence, never an exemption
+        // from the strictly increasing broker order-ID constraint.
+        (void)m_nextValidOrderId.ObserveUsedOrderId(
+            static_cast<long>(order.orderId));
         IBEvent event = MakeIBEvent(
             IBEventType::CompletedOrder,
             static_cast<long long>(order.orderId),
@@ -1796,6 +1826,9 @@ public:
         event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(order.orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));
@@ -2178,9 +2211,8 @@ private:
 
     IBConnectParams m_params;
     std::atomic<bool> m_connected{ false };
-    std::atomic<bool> m_gotNextValidId{ false };
     std::atomic<std::uint64_t> m_connectionEpoch{ 0 };
-    long m_lastValidOrderId = -1;
+    IBNextValidOrderIdReadiness m_nextValidOrderId;
     int m_marketDataType = 1;
     std::string m_status = "IB_INIT";
     std::string m_lastError;
