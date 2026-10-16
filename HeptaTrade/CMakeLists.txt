@@ -136,6 +136,7 @@ endif()
 
 set(HEPTA_IB_GATEWAY_ADAPTER_SOURCES
     adapter_ib/ib_gateway_adapter.cpp
+    adapter_ib/ib_h1_coordinator_owner_journal_bridge_research.cpp
     adapter_ib/ib_gateway_adapter_event_state.cpp
     adapter_ib/ib_gateway_adapter_terminal.cpp
     adapter_ib/ib_gateway_adapter_order_submission.cpp
@@ -476,7 +477,7 @@ add_library(hepta_ib_adapter_runtime STATIC
 target_include_directories(hepta_ib_adapter_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
 target_link_libraries(hepta_ib_adapter_runtime PUBLIC
-    hepta_ib_order_state hepta_authoritative_state hepta_risk_engine
+    hepta_execution_core hepta_ib_order_state hepta_authoritative_state hepta_risk_engine
     Threads::Threads OpenSSL::Crypto)
 if(HEPTA_ENABLE_IBAPI)
     target_compile_definitions(hepta_ib_adapter_runtime PRIVATE HEPTA_ENABLE_IBAPI)

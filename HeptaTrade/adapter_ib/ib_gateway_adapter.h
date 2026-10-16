@@ -217,20 +217,6 @@ public:
     bool PollOnce(int timeoutMs);
     bool TryDequeueEvent(IBEvent& outEvent);
     long GetLastValidOrderId() const;
-    // RESEARCH-ONLY native ID lease, under the same m_apiMutex used by
-    // actual PlaceOrderInternal. The callback MUST durably bind the exact
-    // pair to the existing OMS/Coordinator before it may return true.
-    // Requires the original Coordinator/Owner's pinned OMS, not a caller
-    // reconstructed order list. Incomplete parent/child records, an old
-    // broker nextValidId, or an unreconciled POSSIBLY_SENT always refuse.
-    // Failure consumes the in-memory pair and is permanently UNKNOWN; no
-    // sender, replay permit or maintenance authority is exposed.
-    bool ReserveResearchH1NativeIdPair(
-        const std::string& exactPaperAccount,
-        std::uint64_t expectedConnectionEpoch,
-        const OmsJournal& exactOwnerJournal,
-        const std::function<bool(long,long)>& durablePair,
-        long& parentId, long& stopId, std::string& reason);
     bool ReqAccountSummary();
     bool ReqPositions();
     // Atomically starts a coherent account+positions generation. It rejects
@@ -355,6 +341,19 @@ public:
         std::string& reason) const;
 
 private:
+    // This experimental native lease must never be publicly invoked with a
+    // caller-selected empty or unrelated OMS. Only the actual Coordinator
+    // may supply m_journal; the unit-test access shim has no broker sender.
+    friend class ExecutionCoordinator;
+    friend struct H1NativeLeaseTestAccess;
+    bool ReserveResearchH1NativeIdPair(
+        const std::string& exactPaperAccount,
+        std::uint64_t expectedConnectionEpoch,
+        const OmsJournal& exactOwnerJournal,
+        const std::function<bool(long,long)>& durablePair,
+        long& parentId, long& stopId, std::string& reason,
+        int expectedExactBrokerClientId = -1);
+
     long NextOrderId();
     bool IsSameTradingDay() const;
     bool IsDuplicateOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) const;
