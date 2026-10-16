@@ -105,6 +105,52 @@ class HoldTests(unittest.TestCase):
             self.run_action("maintenance-hold")
         self.assertTrue(self.kill_path.exists())
 
+    def _make_independent_empty_marker(self):
+        marker=self.control/"kill-switch"
+        marker.write_bytes(b"")
+        marker.chmod(0o440)
+        return marker
+
+    def test_execution_owned_empty_marker_is_visible_but_not_auto_rearmed(self):
+        marker=self._make_independent_empty_marker()
+        before=marker.stat()
+        status=self.run_action("maintenance-status")
+        self.assertTrue(status["native_kill_switch_engaged"])
+        self.assertEqual(status["native_marker_origin"], "INDEPENDENT_EMPTY_NATIVE")
+        self.assertFalse(status["may_stop_driver"])
+        with self.assertRaisesRegex(HoldError,"INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE"):
+            self.run_action("paper-on")
+        self.assertEqual((marker.stat().st_ino,marker.stat().st_size),
+                         (before.st_ino,0))
+
+    def test_empty_native_marker_survives_operator_hold_and_release(self):
+        marker=self._make_independent_empty_marker()
+        inode=marker.stat().st_ino
+        status=self.run_action("maintenance-hold")
+        self.assertTrue(status["persistent_hold"])
+        self.assertEqual(status["native_marker_origin"], "INDEPENDENT_EMPTY_NATIVE")
+        with self.assertRaisesRegex(HoldError,"BLOCKED_BY_PERSISTENT"):
+            self.run_action("paper-on")
+        release=self.run_action("maintenance-release")
+        self.assertFalse(release["persistent_hold"])
+        self.assertTrue(release["native_kill_switch_engaged"])
+        self.assertEqual(marker.stat().st_ino,inode)
+        with self.assertRaisesRegex(HoldError,"INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE"):
+            self.run_action("paper-on")
+
+    def test_unrecognized_native_marker_allows_status_only(self):
+        marker=self.control/"kill-switch"
+        marker.write_bytes(b"unknown-origin")
+        marker.chmod(0o440)
+        status=self.run_action("maintenance-status")
+        self.assertEqual(status["native_marker_origin"], "UNRECOGNIZED_INDEPENDENT_NATIVE")
+        self.assertTrue(status["native_kill_switch_engaged"])
+        with self.assertRaisesRegex(HoldError,"UNKNOWN_EXISTING_NATIVE"):
+            self.run_action("paper-on")
+        with self.assertRaisesRegex(HoldError,"UNKNOWN_EXISTING_NATIVE"):
+            self.run_action("maintenance-hold")
+        self.assertEqual(marker.read_bytes(),b"unknown-origin")
+
     def test_bad_state_directory_refuses_without_touching_switch(self):
         self.state.chmod(0o777)
         with self.assertRaisesRegex(HoldError,"UNSAFE_DIRECTORY"):

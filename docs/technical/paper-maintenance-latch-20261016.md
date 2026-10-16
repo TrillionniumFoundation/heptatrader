@@ -35,3 +35,25 @@ or claim driver-death protection based on a passing marker test.
 
 The helper's local unit tests use only disposable private fixtures; no
 accounts, live services, or runtime control directory are mutated by tests.
+
+
+## Native Execution recovery marker compatibility (2026-10-16)
+
+A real Pocket4 read-only check found a valid owner-owned 0440 **empty**
+\`kill-switch\` created at the same time as Execution's automatic service
+restart. The C++ native guard treats presence and safe inode metadata as
+**Engaged** independently of marker contents. The initial Python CLI
+incorrectly required the old CLI's tagged \`engaged\\n\` bytes even for
+read-only status, so it returned HOLD_BLOCKED instead of describing an
+already protective native hold.
+
+The corrected helper distinguishes \`CLI_TAGGED_PAUSE\`,
+\`INDEPENDENT_EMPTY_NATIVE\`, \`UNRECOGNIZED_INDEPENDENT_NATIVE\` and
+\`ABSENT\`. Read-only status works for all safe native marker files.
+\`paper-on\` may clear only the old tagged CLI pause, and never the empty
+Execution-owned native recovery marker. Explicit maintenance release may
+retire its **own** persistent hold while keeping that independent native
+marker unchanged. Unrecognized nonempty payloads still refuse changes.
+
+The helper never assumes an empty marker is an operator-owned pause.
+No code clears/replaces the actual existing marker during this repair.
