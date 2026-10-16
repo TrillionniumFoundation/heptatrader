@@ -114,6 +114,7 @@ public:
     bool ReqAccountSummary() override {return true;}
     bool ReqPositions() override {return true;}
     bool ReqAllOpenOrders() override {return true;}
+    bool ReqOpenOrders() override {return true;}  // adversarial local-client-only view
     bool ReqCompletedOrders() override {return true;}
     bool ReqExecutions(int id) override {executionsRequest=id;return true;}
     bool ReqMktData(int,const IBContractLite&) override {return true;}
@@ -1603,6 +1604,66 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     assert(!scope.nativeStopBrokerWorkingProven&&!scope.stopPriceTriggerProven&&
            !scope.accountSnapshotFreshnessProven&&!scope.maySendOrdinaryExit&&
            !scope.mayStopDriver);
+    // A Lite-only broker event is not a signed native protective stop echo.
+    assert(!scope.sdkNativeStopEchoMatches && scope.sdkNativeStopPermanentId==0);
+    // Refresh the existing REAL Adapter with a synthetic full SDK callback,
+    // not merely a manually populated active-order snapshot.
+    auto originalSdk=e;
+    originalSdk.queueIngressMonotonicNs=555000;
+    auto& sdk=originalSdk.nativeOrder;
+    sdk.present=true;
+    sdk.contractId=12087792;sdk.orderId=original.childOrderId;
+    sdk.permanentId=990001;sdk.parentId=original.parentOrderId;
+    sdk.clientId=original.clientId;sdk.transmit=true;
+    sdk.account=original.account;sdk.action="SELL";
+    sdk.orderType="STP";sdk.timeInForce="GTC";
+    sdk.orderRef=h1.childRef;sdk.ocaGroup=h1.ocaGroup;sdk.ocaType=1;
+    sdk.triggerMethod=0;sdk.stopAuxPrice=original.stopPrice;
+    sdk.totalQuantity=original.quantity;
+    auto nativeRefresh=[&](const IBEvent& candidate) {
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        f.Push(candidate);f.Push(f.Event(IBEventType::OpenOrderEnd));
+        // A new active-order generation requires its own coherent risk
+        // refresh; do not borrow old account/FX-cash snapshots.
+        assert(f.adapter.ReqRiskRefresh());
+        auto val=f.Event(IBEventType::AccountValue);
+        val.key="NetLiquidation:USD";val.value="1000";f.Push(val);
+        val.key="AccountReady:";val.value="true";f.Push(val);
+        val.key="CashBalance:EUR";val.value="-75000";f.Push(val);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+        assert(f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    };
+    nativeRefresh(originalSdk);
+    assert(scope.sdkNativeStopEchoMatches &&
+           scope.sdkNativeStopPermanentId==990001 &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit&&!scope.mayStopDriver);
+    // Preserve all 1-order/position source invariants while corrupting only
+    // SDK-native fields: no such callback may prove the frozen original stop.
+    for(int variant=0;variant<11;++variant) {
+        auto bad=originalSdk;
+        switch(variant) {
+        case 0:bad.nativeOrder.present=false;break;
+        case 1:bad.nativeOrder.permanentId=0;break;
+        case 2:bad.nativeOrder.parentId+=1;break;
+        case 3:bad.nativeOrder.ocaGroup="foreign-oca";break;
+        case 4:bad.nativeOrder.ocaType=0;break;
+        case 5:bad.nativeOrder.transmit=false;break;
+        case 6:bad.nativeOrder.stopAuxPrice+=.00005;break;
+        case 7:bad.nativeOrder.timeInForce="DAY";break;
+        case 8:bad.nativeOrder.totalQuantity-=1;break;
+        case 9:bad.nativeOrder.contractId+=1;break;
+        case 10:bad.queueIngressMonotonicNs=0;break;
+        }
+        nativeRefresh(bad);
+        assert(!scope.sdkNativeStopEchoMatches &&
+               scope.sdkNativeStopPermanentId==0 &&
+               !scope.nativeStopBrokerWorkingProven &&
+               !scope.maySendOrdinaryExit);
+    }
+    nativeRefresh(originalSdk);
+    assert(scope.sdkNativeStopEchoMatches);
     const auto valid=scope;
     auto wrong=original;wrong.account="DU-OTHER";
     assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
@@ -1629,6 +1690,35 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
     assert(reason=="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE");
     assert(!scope.originalAccountAndOrderSetConsistent);
+    // Contradictory native Broker permanent IDs inside ONE open-order
+    // refresh must invalidate the whole inventory, not retain the first
+    // apparently working stop callback.
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(originalSdk);
+    auto collision=originalSdk;
+    collision.nativeOrder.permanentId+=1;
+    f.Push(collision);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(!scope.sdkNativeStopEchoMatches &&
+           !scope.maySendOrdinaryExit &&
+           !scope.nativeStopBrokerWorkingProven);
+    // A CLIENT-ONLY order query must not masquerade as the global active
+    // order authority even when its sole child has a perfect SDK echo.
+    assert(f.adapter.ReqOpenOrders());
+    f.Push(originalSdk);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(f.adapter.ReqRiskRefresh());
+    auto localOnly=f.Event(IBEventType::AccountValue);
+    localOnly.key="NetLiquidation:USD";localOnly.value="1000";f.Push(localOnly);
+    localOnly.key="AccountReady:";localOnly.value="true";f.Push(localOnly);
+    localOnly.key="CashBalance:EUR";localOnly.value="-75000";f.Push(localOnly);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE");
+    assert(!scope.sdkNativeStopEchoMatches);
     (void)valid;
     assert(f.broker->places==0 && f.broker->cancels==0);
 }

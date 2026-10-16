@@ -1075,3 +1075,46 @@ ID, quantity, H1, second active order and out-of-generation cash balance.
 It does not issue, cancel, or modify a Broker order and leaves resident
 PAPER drivers running. See the native `hepta_ib_live_terminal_reconciliation_tests`
 regression.
+## 2026-10-16 — Actual Adapter SDK-native original STOP echo (diagnostic only)
+
+The existing real Adapter's H1 OCA account-scope diagnostic previously
+checked a frozen child ID in the account-wide correlation snapshot but
+did **not** retain the native SDK `openOrder` fields proving whether it
+was actually the original STP/parent/OCA contract.
+
+In this isolated research extension, `ib_gateway_adapter` now
+retains a bounded in-memory copy of exact Broker `openOrder(Submitted)`
+SDK-native fields **only during `ReqAllOpenOrders`** for the current
+configured account/client and connection epoch. New account-wide
+refresh, disconnect and invalidated correlation views clear the cache.
+Contradictory permanent ID/parent/ref/stop-price echoes for the same
+native order ID invalidate the entire refresh.
+
+The frozen H1 OCA observation has two new, narrowly diagnostic fields:
+`sdkNativeStopEchoMatches` and `sdkNativeStopPermanentId`. A match
+requires native conId 12087792, exact parent/child numeric IDs, positive
+Broker Permanent ID, original 45-byte Stop H1, `STP/GTC/Submitted`,
+transmit=true, complete original quantity, trigger method 0, verified
+stop price, matching H1 OCA group + type 1, exact DU account/client,
+current broker epoch and SDK callback ingress provenance. Neither a
+legacy Lite-only orderRef nor a single-client `ReqOpenOrders` view
+can be promoted to an account-wide working protective witness.
+
+**The state remains deliberately unqualified:** fields
+`nativeStopBrokerWorkingProven`,
+`accountSnapshotFreshnessProven`, `stopPriceTriggerProven`,
+`maySendOrdinaryExit` and `mayStopDriver` remain **false**
+even when the SDK native echo matches. SDK fields alone cannot prove
+the stop remains server-held, that original parent actually filled,
+that OCA cancellation handles partial fills, or that the stop survives
+gateway failure.
+
+Pocket4 isolated native IB SDK-enabled Release target
+`hepta_ib_live_terminal_reconciliation_tests` PASS with
+real Adapter instance and injected native callbacks. Negative controls
+include absent SDK-native witness, altered permanent/parent ID,
+OCA group/type, transmit, stop price, GTC, quantity, contract ID and
+provenance, and conflicting duplicated native IDs. The rest of the
+original account/positions/active-order tests remain unchanged.
+No actual Broker traffic, positions, systemd state or original OMS
+was mutated by this research branch.

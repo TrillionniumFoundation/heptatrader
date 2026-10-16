@@ -72,6 +72,8 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_correlationRefreshConflict = false;
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
+    m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopRefreshAccountWide = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -1339,6 +1341,34 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             return;
         }
         if (!acceptedBrokerOpenOrder) return;
+        // Capture only real SDK-native STP echoes during an authoritative
+        // account-wide open-order refresh. A Lite-only orderRef/callback can
+        // never be upgraded into a full original Broker stop witness.
+        if(m_h1NativeStopRefreshAccountWide &&
+           outEvent.nativeOrder.present &&
+           outEvent.value=="Submitted" &&
+           outEvent.order.orderType=="STP" &&
+           outEvent.order.orderRef.compare(0,2,"H1")==0 &&
+           outEvent.connectionEpoch==m_connectionEpoch &&
+           outEvent.brokerClientId==m_cfg.clientId &&
+           outEvent.nativeOrder.clientId==m_cfg.clientId &&
+           outEvent.nativeOrder.account==m_cfg.account) {
+            const long nativeId=static_cast<long>(outEvent.id);
+            const auto old=m_h1NativeStopOpenOrderEchoes.find(nativeId);
+            if(old!=m_h1NativeStopOpenOrderEchoes.end()) {
+                // Even duplicate OpenOrder callbacks must be identical.
+                if(old->second.nativeOrder.permanentId != outEvent.nativeOrder.permanentId ||
+                   old->second.nativeOrder.parentId != outEvent.nativeOrder.parentId ||
+                   old->second.nativeOrder.orderRef != outEvent.nativeOrder.orderRef ||
+                   old->second.nativeOrder.stopAuxPrice != outEvent.nativeOrder.stopAuxPrice) {
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    m_correlationSnapshot.reasonCode="H1_NATIVE_SDK_ECHO_CONFLICT";
+                    m_h1NativeStopOpenOrderEchoes.erase(nativeId);
+                }
+            } else if(m_h1NativeStopOpenOrderEchoes.size()<32) {
+                m_h1NativeStopOpenOrderEchoes.emplace(nativeId,outEvent);
+            }
+        }
         m_pendingActiveOrderIds.insert(static_cast<long>(outEvent.id));
         std::string correlationId;
         std::string decodeReason;
