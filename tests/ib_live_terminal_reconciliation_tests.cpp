@@ -1311,6 +1311,27 @@ void TestResearchH1PairConsumesOnlyNativeAdapterIdsWithoutBrokerEgress() {
             "DU123",73,exEpoch,pair,reason) || pair.parentOrderId!=-1 ||
         exhausted.broker->places!=0)
         throw std::runtime_error("H1_LOCAL_PAIR_OVERFLOWED_SIGNED_TWS_ID");
+    // A pair may legally consume MAX-1 and MAX. The next ordinary send
+    // must refuse, not wrap the local cursor to a positive Broker order ID.
+    IBContractLite exhaustedContract;
+    exhaustedContract.symbol="EUR";
+    exhaustedContract.secType="CASH";
+    exhaustedContract.exchange="IDEALPRO";
+    exhaustedContract.currency="USD";
+    IBOrderLite exhaustedOrder;
+    exhaustedOrder.action="BUY";
+    exhaustedOrder.orderType="LMT";
+    exhaustedOrder.lmtPrice=1.18;
+    exhaustedOrder.totalQuantity=1;
+    long exhaustedAssigned=-1;
+    if (exhausted.adapter.PlaceOrderCorrelated(
+            exhaustedContract, exhaustedOrder,
+            "hepta-v1-sha256:"+std::string(64,'f'),
+            &exhaustedAssigned) ||
+        exhaustedAssigned>0 || exhausted.broker->places!=0 ||
+        exhausted.adapter.GetLastRejectReason()!=
+            "IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("H1_LOCAL_PAIR_EXHAUSTION_ALLOWED_ORDINARY_SEND");
 }
 
 void TestOwnerBoundAdapterNativePairPersistsToSameOriginalOms() {

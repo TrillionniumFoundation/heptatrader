@@ -481,7 +481,8 @@ private:
     int m_errorFuseScore = 0;
     std::time_t m_circuitBreakerTripTs = 0;
     int m_dayOfYear = -1;
-    long m_localOrderSeed = 1;
+    // Store the exhausted int32 TWS sentinel without overflowing a 32-bit long.
+    std::int64_t m_localOrderSeed = 1;
 
     double m_lastReferencePrice = 0.0;
     std::time_t m_lastReferencePriceTs = 0;

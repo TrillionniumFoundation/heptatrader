@@ -1371,7 +1371,7 @@ bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
         reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_FLOOR_UNAVAILABLE";
         return false;
     }
-    const long first = std::max(floor, m_localOrderSeed);
+    const std::int64_t first = std::max<std::int64_t>(floor, m_localOrderSeed);
     if (first >= maxId) {
         reason = "IB_H1_LOCAL_PAIR_NATIVE_ID_EXHAUSTED";
         return false;
@@ -1379,8 +1379,8 @@ bool HeptaIBGatewayAdapter::ReserveResearchUnsentH1LocalIdPair(
     // This changes ONLY our local allocation cursor. The next ordinary
     // order follows the pair and no TWS socket or OMS writes occur here.
     m_localOrderSeed = first + 2;
-    out.parentOrderId = first;
-    out.childOrderId = first + 1;
+    out.parentOrderId = static_cast<long>(first);
+    out.childOrderId = static_cast<long>(first + 1);
     out.brokerClientId = expectedClientId;
     out.connectionEpoch = expectedConnectionEpoch;
     out.paperAccount = expectedPaperAccount;
@@ -1405,7 +1405,9 @@ long HeptaIBGatewayAdapter::NextOrderId() {
         m_localOrderSeed = ibOrderId;
     if (m_localOrderSeed < 1 || m_localOrderSeed > brokerOrderIdMax)
         return -1;
-    return m_localOrderSeed++;
+    // The cursor is widened so returning INT32_MAX does not increment a
+    // 32-bit long past its signed representable range on Windows.
+    return static_cast<long>(m_localOrderSeed++);
 }
 
 bool HeptaIBGatewayAdapter::IsSameTradingDay() const {
