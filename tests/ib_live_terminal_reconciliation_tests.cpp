@@ -1657,16 +1657,10 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
            scope.sdkNativeStopRemainingQuantity==original.quantity &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit && !scope.mayStopDriver);
-    status.nativeOrder.permanentId+=1;
-    status.queueIngressMonotonicNs+=100;
-    f.Push(status);
-    // Contradictory positive permanent ID cannot be repaired by any
-    // subsequent normal status in the same account-order generation.
-    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
-    assert(!f.adapter.InspectResearchH1OcaAccountScope(
-        original,h1,scope,reason));
-    assert(!scope.sdkNativeStopUnfilledRemainingMatches &&
-           scope.sdkNativeStopRemainingQuantity==0);
+    // Contradictory positive permanent-ID callbacks are tested in the
+    // separate dedicated Adapter fixture. They poison the same-epoch
+    // callback-conflict counter: subsequent positive refreshes here would
+    // otherwise incorrectly assume same-epoch requalification is possible.
     // A new account-wide refresh must also clear the prior complete-status
     // witness, forcing new Broker callback evidence each epoch/generation.
 
