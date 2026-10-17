@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run a disjoint Python CI partition, or the complete local suite.
 
-New test files belong to core unless explicitly assigned to source, install,
-isolated process integration, or optional external native integration.
+New test files belong to core unless explicitly assigned to source, learning,
+install, isolated process integration, or optional external native integration.
 No test is dropped by a filename glob maintained in a second workflow.
 """
 from __future__ import annotations
@@ -47,10 +47,16 @@ EXTERNAL_TESTS = frozenset({
     "test_train_v2_physical_native_roundtrip.py",
 })
 
+# These numerical research suites are the routine tests requiring Torch.
+LEARNING_TESTS = frozenset({
+    "test_laya_resident_action_v2_research.py",
+    "test_neuron256_archived_kernel_learning.py",
+})
+
 
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
     discovered = {p.name for p in (root / "tests/python").glob("test_*.py") if p.is_file()}
-    explicit = (SOURCE_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS)
+    explicit = (SOURCE_TESTS, LEARNING_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS)
     overlap = set()
     for i, group in enumerate(explicit):
         for other in explicit[i+1:]:
@@ -62,7 +68,8 @@ def partitions(root: Path = ROOT) -> dict[str, set[str]]:
         raise ValueError("no Python test files discovered")
     return {"source": set(SOURCE_TESTS), "install": set(INSTALL_TESTS),
             "process": set(PROCESS_TESTS), "external": set(EXTERNAL_TESTS),
-            "core": discovered - SOURCE_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS}
+            "learning": set(LEARNING_TESTS),
+            "core": discovered - SOURCE_TESTS - LEARNING_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS}
 
 
 def configure_import_paths() -> None:
@@ -79,7 +86,7 @@ def configure_import_paths() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", choices=("core", "source", "install", "process", "external", "all"), required=True)
+    parser.add_argument("--lane", choices=("core", "source", "learning", "install", "process", "external", "all"), required=True)
     parser.add_argument("--list", action="store_true", help="list selected test files without importing them")
     args = parser.parse_args(argv)
     if not args.list:

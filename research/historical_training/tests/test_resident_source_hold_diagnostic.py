@@ -1,4 +1,4 @@
-"""Fail-closed quality HOLD diagnostic tests, no Broker/model/filesystem mutation."""
+"""Prospective evaluator source HOLD tests; historical training has its own admission."""
 from __future__ import annotations
 import copy
 import json
@@ -41,7 +41,7 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.persist()
     def persist(self):
         self.health.write_text(json.dumps(self.source,sort_keys=True)+'\n')
-    def check(self,role='trainer'):
+    def check(self,role='evaluator'):
         with patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
              patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI):
             return Gate(self.config,role).check()
@@ -59,8 +59,8 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.assertEqual(r['cached_probe_diagnostic']['reported_source_reasons'],self.source['reasons'])
         self.assertFalse(r['original_live_source_evidence']['fresh_original_live_source_proven'])
         self.assertEqual(r['original_live_source_evidence']['broker_queries_sent'],0)
-        self.assertEqual(r['role'],'trainer')
-        self.assertFalse(json.loads((Path(self.config['state_root'])/'trainer-admission.json').read_text())['admit_new_worker'])
+        self.assertEqual(r['role'],'evaluator')
+        self.assertFalse(json.loads((Path(self.config['state_root'])/'evaluator-admission.json').read_text())['admit_new_worker'])
 
     def test_evaluator_hold_is_independently_denying(self):
         with patch('historical_training.resident_live_source.refresh',
@@ -117,7 +117,7 @@ class ClosedMarketHoldTests(unittest.TestCase):
                    return_value=(updated,proof)) as refresh,\
              patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
              patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI):
-            report=Gate(self.config,'trainer').check()
+            report=Gate(self.config,'evaluator').check()
         refresh.assert_called_once()
         self.assertTrue(report['admit_new_worker'])
         self.assertEqual(report['original_live_source_evidence'],proof)
