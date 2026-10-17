@@ -104,3 +104,28 @@ Live state use was 670,759,547 bytes against the unchanged 12 GiB quota, and sto
 The newest historical training candidate is 7becfed5397437dedf9d385fe57b3e35e720830f680fbba8a9f8288ce00f3f69 (job d08687f663923e0a3fd2adbc795e16c79e88671850e800f6b8b3455ecdff4da0). Its 32 reserved rows were all applied in 16 steps, with no rollback, 73.2649 seconds wall time and 1,587,737,088 bytes peak GPU allocation. Training-only price CE changed from 2.45851035416 to 2.45823210850, with Brier 1.01501643099. Its action targets were 0 ACT / 32 ESCALATE. PnL reward was not used. These figures are execution/diagnostic evidence, not prospective performance or trading eligibility.
 
 Activation evidence: trainer-activation.json and live-verification.json in the Pocket4 evidence directory above. The original failed drain-wait observation is retained as evidence; it is not presented as a completed inactive-state check.
+
+
+## Runtime evidence snapshot at 23:27 UTC
+
+The new trainer PID remained 2966959 over subsequent successful loops. Its error record was inactive, no manual hold was present, and all original plan/candidate hashes remained unchanged.
+
+The evaluator reported **322 OBSERVED / 1,101 CENSORED**, with 40 closed REJECTED plans and the original trial 41 still PENDING. These pooled counts span different historical plans; they are not a new independent model-quality sample.
+
+| Historical censor reason | Count |
+| --- | ---: |
+| ENDPOINT_GAP | 27 |
+| NO_PREDICTION_IN_FIXED_SLOT | 679 |
+| PREDICTION_PROCESS_FAILED | 353 |
+| PATH_GAP | 31 |
+| OUTCOME_MISSING | 11 |
+
+Among the 40 closed qualifications, 33 list insufficient observable windows and excess censoring, 37 list insufficient paired-sign evidence, 21 list accuracy below the bootstrap, and 14 list no positive mean improvement. Reasons overlap and must not be summed as distinct trials. Missing source/prediction evidence and model weakness both need attention; closed rejections alone do not identify a single cause.
+
+Feed health remained CAPTURE_UNAVAILABLE with quote_fresh_now=false. The latest verified quote was observed at **2026-10-16 16:15:16.801 UTC** (12:15:16.801 New York). The current segment had 0 quote captures and 245 failure captures at this snapshot. Segment counts reset at rotation; they are not the lifetime outage count. KNOWN_OPEN_FAILURE_UNRECOVERED is retained across weekend rotation.
+
+The pinned regular-session calendar next opens Sunday **2026-10-18 21:15 UTC / 17:15 New York**. That calendar fact does not prove that the prior open-session outage, subscriptions or future original source will recover.
+
+Both recent historical training completions generated automatic, completed COMGR receipts. Each removed only 52 terminal COMGR files totaling **191,734,856 bytes**, with training_evidence_pruned=false. The final resident state footprint was **670,890,632 bytes** against the unchanged 12 GiB quota.
+
+Detailed snapshot and failure diagnostics are retained as final-runtime-audit.json and worker-failure-detail-audit.json in the Pocket4 evidence directory. This is source/operation evidence; no performance acceptance, model promotion or order follows from it.
