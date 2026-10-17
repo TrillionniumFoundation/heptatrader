@@ -94,6 +94,20 @@ struct IBAuthoritativeFxCashExposure {
  // STP LMT, TRAIL or OCA label is only a visible CANDIDATE, not a verified
  // Broker protection that survives driver loss, venue cancel, or liquidation.
 struct IBVisibleProtectiveOrderCandidate {
+    // The read-only census is NOT Broker-proven protective cover. Nevertheless
+    // a changed underlying Contract or OCA native semantics under the same
+    // permId must invalidate any previously complete account-wide inventory.
+    std::string contractSymbol;
+    std::string contractSecType;
+    std::string contractCurrency;
+    std::string contractExchange;
+    std::string orderRef;
+    bool sdkNativePresent = false;
+    long long nativeContractId = 0;
+    int nativeOcaType = 0;
+    std::string nativeTimeInForce;
+    int nativeTriggerMethod = 0;
+    double limitPrice = 0.0;
     std::string orderType;
     std::string action;
     std::string ocaGroup;
