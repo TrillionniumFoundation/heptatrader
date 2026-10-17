@@ -4,6 +4,7 @@
 #include "execution/ib_economic_evidence.h"
 
 #include <cstdint>
+#include <cmath>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -12,6 +13,68 @@
 #include <deque>
 #include <thread>
 #include <condition_variable>
+
+// Optional additive v4 native STOP child witness. Present only on an
+// exact owner-bound, complete SDK openOrder callback. The witness is NOT a
+// working protective guarantee without independently complete broker orders,
+// exact physical position and no-new-entry fence.
+struct IbBracketCallbackEvidence {
+    int version = 0;
+    long contractId = 0;
+    long parentOrderId = 0;
+    long permanentOrderId = 0;
+    int transmit = 0;
+    int ocaType = 0;
+    int triggerMethod = 0;
+    std::string orderRef;
+    std::string ocaGroup;
+    std::string timeInForce;
+    double quantity = 0.0;
+    double stopAuxPrice = 0.0;
+
+    static bool CanonicalH1Ref(const std::string& ref) {
+        // Unpadded base64url of exactly 32 bytes has 43 characters. The
+        // last sextet contains two unused zero bits; reject noncanonical
+        // aliases rather than treating prefix-only H1 as valid evidence.
+        static const std::string alphabet=
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        if (ref.size()!=45 || ref.compare(0,2,"H1")!=0) return false;
+        for(std::size_t i=2;i<ref.size();++i)
+            if(alphabet.find(ref[i])==std::string::npos) return false;
+        const auto last=alphabet.find(ref.back());
+        return last!=std::string::npos && last%4==0;
+    }
+    bool ValidShape() const {
+        if ((version!=1 && version!=2) || contractId!=12087792 ||
+            parentOrderId<=0 || permanentOrderId<=0 || transmit!=1 ||
+            ocaType!=1 || triggerMethod!=0 || timeInForce!="GTC" ||
+            !std::isfinite(quantity) || quantity<=0 || quantity>100000 ||
+            std::floor(quantity)!=quantity ||
+            !std::isfinite(stopAuxPrice) || stopAuxPrice<=0) return false;
+        if(version==1) {
+            // Preserve the exact legacy research-only v1 shape.
+            static const std::string prefix="HEPTA-STOP-";
+            if(orderRef.compare(0,prefix.size(),prefix)!=0 ||
+               orderRef.size()<=prefix.size() || orderRef.size()>45 ||
+               ocaGroup!="HEPTA-FX-OCA-"+orderRef.substr(prefix.size()))
+                return false;
+            for(std::size_t i=prefix.size();i<orderRef.size();++i) {
+                const char c=orderRef[i];
+                if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+                     (c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'))
+                    return false;
+            }
+        } else {
+            // v2 is H1 field SHAPE ONLY; an actual candidate requires a
+            // separate, exact original-OMS + SDK openOrder projection.
+            if(!CanonicalH1Ref(orderRef) || !CanonicalH1Ref(ocaGroup) ||
+               orderRef==ocaGroup) return false;
+        }
+        const double ticks=stopAuxPrice/0.00005;
+        return std::isfinite(ticks) &&
+               std::fabs(ticks-std::round(ticks))<1.e-7;
+    }
+};
 
 struct OmsJournalEvent {
     // v4 schema. Keep old keys/fields for backward compatibility.
@@ -55,6 +118,7 @@ struct OmsJournalEvent {
     double brokerRemainingQuantity = 0.0;
     double brokerMarketCapPrice = 0.0;
     IbEconomicEvidence brokerEconomics;
+    IbBracketCallbackEvidence brokerBracket;
 
     std::string rawLine;
 };
@@ -105,6 +169,11 @@ public:
 
     bool Init(const std::string& path);
     bool Append(const OmsJournalEvent& evt);
+    // Mandatory pre-broker-send durability barrier. Unlike ordinary Append,
+    // this ALWAYS flushes the existing queue and fsyncs the exact critical
+    // marker, even with HEPTA_OMS_SYNC_CRITICAL=0 or async writes enabled.
+    // A failed barrier never authorizes a Broker request.
+    bool AppendDurableCritical(const OmsJournalEvent& evt);
     // Two ordered critical records with no intervening external effect share
     // one durability barrier. This is not an atomic two-record disk format:
     // a failed/crashed call may leave a prefix, which ordinary replay retains.
