@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +42,8 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
                         + str(self.release / 'heptatrader_attributed_driver.py')
                         + ' --manifest ' + str(self.manifest_path) +
                         ' ; ignore_errors=no ; }')
+        # Scope the non-root installer simulation to its module reference.
+        # Patching os.geteuid globally also falsifies read_private ownership.
         self.service = dict(ActiveState='active', MainPID='4201',
                             ExecStart=self.command)
 
@@ -62,7 +65,7 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
     def test_nonflat_identical_install_is_noop_without_external_commands(self):
         # No state file exists, let alone a flat snapshot. Non-mutating
         # reinstallation must exit before any git, broker or systemd stop.
-        with patch.object(installer.os, 'geteuid', return_value=1000), \
+        with patch.object(installer, 'os', SimpleNamespace(geteuid=lambda: 1000)), \
              patch.object(installer, 'show', return_value=self.service), \
              patch.object(installer.subprocess, 'check_output',
                           side_effect=AssertionError('git/broker query forbidden')), \
@@ -73,7 +76,7 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
         self.assertFalse((self.root / 'evidence').exists())
 
     def test_different_source_cannot_reinstall_into_nonflat_lane(self):
-        with patch.object(installer.os, 'geteuid', return_value=1000), \
+        with patch.object(installer, 'os', SimpleNamespace(geteuid=lambda: 1000)), \
              patch.object(installer, 'show', return_value=self.service), \
              patch.object(installer, 'sha', return_value='0' * 64), \
              patch.object(installer.subprocess, 'run',
@@ -82,7 +85,7 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
                 installer.install('EUR.USD', self.root / 'evidence')
 
     def test_inactive_resident_not_mistaken_for_running_noop(self):
-        with patch.object(installer.os, 'geteuid', return_value=1000), \
+        with patch.object(installer, 'os', SimpleNamespace(geteuid=lambda: 1000)), \
              patch.object(installer, 'show', return_value={**self.service, 'ActiveState':'inactive'}):
             with self.assertRaisesRegex(RuntimeError, 'RESIDENT_NOT_ACTIVE'):
                 installer.install('EUR.USD', self.root / 'evidence')
