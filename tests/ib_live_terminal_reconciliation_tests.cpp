@@ -1750,10 +1750,10 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     (void)valid;
     assert(f.broker->places==0 && f.broker->cancels==0);
 }
-void TestH1StopOutOfOrderStatusCannotRestoreUnfilledProof() {
-    // Simulated real SDK callbacks processed out of ingress order. A later
-    // partial fill permanently defeats an older positive Submitted/0-full
-    // status within this account-wide refresh. Never forge new Broker proof.
+void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict() {
+    // Same-session Broker callbacks must never roll an H1 status diagnostic
+    // back to earlier trusted contents after a contradictory newer permId.
+    // The original callback identities, rather than simulated fills, are used.
     Fixture f(true,false,true);
     hepta_bracket_h1::FrozenBracket original;
     original.originalCommandKey="actual-adapter-oca-ordering";
@@ -1807,14 +1807,14 @@ void TestH1StopOutOfOrderStatusCannotRestoreUnfilledProof() {
     assert(f.adapter.InspectResearchH1OcaAccountScope(
         original,refs,scope,reason));
     assert(scope.sdkNativeStopUnfilledRemainingMatches);
-    auto partial=status;partial.queueIngressMonotonicNs=555300;
-    partial.number2=1;partial.number3=original.quantity-1;
-    f.Push(partial);
+    auto contradictory=status;contradictory.queueIngressMonotonicNs=555300;
+    contradictory.nativeOrder.permanentId+=1;
+    f.Push(contradictory);
     assert(f.adapter.InspectResearchH1OcaAccountScope(
         original,refs,scope,reason));
     assert(!scope.sdkNativeStopUnfilledRemainingMatches);
-    // Backdated healthy callback: queue processing order cannot resurrect a
-    // contradicted H1 STOP. The full inventory must fail closed on conflict.
+    // Backdated good callback: queue-processing order cannot resurrect a
+    // contradicted native H1 Stop; the global inventory must fail closed.
     f.Push(status);
     assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
     assert(!f.adapter.InspectResearchH1OcaAccountScope(
@@ -1826,7 +1826,7 @@ void TestH1StopOutOfOrderStatusCannotRestoreUnfilledProof() {
 
 int main() {
     TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
-    TestH1StopOutOfOrderStatusCannotRestoreUnfilledProof();
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict();
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();
