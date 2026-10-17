@@ -72,3 +72,63 @@ trading services as a precondition for this research.
 Even a perfect engineering reproduction is not an actual
 prospective prediction, does not prove economic alpha and does not
 authorize model promotion or live Broker orders.
+
+## Real Pocket4 v5 cutover and create-once verification
+
+The source patch was pushed as commit
+c8e8762f0a58cb4635d3bf7038c5be957ddd05be on the separate
+stacked Draft research branch. The physical v5 source-only release
+is installed read-only at
+  ~/.local/share/heptatrader/value343-prospective/releases/value343-durable-20261017-v5
+
+The v5 observer executable SHA256 is
+  b218825f11625a1d71ad8cdcd35540ef308c8834b9013fd8478d185b0de5bcfc
+and the unchanged v4 incremental source parser SHA256 is
+  cf64fb78b82f8038d005df2ff52bb926dcb7da5edef67259cdbac38e41862bf8.
+
+New independent v5 freeze path:
+  ~/.local/state/heptatrader/operator-evidence/value343-predecision-durable-20261017/freeze.json
+Freeze SHA256:
+  dd847aaa46587ce6a27d4b04897fe816b17020833ba4a02881eb13ad4ce148db
+
+The actual user unit heptatrader-value343-predecision-durable.service
+was started in parallel with v4, successfully re-read all 13,646
+original journal events/4,432 older REQUEST identities, established
+its real Linux inotify descriptor and reached stable operation with
+zero restarts and about 138 MiB observed memory peak. Only after this
+was true did the operator enable v5 for reboot and disable/stop v4.
+V1/v2/v3 research observers also remain inactive. Older model
+releases, freeze files and failed or accepted evidence were NOT changed.
+
+The original PAPER FX/BTC Drivers, Laya Trainer/Evaluator/Feed,
+Execution and Gateway were all physically active with their prior
+PIDs; none was restarted to deploy this read-only experiment.
+The v5 service uses the same network-denied, 40% CPU, 512MiB memory,
+zero-swap, read-only-original files and private v5-only writing path
+as its predecessor.
+
+Owner-private create-once physical deployment qualification:
+  ~/.local/state/heptatrader/operator-evidence/value343-postfsync-v5-deployment-20261017/runtime-qualification-v1.json
+SHA256:
+  fac9b5b006e8a7da262f9bd80fbbca1924cb48b7395f18a09e03f1a5f582a68e
+
+The qualification binds program SHA, original source-cache SHA,
+model freeze SHA, actual systemd unit SHA, source original history,
+process identity, inotify FD, memory peak, original peer PIDs and
+zero Broker/model authority. Exactly 54 focused Value tests, 116
+Source tests and 705 historical-training tests were green on the
+same Pocket4 checkout, including seven new explicit fsync timing
+cases, and the local docs/unit/whitespace checks also passed.
+
+At original v5 activation all 4,432 source requests were historical;
+real post-v5-frozen prospective predictions, durable_seals,
+RESPONSE timing proofs, missed/censored and economic scores are
+ALL ZERO. This is a valid closed-source/closed-market startup, not
+proof of future predictive quality or profitability.
+
+Research-only rollback without touching production services:
+stop+disable heptatrader-value343-predecision-durable.service;
+then enable+start the still-pinned
+heptatrader-value343-predecision-incremental.service. Never delete
+or modify any of the prior evidence or reclassify a missed request
+as a successful future pre-RESPONSE forecast.
