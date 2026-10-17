@@ -65,11 +65,50 @@ bool ParseBrokerErrorCode(const std::string& value, int& code) {
     code = static_cast<int>(parsed);
     return true;
 }
-bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
-    const std::string& type=event.order.orderType;
+// The Broker global inventory must retain all conditional trigger orders,
+// including MIT/LIT used for CASH and STP PRT used for futures, even when
+// they have no Parent or OCA. Visible is NOT broker-attested protection.
+bool IsIbConditionalTriggerType(const std::string& type) {
     return type=="STP" || type=="STP LMT" ||
         type=="TRAIL" || type=="TRAIL LIMIT" ||
+        type=="MIT" || type=="LIT" || type=="STP PRT";
+}
+bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
+    return IsIbConditionalTriggerType(event.order.orderType) ||
         !event.brokerOcaGroup.empty() || event.brokerParentOrderId!=0;
+}
+
+// Original IB SDK openOrder projects Lite + native Order from one callback.
+// A contradiction within that single Broker observation is not a complete
+// account-wide protective-order census. Never synthesize trading authority.
+bool NativeAndLiteProtectiveShapeConsistent(const IBEvent& event) {
+    if (!event.nativeOrder.present) return true;
+    const auto& n=event.nativeOrder;
+    const auto& nativeType=n.orderType;
+    const bool nativeProtective=
+        IsIbConditionalTriggerType(nativeType) ||
+        !n.ocaGroup.empty() || n.parentId!=0;
+    // A malformed Lite projection can hide *every* protective field.
+    // Qualify the consistency check if EITHER callback view reports a
+    // Broker-native STOP, Parent or OCA order. Otherwise a native STP
+    // could be silently omitted from the account-wide protective census.
+    if (!nativeProtective && !IsIbVisibleProtectiveCandidate(event))
+        return true;
+    const bool stopType=IsIbConditionalTriggerType(event.order.orderType);
+    return event.id==n.orderId &&
+        event.brokerPermId==n.permanentId &&
+        event.brokerParentOrderId==n.parentId &&
+        event.brokerOcaGroup==n.ocaGroup &&
+        event.brokerTransmit==n.transmit &&
+        event.brokerClientId==n.clientId &&
+        event.account==n.account &&
+        event.order.action==n.action &&
+        event.order.orderType==n.orderType &&
+        event.order.orderRef==n.orderRef &&
+        std::isfinite(n.totalQuantity) &&
+        event.order.totalQuantity==n.totalQuantity &&
+        (!stopType || (std::isfinite(n.stopAuxPrice) &&
+                      event.order.auxPrice==n.stopAuxPrice));
 }
 
 IBVisibleProtectiveOrderCandidate MakeIbVisibleProtectiveCandidate(
@@ -215,6 +254,11 @@ void HeptaIBGatewayAdapter::ObserveIncrementalProtectiveMetadata(
         event.account!=m_cfg.account || event.id<0 ||
         event.id>LONG_MAX || event.brokerClientId<0)
         return;
+    if (!NativeAndLiteProtectiveShapeConsistent(event)) {
+        InvalidateCorrelationSnapshot(
+            "IB_PROTECTIVE_NATIVE_LITE_INCREMENTAL_CONFLICT");
+        return;
+    }
     if (event.brokerPermId<=0) {
         if (IsIbVisibleProtectiveCandidate(event))
             m_correlationSnapshot.protectiveMetadataIncomplete=true;
@@ -1664,6 +1708,12 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             return;
         }
         if (!acceptedBrokerOpenOrder) return;
+        if (!NativeAndLiteProtectiveShapeConsistent(outEvent)) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode=
+                "IB_PROTECTIVE_NATIVE_LITE_SHAPE_CONFLICT";
+            return;
+        }
         const long orderId = static_cast<long>(outEvent.id);
         if (orderId == 0 && (outEvent.brokerClientId != 0 ||
                              outEvent.brokerPermId <= 0)) {

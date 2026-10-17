@@ -94,9 +94,9 @@ def _unlink(fd: int, name: str, mode: int) -> None:
     os.fsync(fd)
 
 
-def _hold_value(data: bytes | None) -> bool:
+def _hold_record(data: bytes | None) -> dict | None:
     if data is None:
-        return False
+        return None
     def pairs(items):
         obj = {}
         for key, value in items:
@@ -115,13 +115,19 @@ def _hold_value(data: bytes | None) -> bool:
             or type(record.get("created_at_ms")) is not int
             or record["created_at_ms"] <= 0):
         raise HoldError("BAD_HOLD_SCOPE")
-    return True
+    return record
 
 
-def perform(action: str, control: Path, state_root: Path) -> dict:
+def perform(action: str, control: Path, state_root: Path, *,
+            reason: str | None = None, task: str | None = None,
+            resume_when: str | None = None) -> dict:
     """Testable policy core. CLI main separately pins the real runtime paths."""
     if action not in ACTIONS:
         raise HoldError("UNKNOWN_ACTION")
+    metadata = {"reason": reason, "task": task, "resume_when": resume_when}
+    if any(value is not None and (not isinstance(value, str) or len(value) > 512
+           or any(ord(char) < 32 for char in value)) for value in metadata.values()):
+        raise HoldError("BAD_HOLD_DESCRIPTION")
     # An unprivileged owner alone is allowed; never silently act as root.
     if os.geteuid() == 0:
         raise HoldError("ROOT_NOT_ALLOWED")
@@ -143,7 +149,9 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                         or stat.S_IMODE(meta.st_mode) != 0o600):
                     raise HoldError("UNSAFE_OPERATOR_LOCK")
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                hold = _hold_value(_file(maint_fd, HOLD, 0o600))
+                hold_raw = _file(maint_fd, HOLD, 0o600)
+                record = _hold_record(hold_raw)
+                hold = record is not None
                 marker = _file(ctrl_fd, SWITCH, 0o440)
                 # Native Execution accepts a 0440 single-link marker even
                 # when the payload is empty. It creates empty markers on
@@ -164,9 +172,13 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                     if action == "maintenance-hold" and not hold:
                         payload = {"schema": SCHEMA, "uid": os.geteuid(),
                                    "effect": "NEW_PAPER_RISK_HOLD_ONLY",
-                                   "created_at_ms": int(time.time() * 1000)}
+                                   "created_at_ms": int(time.time() * 1000),
+                                   "created_by": "heptatrader-cli", "created_by_pid": os.getpid(),
+                                   **{key: value for key, value in metadata.items() if value is not None}}
                         raw = (json.dumps(payload, sort_keys=True, separators=(",", ":"))
                                + "\n").encode()
+                        if len(raw) > 4096:
+                            raise HoldError("HOLD_DESCRIPTION_TOO_LARGE")
                         if not _write_once(maint_fd, HOLD, raw, 0o600):
                             raise HoldError("RACING_HOLD_CREATION")
                         hold = True
@@ -187,24 +199,30 @@ def perform(action: str, control: Path, state_root: Path) -> dict:
                         if not independent_empty:
                             _unlink(ctrl_fd, SWITCH, 0o440)
                     except Exception:
-                        payload = {"schema": SCHEMA, "uid": os.geteuid(),
-                                   "effect": "NEW_PAPER_RISK_HOLD_ONLY",
-                                   "created_at_ms": int(time.time() * 1000)}
-                        raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
-                        _write_once(maint_fd, HOLD, raw, 0o600)
+                        # Restore the original owner's reason and creation time.
+                        _write_once(maint_fd, HOLD, hold_raw, 0o600)
                         raise
-                # Reporting never claims independent Broker ownership or permission
-                # to stop an exposed strategy.
+                # Report the post-action state, without granting service-stop authority.
+                marker = _file(ctrl_fd, SWITCH, 0o440)
+                record = _hold_record(_file(maint_fd, HOLD, 0o600))
+                origin = ("ABSENT" if marker is None else
+                          "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
+                          "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
+                          "UNRECOGNIZED_INDEPENDENT_NATIVE")
+                blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
+                if marker is not None:
+                    blockers.append(origin)
+                details = None if record is None else {
+                    "uid": record["uid"], "created_at_ms": record["created_at_ms"],
+                    "age_seconds": max(0, (int(time.time() * 1000) - record["created_at_ms"]) // 1000),
+                    "created_by": record.get("created_by"),
+                    "reason": record.get("reason"), "task": record.get("task"),
+                    "resume_when": record.get("resume_when")}
                 return {"schema": "heptatrader.maintenance-latch-status.v1",
-                        "action": action,
-                        "persistent_hold": hold,
-                        "native_kill_switch_engaged":
-                            _file(ctrl_fd, SWITCH, 0o440) is not None,
-                        "native_marker_origin":
-                            ("ABSENT" if marker is None else
-                             "INDEPENDENT_EMPTY_NATIVE" if independent_empty else
-                             "CLI_TAGGED_PAUSE" if not other_native else
-                             "UNRECOGNIZED_INDEPENDENT_NATIVE"),
+                        "action": action, "persistent_hold": record is not None,
+                        "native_kill_switch_engaged": marker is not None,
+                        "native_marker_origin": origin, "hold_details": details,
+                        "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
                         "may_stop_driver": False, "broker_orders_sent": 0}
             finally:
                 os.close(lock)
@@ -220,12 +238,16 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("action", choices=sorted(ACTIONS))
+    ap.add_argument("--reason", help="optional reason for a newly created maintenance hold")
+    ap.add_argument("--task", help="optional task associated with a new hold")
+    ap.add_argument("--resume-when", help="optional resume condition; does not auto-release a hold")
     args = ap.parse_args(argv)
     uid = os.geteuid()
     expected_control = Path(f"/run/user/{uid}/heptatrader/control")
     expected_state = Path(pwd.getpwuid(uid).pw_dir) / ".local/state/heptatrader"
     try:
-        status = perform(args.action, expected_control, expected_state)
+        status = perform(args.action, expected_control, expected_state,
+                         reason=args.reason, task=args.task, resume_when=args.resume_when)
     except (HoldError, OSError, ValueError) as exc:
         print(json.dumps({"status": "HOLD_BLOCKED", "reason": str(exc)[:200],
                           "may_stop_driver": False, "broker_orders_sent": 0}))

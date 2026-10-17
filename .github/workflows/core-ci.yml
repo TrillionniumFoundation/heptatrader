@@ -33,34 +33,29 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Identify markdown-only change without relaxing source checks
+      - name: Identify native, Python and learning change scopes
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          run_full=true
           if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-            if git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA"; then
-              if python3 -B scripts/ci_scope.py --base "$BASE_SHA"; then
-                run_full=false
-              fi
-            fi
+            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
           fi
-          printf 'run_full=%s\n' "$run_full" >> "$GITHUB_OUTPUT"
+          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
       - name: Install build dependencies
-        if: steps.scope.outputs.run_full == 'true'
+        if: steps.scope.outputs.run_native == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
       - name: Native build and behavior tests
-        if: steps.scope.outputs.run_full == 'true'
+        if: steps.scope.outputs.run_native == 'true'
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
       - name: Retain actual test diagnostics
-        if: always() && steps.scope.outputs.run_full == 'true'
+        if: always() && steps.scope.outputs.run_native == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: core-tests-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -89,50 +84,50 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Identify markdown-only change without relaxing source checks
+      - name: Identify native, Python and learning change scopes
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          run_full=true
           if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-            if git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA"; then
-              if python3 -B scripts/ci_scope.py --base "$BASE_SHA"; then
-                run_full=false
-              fi
-            fi
+            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
           fi
-          printf 'run_full=%s\n' "$run_full" >> "$GITHUB_OUTPUT"
+          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
       - name: Install build dependencies
-        if: steps.scope.outputs.run_full == 'true'
+        if: steps.scope.outputs.run_python == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
-      # Validate the checked-out documentation before downloading the large
-      # fixed CPU research dependency. Source changes still run all tests.
       - name: Documentation links preflight
         run: python3 scripts/check_documentation.py
-      # Cache only downloaded HTTP/wheel bytes, never an installed venv or
-      # tested program. Every full-source run installs/asserts CPU torch==2.8.0.
+      - name: Python behavior and source tests once
+        if: steps.scope.outputs.run_python == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/run_python_tests.py --lane core
+          python3 scripts/run_python_tests.py --lane source
+      # Install the model dependency only after the independent Python feedback.
+      # Cache downloaded wheel bytes; every learning run installs the pinned version.
       - name: Cache CPU research dependency downloads
-        if: steps.scope.outputs.run_full == 'true'
+        if: steps.scope.outputs.run_learning == 'true'
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         continue-on-error: true # cache outage must not become a new dev gate
         with:
           path: ~/.cache/pip
           key: heptatrader-cpu-torch-2.8.0-v1-${{ runner.os }}-${{ runner.arch }}
       - name: Install pinned CPU research test dependency
-        if: steps.scope.outputs.run_full == 'true'
+        if: steps.scope.outputs.run_learning == 'true'
         run: |
           python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
           "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
           "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
           echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
-      - name: Python behavior and source tests once
-        if: steps.scope.outputs.run_full == 'true'
-        run: |
-          set -euo pipefail
-          python3 scripts/run_python_tests.py --lane core
-          python3 scripts/run_python_tests.py --lane source
-          git diff --check
+      - name: Python learning tests once
+        if: steps.scope.outputs.run_learning == 'true'
+        env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: python3 scripts/run_python_tests.py --lane learning
+      - name: Whitespace check
+        run: git diff --check
