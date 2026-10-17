@@ -65,10 +65,16 @@ bool ParseBrokerErrorCode(const std::string& value, int& code) {
     code = static_cast<int>(parsed);
     return true;
 }
-bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
-    const std::string& type=event.order.orderType;
+// The Broker global inventory must retain all conditional trigger orders,
+// including MIT/LIT used for CASH and STP PRT used for futures, even when
+// they have no Parent or OCA. Visible is NOT broker-attested protection.
+bool IsIbConditionalTriggerType(const std::string& type) {
     return type=="STP" || type=="STP LMT" ||
         type=="TRAIL" || type=="TRAIL LIMIT" ||
+        type=="MIT" || type=="LIT" || type=="STP PRT";
+}
+bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
+    return IsIbConditionalTriggerType(event.order.orderType) ||
         !event.brokerOcaGroup.empty() || event.brokerParentOrderId!=0;
 }
 
@@ -80,8 +86,7 @@ bool NativeAndLiteProtectiveShapeConsistent(const IBEvent& event) {
     const auto& n=event.nativeOrder;
     const auto& nativeType=n.orderType;
     const bool nativeProtective=
-        nativeType=="STP" || nativeType=="STP LMT" ||
-        nativeType=="TRAIL" || nativeType=="TRAIL LIMIT" ||
+        IsIbConditionalTriggerType(nativeType) ||
         !n.ocaGroup.empty() || n.parentId!=0;
     // A malformed Lite projection can hide *every* protective field.
     // Qualify the consistency check if EITHER callback view reports a
@@ -89,10 +94,7 @@ bool NativeAndLiteProtectiveShapeConsistent(const IBEvent& event) {
     // could be silently omitted from the account-wide protective census.
     if (!nativeProtective && !IsIbVisibleProtectiveCandidate(event))
         return true;
-    const bool stopType=event.order.orderType=="STP" ||
-        event.order.orderType=="STP LMT" ||
-        event.order.orderType=="TRAIL" ||
-        event.order.orderType=="TRAIL LIMIT";
+    const bool stopType=IsIbConditionalTriggerType(event.order.orderType);
     return event.id==n.orderId &&
         event.brokerPermId==n.permanentId &&
         event.brokerParentOrderId==n.parentId &&
