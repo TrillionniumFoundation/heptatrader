@@ -58,3 +58,5 @@ Pocket4 USD100k original decision-attribution net-Value research: [343-reward ch
 Original USD100k Value343 two-sided predecision Pocket4 observer: [prospective research shadow](../technical/pocket4-value343-predecision-shadow-20261017.md). No trading permission.
 
 Pocket4 Value343 v2 original-response-gated inotify shadow (research only): [observed latency, strict response proofs and event-driven watcher](../technical/pocket4-value343-pre-response-inotify-20261017.md).
+
+Pocket4 isolated complete synthetic-wire original REQUEST->RESPONSE->OMS settlement and path-id hardening: [Value343 v3 end-to-end research audit](../technical/pocket4-value343-original-journal-e2e-20261017.md). It does not prove live financial outcomes.

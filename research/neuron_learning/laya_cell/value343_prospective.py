@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import os
 from pathlib import Path
 import stat
@@ -27,14 +28,14 @@ import numpy as np
 from hepta_decision_attribution import digest,read_private,strict
 from . import value343_oos as prior
 
-SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v2"
-SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v2"
+SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v3"
+SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v3"
 STUDY=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-chronological-oos-20261016/study-v4.json")
 STUDY_SHA="dc0e463e6acc2a11a095afcc7623498959327f00d2835b9b2a0bdc8cf659f060"
 SOURCE_CODE_SHA="73354f5d1fdaa0ace5c60211597c9c2d4d2f5f74ecb2f5e9ecef63cb206f246c"
 REGISTRATION=prior.CONFIG
 COHORT=prior.BEHAVIOR
-OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-fast-20261017")
+OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-hardened-20261017")
 MAX_SOURCE_FILES=128
 MAX_SOURCE_TOTAL=256*1024*1024
 MAX_SOURCE_FILE=16*1024*1024
@@ -42,6 +43,16 @@ MAX_REQUEST_AGE_MS=90000
 EXPECTED_MODEL="gpt-6-luna"
 NO_AUTHORITY={"broker_orders_sent":0,"automatic_trading":False,
               "model_promotion":False,"policy_gradient":False}
+
+ORIGINAL_REQUEST_ID_RE=re.compile(r"[0-9a-f]{32}\Z")
+
+
+def original_request_id(value):
+    """Original producer uses uuid4.hex; reject unsafe evidence path names."""
+    if type(value) is not str or ORIGINAL_REQUEST_ID_RE.fullmatch(value) is None:
+        raise ValueError("UNSAFE_ORIGINAL_REQUEST_ID")
+    return value
+
 
 
 def read_model():
@@ -151,8 +162,7 @@ def original_events(manifest):
             if event["kind"]=="REQUEST":
                 request=event["data"]
                 request_id=request.get("request_id")
-                if not isinstance(request_id,str) or len(request_id)<16:
-                    raise ValueError("REQUEST_ID_SCOPE")
+                original_request_id(request_id)
                 if request_id in requests:raise ValueError("DUPLICATE_ORIGINAL_REQUEST")
                 requests[request_id]=event
             result.append(event)
@@ -250,6 +260,7 @@ def capture(events,requests,freeze,model):
              "already_sealed":0,"eligible_future_requests":0}
     for rid,ev in sorted(requests.items(),
                          key=lambda kv:(kv[1]["data"].get("started_at_ms",0),kv[0])):
+        original_request_id(rid)
         request=ev["data"]
         start=request.get("started_at_ms")
         if type(start) is not int or start<=after:
@@ -320,7 +331,8 @@ def attest_responses(events,requests,freeze):
             "already_attested":0}
     for path in sorted((OUT/"predictions").glob("*.json")):
         p=strict(read_private(path,limit=16384))
-        rid=p["request_id"]
+        rid=original_request_id(p["request_id"])
+        if path.name!=rid+".json":raise ValueError("PREDICTION_RECEIPT_FILENAME_CHANGED")
         proof=OUT/"response_proofs"/(rid+".json")
         bad=OUT/"rejects"/(rid+".json")
         if proof.exists() or bad.exists():
@@ -395,7 +407,8 @@ def score(events,requests,freeze):
     matched=[]
     for path in paths:
         p=strict(read_private(path,limit=16384))
-        rid=p["request_id"]
+        rid=original_request_id(p["request_id"])
+        if path.name!=rid+".json":raise ValueError("PREDICTION_RECEIPT_FILENAME_CHANGED")
         if (OUT/"rejects"/(rid+".json")).exists():continue
         proofpath=OUT/"response_proofs"/(rid+".json")
         if not proofpath.exists():continue  # provisional is not an admissible score
