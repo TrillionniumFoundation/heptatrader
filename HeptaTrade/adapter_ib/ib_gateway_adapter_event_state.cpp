@@ -78,6 +78,10 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_pendingProtectiveCandidatesByPermId.clear();
     m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
+    m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopOrderStatusEchoes.clear();
+    m_h1NativeStopRefreshAccountWide = false;
+    m_h1AccountWideOrderEndMonotonicNs = 0;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -280,6 +284,7 @@ HeptaIBGatewayAdapter::GetAuthoritativeTerminalCorrelationSnapshot() const {
 }
 
 void HeptaIBGatewayAdapter::InvalidateRiskSnapshot(const std::string& reason) {
+    m_h1CoherentRiskEndMonotonicNs = 0;
     m_coherentRiskRefreshPending = false;
     m_coherentRiskRefreshForRecoveryAudit = false;
     m_accountRefreshPending = false;
@@ -1354,6 +1359,10 @@ void HeptaIBGatewayAdapter::CompleteCoherentRiskRefreshIfReady() {
         m_riskSnapshot.fxCashGeneration != 0;
     m_riskSnapshot.complete = complete;
     m_riskSnapshot.coherentRefreshComplete = complete;
+    // A previously complete account/position view cannot be fresh proof
+    // of a later order list. Liveness is a separate diagnostic, never send.
+    m_h1CoherentRiskEndMonotonicNs =
+        complete ? CallbackMonotonicNs() : 0;
     if (complete) {
         m_riskSnapshot.riskAbsorbedExposureGeneration =
             m_coherentRiskRefreshExposureGeneration;
@@ -1440,6 +1449,7 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             return;
         }
         if (!acceptedBrokerOpenOrder) return;
+        // Account-wide Broker identity, manual orders and H1 STOP use one scope.
         const long orderId = static_cast<long>(outEvent.id);
         if (orderId == 0 && (outEvent.brokerClientId != 0 ||
                              outEvent.brokerPermId <= 0)) {
@@ -1507,14 +1517,64 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         }
         const auto identity = m_pendingActiveOrderClientIds.emplace(
             orderId, outEvent.brokerClientId);
-        if (!identity.second && identity.first->second != outEvent.brokerClientId) {
+        if (!identity.second &&
+            identity.first->second != outEvent.brokerClientId) {
             MarkCallbackConflict(m_correlationRefreshConflict);
-            m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_CLIENT_ID_COLLISION";
+            m_correlationSnapshot.reasonCode=
+                "IB_ACTIVE_ORDER_CLIENT_ID_COLLISION";
             return;
         }
         m_pendingActiveOrderIds.insert(orderId);
-        // Foreign H1 orderRefs cannot create an original-owner correlation.
-        if (outEvent.brokerClientId != m_cfg.clientId) return;
+        // Broker-global order inventory includes foreign client IDs, but
+        // only the authenticated original client may contribute H1 evidence.
+        if (outEvent.brokerClientId!=m_cfg.clientId) return;
+        // Capture native SDK STP echoes only from the original account-wide
+        // order download; a Lite orderRef is never a complete H1 witness.
+        if (m_h1NativeStopRefreshAccountWide &&
+            outEvent.nativeOrder.present &&
+            outEvent.value=="Submitted" &&
+            outEvent.order.orderType=="STP" &&
+            outEvent.order.orderRef.compare(0,2,"H1")==0 &&
+            outEvent.connectionEpoch==m_connectionEpoch &&
+            outEvent.nativeOrder.clientId==m_cfg.clientId &&
+            outEvent.nativeOrder.account==m_cfg.account) {
+            // A nonpositive global Broker permId cannot certify the native
+            // H1 STOP even if SDK fields appear complete. A missing native
+            // permId remains unqualified by the original H1 matcher, while
+            // a positive contradictory native permId poisons this download.
+            if (outEvent.brokerPermId<=0 ||
+                (outEvent.nativeOrder.permanentId>0 &&
+                 outEvent.brokerPermId!=
+                    outEvent.nativeOrder.permanentId)) {
+                MarkCallbackConflict(m_correlationRefreshConflict);
+                m_correlationSnapshot.reasonCode=
+                    outEvent.brokerPermId<=0 ?
+                        "H1_NATIVE_GLOBAL_PERMID_MISSING" :
+                        "H1_NATIVE_GLOBAL_PERMID_CONFLICT";
+                return;
+            }
+            const long nativeId=orderId;
+            const auto old=m_h1NativeStopOpenOrderEchoes.find(nativeId);
+            if (old!=m_h1NativeStopOpenOrderEchoes.end()) {
+                // Contradictory SDK-native permanent identity/parent/ref/stop
+                // invalidates the full current download, not just one row.
+                if (old->second.nativeOrder.permanentId !=
+                        outEvent.nativeOrder.permanentId ||
+                    old->second.nativeOrder.parentId !=
+                        outEvent.nativeOrder.parentId ||
+                    old->second.nativeOrder.orderRef !=
+                        outEvent.nativeOrder.orderRef ||
+                    old->second.nativeOrder.stopAuxPrice !=
+                        outEvent.nativeOrder.stopAuxPrice) {
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    m_correlationSnapshot.reasonCode=
+                        "H1_NATIVE_SDK_ECHO_CONFLICT";
+                    m_h1NativeStopOpenOrderEchoes.erase(nativeId);
+                }
+            } else if (m_h1NativeStopOpenOrderEchoes.size()<32) {
+                m_h1NativeStopOpenOrderEchoes.emplace(nativeId,outEvent);
+            }
+        }
         std::string correlationId;
         std::string decodeReason;
         if (DecodeVenueOrderRef(
@@ -1529,6 +1589,47 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
             MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = decodeReason;
+        }
+    } else if (outEvent.type == IBEventType::OrderStatus &&
+               m_h1NativeStopRefreshAccountWide &&
+               outEvent.id > 0 && outEvent.id <= LONG_MAX) {
+        // Only the latest status of the exact current-epoch native stop.
+        // A later Cancelled/partial/status event replaces any earlier proof.
+        const long stopId=static_cast<long>(outEvent.id);
+        if (m_h1NativeStopOpenOrderEchoes.count(stopId)) {
+            if (outEvent.connectionEpoch==m_connectionEpoch &&
+                outEvent.brokerClientId==m_cfg.clientId &&
+                outEvent.account==m_cfg.account &&
+                outEvent.queueIngressMonotonicNs!=0) {
+                const auto prior=m_h1NativeStopOrderStatusEchoes.find(stopId);
+                if (outEvent.nativeOrder.permanentId>0 &&
+                    outEvent.nativeOrder.permanentId!=
+                        m_h1NativeStopOpenOrderEchoes.at(stopId).
+                            nativeOrder.permanentId) {
+                    // One same-account, same-client native order number
+                    // cannot acquire a different Broker permanent identity.
+                    // Do not permit a later callback with the old permId to
+                    // resurrect an earlier full-remaining stop diagnostic.
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    InvalidateCorrelationSnapshot(
+                        "H1_NATIVE_STOP_STATUS_PERMID_CONFLICT");
+                } else if (prior!=m_h1NativeStopOrderStatusEchoes.end() &&
+                    outEvent.queueIngressMonotonicNs<=
+                        prior->second.queueIngressMonotonicNs) {
+                    // Fail closed: older status cannot restore full remaining
+                    // after a newer contradictory callback or cancellation.
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    InvalidateCorrelationSnapshot(
+                        "H1_NATIVE_STOP_STATUS_OUT_OF_ORDER");
+                } else {
+                    m_h1NativeStopOrderStatusEchoes[stopId]=outEvent;
+                }
+            } else {
+                m_h1NativeStopOrderStatusEchoes.erase(stopId);
+                MarkCallbackConflict(m_correlationRefreshConflict);
+                InvalidateCorrelationSnapshot(
+                    "H1_NATIVE_STOP_STATUS_SCOPE_CONFLICT");
+            }
         }
     } else if (outEvent.type == IBEventType::OpenOrderEnd && m_correlationRefreshPending) {
         m_correlationRefreshPending = false;
@@ -1566,6 +1667,10 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     m_correlationSnapshot.protectiveMetadataIncomplete = false;
     m_correlationSnapshot.activeOrderMissingPermanentId = false;
         }
+        m_h1AccountWideOrderEndMonotonicNs =
+            m_h1NativeStopRefreshAccountWide &&
+            m_correlationSnapshot.complete ?
+                CallbackMonotonicNs() : 0;
         m_pendingCorrelationOrderIds.clear();
         m_pendingActiveOrderIds.clear();
         m_pendingActiveOrderClientIds.clear();
