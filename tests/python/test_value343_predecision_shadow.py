@@ -190,14 +190,24 @@ class Value343ProspectiveContracts(unittest.TestCase):
         rid=req["request_id"]
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","scores","rejects"):
+            for n in ("predictions","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             sealed=now
+            original=event(req,now)
             shadow.write_once(root/"predictions"/(rid+".json"),
                 {"request_id":rid,"input_request_sha256":shadow.digest(req),
                  "sealed_at_ms":sealed,
+                 "source_event_sha256":original["sha256"],
+                 "source_prefix":original["_witness"],
                  "predictions_after_actual_reported_fees_usd":{"BUY":-4.,"SELL":-8.},
                  "train_only_median_baseline_usd":-12.})
+            response={"kind":"RESPONSE","sha256":"c"*64,
+                "captured_at_ms":now+900,"written_at_ms":now+950,
+                "data":{"request_id":rid,"request_sha256":shadow.digest(req),
+                        "available_at_ms":now+800}}
+            with patch.object(shadow,"OUT",root):
+                proof=shadow.attest_responses([response],{rid:original},{})
+                self.assertEqual(proof["verified_new"],1)
             fake_reward={"reward_id":"r"*64,"input_id":shadow.digest(req),
                          "input_attribution":{"producer_manifest_sha256":shadow.COHORT}}
             src=root/"rewards.json"
@@ -217,7 +227,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
                               return_value=now+5000),\
                  patch.object(shadow.prior,"verify_100k_reward",
                               return_value={"net_usd":"-5"}):
-                out=shadow.score([prior_event,bind_event],{rid:sample},{})
+                out=shadow.score([response,prior_event,bind_event],{rid:sample},{})
                 self.assertEqual(out["new_scores"],1)
                 scored=json.loads((root/"scores"/(rid+".json")).read_bytes())
                 self.assertEqual(scored["actual_net_after_reported_fees_usd"],-5.)
@@ -226,7 +236,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
                 # New copy with a pre-decision violation must be rejected.
                 (root/"scores"/(rid+".json")).unlink()
                 prior_event["data"]["available_at_ms"]=now
-                out=shadow.score([prior_event,bind_event],{rid:sample},{})
+                out=shadow.score([response,prior_event,bind_event],{rid:sample},{})
                 self.assertEqual(out["new_rejected"],1)
                 self.assertTrue((root/"rejects"/(rid+".json")).exists())
 
