@@ -21,6 +21,12 @@
 #include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
+class OmsJournal;
+namespace hepta_bracket_h1 {
+struct FrozenBracket;
+struct BoundRefs;
+}
+
 struct HeptaIBRiskConfig {
     bool enableOrderSubmission = false;
     double maxOrderQuantity = 1.0;
@@ -88,6 +94,20 @@ struct IBAuthoritativeFxCashExposure {
  // STP LMT, TRAIL or OCA label is only a visible CANDIDATE, not a verified
  // Broker protection that survives driver loss, venue cancel, or liquidation.
 struct IBVisibleProtectiveOrderCandidate {
+    // The read-only census is NOT Broker-proven protective cover. Nevertheless
+    // a changed underlying Contract or OCA native semantics under the same
+    // permId must invalidate any previously complete account-wide inventory.
+    std::string contractSymbol;
+    std::string contractSecType;
+    std::string contractCurrency;
+    std::string contractExchange;
+    std::string orderRef;
+    bool sdkNativePresent = false;
+    long long nativeContractId = 0;
+    int nativeOcaType = 0;
+    std::string nativeTimeInForce;
+    int nativeTriggerMethod = 0;
+    double limitPrice = 0.0;
     std::string orderType;
     std::string action;
     std::string ocaGroup;
@@ -182,6 +202,9 @@ struct IBAuthoritativeTerminalCorrelationSnapshot {
     // projection derived only from correlations that also have terminal order
     // evidence in this same snapshot.
     std::set<std::string> executionCorrelations;
+    // Broker execDetails.cumQty, keyed by its exact H1/venue correlation;
+    // cumulative per original order, never summed across repeated fills.
+    std::map<std::string, double> executionCumulativeQtyByCorrelation;
     std::set<long> executionOrderIds;
     bool HasEconomicTerminal(const std::string& correlation, long orderId,
                              std::uint64_t expectedEpoch) const {
@@ -214,6 +237,41 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
     std::uint64_t callbackConflictCount = 0;
     bool callbackConflictMetricsSaturated = false;
     std::string reasonCode;
+};
+
+// Read-only native Adapter sample against a frozen original H1 Stop.
+// This reports correlation/position consistency ONLY; it never proves
+// the SDK openOrder status/stop/OCA trigger or grants order-send authority.
+struct IBH1OcaAdapterScopeObservation {
+    bool originalAccountAndOrderSetConsistent = false;
+    // Diagnostic only: the original Parent must have a real Filled terminal
+    // status AND exact correlated Broker cumulative execution quantity.
+    // This is not a Broker permanent-ID or guaranteed coverage witness.
+    bool originalParentFilledTerminalAndQtyCorrelated = false;
+    bool nativeStopBrokerWorkingProven = false;
+    // A matching SDK openOrder echo is only a diagnostic; not an order
+    // admission or live-position protection signal.
+    bool sdkNativeStopEchoMatches = false;
+    long sdkNativeStopPermanentId = 0;
+    // Real orderStatus full-remaining corroboration; diagnostic only.
+    bool sdkNativeStopUnfilledRemainingMatches = false;
+    double sdkNativeStopRemainingQuantity = 0.0;
+    // Diagnostic only: actual monotonic callback/barrier ages (never grant
+    // order-send, live-stop or maintenance authority).
+    bool brokerObservationClockBounded = false;
+    std::uint64_t activeOrderBarrierAgeMs = 0;
+    std::uint64_t coherentRiskBarrierAgeMs = 0;
+    std::uint64_t stopNativeEchoAgeMs = 0;
+    std::uint64_t stopRemainingStatusAgeMs = 0;
+    bool stopPriceTriggerProven = false;
+    bool accountSnapshotFreshnessProven = false;
+    bool maySendOrdinaryExit = false;
+    bool mayStopDriver = false;
+    long exactStopNativeOrderId = 0;
+    double brokerSignedFxPosition = 0.0;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t riskGeneration = 0;
+    std::uint64_t activeOrdersGeneration = 0;
 };
 
 // One-shot post-durable-account-fence observation from the ORIGINAL
@@ -404,6 +462,14 @@ public:
     IBAuthoritativeRiskSnapshot GetAuthoritativeRiskSnapshot() const;
     IBAuthoritativeRecoveryAuditSnapshot
         GetAuthoritativeRecoveryAuditSnapshot() const;
+    // Research-only: sample real Adapter risk and account-wide active-order
+    // projections UNDER m_apiMutex. Cannot prove a working protective STOP,
+    // OCA venue acceptance, clock freshness or grant a send/stop permit.
+    bool InspectResearchH1OcaAccountScope(
+        const hepta_bracket_h1::FrozenBracket& original,
+        const hepta_bracket_h1::BoundRefs& refs,
+        IBH1OcaAdapterScopeObservation& observation,
+        std::string& reason) const;
     // Idempotently requires a broker epoch newer than the first recovery-audit
     // attempt. Runtime composition consumes newConnectionEpochRequired by
     // scheduling its in-process reconnect state machine; no service manager or
@@ -435,6 +501,19 @@ public:
         std::string& reason) const;
 
 private:
+    // This experimental native lease must never be publicly invoked with a
+    // caller-selected empty or unrelated OMS. Only the actual Coordinator
+    // may supply m_journal; the unit-test access shim has no broker sender.
+    friend class ExecutionCoordinator;
+    friend struct H1NativeLeaseTestAccess;
+    bool ReserveResearchH1NativeIdPair(
+        const std::string& exactPaperAccount,
+        std::uint64_t expectedConnectionEpoch,
+        const OmsJournal& exactOwnerJournal,
+        const std::function<bool(long,long)>& durablePair,
+        long& parentId, long& stopId, std::string& reason,
+        int expectedExactBrokerClientId = -1);
+
     long NextOrderId();
     bool IsSameTradingDay() const;
     bool IsDuplicateOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) const;
@@ -597,6 +676,13 @@ private:
     bool m_correlationRefreshPending = false;
     bool m_correlationRefreshConflict = false;
     IBAuthoritativeCorrelationSnapshot m_correlationSnapshot;
+    // Ephemeral diagnostic SDK-native original stop echoes, collected only
+    // during the exact account-wide open-order refresh and cleared on faults.
+    std::map<long, IBEvent> m_h1NativeStopOpenOrderEchoes;
+    std::map<long, IBEvent> m_h1NativeStopOrderStatusEchoes;
+    bool m_h1NativeStopRefreshAccountWide = false;
+    std::uint64_t m_h1AccountWideOrderEndMonotonicNs = 0;
+    std::uint64_t m_h1CoherentRiskEndMonotonicNs = 0;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
     std::map<long, int> m_pendingActiveOrderClientIds;
@@ -621,6 +707,7 @@ private:
     std::map<std::string, std::string> m_pendingTerminalStatuses;
     std::set<std::string> m_pendingExecutionCorrelations;
     std::map<std::string, long> m_pendingExecutionIdsByCorrelation;
+    std::map<std::string, double> m_pendingExecutionCumulativeQtyByCorrelation;
     // Live execution/terminal proof for orders actually submitted by this
     // adapter incarnation. Never reconstruct these bindings from orderStatus.
     struct LiveTerminalBinding {

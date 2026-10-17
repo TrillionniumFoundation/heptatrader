@@ -4,6 +4,7 @@
 #include "../adapter_ib/ib_market_data_farm.h"
 #include "../adapter_ib/ib_venue_correlation.h"
 #include "../adapter_ib/ib_order_parse_rejection.h"
+#include "ib_paper_native_bracket_projection.h"
 
 #include <algorithm>
 #include <chrono>
@@ -813,6 +814,22 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
     else if (event.type == IBEventType::CommissionReport)
     {
         RetainIbCallbackEconomics(event,record);
+    }
+    else if (event.type == IBEventType::OpenOrder)
+    {
+        if (!owner) return true; // never infer protection for unowned Broker orders
+        std::string projectionReason;
+        const auto projected =
+            hepta_native_bracket_projection::ProjectOriginalWorkingStop(
+                event, record, projectionReason);
+        if (projected == hepta_native_bracket_projection::Result::Ignored)
+            return true; // existing ordinary openOrder path unchanged
+        if (projected == hepta_native_bracket_projection::Result::Rejected)
+        {
+            MarkFatalRuntimeError(projectionReason.empty() ?
+                "IB_NATIVE_BRACKET_CALLBACK_INCOMPLETE" : projectionReason);
+            return false;
+        }
     }
     else if (event.type == IBEventType::CompletedOrder)
     {

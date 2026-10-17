@@ -2,6 +2,8 @@
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
 #include "execution/ib_paper_account_broker_evidence.h"
+#include "execution/ib_bracket_h1_oms_reservation.h"
+#include "execution/ib_bracket_h1_identity.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -10,11 +12,30 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <atomic>
+#include <thread>
+#include <chrono>
 #include <memory>
 #include <new>
 #include <cstdlib>
 #include <stdexcept>
 #include <unistd.h>
+
+// Tests only. The Adapter native OMS lease is intentionally private to
+// ExecutionCoordinator; these negative-control tests still exercise its
+// internal failure/exception paths, but no real client can call this seam.
+struct H1NativeLeaseTestAccess {
+    template<typename Callback>
+    static bool Reserve(HeptaIBGatewayAdapter& adapter,
+        const std::string& account,std::uint64_t epoch,
+        const OmsJournal& journal,const Callback& commit,
+        long& parent,long& child,std::string& reason,
+        int expectedClientId=-1) {
+        return adapter.ReserveResearchH1NativeIdPair(
+            account,epoch,journal,std::function<bool(long,long)>(commit),
+            parent,child,reason,expectedClientId);
+    }
+};
 
 namespace { bool failNextCancelAllocation = false; }
 void* operator new(std::size_t size) {
@@ -83,7 +104,8 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
-    int allOrderReads = 0, accountReads = 0, positionReads = 0;
+    long nextValidOrderId=41;
+    int allOrderReads=0,accountReads=0,positionReads=0;
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
@@ -95,6 +117,7 @@ public:
     bool ReqAccountSummary() override {++accountReads;return true;}
     bool ReqPositions() override {++positionReads;return true;}
     bool ReqAllOpenOrders() override {++allOrderReads;return true;}
+    bool ReqOpenOrders() override {return true;} // client-only adversarial view
     bool ReqCompletedOrders() override {return true;}
     bool ReqExecutions(int id) override {executionsRequest=id;return true;}
     bool ReqMktData(int,const IBContractLite&) override {return true;}
@@ -122,7 +145,11 @@ public:
         if(events.empty()) return false;
         event=events.front();events.pop_front();return true;
     }
-    long GetLastValidOrderId() const override {return 41;}
+    bool nextValidFault = false;
+    long GetLastValidOrderId() const override {
+        if(nextValidFault) throw std::runtime_error("broker ID unavailable");
+        return nextValidOrderId;
+    }
 };
 struct Fixture {
     Broker* broker;HeptaIBGatewayAdapter adapter;
@@ -1315,6 +1342,176 @@ void TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh()
     assert(pending.broker->accountReads==1);
 }
 
+// A post-fence read must not promote a contradiction in its own native H1
+// STOP callback stream into an original-owner zero or maintenance permit.
+void TestOriginalPostFenceReadRejectsH1PermanentIdConflict()
+{
+    Fixture f;
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    f.FinishRiskRefresh();
+    std::string reason;
+    assert(f.adapter.BeginAccountPostFenceRead(reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.originalCommandKey="post-fence-h1-native-conflict";
+    frozen.account="DU123";frozen.owner="owner-adapter";
+    frozen.sessionId="session-1";frozen.executionDomain="PAPER";
+    frozen.contractId=12087792;frozen.clientId=73;
+    frozen.parentOrderId=4800;frozen.childOrderId=4801;
+    frozen.connectionEpoch=f.adapter.GetConnectionEpoch();
+    frozen.positionGeneration=1;frozen.ownerFenceToken=3;
+    frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=25000;frozen.side="BUY";
+    frozen.referencePrice=1.12050;frozen.stopPrice=1.11825;
+    frozen.minTick=0.00005;
+    hepta_bracket_h1::BoundRefs refs;
+    assert(hepta_bracket_h1::BuildFrozenRefs(frozen,refs,reason));
+    auto sdk=f.Event(IBEventType::OpenOrder);
+    sdk.id=frozen.childOrderId;sdk.value="Submitted";
+    sdk.queueIngressMonotonicNs=555000;
+    sdk.contract.symbol="EUR";sdk.contract.secType="CASH";
+    sdk.contract.currency="USD";sdk.contract.exchange="IDEALPRO";
+    sdk.order.orderRef=refs.childRef;sdk.order.orderType="STP";
+    sdk.order.action="SELL";sdk.order.totalQuantity=frozen.quantity;
+    sdk.order.auxPrice=frozen.stopPrice;
+    auto& native=sdk.nativeOrder;
+    native.present=true;native.contractId=frozen.contractId;
+    native.orderId=frozen.childOrderId;native.permanentId=990101;
+    sdk.brokerPermId=990101;
+    native.parentId=frozen.parentOrderId;native.clientId=frozen.clientId;
+    native.transmit=true;native.account=frozen.account;
+    native.action="SELL";native.orderType="STP";native.timeInForce="GTC";
+    native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
+    native.ocaType=1;native.triggerMethod=0;
+    native.stopAuxPrice=frozen.stopPrice;native.totalQuantity=frozen.quantity;
+    // Genuine SDK openOrder mirrors Parent/OCA/transmit in Lite and native.
+    // A missing Lite field is a Broker-global protective shape mismatch.
+    sdk.brokerParentOrderId=frozen.parentOrderId;
+    sdk.brokerOcaGroup=refs.ocaGroup;
+    sdk.brokerTransmit=true;
+    f.Push(sdk);
+    auto conflict=sdk;conflict.queueIngressMonotonicNs=555100;
+    ++conflict.nativeOrder.permanentId;
+    f.Push(conflict);f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto observed=f.adapter.PollAccountPostFenceRead();
+    assert(observed.started && !observed.activeThenRiskObserved);
+    assert(!observed.brokerZeroObserved && !observed.maintenanceStopPermitted);
+    assert(observed.reasonCode=="IB_ACCOUNT_POST_FENCE_ACTIVE_DOWNLOAD_FAILED");
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(f.broker->accountReads==1 && f.broker->positionReads==1);
+    assert(f.broker->allOrderReads==2);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    // Even a perfect H1 native STOP cannot be interpreted as an empty
+    // global Broker order inventory by the original post-fence read.
+    // It is an outstanding account-wide order, NOT a stop/exit permit.
+    Fixture outstanding;
+    assert(outstanding.adapter.ReqRecoveryAuditRiskRefresh());
+    outstanding.FinishRiskRefresh();
+    assert(outstanding.adapter.BeginAccountPostFenceRead(reason));
+    auto fresh=sdk;
+    fresh.connectionEpoch=outstanding.adapter.GetConnectionEpoch();
+    outstanding.Push(fresh);
+    outstanding.Push(outstanding.Event(IBEventType::OpenOrderEnd));
+    const auto waiting=outstanding.adapter.PollAccountPostFenceRead();
+    assert(waiting.started && waiting.activeReadComplete);
+    assert(!waiting.riskReadComplete);
+    outstanding.FinishRiskRefresh();
+    const auto activeStop=outstanding.adapter.PollAccountPostFenceRead();
+    assert(activeStop.activeThenRiskObserved && !activeStop.brokerZeroObserved);
+    assert(activeStop.globalActiveOrders==1);
+    assert(!activeStop.terminalPostFenceComplete &&
+           !activeStop.maintenanceStopPermitted);
+    assert(activeStop.reasonCode==
+           "IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_PRESENT_NOT_STOP_PERMIT");
+    assert(outstanding.broker->places==0 && outstanding.broker->cancels==0);
+    // Race after the fresh global OpenOrderEnd, while the coordinated
+    // account/position risk refresh is still outstanding. A contradictory
+    // later Broker status must revoke the *already completed* active leg.
+    Fixture duringRisk;
+    assert(duringRisk.adapter.ReqRecoveryAuditRiskRefresh());
+    duringRisk.FinishRiskRefresh();
+    assert(duringRisk.adapter.BeginAccountPostFenceRead(reason));
+    auto stopAgain=sdk;
+    stopAgain.connectionEpoch=duringRisk.adapter.GetConnectionEpoch();
+    duringRisk.Push(stopAgain);
+    duringRisk.Push(duringRisk.Event(IBEventType::OpenOrderEnd));
+    const auto beganRisk=duringRisk.adapter.PollAccountPostFenceRead();
+    assert(beganRisk.activeReadComplete && !beganRisk.riskReadComplete);
+    auto status=duringRisk.Event(IBEventType::OrderStatus);
+    status.id=frozen.childOrderId;status.key="Submitted";
+    status.value.clear();status.number=0;status.number2=0;
+    status.number3=frozen.quantity;status.requestId=0;
+    status.nativeOrder.permanentId=native.permanentId;
+    status.remainingQuantityKnown=true;status.queueIngressMonotonicNs=555200;
+    duringRisk.Push(status);
+    auto bad=status;bad.queueIngressMonotonicNs=555300;
+    ++bad.nativeOrder.permanentId;
+    duringRisk.Push(bad);
+    duringRisk.FinishRiskRefresh();
+    const auto invalid=duringRisk.adapter.PollAccountPostFenceRead();
+    assert(invalid.started && !invalid.activeThenRiskObserved);
+    assert(!invalid.brokerZeroObserved && !invalid.maintenanceStopPermitted);
+    assert(!duringRisk.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(duringRisk.broker->allOrderReads==2);
+    assert(duringRisk.broker->accountReads==2 &&
+           duringRisk.broker->positionReads==2);
+    assert(duringRisk.broker->places==0 && duringRisk.broker->cancels==0);
+    // Cross-module next-epoch regression: a residual H1 STP/GTC child may
+    // survive while physical FX exposure is now flat. It is STILL an active
+    // Broker order and can reverse the account on a later trigger. Never
+    // convert a complete terminal download into safe-to-stop zero in that case.
+    Fixture residual;
+    assert(residual.adapter.ReqRecoveryAuditRiskRefresh());
+    residual.FinishRiskRefresh();
+    assert(residual.adapter.BeginAccountPostFenceRead(reason));
+    residual.Push(residual.Event(IBEventType::OpenOrderEnd));
+    // Poll is the original read-only state-machine edge which requests
+    // the coherent account/position refresh AFTER Broker OpenOrderEnd.
+    const auto awaitingRisk=residual.adapter.PollAccountPostFenceRead();
+    assert(awaitingRisk.activeReadComplete && !awaitingRisk.riskReadComplete);
+    residual.FinishRiskRefresh();
+    assert(residual.adapter.PollAccountPostFenceRead().brokerZeroObserved);
+    const auto required=residual.adapter.BeginRecoveryAuditBarrier();
+    assert(required.newConnectionEpochRequired);
+    assert(residual.adapter.BindAccountPostFenceToFreshTerminalEpoch(reason));
+    const auto oldEpoch=residual.adapter.GetConnectionEpoch();
+    residual.adapter.Disconnect();
+    assert(residual.adapter.Connect());
+    assert(residual.adapter.GetConnectionEpoch()==oldEpoch+1);
+    // This SDK-native H1 callback belongs to the NEW Broker connection, but
+    // its original parent/stop/orderRef/permId identities remain frozen.
+    assert(residual.adapter.ReqAuthoritativeOpenOrders());
+    auto stillWorking=sdk;
+    stillWorking.connectionEpoch=residual.adapter.GetConnectionEpoch();
+    residual.Push(stillWorking);
+    residual.Push(residual.Event(IBEventType::OpenOrderEnd));
+    assert(residual.adapter.ReqTerminalCorrelations());
+    residual.FinishBootstrap();
+    assert(residual.adapter.ReqRecoveryAuditRiskRefresh());
+    residual.FinishRiskRefresh();
+    const auto blocked=residual.adapter.PollAccountPostFenceRead();
+    assert(blocked.terminalNewEpochObserved);
+    assert(blocked.globalActiveOrders==1);
+    assert(!blocked.brokerZeroObserved && !blocked.maintenanceStopPermitted);
+    // Later contradictory Broker permanent-ID status revokes even the
+    // complete new-epoch terminal diagnostic until a fresh full audit.
+    auto full=residual.Event(IBEventType::OrderStatus);
+    full.id=frozen.childOrderId;full.key="Submitted";full.value.clear();
+    full.requestId=0;full.number=0;full.number2=0;
+    full.number3=frozen.quantity;full.remainingQuantityKnown=true;
+    full.nativeOrder.permanentId=native.permanentId;
+    full.queueIngressMonotonicNs=stillWorking.queueIngressMonotonicNs+100;
+    residual.Push(full);
+    auto contradicted=full;
+    contradicted.queueIngressMonotonicNs+=100;
+    ++contradicted.nativeOrder.permanentId;
+    residual.Push(contradicted);
+    const auto revoked=residual.adapter.PollAccountPostFenceRead();
+    assert(!revoked.terminalNewEpochObserved && !revoked.brokerZeroObserved);
+    assert(!revoked.maintenanceStopPermitted);
+    assert(!residual.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(residual.broker->places==0 && residual.broker->cancels==0);
+}
+
 
 void TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend()
 {
@@ -2037,6 +2234,70 @@ void TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection()
 }
 
 
+void TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently() {
+    // Broker-global read-only candidate remains a RISK inventory even for
+    // foreign API clients. Same permId but changed contract/OCA can never be
+    // called the same protective candidate after an incremental callback.
+    for (int changedField=0; changedField<8; ++changedField) {
+        Fixture f;
+        auto stop=f.Event(IBEventType::OpenOrder);
+        stop.id=950;stop.brokerClientId=999;stop.brokerPermId=900950;
+        stop.value="Submitted";stop.order.action="SELL";
+        stop.order.orderType="STP";stop.order.auxPrice=1.11825;
+        stop.order.totalQuantity=25000;stop.brokerTransmit=true;
+        stop.brokerOcaGroup="protective-test-group";
+        stop.contract.symbol="EUR";stop.contract.secType="CASH";
+        stop.contract.currency="USD";stop.contract.exchange="IDEALPRO";
+        // Original TWS openOrder populates both SDK-native and Lite fields
+        // from ONE callback. A half-filled synthetic native view must not
+        // bypass main's account-global protective shape consistency guard.
+        auto& native=stop.nativeOrder;
+        native.present=true;
+        native.contractId=12087792;
+        native.orderId=stop.id;
+        native.permanentId=stop.brokerPermId;
+        native.parentId=stop.brokerParentOrderId;
+        native.clientId=stop.brokerClientId;
+        native.account=stop.account;
+        native.action=stop.order.action;
+        native.orderType=stop.order.orderType;
+        native.orderRef=stop.order.orderRef;
+        native.ocaGroup=stop.brokerOcaGroup;
+        native.transmit=stop.brokerTransmit;
+        native.stopAuxPrice=stop.order.auxPrice;
+        native.totalQuantity=stop.order.totalQuantity;
+        native.ocaType=1;
+        native.timeInForce="GTC";
+        native.triggerMethod=0;
+        f.Push(stop);
+        auto before=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(before.complete);
+        assert(before.visibleProtectiveCandidatesByPermId.count(900950)==1);
+        f.Push(stop);
+        assert(f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+        auto changed=stop;
+        switch (changedField) {
+        case 0:changed.contract.symbol="GBP";break;
+        case 1:changed.nativeOrder.contractId=12087793;break;
+        case 2:changed.nativeOrder.ocaType=2;break;
+        case 3:changed.nativeOrder.timeInForce="DAY";break;
+        case 4:changed.nativeOrder.triggerMethod=1;break;
+        case 5:changed.order.lmtPrice=1.11815;break;
+        case 6:changed.order.orderRef="different-owner-orderref";break;
+        case 7:changed.nativeOrder.present=false;break;
+        }
+        f.Push(changed);
+        const auto after=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!after.complete);
+        assert(after.visibleProtectiveCandidatesByPermId.empty());
+        assert(after.reasonCode ==
+            (changedField==6
+             ? "IB_PROTECTIVE_NATIVE_LITE_INCREMENTAL_CONFLICT"
+             : "IB_PROTECTIVE_INCREMENTAL_CONFLICT_REQUIRES_REFRESH"));
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 void TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState() {
     Fixture f;
     auto stop=f.Event(IBEventType::OpenOrder);
@@ -2169,7 +2430,877 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
+void TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker() {
+    Fixture f;
+    f.broker->nextValidOrderId = 2147483648L; // exceeds TWS OrderId:int32
+    IBContractLite c;c.symbol="EUR";c.secType="CASH";
+    c.exchange="IDEALPRO";c.currency="USD";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";
+    o.lmtPrice=1.18;o.totalQuantity=1;
+    long received=-1;
+    const bool admitted=f.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'f'),&received);
+    if(admitted || f.broker->places!=0 ||
+       f.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("IB_NATIVE_ORDER_ID_EXCEEDS_32BIT_BROKER_RANGE");
+    Fixture nearLimit;
+    nearLimit.broker->nextValidOrderId=2147483647L;
+    const long last=nearLimit.Place();
+    if(last!=2147483647L || nearLimit.broker->places!=1)
+        throw std::runtime_error("NATIVE_ORDER_ID_MAX_VALID_VALUE_REFUSED");
+    long later=-1;
+    const bool replay=nearLimit.adapter.PlaceOrderCorrelated(
+        c,o,"hepta-v1-sha256:"+std::string(64,'b'),&later);
+    if(replay || nearLimit.broker->places!=1 ||
+       nearLimit.adapter.GetLastRejectReason()!="IB_NATIVE_ORDER_ID_OUT_OF_RANGE")
+        throw std::runtime_error("NATIVE_ORDER_ID_EXHAUSTION_ALLOWED_SECOND_SEND");
+}
+void TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms() {
+    // No placeOrder calls. The callback may only persist the exact research
+    // parent+stop IDs before returning; it grants no send/stop authority.
+    Fixture f;
+    const auto epoch=f.adapter.GetConnectionEpoch();
+    assert(epoch>0);
+    long parent=-1,child=-1;
+    std::string reason;
+    std::string temporary="/tmp/hepta-adapter-h1-lease-XXXXXX";
+    std::vector<char> file(temporary.begin(),temporary.end());file.push_back('\0');
+    const int fd=::mkstemp(file.data());assert(fd>=0);::close(fd);
+    assert(::unlink(file.data())==0);
+    OmsJournal j;assert(j.Init(file.data()));
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU-other",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1&&f.broker->places==0);
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch+1,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(parent==-1&&child==-1);
+    f.broker->nextValidFault=true;
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION");
+    f.broker->nextValidFault=false;
+    f.broker->nextValidOrderId=0;
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    f.broker->nextValidOrderId=std::numeric_limits<int>::max();
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(reason=="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE");
+    f.broker->nextValidOrderId=41;
+    assert(H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [&](long p,long c){
+            OmsJournalEvent a,b;
+            a.eventType="bracket_parent_reserved";a.orderId=p;
+            a.reqId="synthetic-owner-001";a.clientReqId=a.reqId;
+            a.account="DU123";a.executionDomain="PAPER";
+            a.venue="IB";a.source="SHADOW_NO_BROKER_EGRESS";
+            a.eventId="parent-001";a.requestHash="hash-group-001";
+            a.instrument="EUR.USD";a.side="BUY";a.qty=1000;a.price=1.1205;
+            a.venueCorrelationId="parent-H1-original";
+            b=a;b.eventType="bracket_child_reserved";
+            b.orderId=c;b.eventId="child-001";
+            b.side="SELL";b.price=1.11825;b.venueCorrelationId="stop-H1-original";
+            return j.AppendDurablePair(a,b)==OmsJournal::DurablePairResult::Committed;
+        },parent,child,reason));
+    assert(parent==41&&child==42&&f.broker->places==0);
+    int count=0;assert(j.Replay([&](const OmsJournalEvent& e){
+        ++count;
+        assert(e.reqId=="synthetic-owner-001" && e.account=="DU123");
+        assert((count==1 && e.orderId==41) ||
+               (count==2 && e.orderId==42));
+    })==2 && count==2);
+    // New adapter process may see Broker nextValidId lower than its
+    // original OMS reservation. Must refuse BEFORE invoking the callback.
+    bool called=false;
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [&](long,long){called=true;return true;},parent,child,reason));
+    assert(!called &&
+           reason=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
+    f.broker->nextValidOrderId=43;
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long){return false;},parent,child,reason));
+    assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN" &&
+           parent==-1 && child==-1);
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long)->bool{throw std::runtime_error("uncertain persistence");},
+        parent,child,reason));
+    assert(reason=="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN" &&
+           parent==-1 && child==-1);
+    assert(H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long p,long c){return p==47&&c==48;},
+        parent,child,reason));
+    assert(parent==47&&child==48&&f.broker->places==0);
+    // A durable potentially-sent child cannot be reissued just because
+    // Broker nextValidId advanced past all native IDs.
+    OmsJournalEvent possible;
+    assert(j.Replay([&](const OmsJournalEvent& e){
+        if(e.eventType=="bracket_child_reserved")possible=e;
+    })==2);
+    possible.eventType="bracket_child_send_attempt";
+    possible.status="POSSIBLY_SENT";
+    assert(j.AppendDurableCritical(possible));
+    f.broker->nextValidOrderId=60;
+    called=false;
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [&](long,long){called=true;return true;},parent,child,reason));
+    assert(!called &&
+           reason=="H1_NATIVE_BROKER_SEND_UNKNOWN_REQUIRES_RECONCILIATION");
+    f.adapter.Disconnect();
+    assert(!H1NativeLeaseTestAccess::Reserve(f.adapter,"DU123",epoch,j,
+        [](long,long){return true;},parent,child,reason));
+    assert(f.broker->places==0);
+    assert(::unlink(file.data())==0);
+}
+
+void TestResearchH1NativeLeaseAfterFreshAdapterRestart() {
+    // Distinct IB Adapter/SDK instances and distinct OmsJournal readers, but
+    // the exact SAME durable original-account OMS path. No Broker writes.
+    std::string path="/tmp/hepta-native-id-restart-adapter-XXXXXX";
+    std::vector<char> chars(path.begin(),path.end());
+    chars.push_back('\0');
+    int fd=::mkstemp(chars.data());assert(fd>=0);::close(fd);
+    assert(::unlink(chars.data())==0);
+    auto durableGroup=[](OmsJournal& journal, const char* original,
+                         const char* group, long parent, long child) {
+        OmsJournalEvent first;
+        first.eventType="bracket_parent_reserved";
+        first.reqId=original;first.clientReqId=first.reqId;
+        first.account="DU123";first.executionDomain="PAPER";
+        first.instrument="EUR.USD";first.venue="IB";
+        first.source="SHADOW_NO_BROKER_EGRESS";
+        first.side="BUY";first.qty=1000;first.price=1.1205;
+        first.requestHash=group;first.orderId=parent;
+        first.eventId="parent-01";first.venueCorrelationId="parent-h1";
+        auto second=first;
+        second.eventType="bracket_child_reserved";
+        second.orderId=child;second.eventId="child-01";
+        second.side="SELL";second.price=1.11825;
+        second.venueCorrelationId="child-h1";
+        return journal.AppendDurablePair(first,second)==
+            OmsJournal::DurablePairResult::Committed;
+    };
+    {
+        OmsJournal journal;assert(journal.Init(chars.data()));
+        Fixture old;
+        const auto epoch=old.adapter.GetConnectionEpoch();
+        long p=-1,c=-1;std::string why;
+        assert(H1NativeLeaseTestAccess::Reserve(old.adapter,"DU123",epoch,
+            journal,[&](long a,long b) {
+                return durableGroup(journal,"prior-command","prior-h1-group",a,b);
+            },p,c,why));
+        assert(p==41&&c==42&&old.broker->places==0);
+    }
+    {
+        OmsJournal journal;assert(journal.Init(chars.data()));
+        Fixture fresh; // Adapter local order seed reset, mock Broker still 41.
+        const auto epoch=fresh.adapter.GetConnectionEpoch();
+        long p=-1,c=-1;std::string why;bool called=false;
+        assert(fresh.broker->nextValidOrderId==41);
+        assert(!H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
+            journal,[&](long,long){called=true;return true;},p,c,why));
+        assert(!called&&p==-1&&c==-1&&
+            why=="H1_BROKER_NEXT_VALID_ID_NOT_BEYOND_OMS_FLOOR");
+        fresh.broker->nextValidOrderId=43;
+        assert(H1NativeLeaseTestAccess::Reserve(fresh.adapter,"DU123",epoch,
+            journal,[&](long a,long b) {
+                return durableGroup(journal,"new-command","new-h1-group",a,b);
+            },p,c,why));
+        assert(p==43&&c==44&&fresh.broker->places==0);
+        int count=0;
+        assert(journal.Replay([&](const OmsJournalEvent&){++count;})==4);
+        assert(count==4);
+    }
+    assert(::unlink(chars.data())==0);
+}
+
+void TestResearchCoordinatorOwnedJournalCannotBeReplacedWithDecoy() {
+    // Two unrelated durable OMS files exist. Only the one structurally owned
+    // by the actual Coordinator can participate in this H1 native lease.
+    Fixture fixture;
+    const auto epoch=fixture.adapter.GetConnectionEpoch();
+    std::string first="/tmp/hepta-h1-actual-owner-XXXXXX";
+    std::string second="/tmp/hepta-h1-foreign-decoy-XXXXXX";
+    std::vector<char> path1(first.begin(),first.end()),path2(second.begin(),second.end());
+    path1.push_back('\0');path2.push_back('\0');
+    int fd=::mkstemp(path1.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(path1.data())==0);
+    fd=::mkstemp(path2.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(path2.data())==0);
+    OmsJournal actual;assert(actual.Init(path1.data()));
+    OmsJournal decoy;assert(decoy.Init(path2.data()));
+    OmsJournalEvent foreign;
+    foreign.eventType="bracket_parent_reserved";
+    foreign.reqId="FOREIGN-SESSION";foreign.clientReqId=foreign.reqId;
+    foreign.account="DU123";foreign.executionDomain="PAPER";
+    foreign.venue="IB";foreign.instrument="EUR.USD";
+    foreign.source="SHADOW_NO_BROKER_EGRESS";foreign.side="BUY";
+    foreign.qty=1000;foreign.price=1.1205;
+    foreign.requestHash="foreign-group";
+    foreign.traceId="foreign-session";foreign.strategy="foreign-owner";
+    foreign.orderId=990;foreign.eventId="foreign-parent";
+    foreign.venueCorrelationId="foreign-h1-parent";
+    auto foreignChild=foreign;
+    foreignChild.eventType="bracket_child_reserved";
+    foreignChild.orderId=991;foreignChild.side="SELL";
+    foreignChild.price=1.11825;
+    foreignChild.eventId="foreign-child";
+    foreignChild.venueCorrelationId="foreign-h1-child";
+    assert(decoy.AppendDurablePair(foreign,foreignChild)==
+           OmsJournal::DurablePairResult::Committed);
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(actual,callbacks);
+    AgentExecutionContext original;
+    original.agentId="h1-owner";original.sessionId="h1-session";
+    original.toolCallId="original-h1-journal-bound-1";
+    original.executionDomain="IB-PAPER:EUR.USD";
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=original.agentId;frozen.sessionId=original.sessionId;
+    frozen.originalCommandKey=original.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=17;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    std::string reason;
+    hepta_bracket_h1::Reservation reservation;
+    long parent=-1,child=-1;
+    // An unrelated valid OMS cannot give the Coordinator a Recovery-only
+    // ingress fence. The absence of a caller journal argument also prevents
+    // a decoy from replacing its actual journal.
+    assert(!coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+        fixture.adapter,original,frozen,reservation,parent,child,reason));
+    assert(parent==-1 && child==-1);
+    assert(fixture.broker->places==0);
+    assert(coordinator.EnterRecoveryOnlyOwner(
+        original.agentId,original.sessionId,17,reason));
+    // The decoy has much larger native IDs; if it were used here, a
+    // connected broker reporting nextValidId=41 would be rejected.
+    assert(fixture.broker->nextValidOrderId==41);
+    assert(coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+        fixture.adapter,original,frozen,reservation,parent,child,reason));
+    assert(parent==43 && child==44); // failed no-fence attempt consumed 41/42
+    assert(!reservation.sendAuthorized && !reservation.driverStopAllowed);
+    assert(fixture.broker->places==0);
+    int actualCount=0,decoyCount=0;
+    assert(actual.Replay([&](const OmsJournalEvent&){++actualCount;})==3);
+    assert(decoy.Replay([&](const OmsJournalEvent&){++decoyCount;})==2);
+    assert(actualCount==3 && decoyCount==2);
+    assert(::unlink(path1.data())==0 && ::unlink(path2.data())==0);
+}
+
+void TestConcurrentResearchH1OwnerBoundReservationNeverDuplicates() {
+    Fixture f;
+    const auto epoch=f.adapter.GetConnectionEpoch();
+    std::string pattern="/tmp/h1-native-bound-parallel-XXXXXX";
+    std::vector<char> tmp(pattern.begin(),pattern.end());tmp.push_back('\0');
+    int fd=::mkstemp(tmp.data());assert(fd>=0);
+    ::close(fd);assert(::unlink(tmp.data())==0);
+    OmsJournal originalJournal;assert(originalJournal.Init(tmp.data()));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(originalJournal,callbacks);
+    AgentExecutionContext context;
+    context.agentId="parallel-owner";context.sessionId="parallel-session";
+    context.toolCallId="parallel-h1-01";
+    context.executionDomain="IB-PAPER:EUR.USD";
+    std::string reason;
+    assert(coordinator.EnterRecoveryOnlyOwner(
+        context.agentId,context.sessionId,211,reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=context.agentId;frozen.sessionId=context.sessionId;
+    frozen.originalCommandKey=context.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=211;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    std::atomic<int> successes(0),refusals(0);
+    std::atomic<bool> go(false);
+    auto call=[&]() {
+        while (!go.load()) std::this_thread::yield();
+        hepta_bracket_h1::Reservation result;
+        long parent=-1,child=-1;
+        std::string why;
+        if(coordinator.ReserveResearchNativeH1ThroughOwnedJournal(
+            f.adapter,context,frozen,result,parent,child,why)) {
+            assert(parent==41 && child==42);
+            assert(result.replayComplete &&
+                   !result.sendAuthorized && !result.driverStopAllowed);
+            ++successes;
+        } else {
+            assert(parent==-1 && child==-1);
+            ++refusals;
+        }
+    };
+    std::thread first(call), second(call);
+    go.store(true);
+    first.join();second.join();
+    assert(successes==1 && refusals==1);
+    int count=0;
+    assert(originalJournal.Replay([&](const OmsJournalEvent&){++count;})==3);
+    assert(count==3 && f.broker->places==0);
+    assert(::unlink(tmp.data())==0);
+}
+void TestResearchNativeIdLeaseBindsActualCoordinatorFence() {
+    Fixture brokerFixture;
+    const std::uint64_t epoch=brokerFixture.adapter.GetConnectionEpoch();
+    std::string path="/tmp/hepta-adapter-owner-fence-XXXXXX";
+    std::vector<char> chars(path.begin(),path.end());chars.push_back('\0');
+    int fd=::mkstemp(chars.data());assert(fd>=0);::close(fd);
+    assert(::unlink(chars.data())==0);
+    OmsJournal journal;assert(journal.Init(chars.data()));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator owner(journal,callbacks);
+    AgentExecutionContext original;
+    original.agentId="owner-p4";original.sessionId="session-recovery-1";
+    original.toolCallId="h1-owner-reserved-001";
+    original.executionDomain="IB-PAPER:EUR.USD";
+    std::string reason;
+    assert(owner.EnterRecoveryOnlyOwner(original.agentId,original.sessionId,51,reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.owner=original.agentId;frozen.sessionId=original.sessionId;
+    frozen.originalCommandKey=original.toolCallId;
+    frozen.account="DU123";frozen.executionDomain="PAPER";
+    frozen.side="BUY";frozen.contractId=12087792;frozen.clientId=73;
+    frozen.connectionEpoch=epoch;frozen.positionGeneration=101;
+    frozen.ownerFenceToken=51;frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=89200;frozen.referencePrice=1.12050;
+    frozen.stopPrice=1.11825;frozen.minTick=.00005;
+    hepta_bracket_h1::Reservation pair;
+    long parent=-1,stop=-1;
+    // No journal may be supplied to the Coordinator-owned handoff. Unlike
+    // the earlier raw adapter helper, only the Coordinator's actual OMS
+    // enters the protected native lease under the same adapter send mutex.
+    auto wrongClient=frozen;wrongClient.clientId=74;
+    assert(!owner.ReserveResearchNativeH1ThroughOwnedJournal(
+        brokerFixture.adapter,original,wrongClient,pair,parent,stop,reason) &&
+        reason=="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE" &&
+        parent==-1&&stop==-1);
+    assert(owner.ReserveResearchNativeH1ThroughOwnedJournal(
+        brokerFixture.adapter,original,frozen,pair,parent,stop,reason));
+    assert(parent==41&&stop==42);
+    frozen.parentOrderId=parent;frozen.childOrderId=stop;
+    assert(pair.replayComplete&&!pair.sendAuthorized&&!pair.driverStopAllowed);
+    assert(brokerFixture.broker->places==0);
+    std::vector<OmsJournalEvent> events;
+    assert(journal.Replay([&](const OmsJournalEvent& e){
+        events.push_back(e);
+    })==3);
+    hepta_bracket_h1::Reservation recovered;
+    assert(hepta_bracket_h1::ConfirmReplay(events,frozen,recovered,reason));
+    assert(recovered.ids.parentRef.size()==45&&recovered.ids.childRef.size()==45);
+    {
+       ExecutionCoordinator fresh(journal,callbacks);
+       assert(fresh.RecoverFromJournal(reason));
+       assert(fresh.SessionOwnerRecoveryIngressFence(original.agentId,original.sessionId)==51);
+       // Above OMS floor, this remains a Coordinator original-command
+       // duplicate, rather than a low broker-nextValidId refusal.
+       brokerFixture.broker->nextValidOrderId=43;
+       long duplicateParent=-1,duplicateStop=-1;
+       assert(!fresh.ReserveResearchNativeH1ThroughOwnedJournal(
+            brokerFixture.adapter,original,frozen,pair,
+            duplicateParent,duplicateStop,reason));
+       assert(duplicateParent==-1&&duplicateStop==-1);
+    }
+    assert(brokerFixture.broker->places==0);
+    assert(::unlink(chars.data())==0);
+}
+
+// Real Adapter state only: immutable original H1 must map to the same
+// actual broker active-order inventory and coherent physical EUR cash risk.
+// The result CANNOT authorize a real ordinary OCA exit, even when complete.
+void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
+    Fixture f(true,false,true);
+    hepta_bracket_h1::FrozenBracket original;
+    original.originalCommandKey="actual-adapter-oca-001";
+    original.account="DU123";original.owner="owner-adapter";
+    original.sessionId="session-1";original.executionDomain="PAPER";
+    original.contractId=12087792;original.clientId=73;
+    original.parentOrderId=4100;original.childOrderId=4101;
+    original.connectionEpoch=f.adapter.GetConnectionEpoch();
+    original.positionGeneration=1;original.ownerFenceToken=23;
+    original.intentObservedAtMs=1792080000123ULL;
+    original.quantity=25000;original.side="BUY";
+    original.referencePrice=1.1205;original.stopPrice=1.11825;
+    original.minTick=.00005;
+    hepta_bracket_h1::BoundRefs h1;std::string reason;
+    assert(hepta_bracket_h1::BuildFrozenRefs(original,h1,reason));
+    IBH1OcaAdapterScopeObservation scope;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(!scope.maySendOrdinaryExit&&!scope.nativeStopBrokerWorkingProven);
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    auto e=f.Event(IBEventType::OpenOrder);e.id=original.childOrderId;
+    e.account=original.account;e.value="Submitted";
+    e.contract.symbol="EUR";e.contract.secType="CASH";
+    e.contract.currency="USD";e.contract.exchange="IDEALPRO";
+    e.order.orderRef=h1.childRef;e.order.orderType="STP";
+    e.order.action="SELL";e.order.totalQuantity=original.quantity;
+    e.order.auxPrice=original.stopPrice;
+    f.Push(e);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto orders=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(orders.complete);
+    assert(orders.activeOrderIds.count(original.childOrderId)==1);
+    assert(orders.activeOrderIdsByCorrelation.at(h1.childCorrelation)==
+           original.childOrderId);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(f.adapter.ReqRiskRefresh());
+    auto account=f.Event(IBEventType::AccountValue);
+    account.key="NetLiquidation:USD";account.value="1000";f.Push(account);
+    account.key="AccountReady:";account.value="true";f.Push(account);
+    account.key="CashBalance:EUR";account.value="-75000";f.Push(account);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    const auto risk=f.adapter.GetAuthoritativeRiskSnapshot();
+    assert(risk.complete&&risk.coherentRefreshComplete&&risk.fxCashComplete);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(scope.originalAccountAndOrderSetConsistent);
+    assert(scope.brokerSignedFxPosition==25000);
+    assert(scope.exactStopNativeOrderId==original.childOrderId);
+    assert(scope.connectionEpoch==original.connectionEpoch);
+    assert(!scope.nativeStopBrokerWorkingProven&&!scope.stopPriceTriggerProven&&
+           !scope.accountSnapshotFreshnessProven&&!scope.maySendOrdinaryExit&&
+           !scope.mayStopDriver);
+    // A Lite-only broker event is not a signed native protective stop echo.
+    assert(!scope.sdkNativeStopEchoMatches && scope.sdkNativeStopPermanentId==0);
+    // Refresh the existing REAL Adapter with a synthetic full SDK callback,
+    // not merely a manually populated active-order snapshot.
+    auto originalSdk=e;
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    auto& sdk=originalSdk.nativeOrder;
+    sdk.present=true;
+    sdk.contractId=12087792;sdk.orderId=original.childOrderId;
+    sdk.permanentId=990001;sdk.parentId=original.parentOrderId;
+    originalSdk.brokerPermId=990001;
+    sdk.clientId=original.clientId;sdk.transmit=true;
+    sdk.account=original.account;sdk.action="SELL";
+    sdk.orderType="STP";sdk.timeInForce="GTC";
+    sdk.orderRef=h1.childRef;sdk.ocaGroup=h1.ocaGroup;sdk.ocaType=1;
+    sdk.triggerMethod=0;sdk.stopAuxPrice=original.stopPrice;
+    sdk.totalQuantity=original.quantity;
+    // The real native TWS openOrder wrapper publishes these exact same
+    // fields in both its original Lite observation and SDK-native view.
+    originalSdk.brokerParentOrderId=original.parentOrderId;
+    originalSdk.brokerOcaGroup=h1.ocaGroup;
+    originalSdk.brokerTransmit=true;
+    auto nativeRefresh=[&](const IBEvent& candidate) {
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        f.Push(candidate);f.Push(f.Event(IBEventType::OpenOrderEnd));
+        // A new active-order generation requires its own coherent risk
+        // refresh; do not borrow old account/FX-cash snapshots.
+        assert(f.adapter.ReqRiskRefresh());
+        auto val=f.Event(IBEventType::AccountValue);
+        val.key="NetLiquidation:USD";val.value="1000";f.Push(val);
+        val.key="AccountReady:";val.value="true";f.Push(val);
+        val.key="CashBalance:EUR";val.value="-75000";f.Push(val);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+        assert(f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    };
+    nativeRefresh(originalSdk);
+    assert(scope.sdkNativeStopEchoMatches &&
+           scope.sdkNativeStopPermanentId==990001 &&
+           !scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==0 &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit&&!scope.mayStopDriver);
+    // Main's independent TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict
+    // tests mismatched Lite/native parent, OCA and transmit in fresh fixtures.
+    // Those callbacks poison the whole account-wide generation; never
+    // re-qualify in this existing positive H1 fixture after a conflict.
+    assert(scope.sdkNativeStopEchoMatches);
+    // Fresh SDK-native stop openOrder is not enough. Require a later bound
+    // native orderStatus with exactly zero filled and full remaining.
+    auto status=f.Event(IBEventType::OrderStatus);
+    status.id=original.childOrderId;status.key="Submitted";
+    status.value.clear();status.number=0.0;status.number2=0.0;
+    status.number3=original.quantity;
+    status.queueIngressMonotonicNs=originalSdk.queueIngressMonotonicNs+100;
+    status.nativeOrder.permanentId=originalSdk.nativeOrder.permanentId;
+    status.remainingQuantityKnown=true;
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==original.quantity &&
+           scope.brokerObservationClockBounded &&
+           scope.activeOrderBarrierAgeMs<=3000 &&
+           scope.coherentRiskBarrierAgeMs<=3000 &&
+           scope.stopNativeEchoAgeMs<=3000 &&
+           scope.stopRemainingStatusAgeMs<=3000 &&
+           !scope.accountSnapshotFreshnessProven &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // A historical SDK STOP echo plus a new unfilled status can match all
+    // order IDs and quantities, yet cannot establish fresh Broker protection.
+    auto staleSdk=originalSdk;
+    staleSdk.queueIngressMonotonicNs-=5000000000ULL;
+    nativeRefresh(staleSdk);
+    auto newerStatus=status;
+    newerStatus.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(newerStatus);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopEchoMatches &&
+           scope.sdkNativeStopUnfilledRemainingMatches &&
+           !scope.brokerObservationClockBounded &&
+           !scope.accountSnapshotFreshnessProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // A full original account-wide refresh can re-qualify only the
+    // diagnostic's four-source clock bound; never grant order authority.
+    originalSdk.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    nativeRefresh(originalSdk);
+    status.queueIngressMonotonicNs=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.brokerObservationClockBounded &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // A contradictory positive permanent-ID event is covered in the
+    // dedicated isolated fixture. Never requalify that conflict in-place.
+    // A new account-wide refresh must also clear the prior complete-status
+    // witness, forcing new Broker callback evidence each epoch/generation.
+
+    // Only H1-specific diagnostic negatives that do NOT contradict the
+    // same-callback Lite/native protective order shape can reuse this
+    // positive account epoch. Main's independent full/incremental callback
+    // tests already reject permId, parent, OCA, transmit, stop-price and
+    // quantity mismatch by invalidating the full Broker order projection;
+    // those failures must never be requalified inside this same Fixture.
+    for (int variant : {0,4,7,9,10}) {
+        auto bad=originalSdk;
+        switch(variant) {
+        case 0:bad.nativeOrder.present=false;break;
+        case 4:bad.nativeOrder.ocaType=0;break;
+        case 7:bad.nativeOrder.timeInForce="DAY";break;
+        case 9:bad.nativeOrder.contractId+=1;break;
+        case 10:bad.queueIngressMonotonicNs=0;break;
+        }
+        nativeRefresh(bad);
+        assert(!scope.sdkNativeStopEchoMatches &&
+               scope.sdkNativeStopPermanentId==0 &&
+               !scope.nativeStopBrokerWorkingProven &&
+               !scope.maySendOrdinaryExit);
+    }
+    nativeRefresh(originalSdk);
+    assert(scope.sdkNativeStopEchoMatches);
+    const auto valid=scope;
+    auto wrong=original;wrong.account="DU-OTHER";
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.clientId+=1;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.childOrderId+=2;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    wrong=original;wrong.quantity=24000;
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(wrong,h1,scope,reason));
+    auto changed=h1;changed.childCorrelation="hepta-v1-sha256:"+std::string(64,'f');
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,changed,scope,reason));
+    // A second genuinely broker-active order invalidates the singleton proof.
+    const std::string other="hepta-v1-sha256:"+std::string(64,'a');
+    std::string encoded;assert(IbVenueCorrelationCodec::EncodeOrderRef(other,encoded,reason));
+    auto extra=e;extra.id=original.childOrderId+10;
+    extra.order.orderRef=encoded;
+    f.Push(extra);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ORIGINAL_ACTIVE_STOP_NOT_UNIQUE");
+    // A changed cash balance with no coherent account+position refresh
+    // invalidates the exact original PAPER risk proof, independently of
+    // what a cached order-status callback happened to report.
+    account.key="CashBalance:EUR";account.value="-75001";f.Push(account);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE");
+    assert(!scope.originalAccountAndOrderSetConsistent);
+    // Contradictory native Broker permanent IDs inside ONE open-order
+    // refresh must invalidate the whole inventory, not retain the first
+    // apparently working stop callback.
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(originalSdk);
+    auto collision=originalSdk;
+    collision.nativeOrder.permanentId+=1;
+    f.Push(collision);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(!scope.sdkNativeStopEchoMatches &&
+           !scope.maySendOrdinaryExit &&
+           !scope.nativeStopBrokerWorkingProven);
+    // A CLIENT-ONLY order query must not masquerade as the global active
+    // order authority even when its sole child has a perfect SDK echo.
+    assert(f.adapter.ReqOpenOrders());
+    f.Push(originalSdk);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(f.adapter.ReqRiskRefresh());
+    auto localOnly=f.Event(IBEventType::AccountValue);
+    localOnly.key="NetLiquidation:USD";localOnly.value="1000";f.Push(localOnly);
+    localOnly.key="AccountReady:";localOnly.value="true";f.Push(localOnly);
+    localOnly.key="CashBalance:EUR";localOnly.value="-75000";f.Push(localOnly);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(original,h1,scope,reason));
+    assert(reason=="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE");
+    assert(!scope.sdkNativeStopEchoMatches);
+    (void)valid;
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(bool laterGood) {
+    // Same-session Broker callbacks must never roll an H1 status diagnostic
+    // back to earlier trusted contents after a contradictory newer permId.
+    // The original callback identities, rather than simulated fills, are used.
+    Fixture f(true,false,true);
+    hepta_bracket_h1::FrozenBracket original;
+    original.originalCommandKey="actual-adapter-oca-ordering";
+    original.account="DU123";original.owner="owner-adapter";
+    original.sessionId="session-1";original.executionDomain="PAPER";
+    original.contractId=12087792;original.clientId=73;
+    original.parentOrderId=4600;original.childOrderId=4601;
+    original.connectionEpoch=f.adapter.GetConnectionEpoch();
+    original.positionGeneration=1;original.ownerFenceToken=23;
+    original.intentObservedAtMs=1792080000123ULL;
+    original.quantity=25000;original.side="BUY";
+    original.referencePrice=1.1205;original.stopPrice=1.11825;
+    original.minTick=.00005;
+    hepta_bracket_h1::BoundRefs refs;std::string reason;
+    assert(hepta_bracket_h1::BuildFrozenRefs(original,refs,reason));
+    auto sdk=f.Event(IBEventType::OpenOrder);sdk.id=original.childOrderId;
+    sdk.value="Submitted";sdk.queueIngressMonotonicNs=555000;
+    sdk.contract.symbol="EUR";sdk.contract.secType="CASH";
+    sdk.contract.currency="USD";sdk.contract.exchange="IDEALPRO";
+    sdk.order.orderRef=refs.childRef;sdk.order.orderType="STP";
+    sdk.order.action="SELL";sdk.order.totalQuantity=original.quantity;
+    sdk.order.auxPrice=original.stopPrice;
+    auto& native=sdk.nativeOrder;
+    native.present=true;native.contractId=original.contractId;
+    native.orderId=original.childOrderId;native.permanentId=991001;
+    sdk.brokerPermId=991001;
+    native.parentId=original.parentOrderId;native.clientId=original.clientId;
+    native.transmit=true;native.account=original.account;
+    native.action="SELL";native.orderType="STP";native.timeInForce="GTC";
+    native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
+    native.ocaType=1;native.triggerMethod=0;
+    native.stopAuxPrice=original.stopPrice;native.totalQuantity=original.quantity;
+    // Real TWS SDK wrapper exposes the same Parent, OCA and transmit
+    // fields in both the full native Order and its Broker-visible Lite view.
+    sdk.brokerParentOrderId=original.parentOrderId;
+    sdk.brokerOcaGroup=refs.ocaGroup;
+    sdk.brokerTransmit=true;
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(sdk);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(f.adapter.ReqRiskRefresh());
+    auto a=f.Event(IBEventType::AccountValue);
+    a.key="NetLiquidation:USD";a.value="1000";f.Push(a);
+    a.key="AccountReady:";a.value="true";f.Push(a);
+    a.key="CashBalance:EUR";a.value="-75000";f.Push(a);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    auto status=f.Event(IBEventType::OrderStatus);
+    status.id=original.childOrderId;status.key="Submitted";
+    status.number=0;status.number2=0;status.number3=original.quantity;
+    status.value.clear();status.requestId=0;
+    status.remainingQuantityKnown=true;
+    status.nativeOrder.permanentId=native.permanentId;
+    status.queueIngressMonotonicNs=555100;
+    f.Push(status);
+    IBH1OcaAdapterScopeObservation scope;
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(scope.sdkNativeStopUnfilledRemainingMatches);
+    auto contradictory=status;contradictory.queueIngressMonotonicNs=555300;
+    contradictory.nativeOrder.permanentId+=1;
+    f.Push(contradictory);
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(!scope.sdkNativeStopUnfilledRemainingMatches);
+    // A callback with the ORIGINAL permId must not erase the evidence of
+    // a contradictory permId even when newer by timestamp. Backdated and
+    // later-valid replays are separate adversarial scenarios.
+    auto replay=status;
+    if (laterGood) replay.queueIngressMonotonicNs=555400;
+    f.Push(replay);
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(!scope.sdkNativeStopUnfilledRemainingMatches);
+    assert(!scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
+// Account-wide Broker permId and SDK-native H1 permId came from the SAME
+// real OpenOrder. Both a contradictory positive ID and an absent global
+// permId must fail closed; neither can form an original Broker Stop witness.
+void TestOriginalH1SdkAndGlobalPermIdConflictFailsClosed()
+{
+    for(const long providedPermId : {990101L,0L}) {
+        Fixture f;
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.originalCommandKey="h1-global-native-permid-conflict";
+    frozen.account="DU123";frozen.owner="owner-adapter";
+    frozen.sessionId="session-1";frozen.executionDomain="PAPER";
+    frozen.contractId=12087792;frozen.clientId=73;
+    frozen.parentOrderId=5100;frozen.childOrderId=5101;
+    frozen.connectionEpoch=f.adapter.GetConnectionEpoch();
+    frozen.positionGeneration=1;frozen.ownerFenceToken=3;
+    frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=25000;frozen.side="BUY";
+    frozen.referencePrice=1.12050;frozen.stopPrice=1.11825;
+    frozen.minTick=0.00005;
+    hepta_bracket_h1::BoundRefs refs;std::string reason;
+    assert(hepta_bracket_h1::BuildFrozenRefs(frozen,refs,reason));
+    auto sdk=f.Event(IBEventType::OpenOrder);
+    sdk.id=frozen.childOrderId;sdk.value="Submitted";
+    sdk.queueIngressMonotonicNs=555000;
+    sdk.contract.symbol="EUR";sdk.contract.secType="CASH";
+    sdk.contract.currency="USD";sdk.contract.exchange="IDEALPRO";
+    sdk.order.orderRef=refs.childRef;sdk.order.orderType="STP";
+    sdk.order.action="SELL";sdk.order.totalQuantity=frozen.quantity;
+    sdk.order.auxPrice=frozen.stopPrice;
+    sdk.brokerPermId=providedPermId;
+    sdk.brokerParentOrderId=frozen.parentOrderId;
+    sdk.brokerOcaGroup=refs.ocaGroup;sdk.brokerTransmit=true;
+    auto& native=sdk.nativeOrder;
+    native.present=true;native.contractId=frozen.contractId;
+    native.orderId=frozen.childOrderId;native.permanentId=990102;
+    native.parentId=frozen.parentOrderId;native.clientId=frozen.clientId;
+    native.transmit=true;native.account=frozen.account;
+    native.action="SELL";native.orderType="STP";native.timeInForce="GTC";
+    native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
+    native.ocaType=1;native.triggerMethod=0;
+    native.stopAuxPrice=frozen.stopPrice;native.totalQuantity=frozen.quantity;
+    f.Push(sdk);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto all=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!all.complete);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
+void TestH1ParentTerminalNeedsExactEconomicFilledQuantity() {
+    // Only original Broker completedOrder(Filled) + an exact, account/client-
+    // bound execDetails.cumQty can qualify the advisory parent fill.
+    // A child STOP, physical FX cash and the original H1 alone cannot.
+    for (int mode=0;mode<7;++mode) {
+        Fixture f(false,false,true); // one terminal download is still pending
+        hepta_bracket_h1::FrozenBracket original;
+        original.originalCommandKey="native-h1-parent-qty-research";
+        original.account="DU123";original.owner="owner-h1-parent";
+        original.sessionId="h1-qa";original.executionDomain="PAPER";
+        original.contractId=12087792;original.clientId=73;
+        original.parentOrderId=4200;original.childOrderId=4201;
+        original.connectionEpoch=f.adapter.GetConnectionEpoch();
+        original.positionGeneration=1;original.ownerFenceToken=23;
+        original.intentObservedAtMs=1792080000123ULL;
+        original.quantity=25000;original.side="BUY";
+        original.referencePrice=1.1205;original.stopPrice=1.11825;
+        original.minTick=.00005;
+        hepta_bracket_h1::BoundRefs refs;std::string reason;
+        assert(hepta_bracket_h1::BuildFrozenRefs(original,refs,reason));
+        if (mode!=0) {
+            auto completed=f.Event(IBEventType::CompletedOrder);
+            completed.id=original.parentOrderId;
+            completed.key=(mode==3 ? "Cancelled" : "Filled");
+            completed.account=original.account;
+            completed.brokerClientId=original.clientId;
+            completed.order.orderRef=refs.parentRef;
+            f.Push(completed);
+        }
+        if (mode!=1) {
+            auto exec=f.Event(IBEventType::ExecutionDetails);
+            exec.id=original.parentOrderId;
+            exec.requestId=f.broker->executionsRequest;
+            exec.account=original.account;
+            exec.brokerClientId=original.clientId;
+            exec.order.orderRef= mode==4 ? std::string() : refs.parentRef;
+            exec.key="native-parent-exec";
+            exec.value="BOT";exec.number=original.referencePrice;
+            exec.number2=(mode==2||mode==5) ?
+                original.quantity/2 : original.quantity;
+            f.Push(exec);
+            if(mode==5)f.Push(exec); // duplicate half is NOT a full fill
+        }
+        f.Push(f.Event(IBEventType::CompletedOrdersEnd));
+        auto end=f.Event(IBEventType::ExecutionDetailsEnd);
+        end.requestId=f.broker->executionsRequest;
+        f.Push(end);
+        const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(terminal.complete);
+        const auto cumulative=
+            terminal.executionCumulativeQtyByCorrelation.find(refs.parentCorrelation);
+        if(mode==1||mode==4) {
+            assert(cumulative==terminal.executionCumulativeQtyByCorrelation.end());
+        } else if(mode==2||mode==5) {
+            assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
+            assert(cumulative->second==original.quantity/2);
+        } else {
+            // Missing or cancelled completedOrder does not erase a real
+            // economic execution; both are independently required to qualify.
+            assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
+            assert(cumulative->second==original.quantity);
+        }
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        auto stop=f.Event(IBEventType::OpenOrder);
+        stop.id=original.childOrderId;
+        stop.account=original.account;stop.value="Submitted";
+        stop.contract.symbol="EUR";stop.contract.secType="CASH";
+        stop.contract.currency="USD";stop.contract.exchange="IDEALPRO";
+        stop.order.orderRef=refs.childRef;stop.order.orderType="STP";
+        stop.order.action="SELL";stop.order.totalQuantity=original.quantity;
+        stop.order.auxPrice=original.stopPrice;
+        stop.brokerPermId=990101;
+        stop.brokerParentOrderId=original.parentOrderId;
+        stop.brokerOcaGroup=refs.ocaGroup;
+        stop.brokerTransmit=true;
+        auto& n=stop.nativeOrder;
+        n.present=true;n.contractId=original.contractId;
+        n.orderId=original.childOrderId;n.permanentId=990101;
+        n.parentId=original.parentOrderId;n.clientId=original.clientId;
+        n.transmit=true;n.account=original.account;n.action="SELL";
+        n.orderType="STP";n.timeInForce="GTC";
+        n.orderRef=refs.childRef;n.ocaGroup=refs.ocaGroup;
+        n.ocaType=1;n.triggerMethod=0;
+        n.stopAuxPrice=original.stopPrice;n.totalQuantity=original.quantity;
+        f.Push(stop);f.Push(f.Event(IBEventType::OpenOrderEnd));
+        assert(f.adapter.ReqRiskRefresh());
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value="-75000";f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+        IBH1OcaAdapterScopeObservation observed;
+        assert(f.adapter.InspectResearchH1OcaAccountScope(
+            original,refs,observed,reason));
+        assert(observed.originalAccountAndOrderSetConsistent);
+        const bool exact=(mode==6); // Filled parent + full original execDetails
+        assert(observed.originalParentFilledTerminalAndQtyCorrelated==exact);
+        assert(!observed.nativeStopBrokerWorkingProven &&
+               !observed.maySendOrdinaryExit && !observed.mayStopDriver);
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 int main() {
+    TestH1ParentTerminalNeedsExactEconomicFilledQuantity();
+    TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(false);
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(true);
+    TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
+    TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
+    TestResearchH1NativeLeaseAfterFreshAdapterRestart();
+    TestResearchNativeIdLeaseBindsActualCoordinatorFence();
+    TestResearchCoordinatorOwnedJournalCannotBeReplacedWithDecoy();
+    TestConcurrentResearchH1OwnerBoundReservationNeverDuplicates();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
@@ -2194,6 +3325,31 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerTouchedConditionalOrdersStayInGlobalCensus();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();
+    TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();
+    TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();
+    TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();
+    TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();
+    TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();
+    TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();
+    TestManualPermIdMissingCollisionAndWrongClientFailClosed();
+    TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();
+    TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();
+    TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();
+    TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();
+    TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();
+    TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();
+    TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();
+    TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();
+    TestBrokerTouchedConditionalOrdersStayInGlobalCensus();
+    TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();
+    TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();
+    TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently();
+    TestForeignNumeric201202CannotCreateOwnTerminal();
+    TestOriginalPostFenceReadRejectsH1PermanentIdConflict();
+    TestOriginalH1SdkAndGlobalPermIdConflictFailsClosed();
+    TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();
+    TestAdapterForwardsBoundedHandshakeBudget();
+    TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
