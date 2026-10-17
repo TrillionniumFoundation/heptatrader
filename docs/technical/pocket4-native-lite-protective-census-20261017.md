@@ -63,6 +63,12 @@ protective coverage; the source inventory itself was inconsistent.
   `operator-evidence/native-lite-shape-20261017/source-regression.log`
   SHA256 `fd6af61034a75dfef719c5651f5bc7c867e4b24d967fd534defb17952a7ecbfd`.
 
+- Independently compiled IB-SDK-enabled native Adapter with AddressSanitizer
+  and UndefinedBehaviorSanitizer (Debug, leak detection and halt-on-error).
+  The same protective callback adversarial CTest **1/1 PASS**.
+  `operator-evidence/native-lite-shape-20261017/asan-native-test.log`,
+  SHA256 `a5f96f94e14616d050f388cdfffac552fdf13be39161aa4b7916168b564d6b13`.
+
 ## Distinct, still unproven
 
 The entire exercise used **isolated fake SDK callbacks** and no real Broker
