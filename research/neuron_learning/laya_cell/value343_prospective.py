@@ -27,15 +27,16 @@ import time
 import numpy as np
 from hepta_decision_attribution import digest,read_private,strict
 from . import value343_oos as prior
+from .value343_journal_cache import VerifiedIncrementalJournal
 
-SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v3"
-SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v3"
+SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v4"
+SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v4"
 STUDY=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-chronological-oos-20261016/study-v4.json")
 STUDY_SHA="dc0e463e6acc2a11a095afcc7623498959327f00d2835b9b2a0bdc8cf659f060"
 SOURCE_CODE_SHA="73354f5d1fdaa0ace5c60211597c9c2d4d2f5f74ecb2f5e9ecef63cb206f246c"
 REGISTRATION=prior.CONFIG
 COHORT=prior.BEHAVIOR
-OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-hardened-20261017")
+OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-incremental-20261017")
 MAX_SOURCE_FILES=128
 MAX_SOURCE_TOTAL=256*1024*1024
 MAX_SOURCE_FILE=16*1024*1024
@@ -43,6 +44,11 @@ MAX_REQUEST_AGE_MS=90000
 EXPECTED_MODEL="gpt-6-luna"
 NO_AUTHORITY={"broker_orders_sent":0,"automatic_trading":False,
               "model_promotion":False,"policy_gradient":False}
+
+# Source-cache code is included in the immutable v4 freeze identity;
+# changing the parser must not silently reuse an older prospective trial.
+CACHE_CODE_FILE=Path(__file__).with_name("value343_journal_cache.py")
+FULL_REPLAY_INTERVAL_SECONDS=180
 
 ORIGINAL_REQUEST_ID_RE=re.compile(r"[0-9a-f]{32}\Z")
 
@@ -221,6 +227,7 @@ def frozen():
             or type(freeze.get("activated_at_ms")) is not int
             or freeze.get("activated_at_ms")>int(time.time()*1000)
             or freeze.get("code_sha256")!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+            or freeze.get("cache_code_sha256")!=hashlib.sha256(CACHE_CODE_FILE.read_bytes()).hexdigest()
             or freeze.get("broker_orders_sent")!=0):
         raise ValueError("PRECOMMITTED_MODEL_OR_CODE_CHANGED")
     return freeze
@@ -237,6 +244,7 @@ def initialize():
             "model_sha256":STUDY_SHA,"model_report_id":model[0]["report_id"],
             "behavior_manifest_sha256":COHORT,"source_period_sha256":manifest["period_sha256"],
             "code_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "cache_code_sha256":hashlib.sha256(CACHE_CODE_FILE.read_bytes()).hexdigest(),
             "feature_names":list(prior.FEATURES),"historical_train_rows":217,
             "historical_holdout_rows":67,
             "historical_model_failed_to_beat_trivial_MAE":True,
@@ -496,13 +504,21 @@ def score(events,requests,freeze):
     return {"pending":unscored,"new_scores":changed,"new_rejected":reject}
 
 
-def run_once():
+def run_once(cache=None):
     freeze=frozen()
     model=read_model()
     manifest=registration()
     if manifest["period_sha256"]!=freeze["source_period_sha256"]:
         raise ValueError("SOURCE_PERIOD_ROTATED_USE_NEW_FROZEN_STUDY")
-    events,requests=original_events(manifest)
+    if cache is not None:
+        if (type(cache) is not VerifiedIncrementalJournal or
+                cache.manifest_sha!=COHORT or
+                cache.manifest["journal_directory"]!=manifest["journal_directory"] or
+                cache.manifest["period_sha256"]!=manifest["period_sha256"]):
+            raise ValueError("INCREMENTAL_SOURCE_CACHE_NOT_PINNED")
+        events,requests=cache.update()
+    else:
+        events,requests=original_events(manifest)
     a=capture(events,requests,freeze,model)
     response_status=attest_responses(events,requests,freeze)
     b=score(events,requests,freeze)
@@ -510,6 +526,7 @@ def run_once():
             for name in ("predictions","misses","response_proofs","scores","rejects")}
     print(json.dumps({"schema":SCHEMA,"checked_at_ms":int(time.time()*1000),
         "counts":counts,"capture":a,"response_attestation":response_status,"score":b,
+        "original_source_scan_mode":"HASH_VERIFIED_INCREMENTAL_APPEND" if cache else "FULL_ORIGINAL_REPLAY",
         "broker_orders_sent":0,"policy_change":False},sort_keys=True))
     return 0
 
@@ -584,11 +601,17 @@ def watch_loop():
     manifest=registration()
     if manifest["period_sha256"]!=freeze["source_period_sha256"]:
         raise ValueError("WATCH_ORIGINAL_PERIOD_CHANGED")
+    # Initial original history is authenticated ONCE; every wake-up uses
+    # the same SHA/sequence-linked parser but reads only newly appended
+    # bytes. Every 180 seconds, independently replay the ENTIRE original
+    # source to detect any cached historical-prefix rewrite.
+    cache=VerifiedIncrementalJournal(manifest,COHORT)
     fd=watch_handle(manifest["journal_directory"])
     poller=select.poll();poller.register(fd,select.POLLIN)
     try:
-        run_once()  # initial registered snapshot prevents activation gap
+        run_once(cache)  # initial registered snapshot prevents activation gap
         last=time.monotonic()
+        last_full=last
         while True:
             events=poller.poll(20000)
             if any(mask&(select.POLLERR|select.POLLHUP|select.POLLNVAL)
@@ -599,8 +622,17 @@ def watch_loop():
             if overflow:print(json.dumps({"inotify_queued_events_lost":overflow,
                         "must_rescan_original_ledger":True}),flush=True)
             if trigger or time.monotonic()-last>=20:
-                run_once()
+                run_once(cache)
                 last=time.monotonic()
+            if time.monotonic()-last_full>=FULL_REPLAY_INTERVAL_SECONDS:
+                original,requests=original_events(manifest)
+                cache.update() # consume legitimate appends made during full scan
+                checked=cache.assert_full_replay_same(
+                    original,requests,allow_new_incremental_suffix=True)
+                print(json.dumps({"schema":SCHEMA,"full_historical_integrity":checked,
+                                  "cache_verified_total_events":cache.verified_new_records,
+                                  "broker_orders_sent":0},sort_keys=True),flush=True)
+                last_full=time.monotonic()
     finally:
         os.close(fd)
 

@@ -144,7 +144,7 @@ class TwoSidedPreResponseProofTests(unittest.TestCase):
             self.assertEqual(json.loads(p.read_bytes()),payload)
 
     def test_protocol_v2_cannot_claim_old_v1_source(self):
-        self.assertTrue(shadow.SCHEMA.endswith(".v3"))
+        self.assertTrue(shadow.SCHEMA.endswith(".v4"))
         self.assertNotEqual(shadow.OUT,Path(
             "/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-shadow-20261017"))
         self.assertFalse(shadow.NO_AUTHORITY["automatic_trading"])
