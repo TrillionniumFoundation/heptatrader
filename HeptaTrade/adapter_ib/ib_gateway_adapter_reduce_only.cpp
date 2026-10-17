@@ -108,7 +108,7 @@ VenueFlattenResult HeptaIBGatewayAdapter::PlaceReduceOnlyOrderCorrelated(
                 return VenueFlattenResult::Uncertain("IB_FLATTEN_API_OUTCOME_UNCERTAIN", orderId);
             return reject();
         }
-        MergeIncrementalActiveOrder(orderId, venueCorrelationId);
+        MergeIncrementalActiveOrder(orderId, venueCorrelationId, m_cfg.clientId);
         return VenueFlattenResult::Submitted(orderId);
     }
     catch (const std::exception& error)

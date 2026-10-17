@@ -88,7 +88,7 @@ bool HeptaIBGatewayAdapter::PlaceOrderCorrelated(
     // refreshes: locally accepted correlated sends are immediately visible to
     // max-active-order and owner reconciliation. Cancel does not remove them;
     // only a terminal broker status may do that.
-    MergeIncrementalActiveOrder(orderId, venueCorrelationId);
+    MergeIncrementalActiveOrder(orderId, venueCorrelationId, m_cfg.clientId);
     if (outOrderId) *outOrderId = orderId;
     return true;
 }

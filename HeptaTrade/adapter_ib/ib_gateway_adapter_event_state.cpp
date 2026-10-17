@@ -72,12 +72,14 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_correlationRefreshConflict = false;
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
+    m_pendingActiveOrderClientIds.clear();
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
     m_correlationSnapshot.reasonCode = reason;
     m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
     m_correlationSnapshot.activeOrderIds.clear();
+    m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
 }
 
 IBAuthoritativeCorrelationSnapshot HeptaIBGatewayAdapter::GetAuthoritativeCorrelationSnapshot() const {
@@ -92,10 +94,22 @@ std::uint64_t CallbackMonotonicNs() {
 }
 
 bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
-    long orderId, const std::string& correlationId) {
+    long orderId, const std::string& correlationId, int brokerClientId) {
     if (!m_correlationSnapshot.complete) return true;
-    if (orderId < 0) {
-        InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_ID_INVALID");
+    if (orderId < 0 || brokerClientId < 0) {
+        InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_ID_OR_CLIENT_INVALID");
+        return false;
+    }
+    const auto known = m_correlationSnapshot.activeOrderClientIdsByOrderId.find(orderId);
+    if (known != m_correlationSnapshot.activeOrderClientIdsByOrderId.end() &&
+        known->second != brokerClientId) {
+        InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_CLIENT_ID_COLLISION");
+        return false;
+    }
+    // A foreign client can contribute to Broker-global active risk, never
+    // to the original service owner's correlation or cancellation authority.
+    if (brokerClientId != m_cfg.clientId && !correlationId.empty()) {
+        InvalidateCorrelationSnapshot("IB_FOREIGN_CLIENT_CORRELATION_INVALID");
         return false;
     }
     if (!correlationId.empty()) {
@@ -123,6 +137,7 @@ bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
             orderId;
     }
     m_correlationSnapshot.activeOrderIds.insert(orderId);
+    m_correlationSnapshot.activeOrderClientIdsByOrderId[orderId] = brokerClientId;
     return true;
 }
 
@@ -456,9 +471,13 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
     if (event.type == IBEventType::OpenOrder &&
         !m_cfg.account.empty() && event.account == m_cfg.account) {
         if (event.id >= 0) {
-            acceptedBrokerOpenOrder =
+            // reqAllOpenOrders echoes orders from OTHER client IDs. Those
+            // count toward account-global active risk, but MUST NOT seed
+            // the original client-scoped cancel/terminal lifecycle.
+            acceptedBrokerOpenOrder = event.brokerClientId == m_cfg.clientId ?
                 m_orderLifecycle.RecordBrokerOpenOrder(
-                static_cast<long>(event.id), event.value);
+                    static_cast<long>(event.id), event.value) :
+                event.brokerClientId >= 0;
             // Rebuild the callback identity from a broker-echoed open order,
             // not the naked numeric id. Previously only a new local send made
             // this binding, so every post-restart orderStatus was quarantined
@@ -497,24 +516,35 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
                     }
                 }
             }
-            if (acceptedBrokerOpenOrder)
+            if (acceptedBrokerOpenOrder && event.brokerClientId == m_cfg.clientId)
                 DispatchPendingCancelIfAcknowledged(
                     static_cast<long>(event.id), event.value,
                     event.value != "Filled", true);
         }
+        if (event.brokerClientId < 0 && !m_correlationRefreshPending &&
+            m_correlationSnapshot.complete)
+            InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_CLIENT_ID_UNKNOWN");
         if (acceptedBrokerOpenOrder &&
             !m_correlationRefreshPending && m_correlationSnapshot.complete) {
+            if (event.brokerClientId != m_cfg.clientId) {
+                MergeIncrementalActiveOrder(
+                    static_cast<long>(event.id), std::string(),
+                    event.brokerClientId);
+                return acceptedBrokerOpenOrder;
+            }
             std::string correlationId;
             std::string decodeReason;
             if (DecodeVenueOrderRef(
                     event.order.orderRef, correlationId, decodeReason)) {
                 MergeIncrementalActiveOrder(
-                    static_cast<long>(event.id), correlationId);
+                    static_cast<long>(event.id), correlationId,
+                    event.brokerClientId);
             } else if (event.order.orderRef.compare(0, 2, "H1") == 0) {
                 InvalidateCorrelationSnapshot(decodeReason);
             } else {
                 MergeIncrementalActiveOrder(
-                    static_cast<long>(event.id), std::string());
+                    static_cast<long>(event.id), std::string(),
+                    event.brokerClientId);
             }
         }
     }
@@ -526,8 +556,13 @@ void HeptaIBGatewayAdapter::RetireTerminalActiveOrder(
     if (m_postFillReconciliationOrderIds.count(orderId) != 0 ||
         !m_correlationSnapshot.complete)
         return;
+    const auto identity = m_correlationSnapshot.activeOrderClientIdsByOrderId.find(orderId);
+    if (identity != m_correlationSnapshot.activeOrderClientIdsByOrderId.end() &&
+        identity->second != m_cfg.clientId)
+        return; // A local numeric terminal may NOT erase a foreign order.
     if (eraseRiskBaseline) m_orderRiskBaselines.erase(orderId);
     m_correlationSnapshot.activeOrderIds.erase(orderId);
+    m_correlationSnapshot.activeOrderClientIdsByOrderId.erase(orderId);
     for (std::map<std::string, long>::iterator it =
              m_correlationSnapshot.activeOrderIdsByCorrelation.begin();
          it != m_correlationSnapshot.activeOrderIdsByCorrelation.end();) {
@@ -540,6 +575,10 @@ void HeptaIBGatewayAdapter::RetireTerminalActiveOrder(
 
 void HeptaIBGatewayAdapter::ApplyOrderStatusTransition(
     const IBEvent& event) {
+    // Native orderStatus includes the Broker client ID. A foreign status
+    // must not create local cancel authority for a colliding numeric ID.
+    if (event.brokerClientId >= 0 && event.brokerClientId != m_cfg.clientId)
+        return;
     const long orderId = static_cast<long>(event.id);
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
@@ -1333,13 +1372,28 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     bool acceptedBrokerOpenOrder) {
     if (outEvent.type == IBEventType::OpenOrder && m_correlationRefreshPending) {
         if (m_cfg.account.empty() || outEvent.account != m_cfg.account) return;
-        if (outEvent.id < 0) {
+        if (outEvent.id < 0 || outEvent.id > LONG_MAX) {
             MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_ID_INVALID";
             return;
         }
+        if (outEvent.brokerClientId < 0) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_CLIENT_ID_UNKNOWN";
+            return;
+        }
         if (!acceptedBrokerOpenOrder) return;
-        m_pendingActiveOrderIds.insert(static_cast<long>(outEvent.id));
+        const long orderId = static_cast<long>(outEvent.id);
+        const auto identity = m_pendingActiveOrderClientIds.emplace(
+            orderId, outEvent.brokerClientId);
+        if (!identity.second && identity.first->second != outEvent.brokerClientId) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_CLIENT_ID_COLLISION";
+            return;
+        }
+        m_pendingActiveOrderIds.insert(orderId);
+        // Foreign H1 orderRefs cannot create an original-owner correlation.
+        if (outEvent.brokerClientId != m_cfg.clientId) return;
         std::string correlationId;
         std::string decodeReason;
         if (DecodeVenueOrderRef(
@@ -1364,6 +1418,8 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             m_correlationSnapshot.reasonCode.clear();
             m_correlationSnapshot.activeOrderIdsByCorrelation = m_pendingCorrelationOrderIds;
             m_correlationSnapshot.activeOrderIds = m_pendingActiveOrderIds;
+            m_correlationSnapshot.activeOrderClientIdsByOrderId =
+                m_pendingActiveOrderClientIds;
         } else {
             m_correlationSnapshot.complete = false;
             if (m_correlationSnapshot.reasonCode.empty()) {
@@ -1372,9 +1428,11 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             }
             m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
             m_correlationSnapshot.activeOrderIds.clear();
+            m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
         }
         m_pendingCorrelationOrderIds.clear();
         m_pendingActiveOrderIds.clear();
+        m_pendingActiveOrderClientIds.clear();
     }
 }
 

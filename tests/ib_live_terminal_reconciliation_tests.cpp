@@ -534,6 +534,91 @@ void TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus() {
         assert(quantities.ObserveExecution(fill)==0); // No estimated full-fill synthesis.
     }
 }
+
+void TestForeignClientOpenOrdersNeverBecomeOurCancelOrTerminalAuthority() {
+    Fixture f;
+    const long colliding=146;
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    auto foreign=f.Event(IBEventType::OpenOrder);
+    foreign.id=colliding;foreign.brokerClientId=999;
+    foreign.value="Submitted";
+    foreign.order.action="BUY";foreign.order.orderType="LMT";
+    foreign.order.totalQuantity=0.001;
+    foreign.order.orderRef="H1not-our-order-reference";
+    f.Push(foreign);f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto before=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(before.complete);
+    assert(before.activeOrderIds.count(colliding)==1);
+    assert(before.activeOrderClientIdsByOrderId.at(colliding)==999);
+    assert(before.activeOrderIdsByCorrelation.empty());
+    // The shared-account Broker's foreign active order is not a cancelable
+    // order of our service, even though the numeric order id is plausible.
+    assert(f.adapter.CancelOrder(colliding).detail=="NO_BROKER_SUBMIT");
+    assert(f.broker->cancels==0);
+    auto terminal=f.Status("Cancelled",0);
+    terminal.id=colliding;
+    f.Push(terminal);
+    const auto after=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(after.complete && after.activeOrderIds.count(colliding)==1);
+    assert(after.activeOrderClientIdsByOrderId.at(colliding)==999);
+    // The true Broker-global refresh may later prove this foreign order
+    // absent; only that new completed snapshot removes it.
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto empty=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(empty.complete && empty.activeOrderIds.empty());
+    assert(empty.activeOrderClientIdsByOrderId.empty());
+}
+
+void TestForeignAndOwnClientOrderIdCollisionFailsGlobalSnapshotClosed() {
+    Fixture f;
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    auto own=f.Event(IBEventType::OpenOrder);
+    own.id=281;own.brokerClientId=73;own.value="Submitted";
+    auto foreign=own;foreign.brokerClientId=999;
+    f.Push(own);f.Push(foreign);f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto collide=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!collide.complete);
+    assert(collide.reasonCode=="IB_ACTIVE_ORDER_CLIENT_ID_COLLISION");
+    assert(collide.activeOrderIds.empty());
+    assert(collide.activeOrderClientIdsByOrderId.empty());
+
+    Fixture reverse;
+    assert(reverse.adapter.ReqAuthoritativeOpenOrders());
+    auto first=reverse.Event(IBEventType::OpenOrder);
+    first.id=282;first.brokerClientId=999;first.value="Submitted";
+    auto second=first;second.brokerClientId=73;
+    reverse.Push(first);reverse.Push(second);
+    reverse.Push(reverse.Event(IBEventType::OpenOrderEnd));
+    assert(!reverse.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(reverse.adapter.GetAuthoritativeCorrelationSnapshot().reasonCode==
+           "IB_ACTIVE_ORDER_CLIENT_ID_COLLISION");
+
+    // An unknown SDK client on reqAllOpenOrders is NEVER qualified as an
+    // empty or complete account-global order universe.
+    Fixture unknown;
+    assert(unknown.adapter.ReqAuthoritativeOpenOrders());
+    auto untrusted=unknown.Event(IBEventType::OpenOrder);
+    untrusted.id=283;untrusted.brokerClientId=-1;untrusted.value="Submitted";
+    unknown.Push(untrusted);unknown.Push(unknown.Event(IBEventType::OpenOrderEnd));
+    const auto missing=unknown.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!missing.complete && missing.reasonCode=="IB_ACTIVE_ORDER_CLIENT_ID_UNKNOWN");
+
+    // Collision also invalidates a previously complete snapshot when
+    // account-global Order callbacks arrive asynchronously after End.
+    Fixture late;
+    auto external=late.Event(IBEventType::OpenOrder);
+    external.id=365;external.brokerClientId=999;external.value="Submitted";
+    late.Push(external);
+    const auto before=late.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(before.complete && before.activeOrderClientIdsByOrderId.at(365)==999);
+    auto local=external;local.brokerClientId=73;
+    late.Push(local);
+    const auto after=late.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!after.complete && after.reasonCode=="IB_ACTIVE_ORDER_CLIENT_ID_COLLISION");
+    assert(after.activeOrderIds.empty());
+}
+
 void TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend() {
     for (const bool filled : {false,true}) {
         Fixture f;
@@ -1161,6 +1246,8 @@ int main() {
     TestPendingCancelDoesNotResendOrManufactureTerminalEvidence();
     TestPendingCancelErrorDoesNotTripGlobalFuse();
     TestIncompleteHistoryReadOnlyAdmissionDoesNotCreateTerminalProof();
+    TestForeignClientOpenOrdersNeverBecomeOurCancelOrTerminalAuthority();
+    TestForeignAndOwnClientOrderIdCollisionFailsGlobalSnapshotClosed();
     TestRecoveredOpenOrderRestoresOriginalTerminalBindingWithoutSend();
     TestCryptoCashBaselineUsesSharedResidentAndCanaryEnvelope();
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
