@@ -271,6 +271,13 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
     result.status = ExecutionCommandStatus::Accepted;
     if (command.query == "system.get_health")
     {
+        // The post-fence state machine may advance a fresh Broker risk read
+        // ONLY if the authenticated custodian already started it through the
+        // original journal-durable account-fence control operation.
+        const IBAccountPostFenceReadObservation postFence =
+            m_config.profile.userScope && m_adapter ?
+                m_adapter->PollAccountPostFenceRead() :
+                IBAccountPostFenceReadObservation();
         const IBAuthoritativeRecoveryAuditSnapshot broker =
             m_config.profile.userScope && m_adapter ?
                 m_adapter->GetAuthoritativeRecoveryAuditSnapshot() :
@@ -359,6 +366,29 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"account_broker_reason\":\""
                    << accountBroker.reasonCode << "\""
                    << ",\"account_broker_post_fence_refresh_proven\":false"
+                   << ",\"account_post_fence_read_started\":"
+                   << (postFence.started ? "true" : "false")
+                   << ",\"account_post_fence_active_end_received\":"
+                   << (postFence.activeReadComplete ? "true" : "false")
+                   << ",\"account_post_fence_risk_end_received\":"
+                   << (postFence.riskReadComplete ? "true" : "false")
+                   << ",\"account_post_fence_active_then_risk_observed\":"
+                   << (postFence.activeThenRiskObserved ? "true" : "false")
+                   << ",\"account_post_fence_zero_observed\":"
+                   << (postFence.brokerZeroObserved ? "true" : "false")
+                   << ",\"account_post_fence_stop_permitted\":false"
+                   << ",\"account_post_fence_terminal_refreshed\":false"
+                   << ",\"account_post_fence_connection_epoch\":"
+                   << postFence.connectionEpoch
+                   << ",\"account_post_fence_active_generation\":"
+                   << postFence.activeGeneration
+                   << ",\"account_post_fence_risk_generation\":"
+                   << postFence.riskGeneration
+                   << ",\"account_post_fence_global_active_count\":"
+                   << (postFence.activeThenRiskObserved ?
+                       std::to_string(postFence.globalActiveOrders) : "null")
+                   << ",\"account_post_fence_reason\":\""
+                   << EscapeJson(postFence.reasonCode) << "\""
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
                    << ",\"account_new_entry_fenced\":" << (accountEntryFenced ? "true" : "false")
@@ -612,6 +642,45 @@ bool IbPaperExecutionRuntimeComposition::BuildPolicyAuthority(
     };
     policyCallbacks.recoveryAuditSnapshot = [this]() {
         return PolicyRecoveryAuditSnapshot();
+    };
+    policyCallbacks.beginAccountPostFenceBrokerRead =
+        [this](const AgentExecutionContext& context, std::string& reason) {
+        if (!m_config.profile.userScope ||
+            !m_config.profile.UsesUserCrypto() ||
+            context.account != m_config.profile.account ||
+            context.agentId != m_config.profile.userCryptoAgentId ||
+            context.sessionId != m_config.profile.userCryptoSessionId ||
+            context.executionDomain != "PAPER" || context.venue != "IB" ||
+            !m_adapter || !m_coordinator) {
+            reason = "IB_ACCOUNT_POST_FENCE_OWNER_UNAUTHORIZED";
+            return false;
+        }
+        const auto local = m_coordinator->ObserveAccountLocalDrain(context);
+        if (!local.present || !local.localHotProjectionQuiescent ||
+            m_reconnectPending.load() || m_startupRecoveryReadOnly.load() ||
+            PostFillRiskRefreshPending()) {
+            reason = "IB_ACCOUNT_POST_FENCE_LOCAL_DRAIN_INCOMPLETE";
+            return false;
+        }
+        std::string guardReason;
+        if (!m_killSwitch || !m_killSwitch->BlocksRiskIncrease(guardReason)) {
+            reason = "IB_ACCOUNT_POST_FENCE_INDEPENDENT_RISK_HOLD_REQUIRED";
+            return false;
+        }
+        // Never substitute an old snapshot for the new request. The fresh
+        // global order read itself is sent only AFTER original OMS fsync.
+        if (!m_adapter->BeginAccountPostFenceRead(reason)) return false;
+        // A Cancel/Flatten may have entered the venue during the gap between
+        // the first original coordinator observation and the IB read issue.
+        // Recheck; if in doubt keep the durable account fence and revoke the
+        // observation. No Broker order, cancel or request retry is made.
+        const auto after = m_coordinator->ObserveAccountLocalDrain(context);
+        if (!after.present || !after.localHotProjectionQuiescent) {
+            reason = "IB_ACCOUNT_POST_FENCE_LOCAL_DRAIN_CHANGED";
+            m_adapter->InvalidateAccountPostFenceRead(reason);
+            return false;
+        }
+        return true;
     };
     BindTerminalPolicyCallbacks(policyCallbacks);
     policyCallbacks.riskSnapshot =
