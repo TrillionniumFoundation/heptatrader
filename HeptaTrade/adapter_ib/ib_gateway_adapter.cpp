@@ -976,6 +976,53 @@ void HeptaIBGatewayAdapter::InvalidateAccountPostFenceRead(
         "IB_ACCOUNT_POST_FENCE_LOCAL_STATE_CHANGED" : reason;
 }
 
+
+bool HeptaIBGatewayAdapter::BindAccountPostFenceToFreshTerminalEpoch(
+    std::string& reason)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // This is called by the existing recovered owner-audit callback AFTER
+    // BeginRecoveryAuditBarrier has demanded a strictly NEW connection.
+    // It never issues a Broker call, disconnects, or schedules a reconnect.
+    if (m_postFenceReadStage != PostFenceReadStage::Observed ||
+        m_postFenceExpectedTerminalConnectionEpoch != 0 ||
+        m_postFenceConnectionEpoch == 0 ||
+        m_connectionEpoch != m_postFenceConnectionEpoch ||
+        m_recoveryAuditMinimumConnectionEpoch != m_connectionEpoch + 1 ||
+        m_connectionEpoch == std::numeric_limits<std::uint64_t>::max()) {
+        reason = "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_BINDING_UNAVAILABLE";
+        return false;
+    }
+    const auto observed = BuildRecoveryAuditSnapshotLocked();
+    if (!observed.transportConnected || !observed.eventStreamAuthoritative ||
+        !observed.active.complete || !observed.terminal.complete ||
+        !observed.risk.complete || !observed.risk.coherentRefreshComplete ||
+        observed.active.connectionEpoch != m_connectionEpoch ||
+        observed.terminal.connectionEpoch != m_connectionEpoch ||
+        observed.risk.connectionEpoch != m_connectionEpoch ||
+        observed.active.generation != m_postFenceActiveGeneration ||
+        observed.risk.generation != m_postFenceRiskGeneration ||
+        m_brokerMutationGeneration != m_postFenceMutationGeneration ||
+        m_exposureGeneration != m_postFenceExposureGeneration ||
+        observed.postFillRiskReconciliationPending ||
+        !observed.active.activeOrderIds.empty() ||
+        observed.risk.grossAbsolutePosition != 0.0) {
+        reason = "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_ECONOMIC_PRECONDITION";
+        return false;
+    }
+    for (const auto& position : observed.positionQuantities)
+        if (position.first.empty() || !std::isfinite(position.second) ||
+            position.second != 0.0) {
+            reason = "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_POSITION_PRESENT";
+            return false;
+        }
+    m_postFenceExpectedTerminalConnectionEpoch =
+        m_recoveryAuditMinimumConnectionEpoch;
+    m_postFenceReadStage = PostFenceReadStage::AwaitNewTerminalEpoch;
+    reason = "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_REQUIRED";
+    return true;
+}
+
 IBAccountPostFenceReadObservation HeptaIBGatewayAdapter::PollAccountPostFenceRead() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     IBAccountPostFenceReadObservation status;
@@ -988,6 +1035,124 @@ IBAccountPostFenceReadObservation HeptaIBGatewayAdapter::PollAccountPostFenceRea
     status.terminalGeneration = m_postFenceTerminalGeneration;
     status.brokerMutationGeneration = m_postFenceMutationGeneration;
     status.economicExposureGeneration = m_postFenceExposureGeneration;
+
+    // A fresh completed-orders End is available only after a separate,
+    // owner-controlled IB reconnect. Preserve the PRE-fence read watermark
+    // across Disconnect/Connect and accept ONLY the specifically requested
+    // next connection epoch; do not infer continuity from reset generation
+    // counters or an ordinary current-epoch account-risk refresh.
+    if (m_postFenceReadStage == PostFenceReadStage::AwaitNewTerminalEpoch ||
+        m_postFenceReadStage == PostFenceReadStage::NewTerminalEpochObserved) {
+        status.terminalNewEpochRequired = true;
+        status.newTerminalConnectionEpoch =
+            m_postFenceNewTerminalConnectionEpoch;
+        status.newTerminalGeneration = m_postFenceNewTerminalGeneration;
+        status.newActiveGeneration = m_postFenceNewActiveGeneration;
+        status.newRiskGeneration = m_postFenceNewRiskGeneration;
+        if (m_brokerMutationGeneration != m_postFenceMutationGeneration) {
+            m_postFenceReadStage = PostFenceReadStage::Failed;
+            m_postFenceFailureReason =
+                "IB_ACCOUNT_POST_FENCE_NEW_EPOCH_BROKER_MUTATION";
+        } else if (m_postFenceExpectedTerminalConnectionEpoch == 0 ||
+                   m_connectionEpoch >
+                       m_postFenceExpectedTerminalConnectionEpoch) {
+            m_postFenceReadStage = PostFenceReadStage::Failed;
+            m_postFenceFailureReason =
+                "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_SKIPPED";
+        }
+        if (m_postFenceReadStage == PostFenceReadStage::Failed) {
+            status.reasonCode = m_postFenceFailureReason;
+            return status;
+        }
+        if (m_connectionEpoch < m_postFenceExpectedTerminalConnectionEpoch ||
+            !m_connected || !m_api || !m_api->IsConnected()) {
+            status.reasonCode =
+                "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_CONNECT_PENDING";
+            return status;
+        }
+        const auto fresh = BuildRecoveryAuditSnapshotLocked();
+        const std::uint64_t epoch =
+            m_postFenceExpectedTerminalConnectionEpoch;
+        if (!fresh.transportConnected || !fresh.eventStreamAuthoritative) {
+            m_postFenceReadStage = PostFenceReadStage::Failed;
+            m_postFenceFailureReason =
+                "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_STREAM_UNTRUSTED";
+            status.reasonCode = m_postFenceFailureReason;
+            return status;
+        }
+        // An ordinary same-epoch refresh completing BETWEEN health reads
+        // must not silently replace the exact new terminal proof cohort.
+        if (m_postFenceReadStage ==
+                PostFenceReadStage::NewTerminalEpochObserved &&
+            (fresh.active.generation != m_postFenceNewActiveGeneration ||
+             fresh.terminal.generation != m_postFenceNewTerminalGeneration ||
+             fresh.risk.generation != m_postFenceNewRiskGeneration)) {
+            m_postFenceReadStage = PostFenceReadStage::Failed;
+            m_postFenceFailureReason =
+                "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_GENERATION_DRIFT";
+            status.reasonCode = m_postFenceFailureReason;
+            return status;
+        }
+        if (!fresh.active.complete || !fresh.terminal.complete ||
+            !fresh.risk.complete || !fresh.risk.coherentRefreshComplete ||
+            !fresh.barrierComplete || fresh.postFillRiskReconciliationPending ||
+            fresh.active.connectionEpoch != epoch ||
+            fresh.terminal.connectionEpoch != epoch ||
+            fresh.risk.connectionEpoch != epoch) {
+            if (m_postFenceReadStage ==
+                    PostFenceReadStage::NewTerminalEpochObserved) {
+                m_postFenceReadStage = PostFenceReadStage::Failed;
+                m_postFenceFailureReason =
+                    "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_PROOF_INVALIDATED";
+                status.reasonCode = m_postFenceFailureReason;
+            } else {
+                status.reasonCode =
+                    "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_BARRIER_PENDING";
+            }
+            return status;
+        }
+        if (fresh.terminal.generation == 0 ||
+            fresh.active.generation == 0 ||
+            fresh.risk.generation == 0 ||
+            fresh.terminal.exposureGeneration >
+                fresh.riskAbsorbedExposureGeneration ||
+            fresh.riskAbsorbedExposureGeneration !=
+                fresh.exposureGeneration ||
+            fresh.risk.grossAbsolutePosition < 0.0 ||
+            !std::isfinite(fresh.risk.grossAbsolutePosition)) {
+            m_postFenceReadStage = PostFenceReadStage::Failed;
+            m_postFenceFailureReason =
+                "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_ECONOMIC_DRIFT";
+            status.reasonCode = m_postFenceFailureReason;
+            return status;
+        }
+        bool flat = fresh.risk.grossAbsolutePosition == 0.0;
+        for (const auto& position : fresh.positionQuantities)
+            if (position.first.empty() || !std::isfinite(position.second) ||
+                position.second != 0.0) flat = false;
+        m_postFenceNewTerminalConnectionEpoch = epoch;
+        m_postFenceNewTerminalGeneration = fresh.terminal.generation;
+        m_postFenceNewActiveGeneration = fresh.active.generation;
+        m_postFenceNewRiskGeneration = fresh.risk.generation;
+        m_postFenceReadStage = PostFenceReadStage::NewTerminalEpochObserved;
+        status.newTerminalConnectionEpoch = epoch;
+        status.newTerminalGeneration = fresh.terminal.generation;
+        status.newActiveGeneration = fresh.active.generation;
+        status.newRiskGeneration = fresh.risk.generation;
+        status.terminalNewEpochObserved = true;
+        status.terminalPostFenceComplete = true;
+        status.activeThenRiskObserved = true;
+        status.activeReadComplete = true;
+        status.riskReadComplete = true;
+        status.globalActiveOrders = fresh.active.activeOrderIds.size();
+        status.brokerZeroObserved =
+            fresh.active.activeOrderIds.empty() && flat;
+        status.maintenanceStopPermitted = false;
+        status.reasonCode = status.brokerZeroObserved ?
+            "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_ZERO_NOT_STOP_PERMIT" :
+            "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_RISK_PRESENT";
+        return status;
+    }
 
     const auto fail = [this](const char* code) {
         m_postFenceReadStage = PostFenceReadStage::Failed;

@@ -173,8 +173,30 @@ IbPaperExecutionRuntimeComposition::PolicyRecoveryAuditSnapshot()
     // complete, current, all-flat economic state must be proven BEFORE any
     // reconnect scheduling, not after the RPC has returned Rejected.
     if (snapshot.newConnectionEpochRequired &&
-        RecoveryAuditEconomicPreflight(snapshot))
+        RecoveryAuditEconomicPreflight(snapshot)) {
+        // The existing owner-audit operation ALONE can initiate this
+        // separately bounded recovery reconnect. If an original Crypto
+        // custodian already completed the post-fence active->risk probe,
+        // attach its causal watermark to the NEW terminal connection epoch.
+        // The binding cannot request a reconnect itself; failure to bind
+        // leaves the ordinary owner audit behavior unchanged, and never
+        // creates a stop permit.
+        if (m_config.profile.userScope && m_adapter && m_killSwitch) {
+            std::string postFenceReason;
+            // The original independent native hold must still block NEW risk
+            // when an existing recovery-owner audit schedules a reconnect.
+            // This is only an observation guard, not a new veto on the
+            // already-existing recovery-owner audit/reconnect semantics.
+            const bool riskHold = m_killSwitch->BlocksRiskIncrease(
+                postFenceReason);
+            const bool terminalBound = riskHold &&
+                m_adapter->BindAccountPostFenceToFreshTerminalEpoch(
+                    postFenceReason);
+            if (terminalBound)
+                NotifyTestStage("post_fence_new_terminal_epoch_bound");
+        }
         m_recoveryAuditReconnectRequested.store(true);
+    }
     return snapshot;
 }
 IbPaperAuthoritativeRiskSnapshot
@@ -377,7 +399,20 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"account_post_fence_zero_observed\":"
                    << (postFence.brokerZeroObserved ? "true" : "false")
                    << ",\"account_post_fence_stop_permitted\":false"
-                   << ",\"account_post_fence_terminal_refreshed\":false"
+                   << ",\"account_post_fence_terminal_refreshed\":"
+                   << (postFence.terminalNewEpochObserved ? "true" : "false")
+                   << ",\"account_post_fence_new_terminal_epoch_required\":"
+                   << (postFence.terminalNewEpochRequired ? "true" : "false")
+                   << ",\"account_post_fence_new_terminal_epoch_observed\":"
+                   << (postFence.terminalNewEpochObserved ? "true" : "false")
+                   << ",\"account_post_fence_new_terminal_connection_epoch\":"
+                   << postFence.newTerminalConnectionEpoch
+                   << ",\"account_post_fence_new_terminal_generation\":"
+                   << postFence.newTerminalGeneration
+                   << ",\"account_post_fence_new_active_generation\":"
+                   << postFence.newActiveGeneration
+                   << ",\"account_post_fence_new_risk_generation\":"
+                   << postFence.newRiskGeneration
                    << ",\"account_post_fence_connection_epoch\":"
                    << postFence.connectionEpoch
                    << ",\"account_post_fence_active_generation\":"
