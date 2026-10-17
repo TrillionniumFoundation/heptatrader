@@ -1043,11 +1043,113 @@ void HeptaIBGatewayAdapter::ApplyEventStateTransition(
         break;
     }
 }
+
+bool HeptaIBGatewayAdapter::QuarantineContradictoryOrderStatusIdentity(
+    const IBEvent& event)
+{
+    if (event.type != IBEventType::OrderStatus ||
+        !m_correlationSnapshot.complete ||
+        event.connectionEpoch != m_connectionEpoch ||
+        event.id < 0 || event.id > LONG_MAX ||
+        event.brokerClientId < 0 || event.value == "execDetails")
+        return false;
+    // A provided OTHER-account identity cannot be used to retire or
+    // invalidate a current-account order. An absent account is not proof
+    // of other-account scope: IB orderStatus often omits the account.
+    if (!event.account.empty() && event.account != m_cfg.account)
+        return false;
+    const long scopedId = static_cast<long>(event.id);
+    const bool activeStatus =
+        event.key=="Submitted" || event.key=="PreSubmitted" ||
+        event.key=="PendingSubmit" || event.key=="ApiPending" ||
+        event.key=="PendingCancel";
+    if (event.brokerPermId <= 0) {
+        // An unbound manual status with client0/order0 carries NO
+        // authoritative account-wide identity. It could represent a NEW
+        // manual order even when another manual order shares numeric zero.
+        if (activeStatus && event.brokerClientId == 0 && scopedId == 0) {
+            InvalidateCorrelationSnapshot(
+                "IB_UNBOUND_MANUAL_STATUS_PERMID_UNKNOWN");
+            return false;
+        }
+        if (event.key=="PendingCancel") {
+            // A pending cancellation of a visible protective candidate
+            // cannot remain a completed protective census merely because
+            // the status callback lacks the positive host permId.
+            for (const auto& candidate :
+                 m_correlationSnapshot.visibleProtectiveCandidatesByPermId) {
+                if (candidate.second.brokerClientId == event.brokerClientId &&
+                    candidate.second.orderId == scopedId) {
+                    InvalidateCorrelationSnapshot(
+                        "IB_PROTECTIVE_PENDING_CANCEL_PERMID_UNKNOWN");
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+    const auto scoped = std::make_pair(event.brokerClientId, scopedId);
+    const auto& owners = m_correlationSnapshot.activeOrderByPermanentId;
+    const auto matchingPerm = owners.find(event.brokerPermId);
+    bool contradictory = matchingPerm != owners.end() &&
+        matchingPerm->second != scoped;
+
+    // A bound numeric (clientId, orderId) cannot suddenly acquire ANOTHER
+    // Host-wide permId. Manual unbound (client0,orderId0) deliberately uses
+    // many distinct positive permIds and is handled by the lookup above.
+    if (!contradictory && scopedId != 0 &&
+        m_correlationSnapshot.activeOrderClientIdsByOrderId.count(scopedId) &&
+        m_correlationSnapshot.activeOrderClientIdsByOrderId.at(scopedId) ==
+            event.brokerClientId) {
+        for (const auto& owner : owners) {
+            if (owner.second == scoped &&
+                owner.first != event.brokerPermId) {
+                contradictory = true;
+                break;
+            }
+        }
+    }
+    if (contradictory) {
+        // Drop the untrusted callback before any original native lifecycle,
+        // bound-terminal inference, or downstream order event consumer sees
+        // it. A positive ECONOMIC difference additionally poisons risk.
+        InvalidateCorrelationSnapshot("IB_ORDER_STATUS_PERMID_IDENTITY_CONFLICT");
+        InvalidateRecoveryAuditBarrier(
+            "IB_RECOVERY_AUDIT_ORDER_STATUS_PERMID_IDENTITY_CONFLICT");
+        if (HasEconomicFillEvidence(event))
+            InvalidateRiskSnapshot(
+                "IB_RISK_ORDER_STATUS_PERMID_IDENTITY_CONFLICT");
+        RecordCallbackConflict();
+        EmitObsEvent("callback.order_status_permid_conflict",
+            "\"clientId\":" + std::to_string(event.brokerClientId) +
+            ",\"orderId\":" + std::to_string(scopedId));
+        return true;
+    }
+
+    // An orderStatus for an unknown positive permId may be the FIRST
+    // notification of a new foreign/manual order. Its numeric orderId can
+    // collide with an already known order (all manual orders use 0). Never
+    // leave the old complete all-client snapshot unchanged.
+    if (activeStatus && matchingPerm==owners.end()) {
+        InvalidateCorrelationSnapshot(
+            "IB_ORDER_STATUS_UNSEEN_ACTIVE_PERMID_REQUIRES_REFRESH");
+        return false; // status still reaches original callback consumers
+    }
+    if (event.key=="PendingCancel" &&
+        m_correlationSnapshot.visibleProtectiveCandidatesByPermId.count(
+            event.brokerPermId) != 0)
+        InvalidateCorrelationSnapshot(
+            "IB_PROTECTIVE_PENDING_CANCEL_REQUIRES_GLOBAL_REFRESH");
+    return false;
+}
+
 bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (!m_api) return false;
     for (;;) {
         if (!DequeueCurrentEpochEvent(outEvent)) return false;
+        if (QuarantineContradictoryOrderStatusIdentity(outEvent))
+            continue;
         if ((outEvent.type != IBEventType::OrderStatus &&
              outEvent.type != IBEventType::ExecutionDetails) ||
             m_liveTerminalBindings.count(static_cast<long>(outEvent.id)) == 0)

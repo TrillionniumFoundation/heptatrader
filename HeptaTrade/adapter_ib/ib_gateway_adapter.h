@@ -484,6 +484,12 @@ private:
         const std::string& orderRef, std::string& correlationId,
         std::string& reason) const;
     bool DequeueCurrentEpochEvent(IBEvent& event);
+    // Native orderStatus has an account-unique permId alongside a CLIENT-
+    // scoped numeric ID. Quarantine positive contradictory bindings before
+    // original owner terminal/cancel state or downstream runtime sees them.
+    // Unseen active statuses and pending-cancel protective orders invalidate
+    // the completed global census but still reach the original status owner.
+    bool QuarantineContradictoryOrderStatusIdentity(const IBEvent& event);
     bool CorrelateOpenOrderEvent(const IBEvent& event);
     void ApplyEventStateTransition(const IBEvent& event);
     void ApplyOrderStatusTransition(const IBEvent& event);
