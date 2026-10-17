@@ -39,3 +39,51 @@ Run from its frozen research release using the existing local Python 3.14 venv; 
 While the forex market is closed, there may be zero new original REQUESTs. Zero prospective captures is not a pass or a defect. No retrospective requests are relabeled as future examples.
 
 Even a later prospective MAE improvement is insufficient by itself to prove net profitability or authorize trades. The value model remains RESEARCH ONLY until independently justified by new future outcomes and actual cost/risk evidence.
+
+## Actual on-host Pocket4 deployment and independent recheck
+
+The source-only implementation was committed to the dedicated research
+branch as c241c52b7aae5a803e63e1eb683dd4d1664d7cb1 and copied to
+an immutable-versioned local release:
+  ~/.local/share/heptatrader/value343-prospective/releases/c241c52b7aae5a8
+
+The installed program SHA256 is
+  e7777fd5762d4147540bcd4b98934b3d6d1c80e2c860f6a4ea0243707f08cb2d
+
+The once-only private model/observer freeze is
+  ~/.local/state/heptatrader/operator-evidence/value343-predecision-shadow-20261017/freeze.json
+SHA256:
+  16617ae2ee614dc70e444ef4abd97db65fd9b0ea4e458034eaa98aa0b2e4184c
+
+The real Pocket4 per-user timer is enabled and active:
+  heptatrader-value343-predecision-shadow.timer
+The associated source-only oneshot service has CPUQuota 40%, MemoryMax
+512 MiB, MemorySwapMax 0, no network, original source read-only and
+only its private evidence root writable. User linger was already enabled.
+The first real runs finished successfully, around 1.3s wall time and
+128 MiB peak memory. The original source included 4,432 historical
+requests that all preceded activation and were correctly ignored;
+there were ZERO future predictions or scores during this closed-market
+bootstrap. Do not claim future scoring success from an empty cohort.
+
+User systemd initially rejected an overly strict capability sandbox with
+218/CAPABILITIES before Python started. Only this new research service
+was revised to omit incompatible CapabilityBoundingSet/PrivateDevices
+options, retaining NoNewPrivileges, source read-only, no network and
+resource limits. The earlier failed invocations remain in the service
+journal. No other service was changed.
+
+Independent, create-only on-host deployment qualification:
+  ~/.local/state/heptatrader/operator-evidence/value343-predecision-deployment-20261017/runtime-qualification-v1.json
+SHA256:
+  0fa1157af3a1eec4679b95daa274fa44608e2154d09dcc38b7c0b8a35ff97312
+
+User-space operational rollback is disabling only the new timer:
+  systemctl --user disable --now heptatrader-value343-predecision-shadow.timer
+It does not affect FX/BTC PAPER Drivers, Execution, Gateway, Laya,
+IB Gateway, telephone or other existing systemd units.
+
+Actual Pocket4 fixed-source regression before release: 24 focused,
+116 Source and 705 Historical Training tests passed, as did local
+CI/documentation and whitespace checks. Hosted CI / full Core success
+and any genuine post-freeze future outcome are NOT claimed.
