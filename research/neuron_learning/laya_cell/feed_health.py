@@ -122,9 +122,28 @@ def feed_status(progress, previous_quote, prior_open_failure, at_ms):
 
 def historical_last_quote(feed_root, period_sha256):
     """Bounded authenticated startup diagnostics, including later empty segments."""
-    from .shadow_source import read_source, strict
+    from .shadow_source import read_source, strict, digest
+    def original_start(receipt):
+        # Recovery segments have descriptive names. Order by authenticated
+        # original HEADER time, never lexicographic names or file mtime.
+        try:
+            fd = os.open(receipt.parent / "quotes.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as stream:
+                raw = stream.readline(65537)
+            if len(raw) > 65536:
+                return -1
+            event = strict(raw)
+            if (event.get("kind") != "HEADER" or event.get("sequence") != 0
+                or event.get("previous") != "0" * 64
+                or type(event.get("at_ms")) is not int
+                or event.get("sha256") != digest({k: v for k, v in event.items() if k != "sha256"})):
+                return -1
+            return event["at_ms"]
+        except (OSError, ValueError, TypeError):
+            return -1
     failed_open = False
-    for receipt in sorted(Path(feed_root).glob("segment-*/collector-receipt.json"), reverse=True)[:200]:
+    receipts = Path(feed_root).glob("segment-*/collector-receipt.json")
+    for receipt in sorted(receipts, key=original_start, reverse=True)[:200]:
         try:
             summary = strict(receipt.read_bytes())
             # Once a later open-session failure is known, a quote-free segment

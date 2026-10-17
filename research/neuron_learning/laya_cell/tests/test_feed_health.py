@@ -139,6 +139,10 @@ class HistoricalSeedTests(unittest.TestCase):
             d1=segment("segment-1",[("HEADER",t-1,h),("QUOTE",t,q),("END",t+1,{})],1)
             segment("segment-2",[("HEADER",t+10000,h),("FAILURE",t+10001,{"reason":"UPSTREAM"}),
                                  ("END",t+10002,{})],0)
+            older=t-86400000
+            oldq={**q,"observed_at_ms":older,"stale_after_ms":older+5000}
+            segment("segment-recovery-live",[("HEADER",older-1,h),("QUOTE",older,oldq),
+                                              ("END",older+1,{})],1)
             from decimal import Decimal
             from unittest import mock
             with mock.patch("laya_cell.shadow_source.valid_quote",return_value=(Decimal("1.1"),Decimal("1.2"))):
@@ -146,5 +150,6 @@ class HistoricalSeedTests(unittest.TestCase):
             self.assertEqual(last["observed_at_ms"],t);self.assertTrue(outage)
             raw=(d1/"quotes.jsonl").read_bytes().replace(b'1.1',b'1.3')
             (d1/"quotes.jsonl").write_bytes(raw)
-            last,outage=historical_last_quote(root,"a"*64)
-            self.assertIsNone(last);self.assertTrue(outage)
+            with mock.patch("laya_cell.shadow_source.valid_quote",return_value=(Decimal("1.1"),Decimal("1.2"))):
+                last,outage=historical_last_quote(root,"a"*64)
+            self.assertEqual(last["observed_at_ms"],older);self.assertTrue(outage)
