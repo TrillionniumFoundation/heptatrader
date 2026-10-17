@@ -1959,7 +1959,7 @@ void TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently() {
     // Broker-global read-only candidate remains a RISK inventory even for
     // foreign API clients. Same permId but changed contract/OCA can never be
     // called the same protective candidate after an incremental callback.
-    for (int changedField=0; changedField<5; ++changedField) {
+    for (int changedField=0; changedField<8; ++changedField) {
         Fixture f;
         auto stop=f.Event(IBEventType::OpenOrder);
         stop.id=950;stop.brokerClientId=999;stop.brokerPermId=900950;
@@ -1978,6 +1978,8 @@ void TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently() {
         auto before=f.adapter.GetAuthoritativeCorrelationSnapshot();
         assert(before.complete);
         assert(before.visibleProtectiveCandidatesByPermId.count(900950)==1);
+        f.Push(stop);
+        assert(f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
         auto changed=stop;
         switch (changedField) {
         case 0:changed.contract.symbol="GBP";break;
@@ -1985,6 +1987,9 @@ void TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently() {
         case 2:changed.nativeOrder.ocaType=2;break;
         case 3:changed.nativeOrder.timeInForce="DAY";break;
         case 4:changed.nativeOrder.triggerMethod=1;break;
+        case 5:changed.order.lmtPrice=1.11815;break;
+        case 6:changed.order.orderRef="different-owner-orderref";break;
+        case 7:changed.nativeOrder.present=false;break;
         }
         f.Push(changed);
         const auto after=f.adapter.GetAuthoritativeCorrelationSnapshot();
