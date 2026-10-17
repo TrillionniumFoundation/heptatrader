@@ -489,6 +489,8 @@ long HeptaIBGatewayAdapter::GetLastValidOrderId() const {
 IBAuthoritativeRecoveryAuditSnapshot
 HeptaIBGatewayAdapter::BuildRecoveryAuditSnapshotLocked() const {
     IBAuthoritativeRecoveryAuditSnapshot snapshot;
+    snapshot.transportConnected = m_connected && m_api && m_api->IsConnected();
+    snapshot.eventStreamAuthoritative = m_eventStreamAuthoritative;
     snapshot.active = m_correlationSnapshot;
     snapshot.terminal = m_terminalCorrelationSnapshot;
     snapshot.risk = m_riskSnapshot;

@@ -1198,6 +1198,21 @@ void TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId() {
     assert(snapshot.terminalOrderIdsByCorrelation.count(currentCorrelation) == 0);
 }
 
+void TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit()
+{
+    Fixture f;
+    const auto ready = f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(ready.transportConnected);
+    assert(ready.eventStreamAuthoritative);
+    assert(ready.active.complete && ready.terminal.complete);
+    assert(ready.active.connectionEpoch == ready.terminal.connectionEpoch);
+    f.adapter.Disconnect();
+    const auto disconnected = f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(!disconnected.transportConnected);
+    assert(!disconnected.active.complete);
+    assert(!disconnected.terminal.complete);
+}
+
 void TestAdapterForwardsBoundedHandshakeBudget() {
     Broker* broker=new Broker();
     HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
@@ -1256,6 +1271,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
