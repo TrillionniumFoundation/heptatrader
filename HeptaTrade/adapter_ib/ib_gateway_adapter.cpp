@@ -251,6 +251,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_correlationSnapshot = IBAuthoritativeCorrelationSnapshot();
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
+    m_pendingActiveOrderClientIds.clear();
     m_postFillReconciliationOrderIds.clear();
     m_postFillExposureGenerationByOrderId.clear();
     m_observedEconomicFillQuantityByIdentity.clear();
@@ -897,12 +898,14 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_correlationRefreshConflict = false;
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
+    m_pendingActiveOrderClientIds.clear();
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
     m_correlationSnapshot.reasonCode = "IB_CORRELATION_REFRESH_PENDING";
     m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
     m_correlationSnapshot.activeOrderIds.clear();
+    m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
     const bool requested = accountWide ?
         m_api->ReqAllOpenOrders() : m_api->ReqOpenOrders();
     if (!requested) {

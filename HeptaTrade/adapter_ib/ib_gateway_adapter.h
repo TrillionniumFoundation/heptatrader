@@ -91,6 +91,10 @@ struct IBAuthoritativeCorrelationSnapshot {
     std::string reasonCode;
     std::map<std::string, long> activeOrderIdsByCorrelation;
     std::set<long> activeOrderIds;
+    // reqAllOpenOrders() includes other IB API clients. Numeric order IDs
+    // alone are client-scoped and cannot prove ownership or exact identity.
+    // Every active numeric ID in a complete snapshot has an exact client ID.
+    std::map<long, int> activeOrderClientIdsByOrderId;
 };
 
 struct IBAuthoritativeRiskSnapshot {
@@ -419,7 +423,8 @@ private:
     bool IsConsistentBoundLiveExecution(const IBEvent& event) const;
     void PublishPositionEvent(const IBEvent& event);
     bool MergeIncrementalActiveOrder(long orderId,
-                                     const std::string& correlationId);
+                                     const std::string& correlationId,
+                                     int brokerClientId);
     void InvalidateCorrelationSnapshot(const std::string& reason);
     void InvalidateTerminalCorrelationSnapshot(const std::string& reason);
     void FinalizeTerminalCorrelationSnapshot();
@@ -491,6 +496,7 @@ private:
     IBAuthoritativeCorrelationSnapshot m_correlationSnapshot;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
+    std::map<long, int> m_pendingActiveOrderClientIds;
     std::set<long> m_postFillReconciliationOrderIds;
     std::map<long, std::uint64_t> m_postFillExposureGenerationByOrderId;
     std::map<std::string, double> m_observedEconomicFillQuantityByIdentity;
