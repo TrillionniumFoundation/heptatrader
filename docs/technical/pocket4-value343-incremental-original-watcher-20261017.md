@@ -98,3 +98,73 @@ RESPONSE; independent original response receipt; real economic
 settlement with actual commissions; a forward MAE/Brier evidence
 against the already-frozen non-neural baselines. This cannot be closed
 by an already-seen historical or synthetic record.
+
+## Actual v4 Pocket4 installation and previous watcher retirement
+
+The exact research commit `e7cf79202a3ce22fd01b3369640954bca98ecd6d`
+was pushed to the dedicated stacked Draft PR #407. The program was
+staged read-only at
+`~/.local/share/heptatrader/value343-prospective/releases/value343-incremental-20261017-v4`.
+Physical installed SHA256 identities:
+
+- v4 observer source: `c22fa6a8ef0356e5c2557f3ae29ebacdfbae4bcec49fbe55a50485f55c15f442`;
+- v4 incremental source verifier: `cf64fb78b82f8038d005df2ff52bb926dcb7da5edef67259cdbac38e41862bf8`.
+
+An owner-private v4 only trial was create-once registered at
+`~/.local/state/heptatrader/operator-evidence/value343-predecision-incremental-20261017/freeze.json`;
+SHA256 `f1b2b0cc44b025e068e7d6b211e20f365581730ffaaddb9096ac1ed0a101c117`.
+The model baseline remains exactly the previous historically unqualified
+Value343 Huber fit, not a new trained model. The freeze verifies both
+source SHA256 values and original historical model identity.
+
+The real Pocket4 user unit
+`heptatrader-value343-predecision-incremental.service` has been
+started, accepted with physical Linux inotify FD open, stable PID,
+zero restarts, about 145MB peak memory and original entire source
+verification on startup. It is **enabled for restart and active**.
+Existing CPUQuota 40%, MemoryMax 512MiB, MemorySwapMax=0,
+original home/source read-only, no network and only the separate v4
+research evidence directory writable are retained. Owner `alex`
+user lingering was already enabled.
+
+The v3 research observer was disabled/stopped **AFTER** actual v4
+inotify, whole-source validation and stable process observation.
+The earlier v2 persistent watcher and v1 polling timer remain inactive.
+All older frozen receipts, code releases and private research evidence
+were retained unchanged, including original failed forensic tests.
+Original PAPER Execution, Gateway, EUR/USD/BTC Drivers, Laya Trainer,
+Evaluator and Feed were physically rechecked active without research
+component restarting their PIDs.
+
+The original source contains 4,432 REQUESTs before v4 activation;
+no old request was backfilled as a prospective forecast. After initial
+v4 cutover, forward predictions, missed/censored requests, qualified
+RESPONSE proofs, rejected receipts and future settled scores are all
+**zero**. This is valid for the weekend/closed source and is NOT
+qualification of the new Value model or a real live event latency.
+
+Create-only physical Pocket4 deployment qualification:
+`~/.local/state/heptatrader/operator-evidence/value343-incremental-v4-deployment-20261017/runtime-qualification-v1.json`.
+SHA256:
+`1aae04bbdc24c59f6f1c45c760e93ccea87c9d65d4c62b8c1d726f68b232e446`.
+This receipt binds source program/cache SHA, v4 freeze, systemd unit,
+real inotify FD, process restart count/memory peak, old research
+watcher inactivity, live original peer PIDs and zero prospective
+qualifications.
+
+Research-only rollback (without interrupting any broker services):
+stop+disable **only**
+`heptatrader-value343-predecision-incremental.service`; re-enable
+and start only the still-pinned
+`heptatrader-value343-predecision-hardened.service`.
+Never delete v4 partial/failed evidence or pretend a previous
+missing source event was genuinely sealed. The actual market-return
+trial remains OPEN until a NEW authentic original REQUEST is
+observed and sealed before RESPONSE, later scored against the
+original broker's full close plus actual USD commissions.
+
+The exact Pocket4 worktree passed 47 focused Value/incremental tests,
+116 Source tests, 705 Historical Training tests, documentation,
+whitespace and user service validation. Neither external hosted CI
+nor the full Core suite, live prospective alpha or policy improvement
+is claimed.
