@@ -1676,7 +1676,7 @@ public:
     void tickString(TickerId, TickType, const std::string&) override {}
     void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
     void orderStatus(OrderId oid, const std::string& status, Decimal filled,
-                     Decimal remaining, double avgFillPrice, int, int, double,
+                     Decimal remaining, double avgFillPrice, int permId, int, double,
                      int clientId, const std::string& whyHeld,
                      double mktCapPrice) override {
         const double filledQuantity = DecimalFunctions::decimalToDouble(filled);
@@ -1692,6 +1692,7 @@ public:
             remainingQuantity);
         event.whyHeld = whyHeld;
         event.brokerClientId = clientId;
+        event.brokerPermId = permId > 0 ? permId : 0;
         event.marketCapPrice = mktCapPrice;
         PushEvent(std::move(event));
     }
@@ -1706,6 +1707,8 @@ public:
         executionEvent.account = execution.acctNumber;
         executionEvent.requestId = requestId;
         executionEvent.brokerClientId = execution.clientId;
+        executionEvent.brokerPermId =
+            execution.permId > 0 ? execution.permId : 0;
         executionEvent.contract = BuildContractLite(contract);
         executionEvent.economics = CaptureIbExecutionEconomics(executionEvent.contract,
             contract.conId, execution.permId, DecimalFunctions::decimalToDouble(execution.shares),
@@ -1775,6 +1778,7 @@ public:
             0.0);
         event.account = order.account;
         event.brokerClientId = order.clientId;
+        event.brokerPermId = order.permId > 0 ? order.permId : 0;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;
@@ -1794,6 +1798,7 @@ public:
             0.0);
         event.account = order.account;
         event.brokerClientId = order.clientId;
+        event.brokerPermId = order.permId > 0 ? order.permId : 0;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;

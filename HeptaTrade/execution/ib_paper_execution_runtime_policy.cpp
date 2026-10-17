@@ -211,7 +211,7 @@ IbPaperExecutionRuntimeComposition::PolicyRiskSnapshot() const
         risk.accountComplete && risk.positionsComplete &&
         risk.fxCashComplete && correlations.complete &&
         !PostFillRiskRefreshPending();
-    result.activeOrderCount = correlations.activeOrderIds.size();
+    result.activeOrderCount = correlations.VisibleActiveOrderCount();
     result.grossAbsolutePosition = risk.grossAbsolutePosition;
     if (m_config.profile.UsesUserCrypto())
     {
@@ -385,6 +385,17 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"account_broker_foreign_active_order_count\":"
                    << (accountBroker.snapshotCoherent ?
                        std::to_string(accountBroker.foreignActiveOrders) : "null")
+                   << ",\"account_broker_visible_unbound_manual_orders\":"
+                   << (accountBroker.snapshotCoherent ?
+                       std::to_string(accountBroker.observedUnboundManualOrders) : "null")
+                   << ",\"account_broker_visible_permanent_order_ids\":"
+                   << (accountBroker.snapshotCoherent ?
+                       std::to_string(accountBroker.observedBrokerPermanentIds) : "null")
+                   << ",\"account_broker_visible_permid_coverage_complete\":"
+                   << (accountBroker.snapshotCoherent &&
+                       accountBroker.observedPermanentIdentityComplete ?
+                       "true" : "false")
+                   << ",\"account_broker_external_manual_universe_complete\":false"
                    << ",\"account_broker_reason\":\""
                    << accountBroker.reasonCode << "\""
                    << ",\"account_broker_post_fence_refresh_proven\":false"
@@ -422,6 +433,16 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"account_post_fence_global_active_count\":"
                    << (postFence.activeThenRiskObserved ?
                        std::to_string(postFence.globalActiveOrders) : "null")
+                   << ",\"account_post_fence_unbound_manual_order_count\":"
+                   << (postFence.activeThenRiskObserved ?
+                       std::to_string(postFence.observedUnboundManualOrders) : "null")
+                   << ",\"account_post_fence_visible_permid_count\":"
+                   << (postFence.activeThenRiskObserved ?
+                       std::to_string(postFence.observedBrokerPermanentIds) : "null")
+                   << ",\"account_post_fence_visible_permid_coverage_complete\":"
+                   << (postFence.activeThenRiskObserved &&
+                       postFence.observedPermanentIdentityComplete ? "true" : "false")
+                   << ",\"account_post_fence_external_manual_universe_complete\":false"
                    << ",\"account_post_fence_reason\":\""
                    << EscapeJson(postFence.reasonCode) << "\""
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")

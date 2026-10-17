@@ -101,6 +101,10 @@ struct IBEvent {
     // Broker-supplied API client identity. Unknown must never authorize
     // incremental terminal evidence for an order submitted by this client.
     int brokerClientId = -1;
+    // Original TWS host-unique permanent order ID. Critical for manual
+    // unbound orders whose API-scoped orderId can be 0 for EVERY order.
+    // Zero means no authoritative permanent ID was observed.
+    std::int64_t brokerPermId = 0;
     std::string account;
     std::string key;
     std::string value;

@@ -341,7 +341,7 @@ bool IbPaperExecutionRuntimeComposition::AllowsRiskIncrease(
             correlations.reasonCode;
         return false;
     }
-    if (correlations.activeOrderIds.size() >=
+    if (correlations.VisibleActiveOrderCount() >=
             m_config.profile.maxActiveOrders)
     {
         reason = "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";

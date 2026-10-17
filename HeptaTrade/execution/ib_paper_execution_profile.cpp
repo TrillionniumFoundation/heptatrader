@@ -1595,7 +1595,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
         recovery.terminalExposureGeneration;
     result.brokerRiskAbsorbedExposureGeneration =
         recovery.riskAbsorbedExposureGeneration;
-    result.brokerGlobalActiveOrderCount = active.activeOrderIds.size();
+    result.brokerGlobalActiveOrderCount = active.VisibleActiveOrderCount();
     result.brokerPostFillRiskReconciliationPending =
         recovery.postFillRiskReconciliationPending;
     result.brokerRecoveryAuditBarrierComplete = recovery.barrierComplete;
