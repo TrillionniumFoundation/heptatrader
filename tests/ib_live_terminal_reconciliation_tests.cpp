@@ -1969,7 +1969,7 @@ void TestH1ParentTerminalNeedsExactEconomicFilledQuantity() {
     // Only original Broker completedOrder(Filled) + an exact, account/client-
     // bound execDetails.cumQty can qualify the advisory parent fill.
     // A child STOP, physical FX cash and the original H1 alone cannot.
-    for (int mode=0;mode<6;++mode) {
+    for (int mode=0;mode<7;++mode) {
         Fixture f(false,false,true); // one terminal download is still pending
         hepta_bracket_h1::FrozenBracket original;
         original.originalCommandKey="native-h1-parent-qty-research";
@@ -2016,11 +2016,11 @@ void TestH1ParentTerminalNeedsExactEconomicFilledQuantity() {
         assert(terminal.complete);
         const auto cumulative=
             terminal.executionCumulativeQtyByCorrelation.find(refs.parentCorrelation);
-        if(mode==0||mode==4)assert(cumulative==terminal.executionCumulativeQtyByCorrelation.end());
+        if(mode==1||mode==4)assert(cumulative==terminal.executionCumulativeQtyByCorrelation.end());
         else if(mode==2||mode==5) {
             assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
             assert(cumulative->second==original.quantity/2);
-        } else if(mode!=1) {
+        } else {
             assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
             assert(cumulative->second==original.quantity);
         }
@@ -2056,7 +2056,7 @@ void TestH1ParentTerminalNeedsExactEconomicFilledQuantity() {
         assert(f.adapter.InspectResearchH1OcaAccountScope(
             original,refs,observed,reason));
         assert(observed.originalAccountAndOrderSetConsistent);
-        const bool exact=(mode==1); // filled terminal + full execDetails
+        const bool exact=(mode==6); // Filled terminal and exact full cumQty
         assert(observed.originalParentFilledTerminalAndQtyCorrelated==exact);
         assert(!observed.nativeStopBrokerWorkingProven &&
                !observed.maySendOrdinaryExit && !observed.mayStopDriver);
