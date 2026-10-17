@@ -56,3 +56,5 @@ Original-source Tiny MLP Shadow90 two-gap source study: [Pocket4 original gap au
 Pocket4 USD100k original decision-attribution net-Value research: [343-reward chronological holdout](../technical/pocket4-value343-chronological-20261016.md). No policy or trading authority.
 
 Original USD100k Value343 two-sided predecision Pocket4 observer: [prospective research shadow](../technical/pocket4-value343-predecision-shadow-20261017.md). No trading permission.
+
+Pocket4 Value343 v2 original-response-gated inotify shadow (research only): [observed latency, strict response proofs and event-driven watcher](../technical/pocket4-value343-pre-response-inotify-20261017.md).

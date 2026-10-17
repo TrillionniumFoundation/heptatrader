@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+import ctypes
+import errno
+import select
+import struct
+import uuid
 import argparse
 import hashlib
 import json
@@ -22,14 +27,14 @@ import numpy as np
 from hepta_decision_attribution import digest,read_private,strict
 from . import value343_oos as prior
 
-SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v1"
-SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v1"
+SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v2"
+SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v2"
 STUDY=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-chronological-oos-20261016/study-v4.json")
 STUDY_SHA="dc0e463e6acc2a11a095afcc7623498959327f00d2835b9b2a0bdc8cf659f060"
 SOURCE_CODE_SHA="73354f5d1fdaa0ace5c60211597c9c2d4d2f5f74ecb2f5e9ecef63cb206f246c"
 REGISTRATION=prior.CONFIG
 COHORT=prior.BEHAVIOR
-OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-shadow-20261017")
+OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-fast-20261017")
 MAX_SOURCE_FILES=128
 MAX_SOURCE_TOTAL=256*1024*1024
 MAX_SOURCE_FILE=16*1024*1024
@@ -177,12 +182,23 @@ def predict_two_sides(request,model):
 
 
 def write_once(path,obj):
+    """Create-only complete receipt; SIGTERM must not leave a partial .json."""
+    path=Path(path)
     if path.exists() or path.is_symlink():
         raise FileExistsError(str(path))
     data=(json.dumps(obj,sort_keys=True,separators=(",",":"),allow_nan=False)+"\n").encode()
-    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
-    with os.fdopen(fd,"wb") as f:
-        f.write(data);f.flush();os.fsync(f.fileno())
+    temp=path.parent/(".receipt-"+uuid.uuid4().hex+".tmp")
+    fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    try:
+        with os.fdopen(fd,"wb") as f:
+            f.write(data);f.flush();os.fsync(f.fileno())
+        # link is atomic and fails if a previous complete result exists.
+        os.link(temp,path,follow_symlinks=False)
+        fd_dir=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd_dir)
+        finally:os.close(fd_dir)
+    finally:
+        if temp.exists():temp.unlink()
     return hashlib.sha256(data).hexdigest()
 
 
@@ -205,7 +221,7 @@ def initialize():
     model=read_model()
     manifest=registration()
     OUT.mkdir(mode=0o700,parents=True)
-    for name in ("predictions","misses","scores","rejects"):
+    for name in ("predictions","misses","response_proofs","scores","rejects"):
         (OUT/name).mkdir(mode=0o700)
     freeze={"schema":SCHEMA,"activated_at_ms":int(time.time()*1000),
             "model_sha256":STUDY_SHA,"model_report_id":model[0]["report_id"],
@@ -259,7 +275,7 @@ def capture(events,requests,freeze,model):
             continue
         forecasts,median=predict_two_sides(request,model)
         sealed_at=int(time.time()*1000)
-        if sealed_at-start>MAX_REQUEST_AGE_MS:
+        if sealed_at-start>MAX_REQUEST_AGE_MS or sealed_at<ev.get("written_at_ms",0):
             write_once(miss,{"schema":SCHEMA,"request_id":rid,
                 "status":"MISSED_RESEARCH_LATENCY","observed_at_ms":sealed_at,
                 "original_event_sha256":ev["sha256"],**NO_AUTHORITY})
@@ -280,11 +296,80 @@ def capture(events,requests,freeze,model):
             "train_only_median_baseline_usd":median,
             "selected_side_unknown_before_response":True,
             "predecision_at_capture":True,
+            "original_response_time_witness_required":True,
+            "response_timing_qualified":False,
             "prospective_holdout_efficacy_unproven":True,
             **NO_AUTHORITY}
         write_once(out,receipt)
         summary["new_valid_predictions"]+=1
     return summary
+
+
+def attest_responses(events,requests,freeze):
+    """Later prove each original sealed quote PREDATED RESPONSE availability.
+
+    Source polling alone does not prove this: the model may have responded
+    in the gap between the watcher snapshot and O_EXCL prediction commit.
+    A prediction is only PROVISIONAL until this future original proof.
+    """
+    response_by_request=defaultdict(list)
+    for event in events:
+        if event["kind"]=="RESPONSE":
+            response_by_request[event["data"].get("request_id")].append(event)
+    totals={"verified_new":0,"censored_new":0,"still_no_response":0,
+            "already_attested":0}
+    for path in sorted((OUT/"predictions").glob("*.json")):
+        p=strict(read_private(path,limit=16384))
+        rid=p["request_id"]
+        proof=OUT/"response_proofs"/(rid+".json")
+        bad=OUT/"rejects"/(rid+".json")
+        if proof.exists() or bad.exists():
+            totals["already_attested"]+=1;continue
+        original=requests.get(rid)
+        if original is None:
+            raise ValueError("FUTURE_PREDECISION_ORIGINAL_REQUEST_LOST")
+        orig_request=original["data"]
+        if (p["source_event_sha256"]!=original["sha256"] or
+                p["input_request_sha256"]!=digest(orig_request) or
+                p["source_prefix"]["sha256"]!=original["_witness"]["sha256"] or
+                p["sealed_at_ms"]<original["written_at_ms"]):
+            raise ValueError("PREDECISION_SOURCE_PROVENANCE_CHANGED")
+        responses=response_by_request.get(rid,[])
+        if len(responses)>1:
+            raise ValueError("DUPLICATE_ORIGINAL_MODEL_RESPONSE")
+        if not responses:
+            totals["still_no_response"]+=1;continue
+        r=responses[0]
+        at=r["data"].get("available_at_ms")
+        actual_response=(type(at) is int and
+                         r["data"].get("request_sha256")==digest(orig_request) and
+                         type(r.get("captured_at_ms")) is int and
+                         type(r.get("written_at_ms")) is int and
+                         orig_request["started_at_ms"]<=at<=r["captured_at_ms"]<=r["written_at_ms"])
+        if (not actual_response or
+                not p["sealed_at_ms"]<at or
+                not p["sealed_at_ms"]<r["captured_at_ms"]):
+            write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
+                "status":"CENSORED_SEAL_NOT_PROVEN_BEFORE_ORIGINAL_RESPONSE",
+                "score_valid":False,
+                "sealed_at_ms":p["sealed_at_ms"],
+                "original_response_available_at_ms":at,
+                "original_response_receipt_sha256":r["sha256"],
+                **NO_AUTHORITY})
+            totals["censored_new"]+=1;continue
+        write_once(proof,{"schema":SCHEMA,"request_id":rid,
+            "status":"VERIFIED_PRE_ORIGINAL_RESPONSE",
+            "sealed_at_ms":p["sealed_at_ms"],
+            "original_response_available_at_ms":at,
+            "original_response_captured_at_ms":r["captured_at_ms"],
+            "original_response_receipt_sha256":r["sha256"],
+            "original_request_sha256":digest(orig_request),
+            "original_prediction_sha256":hashlib.sha256(
+                read_private(path,limit=16384)).hexdigest(),
+            "not_economic_success":True,
+            **NO_AUTHORITY})
+        totals["verified_new"]+=1
+    return totals
 
 
 def score(events,requests,freeze):
@@ -298,29 +383,37 @@ def score(events,requests,freeze):
     for r in rewards.get("rewards",[]):
         if r.get("input_attribution",{}).get("producer_manifest_sha256")==COHORT:
             reward_by_input[r.get("input_id")].append(r)
-    bindings=defaultdict(list);decisions=defaultdict(list)
+    bindings=defaultdict(list);decisions=defaultdict(list);responses=defaultdict(list)
     for event in events:
         d=event.get("data",{})
         if event["kind"]=="COMMAND_BINDING":
             bindings[d.get("request_id")].append(d)
         elif event["kind"]=="DECISION":
             decisions[d.get("request_id")].append(d)
+        elif event["kind"]=="RESPONSE":
+            responses[d.get("request_id")].append(event)
     matched=[]
     for path in paths:
         p=strict(read_private(path,limit=16384))
         rid=p["request_id"]
+        if (OUT/"rejects"/(rid+".json")).exists():continue
+        proofpath=OUT/"response_proofs"/(rid+".json")
+        if not proofpath.exists():continue  # provisional is not an admissible score
+        proof=strict(read_private(proofpath,limit=16384))
         rlist=reward_by_input.get(p["input_request_sha256"],[])
-        if rlist:matched.append((p,rlist,bindings.get(rid,[]),decisions.get(rid,[])))
+        if rlist:
+            matched.append((p,rlist,bindings.get(rid,[]),
+                            decisions.get(rid,[]),responses.get(rid,[]),proof))
     if not matched:
         return {"pending":len(paths),"new_scores":0,"new_rejected":0}
     distinct={}
-    for p,rlist,bs,ds in matched:
-        if len(rlist)!=1 or len(bs)!=1 or len(ds)!=1:
+    for p,rlist,bs,ds,rs,proof in matched:
+        if len(rlist)!=1 or len(bs)!=1 or len(ds)!=1 or len(rs)!=1:
             raise ValueError("FORWARD_FUTURE_ORIGINAL_BINDING_AMBIGUOUS")
         distinct[rlist[0]["reward_id"]]=rlist[0]
     events_by_id,_=prior.original_oms_events(list(distinct.values()))
     changed=0;reject=0
-    for p,rewards_list,bindings_list,decisions_list in matched:
+    for p,rewards_list,bindings_list,decisions_list,response_list,proof in matched:
         rid=p["request_id"]
         good=OUT/"scores"/(rid+".json")
         bad=OUT/"rejects"/(rid+".json")
@@ -331,6 +424,15 @@ def score(events,requests,freeze):
         reward=rewards_list[0]
         binding=bindings_list[0]
         decision=decisions_list[0]
+        response=response_list[0]
+        if (proof.get("status")!="VERIFIED_PRE_ORIGINAL_RESPONSE" or
+                proof.get("original_request_sha256")!=digest(request) or
+                proof.get("original_response_receipt_sha256")!=response["sha256"] or
+                proof.get("original_prediction_sha256")!=hashlib.sha256(
+                    read_private(OUT/"predictions"/(rid+".json"),limit=16384)).hexdigest() or
+                type(response["data"].get("available_at_ms")) is not int or
+                not p["sealed_at_ms"]<response["data"]["available_at_ms"]):
+            raise ValueError("ORIGINAL_RESPONSE_ATTESTATION_CHANGED")
         if (binding.get("request_id")!=rid
                 or binding.get("request_sha256")!=digest(request)
                 or reward["input_id"]!=digest(request)
@@ -340,11 +442,12 @@ def score(events,requests,freeze):
         # original decision and later outcome first-available time.
         decision_time=decision["available_at_ms"]
         known_at=prior.settled_time(reward,events_by_id,request,binding)
-        if (p["sealed_at_ms"]>=decision_time
+        if (p["sealed_at_ms"]>=response["data"]["available_at_ms"]
+                or p["sealed_at_ms"]>=decision_time
                 or p["sealed_at_ms"]>=binding["command"]["created_at_ms"]
                 or p["sealed_at_ms"]>=known_at):
             write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
-                "status":"CENSORED_SEAL_NOT_BEFORE_ORIGINAL_DECISION_OR_LABEL",
+                "status":"CENSORED_SEAL_NOT_BEFORE_RESPONSE_DECISION_OR_LABEL",
                 "decision_at_ms":decision_time,"label_known_at_ms":known_at,
                 "score_valid":False,**NO_AUTHORITY})
             reject+=1;continue
@@ -362,6 +465,9 @@ def score(events,requests,freeze):
             "frozen_model_sha256":STUDY_SHA,
             "original_side":side,
             "prediction_sealed_at_ms":p["sealed_at_ms"],
+            "original_response_available_at_ms":response["data"]["available_at_ms"],
+            "response_proof_sha256":hashlib.sha256(read_private(
+                 OUT/"response_proofs"/(rid+".json"),limit=16384)).hexdigest(),
             "decision_first_available_ms":decision_time,
             "original_execution_and_fees_known_at_ms":known_at,
             "actual_net_after_reported_fees_usd":net,
@@ -385,25 +491,118 @@ def run_once():
         raise ValueError("SOURCE_PERIOD_ROTATED_USE_NEW_FROZEN_STUDY")
     events,requests=original_events(manifest)
     a=capture(events,requests,freeze,model)
+    response_status=attest_responses(events,requests,freeze)
     b=score(events,requests,freeze)
     counts={name:len(list((OUT/name).glob("*.json")))
-            for name in ("predictions","misses","scores","rejects")}
+            for name in ("predictions","misses","response_proofs","scores","rejects")}
     print(json.dumps({"schema":SCHEMA,"checked_at_ms":int(time.time()*1000),
-        "counts":counts,"capture":a,"score":b,
+        "counts":counts,"capture":a,"response_attestation":response_status,"score":b,
         "broker_orders_sent":0,"policy_change":False},sort_keys=True))
     return 0
 
 
+# Linux inotify directory events; journal writers keep *.jsonl FDs open,
+# so CLOSE_WRITE-only watchers would miss the REQUEST. Skip their frequent
+# unrelated *.health.json rewrites to avoid burning CPU while idle.
+IN_MODIFY=0x00000002
+IN_CLOSE_WRITE=0x00000008
+IN_MOVED_TO=0x00000080
+IN_CREATE=0x00000100
+IN_Q_OVERFLOW=0x00004000
+IN_IGNORED=0x00008000
+WATCH_MASK=IN_MODIFY|IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE
+INOTIFY_HEADER=struct.Struct("iIII")
+
+
+def original_journal_events(fd):
+    """Read all available inotify records; journal-data append only.
+
+    A kernel queue overflow forces full rescan and warning. No dropped
+    event is treated as a successfully pre-response-sealed forecast.
+    """
+    need_scan=False;overflows=0
+    while True:
+        try:data=os.read(fd,262144)
+        except BlockingIOError:break
+        if not data:raise OSError("INOTIFY_STREAM_ENDED")
+        position=0
+        while position<len(data):
+            if position+INOTIFY_HEADER.size>len(data):
+                raise ValueError("INOTIFY_TRUNCATED_HEADER")
+            _,mask,_,n=INOTIFY_HEADER.unpack_from(data,position)
+            position+=INOTIFY_HEADER.size
+            if position+n>len(data):raise ValueError("INOTIFY_TRUNCATED_NAME")
+            name=data[position:position+n].rstrip(b"\x00")
+            position+=n
+            if mask&IN_IGNORED:raise OSError("INOTIFY_WATCH_LOST")
+            if mask&IN_Q_OVERFLOW:
+                overflows+=1;need_scan=True
+            elif (mask&WATCH_MASK) and name.endswith(b".jsonl"):
+                need_scan=True
+    return need_scan,overflows
+
+
+def watch_handle(directory):
+    """Watch original private journal APPEND, with no driver modification."""
+    p=Path(directory);st=p.lstat()
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid()
+            or st.st_mode&0o077):
+        raise ValueError("WATCH_ORIGINAL_PRIVATE_DIRECTORY_CHANGED")
+    libc=ctypes.CDLL(None,use_errno=True)
+    openfd=libc.inotify_init1
+    openfd.argtypes=[ctypes.c_int];openfd.restype=ctypes.c_int
+    add=libc.inotify_add_watch
+    add.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_uint32]
+    add.restype=ctypes.c_int
+    fd=openfd(os.O_CLOEXEC|os.O_NONBLOCK)
+    if fd<0:raise OSError(ctypes.get_errno(),"inotify_init1")
+    try:
+        if add(fd,os.fsencode(p),WATCH_MASK)<0:
+            raise OSError(ctypes.get_errno(),"inotify_add_watch")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def watch_loop():
+    """Prompt original REQUEST wakeups plus 20-second score catchup."""
+    freeze=frozen()
+    manifest=registration()
+    if manifest["period_sha256"]!=freeze["source_period_sha256"]:
+        raise ValueError("WATCH_ORIGINAL_PERIOD_CHANGED")
+    fd=watch_handle(manifest["journal_directory"])
+    poller=select.poll();poller.register(fd,select.POLLIN)
+    try:
+        run_once()  # initial registered snapshot prevents activation gap
+        last=time.monotonic()
+        while True:
+            events=poller.poll(20000)
+            if any(mask&(select.POLLERR|select.POLLHUP|select.POLLNVAL)
+                   for _,mask in events):
+                raise OSError("INOTIFY_POLL_ERROR")
+            trigger=overflow=0
+            if events:trigger,overflow=original_journal_events(fd)
+            if overflow:print(json.dumps({"inotify_queued_events_lost":overflow,
+                        "must_rescan_original_ledger":True}),flush=True)
+            if trigger or time.monotonic()-last>=20:
+                run_once()
+                last=time.monotonic()
+    finally:
+        os.close(fd)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode",choices=("init","once","status"),required=True)
+    p.add_argument("--mode",choices=("init","once","status","watch"),required=True)
     a=p.parse_args()
     if a.mode=="init":return initialize()
     if a.mode=="once":return run_once()
+    if a.mode=="watch":return watch_loop()
     freeze=frozen()
     print(json.dumps({"schema":SCHEMA,"activated_at_ms":freeze["activated_at_ms"],
         "receipt_counts":{n:len(list((OUT/n).glob("*.json")))
-                 for n in ("predictions","misses","scores","rejects")},
+                 for n in ("predictions","misses","response_proofs","scores","rejects")},
         **NO_AUTHORITY},sort_keys=True))
     return 0
 
