@@ -44,12 +44,21 @@ def parse_full_psi(text):
     return out
 
 
-def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
+def assess_resources(memory,pressure,now_ms,manual_hold):
     reasons=[]
     if type(manual_hold) is not bool or manual_hold:reasons.append('OPERATOR_RESOURCE_HOLD')
     if memory['MemAvailable']<RESOURCE_RULE['min_available_bytes']:reasons.append('HOST_AVAILABLE_MEMORY_BELOW_8GIB')
     if memory['SwapFree']<RESOURCE_RULE['min_swap_free_bytes']:reasons.append('HOST_SWAP_RESERVE_BELOW_1GIB')
     if pressure['avg10']>1 or pressure['avg60']>.1:reasons.append('HOST_FULL_MEMORY_PSI_PRESSURE')
+    return {'schema':'heptatrader.resident-resource-admission.v1','at_ms':now_ms,'admit_new_worker':not reasons,
+        'reasons':list(dict.fromkeys(reasons)),'memory_bytes':memory,'full_memory_psi':pressure,
+        'max_new_heavy_workers_across_roles':1,'existing_workers_interrupted':False,
+        'automatic_trading':False,'statistical_rule_changed':False}
+
+
+def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
+    report=assess_resources(memory,pressure,now_ms,manual_hold)
+    reasons=report['reasons']
     try:
         fields=('at_ms','latest_source_quote_ms','usable','unusable')
         if any(type(source[k]) is not int for k in fields):raise ValueError('typed source')
@@ -62,10 +71,9 @@ def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
             or source['usable']+source['unusable']!=24 or source.get('state')!='READY_FOR_REVIEW_NOT_AUTHORIZATION'):
             reasons.append('SOURCE_CONTINUITY_NOT_READY')
     except (KeyError,TypeError,ValueError):reasons.append('SOURCE_READINESS_INVALID')
-    return {'schema':'heptatrader.resident-resource-admission.v1','at_ms':now_ms,'admit_new_worker':not reasons,
-        'reasons':list(dict.fromkeys(reasons)),'memory_bytes':memory,'full_memory_psi':pressure,
-        'max_new_heavy_workers_across_roles':1,'existing_workers_interrupted':False,
-        'automatic_trading':False,'statistical_rule_changed':False}
+    report['reasons']=list(dict.fromkeys(reasons))
+    report['admit_new_worker']=not report['reasons']
+    return report
 
 
 
@@ -178,40 +186,55 @@ class Gate:
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
             if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
-            from .resident_live_source import refresh
             original=read(self.c['original_config'])
-            source=read(self.c['source_health_path'],2*1024*1024)
-            if type(source) is not dict:
-                raise EvidenceError('CONTINUITY_SOURCE_STATUS_NOT_OBJECT')
-            prefixes=source.get('source_prefixes')
-            if type(prefixes) is not list or not prefixes:
-                raise EvidenceError('CONTINUITY_SOURCE_PREFIXES_MISSING')
-            if source.get('source_prefix_digest')!=digest(prefixes):
-                raise EvidenceError('CONTINUITY_PREFIX_DIGEST_CHANGED')
             current=int(time.time()*1000)
             memory=parse_meminfo(Path('/proc/meminfo').read_text())
             pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
-            held=preflight_source_health_hold(source)
-            if held is not None:
-                # New real quotes cannot retroactively repair already-rejected
-                # mature quality probes. Do not confuse an unavailable live
-                # extension during a closed market with a corrupted archive.
-                report=assess(memory,pressure,source,current,
-                    self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
-                report['admit_new_worker']=False
-                report['reasons']=list(dict.fromkeys(
-                    report['reasons']+['SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY']))
-                report['cached_probe_diagnostic']=held
+            if self.role=='trainer':
+                # The resident still validates immutable sources, causal mature
+                # labels and unused rows before training. Current live readiness
+                # is a requirement for prospective evaluation, not that dataset.
+                report=assess_resources(memory,pressure,current,
+                    os.path.lexists(self.c['manual_hold_path']))
+                report['admission_scope']='HISTORICAL_TRAINING_RESOURCES_ONLY'
+                report['historical_dataset_validation']='PENDING_IN_RESIDENT_STEP'
                 report['original_live_source_evidence']={
-                    'status':'NOT_COLLECTED_WHILE_SOURCE_PROBES_HELD',
+                    'status':'NOT_REQUESTED_FOR_HISTORICAL_TRAINING',
                     'source_ttl_ms':5000,
                     'fresh_original_live_source_proven':False,
                     'broker_queries_sent':0}
             else:
-                source,proof=refresh(original,source,current)
-                report=assess(memory,pressure,source,int(time.time()*1000),
-                    self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
-                report['original_live_source_evidence']=proof
+                from .resident_live_source import refresh
+                source=read(self.c['source_health_path'],2*1024*1024)
+                if type(source) is not dict:
+                    raise EvidenceError('CONTINUITY_SOURCE_STATUS_NOT_OBJECT')
+                prefixes=source.get('source_prefixes')
+                if type(prefixes) is not list or not prefixes:
+                    raise EvidenceError('CONTINUITY_SOURCE_PREFIXES_MISSING')
+                if source.get('source_prefix_digest')!=digest(prefixes):
+                    raise EvidenceError('CONTINUITY_PREFIX_DIGEST_CHANGED')
+                current=int(time.time()*1000)
+                held=preflight_source_health_hold(source)
+                if held is not None:
+                    # New real quotes cannot retroactively repair already-rejected
+                    # mature quality probes. Do not confuse a closed market with
+                    # a corrupted historical archive.
+                    report=assess(memory,pressure,source,current,
+                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                    report['admit_new_worker']=False
+                    report['reasons']=list(dict.fromkeys(
+                        report['reasons']+['SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY']))
+                    report['cached_probe_diagnostic']=held
+                    report['original_live_source_evidence']={
+                        'status':'NOT_COLLECTED_WHILE_SOURCE_PROBES_HELD',
+                        'source_ttl_ms':5000,
+                        'fresh_original_live_source_proven':False,
+                        'broker_queries_sent':0}
+                else:
+                    source,proof=refresh(original,source,current)
+                    report=assess(memory,pressure,source,int(time.time()*1000),
+                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                    report['original_live_source_evidence']=proof
         except (OSError,ValueError,TypeError,KeyError) as exc:
             report={'schema':'heptatrader.resident-resource-admission.v1','at_ms':int(time.time()*1000),
                 'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}

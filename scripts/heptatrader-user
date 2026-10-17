@@ -33,7 +33,7 @@ case "${1:-status}" in
       systemctl --user is-active --quiet heptatrader-paper-driver.service heptatrader-crypto-driver.service
     fi
     helper="$(dirname "$(readlink -f "$0")")/hepta_maintenance_latch.py"
-    exec /usr/bin/python3 -B "$helper" "$1"
+    exec /usr/bin/python3 -B "$helper" "$@"
     ;;
   logs)
     exec journalctl --user -u heptatrader-execution.service -u heptatrader-gateway.service -n 60 --no-pager ;;
