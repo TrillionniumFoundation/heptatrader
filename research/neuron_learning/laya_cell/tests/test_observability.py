@@ -115,16 +115,35 @@ class AsyncSchedulingTests(unittest.TestCase):
   with patch('laya_cell.resident_evaluate.time.time',return_value=T/1000),patch('laya_cell.resident_evaluate.read_quotes',return_value=([],[])) as rd,patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
    first=engine.step();second=engine.step()
   self.assertEqual(first['active_prediction_workers'],1);self.assertEqual(second['active_prediction_workers'],1)
-  self.assertEqual(rd.call_count,2);proc.wait.assert_not_called()
+  rd.assert_not_called();proc.wait.assert_not_called()
+  self.assertFalse(first['source_scan_performed']);self.assertFalse(second['source_scan_performed'])
+  self.assertEqual(list(path.parent.glob('outcome-*.json')),[])
  def test_outcome_refresh_does_not_use_snapshot_from_before_worker(self):
   from laya_cell.integrity import canonical
   engine,plan,path,proc=self.setup_case(T)
   _,pred,qs=EndpointTests().fixture();pred['plan_id']=plan['plan_id']
   (path.parent/'prediction-000.json').write_bytes(canonical(pred))
-  with patch('laya_cell.resident_evaluate.time.time',return_value=(T+320000)/1000),patch('laya_cell.resident_evaluate.read_quotes',side_effect=[(qs[:10],[]),(qs,[])]) as rd,patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
-   engine.step()
+  with patch('laya_cell.resident_evaluate.time.time',return_value=(T+250000)/1000) as clock,patch('laya_cell.resident_evaluate.read_quotes',return_value=(qs,[])) as rd,patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
+   first=engine.step()
+   rd.assert_not_called();self.assertFalse(first['source_scan_performed'])
+   self.assertFalse((path.parent/'outcome-000.json').exists())
+   # The step starts mature, then evidence loading happens at a later time.
+   # Preserve the fresh causal as-of check as well as cross-step laziness.
+   clock.return_value=(T+310000)/1000
+   from laya_cell.resident_evaluate import read_json as actual_read_json
+   def advance_after_prediction(file):
+    value=actual_read_json(file)
+    if Path(file)==path.parent/'prediction-000.json':
+     clock.return_value=(T+320000)/1000
+    return value
+   with patch('laya_cell.resident_evaluate.read_json',side_effect=advance_after_prediction):
+    second=engine.step()
   result=json.loads((path.parent/'outcome-000.json').read_bytes())
-  self.assertEqual(result['status'],'OBSERVED');self.assertEqual(rd.call_count,2)
+  self.assertEqual(result['status'],'OBSERVED')
+  self.assertEqual(result['slot'],0);self.assertEqual(result['plan_id'],plan['plan_id'])
+  self.assertEqual(len(list(path.parent.glob('outcome-*.json'))),1)
+  rd.assert_called_once_with(engine.c,T+320000)
+  self.assertTrue(second['source_scan_performed']);proc.wait.assert_not_called()
  def test_failed_worker_retains_reason_and_phase(self):
   engine,plan,path,proc=self.setup_case(T+60000)
   with patch('laya_cell.resident_evaluate.time.time',return_value=T/1000),patch('laya_cell.resident_evaluate.read_quotes',return_value=([],[])),patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
