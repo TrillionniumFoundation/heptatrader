@@ -514,6 +514,8 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
         return {"status": "KNOWN" if known else "UNKNOWN", "reason": None if known else reason,
                 "evidence_path": str(path) if path is not None else None}
     result["evidence_status"] = {
+        "account_observation": status(result["observation_complete"],
+            "NO_COMPLETED_RECONCILED_ACCOUNT_OBSERVATION", root / "arithmetic-latest.json"),
         "current_nav": status(result["nav_complete"], "NO_FRESH_SOURCE_VERIFIED_ACCOUNT_NAV", root / "nav.json"),
         "opening_nav_at_reset": status(False,
             "BROKER_OPENING_VALUATION_BASIS_UNATTESTED", root / "return-inputs.json"),
@@ -540,6 +542,8 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
     report["account"] = result
     report["account_nav"] = result["nav"]
     report["account_complete"] = result["complete"]
+    report["account_observed_nav"] = result["observed_nav"]
+    report["account_observation_complete"] = result["observation_complete"]
     report["account_nav_reason"] = None if result["nav_complete"] else ";".join(result["reason_codes"])
     report["all_in_account_net_pnl"] = result["all_in_account_net_pnl"]
     return report
@@ -548,12 +552,15 @@ def attach_account(report: dict, period_path: Path, state_root: Path, config: Pa
 def render_account(account: dict) -> str:
     def money(value): return "UNKNOWN" if value is None else f"{number(value):+.2f}"
     lines = ["ACCOUNT | USD | " + str(account.get("period_id")),
-             "Strict Broker NAV=" + money(account.get("nav")),
-             "Arithmetic-only observation (NOT strict NAV)=" + money(account.get("arithmetic_nav")),
+             "Account NAV observation=" + money(account.get("observed_nav")) +
+             "; complete=" + str(account.get("observation_complete", False)),
+             "  Observed at ms=" + str(account.get("observation_observed_at_ms")) +
+             "; source=" + ("completed Broker account download" if account.get("observation_complete") else "UNKNOWN"),
              "  Cash=" + money(account.get("cash")) + "; marked assets=" + money(account.get("marked_assets")) +
              "; accrued interest=" + money(account.get("accrued_interest")) + "; dividend accruals=" + money(account.get("dividend_accruals")),
              "Funding-adjusted account return=" + money(account.get("broker_reported_account_net_pnl")) +
              "; including documented outside-NAV liabilities=" + money(account.get("all_in_account_net_pnl"))]
+    lines.append("Broker NAV with an attested valuation basis=" + money(account.get("nav")))
     future = account.get("future_exit_costs") or {}
     lines.append("ESTIMATE ONLY: future exit commissions=" + money(future.get("estimated_future_exit_commissions")))
     for scenario in future.get("scenarios", []):
@@ -607,7 +614,7 @@ def main(argv=None) -> int:
     modes.add_argument("--init-from-reset", type=Path)
     modes.add_argument("--import-flex", type=Path)
     parser.add_argument("--statement-timezone")
-    parser.add_argument("--account", action="store_true", help="show complete account scope, not strategy total")
+    parser.add_argument("--account", action="store_true", help="show account observations and separately qualified returns")
     parser.add_argument("--broker-client-id", type=int)
     parser.add_argument("--period", type=Path, default=home / ".config/heptatrader/pnl-period.json")
     parser.add_argument("--state-root", type=Path, default=home / ".local/state/heptatrader")
@@ -672,16 +679,19 @@ def main(argv=None) -> int:
             report = attach_account(report, args.period, args.state_root, args.config)
         except (OSError, ValueError, KeyError, TypeError) as error:
             report["account"] = {"nav": None, "nav_complete": False, "complete": False,
+                "observed_nav": None, "observation_complete": False, "observation_observed_at_ms": None,
                 "mutation_authorized": False, "reason_codes": [str(error) if isinstance(error, EvidenceError) else "ACCOUNT_REPORT_UNAVAILABLE"]}
             report["account_nav"] = None
             report["account_complete"] = False
+            report["account_observed_nav"] = None
+            report["account_observation_complete"] = False
             report["all_in_account_net_pnl"] = None
         if args.watch or (args.output and not args.cached):
             write_snapshot(output, report)
         if not args.watch:
             view = report.get("account", {}) if args.account else report
             print(json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) if args.format == "json" else (render_account(view) if args.account else render(report)))
-            return 0 if (view.get("complete") if args.account else report.get("complete")) else 2
+            return 0 if (view.get("observation_complete") if args.account else report.get("complete")) else 2
         deadline = start + args.interval_sec
         while not stop and time.monotonic() < deadline:
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
