@@ -278,6 +278,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_pendingTerminalStatuses.clear();
     m_pendingExecutionCorrelations.clear();
     m_pendingExecutionIdsByCorrelation.clear();
+    m_pendingExecutionCumulativeQtyByCorrelation.clear();
     m_exposureGeneration = 0;
     m_riskGeneration = 0;
     m_coherentRiskRefreshDispatching = false;
@@ -613,6 +614,26 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
         return false;
     }
     observation.originalAccountAndOrderSetConsistent=true;
+    // The child STOP can exist without an executed original Parent. A
+    // same-lock terminal Filled identity AND an exact Broker cumulative
+    // executed quantity are required before reporting parent-fill evidence.
+    const auto& terminal=snap.terminal;
+    const auto status=terminal.terminalStatusesByCorrelation.find(
+        refs.parentCorrelation);
+    const auto parentCum=
+        terminal.executionCumulativeQtyByCorrelation.find(
+            refs.parentCorrelation);
+    observation.originalParentFilledTerminalAndQtyCorrelated =
+        terminal.complete && terminal.generation!=0 &&
+        terminal.connectionEpoch==m_connectionEpoch &&
+        terminal.exposureGeneration<=snap.riskAbsorbedExposureGeneration &&
+        terminal.HasEconomicTerminal(
+            refs.parentCorrelation,original.parentOrderId,m_connectionEpoch) &&
+        status!=terminal.terminalStatusesByCorrelation.end() &&
+        status->second=="Filled" &&
+        parentCum!=terminal.executionCumulativeQtyByCorrelation.end() &&
+        std::isfinite(parentCum->second) &&
+        parentCum->second==original.quantity;
     const auto nativeStop=m_h1NativeStopOpenOrderEchoes.find(
         original.childOrderId);
     // A native SDK echo and a global Broker-visible protective candidate
@@ -1509,6 +1530,7 @@ bool HeptaIBGatewayAdapter::ReqTerminalCorrelations() {
     m_pendingTerminalStatuses.clear();
     m_pendingExecutionCorrelations.clear();
     m_pendingExecutionIdsByCorrelation.clear();
+    m_pendingExecutionCumulativeQtyByCorrelation.clear();
     m_terminalCorrelationSnapshot.connectionEpoch = m_connectionEpoch;
     m_terminalCorrelationSnapshot.generation =
         m_terminalCorrelationGeneration;
@@ -1519,6 +1541,7 @@ bool HeptaIBGatewayAdapter::ReqTerminalCorrelations() {
     m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.clear();
     m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.clear();
     m_terminalCorrelationSnapshot.executionOrderIds.clear();
+    m_terminalCorrelationSnapshot.executionCumulativeQtyByCorrelation.clear();
 
     // completedOrders(apiOnly=false) is account-wide across API clients. The
     // adapter still enforces exact-account and H1 namespace filtering.
