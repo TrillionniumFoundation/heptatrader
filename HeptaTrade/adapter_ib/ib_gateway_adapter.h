@@ -187,6 +187,14 @@ struct IBAccountPostFenceReadObservation {
     bool activeThenRiskObserved = false;
     bool brokerZeroObserved = false;
     bool terminalPostFenceComplete = false;
+    // Only the existing, separately authorized recovery-owner audit may
+    // request a NEW IB connection epoch. A health/status read never does.
+    bool terminalNewEpochRequired = false;
+    bool terminalNewEpochObserved = false;
+    std::uint64_t newTerminalConnectionEpoch = 0;
+    std::uint64_t newTerminalGeneration = 0;
+    std::uint64_t newActiveGeneration = 0;
+    std::uint64_t newRiskGeneration = 0;
     bool maintenanceStopPermitted = false;
     std::uint64_t connectionEpoch = 0;
     std::uint64_t activeGeneration = 0;
@@ -272,6 +280,10 @@ public:
     // Original runtime can revoke an already-issued read if coordinator
     // local quiescence changed around the Broker request boundary.
     void InvalidateAccountPostFenceRead(const std::string& reason);
+    // Called ONLY by the original recovered owner-audit callback after the
+    // existing Broker audit has independently required a NEW epoch. It
+    // schedules nothing, does not reconnect, and cannot permit STOP.
+    bool BindAccountPostFenceToFreshTerminalEpoch(std::string& reason);
     // Idempotent, bounded read-state progress; after original OpenOrderEnd
     // issues one coherent account+positions refresh. No reconnect or retry.
     IBAccountPostFenceReadObservation PollAccountPostFenceRead();
@@ -603,7 +615,8 @@ private:
         m_authoritativeFxCashExposures;
     std::uint64_t m_brokerMutationGeneration = 0;
     enum class PostFenceReadStage : std::uint8_t {
-        NotStarted, AwaitActive, AwaitRisk, Observed, Failed
+        NotStarted, AwaitActive, AwaitRisk, Observed,
+        AwaitNewTerminalEpoch, NewTerminalEpochObserved, Failed
     };
     PostFenceReadStage m_postFenceReadStage = PostFenceReadStage::NotStarted;
     std::uint64_t m_postFenceConnectionEpoch = 0;
@@ -612,6 +625,11 @@ private:
     std::uint64_t m_postFenceTerminalGeneration = 0;
     std::uint64_t m_postFenceMutationGeneration = 0;
     std::uint64_t m_postFenceExposureGeneration = 0;
+    std::uint64_t m_postFenceExpectedTerminalConnectionEpoch = 0;
+    std::uint64_t m_postFenceNewTerminalConnectionEpoch = 0;
+    std::uint64_t m_postFenceNewTerminalGeneration = 0;
+    std::uint64_t m_postFenceNewActiveGeneration = 0;
+    std::uint64_t m_postFenceNewRiskGeneration = 0;
     std::string m_postFenceFailureReason;
     std::uint64_t m_recoveryAuditMinimumConnectionEpoch = 0;
     bool m_recoveryAuditBarrierComplete = false;
