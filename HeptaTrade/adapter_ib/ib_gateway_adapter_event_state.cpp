@@ -1398,7 +1398,18 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
                 outEvent.account==m_cfg.account &&
                 outEvent.queueIngressMonotonicNs!=0) {
                 const auto prior=m_h1NativeStopOrderStatusEchoes.find(stopId);
-                if (prior!=m_h1NativeStopOrderStatusEchoes.end() &&
+                if (outEvent.nativeOrder.permanentId>0 &&
+                    outEvent.nativeOrder.permanentId!=
+                        m_h1NativeStopOpenOrderEchoes.at(stopId).
+                            nativeOrder.permanentId) {
+                    // One same-account, same-client native order number
+                    // cannot acquire a different Broker permanent identity.
+                    // Do not permit a later callback with the old permId to
+                    // resurrect an earlier full-remaining stop diagnostic.
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    InvalidateCorrelationSnapshot(
+                        "H1_NATIVE_STOP_STATUS_PERMID_CONFLICT");
+                } else if (prior!=m_h1NativeStopOrderStatusEchoes.end() &&
                     outEvent.queueIngressMonotonicNs<=
                         prior->second.queueIngressMonotonicNs) {
                     // Fail closed: older status cannot restore full remaining
