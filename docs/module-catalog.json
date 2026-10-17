@@ -336,7 +336,8 @@
         "systemd/user/heptatrader-value343-predecision-fast.service",
         "systemd/user/heptatrader-value343-predecision-hardened.service",
         "research/neuron_learning/laya_cell/value343_journal_cache.py",
-        "systemd/user/heptatrader-value343-predecision-incremental.service"
+        "systemd/user/heptatrader-value343-predecision-incremental.service",
+        "systemd/user/heptatrader-value343-predecision-durable.service"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -364,7 +365,8 @@
         "tests/python/test_value343_predecision_shadow.py",
         "tests/python/test_value343_pre_response_v2.py",
         "tests/python/test_value343_realcode_isolated_e2e.py",
-        "tests/python/test_value343_incremental_journal.py"
+        "tests/python/test_value343_incremental_journal.py",
+        "tests/python/test_value343_post_fsync_durable_seal.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

@@ -188,7 +188,7 @@ class OriginalJournalEndToEnd(unittest.TestCase):
             world=OriginalSyntheticFixture(Path(temporary))
             research=Path(temporary)/"research"
             research.mkdir(mode=0o700)
-            for sub in ("predictions","misses","response_proofs","scores","rejects"):
+            for sub in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (research/sub).mkdir(mode=0o700)
             request=world.request()
             record=world.append("REQUEST",request)
@@ -270,7 +270,7 @@ class OriginalJournalEndToEnd(unittest.TestCase):
             events,requests=s.original_events(world.manifest)
             research=Path(tmp)/"research"
             research.mkdir(mode=0o700)
-            for sub in ("predictions","misses","response_proofs","scores","rejects"):
+            for sub in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (research/sub).mkdir(mode=0o700)
             fixed={"activated_at_ms":request["started_at_ms"]-100,
                    "model_report_id":"TEST_ONLY_FROZEN_SOURCE",
@@ -298,7 +298,7 @@ class OriginalJournalEndToEnd(unittest.TestCase):
             world=OriginalSyntheticFixture(Path(tmp))
             research=Path(tmp)/"research"
             research.mkdir(mode=0o700)
-            for sub in ("predictions","misses","response_proofs","scores","rejects"):
+            for sub in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (research/sub).mkdir(mode=0o700)
             req=world.request(id="c"*32)
             freeze={"activated_at_ms":req["started_at_ms"]-100,
@@ -335,7 +335,7 @@ class OriginalJournalEndToEnd(unittest.TestCase):
             events,requests=s.original_events(world.manifest)
             research=Path(tmp)/"research"
             research.mkdir(mode=0o700)
-            for sub in ("predictions","misses","response_proofs","scores","rejects"):
+            for sub in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (research/sub).mkdir(mode=0o700)
             with patch.object(s,"OUT",research):
                 result=s.capture(events,requests,{

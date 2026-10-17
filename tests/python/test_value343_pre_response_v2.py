@@ -12,7 +12,8 @@ import unittest
 from unittest.mock import patch
 
 from laya_cell import value343_prospective as shadow
-from tests.python.test_value343_predecision_shadow import synthetic_request, event
+from tests.python.test_value343_predecision_shadow import (
+    synthetic_request,event,fixture_complete_durable_receipt)
 
 
 def local_setup(now):
@@ -31,7 +32,7 @@ def local_setup(now):
 
 def write_prediction(root,req,original,now):
     rid=req["request_id"]
-    for name in ("predictions","misses","response_proofs","scores","rejects"):
+    for name in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
         (root/name).mkdir(exist_ok=True)
     body={
         "request_id":rid,"input_request_sha256":shadow.digest(req),
@@ -41,6 +42,7 @@ def write_prediction(root,req,original,now):
         "train_only_median_baseline_usd":-12.,
     }
     shadow.write_once(root/"predictions"/(rid+".json"),body)
+    fixture_complete_durable_receipt(root,rid)
     return body
 
 
@@ -144,7 +146,7 @@ class TwoSidedPreResponseProofTests(unittest.TestCase):
             self.assertEqual(json.loads(p.read_bytes()),payload)
 
     def test_protocol_v2_cannot_claim_old_v1_source(self):
-        self.assertTrue(shadow.SCHEMA.endswith(".v4"))
+        self.assertTrue(shadow.SCHEMA.endswith(".v5"))
         self.assertNotEqual(shadow.OUT,Path(
             "/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-shadow-20261017"))
         self.assertFalse(shadow.NO_AUTHORITY["automatic_trading"])
