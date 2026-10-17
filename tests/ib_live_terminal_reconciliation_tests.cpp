@@ -1955,6 +1955,47 @@ void TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection()
 }
 
 
+void TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently() {
+    // Broker-global read-only candidate remains a RISK inventory even for
+    // foreign API clients. Same permId but changed contract/OCA can never be
+    // called the same protective candidate after an incremental callback.
+    for (int changedField=0; changedField<5; ++changedField) {
+        Fixture f;
+        auto stop=f.Event(IBEventType::OpenOrder);
+        stop.id=950;stop.brokerClientId=999;stop.brokerPermId=900950;
+        stop.value="Submitted";stop.order.action="SELL";
+        stop.order.orderType="STP";stop.order.auxPrice=1.11825;
+        stop.order.totalQuantity=25000;stop.brokerTransmit=true;
+        stop.brokerOcaGroup="protective-test-group";
+        stop.contract.symbol="EUR";stop.contract.secType="CASH";
+        stop.contract.currency="USD";stop.contract.exchange="IDEALPRO";
+        stop.nativeOrder.present=true;
+        stop.nativeOrder.contractId=12087792;
+        stop.nativeOrder.ocaType=1;
+        stop.nativeOrder.timeInForce="GTC";
+        stop.nativeOrder.triggerMethod=0;
+        f.Push(stop);
+        auto before=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(before.complete);
+        assert(before.visibleProtectiveCandidatesByPermId.count(900950)==1);
+        auto changed=stop;
+        switch (changedField) {
+        case 0:changed.contract.symbol="GBP";break;
+        case 1:changed.nativeOrder.contractId=12087793;break;
+        case 2:changed.nativeOrder.ocaType=2;break;
+        case 3:changed.nativeOrder.timeInForce="DAY";break;
+        case 4:changed.nativeOrder.triggerMethod=1;break;
+        }
+        f.Push(changed);
+        const auto after=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!after.complete);
+        assert(after.visibleProtectiveCandidatesByPermId.empty());
+        assert(after.reasonCode==
+               "IB_PROTECTIVE_INCREMENTAL_CONFLICT_REQUIRES_REFRESH");
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 void TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState() {
     Fixture f;
     auto stop=f.Event(IBEventType::OpenOrder);
@@ -2876,6 +2917,7 @@ int main() {
     TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();
     TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();
     TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();
+    TestProtectiveCandidateContractAndOcaShapeCannotChangeSilently();
     TestForeignNumeric201202CannotCreateOwnTerminal();
     TestOriginalPostFenceReadRejectsH1PermanentIdConflict();
     TestOriginalH1SdkAndGlobalPermIdConflictFailsClosed();
