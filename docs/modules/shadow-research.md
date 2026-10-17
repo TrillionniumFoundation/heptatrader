@@ -62,3 +62,5 @@ Pocket4 Value343 v2 original-response-gated inotify shadow (research only): [obs
 Pocket4 isolated complete synthetic-wire original REQUEST->RESPONSE->OMS settlement and path-id hardening: [Value343 v3 end-to-end research audit](../technical/pocket4-value343-original-journal-e2e-20261017.md). It does not prove live financial outcomes.
 
 Pocket4 source-only SHA-chain incremental REQUEST watcher, original-response proof and reversible v4 research: [benchmark, integrity and race acceptance](../technical/pocket4-value343-incremental-original-watcher-20261017.md). No trading/model permission.
+
+Pocket4 v5 original RESPONSE after durable prediction fsync (owner-only source research): [post-fsync proof and crash/race evidence](../technical/pocket4-value343-durable-fsync-response-20261017.md). No trading authority.

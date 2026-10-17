@@ -207,7 +207,7 @@ class IncrementalOriginalEvidenceTests(unittest.TestCase):
             world=OriginalSyntheticFixture(Path(td))
             root=Path(td)/"research"
             root.mkdir(mode=0o700)
-            for n in ("predictions","misses","response_proofs","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir(mode=0o700)
             manifest={**world.manifest,"instrument":"EUR.USD","execution_domain":"PAPER"}
             cache=VerifiedIncrementalJournal(manifest,watcher.COHORT)

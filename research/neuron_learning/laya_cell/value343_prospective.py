@@ -29,14 +29,14 @@ from hepta_decision_attribution import digest,read_private,strict
 from . import value343_oos as prior
 from .value343_journal_cache import VerifiedIncrementalJournal
 
-SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v4"
-SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v4"
+SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v5"
+SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v5"
 STUDY=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-chronological-oos-20261016/study-v4.json")
 STUDY_SHA="dc0e463e6acc2a11a095afcc7623498959327f00d2835b9b2a0bdc8cf659f060"
 SOURCE_CODE_SHA="73354f5d1fdaa0ace5c60211597c9c2d4d2f5f74ecb2f5e9ecef63cb206f246c"
 REGISTRATION=prior.CONFIG
 COHORT=prior.BEHAVIOR
-OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-incremental-20261017")
+OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-durable-20261017")
 MAX_SOURCE_FILES=128
 MAX_SOURCE_TOTAL=256*1024*1024
 MAX_SOURCE_FILE=16*1024*1024
@@ -218,6 +218,36 @@ def write_once(path,obj):
     return hashlib.sha256(data).hexdigest()
 
 
+def read_durable_seal(prediction_path, prediction):
+    """Post-fsync commitment time, not the prediction's pre-write clock.
+
+    If the service crashes after the prediction and before this separate
+    SHA-linked receipt, do not reconstruct/retroactively date the proof.
+    """
+    rid=original_request_id(prediction["request_id"])
+    path=OUT/"durable_seals"/(rid+".json")
+    if not path.exists():return None
+    data=read_private(path,limit=16384)
+    receipt=strict(data)
+    data_sha=hashlib.sha256(read_private(prediction_path,limit=16384)).hexdigest()
+    try:ctime_ns=prediction_path.stat().st_ctime_ns
+    except OSError as exc:raise ValueError("DURABLE_PREDICTION_FILE_UNAVAILABLE") from exc
+    if (receipt.get("schema")!=SCHEMA or
+            receipt.get("status")!="PREDICTION_FSYNC_COMPLETE" or
+            receipt.get("request_id")!=rid or
+            receipt.get("prediction_sha256")!=data_sha or
+            receipt.get("source_event_sha256")!=prediction.get("source_event_sha256") or
+            type(receipt.get("durable_fsync_returned_at_ns")) is not int or
+            type(receipt.get("prediction_file_ctime_ns")) is not int or
+            type(prediction.get("sealed_at_ms")) is not int or
+            not prediction["sealed_at_ms"]*1000000<=receipt["prediction_file_ctime_ns"]<=receipt["durable_fsync_returned_at_ns"] or
+            receipt["prediction_file_ctime_ns"]!=ctime_ns or
+            receipt.get("broker_orders_sent")!=0 or
+            receipt.get("model_promotion") is not False):
+        raise ValueError("DURABLE_FSYNC_RECEIPT_IDENTITY_OR_TIME_CHANGED")
+    return receipt,hashlib.sha256(data).hexdigest()
+
+
 def frozen():
     data=read_private(OUT/"freeze.json",limit=16384)
     freeze=strict(data)
@@ -238,7 +268,7 @@ def initialize():
     model=read_model()
     manifest=registration()
     OUT.mkdir(mode=0o700,parents=True)
-    for name in ("predictions","misses","response_proofs","scores","rejects"):
+    for name in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
         (OUT/name).mkdir(mode=0o700)
     freeze={"schema":SCHEMA,"activated_at_ms":int(time.time()*1000),
             "model_sha256":STUDY_SHA,"model_report_id":model[0]["report_id"],
@@ -319,7 +349,25 @@ def capture(events,requests,freeze,model):
             "response_timing_qualified":False,
             "prospective_holdout_efficacy_unproven":True,
             **NO_AUTHORITY}
-        write_once(out,receipt)
+        # sealed_at_ms above is the PRE-WRITE clock. It cannot establish
+        # that the prediction was on durable storage before RESPONSE.
+        prediction_sha=write_once(out,receipt)
+        kernel_stat=out.stat()
+        durable_time_ns=time.time_ns()  # AFTER bytes + containing dir fsync
+        if (not stat.S_ISREG(kernel_stat.st_mode) or
+                kernel_stat.st_ctime_ns>durable_time_ns or
+                durable_time_ns<sealed_at*1_000_000):
+            raise ValueError("DURABLE_PREDICTION_KERNEL_TIMESTAMP_CONFLICT")
+        # A process kill before this separate receipt means NO qualifying
+        # durable proof. Never invent one after the real RESPONSE.
+        write_once(OUT/"durable_seals"/(rid+".json"),{
+            "schema":SCHEMA,"status":"PREDICTION_FSYNC_COMPLETE",
+            "request_id":rid,"source_event_sha256":ev["sha256"],
+            "prediction_sha256":prediction_sha,
+            "prediction_file_ctime_ns":kernel_stat.st_ctime_ns,
+            "durable_fsync_returned_at_ns":durable_time_ns,
+            "proof_is_written_after_durable_prediction":True,
+            **NO_AUTHORITY})
         summary["new_valid_predictions"]+=1
     return summary
 
@@ -359,6 +407,16 @@ def attest_responses(events,requests,freeze):
             raise ValueError("DUPLICATE_ORIGINAL_MODEL_RESPONSE")
         if not responses:
             totals["still_no_response"]+=1;continue
+        completed=read_durable_seal(path,p)
+        if completed is None:
+            write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
+                "status":"CENSORED_MISSING_DURABLE_FSYNC_WITNESS",
+                "score_valid":False,
+                "original_response_receipt_sha256":responses[0]["sha256"],
+                **NO_AUTHORITY})
+            totals["censored_new"]+=1
+            continue
+        seal,seal_sha=completed
         r=responses[0]
         at=r["data"].get("available_at_ms")
         actual_response=(type(at) is int and
@@ -366,13 +424,18 @@ def attest_responses(events,requests,freeze):
                          type(r.get("captured_at_ms")) is int and
                          type(r.get("written_at_ms")) is int and
                          orig_request["started_at_ms"]<=at<=r["captured_at_ms"]<=r["written_at_ms"])
+        # Compare the true POST-fsync time in nanoseconds to original
+        # RESPONSE millis. Truncating nanoseconds to millis would admit
+        # an otherwise-invalid sub-millisecond arrival race.
         if (not actual_response or
-                not p["sealed_at_ms"]<at or
-                not p["sealed_at_ms"]<r["captured_at_ms"]):
+                not seal["durable_fsync_returned_at_ns"]<(orig_request["started_at_ms"]+MAX_REQUEST_AGE_MS)*1_000_000 or
+                not seal["durable_fsync_returned_at_ns"]<at*1_000_000 or
+                not seal["durable_fsync_returned_at_ns"]<r["captured_at_ms"]*1_000_000):
             write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
                 "status":"CENSORED_SEAL_NOT_PROVEN_BEFORE_ORIGINAL_RESPONSE",
                 "score_valid":False,
                 "sealed_at_ms":p["sealed_at_ms"],
+                "durable_fsync_returned_at_ns":seal["durable_fsync_returned_at_ns"],
                 "original_response_available_at_ms":at,
                 "original_response_receipt_sha256":r["sha256"],
                 **NO_AUTHORITY})
@@ -380,6 +443,8 @@ def attest_responses(events,requests,freeze):
         write_once(proof,{"schema":SCHEMA,"request_id":rid,
             "status":"VERIFIED_PRE_ORIGINAL_RESPONSE",
             "sealed_at_ms":p["sealed_at_ms"],
+            "durable_fsync_returned_at_ns":seal["durable_fsync_returned_at_ns"],
+            "durable_seal_sha256":seal_sha,
             "original_response_available_at_ms":at,
             "original_response_captured_at_ms":r["captured_at_ms"],
             "original_response_receipt_sha256":r["sha256"],
@@ -418,6 +483,7 @@ def score(events,requests,freeze):
         rid=original_request_id(p["request_id"])
         if path.name!=rid+".json":raise ValueError("PREDICTION_RECEIPT_FILENAME_CHANGED")
         if (OUT/"rejects"/(rid+".json")).exists():continue
+        if read_durable_seal(path,p) is None:continue
         proofpath=OUT/"response_proofs"/(rid+".json")
         if not proofpath.exists():continue  # provisional is not an admissible score
         proof=strict(read_private(proofpath,limit=16384))
@@ -446,13 +512,18 @@ def score(events,requests,freeze):
         binding=bindings_list[0]
         decision=decisions_list[0]
         response=response_list[0]
+        completed=read_durable_seal(OUT/"predictions"/(rid+".json"),p)
+        if completed is None:raise ValueError("RESEARCH_SCORE_MISSING_DURABLE_PROOF")
+        durable,durable_sha=completed
         if (proof.get("status")!="VERIFIED_PRE_ORIGINAL_RESPONSE" or
+                proof.get("durable_seal_sha256")!=durable_sha or
+                proof.get("durable_fsync_returned_at_ns")!=durable["durable_fsync_returned_at_ns"] or
                 proof.get("original_request_sha256")!=digest(request) or
                 proof.get("original_response_receipt_sha256")!=response["sha256"] or
                 proof.get("original_prediction_sha256")!=hashlib.sha256(
                     read_private(OUT/"predictions"/(rid+".json"),limit=16384)).hexdigest() or
                 type(response["data"].get("available_at_ms")) is not int or
-                not p["sealed_at_ms"]<response["data"]["available_at_ms"]):
+                not durable["durable_fsync_returned_at_ns"]<response["data"]["available_at_ms"]*1_000_000):
             raise ValueError("ORIGINAL_RESPONSE_ATTESTATION_CHANGED")
         if (binding.get("request_id")!=rid
                 or binding.get("request_sha256")!=digest(request)
@@ -463,10 +534,11 @@ def score(events,requests,freeze):
         # original decision and later outcome first-available time.
         decision_time=decision["available_at_ms"]
         known_at=prior.settled_time(reward,events_by_id,request,binding)
-        if (p["sealed_at_ms"]>=response["data"]["available_at_ms"]
-                or p["sealed_at_ms"]>=decision_time
-                or p["sealed_at_ms"]>=binding["command"]["created_at_ms"]
-                or p["sealed_at_ms"]>=known_at):
+        if (durable["durable_fsync_returned_at_ns"]>=(request["started_at_ms"]+MAX_REQUEST_AGE_MS)*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=response["data"]["available_at_ms"]*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=decision_time*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=binding["command"]["created_at_ms"]*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=known_at*1_000_000):
             write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
                 "status":"CENSORED_SEAL_NOT_BEFORE_RESPONSE_DECISION_OR_LABEL",
                 "decision_at_ms":decision_time,"label_known_at_ms":known_at,
@@ -485,7 +557,9 @@ def score(events,requests,freeze):
             "original_input_sha256":reward["input_id"],
             "frozen_model_sha256":STUDY_SHA,
             "original_side":side,
-            "prediction_sealed_at_ms":p["sealed_at_ms"],
+            "prediction_write_started_at_ms":p["sealed_at_ms"],
+            "prediction_durable_fsync_returned_at_ns":durable["durable_fsync_returned_at_ns"],
+            "durable_seal_sha256":durable_sha,
             "original_response_available_at_ms":response["data"]["available_at_ms"],
             "response_proof_sha256":hashlib.sha256(read_private(
                  OUT/"response_proofs"/(rid+".json"),limit=16384)).hexdigest(),
@@ -523,7 +597,7 @@ def run_once(cache=None):
     response_status=attest_responses(events,requests,freeze)
     b=score(events,requests,freeze)
     counts={name:len(list((OUT/name).glob("*.json")))
-            for name in ("predictions","misses","response_proofs","scores","rejects")}
+            for name in ("predictions","durable_seals","misses","response_proofs","scores","rejects")}
     print(json.dumps({"schema":SCHEMA,"checked_at_ms":int(time.time()*1000),
         "counts":counts,"capture":a,"response_attestation":response_status,"score":b,
         "original_source_scan_mode":"HASH_VERIFIED_INCREMENTAL_APPEND" if cache else "FULL_ORIGINAL_REPLAY",
@@ -647,7 +721,7 @@ def main():
     freeze=frozen()
     print(json.dumps({"schema":SCHEMA,"activated_at_ms":freeze["activated_at_ms"],
         "receipt_counts":{n:len(list((OUT/n).glob("*.json")))
-                 for n in ("predictions","misses","response_proofs","scores","rejects")},
+                 for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects")},
         **NO_AUTHORITY},sort_keys=True))
     return 0
 

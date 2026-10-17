@@ -40,6 +40,23 @@ def event(request,now):
                         "sha256":"b"*64}}
 
 
+def fixture_complete_durable_receipt(root,rid):
+    """Make a genuine fsynced test witness AFTER a manually made receipt."""
+    filename=Path(root)/"predictions"/(rid+".json")
+    pred=json.loads(filename.read_bytes())
+    st=filename.stat()
+    after=time.time_ns()
+    assert pred["sealed_at_ms"]*1_000_000<=st.st_ctime_ns<=after
+    return shadow.write_once(Path(root)/"durable_seals"/(rid+".json"),{
+        "schema":shadow.SCHEMA,"status":"PREDICTION_FSYNC_COMPLETE",
+        "request_id":rid,"source_event_sha256":pred["source_event_sha256"],
+        "prediction_sha256":hashlib.sha256(filename.read_bytes()).hexdigest(),
+        "prediction_file_ctime_ns":st.st_ctime_ns,
+        "durable_fsync_returned_at_ns":after,
+        "proof_is_written_after_durable_prediction":True,
+        **shadow.NO_AUTHORITY})
+
+
 class Value343ProspectiveContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -95,7 +112,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         req=synthetic_request(now)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for sub in ("predictions","misses","scores","rejects"):
+            for sub in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/sub).mkdir()
             freeze={"activated_at_ms":now-5000,
                     "model_report_id":self.model[0]["report_id"],
@@ -120,7 +137,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         req=synthetic_request(now)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             freeze={"activated_at_ms":now-5000,"model_report_id":"z",
                     "source_period_sha256":"z"}
@@ -141,7 +158,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         ev=event(req,now)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             with patch.object(shadow,"OUT",root):
                 r=shadow.capture([ev],{req["request_id"]:ev},
@@ -159,7 +176,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         ev=event(req,now)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             with patch.object(shadow,"OUT",root):
                 out=shadow.capture([ev],{req["request_id"]:ev},
@@ -172,7 +189,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         ev=event(req,now)
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             with patch.object(shadow,"OUT",root):
                 out=shadow.capture([ev],{req["request_id"]:ev},
@@ -190,7 +207,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
         rid=req["request_id"]
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
-            for n in ("predictions","misses","response_proofs","scores","rejects"):
+            for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
                 (root/n).mkdir()
             sealed=now
             original=event(req,now)
@@ -201,6 +218,7 @@ class Value343ProspectiveContracts(unittest.TestCase):
                  "source_prefix":original["_witness"],
                  "predictions_after_actual_reported_fees_usd":{"BUY":-4.,"SELL":-8.},
                  "train_only_median_baseline_usd":-12.})
+            fixture_complete_durable_receipt(root,rid)
             response={"kind":"RESPONSE","sha256":"c"*64,
                 "captured_at_ms":now+900,"written_at_ms":now+950,
                 "data":{"request_id":rid,"request_sha256":shadow.digest(req),
