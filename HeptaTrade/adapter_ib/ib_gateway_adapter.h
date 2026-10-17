@@ -149,6 +149,9 @@ struct IBAuthoritativeTerminalCorrelationSnapshot {
     // projection derived only from correlations that also have terminal order
     // evidence in this same snapshot.
     std::set<std::string> executionCorrelations;
+    // Broker execDetails.cumQty, keyed by its exact H1/venue correlation;
+    // cumulative per original order, never summed across repeated fills.
+    std::map<std::string, double> executionCumulativeQtyByCorrelation;
     std::set<long> executionOrderIds;
     bool HasEconomicTerminal(const std::string& correlation, long orderId,
                              std::uint64_t expectedEpoch) const {
@@ -188,6 +191,10 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
 // the SDK openOrder status/stop/OCA trigger or grants order-send authority.
 struct IBH1OcaAdapterScopeObservation {
     bool originalAccountAndOrderSetConsistent = false;
+    // Diagnostic only: the original Parent must have a real Filled terminal
+    // status AND exact correlated Broker cumulative execution quantity.
+    // This is not a Broker permanent-ID or guaranteed coverage witness.
+    bool originalParentFilledTerminalAndQtyCorrelated = false;
     bool nativeStopBrokerWorkingProven = false;
     // A matching SDK openOrder echo is only a diagnostic; not an order
     // admission or live-position protection signal.
@@ -581,6 +588,7 @@ private:
     std::map<std::string, std::string> m_pendingTerminalStatuses;
     std::set<std::string> m_pendingExecutionCorrelations;
     std::map<std::string, long> m_pendingExecutionIdsByCorrelation;
+    std::map<std::string, double> m_pendingExecutionCumulativeQtyByCorrelation;
     // Live execution/terminal proof for orders actually submitted by this
     // adapter incarnation. Never reconstruct these bindings from orderStatus.
     struct LiveTerminalBinding {
