@@ -74,3 +74,12 @@ CMake 4.2.3/Ninja Release with assertions enabled.
   sent **zero** actual IB order/cancel operations. No host, systemd
   selector, account owner, native maintenance hold, execution journal,
   model or trading strategy was modified.
+
+After original main advanced to `58632dd` (source-scoped development
+and trading gate changes), the branch incorporated main without native
+conflicts. Rebuilt the original IB SDK-ON Adapter/Execution target and
+reran the **same five native regressions 5/5 PASS** (44.49s), sealed log
+`native-five-postmain.log` SHA256
+`f148b18348b4612aa6582bdaaf5a2a29c6e562c911c7c8fbd1128d15d7884e1a`.
+That merge did not alter original PAPER trade authorization or the
+production daemon selected by systemd.
