@@ -80,3 +80,27 @@ Pocket4 evidence directory:
 ```
 
 The evidence contains focused and regression logs (including the failed baseline control), calendar compatibility records, the complete immutable release inventory, exact configurations, and the proposed trainer service override. No broker order, execution authority or model promotion is introduced.
+
+
+## Activation and live verification
+
+The trainer-only switch completed at **2026-10-17 23:20:24 UTC** (19:20 New York). Trainer PID 2966959 loaded the immutable release and validated its exact guard/configuration identities.
+
+The initial SIGUSR1 drain did finish normally. The existing readmission timer immediately reactivated the old definition, so activation loaded the new trainer definition and explicitly stopped/started the idle trainer. No active training/GPU child was present at the switch. The readmission timer was not changed.
+
+Post-switch checks proved:
+
+- All **41 original plan files** retained their SHA256.
+- All **82 candidate manifest/adapter files** retained their SHA256.
+- The trial counter remained **41**, with **41 COMPLETED / 1 FAILED / 0 RUNNING / 0 ADMITTED** jobs.
+- The latest candidate has one bound DEFERRED registration with reason PRIOR_ORIGINAL_TRIAL_PENDING and trial_allocated=false.
+- The live state is CANDIDATE_READY_AWAITING_FORWARD_ADMISSION. The previous original trial remains pending on its frozen deadline; no replacement trial was allocated.
+- Guard modules, evaluator/source pins, objectives, budgets and the 6 GiB trainer memory fence were preserved.
+- Execution, broker/gateway, EUR/BTC drivers, feed and Laya evaluator process identities remained unchanged. Of 28 observed non-trainer services, one separately scheduled value-successor evaluator changed state during the observation interval; no control request was sent to it.
+- The trainer error record was inactive after a successful new-runtime loop.
+
+Live state use was 670,759,547 bytes against the unchanged 12 GiB quota, and storage admission was ready.
+
+The newest historical training candidate is 7becfed5397437dedf9d385fe57b3e35e720830f680fbba8a9f8288ce00f3f69 (job d08687f663923e0a3fd2adbc795e16c79e88671850e800f6b8b3455ecdff4da0). Its 32 reserved rows were all applied in 16 steps, with no rollback, 73.2649 seconds wall time and 1,587,737,088 bytes peak GPU allocation. Training-only price CE changed from 2.45851035416 to 2.45823210850, with Brier 1.01501643099. Its action targets were 0 ACT / 32 ESCALATE. PnL reward was not used. These figures are execution/diagnostic evidence, not prospective performance or trading eligibility.
+
+Activation evidence: trainer-activation.json and live-verification.json in the Pocket4 evidence directory above. The original failed drain-wait observation is retained as evidence; it is not presented as a completed inactive-state check.
