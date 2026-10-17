@@ -10,6 +10,9 @@ import stat
 import tempfile
 import time
 import unittest
+import json
+from unittest.mock import patch
+import hepta_maintenance_latch as latch
 
 from hepta_maintenance_latch import HoldError, perform
 
@@ -185,6 +188,65 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(result["broker_orders_sent"],0)
         self.assertFalse(result["may_stop_driver"])
         self.assertEqual(result["schema"],"heptatrader.maintenance-latch-status.v1")
+
+    def test_status_reports_post_action_marker_origin(self):
+        paused = self.run_action("pause")
+        self.assertEqual(paused["native_marker_origin"], "CLI_TAGGED_PAUSE")
+        self.assertTrue(paused["new_paper_risk_blocked"])
+        resumed = self.run_action("paper-on")
+        self.assertEqual(resumed["native_marker_origin"], "ABSENT")
+        self.assertEqual(resumed["blockers"], [])
+        self.assertFalse(resumed["new_paper_risk_blocked"])
+        self.run_action("maintenance-hold")
+        released = self.run_action("maintenance-release")
+        self.assertEqual(released["native_marker_origin"], "ABSENT")
+        self.assertIsNone(released["hold_details"])
+
+    def test_optional_hold_context_is_visible_and_not_rewritten(self):
+        status = perform("maintenance-hold", self.control, self.state,
+                         reason="install verified driver", task="driver update",
+                         resume_when="original maintenance owner completes review")
+        self.assertEqual(status["hold_details"]["reason"], "install verified driver")
+        self.assertEqual(status["hold_details"]["uid"], os.geteuid())
+        self.assertEqual(status["hold_details"]["created_by"], "heptatrader-cli")
+        before = self.hold_path.read_bytes()
+        repeated = perform("maintenance-hold", self.control, self.state,
+                           reason="later caller cannot replace original ownership")
+        self.assertEqual(self.hold_path.read_bytes(), before)
+        self.assertEqual(repeated["hold_details"]["created_at_ms"],
+                         status["hold_details"]["created_at_ms"])
+        self.assertEqual(repeated["hold_details"]["reason"], "install verified driver")
+        self.assertFalse(status["may_stop_driver"])
+
+    def test_legacy_hold_age_is_visible_without_inventing_a_reason(self):
+        self.run_action("maintenance-hold")
+        legacy = {"schema": latch.SCHEMA, "uid": os.geteuid(),
+                  "effect": "NEW_PAPER_RISK_HOLD_ONLY",
+                  "created_at_ms": int(time.time() * 1000) - 3600000}
+        raw = (json.dumps(legacy) + "\n").encode()
+        self.hold_path.write_bytes(raw)
+        status = self.run_action("maintenance-status")
+        self.assertGreaterEqual(status["hold_details"]["age_seconds"], 3600)
+        self.assertIsNone(status["hold_details"]["reason"])
+        self.assertIsNone(status["hold_details"]["created_by"])
+        self.assertEqual(self.hold_path.read_bytes(), raw)
+        self.assertTrue(status["new_paper_risk_blocked"])
+
+    def test_failed_release_restores_exact_original_hold_record(self):
+        perform("maintenance-hold", self.control, self.state,
+                reason="original task", task="retained", resume_when="explicit completion")
+        original = self.hold_path.read_bytes()
+        real_unlink = latch._unlink
+        def fail_native(fd, name, mode):
+            if name == latch.SWITCH:
+                raise OSError("synthetic unlink failure")
+            return real_unlink(fd, name, mode)
+        with patch.object(latch, "_unlink", side_effect=fail_native):
+            with self.assertRaisesRegex(OSError, "synthetic"):
+                self.run_action("maintenance-release")
+        self.assertEqual(self.hold_path.read_bytes(), original)
+        self.assertEqual(self.kill_path.read_bytes(), b"engaged\n")
+        self.assertFalse(self.run_action("maintenance-status")["may_stop_driver"])
 
     def test_public_wrapper_routes_every_entry_to_pinned_helper(self):
         script=Path(__file__).resolve().parents[2]/"scripts/heptatrader-user"

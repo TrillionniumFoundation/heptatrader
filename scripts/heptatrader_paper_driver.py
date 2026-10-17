@@ -1054,20 +1054,11 @@ def main():
             snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
             if not pending_mode and state.get("active_lease_continuation_supported"):
                 maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),pos,len(snap["active"]),None)
-            if not pending_mode:
-                snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
-                q=snap["quote"]
-                if q.get("authoritative") is not True or q.get("source")!="IB" or q.get("stale") is not False:
-                    raise DriverError("authoritative instrument quote unavailable")
             if pending_mode:
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
                 continue
-            q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
-            if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
-                state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
-                state["history"]=state["history"][-MAX_HISTORY:]
             if state.get("owner_fence_recovery_required"):
                 state["position"]=pos; state["halt_new_entries"]=True
                 model_worker=None
@@ -1091,6 +1082,24 @@ def main():
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
             if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
                 raise DriverError("authoritative mutation state is not ready")
+            # Risk halts use the existing native CLOSE path before any quote
+            # request. Native execution still validates the exact reduce-only order.
+            if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE and state.get("halt_new_entries"):
+                why="HALT_REDUCE_ONLY"
+                state["last_exit_reason"]=why; atomic_json(state_path,state)
+                prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",exit_reason=why)
+                atomic_json(state_path,state)
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            # Price-based exits and new entries still require a fresh IB quote.
+            snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
+            q=snap["quote"]
+            if q.get("authoritative") is not True or q.get("source")!="IB" or q.get("stale") is not False:
+                raise DriverError("authoritative instrument quote unavailable")
+            mid=(float(q["bid"])+float(q["ask"]))/2
+            if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
+                state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
+                state["history"]=state["history"][-MAX_HISTORY:]
             decision=None
             # Safety exits are evaluated on every sample and never wait for the model.
             if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
