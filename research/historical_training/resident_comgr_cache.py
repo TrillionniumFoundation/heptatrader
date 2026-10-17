@@ -231,7 +231,9 @@ def terminal_tasks(original, evidence):
                     except FileNotFoundError: pass
                 scanned += 1
                 for task, prefix in target.items():
-                    if any(prefix + "/" in r for r in references) or prefix + "/" in cmd:
+                    job_config = str(Path(original["control_directory"])/"jobs"/(Path(task).name+".json"))
+                    if (any(prefix + "/" in r for r in references) or prefix + "/" in cmd
+                        or (task.startswith("candidates/") and job_config in cmd)):
                         active.add(task)
             except PermissionError:
                 (unknown_research if is_research else unreadable_nonresearch).append(

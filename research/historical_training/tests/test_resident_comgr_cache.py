@@ -115,3 +115,27 @@ class CacheTests(unittest.TestCase):
             plan["candidate_directory"]=str(self.base/"unrelated/artifact")
             (task/"plan.json").write_text(json.dumps(plan))
             with self.assertRaises(ValueError):gc.terminal_tasks(config,{})
+
+    def test_terminal_failed_job_with_live_config_reference_is_retained(self):
+        import sqlite3
+        control=self.root/"control";control.mkdir()
+        config={"state_root":str(self.root),"control_directory":str(control),
+                "evaluation_directory":str(self.root/"evaluation")}
+        payload=json.dumps({"output_directory":str(self.root/"candidates/job/artifact")})
+        with sqlite3.connect(control/"scheduler.sqlite") as db:
+            db.execute("CREATE TABLE jobs(id TEXT,status TEXT,payload TEXT)")
+            db.execute("INSERT INTO jobs VALUES(?,?,?)",("job","FAILED",payload))
+        (self.cache/"llvmcache-a").write_bytes(b"compiled")
+        process=self.base/"999123";process.mkdir();(process/"fd").mkdir()
+        (process/"comm").write_text("python3")
+        (process/"maps").write_text("")
+        (process/"cwd").symlink_to(self.base,target_is_directory=True)
+        (process/"cmdline").write_bytes(("python3 --config "+str(control/"jobs/job.json")).encode())
+        iterate=Path.iterdir
+        def fixture_processes(path):
+            return iter([process]) if path==Path("/proc") else iterate(path)
+        with patch.object(Path,"iterdir",fixture_processes):
+            proof={};self.assertEqual(gc.terminal_tasks(config,proof),{})
+            self.assertEqual(proof["active_tasks"],["candidates/job"])
+            (process/"cmdline").write_bytes(b"python3 idle")
+            self.assertEqual(gc.terminal_tasks(config,{}),{"candidates/job":"FAILED"})
