@@ -1448,6 +1448,61 @@ void TestOriginalPostFenceReadRejectsH1PermanentIdConflict()
     assert(duringRisk.broker->accountReads==2 &&
            duringRisk.broker->positionReads==2);
     assert(duringRisk.broker->places==0 && duringRisk.broker->cancels==0);
+    // Cross-module next-epoch regression: a residual H1 STP/GTC child may
+    // survive while physical FX exposure is now flat. It is STILL an active
+    // Broker order and can reverse the account on a later trigger. Never
+    // convert a complete terminal download into safe-to-stop zero in that case.
+    Fixture residual;
+    assert(residual.adapter.ReqRecoveryAuditRiskRefresh());
+    residual.FinishRiskRefresh();
+    assert(residual.adapter.BeginAccountPostFenceRead(reason));
+    residual.Push(residual.Event(IBEventType::OpenOrderEnd));
+    // Poll is the original read-only state-machine edge which requests
+    // the coherent account/position refresh AFTER Broker OpenOrderEnd.
+    const auto awaitingRisk=residual.adapter.PollAccountPostFenceRead();
+    assert(awaitingRisk.activeReadComplete && !awaitingRisk.riskReadComplete);
+    residual.FinishRiskRefresh();
+    assert(residual.adapter.PollAccountPostFenceRead().brokerZeroObserved);
+    const auto required=residual.adapter.BeginRecoveryAuditBarrier();
+    assert(required.newConnectionEpochRequired);
+    assert(residual.adapter.BindAccountPostFenceToFreshTerminalEpoch(reason));
+    const auto oldEpoch=residual.adapter.GetConnectionEpoch();
+    residual.adapter.Disconnect();
+    assert(residual.adapter.Connect());
+    assert(residual.adapter.GetConnectionEpoch()==oldEpoch+1);
+    // This SDK-native H1 callback belongs to the NEW Broker connection, but
+    // its original parent/stop/orderRef/permId identities remain frozen.
+    assert(residual.adapter.ReqAuthoritativeOpenOrders());
+    auto stillWorking=sdk;
+    stillWorking.connectionEpoch=residual.adapter.GetConnectionEpoch();
+    residual.Push(stillWorking);
+    residual.Push(residual.Event(IBEventType::OpenOrderEnd));
+    assert(residual.adapter.ReqTerminalCorrelations());
+    residual.FinishBootstrap();
+    assert(residual.adapter.ReqRecoveryAuditRiskRefresh());
+    residual.FinishRiskRefresh();
+    const auto blocked=residual.adapter.PollAccountPostFenceRead();
+    assert(blocked.terminalNewEpochObserved);
+    assert(blocked.globalActiveOrders==1);
+    assert(!blocked.brokerZeroObserved && !blocked.maintenanceStopPermitted);
+    // Later contradictory Broker permanent-ID status revokes even the
+    // complete new-epoch terminal diagnostic until a fresh full audit.
+    auto full=residual.Event(IBEventType::OrderStatus);
+    full.id=frozen.childOrderId;full.key="Submitted";full.value.clear();
+    full.requestId=0;full.number=0;full.number2=0;
+    full.number3=frozen.quantity;full.remainingQuantityKnown=true;
+    full.nativeOrder.permanentId=native.permanentId;
+    full.queueIngressMonotonicNs=stillWorking.queueIngressMonotonicNs+100;
+    residual.Push(full);
+    auto contradicted=full;
+    contradicted.queueIngressMonotonicNs+=100;
+    ++contradicted.nativeOrder.permanentId;
+    residual.Push(contradicted);
+    const auto revoked=residual.adapter.PollAccountPostFenceRead();
+    assert(!revoked.terminalNewEpochObserved && !revoked.brokerZeroObserved);
+    assert(!revoked.maintenanceStopPermitted);
+    assert(!residual.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(residual.broker->places==0 && residual.broker->cancels==0);
 }
 
 
@@ -1480,6 +1535,147 @@ void TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend()
     assert(mutated.started && !mutated.activeThenRiskObserved);
     assert(mutated.reasonCode=="IB_ACCOUNT_POST_FENCE_BROKER_MUTATION_OR_FILL");
     assert(concurrent.broker->accountReads==1);
+}
+
+
+void TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit()
+{
+    Fixture f;
+    std::string reason;
+    // Qualify a single post-fence active -> coherent risk generation in the
+    // adapter fixture. Real production starts it only after the original
+    // authenticated Crypto owner fsyncs the coordinator account fence.
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+    assert(f.adapter.BeginAccountPostFenceRead(reason));
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto awaitingRisk=f.adapter.PollAccountPostFenceRead();
+    assert(awaitingRisk.activeReadComplete && !awaitingRisk.riskReadComplete);
+    f.FinishRiskRefresh();
+    const auto oldEpoch=f.adapter.PollAccountPostFenceRead();
+    assert(oldEpoch.brokerZeroObserved && oldEpoch.activeThenRiskObserved);
+    assert(!oldEpoch.terminalPostFenceComplete);
+
+    // Health/status alone cannot promote a fresh terminal epoch or trigger
+    // reconnect. The existing recovery audit control has to demand it first.
+    assert(!f.adapter.BindAccountPostFenceToFreshTerminalEpoch(reason));
+    assert(reason=="IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_BINDING_UNAVAILABLE");
+    const auto originalEpoch=f.adapter.GetConnectionEpoch();
+    const auto requested=f.adapter.BeginRecoveryAuditBarrier();
+    assert(requested.newConnectionEpochRequired);
+    assert(!requested.barrierComplete);
+    assert(f.adapter.BindAccountPostFenceToFreshTerminalEpoch(reason));
+    assert(reason=="IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_REQUIRED");
+    const auto mustReconnect=f.adapter.PollAccountPostFenceRead();
+    assert(mustReconnect.terminalNewEpochRequired);
+    assert(!mustReconnect.terminalNewEpochObserved);
+    assert(!mustReconnect.brokerZeroObserved);
+    assert(!mustReconnect.maintenanceStopPermitted);
+    // Neither the adapter begin nor the status read has disconnected us:
+    // the existing owner-controlled runtime reconnect state owns that work.
+    assert(f.adapter.GetConnectionEpoch()==originalEpoch);
+    assert(f.broker->connected);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    f.adapter.Disconnect();
+    assert(f.adapter.PollAccountPostFenceRead().terminalNewEpochRequired);
+    assert(f.adapter.Connect());
+    assert(f.adapter.GetConnectionEpoch()==originalEpoch+1);
+    auto beforeDownload=f.adapter.PollAccountPostFenceRead();
+    assert(!beforeDownload.terminalNewEpochObserved);
+    assert(beforeDownload.reasonCode==
+        "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_BARRIER_PENDING");
+
+    f.Bootstrap(false);
+    assert(!f.adapter.PollAccountPostFenceRead().terminalNewEpochObserved);
+    f.FinishBootstrap();
+    assert(!f.adapter.PollAccountPostFenceRead().terminalNewEpochObserved);
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    assert(!f.adapter.PollAccountPostFenceRead().terminalNewEpochObserved);
+    f.FinishRiskRefresh();
+    const auto fresh=f.adapter.PollAccountPostFenceRead();
+    assert(fresh.terminalNewEpochRequired);
+    assert(fresh.terminalNewEpochObserved && fresh.terminalPostFenceComplete);
+    assert(fresh.newTerminalConnectionEpoch==originalEpoch+1);
+    assert(fresh.newTerminalGeneration>0);
+    assert(fresh.newActiveGeneration>0 && fresh.newRiskGeneration>0);
+    assert(fresh.activeThenRiskObserved && fresh.brokerZeroObserved);
+    assert(fresh.globalActiveOrders==0);
+    assert(!fresh.maintenanceStopPermitted);
+    assert(fresh.reasonCode==
+        "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_ZERO_NOT_STOP_PERMIT");
+    const auto duplicate=f.adapter.PollAccountPostFenceRead();
+    assert(duplicate.terminalNewEpochObserved);
+    assert(!duplicate.maintenanceStopPermitted);
+    assert(f.adapter.ReqRiskRefresh());
+    f.FinishRiskRefresh();
+    const auto superseded=f.adapter.PollAccountPostFenceRead();
+    assert(!superseded.terminalNewEpochObserved);
+    assert(!superseded.brokerZeroObserved);
+    assert(superseded.reasonCode ==
+        "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_GENERATION_DRIFT");
+}
+
+void TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation()
+{
+    const auto start=[&](Fixture& f) {
+        std::string reason;
+        assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+        assert(f.adapter.BeginAccountPostFenceRead(reason));
+        f.Push(f.Event(IBEventType::OpenOrderEnd));
+        assert(!f.adapter.PollAccountPostFenceRead().riskReadComplete);
+        f.FinishRiskRefresh();
+        assert(f.adapter.PollAccountPostFenceRead().brokerZeroObserved);
+        const auto newEpoch=f.adapter.BeginRecoveryAuditBarrier();
+        assert(newEpoch.newConnectionEpochRequired);
+        assert(f.adapter.BindAccountPostFenceToFreshTerminalEpoch(reason));
+    };
+    {
+        Fixture stale;
+        start(stale);
+        const auto oldEpoch=stale.adapter.GetConnectionEpoch();
+        stale.adapter.Disconnect();
+        assert(stale.adapter.Connect());
+        stale.adapter.Disconnect();
+        assert(stale.adapter.Connect());
+        assert(stale.adapter.GetConnectionEpoch()==oldEpoch+2);
+        const auto denied=stale.adapter.PollAccountPostFenceRead();
+        assert(denied.terminalNewEpochRequired);
+        assert(!denied.terminalNewEpochObserved);
+        assert(denied.reasonCode==
+            "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_SKIPPED");
+    }
+    {
+        Fixture sent;
+        start(sent);
+        sent.adapter.Disconnect();assert(sent.adapter.Connect());sent.Bootstrap();
+        assert(sent.adapter.ReqRecoveryAuditRiskRefresh());sent.FinishRiskRefresh();
+        assert(sent.adapter.PollAccountPostFenceRead().terminalNewEpochObserved);
+        // A new actual Broker send (even in this offline fake) invalidates the
+        // old account-wide result instead of carrying its zero forward.
+        sent.Place("hepta-v1-sha256:"+std::string(64,'c'));
+        const auto mutated=sent.adapter.PollAccountPostFenceRead();
+        assert(!mutated.terminalNewEpochObserved);
+        assert(!mutated.brokerZeroObserved);
+        assert(mutated.reasonCode==
+            "IB_ACCOUNT_POST_FENCE_NEW_EPOCH_BROKER_MUTATION");
+    }
+    {
+        Fixture foreign;
+        start(foreign);
+        foreign.adapter.Disconnect();assert(foreign.adapter.Connect());
+        foreign.Bootstrap();
+        auto outside=foreign.Event(IBEventType::OpenOrder);
+        outside.id=146;outside.brokerClientId=999;outside.value="Submitted";
+        foreign.Push(outside);
+        assert(foreign.adapter.ReqRecoveryAuditRiskRefresh());
+        foreign.FinishRiskRefresh();
+        const auto nonzero=foreign.adapter.PollAccountPostFenceRead();
+        assert(nonzero.terminalNewEpochObserved);
+        assert(!nonzero.brokerZeroObserved && nonzero.globalActiveOrders==1);
+        assert(!nonzero.maintenanceStopPermitted);
+        assert(nonzero.reasonCode==
+            "IB_ACCOUNT_POST_FENCE_NEW_TERMINAL_EPOCH_RISK_PRESENT");
+    }
 }
 
 void TestAdapterForwardsBoundedHandshakeBudget() {
@@ -2240,7 +2436,19 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();
+    TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();
+    TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();
+    TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();
+    TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();
+    TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();
+    // Original H1 status corruption and terminal-epoch source freshness
+    // both remain binding, independent fail-closed regression paths.
     TestOriginalPostFenceReadRejectsH1PermanentIdConflict();
+    TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();
+    TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();
+    TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();
+    TestAdapterForwardsBoundedHandshakeBudget();
+    TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
