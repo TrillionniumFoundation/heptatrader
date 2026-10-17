@@ -104,6 +104,7 @@ public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
     long nextValidOrderId=41;
+    int allOrderReads=0,accountReads=0,positionReads=0;
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
@@ -112,10 +113,10 @@ public:
     void Disconnect() override {connected=false;}
     bool IsConnected() const override {return connected;}
     const char* GetStatusString() const override {return "fixture";}
-    bool ReqAccountSummary() override {return true;}
-    bool ReqPositions() override {return true;}
-    bool ReqAllOpenOrders() override {return true;}
-    bool ReqOpenOrders() override {return true;}  // adversarial local-client-only view
+    bool ReqAccountSummary() override {++accountReads;return true;}
+    bool ReqPositions() override {++positionReads;return true;}
+    bool ReqAllOpenOrders() override {++allOrderReads;return true;}
+    bool ReqOpenOrders() override {return true;} // client-only adversarial view
     bool ReqCompletedOrders() override {return true;}
     bool ReqExecutions(int id) override {executionsRequest=id;return true;}
     bool ReqMktData(int,const IBContractLite&) override {return true;}
@@ -1240,6 +1241,247 @@ void TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit()
     assert(!disconnected.terminal.complete);
 }
 
+
+void TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk()
+{
+    Fixture f;
+    // No original custodian fence has been installed in this adapter unit
+    // fixture. Only the separate original policy control can authorize
+    // BeginAccountPostFenceRead in production.
+    assert(!f.adapter.PollAccountPostFenceRead().started);
+    assert(f.broker->allOrderReads==1);
+    std::string reason;
+    assert(!f.adapter.BeginAccountPostFenceRead(reason));
+    assert(reason=="IB_ACCOUNT_POST_FENCE_BASELINE_INCOMPLETE");
+    assert(f.broker->allOrderReads==1);
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    f.FinishRiskRefresh();
+    assert(f.adapter.GetAuthoritativeRecoveryAuditSnapshot().barrierComplete);
+    assert(f.broker->accountReads==1 && f.broker->positionReads==1);
+
+    assert(f.adapter.BeginAccountPostFenceRead(reason));
+    assert(reason=="IB_ACCOUNT_POST_FENCE_OPEN_ORDER_END_PENDING");
+    assert(f.broker->allOrderReads==2);
+    auto pending=f.adapter.PollAccountPostFenceRead();
+    assert(pending.started && !pending.activeReadComplete);
+    assert(!pending.activeThenRiskObserved);
+    assert(pending.maintenanceStopPermitted==false);
+    assert(f.broker->accountReads==1 && f.broker->positionReads==1);
+    auto seen=f.Event(IBEventType::OpenOrderEnd);
+    f.Push(seen);
+    auto riskPending=f.adapter.PollAccountPostFenceRead();
+    assert(riskPending.activeReadComplete);
+    assert(!riskPending.riskReadComplete);
+    assert(f.broker->accountReads==2 && f.broker->positionReads==2);
+    // Repeated reads do not resend Broker refreshes.
+    assert(!f.adapter.PollAccountPostFenceRead().riskReadComplete);
+    assert(f.broker->accountReads==2 && f.broker->positionReads==2);
+    f.FinishRiskRefresh();
+    const auto observed=f.adapter.PollAccountPostFenceRead();
+    assert(observed.activeReadComplete && observed.riskReadComplete);
+    assert(observed.activeThenRiskObserved && observed.brokerZeroObserved);
+    assert(observed.connectionEpoch==f.broker->epoch);
+    assert(observed.activeGeneration==2);
+    assert(observed.riskGeneration>0);
+    assert(!observed.terminalPostFenceComplete && !observed.maintenanceStopPermitted);
+    assert(observed.reasonCode=="IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_ZERO_NOT_STOP_PERMIT");
+    assert(!f.adapter.BeginAccountPostFenceRead(reason));
+    assert(reason=="IB_ACCOUNT_POST_FENCE_READ_ALREADY_ATTEMPTED");
+    assert(f.broker->allOrderReads==2 && f.broker->accountReads==2);
+
+    // A connection loss after an observed zero revokes even this read-only
+    // diagnostic: it cannot survive an unrelated new broker epoch.
+    f.adapter.Disconnect();
+    const auto lost=f.adapter.PollAccountPostFenceRead();
+    assert(!lost.activeThenRiskObserved && !lost.brokerZeroObserved);
+    assert(!lost.maintenanceStopPermitted);
+    assert(lost.reasonCode=="IB_ACCOUNT_POST_FENCE_CONNECTION_OR_STREAM_CHANGED");
+}
+
+void TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh()
+{
+    Fixture foreign;
+    assert(foreign.adapter.ReqRecoveryAuditRiskRefresh());
+    foreign.FinishRiskRefresh();
+    std::string reason;
+    assert(foreign.adapter.BeginAccountPostFenceRead(reason));
+    auto order=foreign.Event(IBEventType::OpenOrder);
+    order.id=146;order.brokerClientId=999;order.value="Submitted";
+    foreign.Push(order);foreign.Push(foreign.Event(IBEventType::OpenOrderEnd));
+    auto afterOpen=foreign.adapter.PollAccountPostFenceRead();
+    assert(afterOpen.activeReadComplete && !afterOpen.riskReadComplete);
+    foreign.FinishRiskRefresh();
+    const auto nonzero=foreign.adapter.PollAccountPostFenceRead();
+    assert(nonzero.activeThenRiskObserved && !nonzero.brokerZeroObserved);
+    assert(nonzero.globalActiveOrders==1);
+    assert(!nonzero.maintenanceStopPermitted);
+    assert(nonzero.reasonCode=="IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_PRESENT_NOT_STOP_PERMIT");
+
+    Fixture invalid;
+    assert(invalid.adapter.ReqRecoveryAuditRiskRefresh());
+    invalid.FinishRiskRefresh();
+    assert(invalid.adapter.BeginAccountPostFenceRead(reason));
+    auto unknown=invalid.Event(IBEventType::OpenOrder);
+    unknown.id=365;unknown.brokerClientId=-1;unknown.value="Submitted";
+    invalid.Push(unknown);invalid.Push(invalid.Event(IBEventType::OpenOrderEnd));
+    const auto poisoned=invalid.adapter.PollAccountPostFenceRead();
+    assert(!poisoned.activeThenRiskObserved);
+    assert(poisoned.reasonCode=="IB_ACCOUNT_POST_FENCE_ACTIVE_DOWNLOAD_FAILED");
+    assert(!invalid.adapter.PollAccountPostFenceRead().activeThenRiskObserved);
+    assert(invalid.broker->accountReads==1); // never begins risk from bad orders
+
+    Fixture pending;
+    assert(pending.adapter.ReqRecoveryAuditRiskRefresh());
+    pending.FinishRiskRefresh();
+    assert(pending.adapter.BeginAccountPostFenceRead(reason));
+    assert(!pending.adapter.PollAccountPostFenceRead().activeReadComplete);
+    pending.adapter.Disconnect();
+    const auto closed=pending.adapter.PollAccountPostFenceRead();
+    assert(closed.reasonCode=="IB_ACCOUNT_POST_FENCE_CONNECTION_OR_STREAM_CHANGED");
+    assert(pending.broker->accountReads==1);
+}
+
+// A post-fence read must not promote a contradiction in its own native H1
+// STOP callback stream into an original-owner zero or maintenance permit.
+void TestOriginalPostFenceReadRejectsH1PermanentIdConflict()
+{
+    Fixture f;
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    f.FinishRiskRefresh();
+    std::string reason;
+    assert(f.adapter.BeginAccountPostFenceRead(reason));
+    hepta_bracket_h1::FrozenBracket frozen;
+    frozen.originalCommandKey="post-fence-h1-native-conflict";
+    frozen.account="DU123";frozen.owner="owner-adapter";
+    frozen.sessionId="session-1";frozen.executionDomain="PAPER";
+    frozen.contractId=12087792;frozen.clientId=73;
+    frozen.parentOrderId=4800;frozen.childOrderId=4801;
+    frozen.connectionEpoch=f.adapter.GetConnectionEpoch();
+    frozen.positionGeneration=1;frozen.ownerFenceToken=3;
+    frozen.intentObservedAtMs=1792080000123ULL;
+    frozen.quantity=25000;frozen.side="BUY";
+    frozen.referencePrice=1.12050;frozen.stopPrice=1.11825;
+    frozen.minTick=0.00005;
+    hepta_bracket_h1::BoundRefs refs;
+    assert(hepta_bracket_h1::BuildFrozenRefs(frozen,refs,reason));
+    auto sdk=f.Event(IBEventType::OpenOrder);
+    sdk.id=frozen.childOrderId;sdk.value="Submitted";
+    sdk.queueIngressMonotonicNs=555000;
+    sdk.contract.symbol="EUR";sdk.contract.secType="CASH";
+    sdk.contract.currency="USD";sdk.contract.exchange="IDEALPRO";
+    sdk.order.orderRef=refs.childRef;sdk.order.orderType="STP";
+    sdk.order.action="SELL";sdk.order.totalQuantity=frozen.quantity;
+    sdk.order.auxPrice=frozen.stopPrice;
+    auto& native=sdk.nativeOrder;
+    native.present=true;native.contractId=frozen.contractId;
+    native.orderId=frozen.childOrderId;native.permanentId=990101;
+    native.parentId=frozen.parentOrderId;native.clientId=frozen.clientId;
+    native.transmit=true;native.account=frozen.account;
+    native.action="SELL";native.orderType="STP";native.timeInForce="GTC";
+    native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
+    native.ocaType=1;native.triggerMethod=0;
+    native.stopAuxPrice=frozen.stopPrice;native.totalQuantity=frozen.quantity;
+    f.Push(sdk);
+    auto conflict=sdk;conflict.queueIngressMonotonicNs=555100;
+    ++conflict.nativeOrder.permanentId;
+    f.Push(conflict);f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto observed=f.adapter.PollAccountPostFenceRead();
+    assert(observed.started && !observed.activeThenRiskObserved);
+    assert(!observed.brokerZeroObserved && !observed.maintenanceStopPermitted);
+    assert(observed.reasonCode=="IB_ACCOUNT_POST_FENCE_ACTIVE_DOWNLOAD_FAILED");
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(f.broker->accountReads==1 && f.broker->positionReads==1);
+    assert(f.broker->allOrderReads==2);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    // Even a perfect H1 native STOP cannot be interpreted as an empty
+    // global Broker order inventory by the original post-fence read.
+    // It is an outstanding account-wide order, NOT a stop/exit permit.
+    Fixture outstanding;
+    assert(outstanding.adapter.ReqRecoveryAuditRiskRefresh());
+    outstanding.FinishRiskRefresh();
+    assert(outstanding.adapter.BeginAccountPostFenceRead(reason));
+    auto fresh=sdk;
+    fresh.connectionEpoch=outstanding.adapter.GetConnectionEpoch();
+    outstanding.Push(fresh);
+    outstanding.Push(outstanding.Event(IBEventType::OpenOrderEnd));
+    const auto waiting=outstanding.adapter.PollAccountPostFenceRead();
+    assert(waiting.started && waiting.activeReadComplete);
+    assert(!waiting.riskReadComplete);
+    outstanding.FinishRiskRefresh();
+    const auto activeStop=outstanding.adapter.PollAccountPostFenceRead();
+    assert(activeStop.activeThenRiskObserved && !activeStop.brokerZeroObserved);
+    assert(activeStop.globalActiveOrders==1);
+    assert(!activeStop.terminalPostFenceComplete &&
+           !activeStop.maintenanceStopPermitted);
+    assert(activeStop.reasonCode==
+           "IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_PRESENT_NOT_STOP_PERMIT");
+    assert(outstanding.broker->places==0 && outstanding.broker->cancels==0);
+    // Race after the fresh global OpenOrderEnd, while the coordinated
+    // account/position risk refresh is still outstanding. A contradictory
+    // later Broker status must revoke the *already completed* active leg.
+    Fixture duringRisk;
+    assert(duringRisk.adapter.ReqRecoveryAuditRiskRefresh());
+    duringRisk.FinishRiskRefresh();
+    assert(duringRisk.adapter.BeginAccountPostFenceRead(reason));
+    auto stopAgain=sdk;
+    stopAgain.connectionEpoch=duringRisk.adapter.GetConnectionEpoch();
+    duringRisk.Push(stopAgain);
+    duringRisk.Push(duringRisk.Event(IBEventType::OpenOrderEnd));
+    const auto beganRisk=duringRisk.adapter.PollAccountPostFenceRead();
+    assert(beganRisk.activeReadComplete && !beganRisk.riskReadComplete);
+    auto status=duringRisk.Event(IBEventType::OrderStatus);
+    status.id=frozen.childOrderId;status.key="Submitted";
+    status.value.clear();status.number=0;status.number2=0;
+    status.number3=frozen.quantity;status.requestId=0;
+    status.nativeOrder.permanentId=native.permanentId;
+    status.remainingQuantityKnown=true;status.queueIngressMonotonicNs=555200;
+    duringRisk.Push(status);
+    auto bad=status;bad.queueIngressMonotonicNs=555300;
+    ++bad.nativeOrder.permanentId;
+    duringRisk.Push(bad);
+    duringRisk.FinishRiskRefresh();
+    const auto invalid=duringRisk.adapter.PollAccountPostFenceRead();
+    assert(invalid.started && !invalid.activeThenRiskObserved);
+    assert(!invalid.brokerZeroObserved && !invalid.maintenanceStopPermitted);
+    assert(!duringRisk.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(duringRisk.broker->allOrderReads==2);
+    assert(duringRisk.broker->accountReads==2 &&
+           duringRisk.broker->positionReads==2);
+    assert(duringRisk.broker->places==0 && duringRisk.broker->cancels==0);
+}
+
+
+void TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend()
+{
+    Fixture revoked;
+    assert(revoked.adapter.ReqRecoveryAuditRiskRefresh());
+    revoked.FinishRiskRefresh();
+    std::string reason;
+    assert(revoked.adapter.BeginAccountPostFenceRead(reason));
+    revoked.adapter.InvalidateAccountPostFenceRead(
+        "IB_ACCOUNT_POST_FENCE_LOCAL_DRAIN_CHANGED");
+    revoked.Push(revoked.Event(IBEventType::OpenOrderEnd));
+    const auto blocked=revoked.adapter.PollAccountPostFenceRead();
+    assert(blocked.started && !blocked.activeThenRiskObserved);
+    assert(blocked.reasonCode=="IB_ACCOUNT_POST_FENCE_LOCAL_DRAIN_CHANGED");
+    assert(revoked.broker->accountReads==1); // NO risk request after revoke
+
+    Fixture concurrent;
+    assert(concurrent.adapter.ReqRecoveryAuditRiskRefresh());
+    concurrent.FinishRiskRefresh();
+    assert(concurrent.adapter.BeginAccountPostFenceRead(reason));
+    concurrent.Push(concurrent.Event(IBEventType::OpenOrderEnd));
+    // This is an isolated Broker FAKE with no original account fence. A
+    // concurrent venue send must invalidate the post-fence watermark;
+    // production stops the same send at the original coordinator gate.
+    concurrent.Place("hepta-v1-sha256:"+std::string(64,'f'));
+    assert(concurrent.broker->places==1);
+    const auto mutated=concurrent.adapter.PollAccountPostFenceRead();
+    assert(mutated.started && !mutated.activeThenRiskObserved);
+    assert(mutated.reasonCode=="IB_ACCOUNT_POST_FENCE_BROKER_MUTATION_OR_FILL");
+    assert(concurrent.broker->accountReads==1);
+}
+
 void TestAdapterForwardsBoundedHandshakeBudget() {
     Broker* broker=new Broker();
     HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
@@ -1998,6 +2240,7 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestOriginalPostFenceReadRejectsH1PermanentIdConflict();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }

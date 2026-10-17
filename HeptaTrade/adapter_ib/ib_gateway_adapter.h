@@ -214,6 +214,27 @@ struct IBH1OcaAdapterScopeObservation {
     std::uint64_t activeOrdersGeneration = 0;
 };
 
+// One-shot post-durable-account-fence observation from the ORIGINAL
+// Broker adapter; only original owner control may start it. This does not
+// provide a terminal-after-fence or Broker-global STOP permit.
+struct IBAccountPostFenceReadObservation {
+    bool started = false;
+    bool activeReadComplete = false;
+    bool riskReadComplete = false;
+    bool activeThenRiskObserved = false;
+    bool brokerZeroObserved = false;
+    bool terminalPostFenceComplete = false;
+    bool maintenanceStopPermitted = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t activeGeneration = 0;
+    std::uint64_t riskGeneration = 0;
+    std::uint64_t terminalGeneration = 0;
+    std::uint64_t brokerMutationGeneration = 0;
+    std::uint64_t economicExposureGeneration = 0;
+    std::size_t globalActiveOrders = 0;
+    std::string reasonCode = "IB_ACCOUNT_POST_FENCE_READ_NOT_STARTED";
+};
+
 struct IBPhysicalCryptoPositionObservation {
     bool complete = false;
     std::string account;
@@ -281,6 +302,16 @@ public:
     bool GetOrderRiskBaseline(long orderId, IBOrderRiskBaseline& out) const;
     bool ReqOpenOrders();
     bool ReqAuthoritativeOpenOrders();
+    // Mutates only IB *read request* generations, never sends broker order/
+    // cancel. The caller must first prove the original durable owner fence
+    // and local send drain, within the native authenticated control path.
+    bool BeginAccountPostFenceRead(std::string& reason);
+    // Original runtime can revoke an already-issued read if coordinator
+    // local quiescence changed around the Broker request boundary.
+    void InvalidateAccountPostFenceRead(const std::string& reason);
+    // Idempotent, bounded read-state progress; after original OpenOrderEnd
+    // issues one coherent account+positions refresh. No reconnect or retry.
+    IBAccountPostFenceReadObservation PollAccountPostFenceRead();
     bool ReqTerminalCorrelations();
     bool ReqMktData(int reqId, const IBContractLite& c);
     bool CancelMktData(int reqId);
@@ -636,6 +667,17 @@ private:
     std::map<std::string, IBAuthoritativeFxCashExposure>
         m_authoritativeFxCashExposures;
     std::uint64_t m_brokerMutationGeneration = 0;
+    enum class PostFenceReadStage : std::uint8_t {
+        NotStarted, AwaitActive, AwaitRisk, Observed, Failed
+    };
+    PostFenceReadStage m_postFenceReadStage = PostFenceReadStage::NotStarted;
+    std::uint64_t m_postFenceConnectionEpoch = 0;
+    std::uint64_t m_postFenceActiveGeneration = 0;
+    std::uint64_t m_postFenceRiskGeneration = 0;
+    std::uint64_t m_postFenceTerminalGeneration = 0;
+    std::uint64_t m_postFenceMutationGeneration = 0;
+    std::uint64_t m_postFenceExposureGeneration = 0;
+    std::string m_postFenceFailureReason;
     std::uint64_t m_recoveryAuditMinimumConnectionEpoch = 0;
     bool m_recoveryAuditBarrierComplete = false;
     std::uint64_t m_recoveryAuditBarrierConnectionEpoch = 0;
