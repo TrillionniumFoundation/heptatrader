@@ -76,6 +76,19 @@ IBVisibleProtectiveOrderCandidate MakeIbVisibleProtectiveCandidate(
     const IBEvent& event)
 {
     IBVisibleProtectiveOrderCandidate candidate;
+    candidate.contractSymbol=event.contract.symbol;
+    candidate.contractSecType=event.contract.secType;
+    candidate.contractCurrency=event.contract.currency;
+    candidate.contractExchange=event.contract.exchange;
+    candidate.orderRef=event.order.orderRef;
+    candidate.sdkNativePresent=event.nativeOrder.present;
+    if(event.nativeOrder.present) {
+        candidate.nativeContractId=event.nativeOrder.contractId;
+        candidate.nativeOcaType=event.nativeOrder.ocaType;
+        candidate.nativeTimeInForce=event.nativeOrder.timeInForce;
+        candidate.nativeTriggerMethod=event.nativeOrder.triggerMethod;
+    }
+    candidate.limitPrice=event.order.lmtPrice;
     candidate.orderType=event.order.orderType;
     candidate.action=event.order.action;
     candidate.ocaGroup=event.brokerOcaGroup;
@@ -92,7 +105,18 @@ bool SameIbVisibleProtectiveCandidate(
     const IBVisibleProtectiveOrderCandidate& a,
     const IBVisibleProtectiveOrderCandidate& b)
 {
-    return a.orderType==b.orderType && a.action==b.action &&
+    return a.contractSymbol==b.contractSymbol &&
+        a.contractSecType==b.contractSecType &&
+        a.contractCurrency==b.contractCurrency &&
+        a.contractExchange==b.contractExchange &&
+        a.orderRef==b.orderRef &&
+        a.sdkNativePresent==b.sdkNativePresent &&
+        a.nativeContractId==b.nativeContractId &&
+        a.nativeOcaType==b.nativeOcaType &&
+        a.nativeTimeInForce==b.nativeTimeInForce &&
+        a.nativeTriggerMethod==b.nativeTriggerMethod &&
+        a.limitPrice==b.limitPrice &&
+        a.orderType==b.orderType && a.action==b.action &&
         a.ocaGroup==b.ocaGroup && a.parentOrderId==b.parentOrderId &&
         a.transmit==b.transmit && a.stopTrigger==b.stopTrigger &&
         a.totalQuantity==b.totalQuantity &&
