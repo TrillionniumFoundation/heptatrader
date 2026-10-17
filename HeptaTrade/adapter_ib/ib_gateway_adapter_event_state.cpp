@@ -75,6 +75,8 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_pendingActiveOrderClientIds.clear();
     m_pendingActivePermIdOwners.clear();
     m_pendingUnboundManualPermIds.clear();
+    m_pendingProtectiveCandidatesByPermId.clear();
+    m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
@@ -85,6 +87,8 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
     m_correlationSnapshot.activeOrderByPermanentId.clear();
     m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.visibleProtectiveCandidatesByPermId.clear();
+    m_correlationSnapshot.protectiveMetadataIncomplete = false;
     m_correlationSnapshot.activeOrderMissingPermanentId = false;
 }
 
@@ -1460,6 +1464,47 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         } else {
             m_pendingMissingPermanentId = true;
         }
+        // Observe Broker-native stop/OCA/parent metadata on the ORIGINAL
+        // account-wide callback. Never infer protective survival from this
+        // label alone, and never bind/change orders or create cancel authority.
+        const bool stopType =
+            outEvent.order.orderType == "STP" ||
+            outEvent.order.orderType == "STP LMT" ||
+            outEvent.order.orderType == "TRAIL" ||
+            outEvent.order.orderType == "TRAIL LIMIT";
+        if (stopType || !outEvent.brokerOcaGroup.empty() ||
+            outEvent.brokerParentOrderId != 0) {
+            if (outEvent.brokerPermId <= 0) {
+                m_pendingProtectiveMetadataIncomplete = true;
+            } else {
+                IBVisibleProtectiveOrderCandidate candidate;
+                candidate.orderType = outEvent.order.orderType;
+                candidate.action = outEvent.order.action;
+                candidate.ocaGroup = outEvent.brokerOcaGroup;
+                candidate.parentOrderId = outEvent.brokerParentOrderId;
+                candidate.transmit = outEvent.brokerTransmit;
+                candidate.stopTrigger = outEvent.order.auxPrice;
+                candidate.totalQuantity = outEvent.order.totalQuantity;
+                candidate.brokerClientId = outEvent.brokerClientId;
+                candidate.orderId = orderId;
+                const auto existing =
+                    m_pendingProtectiveCandidatesByPermId.emplace(
+                        outEvent.brokerPermId, candidate);
+                if (!existing.second &&
+                    (existing.first->second.orderType != candidate.orderType ||
+                     existing.first->second.action != candidate.action ||
+                     existing.first->second.ocaGroup != candidate.ocaGroup ||
+                     existing.first->second.parentOrderId != candidate.parentOrderId ||
+                     existing.first->second.transmit != candidate.transmit ||
+                     existing.first->second.stopTrigger != candidate.stopTrigger ||
+                     existing.first->second.totalQuantity != candidate.totalQuantity)) {
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    m_correlationSnapshot.reasonCode =
+                        "IB_PROTECTIVE_PERMID_METADATA_CONFLICT";
+                    return;
+                }
+            }
+        }
         const auto identity = m_pendingActiveOrderClientIds.emplace(
             orderId, outEvent.brokerClientId);
         if (!identity.second && identity.first->second != outEvent.brokerClientId) {
@@ -1502,6 +1547,10 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
                 m_pendingUnboundManualPermIds;
             m_correlationSnapshot.activeOrderMissingPermanentId =
                 m_pendingMissingPermanentId;
+            m_correlationSnapshot.visibleProtectiveCandidatesByPermId =
+                m_pendingProtectiveCandidatesByPermId;
+            m_correlationSnapshot.protectiveMetadataIncomplete =
+                m_pendingProtectiveMetadataIncomplete;
         } else {
             m_correlationSnapshot.complete = false;
             if (m_correlationSnapshot.reasonCode.empty()) {
@@ -1513,6 +1562,8 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
     m_correlationSnapshot.activeOrderByPermanentId.clear();
     m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.visibleProtectiveCandidatesByPermId.clear();
+    m_correlationSnapshot.protectiveMetadataIncomplete = false;
     m_correlationSnapshot.activeOrderMissingPermanentId = false;
         }
         m_pendingCorrelationOrderIds.clear();
@@ -1520,6 +1571,8 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         m_pendingActiveOrderClientIds.clear();
     m_pendingActivePermIdOwners.clear();
     m_pendingUnboundManualPermIds.clear();
+    m_pendingProtectiveCandidatesByPermId.clear();
+    m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
     }
 }

@@ -1779,6 +1779,9 @@ public:
         event.account = order.account;
         event.brokerClientId = order.clientId;
         event.brokerPermId = order.permId > 0 ? order.permId : 0;
+        event.brokerParentOrderId = static_cast<long long>(order.parentId);
+        event.brokerOcaGroup = order.ocaGroup;
+        event.brokerTransmit = order.transmit;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;
@@ -1799,6 +1802,9 @@ public:
         event.account = order.account;
         event.brokerClientId = order.clientId;
         event.brokerPermId = order.permId > 0 ? order.permId : 0;
+        event.brokerParentOrderId = static_cast<long long>(order.parentId);
+        event.brokerOcaGroup = order.ocaGroup;
+        event.brokerTransmit = order.transmit;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;

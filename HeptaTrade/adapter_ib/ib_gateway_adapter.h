@@ -84,6 +84,21 @@ struct IBAuthoritativeFxCashExposure {
     double campaignOwnedQuantity = 0.0;
 };
 
+// READ-ONLY metadata from the original IB openOrder callback. A live STP,
+ // STP LMT, TRAIL or OCA label is only a visible CANDIDATE, not a verified
+ // Broker protection that survives driver loss, venue cancel, or liquidation.
+struct IBVisibleProtectiveOrderCandidate {
+    std::string orderType;
+    std::string action;
+    std::string ocaGroup;
+    long long parentOrderId = 0;
+    bool transmit = false;
+    double stopTrigger = 0.0;
+    double totalQuantity = 0.0;
+    int brokerClientId = -1;
+    long orderId = 0;
+};
+
 struct IBAuthoritativeCorrelationSnapshot {
     std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
@@ -101,6 +116,9 @@ struct IBAuthoritativeCorrelationSnapshot {
     // all of these into the single numeric zero key above.
     std::map<std::int64_t, std::pair<int, long>> activeOrderByPermanentId;
     std::set<std::int64_t> unboundManualPermanentIds;
+    std::map<std::int64_t, IBVisibleProtectiveOrderCandidate>
+        visibleProtectiveCandidatesByPermId;
+    bool protectiveMetadataIncomplete = false;
     // Existing/legacy native fixture or broker callbacks can lack a permId.
     // That is NEVER positive evidence that account-wide permanent identity
     // coverage is complete. A zero-size request still does not prove that
@@ -574,6 +592,9 @@ private:
     std::map<long, int> m_pendingActiveOrderClientIds;
     std::map<std::int64_t, std::pair<int, long>> m_pendingActivePermIdOwners;
     std::set<std::int64_t> m_pendingUnboundManualPermIds;
+    std::map<std::int64_t, IBVisibleProtectiveOrderCandidate>
+        m_pendingProtectiveCandidatesByPermId;
+    bool m_pendingProtectiveMetadataIncomplete = false;
     bool m_pendingMissingPermanentId = false;
     std::set<long> m_postFillReconciliationOrderIds;
     std::map<long, std::uint64_t> m_postFillExposureGenerationByOrderId;

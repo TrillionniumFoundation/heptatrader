@@ -105,6 +105,11 @@ struct IBEvent {
     // unbound orders whose API-scoped orderId can be 0 for EVERY order.
     // Zero means no authoritative permanent ID was observed.
     std::int64_t brokerPermId = 0;
+    // Exact read-only IB Order metadata. NEVER copied into Agent-supplied
+    // OrderIntent or used as permission to submit, cancel, bind, or stop.
+    long long brokerParentOrderId = 0;
+    std::string brokerOcaGroup;
+    bool brokerTransmit = false;
     std::string account;
     std::string key;
     std::string value;
