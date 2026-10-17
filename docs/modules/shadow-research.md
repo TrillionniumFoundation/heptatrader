@@ -54,3 +54,5 @@ Research status remains EXPERIMENTAL after this documentation and test work.
 Original-source Tiny MLP Shadow90 two-gap source study: [Pocket4 original gap audit](../technical/laya-original-quote-two-gap-20261016.md); never upgrades an original CENSORED result.
 
 Pocket4 USD100k original decision-attribution net-Value research: [343-reward chronological holdout](../technical/pocket4-value343-chronological-20261016.md). No policy or trading authority.
+
+Original USD100k Value343 two-sided predecision Pocket4 observer: [prospective research shadow](../technical/pocket4-value343-predecision-shadow-20261017.md). No trading permission.
