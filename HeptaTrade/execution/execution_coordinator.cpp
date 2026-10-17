@@ -1457,12 +1457,20 @@ bool ExecutionCoordinator::EnterAccountNewEntryFence(
     // mutex has already crossed the send-attempt boundary. A fence cannot
     // retroactively cancel it, or infer a Broker-global zero from local state.
     for (const auto& item : m_orderOwners)
-        if (item.second.account == context.account) ++outstanding;
+        if (item.second.account == context.account ||
+            item.second.account.empty()) ++outstanding;
     for (const auto& item : m_requests)
-        if (item.second.context.account == context.account &&
+        if ((item.second.context.account == context.account ||
+             item.second.context.account.empty()) &&
             item.second.status == ExecutionCommandStatus::Uncertain)
             ++outstanding;
-    if (m_riskMutationDispatchInFlight) ++outstanding;
+    // The original same-mutex venue dispatch counter includes CANCEL as
+    // well as Place/Flatten. A callback may have crossed the Broker boundary
+    // before this account stop was installed. No zero-drain acknowledgement
+    // may be inferred while any callback has yet to return.
+    outstanding += static_cast<std::size_t>(m_venueDispatchesInFlight);
+    if (m_riskMutationDispatchInFlight && m_venueDispatchesInFlight == 0)
+        ++outstanding;
     reason = outstanding ? "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING" :
         "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT";
     return true;
@@ -1472,6 +1480,50 @@ bool ExecutionCoordinator::IsAccountNewEntryFenced(const std::string& account) c
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return !account.empty() && m_accountNewEntryFences.count(account) != 0;
+}
+
+ExecutionAccountLocalDrainObservation ExecutionCoordinator::ObserveAccountLocalDrain(
+    const AgentExecutionContext& context) const
+{
+    ExecutionAccountLocalDrainObservation observed;
+    if (context.account.empty() || context.agentId.empty() || context.sessionId.empty())
+        return observed; // Never materialize a fictitious idle account.
+    std::lock_guard<std::mutex> lock(m_mutex);
+    observed.present = true;
+    observed.sessionOwnerFenced =
+        m_fencedSessionOwners.count(OwnerKey(context.agentId, context.sessionId)) != 0;
+    observed.sessionOwnerRecoveryOnly =
+        m_recoveryOnlySessionOwners.count(OwnerKey(context.agentId, context.sessionId)) != 0;
+    observed.accountEntryFenced = m_accountNewEntryFences.count(context.account) != 0;
+    observed.mutationBlocked = m_mutationBlocked;
+    observed.mutationBlockReason = m_mutationBlockReason;
+    observed.riskMutationDispatchInFlight = m_riskMutationDispatchInFlight;
+    observed.venueDispatchesInFlight = m_venueDispatchesInFlight;
+    for (const auto& item : m_orderOwners)
+    {
+        if (item.second.account == context.account) ++observed.ownedOrders;
+        else if (item.second.account.empty()) ++observed.unattributedOwnedOrders;
+    }
+    // HOT projection only: never reinterpret missing archived/cold history as
+    // positive proof that every historical and Broker-side send has settled.
+    for (const auto& item : m_requests)
+    {
+        if (item.second.status != ExecutionCommandStatus::Uncertain) continue;
+        if (item.second.context.account == context.account)
+            ++observed.uncertainCommands;
+        else if (item.second.context.account.empty())
+            ++observed.unattributedUncertainCommands;
+    }
+    observed.localHotProjectionQuiescent =
+        observed.accountEntryFenced && !observed.mutationBlocked &&
+        !observed.riskMutationDispatchInFlight &&
+        observed.venueDispatchesInFlight == 0 &&
+        observed.ownedOrders == 0 && observed.uncertainCommands == 0 &&
+        observed.unattributedOwnedOrders == 0 &&
+        observed.unattributedUncertainCommands == 0;
+    // Even localHotProjectionQuiescent=true cannot prove a Broker-global
+    // active/unknown-order zero or protective stop surviving Driver death.
+    return observed;
 }
 
 std::size_t ExecutionCoordinator::FenceSessionOwner(

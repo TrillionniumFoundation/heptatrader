@@ -674,10 +674,20 @@ void TestAccountNewEntryFencePersistsAcrossSessions()
     custodian.executionDomain="PAPER";
     std::size_t outstanding=777;
     std::string reason;
+    const auto before = coordinator.ObserveAccountLocalDrain(custodian);
+    assert(before.present && !before.accountEntryFenced);
+    assert(!before.localHotProjectionQuiescent);
+    assert(!coordinator.ObserveAccountLocalDrain(AgentExecutionContext()).present);
     assert(coordinator.EnterAccountNewEntryFence(
         custodian,outstanding,reason));
     assert(outstanding==0);
     assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT");
+    const auto first = coordinator.ObserveAccountLocalDrain(custodian);
+    assert(first.present && first.accountEntryFenced);
+    assert(first.ownedOrders==0 && first.uncertainCommands==0);
+    assert(first.unattributedOwnedOrders==0 && first.unattributedUncertainCommands==0);
+    assert(first.venueDispatchesInFlight==0);
+    assert(first.localHotProjectionQuiescent);
     assert(coordinator.IsAccountNewEntryFenced("DU123"));
     assert(!coordinator.IsAccountNewEntryFenced("DU_FOREIGN"));
     auto crypto=MakePlace("crypto-new-after-maint");
@@ -697,18 +707,41 @@ void TestAccountNewEntryFencePersistsAcrossSessions()
     foreign.context.account="DU_OTHER";
     assert(coordinator.PlaceOrder(foreign).status==ExecutionCommandStatus::Accepted);
     assert(sends==1);
+    // An order on a DIFFERENT account is not our local account risk.
+    assert(coordinator.ObserveAccountLocalDrain(custodian).localHotProjectionQuiescent);
     custodian.toolCallId="maint-account-repeat";
     assert(coordinator.EnterAccountNewEntryFence(custodian,outstanding,reason));
     assert(outstanding==0); // The foreign account is not scope of this lock.
+    // An unattributed original owner is not the same as a proven other
+    // Broker account. It must remain an account-maintenance blocker.
+    auto unknown=MakePlace("missing-account-original");
+    unknown.context.account.clear();
+    const auto unattributed=coordinator.PlaceOrder(unknown);
+    assert(unattributed.status==ExecutionCommandStatus::Accepted);
+    assert(sends==2);
+    const auto unknownState=coordinator.ObserveAccountLocalDrain(custodian);
+    assert(unknownState.unattributedOwnedOrders==1);
+    assert(!unknownState.localHotProjectionQuiescent);
+    custodian.toolCallId="maint-account-unknown-repeat";
+    assert(coordinator.EnterAccountNewEntryFence(custodian,outstanding,reason));
+    assert(outstanding>=1);
+    assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING");
+    assert(coordinator.RecordOrderTerminalDurably(unattributed.orderId,&reason));
+    const auto unknownCleared=coordinator.ObserveAccountLocalDrain(custodian);
+    assert(unknownCleared.unattributedOwnedOrders==0);
+    assert(unknownCleared.localHotProjectionQuiescent);
     ExecutionCoordinator recovered(journal,callbacks);
     assert(recovered.RecoverFromJournal(reason));
     assert(recovered.IsAccountNewEntryFenced("DU123"));
+    const auto replayed = recovered.ObserveAccountLocalDrain(custodian);
+    assert(replayed.present && replayed.accountEntryFenced);
+    assert(replayed.ownedOrders==0 && replayed.localHotProjectionQuiescent);
     assert(!recovered.IsAccountNewEntryFenced("DU_OTHER"));
     auto later=MakePlace("post-restart-btc");
     later.context.agentId="third-agent";
     later.context.sessionId="new-session";
     assert(recovered.PlaceOrder(later).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
-    assert(sends==1);
+    assert(sends==2);
     ::unlink(path.c_str());
 }
 
@@ -751,6 +784,12 @@ void TestAccountNewEntryFenceReportsInFlightAndDoesNotResend()
     assert(coordinator.EnterAccountNewEntryFence(control,outstanding,reason));
     assert(outstanding>=1);
     assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING");
+    const auto sending = coordinator.ObserveAccountLocalDrain(control);
+    assert(sending.present && sending.accountEntryFenced);
+    assert(sending.riskMutationDispatchInFlight);
+    assert(sending.venueDispatchesInFlight>=1);
+    assert(sending.uncertainCommands>=1);
+    assert(!sending.localHotProjectionQuiescent);
     auto competing=MakePlace("different-session-must-reject");
     competing.context.agentId="other";
     competing.context.sessionId="session2";
@@ -763,14 +802,105 @@ void TestAccountNewEntryFenceReportsInFlightAndDoesNotResend()
     changed.notify_all();
     assert(running.get().status==ExecutionCommandStatus::Accepted);
     assert(!coordinator.RuntimeObservation().riskMutationDispatchInFlight);
+    const auto brokerAcknowledged = coordinator.ObserveAccountLocalDrain(control);
+    assert(!brokerAcknowledged.riskMutationDispatchInFlight);
+    assert(brokerAcknowledged.venueDispatchesInFlight==0);
+    assert(brokerAcknowledged.ownedOrders>=1);
+    assert(!brokerAcknowledged.localHotProjectionQuiescent);
     assert(sends==1);
     assert(coordinator.IsAccountNewEntryFenced("DU123"));
+    assert(coordinator.RecordOrderTerminalDurably(980,&reason));
+    const auto localDrained = coordinator.ObserveAccountLocalDrain(control);
+    assert(localDrained.accountEntryFenced && localDrained.localHotProjectionQuiescent);
+    assert(localDrained.ownedOrders==0 && localDrained.uncertainCommands==0);
     assert(coordinator.PlaceOrder(
         MakePlace("new-after-original-return")).reasonCode=="ACCOUNT_NEW_ENTRY_FENCED");
     ExecutionCoordinator recovered(journal,callbacks);
     assert(recovered.RecoverFromJournal(reason));
     assert(recovered.IsAccountNewEntryFenced("DU123"));
     assert(sends==1);
+    ::unlink(path.c_str());
+}
+
+
+void TestAccountNewEntryFenceCountsCancelVenueDispatch()
+{
+    const std::string path=TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    std::mutex gate;
+    std::condition_variable changed;
+    bool entered=false,release=false;
+    unsigned cancels=0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement=VenuePlacement::Immediate(
+        [](const PlaceOrderCommand&, const std::string&) {
+            return VenuePlaceResult::Submitted(991);
+        });
+    callbacks.canCancelIbOrder=[](long id,std::string* reason) {
+        if (reason) reason->clear();
+        return id==991;
+    };
+    callbacks.cancelOrder=[&](long id) {
+        assert(id==991);
+        {
+            std::lock_guard<std::mutex> lock(gate);
+            entered=true;++cancels;
+        }
+        changed.notify_all();
+        std::unique_lock<std::mutex> lock(gate);
+        changed.wait(lock,[&]{return release;});
+        return VenueCancelResult::Submitted();
+    };
+    ExecutionCoordinator coordinator(journal,callbacks);
+    const auto place=MakePlace("cancel-boundary-seed");
+    const auto original=coordinator.PlaceOrder(place);
+    assert(original.status==ExecutionCommandStatus::Accepted);
+    assert(original.orderId==991);
+    CancelOrderCommand cancel;
+    cancel.context=place.context;
+    cancel.context.toolCallId="cancel-in-flight-before-account-fence";
+    cancel.orderId=991;
+    cancel.instrument=place.instrument;
+    auto running=std::async(std::launch::async,[&] {
+        return coordinator.CancelOrder(cancel);
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        assert(changed.wait_for(lock,std::chrono::seconds(2),
+                                [&]{return entered;}));
+    }
+    AgentExecutionContext control=place.context;
+    control.toolCallId="account-cancel-drain-test";
+    std::size_t outstanding=0;
+    std::string reason;
+    assert(coordinator.EnterAccountNewEntryFence(control,outstanding,reason));
+    assert(outstanding>=2); // Original active order AND venue CANCEL send.
+    assert(reason=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING");
+    const auto during=coordinator.ObserveAccountLocalDrain(control);
+    assert(during.present && during.accountEntryFenced);
+    assert(!during.riskMutationDispatchInFlight); // A CANCEL is not a new entry.
+    assert(during.venueDispatchesInFlight>=1);
+    assert(during.ownedOrders==1);
+    assert(!during.localHotProjectionQuiescent);
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        release=true;
+    }
+    changed.notify_all();
+    const auto cancelled=running.get();
+    assert(cancelled.status==ExecutionCommandStatus::Accepted);
+    assert(cancels==1);
+    const auto callbackReturned=coordinator.ObserveAccountLocalDrain(control);
+    assert(callbackReturned.venueDispatchesInFlight==0);
+    assert(callbackReturned.ownedOrders==1);
+    assert(!callbackReturned.localHotProjectionQuiescent);
+    // A callback return is NOT Broker terminal evidence. Only the native
+    // durable terminal record clears the exact original owner projection.
+    assert(coordinator.RecordOrderTerminalDurably(991,&reason));
+    const auto terminal=coordinator.ObserveAccountLocalDrain(control);
+    assert(terminal.accountEntryFenced && terminal.localHotProjectionQuiescent);
+    assert(terminal.ownedOrders==0 && terminal.uncertainCommands==0);
     ::unlink(path.c_str());
 }
 
@@ -802,6 +932,10 @@ void TestAccountNewEntryFenceJournalFailureFailsClosed()
     assert(reason=="OMS_ACCOUNT_NEW_ENTRY_FENCE_WRITE_FAILED");
     assert(coordinator.IsAccountNewEntryFenced("DU123"));
     assert(coordinator.IsMutationBlocked());
+    const auto failed = coordinator.ObserveAccountLocalDrain(context);
+    assert(failed.present && failed.accountEntryFenced && failed.mutationBlocked);
+    assert(!failed.localHotProjectionQuiescent);
+    assert(failed.mutationBlockReason=="OMS_ACCOUNT_NEW_ENTRY_FENCE_WRITE_FAILED");
     auto command=MakePlace("different-owner-after-fence-write-failure");
     command.context.agentId="different-owner";
     command.context.sessionId="different-session";

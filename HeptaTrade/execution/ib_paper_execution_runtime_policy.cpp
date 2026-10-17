@@ -283,20 +283,20 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
         // the exact authenticated owner's readiness, never a mere socket probe.
         if (m_config.profile.userScope)
         {
-            const bool fenced = !m_coordinator || m_coordinator->IsSessionOwnerFenced(
-                command.context.agentId, command.context.sessionId);
-            const bool recoveryOnly = !m_coordinator || m_coordinator->IsSessionOwnerRecoveryOnly(
-                command.context.agentId, command.context.sessionId);
-            const bool accountEntryFenced = !m_coordinator ||
-                m_coordinator->IsAccountNewEntryFenced(command.context.account);
-            std::string reason;
+            // Read owner/account fence and every local venue in-flight flag
+            // together under ONE original coordinator mutex. Previously
+            // separate reads could advertise a false idle mixed generation.
+            const ExecutionAccountLocalDrainObservation local = m_coordinator ?
+                m_coordinator->ObserveAccountLocalDrain(command.context) :
+                ExecutionAccountLocalDrainObservation();
+            const bool fenced = !local.present || local.sessionOwnerFenced;
+            const bool recoveryOnly = !local.present || local.sessionOwnerRecoveryOnly;
+            const bool accountEntryFenced = !local.present || local.accountEntryFenced;
+            std::string reason = local.mutationBlockReason;
             const bool startupReadOnly = m_startupRecoveryReadOnly.load();
-            const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason) || startupReadOnly;
-            // The existing Place/Flatten coordinator mutex is released at
-            // the actual Broker dispatch. Do not advertise mutation_ready
-            // from a stale flat/active-order snapshot during that gap.
-            const bool riskDispatchInFlight = !m_coordinator ||
-                m_coordinator->RuntimeObservation().riskMutationDispatchInFlight;
+            const bool blocked = !local.present || local.mutationBlocked || startupReadOnly;
+            const bool riskDispatchInFlight =
+                !local.present || local.riskMutationDispatchInFlight;
             std::string guardReason;
             const bool nativeNewRiskGuardBlocked = !m_killSwitch ||
                 m_killSwitch->BlocksRiskIncrease(guardReason);
@@ -307,6 +307,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                 orders.complete && risk.connectionEpoch != 0 &&
                 risk.connectionEpoch == orders.connectionEpoch && !PostFillRiskRefreshPending();
             if (startupReadOnly) reason = StartupRecoveryReadOnlyReason();
+            else if (!local.present) reason = "NATIVE_ACCOUNT_LOCAL_OBSERVATION_UNAVAILABLE";
             else if (fenced) reason = "SESSION_OWNER_FENCED";
             else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
             else if (accountEntryFenced) reason = "ACCOUNT_NEW_ENTRY_FENCED";
@@ -322,6 +323,20 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
                    << ",\"account_new_entry_fenced\":" << (accountEntryFenced ? "true" : "false")
+                   << ",\"account_local_drain_scope\":\"COORDINATOR_HOT_ONLY\""
+                   << ",\"account_local_drain_observation_present\":"
+                   << (local.present ? "true" : "false")
+                   << ",\"account_local_owned_orders\":" << local.ownedOrders
+                   << ",\"account_local_uncertain_commands\":" << local.uncertainCommands
+                   << ",\"account_local_unattributed_owned_orders\":"
+                   << local.unattributedOwnedOrders
+                   << ",\"account_local_unattributed_uncertain_commands\":"
+                   << local.unattributedUncertainCommands
+                   << ",\"account_local_venue_dispatches_in_flight\":"
+                   << local.venueDispatchesInFlight
+                   << ",\"account_local_hot_projection_quiescent\":"
+                   << (local.localHotProjectionQuiescent ? "true" : "false")
+                   << ",\"maintenance_stop_permitted\":false"
                    << ",\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"risk_mutation_dispatch_in_flight\":"
                    << (riskDispatchInFlight ? "true" : "false")

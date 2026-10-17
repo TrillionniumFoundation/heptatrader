@@ -48,6 +48,7 @@ int main(int argc, char** argv)
     TestAccountNewEntryFencePersistsAcrossSessions();
     TestAccountNewEntryFenceReportsInFlightAndDoesNotResend();
     TestAccountNewEntryFenceJournalFailureFailsClosed();
+    TestAccountNewEntryFenceCountsCancelVenueDispatch();
     TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock();
     TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();

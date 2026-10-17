@@ -72,6 +72,7 @@ void TestReconnectFenceRefusesVenueDispatchInFlight();
 void TestAccountNewEntryFencePersistsAcrossSessions();
 void TestAccountNewEntryFenceReportsInFlightAndDoesNotResend();
 void TestAccountNewEntryFenceJournalFailureFailsClosed();
+void TestAccountNewEntryFenceCountsCancelVenueDispatch();
 void TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock();
 void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
 void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
