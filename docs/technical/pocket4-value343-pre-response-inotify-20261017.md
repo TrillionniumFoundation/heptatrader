@@ -112,3 +112,66 @@ proof of forward model accuracy or economic improvement.
 No futures data, pre-response success, or prospective settled
 trade may be claimed until a real original request after v2
 activation is independently captured and later verified.
+
+## Actual Pocket4 deployment and rollback (checked October 16 PDT / October 17 UTC)
+
+The exact branch commit `45376373e31f7eef247afc5219648a686e918d52`
+was pushed as draft PR #403, stacked on PR #399. The executable release
+is staged separately from the repository and pinned in an immutable
+private freeze:
+
+- Versioned local release:
+  `~/.local/share/heptatrader/value343-prospective/releases/value343-fast-20261017-v2`
+- Exact observer source SHA256:
+  `8a9d691ac33e335c9073383b3bbf99debd6afff411d012d54c6c8dad66721f4e`
+- V2 private freeze:
+  `~/.local/state/heptatrader/operator-evidence/value343-predecision-fast-20261017/freeze.json`
+- Freeze SHA256:
+  `0446b99e9229baa187a5908c622db13c618112638922b2626b67cbdf7ce8566e`
+
+The real host's user-systemd `heptatrader-value343-predecision-fast.service`
+is **enabled and running**, with an actual `/proc/<pid>/fdinfo/`
+inotify descriptor. The legacy seven-second research timer
+`heptatrader-value343-predecision-shadow.timer` was **disabled and
+stopped** only AFTER v2 boot, original-source scan and native watcher
+health checks passed. Legacy v1 freeze, unit file and evidence were
+not overwritten; v1 remains a reversible standby.
+
+The actual service has `PYTHONUNBUFFERED=1` for timely systemd
+journal receipts, no network, no privileges, source read-only and
+only the separate private v2 evidence directory writable, CPUQuota
+40%, MemoryMax 512MiB, MemorySwapMax 0. The exact installed unit
+includes these runtime controls and is pinned in the private
+qualification receipt. The observed v2 peak memory during
+initial continuous operation was about 152MiB and **zero restarts**.
+
+Physical authoritatively audited upstream Laya Trainer and Evaluator,
+PAPER Execution, Gateway, EUR/USD and BTC Drivers remained active with
+their pre-migration PIDs. The new observer performed no broker calls,
+model promotion, Value fit, economic paper strategy selection or
+replay of original inputs as synthetic future rows.
+
+All 4,432 original source requests preceded v2 activation. As of the
+qualification receipt, genuine v2 pre-response predictions,
+response_proofs, after-fee settled scores, censored/missed attempts
+and rejected evidence are **all zero**. This is exactly correct during
+the closed-market initial interval, NOT a success claim for future
+model accuracy or actual event-delivery latency under live market
+traffic.
+
+Immutable owner-only physical deployment evidence:
+  `~/.local/state/heptatrader/operator-evidence/value343-fast-pre-response-deployment-20261017/runtime-qualification-v1.json`
+SHA256:
+  `a1e9a01b9bac0f8ce25f22a5978e08f744d0d6d6b35bdaab36410ae4e14337`
+
+Rollback if v2 fails after source market opens: disable and stop
+**only** `heptatrader-value343-predecision-fast.service`, then
+re-enable `heptatrader-value343-predecision-shadow.timer`. Do not
+stop the Execution/Gateway/Driver/Laya services, move trading or
+training to other hosts, or regenerate existing historical receipts.
+
+Pocket4 exact worktree regressions: **32 focused Value tests, 116
+source tests and 705 historical-training tests passed**, along with
+documentation, source whitespace and systemd unit checks. Hosted
+CI, whole-project Core, a new observed REQUEST-before-RESPONSE or
+a settled genuinely prospective reward are not yet qualified.
