@@ -1660,7 +1660,10 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     status.nativeOrder.permanentId+=1;
     status.queueIngressMonotonicNs+=100;
     f.Push(status);
-    assert(f.adapter.InspectResearchH1OcaAccountScope(
+    // Contradictory positive permanent ID cannot be repaired by any
+    // subsequent normal status in the same account-order generation.
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
         original,h1,scope,reason));
     assert(!scope.sdkNativeStopUnfilledRemainingMatches &&
            scope.sdkNativeStopRemainingQuantity==0);
@@ -1810,7 +1813,8 @@ void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(bool laterGood) {
     auto contradictory=status;contradictory.queueIngressMonotonicNs=555300;
     contradictory.nativeOrder.permanentId+=1;
     f.Push(contradictory);
-    assert(f.adapter.InspectResearchH1OcaAccountScope(
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
         original,refs,scope,reason));
     assert(!scope.sdkNativeStopUnfilledRemainingMatches);
     // A callback with the ORIGINAL permId must not erase the evidence of
