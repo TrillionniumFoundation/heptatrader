@@ -615,7 +615,42 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
     observation.originalAccountAndOrderSetConsistent=true;
     const auto nativeStop=m_h1NativeStopOpenOrderEchoes.find(
         original.childOrderId);
-    if(nativeStop!=m_h1NativeStopOpenOrderEchoes.end() &&
+    // A native SDK echo and a global Broker-visible protective candidate
+    // originate from the SAME original openOrder. Do not claim even
+    // diagnostic H1 correspondence if their parent/OCA/transmit or
+    // permanent identity disagrees; the two read-only projections must
+    // establish the same original owner/contract/child without invention.
+    const bool brokerCensusStopConsistent=[&]() {
+        if(nativeStop==m_h1NativeStopOpenOrderEchoes.end()) return false;
+        const IBEvent& e=nativeStop->second;
+        if(e.brokerPermId<=0 ||
+           e.brokerPermId!=e.nativeOrder.permanentId ||
+           e.brokerParentOrderId!=e.nativeOrder.parentId ||
+           e.brokerOcaGroup!=e.nativeOrder.ocaGroup ||
+           e.brokerTransmit!=e.nativeOrder.transmit) return false;
+        const auto owner=snap.active.activeOrderByPermanentId.find(
+            e.brokerPermId);
+        const auto candidate=snap.active.visibleProtectiveCandidatesByPermId.find(
+            e.brokerPermId);
+        if(owner==snap.active.activeOrderByPermanentId.end() ||
+           candidate==snap.active.visibleProtectiveCandidatesByPermId.end())
+            return false;
+        const auto& b=candidate->second;
+        return owner->second.first==original.clientId &&
+            owner->second.second==original.childOrderId &&
+            b.brokerClientId==original.clientId &&
+            b.orderId==original.childOrderId &&
+            b.orderRef==refs.childRef &&
+            b.orderType=="STP" &&
+            b.action==(original.side=="BUY" ? "SELL":"BUY") &&
+            b.parentOrderId==original.parentOrderId &&
+            b.ocaGroup==refs.ocaGroup && b.transmit &&
+            b.sdkNativePresent && b.nativeContractId==original.contractId &&
+            b.nativeOcaType==1 && b.nativeTimeInForce=="GTC" &&
+            b.nativeTriggerMethod==0 && b.stopTrigger==original.stopPrice &&
+            b.totalQuantity==original.quantity;
+    }();
+    if(brokerCensusStopConsistent &&
        hepta_ib_h1_native_stop_echo::MatchesOriginalSdkStop(
            nativeStop->second,original,refs,m_connectionEpoch)) {
         observation.sdkNativeStopEchoMatches=true;

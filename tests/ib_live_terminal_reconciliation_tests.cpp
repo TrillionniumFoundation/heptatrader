@@ -2706,6 +2706,11 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     sdk.orderRef=h1.childRef;sdk.ocaGroup=h1.ocaGroup;sdk.ocaType=1;
     sdk.triggerMethod=0;sdk.stopAuxPrice=original.stopPrice;
     sdk.totalQuantity=original.quantity;
+    // The real native TWS openOrder wrapper publishes these exact same
+    // fields in both its original Lite observation and SDK-native view.
+    originalSdk.brokerParentOrderId=original.parentOrderId;
+    originalSdk.brokerOcaGroup=h1.ocaGroup;
+    originalSdk.brokerTransmit=true;
     auto nativeRefresh=[&](const IBEvent& candidate) {
         assert(f.adapter.ReqAuthoritativeOpenOrders());
         f.Push(candidate);f.Push(f.Event(IBEventType::OpenOrderEnd));
@@ -2727,6 +2732,22 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
            scope.sdkNativeStopRemainingQuantity==0 &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit&&!scope.mayStopDriver);
+    // Cross-observation safety: a native H1 STOP must NOT look matched
+    // when the SAME openOrder has a different Lite parent, OCA group or
+    // transmit bit in the Broker-global protective candidate census.
+    for(int variant=0;variant<3;++variant) {
+        auto inconsistent=originalSdk;
+        if(variant==0) inconsistent.brokerOcaGroup="different-oca";
+        if(variant==1) inconsistent.brokerParentOrderId+=1;
+        if(variant==2) inconsistent.brokerTransmit=false;
+        nativeRefresh(inconsistent);
+        assert(!scope.sdkNativeStopEchoMatches);
+        assert(!scope.sdkNativeStopUnfilledRemainingMatches);
+        assert(!scope.nativeStopBrokerWorkingProven);
+        assert(!scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    }
+    nativeRefresh(originalSdk);
+    assert(scope.sdkNativeStopEchoMatches);
     // Fresh SDK-native stop openOrder is not enough. Require a later bound
     // native orderStatus with exactly zero filled and full remaining.
     auto status=f.Event(IBEventType::OrderStatus);
@@ -2905,6 +2926,11 @@ void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(bool laterGood) {
     native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
     native.ocaType=1;native.triggerMethod=0;
     native.stopAuxPrice=original.stopPrice;native.totalQuantity=original.quantity;
+    // Real TWS SDK wrapper exposes the same Parent, OCA and transmit
+    // fields in both the full native Order and its Broker-visible Lite view.
+    sdk.brokerParentOrderId=original.parentOrderId;
+    sdk.brokerOcaGroup=refs.ocaGroup;
+    sdk.brokerTransmit=true;
     assert(f.adapter.ReqAuthoritativeOpenOrders());
     f.Push(sdk);
     f.Push(f.Event(IBEventType::OpenOrderEnd));
