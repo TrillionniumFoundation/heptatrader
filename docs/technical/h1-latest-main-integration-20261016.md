@@ -59,3 +59,39 @@ SHA256 `98ad46255d20eaffd1bfce8c3b70ab44fbc3785d9ba7507168633af8568b8806`.
 **This remains source-only research and does not certify actual Broker
 STP/OCA acceptance, protective coverage during Driver absence, or safe
 systemd maintenance.** The resident Execution binary was not replaced.
+
+## 2026-10-16 Pocket4: SDK wire and four-source clock evidence
+
+Original IB SDK 1030.01 **EClient::placeOrder serializer**, routed into a
+strictly no-network in-memory sink, now tested as an extra native CTest.
+The two wire frames must contain original 45-character H1 parent/STOP
+refs, exact EUR/USD conId/amount/account, original parent MKT/DAY with
+transmit=false, child STP/GTC/parentId with transmit=true, OCA Type 1 and
+original tick-aligned auxPrice. Individual negative mutations prove the
+wire's exact parentId, transmit, TIF, OCA type/group, H1 ref and trigger
+fields cannot be silently dropped. The in-memory SDK server version 200
+is **synthetic**, not negotiated with the running Gateway.
+
+The research Adapter additionally observes four **host-monotonic** ages:
+account-global `OpenOrderEnd`, coherent Account/Positions/FX-CASH risk
+refresh, original SDK-native STOP `openOrder`, and matching latest full-
+remaining `orderStatus`. All four must be <=3 seconds old for the
+diagnostic `brokerObservationClockBounded`; stale SDK echo combined with
+fresh `orderStatus` correctly yields false even with matching original
+permanent ID. Any reversed or contradictory permanent-ID callback still
+invalidates the original Broker correlation generation. None of these
+facts authorizes an order or any Driver-stop decision.
+
+Final Pocket4 SDK-enabled native isolated build and **21/21 relevant
+CTests PASS** (including Coordinator concurrency, H1/OMS/OCA, real
+Adapter callback regression, SDK wire serializer, PAPER profile, and
+full synthetic Runtime recovery). Log:
+`~/.local/state/heptatrader/operator-evidence/h1-wire-freshness-20261016-v1/
+sdk-wire-freshness-native-ctest.log`; SHA256
+`c94dbff1e480be733be0928e786f5eaa911d160397b6494cf0c766fbe54029de`.
+Rebuilt isolated Execution binary SHA256
+`dd5ded4a161a1e9c548e85cd722dd5b933f0fb15a206de61e82c7ceb90b4e38a`.
+**Actual Broker orders sent=0, network connections opened=0, runtime
+service restarts=0, maintenance holds released=0.** Broker-native stop
+acceptance/survival, OCA exit, partial fill and safe unattended Driver
+handoff remain unproven, so keep P0 #331 and the research PR open.
