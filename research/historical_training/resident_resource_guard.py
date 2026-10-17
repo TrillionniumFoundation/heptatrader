@@ -234,7 +234,37 @@ class Gate:
         name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')
         if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
         return False
-    def release(self):self.lease.release()
+    def maintain_caches(self):
+        if self.c.get('cache_maintenance')!='TERMINAL_TASK_COMGR_ONLY_V1':
+            return
+        now=time.monotonic()
+        if self.lease.fd is None and now-getattr(self,'_last_cache_sweep',0)<60:
+            return
+        self._last_cache_sweep=now
+        try:
+            from .resident_comgr_cache import sweep_terminal
+            try:
+                report=sweep_terminal(self.c,existing_lease_fd=self.lease.fd)
+            except BlockingIOError:
+                report={'phase':'HEAVY_LEASE_BUSY','removed_files':0,'removed_bytes':0}
+            atomic(self.root/(self.role+'-cache-maintenance.json'),{
+                'at_ms':int(time.time()*1000),'phase':report['phase'],
+                'removed_files':report.get('removed_files',0),'removed_bytes':report.get('removed_bytes',0),
+                'training_result_changed':False})
+        except Exception as exc:
+            failure={'at_ms':int(time.time()*1000),'phase':'MAINTENANCE_FAILED',
+                     'error':str(exc),'training_result_changed':False}
+            try:
+                atomic(self.root/(self.role+'-cache-maintenance.json'),failure)
+            except Exception:
+                try:print(json.dumps(failure),flush=True)
+                except Exception:pass
+
+    def release(self):
+        # Parent wait/reap is complete on normal worker paths; the terminal
+        # selector also refuses paths referenced by an unreaped/orphan worker.
+        try:self.maintain_caches()
+        finally:self.lease.release()
 
 
 def evaluator_idle_poll_seconds(gate,tasks):
@@ -294,6 +324,10 @@ def guarded_trainer_class(base,gate):
 
 
 def verify_config(c):
+    if c.get('cache_maintenance') not in (None,'TERMINAL_TASK_COMGR_ONLY_V1'):
+        raise EvidenceError('UNREVIEWED_CACHE_MAINTENANCE_PROFILE')
+    if c.get('cache_maintenance') and not c.get('guard_files_sha256',{}).get('resident_comgr_cache.py'):
+        raise EvidenceError('CACHE_MAINTENANCE_RUNTIME_NOT_PINNED')
     if c.get('schema')!='heptatrader.resident-admission-wrapper-config.v1' or c.get('trade_authority') is not False:
         raise EvidenceError('GUARD_CONFIG_SCOPE')
     if c.get('resource_rule')!=RESOURCE_RULE or c.get('max_heavy_workers')!=1:raise EvidenceError('RESOURCE_RULE_CHANGED')
@@ -301,9 +335,10 @@ def verify_config(c):
         from .value_priority_admission import verify_policy,_load_pinned
         verify_policy(c['value_priority'])
         _load_pinned(c['value_priority'])
-        if set(c.get('guard_files_sha256',{}))!={
-            'common.py','resident_live_source.py','resident_resource_guard.py',
-            'value_priority_admission.py'}:
+        expected={'common.py','resident_live_source.py','resident_resource_guard.py',
+                  'value_priority_admission.py'}
+        if c.get('cache_maintenance'):expected.add('resident_comgr_cache.py')
+        if set(c.get('guard_files_sha256',{}))!=expected:
             raise EvidenceError('PRIORITY_RUNTIME_NOT_PINNED')
     if sha(c['original_config'])!=c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
     original=read(c['original_config'])
