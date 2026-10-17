@@ -1397,7 +1397,18 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
                 outEvent.brokerClientId==m_cfg.clientId &&
                 outEvent.account==m_cfg.account &&
                 outEvent.queueIngressMonotonicNs!=0) {
-                m_h1NativeStopOrderStatusEchoes[stopId]=outEvent;
+                const auto prior=m_h1NativeStopOrderStatusEchoes.find(stopId);
+                if (prior!=m_h1NativeStopOrderStatusEchoes.end() &&
+                    outEvent.queueIngressMonotonicNs<=
+                        prior->second.queueIngressMonotonicNs) {
+                    // Fail closed: older status cannot restore full remaining
+                    // after a newer contradictory callback or cancellation.
+                    MarkCallbackConflict(m_correlationRefreshConflict);
+                    InvalidateCorrelationSnapshot(
+                        "H1_NATIVE_STOP_STATUS_OUT_OF_ORDER");
+                } else {
+                    m_h1NativeStopOrderStatusEchoes[stopId]=outEvent;
+                }
             } else {
                 m_h1NativeStopOrderStatusEchoes.erase(stopId);
                 MarkCallbackConflict(m_correlationRefreshConflict);
