@@ -1199,6 +1199,23 @@ void TestAccountNewEntryFenceRequiresConfiguredNativeCustodian()
     std::string reason;
     assert(config.Validate(reason));
     IbPaperExecutionPolicyCallbacks policyCallbacks;
+    int postFenceReads = 0;
+    policyCallbacks.beginAccountPostFenceBrokerRead =
+        [&](const AgentExecutionContext& owner, std::string& detail) {
+            assert(coordinator.IsAccountNewEntryFenced(owner.account));
+            assert(coordinator.ObserveAccountLocalDrain(owner).localHotProjectionQuiescent);
+            // An independent original-journal replay at the exact callback
+            // boundary must find the fsynced account lock already present.
+            ExecutionCoordinator replay(journal,callbacks);
+            std::string replayReason;
+            assert(replay.RecoverFromJournal(replayReason));
+            assert(replay.IsAccountNewEntryFenced(owner.account));
+            ++postFenceReads;
+            detail = postFenceReads == 1 ?
+                "FIXTURE_ORIGINAL_BROKER_READ_REQUESTED" :
+                "IB_ACCOUNT_POST_FENCE_READ_ALREADY_ATTEMPTED";
+            return postFenceReads == 1;
+        };
     std::shared_ptr<IbPaperKillSwitchReader> guard(
         new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
     IbPaperExecutionPolicyAuthority policy(
@@ -1224,14 +1241,20 @@ void TestAccountNewEntryFenceRequiresConfiguredNativeCustodian()
                denied.reasonCode=="IB_PAPER_CONTROL_CONTEXT_INVALID");
         assert(!coordinator.IsAccountNewEntryFenced(config.account));
     }
+    assert(postFenceReads==0); // unauthorized sessions never invoke Broker reads
     const auto accepted=policy.FenceAccountNewEntries(command);
     assert(accepted.status==ExecutionCommandStatus::Accepted);
+    assert(postFenceReads==1);
+    assert(accepted.detail.find(
+        "ACCOUNT_POST_FENCE_BROKER_READ_REQUESTED_NOT_STOP_PERMIT:")==0);
     assert(accepted.affectedCount==0);
     assert(accepted.reasonCode=="ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT");
     assert(coordinator.IsAccountNewEntryFenced(config.account));
     command.context.toolCallId="account-no-new-entry-idempotent";
     const auto repeated=policy.FenceAccountNewEntries(command);
     assert(repeated.status==ExecutionCommandStatus::Accepted);
+    assert(postFenceReads==2); // existing one-shot adapter refuses duplicate
+    assert(repeated.detail.find("ACCOUNT_POST_FENCE_BROKER_READ_NOT_REQUESTED:")==0);
     assert(repeated.affectedCount==0);
     ExecutionCoordinator restarted(journal,callbacks);
     assert(restarted.RecoverFromJournal(reason));

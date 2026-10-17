@@ -917,6 +917,192 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     return true;
 }
 
+
+bool HeptaIBGatewayAdapter::BeginAccountPostFenceRead(std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    if (m_postFenceReadStage != PostFenceReadStage::NotStarted) {
+        reason = "IB_ACCOUNT_POST_FENCE_READ_ALREADY_ATTEMPTED";
+        return false; // no replay of untagged IB openOrderEnd in this epoch
+    }
+    const auto initial = BuildRecoveryAuditSnapshotLocked();
+    if (!initial.transportConnected || !initial.eventStreamAuthoritative ||
+        !initial.active.complete || !initial.terminal.complete ||
+        !initial.risk.complete || !initial.risk.coherentRefreshComplete ||
+        !initial.risk.accountComplete || !initial.risk.positionsComplete ||
+        !initial.risk.fxCashComplete || !initial.barrierComplete ||
+        initial.postFillRiskReconciliationPending ||
+        initial.active.connectionEpoch == 0 ||
+        initial.active.connectionEpoch != initial.terminal.connectionEpoch ||
+        initial.active.connectionEpoch != initial.risk.connectionEpoch ||
+        m_correlationRefreshPending || m_accountRefreshPending ||
+        m_positionsRefreshPending || m_coherentRiskRefreshPending) {
+        reason = "IB_ACCOUNT_POST_FENCE_BASELINE_INCOMPLETE";
+        return false;
+    }
+    // The policy callback already proved the ORIGINAL journal-durable
+    // account fence and the coordinator's same-mutex local drain. Record
+    // all Broker watermarks BEFORE issuing an actual fresh read on this
+    // original API client. This cannot certify unbound manual TWS orders.
+    const std::uint64_t epoch = m_connectionEpoch;
+    const std::uint64_t mutation = m_brokerMutationGeneration;
+    const std::uint64_t exposure = m_exposureGeneration;
+    const std::uint64_t terminal = m_terminalCorrelationGeneration;
+    if (!BeginOpenOrderRefresh(true)) {
+        m_postFenceReadStage = PostFenceReadStage::Failed;
+        m_postFenceFailureReason =
+            "IB_ACCOUNT_POST_FENCE_OPEN_ORDERS_DISPATCH_FAILED";
+        reason = m_postFenceFailureReason;
+        return false;
+    }
+    m_postFenceConnectionEpoch = epoch;
+    m_postFenceMutationGeneration = mutation;
+    m_postFenceExposureGeneration = exposure;
+    m_postFenceTerminalGeneration = terminal;
+    m_postFenceActiveGeneration = m_correlationGeneration;
+    m_postFenceRiskGeneration = 0;
+    m_postFenceReadStage = PostFenceReadStage::AwaitActive;
+    reason = "IB_ACCOUNT_POST_FENCE_OPEN_ORDER_END_PENDING";
+    return true;
+}
+
+void HeptaIBGatewayAdapter::InvalidateAccountPostFenceRead(
+    const std::string& reason)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    if (m_postFenceReadStage == PostFenceReadStage::NotStarted)
+        return;
+    m_postFenceReadStage = PostFenceReadStage::Failed;
+    m_postFenceFailureReason = reason.empty() ?
+        "IB_ACCOUNT_POST_FENCE_LOCAL_STATE_CHANGED" : reason;
+}
+
+IBAccountPostFenceReadObservation HeptaIBGatewayAdapter::PollAccountPostFenceRead() {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    IBAccountPostFenceReadObservation status;
+    if (m_postFenceReadStage == PostFenceReadStage::NotStarted)
+        return status;
+    status.started = true;
+    status.connectionEpoch = m_postFenceConnectionEpoch;
+    status.activeGeneration = m_postFenceActiveGeneration;
+    status.riskGeneration = m_postFenceRiskGeneration;
+    status.terminalGeneration = m_postFenceTerminalGeneration;
+    status.brokerMutationGeneration = m_postFenceMutationGeneration;
+    status.economicExposureGeneration = m_postFenceExposureGeneration;
+
+    const auto fail = [this](const char* code) {
+        m_postFenceReadStage = PostFenceReadStage::Failed;
+        m_postFenceFailureReason = code;
+    };
+    if (m_postFenceReadStage == PostFenceReadStage::Failed) {
+        status.reasonCode = m_postFenceFailureReason;
+        return status;
+    }
+    if (!m_api || !m_api->IsConnected() || !m_connected ||
+        !m_eventStreamAuthoritative ||
+        m_connectionEpoch == 0 || m_connectionEpoch != m_postFenceConnectionEpoch) {
+        fail("IB_ACCOUNT_POST_FENCE_CONNECTION_OR_STREAM_CHANGED");
+    } else if (m_brokerMutationGeneration != m_postFenceMutationGeneration ||
+               m_exposureGeneration != m_postFenceExposureGeneration) {
+        fail("IB_ACCOUNT_POST_FENCE_BROKER_MUTATION_OR_FILL");
+    } else if (m_correlationGeneration != m_postFenceActiveGeneration ||
+               m_correlationSnapshot.connectionEpoch != m_postFenceConnectionEpoch ||
+               m_terminalCorrelationGeneration != m_postFenceTerminalGeneration ||
+               !m_terminalCorrelationSnapshot.complete ||
+               m_terminalCorrelationSnapshot.connectionEpoch !=
+                   m_postFenceConnectionEpoch) {
+        fail("IB_ACCOUNT_POST_FENCE_ORDER_OR_TERMINAL_GENERATION_DRIFT");
+    }
+    if (m_postFenceReadStage == PostFenceReadStage::Failed) {
+        status.reasonCode = m_postFenceFailureReason;
+        return status;
+    }
+
+    if (m_postFenceReadStage == PostFenceReadStage::AwaitActive) {
+        if (!m_correlationSnapshot.complete) {
+            if (!m_correlationRefreshPending)
+                fail("IB_ACCOUNT_POST_FENCE_ACTIVE_DOWNLOAD_FAILED");
+            else
+                status.reasonCode = "IB_ACCOUNT_POST_FENCE_OPEN_ORDER_END_PENDING";
+        } else {
+            // The risk snapshot must be started strictly AFTER the fresh
+            // global OpenOrderEnd. This uses the original adapter API mutex;
+            // competing fills, cancels, flatten and reconnect fail closed.
+            if (!ReqRecoveryAuditRiskRefresh())
+                fail("IB_ACCOUNT_POST_FENCE_RISK_REFRESH_REJECTED");
+            else {
+                m_postFenceRiskGeneration = m_riskGeneration;
+                status.riskGeneration = m_postFenceRiskGeneration;
+                m_postFenceReadStage = PostFenceReadStage::AwaitRisk;
+            }
+        }
+    }
+    if (m_postFenceReadStage == PostFenceReadStage::AwaitRisk) {
+        status.activeReadComplete =
+            m_correlationSnapshot.complete &&
+            m_correlationSnapshot.generation == m_postFenceActiveGeneration;
+        if (m_riskGeneration != m_postFenceRiskGeneration ||
+            m_riskSnapshot.connectionEpoch != m_postFenceConnectionEpoch)
+            fail("IB_ACCOUNT_POST_FENCE_RISK_GENERATION_DRIFT");
+        else if (!m_riskSnapshot.complete || !m_riskSnapshot.coherentRefreshComplete) {
+            if (!m_coherentRiskRefreshPending && !m_accountRefreshPending &&
+                !m_positionsRefreshPending)
+                fail("IB_ACCOUNT_POST_FENCE_RISK_DOWNLOAD_FAILED");
+            else
+                status.reasonCode = "IB_ACCOUNT_POST_FENCE_RISK_END_PENDING";
+        } else {
+            const auto audited = BuildRecoveryAuditSnapshotLocked();
+            if (!audited.barrierComplete ||
+                audited.newConnectionEpochRequired ||
+                audited.postFillRiskReconciliationPending ||
+                audited.riskAbsorbedExposureGeneration != m_postFenceExposureGeneration ||
+                audited.terminalExposureGeneration > m_postFenceExposureGeneration)
+                fail("IB_ACCOUNT_POST_FENCE_BARRIER_OR_EXPOSURE_DRIFT");
+            else
+                m_postFenceReadStage = PostFenceReadStage::Observed;
+        }
+    }
+    if (m_postFenceReadStage == PostFenceReadStage::Failed) {
+        status.reasonCode = m_postFenceFailureReason;
+        return status;
+    }
+    if (m_postFenceReadStage != PostFenceReadStage::Observed)
+        return status;
+
+    const auto audited = BuildRecoveryAuditSnapshotLocked();
+    if (!audited.transportConnected || !audited.eventStreamAuthoritative ||
+        !audited.active.complete || !audited.terminal.complete ||
+        !audited.risk.complete || !audited.risk.coherentRefreshComplete ||
+        !audited.barrierComplete || audited.postFillRiskReconciliationPending ||
+        audited.active.generation != m_postFenceActiveGeneration ||
+        audited.risk.generation != m_postFenceRiskGeneration ||
+        audited.riskAbsorbedExposureGeneration != m_postFenceExposureGeneration ||
+        audited.exposureGeneration != m_postFenceExposureGeneration) {
+        fail("IB_ACCOUNT_POST_FENCE_COMPLETED_PROOF_INVALIDATED");
+        status.reasonCode = m_postFenceFailureReason;
+        return status;
+    }
+    status.activeReadComplete = true;
+    status.riskReadComplete = true;
+    status.activeThenRiskObserved = true;
+    status.globalActiveOrders = audited.active.activeOrderIds.size();
+    bool exactlyFlat = audited.risk.grossAbsolutePosition == 0.0;
+    for (const auto& position : audited.positionQuantities) {
+        if (position.first.empty() || !std::isfinite(position.second) ||
+            position.second != 0.0)
+            exactlyFlat = false;
+    }
+    status.brokerZeroObserved = audited.active.activeOrderIds.empty() && exactlyFlat;
+    // CompletedOrdersEnd cannot be safely reissued in one connection epoch
+    // (untagged SDK barrier). This diagnostic NEVER claims terminal-post-
+    // fence completeness, unbound TWS coverage or a maintenance STOP permit.
+    status.terminalPostFenceComplete = false;
+    status.maintenanceStopPermitted = false;
+    status.reasonCode = status.brokerZeroObserved ?
+        "IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_ZERO_NOT_STOP_PERMIT" :
+        "IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_PRESENT_NOT_STOP_PERMIT";
+    return status;
+}
+
 bool HeptaIBGatewayAdapter::ReqTerminalCorrelations() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     // completedOrdersEnd has no request id. A second request in one connection

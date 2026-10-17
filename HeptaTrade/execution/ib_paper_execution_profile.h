@@ -181,6 +181,11 @@ struct IbPaperExecutionPolicyCallbacks
     std::function<IBAuthoritativeRecoveryAuditSnapshot()>
         recoveryAuditSnapshot;
     std::function<IBAuthoritativeRecoveryAuditSnapshot()> leaseAuditSnapshot;
+    // Optional original native user-PAPER control callback, AFTER the owner
+    // account fence is journal-durable. Only issues read-only Broker API
+    // requests if original local venue sends are already drained.
+    std::function<bool(const AgentExecutionContext&, std::string&)>
+        beginAccountPostFenceBrokerRead;
     // One-way runtime terminal boundary.  The first callback durably enters
     // TERMINALIZING, closes broker ingress, drains callbacks, and returns the
     // frozen snapshot.  The second fsyncs the exact terminal witness.  Replay
