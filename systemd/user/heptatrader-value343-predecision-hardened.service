@@ -1,0 +1,35 @@
+[Unit]
+Description=HeptaTrader Pocket4 original REQUEST e2e-hardening v3 research; NO broker authority
+After=default.target
+ConditionPathExists=/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-hardened-20261017/freeze.json
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alex/.local/share/heptatrader/value343-prospective/releases/value343-hardened-20261017-v3
+ExecStart=/home/alex/.local/share/heptatrader/laya-runtime/venv/bin/python -B -m laya_cell.value343_prospective --mode watch
+Environment=PYTHONPATH=/home/alex/.local/share/heptatrader/value343-prospective/releases/value343-hardened-20261017-v3/learn:/home/alex/.local/share/heptatrader/value343-prospective/releases/value343-hardened-20261017-v3/scripts
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+UMask=0077
+Nice=10
+CPUQuota=40%
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-hardened-20261017
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+[Install]
+WantedBy=default.target

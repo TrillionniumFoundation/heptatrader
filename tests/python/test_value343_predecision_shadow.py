@@ -29,7 +29,7 @@ def synthetic_request(now):
     r["position_at_request"]=0
     r["model_id"]=shadow.EXPECTED_MODEL
     r["prompt_sha256"]=hashlib.sha256(r["prompt"].encode()).hexdigest()
-    r["request_id"]="test-research-"+str(now)
+    r["request_id"]=hashlib.sha256(str(now).encode()).hexdigest()[:32]
     return r
 
 

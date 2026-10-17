@@ -333,7 +333,8 @@
         "scripts/research_laya_original90_gap_audit.py",
         "research/neuron_learning/laya_cell/value343_oos.py",
         "research/neuron_learning/laya_cell/value343_prospective.py",
-        "systemd/user/heptatrader-value343-predecision-fast.service"
+        "systemd/user/heptatrader-value343-predecision-fast.service",
+        "systemd/user/heptatrader-value343-predecision-hardened.service"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -359,7 +360,8 @@
         "tests/python/test_laya_original90_gap_audit.py",
         "tests/python/test_value343_chronological_oos.py",
         "tests/python/test_value343_predecision_shadow.py",
-        "tests/python/test_value343_pre_response_v2.py"
+        "tests/python/test_value343_pre_response_v2.py",
+        "tests/python/test_value343_realcode_isolated_e2e.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
