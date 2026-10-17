@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Inspect or install an exact PAPER decision-attribution producer.
+"""Inspect, prepare or install an exact PAPER decision-attribution producer.
 
 Inspect and byte-identical re-install are read-only, work while non-flat, and
-never restart a service. A first installation still requires an authoritative
-flat lane; changed trading code requires a separately reviewed owner-safe upgrade.
+never restart a service. Upgrade preparation also stages code independently of
+positions and opening holds. A first installation still requires an authoritative
+flat lane; activation of changed trading code requires owner-controlled continuity.
 """
 from __future__ import annotations
-import argparse,fcntl,hashlib,importlib.util,json,os,re,subprocess,time
+import argparse,ast,errno,fcntl,hashlib,importlib.util,json,os,re,shutil,subprocess,tempfile,time
 from pathlib import Path
 from hepta_decision_attribution import canonical,digest,read_private,strict
 
@@ -78,6 +79,103 @@ def inspect_resident(command,instrument):
 def unit_for(instrument):
  return 'heptatrader-paper-driver.service' if instrument=='EUR.USD' else 'heptatrader-crypto-driver.service'
 
+
+def _source_literal(raw,name):
+ values=[]
+ for node in ast.parse(raw).body:
+  if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id==name for t in node.targets):
+   values.append(ast.literal_eval(node.value))
+ if len(values)!=1:raise RuntimeError('ATTRIBUTION_SOURCE_BINDING_AMBIGUOUS:'+name)
+ return values[0]
+
+def _verify_prepared(release,expected,files):
+ if release.is_symlink():raise RuntimeError('ATTRIBUTION_PREPARED_PATH_INVALID')
+ if {p.name for p in release.iterdir()}!=set(files)|{'manifest.json'}:
+  raise RuntimeError('ATTRIBUTION_PREPARED_FILE_SET_CHANGED')
+ raw=read_private(release/'manifest.json',65536);actual=strict(raw)
+ comparable=dict(actual);comparable.pop('created_at_ms',None)
+ if comparable!=expected:raise RuntimeError('ATTRIBUTION_PREPARED_MANIFEST_CHANGED')
+ for name,payload in files.items():
+  if read_private(release/name,1048576)!=payload:
+   raise RuntimeError('ATTRIBUTION_PREPARED_RUNTIME_CHANGED:'+name)
+ return hashlib.sha256(raw).hexdigest()
+
+def prepare_upgrade(instrument):
+ """Stage exact candidate bytes; never read broker/state or change a unit."""
+ if os.geteuid()==0:raise RuntimeError('USER_SERVICE_ONLY')
+ h=Path.home();repo=Path(__file__).resolve().parents[1];source=repo/'scripts'
+ service=show(unit_for(instrument))
+ observed=inspect_resident(service['ExecStart'],instrument)
+ if observed['status']!='INSTALLED_VERIFIED':
+  raise RuntimeError('ATTRIBUTION_PREPARE_REQUIRES_EXISTING_INSTALLATION')
+ resident=Path(observed['release'])
+ installed_raw=read_private(resident/'manifest.json',65536)
+ if hashlib.sha256(installed_raw).hexdigest()!=observed['manifest_sha256']:
+  raise RuntimeError('ATTRIBUTION_INSTALLED_MANIFEST_CHANGED')
+ installed=strict(installed_raw)
+ files={name:(source/name).read_bytes() for name in sorted(runtime_filenames(instrument))}
+ for name,raw in files.items():
+  if len(raw)>1048576:raise RuntimeError('ATTRIBUTION_SOURCE_TOO_LARGE:'+name)
+  compile(raw,name,'exec',dont_inherit=True)  # Validate without executing candidate code.
+ hashes={name:hashlib.sha256(raw).hexdigest() for name,raw in files.items()}
+ if instrument=='BTC.USD':
+  profile_raw=read_private(resident/'profile.json',65536)
+  if hashlib.sha256(profile_raw).hexdigest()!=installed.get('btc_profile_sha256'):
+   raise RuntimeError('ATTRIBUTION_INSTALLED_BTC_PROFILE_CHANGED')
+  profile=strict(profile_raw)
+  if (profile.get('schema')!='heptatrader.btc-entry-runtime.v1' or
+      profile.get('period_sha256')!=installed['period_sha256'] or
+      profile.get('profile')!=_source_literal(files['hepta_btc_entry_policy.py'],'PROFILE')):
+   raise RuntimeError('ATTRIBUTION_PREPARED_BTC_PROFILE_INCOMPATIBLE')
+  if _source_literal(files['heptatrader_btc_economics_driver.py'],'BASE_SHA256')!=hashes['heptatrader_paper_driver.py']:
+   raise RuntimeError('ATTRIBUTION_PREPARED_BTC_BASE_HASH_MISMATCH')
+  files['profile.json']=profile_raw
+ # Git records provenance; the manifest binds the exact copied runtime bytes.
+ # Unrelated checkout changes are not a candidate-preparation requirement.
+ source_sha=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()
+ if re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})',source_sha) is None:
+  raise RuntimeError('ATTRIBUTION_SOURCE_IDENTITY_INVALID')
+ manifest=dict(installed)
+ manifest.pop('created_at_ms',None)
+ runtime_bytes_changed=hashes!=installed['runtime_sha256']
+ manifest.update(source_sha=source_sha,runtime_sha256=hashes,
+                 prepared_from_manifest_sha256=observed['manifest_sha256'],
+                 runtime_bytes_changed=runtime_bytes_changed,
+                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed),
+                 behavior_equivalence_assessed=False)
+ identity=digest(manifest)
+ release=h/'.local/share/heptatrader/decision-attribution/releases'/(source_sha+'-prepared-'+identity)/instrument
+ release.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+ if os.path.lexists(release):
+  status='ALREADY_PREPARED_NOT_ACTIVATED'
+  manifest_hash=_verify_prepared(release,manifest,files)
+ else:
+  staging=Path(tempfile.mkdtemp(prefix='.'+instrument+'-preparing-',dir=release.parent))
+  try:
+   for name,raw in files.items():private_write(staging/name,raw)
+   complete=dict(manifest,created_at_ms=int(time.time()*1000))
+   private_write(staging/'manifest.json',(canonical(complete)+'\n').encode())
+   manifest_hash=_verify_prepared(staging,manifest,files)
+   staging.chmod(0o500)
+   try:
+    os.rename(staging,release)
+   except OSError as error:
+    if error.errno not in (errno.EEXIST,errno.ENOTEMPTY):raise
+    manifest_hash=_verify_prepared(release,manifest,files)
+    status='ALREADY_PREPARED_NOT_ACTIVATED'
+   else:
+    status='PREPARED_NOT_ACTIVATED'
+  finally:
+   if staging.exists():
+    staging.chmod(0o700)
+    shutil.rmtree(staging)
+ receipt={'schema':'heptatrader.attribution-preparation.v1','status':status,
+  'instrument':instrument,'source_sha':source_sha,'release':str(release),
+  'manifest':str(release/'manifest.json'),'manifest_sha256':manifest_hash,
+  'prepared_from_manifest_sha256':observed['manifest_sha256'],'runtime_sha256':hashes,
+  'trade_authority':False,'service_changed':False,'activated':False,'forced_orders':0}
+ print(json.dumps(receipt,sort_keys=True),flush=True)
+ return receipt
 
 def install(instrument,evidence):
  h=Path.home();repo=Path(__file__).resolve().parents[1];source=repo/'scripts'
@@ -181,9 +279,15 @@ def install(instrument,evidence):
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--instrument',choices=['EUR.USD','BTC.USD'],required=True)
- p.add_argument('--evidence-directory',type=Path);p.add_argument('--inspect-only',action='store_true');a=p.parse_args();os.umask(0o077)
+ p.add_argument('--evidence-directory',type=Path)
+ mode=p.add_mutually_exclusive_group()
+ mode.add_argument('--inspect-only',action='store_true')
+ mode.add_argument('--prepare-upgrade',action='store_true')
+ a=p.parse_args();os.umask(0o077)
  if a.inspect_only:
   print(json.dumps(inspect_resident(show(unit_for(a.instrument))['ExecStart'],a.instrument),sort_keys=True),flush=True)
+ elif a.prepare_upgrade:
+  prepare_upgrade(a.instrument)
  else:
   if a.evidence_directory is None:p.error('--evidence-directory required for installation')
   install(a.instrument,a.evidence_directory)

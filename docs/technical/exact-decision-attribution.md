@@ -18,8 +18,9 @@ anywhere. Existing model-input hashes alone are not reversible input records.
 
 ## New producer: original callsite, not inferred matching
 
-`heptatrader_attributed_driver.py` loads byte-identical preexisting PAPER base
-code. For BTC it composes the unchanged economics adapter and profile first.
+`heptatrader_attributed_driver.py` loads the exact PAPER base code pinned by its
+release manifest. For BTC it composes the pinned economics adapter and existing
+profile first.
 The outer `Capture` is purely observational and makes no trading decision.
 
 1. At the actual `infer model run` call, capture the literal CLI prompt, model
@@ -80,12 +81,40 @@ For an already installed PAPER attribution producer,
 period and immutable runtime hashes **without** contacting a broker or
 restarting a service. Reinstalling **byte-identical** code on an active
 attributed lane returns `ALREADY_CURRENT_NOOP` even when nonflat or under
-an operator opening hold. A differing runtime refuses in place and requires
-separate owner-safe continuity qualification; the first actual installation
-continues to require the original flat/clear conditions. Neither inspection
-nor an idempotent no-op authorizes new risk or model promotion.
+an operator opening hold. The installation path continues to refuse an in-place
+change to a differing runtime.
 
-`install_decision_attribution.py` requires a clean committed source, PAPER mode
+To prepare an upgrade for an existing producer, run:
+
+```sh
+python3 -B scripts/install_decision_attribution.py --instrument EUR.USD --prepare-upgrade
+python3 -B scripts/install_decision_attribution.py --instrument BTC.USD --prepare-upgrade
+```
+
+Preparation reads the installed manifest, period, pinned runtime and BTC profile,
+then builds a complete versioned candidate from the selected source checkout.
+It preserves the existing producer configuration and binds the candidate's exact
+runtime bytes. The recorded `source_sha` is the observed checkout HEAD;
+`runtime_sha256` identifies the bytes actually copied, including any source edits
+in that checkout. `runtime_bytes_changed` compares those bytes with the parent
+manifest. The existing Boolean `trading_behavior_changed` cohort remains true
+when already true, and changed bytes conservatively enter that cohort. Only an
+explicit false parent with identical bytes remains false. This is an identity
+classification; `behavior_equivalence_assessed=false` states that preparation
+has not judged code equivalence or measured a trading improvement.
+
+Preparation does not require a flat lane, a current quote, a cleared
+opening hold, or unrelated files in the checkout to be clean. Repeating the
+same preparation verifies and reuses the existing candidate.
+
+Preparation does not contact the broker, read or alter driver state, write a
+service configuration, or stop a process. Its output identifies a prepared
+candidate; it is not a receipt that the running driver has changed. Activation
+uses a separate owner-controlled continuity procedure supported by the installed
+runtime. Inspection, preparation and an idempotent no-op do not grant new risk
+or model promotion.
+
+The first actual installation requires a clean committed source, PAPER mode
 on port 4002, no operator reset hold, a flat/no-pending/unfenced target lane and an
 authoritative read-only snapshot. It copies the currently executed base and BTC
 profile byte-for-byte into an immutable release. Only the chosen PAPER driver is
