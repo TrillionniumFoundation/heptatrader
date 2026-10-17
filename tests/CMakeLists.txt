@@ -213,6 +213,103 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+# Issue #331: shadow-only broker stop contract, no transport or live install.
+add_executable(hepta_execution_owner_stop_shadow_tests
+    execution_owned_stop_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_owner_stop_shadow_tests)
+
+# Parent, child and OCA refs must derive from one frozen ORIGINAL command
+# through the resident 45-byte H1 venue codec; purely identity, no sender.
+add_executable(hepta_execution_bracket_h1_identity_tests
+    ib_bracket_h1_identity_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_identity_tests PRIVATE
+    hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_identity_tests)
+
+# Experimental H1-bracket durable pair on real OMS (no broker send path).
+add_executable(hepta_execution_bracket_h1_oms_reservation_tests
+    ib_bracket_h1_oms_reservation_tests.cpp)
+target_link_libraries(hepta_execution_bracket_h1_oms_reservation_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_h1_oms_reservation_tests)
+
+# Real Coordinator recovery-only ingress fence, native OMS pair,
+# restart replay and duplicate denial. No broker send path.
+add_executable(hepta_execution_coordinator_h1_recovery_fence_tests
+    execution_coordinator_h1_recovery_fence_tests.cpp)
+target_link_libraries(hepta_execution_coordinator_h1_recovery_fence_tests PRIVATE
+    hepta_execution_core hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_coordinator_h1_recovery_fence_tests)
+
+# Research-only OMS native-ID restart high-watermark (no Broker sender).
+add_executable(hepta_ib_h1_native_id_restart_floor_tests
+    ib_h1_native_id_restart_floor_tests.cpp)
+target_link_libraries(hepta_ib_h1_native_id_restart_floor_tests PRIVATE hepta_oms_journal)
+hepta_register_core_test(hepta_ib_h1_native_id_restart_floor_tests)
+
+# Simulated native parent transmit=false / child transmit=true bracket group.
+# Still no broker transport or maintenance authority in this research target.
+add_executable(hepta_execution_bracket_shadow_tests
+    execution_bracket_shadow_tests.cpp)
+hepta_register_core_test(hepta_execution_bracket_shadow_tests)
+
+# Use the actual production OmsJournal on a temporary isolated path. Never
+# attach a source to the resident OMS ledger or contact a real broker.
+add_executable(hepta_execution_bracket_shadow_oms_tests
+    execution_bracket_shadow_oms_tests.cpp)
+target_link_libraries(hepta_execution_bracket_shadow_oms_tests PRIVATE
+    hepta_oms_journal OpenSSL::Crypto)
+hepta_register_core_test(hepta_execution_bracket_shadow_oms_tests)
+
+# Additive v4 record from a Broker-backed original native child openOrder;
+# test the actual, unmodified-in-production OmsJournal implementation.
+add_executable(hepta_ib_native_bracket_oms_tests
+    ib_native_bracket_oms_tests.cpp)
+target_link_libraries(hepta_ib_native_bracket_oms_tests PRIVATE hepta_oms_journal)
+hepta_register_core_test(hepta_ib_native_bracket_oms_tests)
+
+# H1 broker callback schema is a separate, unsent pure-OMS test.
+add_executable(hepta_ib_native_h1_callback_tests
+    ib_native_h1_callback_tests.cpp)
+target_link_libraries(hepta_ib_native_h1_callback_tests PRIVATE
+    hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+hepta_register_core_test(hepta_ib_native_h1_callback_tests)
+
+# Compile exact SDK Contract/Order types only in the already validated
+# native-IB-enabled lane. No placeOrder or native order sending code exists here.
+if(HEPTA_ENABLE_IBAPI)
+    add_executable(hepta_ib_native_bracket_shadow_tests
+        ib_native_bracket_shadow_tests.cpp)
+    target_link_libraries(hepta_ib_native_bracket_shadow_tests PRIVATE
+        hepta_ibapi_client hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_bracket_shadow_tests)
+    add_executable(hepta_ib_native_bracket_callback_tests
+        ib_native_bracket_callback_tests.cpp)
+    target_link_libraries(hepta_ib_native_bracket_callback_tests PRIVATE
+        hepta_ibapi_client)
+    hepta_register_core_test(hepta_ib_native_bracket_callback_tests)
+    add_executable(hepta_ib_h1_native_stop_remaining_tests
+        ib_h1_native_stop_remaining_tests.cpp)
+    target_link_libraries(hepta_ib_h1_native_stop_remaining_tests PRIVATE
+        hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_h1_native_stop_remaining_tests)
+    # SDK-native H1 parent/child ordered calls to a FAKE EClient, with actual
+    # OmsJournal fsync attempts. Test-only compile flag never on real adapter.
+    add_executable(hepta_ib_native_h1_pair_transport_tests
+        ib_native_h1_pair_transport_tests.cpp)
+    target_compile_definitions(hepta_ib_native_h1_pair_transport_tests PRIVATE
+        HEPTA_IB_NATIVE_BRACKET_FAKE_DISPATCH_TEST=1)
+    target_link_libraries(hepta_ib_native_h1_pair_transport_tests PRIVATE
+        hepta_ibapi_client hepta_oms_journal hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_h1_pair_transport_tests)
+    # H1 OCA ordinary-exit candidate: fake Broker witness, NO send path.
+    add_executable(hepta_ib_native_h1_oca_exit_tests
+        ib_native_h1_oca_exit_tests.cpp)
+    target_link_libraries(hepta_ib_native_h1_oca_exit_tests PRIVATE
+        hepta_ibapi_client hepta_ib_order_state OpenSSL::Crypto)
+    hepta_register_core_test(hepta_ib_native_h1_oca_exit_tests)
+endif()
+
 add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp
     ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)

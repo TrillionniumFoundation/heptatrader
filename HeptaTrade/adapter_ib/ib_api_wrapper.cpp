@@ -680,6 +680,7 @@ std::uint64_t IBMarketDataAdmissionState::Generation() const {
 #include "CommissionReport.h"
 #include "OrderCancel.h"
 #include "OrderState.h"
+#include "ib_native_bracket_callback_research.h"
 
 class EWrapperDefault : public EWrapper {
 public:
@@ -1676,7 +1677,7 @@ public:
     void tickString(TickerId, TickType, const std::string&) override {}
     void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
     void orderStatus(OrderId oid, const std::string& status, Decimal filled,
-                     Decimal remaining, double avgFillPrice, int, int, double,
+                     Decimal remaining, double avgFillPrice, int permId, int, double,
                      int clientId, const std::string& whyHeld,
                      double mktCapPrice) override {
         const double filledQuantity = DecimalFunctions::decimalToDouble(filled);
@@ -1692,6 +1693,9 @@ public:
             remainingQuantity);
         event.whyHeld = whyHeld;
         event.brokerClientId = clientId;
+        // orderStatus contains no original parent/OCA/contract payload.
+        // Store only permId. Never mark it as a complete SDK order witness.
+        event.nativeOrder.permanentId = permId;
         event.marketCapPrice = mktCapPrice;
         PushEvent(std::move(event));
     }
@@ -1777,6 +1781,9 @@ public:
         event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));
@@ -1796,6 +1803,9 @@ public:
         event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(order.orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));

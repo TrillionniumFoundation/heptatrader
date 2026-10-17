@@ -21,6 +21,12 @@
 #include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
+class OmsJournal;
+namespace hepta_bracket_h1 {
+struct FrozenBracket;
+struct BoundRefs;
+}
+
 struct HeptaIBRiskConfig {
     bool enableOrderSubmission = false;
     double maxOrderQuantity = 1.0;
@@ -173,6 +179,30 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
     std::string reasonCode;
 };
 
+// Read-only native Adapter sample against a frozen original H1 Stop.
+// This reports correlation/position consistency ONLY; it never proves
+// the SDK openOrder status/stop/OCA trigger or grants order-send authority.
+struct IBH1OcaAdapterScopeObservation {
+    bool originalAccountAndOrderSetConsistent = false;
+    bool nativeStopBrokerWorkingProven = false;
+    // A matching SDK openOrder echo is only a diagnostic; not an order
+    // admission or live-position protection signal.
+    bool sdkNativeStopEchoMatches = false;
+    long sdkNativeStopPermanentId = 0;
+    // Real orderStatus full-remaining corroboration; diagnostic only.
+    bool sdkNativeStopUnfilledRemainingMatches = false;
+    double sdkNativeStopRemainingQuantity = 0.0;
+    bool stopPriceTriggerProven = false;
+    bool accountSnapshotFreshnessProven = false;
+    bool maySendOrdinaryExit = false;
+    bool mayStopDriver = false;
+    long exactStopNativeOrderId = 0;
+    double brokerSignedFxPosition = 0.0;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t riskGeneration = 0;
+    std::uint64_t activeOrdersGeneration = 0;
+};
+
 struct IBPhysicalCryptoPositionObservation {
     bool complete = false;
     std::string account;
@@ -312,6 +342,14 @@ public:
     IBAuthoritativeRiskSnapshot GetAuthoritativeRiskSnapshot() const;
     IBAuthoritativeRecoveryAuditSnapshot
         GetAuthoritativeRecoveryAuditSnapshot() const;
+    // Research-only: sample real Adapter risk and account-wide active-order
+    // projections UNDER m_apiMutex. Cannot prove a working protective STOP,
+    // OCA venue acceptance, clock freshness or grant a send/stop permit.
+    bool InspectResearchH1OcaAccountScope(
+        const hepta_bracket_h1::FrozenBracket& original,
+        const hepta_bracket_h1::BoundRefs& refs,
+        IBH1OcaAdapterScopeObservation& observation,
+        std::string& reason) const;
     // Idempotently requires a broker epoch newer than the first recovery-audit
     // attempt. Runtime composition consumes newConnectionEpochRequired by
     // scheduling its in-process reconnect state machine; no service manager or
@@ -343,6 +381,19 @@ public:
         std::string& reason) const;
 
 private:
+    // This experimental native lease must never be publicly invoked with a
+    // caller-selected empty or unrelated OMS. Only the actual Coordinator
+    // may supply m_journal; the unit-test access shim has no broker sender.
+    friend class ExecutionCoordinator;
+    friend struct H1NativeLeaseTestAccess;
+    bool ReserveResearchH1NativeIdPair(
+        const std::string& exactPaperAccount,
+        std::uint64_t expectedConnectionEpoch,
+        const OmsJournal& exactOwnerJournal,
+        const std::function<bool(long,long)>& durablePair,
+        long& parentId, long& stopId, std::string& reason,
+        int expectedExactBrokerClientId = -1);
+
     long NextOrderId();
     bool IsSameTradingDay() const;
     bool IsDuplicateOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) const;
@@ -494,6 +545,11 @@ private:
     bool m_correlationRefreshPending = false;
     bool m_correlationRefreshConflict = false;
     IBAuthoritativeCorrelationSnapshot m_correlationSnapshot;
+    // Ephemeral diagnostic SDK-native original stop echoes, collected only
+    // during the exact account-wide open-order refresh and cleared on faults.
+    std::map<long, IBEvent> m_h1NativeStopOpenOrderEchoes;
+    std::map<long, IBEvent> m_h1NativeStopOrderStatusEchoes;
+    bool m_h1NativeStopRefreshAccountWide = false;
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
     std::map<long, int> m_pendingActiveOrderClientIds;
