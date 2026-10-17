@@ -323,6 +323,7 @@ void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     m_pendingTerminalStatuses.clear();
     m_pendingExecutionCorrelations.clear();
     m_pendingExecutionIdsByCorrelation.clear();
+    m_pendingExecutionCumulativeQtyByCorrelation.clear();
     m_terminalCorrelationSnapshot.connectionEpoch = m_connectionEpoch;
     m_terminalCorrelationSnapshot.generation =
         m_terminalCorrelationGeneration;
@@ -332,6 +333,7 @@ void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.clear();
     m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.clear();
     m_terminalCorrelationSnapshot.executionCorrelations.clear();
+    m_terminalCorrelationSnapshot.executionCumulativeQtyByCorrelation.clear();
     m_terminalCorrelationSnapshot.executionOrderIds.clear();
 }
 
@@ -349,6 +351,7 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
         m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.clear();
         m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.clear();
         m_terminalCorrelationSnapshot.executionCorrelations.clear();
+        m_terminalCorrelationSnapshot.executionCumulativeQtyByCorrelation.clear();
         m_terminalCorrelationSnapshot.executionOrderIds.clear();
         return;
     }
@@ -396,6 +399,8 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
         m_pendingTerminalStatuses;
     m_terminalCorrelationSnapshot.executionCorrelations =
         m_pendingExecutionCorrelations;
+    m_terminalCorrelationSnapshot.executionCumulativeQtyByCorrelation =
+        m_pendingExecutionCumulativeQtyByCorrelation;
     m_terminalCorrelationSnapshot.executionOrderIds.clear();
     for (const std::string& correlation : m_pendingExecutionCorrelations) {
         const auto order = m_pendingTerminalOrderIds.find(correlation);
@@ -406,6 +411,7 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
     m_pendingTerminalStatuses.clear();
     m_pendingExecutionCorrelations.clear();
     m_pendingExecutionIdsByCorrelation.clear();
+    m_pendingExecutionCumulativeQtyByCorrelation.clear();
     // A live callback may race the initial End markers. Preserve its proof
     // without ever promoting an incomplete bootstrap snapshot.
     std::vector<long> liveOrderIds;
@@ -2209,7 +2215,16 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                     if (!id.second && id.first->second!=outEvent.id) {
                         MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
                         m_terminalCorrelationSnapshot.reasonCode="IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT";
-                    } else m_pendingExecutionCorrelations.insert(correlationId);
+                    } else {
+                        m_pendingExecutionCorrelations.insert(correlationId);
+                        const double cumQty=outEvent.number2;
+                        // Broker execDetails.cumQty is cumulative PER order.
+                        // Replays and duplicated partial fills are not additive.
+                        auto& largest=
+                            m_pendingExecutionCumulativeQtyByCorrelation[correlationId];
+                        if(std::isfinite(cumQty) && cumQty>largest)
+                            largest=cumQty;
+                    }
                 }
             } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
                 MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
