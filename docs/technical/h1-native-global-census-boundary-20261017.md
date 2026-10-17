@@ -44,11 +44,28 @@ active-risk observations separately visible; do NOT cancel a foreign
 order, reduce risk based on unsigned evidence, issue an order or create
 new trading authority.
 
-**Verification disposition:** the red CTest and successful isolated C++
-compile are recorded; a subsequent remote CTest invocation was rejected
-by the operator tool safety gate. Therefore a post-fix test **PASS is
-NOT claimed** until an authorized run produces a result. The branch is
-held as Draft/unreleased.
+**Verification disposition (2026-10-17 Pocket4 independent recheck):**
+The original pre-fix red CTest remains sealed as historical failure. Its
+previously reported post-fix check was blocked/then failed on an unrelated
+incomplete synthetic H1 fixture; this is not erased. At exact reviewed HEAD
+`2d472eb0d63012fa50f74f451cc97d46d74a560e`, the current Pocket4
+TWS SDK-enabled Release Execution binary was re-linked and the full original
+H1/OMS/OCA/Coordinator/Adapter/startup/quote/full-runtime suite actually
+completed **21/21 CTests PASS (45.49s)**. The independent Source lane
+completed **116/116 tests PASS** after moving its disposable executable
+CMake fixtures off the host's `noexec` /tmp mount to a PRIVATE home-backed
+TMPDIR; /tmp's policy and the host's original IB service were not changed.
+
+Frozen Pocket4 evidence:
+`~/.local/state/heptatrader/operator-evidence/h1-global-census-verified-20261017/`
+- `native-h1-21.log` SHA256
+  `7d92f6f49b81d7c263d446872df8e27978a06d22355edcdb9cb7ffd8ee1d9033`;
+- `source-tests-exec-tmp.log` SHA256
+  `10f069eb7e43f4076700f9188416cf882b9d501dc5f6b273b9cc487b155e4bdd`;
+- complete isolated Execution binary SHA256
+  `e0c093b94e5bcc1589213a9e611254faaa105de6c52a93fc037ca8ff2a7f760d`.
+This is source-only verification, NOT a production release or proof of
+Broker-held stop coverage. Keep the PR Draft and P0 #331 open.
 
 The original Pocket4 Execution and FX/BTC driver binaries/PIDs, native
 kill-switch and durable user maintenance hold are unchanged. Original
