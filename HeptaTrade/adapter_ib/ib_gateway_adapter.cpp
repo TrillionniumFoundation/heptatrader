@@ -254,6 +254,8 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_pendingActiveOrderClientIds.clear();
     m_pendingActivePermIdOwners.clear();
     m_pendingUnboundManualPermIds.clear();
+    m_pendingProtectiveCandidatesByPermId.clear();
+    m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
     m_postFillReconciliationOrderIds.clear();
     m_postFillExposureGenerationByOrderId.clear();
@@ -906,6 +908,8 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_pendingActiveOrderClientIds.clear();
     m_pendingActivePermIdOwners.clear();
     m_pendingUnboundManualPermIds.clear();
+    m_pendingProtectiveCandidatesByPermId.clear();
+    m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
@@ -916,6 +920,8 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
     m_correlationSnapshot.activeOrderByPermanentId.clear();
     m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.visibleProtectiveCandidatesByPermId.clear();
+    m_correlationSnapshot.protectiveMetadataIncomplete = false;
     m_correlationSnapshot.activeOrderMissingPermanentId = false;
     const bool requested = accountWide ?
         m_api->ReqAllOpenOrders() : m_api->ReqOpenOrders();

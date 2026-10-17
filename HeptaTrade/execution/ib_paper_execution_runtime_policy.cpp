@@ -396,6 +396,18 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                        accountBroker.observedPermanentIdentityComplete ?
                        "true" : "false")
                    << ",\"account_broker_external_manual_universe_complete\":false"
+                   << ",\"account_broker_visible_protective_candidates\":"
+                   << (accountBroker.snapshotCoherent ?
+                       std::to_string(
+                           broker.active.visibleProtectiveCandidatesByPermId.size()) :
+                       "null")
+                   << ",\"account_broker_protective_metadata_complete\":"
+                   << (accountBroker.snapshotCoherent &&
+                       !broker.active.protectiveMetadataIncomplete ?
+                       "true" : "false")
+                   << ",\"account_broker_independent_stop_survival_proven\":false"
+                   << ",\"account_broker_protective_lifecycle_reason\":\""
+                      "IB_BROKER_PROTECTIVE_SURVIVAL_UNPROVEN\""
                    << ",\"account_broker_reason\":\""
                    << accountBroker.reasonCode << "\""
                    << ",\"account_broker_post_fence_refresh_proven\":false"
