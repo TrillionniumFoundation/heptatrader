@@ -1335,6 +1335,20 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::FenceAccountNewEnt
     result.status = ExecutionCommandStatus::Accepted;
     result.affectedCount = outstanding;
     result.reasonCode = reason;
+    // The original authorized Crypto owner alone can issue this read probe.
+    // Failed or incomplete Broker evidence does NOT undo the durable fence.
+    // An unknown or in-flight send cannot qualify for a fresh read.
+    if (outstanding == 0 && m_callbacks.beginAccountPostFenceBrokerRead) {
+        const auto local = m_coordinator.ObserveAccountLocalDrain(command.context);
+        if (local.present && local.localHotProjectionQuiescent) {
+            std::string readReason;
+            const bool issued = m_callbacks.beginAccountPostFenceBrokerRead(
+                command.context, readReason);
+            result.detail = (issued ?
+                "ACCOUNT_POST_FENCE_BROKER_READ_REQUESTED_NOT_STOP_PERMIT:" :
+                "ACCOUNT_POST_FENCE_BROKER_READ_NOT_REQUESTED:") + readReason;
+        }
+    }
     // A successful *entry* fence may coexist with pending Broker sends,
     // active or unknown orders. Never claim a stop permit here.
     result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
