@@ -61,3 +61,34 @@ PAPER stop/maintenance cutover. H1 `nativeStopBrokerWorkingProven`,
 `maySendOrdinaryExit` and `mayStopDriver` remain false. The
 original Execution owner, account-wide durable/native risk holds,
 IB Gateway and both active strategy services are unchanged.
+
+## Feasible PAPER acceptance boundary, not a fictitious exchange guarantee
+
+IBKR explicitly states that **stops and other complex orders are always
+simulated in PAPER**. A successful `Submitted` / `PreSubmitted` echo
+cannot certify an exchange-native order or guaranteed protection after
+IBKR simulation or market-data failure. Source:
+https://www.interactivebrokers.com/campus/glossary-terms/paper-trading-account/
+
+A previous exact-account, one-shot, **nonexecuting** STP/GTC/OCA WhatIf
+returned an exact Broker echo with `whatIf=true`, `PreSubmitted`,
+zero execution callbacks and zero changed active orders. This proves
+encoding/preview semantics ONLY. Local original receipt:
+`~/.local/state/heptatrader/operator-evidence/
+ib-paper-stp-gtc-oca-whatif-20261016/whatif-gtc-oca-result.json`.
+It is not a working protective stop and must not be replayed as a new
+send under a fresh idempotency key.
+
+The next meaningful product test must use the **existing original
+Execution owner** and an explicitly bounded isolated PAPER canary only
+after its durable account-new-entry fence, complete same-account
+Broker-global orders/positions and original OMS original-command state
+are coherent. Verify actual Parent/Child Broker status and permanent-ID
+callbacks, exact full/partial execution, ordinary exit OCA cancellation,
+unknown-send recovery, and original Driver absence while the
+independent Execution owner remains alive. Do not simultaneously
+stop the Gateway or original Execution while relying on PAPER stop
+simulation; that is not demonstrable safety coverage. Until the
+original Broker/owner canary is completed and reconciled, no native
+Driver-stop authority, entry policy change, or production selector
+switch may be inferred from this research branch.
