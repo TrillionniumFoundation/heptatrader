@@ -1907,6 +1907,74 @@ void TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict()
     }
 }
 
+// Actual documented TWS API MIT/LIT (FX-supported) and STP PRT (FUT only)
+// remain trigger-conditional orders WITHOUT Parent/OCA. They are never
+// Broker-proven protective stops, but may not disappear from the account-wide
+// active/protective-candidate diagnostic, even when owned by a foreign client.
+void TestBrokerTouchedConditionalOrdersStayInGlobalCensus() {
+    const std::string types[]={"MIT","LIT","STP PRT"};
+    for (int variant=0;variant<3;++variant) {
+        Fixture visible;
+        assert(visible.adapter.ReqAuthoritativeOpenOrders());
+        auto e=visible.Event(IBEventType::OpenOrder);
+        e.id=7811+variant;e.brokerClientId=999;
+        e.brokerPermId=997811+variant;e.account="DU123";
+        e.value="Submitted";
+        e.contract.symbol=variant==2 ? "ES" : "EUR";
+        e.contract.secType=variant==2 ? "FUT" : "CASH";
+        e.contract.currency="USD";
+        e.contract.exchange=variant==2 ? "GLOBEX" : "IDEALPRO";
+        e.order.action="SELL";e.order.orderType=types[variant];
+        e.order.orderRef="conditional-scope-"+std::to_string(variant);
+        e.order.auxPrice=variant==2 ? 4000.0 : 1.1;
+        e.order.lmtPrice=variant==1 ? 1.099 : 0.0;
+        e.order.totalQuantity=1;
+        e.brokerParentOrderId=0;e.brokerOcaGroup.clear();
+        e.brokerTransmit=true;
+        auto& n=e.nativeOrder;
+        n.present=true;n.contractId=variant==2 ? 100001 : 12087792;
+        n.orderId=static_cast<long>(e.id);
+        n.permanentId=e.brokerPermId;n.clientId=e.brokerClientId;
+        n.parentId=0;n.account=e.account;n.action=e.order.action;
+        n.orderType=e.order.orderType;n.orderRef=e.order.orderRef;
+        n.ocaGroup.clear();n.transmit=true;n.timeInForce="DAY";
+        n.stopAuxPrice=e.order.auxPrice;n.totalQuantity=e.order.totalQuantity;
+        visible.Push(e);
+        visible.Push(visible.Event(IBEventType::OpenOrderEnd));
+        const auto good=visible.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(good.complete && good.VisibleActiveOrderCount()==1);
+        assert(good.visibleProtectiveCandidatesByPermId.size()==1);
+        assert(good.visibleProtectiveCandidatesByPermId.count(e.brokerPermId)==1);
+        assert(good.visibleProtectiveCandidatesByPermId.at(e.brokerPermId).
+               orderType==types[variant]);
+        assert(visible.broker->places==0 && visible.broker->cancels==0);
+
+        // Lite unexpectedly reporting plain MKT while the real SDK Order
+        // remains trigger-conditional must revoke the account-global view.
+        // No field is accepted as stop-working or Driver-stop authority.
+        Fixture hidden;
+        assert(hidden.adapter.ReqAuthoritativeOpenOrders());
+        auto mismatch=e;
+        mismatch.order.orderType="MKT";mismatch.order.auxPrice=0.0;
+        mismatch.order.lmtPrice=0.0;
+        hidden.Push(mismatch);
+        hidden.Push(hidden.Event(IBEventType::OpenOrderEnd));
+        const auto bad=hidden.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!bad.complete);
+        assert(bad.visibleProtectiveCandidatesByPermId.empty());
+        assert(hidden.broker->places==0 && hidden.broker->cancels==0);
+
+        // Incremental SDK/Lite disagreement must likewise invalidate the
+        // already completed original global inventory, not silently replace.
+        Fixture incremental;
+        incremental.Push(mismatch);
+        const auto inc=incremental.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!inc.complete);
+        assert(inc.visibleProtectiveCandidatesByPermId.empty());
+        assert(incremental.broker->places==0 && incremental.broker->cancels==0);
+    }
+}
+
 void TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection()
 {
     Fixture f;
@@ -2126,6 +2194,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerTouchedConditionalOrdersStayInGlobalCensus();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
