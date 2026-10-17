@@ -1693,6 +1693,9 @@ public:
             remainingQuantity);
         event.whyHeld = whyHeld;
         event.brokerClientId = clientId;
+        // Native orderStatus carries a Broker permId but no complete
+        // parent/OCA/contract payload; preserve the original global
+        // permanent ID census and H1 diagnostic fields independently.
         event.brokerPermId = permId > 0 ? permId : 0;
         event.nativeOrder.permanentId = permId; // not a full Order witness
         event.marketCapPrice = mktCapPrice;
