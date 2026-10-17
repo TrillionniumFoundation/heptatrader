@@ -132,3 +132,27 @@ then enable+start the still-pinned
 heptatrader-value343-predecision-incremental.service. Never delete
 or modify any of the prior evidence or reclassify a missed request
 as a successful future pre-RESPONSE forecast.
+
+## First actual autonomous 180-second v5 independent full-source replay
+
+After v5 replaced the v4 user research watcher and continued running,
+the actual periodic independent whole-original source rehash completed
+successfully **without operator invocation of the verifier**.
+The logged result confirmed 13,646 authentic original events, 4,432
+original REQUESTs, and zero unverified extra events, with
+`full_source_consistent=true`. No original source history, original
+Broker economics or model weights were changed. The v5 user service
+remained enabled/active with zero restarts and a measured maximum
+~231MiB during the complete replay (below its 512MiB hard limit).
+
+The independent, create-only Pocket4 source-cycle receipt is:
+  ~/.local/state/heptatrader/operator-evidence/value343-postfsync-v5-full-replay-20261017/autonomous-original-source-replay-v1.json
+SHA256:
+  c0400ed77c22fe7b37d493ff41d30dbeabb14c033aa2cd240c03258cc2917e94
+
+The v5 research output still contains zero genuine new predictions,
+post-fsync proof receipts, original RESPONSE proofs, missed/censored
+requests or settled after-fee scores. That is an operational source
+integrity pass during closed FX markets, NOT a statement about
+prospective prediction efficacy or profitability. The original v4,
+v3, v2 and v1 release paths and historical evidence remain intact.
