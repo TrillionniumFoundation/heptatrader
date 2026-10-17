@@ -680,6 +680,7 @@ std::uint64_t IBMarketDataAdmissionState::Generation() const {
 #include "CommissionReport.h"
 #include "OrderCancel.h"
 #include "OrderState.h"
+#include "ib_native_bracket_callback_research.h"
 
 class EWrapperDefault : public EWrapper {
 public:
@@ -1692,7 +1693,11 @@ public:
             remainingQuantity);
         event.whyHeld = whyHeld;
         event.brokerClientId = clientId;
+        // Native orderStatus carries a Broker permId but no complete
+        // parent/OCA/contract payload; preserve the original global
+        // permanent ID census and H1 diagnostic fields independently.
         event.brokerPermId = permId > 0 ? permId : 0;
+        event.nativeOrder.permanentId = permId;
         event.marketCapPrice = mktCapPrice;
         PushEvent(std::move(event));
     }
@@ -1784,6 +1789,9 @@ public:
         event.brokerTransmit = order.transmit;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));
@@ -1807,6 +1815,9 @@ public:
         event.brokerTransmit = order.transmit;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
+        event.nativeOrder =
+            hepta_ib_bracket_callback_research::CaptureNativeBrokerOrder(
+                contract, order, static_cast<long>(order.orderId));
         event.number = event.order.totalQuantity;
         event.number2 = event.order.lmtPrice;
         PushEvent(std::move(event));
