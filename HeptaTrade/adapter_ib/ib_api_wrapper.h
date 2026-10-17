@@ -90,6 +90,28 @@ enum class IBEventType {
     CommissionReport // appended: retain existing enum values
 };
 
+// SDK-native evidence from the original order-bearing EWrapper callback.
+// It does not grant new order, cancel, or Driver-maintenance authority.
+struct IBBrokerNativeOrderWitness {
+    bool present = false;
+    long contractId = 0;
+    long orderId = 0;
+    long permanentId = 0;
+    long parentId = 0;
+    int clientId = -1;
+    bool transmit = false;
+    std::string account;
+    std::string action;
+    std::string orderType;
+    std::string timeInForce;
+    std::string orderRef;
+    std::string ocaGroup;
+    int ocaType = 0;
+    int triggerMethod = 0;
+    double stopAuxPrice = 0.0;
+    double totalQuantity = 0.0;
+};
+
 struct IBEvent {
     IBEventType type = IBEventType::None;
     long long id = 0;
@@ -132,6 +154,7 @@ struct IBEvent {
     IbEconomicEvidence economics;
     IBContractLite contract;
     IBOrderLite order;
+    IBBrokerNativeOrderWitness nativeOrder; // read-only SDK observation
     std::uint64_t overflowGeneration = 0;
     std::uint64_t droppedEventCount = 0;
     // Producer-side steady-clock timestamp taken immediately before queue

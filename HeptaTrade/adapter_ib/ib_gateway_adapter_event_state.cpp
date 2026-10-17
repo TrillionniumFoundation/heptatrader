@@ -72,6 +72,33 @@ bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
         !event.brokerOcaGroup.empty() || event.brokerParentOrderId!=0;
 }
 
+// Original IB SDK openOrder projects Lite + native Order from one callback.
+// A contradiction within that single Broker observation is not a complete
+// account-wide protective-order census. Never synthesize trading authority.
+bool NativeAndLiteProtectiveShapeConsistent(const IBEvent& event) {
+    if (!event.nativeOrder.present ||
+        !IsIbVisibleProtectiveCandidate(event)) return true;
+    const auto& n=event.nativeOrder;
+    const bool stopType=event.order.orderType=="STP" ||
+        event.order.orderType=="STP LMT" ||
+        event.order.orderType=="TRAIL" ||
+        event.order.orderType=="TRAIL LIMIT";
+    return event.id==n.orderId &&
+        event.brokerPermId==n.permanentId &&
+        event.brokerParentOrderId==n.parentId &&
+        event.brokerOcaGroup==n.ocaGroup &&
+        event.brokerTransmit==n.transmit &&
+        event.brokerClientId==n.clientId &&
+        event.account==n.account &&
+        event.order.action==n.action &&
+        event.order.orderType==n.orderType &&
+        event.order.orderRef==n.orderRef &&
+        std::isfinite(n.totalQuantity) &&
+        event.order.totalQuantity==n.totalQuantity &&
+        (!stopType || (std::isfinite(n.stopAuxPrice) &&
+                      event.order.auxPrice==n.stopAuxPrice));
+}
+
 IBVisibleProtectiveOrderCandidate MakeIbVisibleProtectiveCandidate(
     const IBEvent& event)
 {
@@ -215,6 +242,11 @@ void HeptaIBGatewayAdapter::ObserveIncrementalProtectiveMetadata(
         event.account!=m_cfg.account || event.id<0 ||
         event.id>LONG_MAX || event.brokerClientId<0)
         return;
+    if (!NativeAndLiteProtectiveShapeConsistent(event)) {
+        InvalidateCorrelationSnapshot(
+            "IB_PROTECTIVE_NATIVE_LITE_INCREMENTAL_CONFLICT");
+        return;
+    }
     if (event.brokerPermId<=0) {
         if (IsIbVisibleProtectiveCandidate(event))
             m_correlationSnapshot.protectiveMetadataIncomplete=true;
@@ -1664,6 +1696,12 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             return;
         }
         if (!acceptedBrokerOpenOrder) return;
+        if (!NativeAndLiteProtectiveShapeConsistent(outEvent)) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode=
+                "IB_PROTECTIVE_NATIVE_LITE_SHAPE_CONFLICT";
+            return;
+        }
         const long orderId = static_cast<long>(outEvent.id);
         if (orderId == 0 && (outEvent.brokerClientId != 0 ||
                              outEvent.brokerPermId <= 0)) {

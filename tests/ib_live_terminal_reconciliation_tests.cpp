@@ -1823,6 +1823,61 @@ void TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend() {
     assert(denied.reasonCode=="IB_PROTECTIVE_PENDING_CANCEL_PERMID_UNKNOWN");
 }
 
+void TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict()
+{
+    // A real TWS openOrder projects both the Lite metadata and SDK-native
+    // Order from ONE Broker callback. A mismatch must revoke the current
+    // account-global protective candidate rather than leaving complete=true.
+    for (int variant=0;variant<=12;++variant) {
+        Fixture f;
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        auto e=f.Event(IBEventType::OpenOrder);
+        e.id=1723;e.brokerClientId=999;e.brokerPermId=9901723;
+        e.value="Submitted";e.account="DU123";
+        e.contract.symbol="EUR";e.contract.secType="CASH";
+        e.contract.currency="USD";e.contract.exchange="IDEALPRO";
+        e.order.action="SELL";e.order.orderType="STP";
+        e.order.orderRef="fixture-native-protective";
+        e.order.auxPrice=1.1205;e.order.totalQuantity=2;
+        e.brokerParentOrderId=1722;e.brokerOcaGroup="fixture-native-oca";
+        e.brokerTransmit=true;
+        auto& n=e.nativeOrder;
+        n.present=true;n.contractId=12087792;n.orderId=1723;
+        n.permanentId=9901723;n.clientId=999;n.parentId=1722;
+        n.account="DU123";n.action="SELL";n.orderType="STP";
+        n.orderRef=e.order.orderRef;n.ocaGroup=e.brokerOcaGroup;
+        n.ocaType=1;n.transmit=true;n.timeInForce="GTC";
+        n.triggerMethod=0;n.stopAuxPrice=e.order.auxPrice;
+        n.totalQuantity=e.order.totalQuantity;
+        switch(variant) {
+        case 1:++e.brokerPermId;break;
+        case 2:++e.brokerParentOrderId;break;
+        case 3:e.brokerOcaGroup="other-oca";break;
+        case 4:e.brokerTransmit=false;break;
+        case 5:e.order.orderRef="other-ref";break;
+        case 6:e.order.action="BUY";break;
+        case 7:e.order.orderType="STP LMT";break;
+        case 8:e.order.auxPrice+=.00005;break;
+        case 9:++n.clientId;break;
+        case 10:n.account="DU-OTHER";break;
+        case 11:++n.orderId;break;
+        case 12:++n.totalQuantity;break;
+        }
+        f.Push(e);
+        f.Push(f.Event(IBEventType::OpenOrderEnd));
+        const auto view=f.adapter.GetAuthoritativeCorrelationSnapshot();
+        if (variant==0) {
+            assert(view.complete);
+            assert(view.visibleProtectiveCandidatesByPermId.size()==1);
+            assert(view.visibleProtectiveCandidatesByPermId.count(9901723)==1);
+        } else {
+            assert(!view.complete);
+            assert(view.visibleProtectiveCandidatesByPermId.empty());
+        }
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 void TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection()
 {
     Fixture f;
@@ -2042,6 +2097,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
