@@ -133,7 +133,7 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     out.connectionEpoch = audit.risk.connectionEpoch;
     out.activeGeneration = audit.active.generation;
     out.activeComplete = audit.active.complete;
-    out.activeOrders = static_cast<std::uint64_t>(audit.active.activeOrderIds.size());
+    out.activeOrders = static_cast<std::uint64_t>(audit.active.VisibleActiveOrderCount());
     out.activeCorrelations = static_cast<std::uint64_t>(
         audit.active.activeOrderIdsByCorrelation.size());
     out.activeReason = audit.active.reasonCode;

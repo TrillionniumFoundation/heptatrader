@@ -252,6 +252,9 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
     m_pendingActiveOrderClientIds.clear();
+    m_pendingActivePermIdOwners.clear();
+    m_pendingUnboundManualPermIds.clear();
+    m_pendingMissingPermanentId = false;
     m_postFillReconciliationOrderIds.clear();
     m_postFillExposureGenerationByOrderId.clear();
     m_observedEconomicFillQuantityByIdentity.clear();
@@ -901,6 +904,9 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
     m_pendingActiveOrderClientIds.clear();
+    m_pendingActivePermIdOwners.clear();
+    m_pendingUnboundManualPermIds.clear();
+    m_pendingMissingPermanentId = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -908,6 +914,9 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
     m_correlationSnapshot.activeOrderIds.clear();
     m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
+    m_correlationSnapshot.activeOrderByPermanentId.clear();
+    m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.activeOrderMissingPermanentId = false;
     const bool requested = accountWide ?
         m_api->ReqAllOpenOrders() : m_api->ReqOpenOrders();
     if (!requested) {
@@ -1144,7 +1153,16 @@ IBAccountPostFenceReadObservation HeptaIBGatewayAdapter::PollAccountPostFenceRea
         status.activeThenRiskObserved = true;
         status.activeReadComplete = true;
         status.riskReadComplete = true;
-        status.globalActiveOrders = fresh.active.activeOrderIds.size();
+        status.globalActiveOrders = fresh.active.VisibleActiveOrderCount();
+        status.observedUnboundManualOrders =
+            fresh.active.unboundManualPermanentIds.size();
+        status.observedBrokerPermanentIds =
+            fresh.active.activeOrderByPermanentId.size();
+        status.observedPermanentIdentityComplete =
+            !fresh.active.activeOrderMissingPermanentId &&
+            fresh.active.activeOrderByPermanentId.size() ==
+                status.globalActiveOrders;
+        status.externalManualTwsUniverseComplete = false;
         status.brokerZeroObserved =
             fresh.active.activeOrderIds.empty() && flat;
         status.maintenanceStopPermitted = false;
@@ -1249,7 +1267,16 @@ IBAccountPostFenceReadObservation HeptaIBGatewayAdapter::PollAccountPostFenceRea
     status.activeReadComplete = true;
     status.riskReadComplete = true;
     status.activeThenRiskObserved = true;
-    status.globalActiveOrders = audited.active.activeOrderIds.size();
+    status.globalActiveOrders = audited.active.VisibleActiveOrderCount();
+    status.observedUnboundManualOrders =
+        audited.active.unboundManualPermanentIds.size();
+    status.observedBrokerPermanentIds =
+        audited.active.activeOrderByPermanentId.size();
+    status.observedPermanentIdentityComplete =
+        !audited.active.activeOrderMissingPermanentId &&
+        audited.active.activeOrderByPermanentId.size() ==
+            status.globalActiveOrders;
+    status.externalManualTwsUniverseComplete = false;
     bool exactlyFlat = audited.risk.grossAbsolutePosition == 0.0;
     for (const auto& position : audited.positionQuantities) {
         if (position.first.empty() || !std::isfinite(position.second) ||

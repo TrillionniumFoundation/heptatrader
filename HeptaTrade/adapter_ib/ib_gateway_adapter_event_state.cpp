@@ -73,6 +73,9 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
     m_pendingActiveOrderClientIds.clear();
+    m_pendingActivePermIdOwners.clear();
+    m_pendingUnboundManualPermIds.clear();
+    m_pendingMissingPermanentId = false;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -80,6 +83,9 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
     m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
     m_correlationSnapshot.activeOrderIds.clear();
     m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
+    m_correlationSnapshot.activeOrderByPermanentId.clear();
+    m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.activeOrderMissingPermanentId = false;
 }
 
 IBAuthoritativeCorrelationSnapshot HeptaIBGatewayAdapter::GetAuthoritativeCorrelationSnapshot() const {
@@ -94,11 +100,33 @@ std::uint64_t CallbackMonotonicNs() {
 }
 
 bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
-    long orderId, const std::string& correlationId, int brokerClientId) {
+    long orderId, const std::string& correlationId, int brokerClientId,
+    std::int64_t brokerPermId) {
     if (!m_correlationSnapshot.complete) return true;
     if (orderId < 0 || brokerClientId < 0) {
         InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_ID_OR_CLIENT_INVALID");
         return false;
+    }
+    if (orderId == 0 &&
+        (brokerClientId != 0 || brokerPermId <= 0 ||
+         !correlationId.empty())) {
+        InvalidateCorrelationSnapshot("IB_UNBOUND_MANUAL_PERMID_REQUIRED");
+        return false;
+    }
+    if (brokerPermId > 0) {
+        const auto identity = std::make_pair(brokerClientId, orderId);
+        const auto found =
+            m_correlationSnapshot.activeOrderByPermanentId.find(brokerPermId);
+        if (found != m_correlationSnapshot.activeOrderByPermanentId.end() &&
+            found->second != identity) {
+            InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_PERMID_COLLISION");
+            return false;
+        }
+        m_correlationSnapshot.activeOrderByPermanentId[brokerPermId] = identity;
+        if (orderId == 0)
+            m_correlationSnapshot.unboundManualPermanentIds.insert(brokerPermId);
+    } else {
+        m_correlationSnapshot.activeOrderMissingPermanentId = true;
     }
     const auto known = m_correlationSnapshot.activeOrderClientIdsByOrderId.find(orderId);
     if (known != m_correlationSnapshot.activeOrderClientIdsByOrderId.end() &&
@@ -465,16 +493,24 @@ bool HeptaIBGatewayAdapter::DequeueCurrentEpochEvent(IBEvent& event) {
 
 bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
     bool acceptedBrokerOpenOrder = false;
+    // Any active openOrder whose Broker account is unknown may belong to
+    // our PAPER account. Skipping it would turn a partially sourced order
+    // inventory into a false global zero, especially for manual TWS orders.
+    if (event.type == IBEventType::OpenOrder &&
+        !m_cfg.account.empty() && event.account.empty() &&
+        !m_correlationRefreshPending && m_correlationSnapshot.complete)
+        InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_ACCOUNT_UNKNOWN");
     // An account-wide OpenOrder callback is broker acknowledgement after a
     // process restart. Restore cancelability from that authoritative evidence
     // rather than relying on process-local submit history.
     if (event.type == IBEventType::OpenOrder &&
         !m_cfg.account.empty() && event.account == m_cfg.account) {
-        if (event.id >= 0) {
+        if (event.id >= 0 && event.id <= LONG_MAX) {
             // reqAllOpenOrders echoes orders from OTHER client IDs. Those
             // count toward account-global active risk, but MUST NOT seed
             // the original client-scoped cancel/terminal lifecycle.
-            acceptedBrokerOpenOrder = event.brokerClientId == m_cfg.clientId ?
+            acceptedBrokerOpenOrder =
+                event.brokerClientId == m_cfg.clientId && event.id > 0 ?
                 m_orderLifecycle.RecordBrokerOpenOrder(
                     static_cast<long>(event.id), event.value) :
                 event.brokerClientId >= 0;
@@ -516,7 +552,8 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
                     }
                 }
             }
-            if (acceptedBrokerOpenOrder && event.brokerClientId == m_cfg.clientId)
+            if (acceptedBrokerOpenOrder &&
+                event.brokerClientId == m_cfg.clientId && event.id > 0)
                 DispatchPendingCancelIfAcknowledged(
                     static_cast<long>(event.id), event.value,
                     event.value != "Filled", true);
@@ -529,7 +566,7 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
             if (event.brokerClientId != m_cfg.clientId) {
                 MergeIncrementalActiveOrder(
                     static_cast<long>(event.id), std::string(),
-                    event.brokerClientId);
+                    event.brokerClientId, event.brokerPermId);
                 return acceptedBrokerOpenOrder;
             }
             std::string correlationId;
@@ -538,13 +575,13 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
                     event.order.orderRef, correlationId, decodeReason)) {
                 MergeIncrementalActiveOrder(
                     static_cast<long>(event.id), correlationId,
-                    event.brokerClientId);
+                    event.brokerClientId, event.brokerPermId);
             } else if (event.order.orderRef.compare(0, 2, "H1") == 0) {
                 InvalidateCorrelationSnapshot(decodeReason);
             } else {
                 MergeIncrementalActiveOrder(
                     static_cast<long>(event.id), std::string(),
-                    event.brokerClientId);
+                    event.brokerClientId, event.brokerPermId);
             }
         }
     }
@@ -563,6 +600,14 @@ void HeptaIBGatewayAdapter::RetireTerminalActiveOrder(
     if (eraseRiskBaseline) m_orderRiskBaselines.erase(orderId);
     m_correlationSnapshot.activeOrderIds.erase(orderId);
     m_correlationSnapshot.activeOrderClientIdsByOrderId.erase(orderId);
+    for (auto it = m_correlationSnapshot.activeOrderByPermanentId.begin();
+         it != m_correlationSnapshot.activeOrderByPermanentId.end();) {
+        if (it->second.first == m_cfg.clientId &&
+            it->second.second == orderId)
+            it = m_correlationSnapshot.activeOrderByPermanentId.erase(it);
+        else
+            ++it;
+    }
     for (std::map<std::string, long>::iterator it =
              m_correlationSnapshot.activeOrderIdsByCorrelation.begin();
          it != m_correlationSnapshot.activeOrderIdsByCorrelation.end();) {
@@ -1371,7 +1416,15 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     const IBEvent& outEvent,
     bool acceptedBrokerOpenOrder) {
     if (outEvent.type == IBEventType::OpenOrder && m_correlationRefreshPending) {
-        if (m_cfg.account.empty() || outEvent.account != m_cfg.account) return;
+        if (m_cfg.account.empty()) return;
+        if (outEvent.account.empty()) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode =
+                "IB_ACTIVE_ORDER_ACCOUNT_UNKNOWN";
+            return;
+        }
+        // Another positively identified IB account is out of scope.
+        if (outEvent.account != m_cfg.account) return;
         if (outEvent.id < 0 || outEvent.id > LONG_MAX) {
             MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_ID_INVALID";
@@ -1384,6 +1437,29 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         }
         if (!acceptedBrokerOpenOrder) return;
         const long orderId = static_cast<long>(outEvent.id);
+        if (orderId == 0 && (outEvent.brokerClientId != 0 ||
+                             outEvent.brokerPermId <= 0)) {
+            MarkCallbackConflict(m_correlationRefreshConflict);
+            m_correlationSnapshot.reasonCode =
+                "IB_UNBOUND_MANUAL_PERMID_REQUIRED";
+            return;
+        }
+        if (outEvent.brokerPermId > 0) {
+            const auto nativeIdentity =
+                std::make_pair(outEvent.brokerClientId, orderId);
+            const auto perm = m_pendingActivePermIdOwners.emplace(
+                outEvent.brokerPermId, nativeIdentity);
+            if (!perm.second && perm.first->second != nativeIdentity) {
+                MarkCallbackConflict(m_correlationRefreshConflict);
+                m_correlationSnapshot.reasonCode =
+                    "IB_ACTIVE_ORDER_PERMID_COLLISION";
+                return;
+            }
+            if (orderId == 0)
+                m_pendingUnboundManualPermIds.insert(outEvent.brokerPermId);
+        } else {
+            m_pendingMissingPermanentId = true;
+        }
         const auto identity = m_pendingActiveOrderClientIds.emplace(
             orderId, outEvent.brokerClientId);
         if (!identity.second && identity.first->second != outEvent.brokerClientId) {
@@ -1420,6 +1496,12 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             m_correlationSnapshot.activeOrderIds = m_pendingActiveOrderIds;
             m_correlationSnapshot.activeOrderClientIdsByOrderId =
                 m_pendingActiveOrderClientIds;
+            m_correlationSnapshot.activeOrderByPermanentId =
+                m_pendingActivePermIdOwners;
+            m_correlationSnapshot.unboundManualPermanentIds =
+                m_pendingUnboundManualPermIds;
+            m_correlationSnapshot.activeOrderMissingPermanentId =
+                m_pendingMissingPermanentId;
         } else {
             m_correlationSnapshot.complete = false;
             if (m_correlationSnapshot.reasonCode.empty()) {
@@ -1429,10 +1511,16 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             m_correlationSnapshot.activeOrderIdsByCorrelation.clear();
             m_correlationSnapshot.activeOrderIds.clear();
             m_correlationSnapshot.activeOrderClientIdsByOrderId.clear();
+    m_correlationSnapshot.activeOrderByPermanentId.clear();
+    m_correlationSnapshot.unboundManualPermanentIds.clear();
+    m_correlationSnapshot.activeOrderMissingPermanentId = false;
         }
         m_pendingCorrelationOrderIds.clear();
         m_pendingActiveOrderIds.clear();
         m_pendingActiveOrderClientIds.clear();
+    m_pendingActivePermIdOwners.clear();
+    m_pendingUnboundManualPermIds.clear();
+    m_pendingMissingPermanentId = false;
     }
 }
 

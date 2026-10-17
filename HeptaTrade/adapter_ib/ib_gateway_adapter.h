@@ -95,6 +95,27 @@ struct IBAuthoritativeCorrelationSnapshot {
     // alone are client-scoped and cannot prove ownership or exact identity.
     // Every active numeric ID in a complete snapshot has an exact client ID.
     std::map<long, int> activeOrderClientIdsByOrderId;
+    // The IB Host permId is account-wide and survives numeric client-ID
+    // changes. Manual TWS orders can all be returned as (clientId=0,
+    // orderId=0). Keep every distinct positive permId instead of collapsing
+    // all of these into the single numeric zero key above.
+    std::map<std::int64_t, std::pair<int, long>> activeOrderByPermanentId;
+    std::set<std::int64_t> unboundManualPermanentIds;
+    // Existing/legacy native fixture or broker callbacks can lack a permId.
+    // That is NEVER positive evidence that account-wide permanent identity
+    // coverage is complete. A zero-size request still does not prove that
+    // ALL TWS/manual/external Broker sessions have been enumerated.
+    bool activeOrderMissingPermanentId = false;
+
+    std::size_t VisibleActiveOrderCount() const {
+        const std::size_t manualSentinel =
+            activeOrderIds.count(0) != 0 ? 1U : 0U;
+        // Visible bound numbers + EACH separately identified manual TWS
+        // order. Unknown manual id zero has at least one risk blocker.
+        return activeOrderIds.size() - manualSentinel +
+            (unboundManualPermanentIds.empty() ?
+             manualSentinel : unboundManualPermanentIds.size());
+    }
 };
 
 struct IBAuthoritativeRiskSnapshot {
@@ -203,6 +224,12 @@ struct IBAccountPostFenceReadObservation {
     std::uint64_t brokerMutationGeneration = 0;
     std::uint64_t economicExposureGeneration = 0;
     std::size_t globalActiveOrders = 0;
+    std::size_t observedUnboundManualOrders = 0;
+    std::size_t observedBrokerPermanentIds = 0;
+    bool observedPermanentIdentityComplete = false;
+    // IB reqAllOpenOrders is NOT a transactional, account-wide inventory
+    // of every unbound manual TWS order/other username. Never promote.
+    bool externalManualTwsUniverseComplete = false;
     std::string reasonCode = "IB_ACCOUNT_POST_FENCE_READ_NOT_STARTED";
 };
 
@@ -471,7 +498,8 @@ private:
     void PublishPositionEvent(const IBEvent& event);
     bool MergeIncrementalActiveOrder(long orderId,
                                      const std::string& correlationId,
-                                     int brokerClientId);
+                                     int brokerClientId,
+                                     std::int64_t brokerPermId = 0);
     void InvalidateCorrelationSnapshot(const std::string& reason);
     void InvalidateTerminalCorrelationSnapshot(const std::string& reason);
     void FinalizeTerminalCorrelationSnapshot();
@@ -544,6 +572,9 @@ private:
     std::map<std::string, long> m_pendingCorrelationOrderIds;
     std::set<long> m_pendingActiveOrderIds;
     std::map<long, int> m_pendingActiveOrderClientIds;
+    std::map<std::int64_t, std::pair<int, long>> m_pendingActivePermIdOwners;
+    std::set<std::int64_t> m_pendingUnboundManualPermIds;
+    bool m_pendingMissingPermanentId = false;
     std::set<long> m_postFillReconciliationOrderIds;
     std::map<long, std::uint64_t> m_postFillExposureGenerationByOrderId;
     std::map<std::string, double> m_observedEconomicFillQuantityByIdentity;

@@ -1,6 +1,7 @@
 #include "adapter_ib/ib_gateway_adapter.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include "execution/execution_coordinator.h"
+#include "execution/ib_paper_account_broker_evidence.h"
 #include "execution/ib_paper_startup_recovery.h"
 #include <cassert>
 #include <cmath>
@@ -1487,6 +1488,218 @@ void TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation()
     }
 }
 
+
+void TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds()
+{
+    Fixture f;
+    assert(f.broker->places==0 && f.broker->cancels==0);
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    auto manual=f.Event(IBEventType::OpenOrder);
+    manual.id=0;manual.brokerClientId=0;manual.brokerPermId=900101;
+    manual.value="Submitted";
+    manual.order.action="BUY";
+    manual.order.totalQuantity=3;
+    f.Push(manual);
+    auto second=manual;
+    second.brokerPermId=900102;
+    second.order.action="SELL";
+    f.Push(second);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto active=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(active.complete);
+    assert(active.activeOrderIds.size()==1);
+    assert(active.activeOrderIds.count(0)==1);
+    assert(active.activeOrderClientIdsByOrderId.at(0)==0);
+    assert(active.unboundManualPermanentIds.size()==2);
+    assert(active.activeOrderByPermanentId.size()==2);
+    assert(active.activeOrderByPermanentId.at(900101).first==0);
+    assert(active.activeOrderByPermanentId.at(900102).second==0);
+    assert(!active.activeOrderMissingPermanentId);
+    assert(active.VisibleActiveOrderCount()==2);
+    assert(active.activeOrderIdsByCorrelation.empty());
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    f.FinishRiskRefresh();
+    const auto risk=f.adapter.GetAuthoritativeRecoveryAuditSnapshot();
+    assert(risk.barrierComplete);
+    const auto examined=InspectIbPaperAccountBrokerEvidence(risk,73);
+    assert(examined.snapshotCoherent && !examined.brokerZeroObserved);
+    assert(examined.globalActiveOrders==2);
+    assert(examined.foreignActiveOrders==2);
+    assert(examined.observedUnboundManualOrders==2);
+    assert(examined.observedBrokerPermanentIds==2);
+    assert(examined.observedPermanentIdentityComplete);
+    assert(!examined.externalManualTwsUniverseComplete);
+    assert(std::string(examined.reasonCode)==
+           "IB_ACCOUNT_BROKER_UNBOUND_MANUAL_ORDERS_PRESENT");
+
+    // A THIRD same-number manual order appearing asynchronously must also
+    // remain separately visible, not replace the previous permIds.
+    auto third=manual;third.brokerPermId=900103;
+    f.Push(third);
+    const auto newer=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(newer.complete && newer.VisibleActiveOrderCount()==3);
+    assert(newer.unboundManualPermanentIds.size()==3);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    // A NEW complete reqAllOpenOrders cohort with no manual orders can
+    // retire those observed IDs. Local status/cancel did not invent absence.
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto newRead=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(newRead.complete && newRead.VisibleActiveOrderCount()==0);
+    assert(newRead.unboundManualPermanentIds.empty());
+    assert(newRead.activeOrderByPermanentId.empty());
+}
+
+void TestManualPermIdMissingCollisionAndWrongClientFailClosed()
+{
+    {
+        Fixture missing;
+        assert(missing.adapter.ReqAuthoritativeOpenOrders());
+        auto manual=missing.Event(IBEventType::OpenOrder);
+        manual.id=0;manual.brokerClientId=0;manual.brokerPermId=0;
+        manual.value="Submitted";
+        missing.Push(manual);
+        missing.Push(missing.Event(IBEventType::OpenOrderEnd));
+        const auto bad=missing.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!bad.complete);
+        assert(bad.reasonCode=="IB_UNBOUND_MANUAL_PERMID_REQUIRED");
+        assert(bad.VisibleActiveOrderCount()==0); // incomplete != zero proof
+        assert(missing.broker->places==0 && missing.broker->cancels==0);
+    }
+    {
+        Fixture wrong;
+        assert(wrong.adapter.ReqAuthoritativeOpenOrders());
+        auto foreign=wrong.Event(IBEventType::OpenOrder);
+        foreign.id=0;foreign.brokerClientId=701;
+        foreign.brokerPermId=900301;foreign.value="Submitted";
+        wrong.Push(foreign);wrong.Push(wrong.Event(IBEventType::OpenOrderEnd));
+        const auto bad=wrong.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!bad.complete);
+        assert(bad.reasonCode=="IB_UNBOUND_MANUAL_PERMID_REQUIRED");
+    }
+    {
+        Fixture collided;
+        assert(collided.adapter.ReqAuthoritativeOpenOrders());
+        auto first=collided.Event(IBEventType::OpenOrder);
+        first.id=101;first.brokerClientId=73;first.brokerPermId=991001;
+        first.value="Submitted";
+        first.order.action="BUY";first.order.totalQuantity=1;
+        collided.Push(first);
+        auto second=first;
+        second.id=102;second.brokerPermId=991001;
+        collided.Push(second);
+        collided.Push(collided.Event(IBEventType::OpenOrderEnd));
+        const auto bad=collided.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!bad.complete);
+        assert(bad.reasonCode=="IB_ACTIVE_ORDER_PERMID_COLLISION");
+    }
+    {
+        Fixture incremental;
+        assert(incremental.adapter.ReqAuthoritativeOpenOrders());
+        auto order=incremental.Event(IBEventType::OpenOrder);
+        order.id=101;order.brokerClientId=999;
+        order.brokerPermId=900451;order.value="Submitted";
+        incremental.Push(order);
+        incremental.Push(incremental.Event(IBEventType::OpenOrderEnd));
+        assert(incremental.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+        auto conflict=order;conflict.id=102;
+        incremental.Push(conflict);
+        const auto bad=incremental.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(!bad.complete);
+        assert(bad.reasonCode=="IB_ACTIVE_ORDER_PERMID_COLLISION");
+        assert(incremental.broker->places==0 && incremental.broker->cancels==0);
+    }
+    {
+        Fixture absent;
+        assert(absent.adapter.ReqAuthoritativeOpenOrders());
+        auto order=absent.Event(IBEventType::OpenOrder);
+        order.id=333;order.brokerClientId=999;order.brokerPermId=0;
+        order.value="Submitted";
+        absent.Push(order);absent.Push(absent.Event(IBEventType::OpenOrderEnd));
+        const auto unproven=absent.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(unproven.complete);
+        assert(unproven.VisibleActiveOrderCount()==1);
+        assert(unproven.activeOrderMissingPermanentId);
+        assert(unproven.activeOrderByPermanentId.empty());
+    }
+}
+
+
+void TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed()
+{
+    Fixture f;
+    assert(f.adapter.ReqRecoveryAuditRiskRefresh());
+    f.FinishRiskRefresh();
+    std::string reason;
+    assert(f.adapter.BeginAccountPostFenceRead(reason));
+    for (std::int64_t permId=900701;permId<=900702;++permId) {
+        auto manual=f.Event(IBEventType::OpenOrder);
+        manual.id=0;
+        manual.brokerClientId=0;
+        manual.brokerPermId=permId;
+        manual.value="Submitted";
+        f.Push(manual);
+    }
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    const auto pending=f.adapter.PollAccountPostFenceRead();
+    assert(pending.activeReadComplete && !pending.riskReadComplete);
+    f.FinishRiskRefresh();
+    const auto observed=f.adapter.PollAccountPostFenceRead();
+    assert(observed.activeThenRiskObserved);
+    assert(observed.globalActiveOrders==2);
+    assert(observed.observedUnboundManualOrders==2);
+    assert(observed.observedBrokerPermanentIds==2);
+    assert(observed.observedPermanentIdentityComplete);
+    assert(!observed.externalManualTwsUniverseComplete);
+    assert(!observed.brokerZeroObserved);
+    assert(!observed.maintenanceStopPermitted);
+    assert(observed.reasonCode==
+        "IB_ACCOUNT_POST_FENCE_ACTIVE_RISK_PRESENT_NOT_STOP_PERMIT");
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    Fixture missing;
+    assert(missing.adapter.ReqAuthoritativeOpenOrders());
+    auto unknown=missing.Event(IBEventType::OpenOrder);
+    unknown.id=0;unknown.brokerClientId=0;
+    unknown.brokerPermId=991001;unknown.account.clear();
+    unknown.value="Submitted";
+    missing.Push(unknown);
+    missing.Push(missing.Event(IBEventType::OpenOrderEnd));
+    const auto rejected=missing.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!rejected.complete);
+    assert(rejected.reasonCode=="IB_ACTIVE_ORDER_ACCOUNT_UNKNOWN");
+
+    Fixture late;
+    const auto old=late.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(old.complete && old.activeOrderIds.empty());
+    auto lateUnknown=late.Event(IBEventType::OpenOrder);
+    lateUnknown.id=0;lateUnknown.brokerClientId=0;
+    lateUnknown.brokerPermId=991002;lateUnknown.account.clear();
+    lateUnknown.value="Submitted";
+    late.Push(lateUnknown);
+    const auto invalidated=late.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!invalidated.complete);
+    assert(invalidated.reasonCode=="IB_ACTIVE_ORDER_ACCOUNT_UNKNOWN");
+    assert(late.broker->places==0 && late.broker->cancels==0);
+
+    // A positively identified DIFFERENT IB account is not allowed to
+    // contaminate the original configured account's risk projection.
+    Fixture other;
+    assert(other.adapter.ReqAuthoritativeOpenOrders());
+    auto knownForeign=other.Event(IBEventType::OpenOrder);
+    knownForeign.id=0;knownForeign.brokerClientId=0;
+    knownForeign.brokerPermId=991003;
+    knownForeign.account="DU_OTHER";
+    knownForeign.value="Submitted";
+    other.Push(knownForeign);
+    other.Push(other.Event(IBEventType::OpenOrderEnd));
+    const auto isolated=other.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(isolated.complete && isolated.VisibleActiveOrderCount()==0);
+}
+
 void TestAdapterForwardsBoundedHandshakeBudget() {
     Broker* broker=new Broker();
     HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
@@ -1545,6 +1758,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }
