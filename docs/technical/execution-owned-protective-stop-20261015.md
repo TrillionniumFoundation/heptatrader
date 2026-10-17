@@ -1118,3 +1118,45 @@ provenance, and conflicting duplicated native IDs. The rest of the
 original account/positions/active-order tests remain unchanged.
 No actual Broker traffic, positions, systemd state or original OMS
 was mutated by this research branch.
+
+## 2026-10-16 — Same-permanent-ID native stop remaining-volume witness
+
+Draft research extension to the existing Adapter (stacked on PR #356).
+The root SDK `openOrder(Submitted)` echo establishes exact H1 Stop
+`contractId/parentId/permanentId/OCA/account/client/price` provenance,
+but **does not** carry a signed, current remaining-quantity witness.
+A Submitted STP may be partly filled or cancelled immediately afterward.
+
+The new `ib_h1_native_stop_remaining_research.h` strictly combines that
+original native callback with the **latest native `orderStatus`** on the
+same order ID, account, client and broker epoch. A diagnostic
+`sdkNativeStopUnfilledRemainingMatches` is true only when the latest
+status is `Submitted`, the broker permanent ID is identical, the
+status callback has its own current-epoch ingress provenance, it follows
+the original native openOrder, and it reports **filled exactly zero and
+remaining exactly the original frozen quantity**. Missing, PreSubmitted,
+Cancelled, historical/synthetic, changed permId/client/account, stale,
+out-of-order, partially filled and non-finite callbacks fail closed.
+
+The existing Adapter retains *no* standalone orderStatus authority:
+`OrderStatus` is bound to the previously decoded native OpenOrder H1
+under the existing `m_apiMutex`; it cannot mint an SDK-native order
+witness. The diagnostic status cache is cleared whenever account-wide
+open-order refresh restarts or a correlation/connection failure invalidates
+the inventory. A later terminal/changed status replaces an earlier
+good status. This does not repair or bypass a stale risk snapshot.
+
+Even a matching pair **cannot prove** server-side stop survivability,
+freshness of the physical account position, original parent fill,
+OCA cancellation/overfill behavior, or any guaranteed 20bp exit.
+Therefore `nativeStopBrokerWorkingProven`, `maySendOrdinaryExit`
+and `mayStopDriver` remain **false**. No native IBKR order sender was
+created or invoked.
+
+Isolated Pocket4 C++ SDK-ON native Execution daemon build and dedicated
+tests cover the pure native field matcher (invalid status/identity/epoch/
+remaining cases) and the existing Adapter's real callback projection.
+The explicit negative-control test first refused to reconstruct an
+account-wide risk barrier after a purposely corrupted terminal callback;
+the fixture was correctly reordered so that no production risk gate was
+relaxed. Broker PAPER positive order acceptance is still UNVERIFIED.

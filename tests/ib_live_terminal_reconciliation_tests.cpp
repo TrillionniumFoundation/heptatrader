@@ -1637,8 +1637,33 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     nativeRefresh(originalSdk);
     assert(scope.sdkNativeStopEchoMatches &&
            scope.sdkNativeStopPermanentId==990001 &&
+           !scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==0 &&
            !scope.nativeStopBrokerWorkingProven &&
            !scope.maySendOrdinaryExit&&!scope.mayStopDriver);
+    // Fresh SDK-native stop openOrder is not enough. Require a later bound
+    // native orderStatus with exactly zero filled and full remaining.
+    auto status=f.Event(IBEventType::OrderStatus);
+    status.id=original.childOrderId;status.key="Submitted";
+    status.value.clear();status.number=0.0;status.number2=0.0;
+    status.number3=original.quantity;
+    status.queueIngressMonotonicNs=originalSdk.queueIngressMonotonicNs+100;
+    status.nativeOrder.permanentId=originalSdk.nativeOrder.permanentId;
+    status.remainingQuantityKnown=true;
+    f.Push(status);
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,h1,scope,reason));
+    assert(scope.sdkNativeStopUnfilledRemainingMatches &&
+           scope.sdkNativeStopRemainingQuantity==original.quantity &&
+           !scope.nativeStopBrokerWorkingProven &&
+           !scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    // Contradictory positive permanent-ID callbacks are tested in the
+    // separate dedicated Adapter fixture. They poison the same-epoch
+    // callback-conflict counter: subsequent positive refreshes here would
+    // otherwise incorrectly assume same-epoch requalification is possible.
+    // A new account-wide refresh must also clear the prior complete-status
+    // witness, forcing new Broker callback evidence each epoch/generation.
+
     // Preserve all 1-order/position source invariants while corrupting only
     // SDK-native fields: no such callback may prove the frozen original stop.
     for(int variant=0;variant<11;++variant) {
@@ -1722,8 +1747,88 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     (void)valid;
     assert(f.broker->places==0 && f.broker->cancels==0);
 }
+void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(bool laterGood) {
+    // Same-session Broker callbacks must never roll an H1 status diagnostic
+    // back to earlier trusted contents after a contradictory newer permId.
+    // The original callback identities, rather than simulated fills, are used.
+    Fixture f(true,false,true);
+    hepta_bracket_h1::FrozenBracket original;
+    original.originalCommandKey="actual-adapter-oca-ordering";
+    original.account="DU123";original.owner="owner-adapter";
+    original.sessionId="session-1";original.executionDomain="PAPER";
+    original.contractId=12087792;original.clientId=73;
+    original.parentOrderId=4600;original.childOrderId=4601;
+    original.connectionEpoch=f.adapter.GetConnectionEpoch();
+    original.positionGeneration=1;original.ownerFenceToken=23;
+    original.intentObservedAtMs=1792080000123ULL;
+    original.quantity=25000;original.side="BUY";
+    original.referencePrice=1.1205;original.stopPrice=1.11825;
+    original.minTick=.00005;
+    hepta_bracket_h1::BoundRefs refs;std::string reason;
+    assert(hepta_bracket_h1::BuildFrozenRefs(original,refs,reason));
+    auto sdk=f.Event(IBEventType::OpenOrder);sdk.id=original.childOrderId;
+    sdk.value="Submitted";sdk.queueIngressMonotonicNs=555000;
+    sdk.contract.symbol="EUR";sdk.contract.secType="CASH";
+    sdk.contract.currency="USD";sdk.contract.exchange="IDEALPRO";
+    sdk.order.orderRef=refs.childRef;sdk.order.orderType="STP";
+    sdk.order.action="SELL";sdk.order.totalQuantity=original.quantity;
+    sdk.order.auxPrice=original.stopPrice;
+    auto& native=sdk.nativeOrder;
+    native.present=true;native.contractId=original.contractId;
+    native.orderId=original.childOrderId;native.permanentId=991001;
+    native.parentId=original.parentOrderId;native.clientId=original.clientId;
+    native.transmit=true;native.account=original.account;
+    native.action="SELL";native.orderType="STP";native.timeInForce="GTC";
+    native.orderRef=refs.childRef;native.ocaGroup=refs.ocaGroup;
+    native.ocaType=1;native.triggerMethod=0;
+    native.stopAuxPrice=original.stopPrice;native.totalQuantity=original.quantity;
+    assert(f.adapter.ReqAuthoritativeOpenOrders());
+    f.Push(sdk);
+    f.Push(f.Event(IBEventType::OpenOrderEnd));
+    assert(f.adapter.ReqRiskRefresh());
+    auto a=f.Event(IBEventType::AccountValue);
+    a.key="NetLiquidation:USD";a.value="1000";f.Push(a);
+    a.key="AccountReady:";a.value="true";f.Push(a);
+    a.key="CashBalance:EUR";a.value="-75000";f.Push(a);
+    f.Push(f.Event(IBEventType::AccountSummaryEnd));
+    f.Push(f.Event(IBEventType::PositionEnd));
+    auto status=f.Event(IBEventType::OrderStatus);
+    status.id=original.childOrderId;status.key="Submitted";
+    status.number=0;status.number2=0;status.number3=original.quantity;
+    status.value.clear();status.requestId=0;
+    status.remainingQuantityKnown=true;
+    status.nativeOrder.permanentId=native.permanentId;
+    status.queueIngressMonotonicNs=555100;
+    f.Push(status);
+    IBH1OcaAdapterScopeObservation scope;
+    assert(f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(scope.sdkNativeStopUnfilledRemainingMatches);
+    auto contradictory=status;contradictory.queueIngressMonotonicNs=555300;
+    contradictory.nativeOrder.permanentId+=1;
+    f.Push(contradictory);
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(!scope.sdkNativeStopUnfilledRemainingMatches);
+    // A callback with the ORIGINAL permId must not erase the evidence of
+    // a contradictory permId even when newer by timestamp. Backdated and
+    // later-valid replays are separate adversarial scenarios.
+    auto replay=status;
+    if (laterGood) replay.queueIngressMonotonicNs=555400;
+    f.Push(replay);
+    assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    assert(!f.adapter.InspectResearchH1OcaAccountScope(
+        original,refs,scope,reason));
+    assert(!scope.sdkNativeStopUnfilledRemainingMatches);
+    assert(!scope.maySendOrdinaryExit && !scope.mayStopDriver);
+    assert(f.broker->places==0 && f.broker->cancels==0);
+}
+
 int main() {
     TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(false);
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(true);
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();

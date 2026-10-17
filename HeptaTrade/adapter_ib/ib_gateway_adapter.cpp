@@ -1,6 +1,7 @@
 ﻿#include "ib_gateway_adapter.h"
 #include "../execution/ib_bracket_h1_identity.h"
 #include "ib_h1_native_stop_echo_research.h"
+#include "ib_h1_native_stop_remaining_research.h"
 #include "ib_venue_correlation.h"
 #include "../execution/ib_h1_native_id_restart_floor.h"
 #include <ctime>
@@ -612,6 +613,16 @@ bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
         observation.sdkNativeStopEchoMatches=true;
         observation.sdkNativeStopPermanentId=
             nativeStop->second.nativeOrder.permanentId;
+        const auto latestStatus=m_h1NativeStopOrderStatusEchoes.find(
+            original.childOrderId);
+        if(latestStatus!=m_h1NativeStopOrderStatusEchoes.end() &&
+           hepta_ib_h1_native_stop_remaining::MatchesUnfilledStopStatus(
+               nativeStop->second,latestStatus->second,
+               original,refs,m_connectionEpoch)) {
+            observation.sdkNativeStopUnfilledRemainingMatches=true;
+            observation.sdkNativeStopRemainingQuantity=
+                latestStatus->second.number3;
+        }
     }
     observation.exactStopNativeOrderId=original.childOrderId;
     observation.brokerSignedFxPosition=position->second;
@@ -996,6 +1007,7 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_pendingCorrelationOrderIds.clear();
     m_pendingActiveOrderIds.clear();
     m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopOrderStatusEchoes.clear();
     m_h1NativeStopRefreshAccountWide = accountWide;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
