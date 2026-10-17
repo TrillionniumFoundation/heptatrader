@@ -72,3 +72,58 @@ native callback diagnostic, **not** a Broker-held protective stop. There
 is still no attested automatic independent FX risk exit surviving actual
 strategy Driver death, and no validated cancel/OCA race protection.
 P0 Issue #331 and the controlled cutover blockade remain open.
+
+## Additional identity-conflict regression: monotonic callbacks can still lie
+
+At the original `7d9293a` research HEAD, a newer conflicting positive
+`Broker permanentId` could be temporarily stored and followed by an even
+newer apparently valid `Submitted/0-full` callback on the **same numeric
+child ID, client, account and connection epoch**. Because both timestamps
+increased, the first time-order repair did not invalidate the global order
+projection, and the later valid-looking event could regain the diagnostic
+full-remaining match. Test-only commit `6b6f88a` replayed the contradictory
+newer permId and then a later good one; the **actual SDK-enabled Adapter
+CTest failed on the expected-incomplete global inventory assertion**.
+
+Minimal additional fix `89636dc`: if a same-scope H1 `OrderStatus`
+provides a positive Broker permanent ID that differs from the original
+account-wide SDK `openOrder` permanent ID, immediately record callback
+conflict and invalidate that **generation's entire** correlation snapshot
+(`H1_NATIVE_STOP_STATUS_PERMID_CONFLICT`). Subsequent old **or** newer
+good-looking callback cannot recover the same generation; it takes a new
+authoritative Broker epoch and all original risk/order/terminal constraints.
+A missing/zero permanent ID is never accepted as affirmative proof and does
+not itself invent Broker identity.
+
+A pre-existing Adapter test erroneously attempted to reuse the same
+connection after intentionally injecting a contradictory permanent ID.
+Because conflict is permanent for that same epoch, the original test
+could never honestly requalify. Commit `420c55f` separated the
+adversarial permId fixture from ordinary account/source positive fixtures
+instead of resetting the risk conflict or weakening the checks.
+
+**Pocket4 release-guarded isolation and final evidence:**
+- IB SDK 1030.01-enabled Release C++ Adapter target rebuilt.
+- Real Adapter `hepta_ib_live_terminal_reconciliation_tests` passes, 1/1.
+- H1/OMS/Bracket/OCA native CTest group passes, 14/14.
+- Original source file hash changes only the research Adapter cache; no
+  production order-send API, actual IB session, stop, cancel, or broker action
+  introduced. `nativeStopBrokerWorkingProven`, `maySendOrdinaryExit`,
+  `mayStopDriver` remain false.
+- Local owner-private evidence under
+  `~/.local/state/heptatrader/operator-evidence/h1-native-status-identity-v2/`:
+  `h1-oms-oca-14-tests.log` SHA256
+  `8814f52a139dc391059db388e0816eba9556c286f2669a2923e120cbe66649a7`;
+  `native-adapter-test.log` SHA256
+  `dcb8837b3886e018cccccf3b2dbae2cc19b48cf8f2f3017808b1009c1be0d918`.
+- The *existing* original Execution PID 222401 / cumulative restarts 367
+  remained unchanged, native + durable operator maintenance holds stayed
+  engaged, and original FX/BTC PAPER drivers were not switched. Current
+  underlying IB owner returned authoritative empty active orders and
+  positions and current strategy PnL observer was complete.
+
+**Future real gate:** original Execution-owned PAPER Parent/STP/OCA place,
+cancel and partial-fill lifecycle with authentic positive Broker source,
+safe outage/reconnect and Driver-death continuity. These tests do not
+license a production rollback, a new PAPER order or releasing native
+protection.
