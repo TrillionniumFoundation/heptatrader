@@ -1828,7 +1828,7 @@ void TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict()
     // A real TWS openOrder projects both the Lite metadata and SDK-native
     // Order from ONE Broker callback. A mismatch must revoke the current
     // account-global protective candidate rather than leaving complete=true.
-    for (int variant=0;variant<=12;++variant) {
+    for (int variant=0;variant<=14;++variant) {
         Fixture f;
         assert(f.adapter.ReqAuthoritativeOpenOrders());
         auto e=f.Event(IBEventType::OpenOrder);
@@ -1862,6 +1862,22 @@ void TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict()
         case 10:n.account="DU-OTHER";break;
         case 11:++n.orderId;break;
         case 12:++n.totalQuantity;break;
+        case 13:
+            // Native SDK reports a stop with Parent/OCA, but the Lite view
+            // hides all protective attributes. Never certify this census.
+            e.order.orderType="MKT";
+            e.order.auxPrice=0;
+            e.brokerOcaGroup.clear();
+            e.brokerParentOrderId=0;
+            break;
+        case 14:
+            // Ordinary MKT with no parent/OCA on EITHER original view
+            // is not protective and must not be rejected as a stop.
+            e.order.orderType="MKT";e.order.auxPrice=0;
+            e.brokerOcaGroup.clear();e.brokerParentOrderId=0;
+            n.orderType="MKT";n.stopAuxPrice=0;
+            n.ocaGroup.clear();n.parentId=0;
+            break;
         }
         f.Push(e);
         f.Push(f.Event(IBEventType::OpenOrderEnd));
@@ -1870,11 +1886,24 @@ void TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict()
             assert(view.complete);
             assert(view.visibleProtectiveCandidatesByPermId.size()==1);
             assert(view.visibleProtectiveCandidatesByPermId.count(9901723)==1);
+        } else if (variant==14) {
+            assert(view.complete);
+            assert(view.visibleProtectiveCandidatesByPermId.empty());
         } else {
             assert(!view.complete);
             assert(view.visibleProtectiveCandidatesByPermId.empty());
         }
         assert(f.broker->places==0 && f.broker->cancels==0);
+        if (variant==13) {
+            // The same hidden native stop also cannot be silently accepted
+            // after the initial global open-order barrier (incremental path).
+            Fixture incremental;
+            incremental.Push(e);
+            const auto after=incremental.adapter.GetAuthoritativeCorrelationSnapshot();
+            assert(!after.complete);
+            assert(after.visibleProtectiveCandidatesByPermId.empty());
+            assert(incremental.broker->places==0 && incremental.broker->cancels==0);
+        }
     }
 }
 

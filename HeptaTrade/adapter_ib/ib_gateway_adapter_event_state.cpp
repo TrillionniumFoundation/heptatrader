@@ -76,9 +76,19 @@ bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
 // A contradiction within that single Broker observation is not a complete
 // account-wide protective-order census. Never synthesize trading authority.
 bool NativeAndLiteProtectiveShapeConsistent(const IBEvent& event) {
-    if (!event.nativeOrder.present ||
-        !IsIbVisibleProtectiveCandidate(event)) return true;
+    if (!event.nativeOrder.present) return true;
     const auto& n=event.nativeOrder;
+    const auto& nativeType=n.orderType;
+    const bool nativeProtective=
+        nativeType=="STP" || nativeType=="STP LMT" ||
+        nativeType=="TRAIL" || nativeType=="TRAIL LIMIT" ||
+        !n.ocaGroup.empty() || n.parentId!=0;
+    // A malformed Lite projection can hide *every* protective field.
+    // Qualify the consistency check if EITHER callback view reports a
+    // Broker-native STOP, Parent or OCA order. Otherwise a native STP
+    // could be silently omitted from the account-wide protective census.
+    if (!nativeProtective && !IsIbVisibleProtectiveCandidate(event))
+        return true;
     const bool stopType=event.order.orderType=="STP" ||
         event.order.orderType=="STP LMT" ||
         event.order.orderType=="TRAIL" ||
