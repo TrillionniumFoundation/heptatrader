@@ -88,3 +88,30 @@ class CacheTests(unittest.TestCase):
         self.assertTrue((self.cache/"llvmcache-a").exists())
         r=gc.prune_comgr_cache(self.root,self.lock,lambda:{},self.receipt)
         self.assertEqual(r["phase"],"NO_WORK");self.assertFalse(self.receipt.exists())
+
+
+    def test_rechallenge_directory_binds_original_candidate(self):
+        import sqlite3
+        control=self.root/"control";control.mkdir()
+        with sqlite3.connect(control/"scheduler.sqlite") as db:
+            db.execute("CREATE TABLE jobs(id TEXT,status TEXT,payload TEXT)")
+        evaluation=self.root/"evaluation"
+        task=evaluation/"rechallenge-example"
+        cache=task/"gpu-tmp/comgr-cache";cache.mkdir(parents=True)
+        (cache/"llvmcache-a").write_bytes(b"compiled")
+        q={"state":"REJECTED","plan_id":"plan","candidate_id":"candidate"}
+        plan={"job_id":"job","plan_id":"plan","candidate_id":"candidate",
+              "candidate_directory":str(self.root/"candidates/job/artifact")}
+        (task/"qualification.json").write_text(json.dumps(q))
+        (task/"plan.json").write_text(json.dumps(plan))
+        config={"state_root":str(self.root),"control_directory":str(control),
+                "evaluation_directory":str(evaluation)}
+        iterate=Path.iterdir
+        def fixture_processes(path):
+            return iter(()) if path==Path("/proc") else iterate(path)
+        with patch.object(Path,"iterdir",fixture_processes):
+            result=gc.terminal_tasks(config,{})
+            self.assertEqual(result,{"evaluation/rechallenge-example":"REJECTED"})
+            plan["candidate_directory"]=str(self.base/"unrelated/artifact")
+            (task/"plan.json").write_text(json.dumps(plan))
+            with self.assertRaises(ValueError):gc.terminal_tasks(config,{})

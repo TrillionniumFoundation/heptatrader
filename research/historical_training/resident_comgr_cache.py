@@ -192,11 +192,16 @@ def terminal_tasks(original, evidence):
             refs[task] = {"job_id": job_id, "state": state,
                           "payload_sha256": hashlib.sha256(payload.encode()).hexdigest()}
     for path in Path(original["evaluation_directory"]).glob("*/qualification.json"):
+        cache = path.parent/"gpu-tmp/comgr-cache"
+        if not cache.is_dir() or not any(p.name.startswith("llvmcache-") for p in cache.iterdir()):
+            continue
         raw = path.read_bytes(); q = json.loads(raw)
         if q.get("state") not in TERMINAL["evaluation"]: continue
         plan_raw = (path.parent/"plan.json").read_bytes(); plan = json.loads(plan_raw)
         if (q["plan_id"] != plan["plan_id"] or q["candidate_id"] != plan["candidate_id"] or
-            plan["job_id"] != path.parent.name):
+            Path(plan["candidate_directory"]) != root/"candidates"/plan["job_id"]/"artifact"):
+            # Rechallenge directories intentionally have a distinct name; their
+            # sealed plan still binds the exact original candidate directory.
             raise ValueError("TERMINAL_EVALUATION_IDENTITY")
         task = "evaluation/" + path.parent.name; allowed[task] = q["state"]
         refs[task] = {"qualification_sha256": hashlib.sha256(raw).hexdigest(),
