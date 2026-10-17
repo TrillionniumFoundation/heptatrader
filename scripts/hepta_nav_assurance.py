@@ -67,6 +67,15 @@ def enforce_strict_account_report(result: dict, assurance: dict,
                               if assurance['arithmetic_reconciled'] and arithmetic_nav else None)
     result['arithmetic_nav_raw_sha256'] = assurance['raw_sha256']
     result['nav_assurance'] = assurance
+    # A completed, reconciled observation is useful even when broader valuation
+    # and return qualifications remain unknown. Keep legacy strict fields closed.
+    observation_complete = bool(assurance['capture_complete']
+                                and assurance['arithmetic_reconciled']
+                                and result['arithmetic_nav'] is not None)
+    result.update(observation_complete=observation_complete,
+                  observed_nav=result['arithmetic_nav'] if observation_complete else None,
+                  observation_observed_at_ms=assurance['observed_at_ms']
+                      if observation_complete else None)
     # A cache supplied with strict_nav_eligible=True is not a source attestation.
     result.update(nav=None, nav_complete=False, complete=False,
                   reported_account_complete=False, all_in_complete=False,

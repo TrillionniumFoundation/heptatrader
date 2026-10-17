@@ -1,9 +1,13 @@
-"""Conservative changed-path CI scope: uncertain and source changes run full."""
+"""Verified tool scope stays bounded; unknown paths restore full CI."""
 import subprocess
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+import shutil
+import sys
+import tempfile
 
-from ci_scope import docs_only, diff_paths
+from ci_scope import docs_only, diff_paths, scope_for_paths, VERIFIED_PYTHON_GROUPS
 
 
 class DocsOnlyScope(unittest.TestCase):
@@ -57,6 +61,89 @@ class DocsOnlyScope(unittest.TestCase):
         for bad in [b"", b"docs/a.md", b"\0"]:
             with patch("ci_scope.subprocess.check_output", return_value=bad):
                 self.assertFalse(docs_only(diff_paths("a" * 40) or []))
+
+
+class ComponentScopeTests(unittest.TestCase):
+    FULL = {"run_native": True, "run_python": True, "run_learning": True}
+    PYTHON = {"run_native": False, "run_python": True, "run_learning": False}
+
+    def setUp(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self.root = Path(box.name)
+        for path in frozenset.union(*VERIFIED_PYTHON_GROUPS):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("pass\n")
+
+    def test_verified_tools_tests_and_docs_use_full_python_only(self):
+        for paths in (
+            ["scripts/hepta_nav_assurance.py"],
+            ["tests/python/test_pnl_cli.py"],
+            ["scripts/hepta_maintenance_latch.py", "scripts/hepta_pnl_report.py",
+             "tests/python/test_account_observation.py", "docs/technical/change.md"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON)
+        self.assertEqual(scope_for_paths(["README.md", "docs/technical/a.md"], self.root),
+                         {key: False for key in self.FULL})
+
+    def test_unknown_shared_ci_and_invalid_paths_restore_full(self):
+        for extra in ("scripts/unknown.py", "scripts/hepta_account_pnl.py",
+                      "scripts/heptatrader-user", "scripts/ci_scope.py",
+                      "scripts/run_python_tests.py", ".github/workflows/core-ci.yml",
+                      "other/hepta_nav_assurance.py", "scripts/hepta_nav_assurance.py.bak",
+                      "docs/../scripts/a.md", "requirements.txt"):
+            with self.subTest(extra=extra):
+                self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py", extra],
+                                                 self.root), self.FULL)
+        for unknown in (None, [], [""]):
+            self.assertEqual(scope_for_paths(unknown, self.root), self.FULL)
+
+    def test_missing_or_symlinked_paired_test_cannot_exempt_a_tool(self):
+        test = self.root / "tests/python/test_nav_assurance.py"
+        test.unlink()
+        self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py"], self.root), self.FULL)
+        other = self.root / "retained.py"
+        other.write_text("pass\n")
+        test.symlink_to(other)
+        self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py"], self.root), self.FULL)
+        tool = self.root / "scripts/hepta_pnl_report.py"
+        tool.unlink()
+        self.assertEqual(scope_for_paths(["tests/python/test_pnl_cli.py"], self.root), self.FULL)
+
+    def test_real_git_cli_emits_three_explicit_outputs_and_mixed_fallback(self):
+        source = Path(__file__).resolve().parents[2] / "scripts/ci_scope.py"
+        script = self.root / "scripts/ci_scope.py"
+        shutil.copyfile(source, script)
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Scope Test",
+                 "-c", "user.email=scope-test@example.invalid", *args],
+                cwd=self.root, stderr=subprocess.PIPE, text=True, timeout=15).strip()
+        def outputs(base):
+            result = subprocess.run(
+                [sys.executable, "-B", str(script), "--base", base, "--format", "github"],
+                cwd=self.root, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pairs = [line.split("=", 1) for line in result.stdout.splitlines()]
+            self.assertEqual(len(pairs), 3)
+            self.assertEqual({key for key, _ in pairs}, set(self.FULL))
+            self.assertTrue(all(value in ("true", "false") for _, value in pairs))
+            return {key: value == "true" for key, value in pairs}
+        git("init", "-q")
+        git("add", ".")
+        git("commit", "-qm", "initial fixture")
+        base = git("rev-parse", "HEAD")
+        (self.root / "scripts/hepta_nav_assurance.py").write_text("value = 1\n")
+        git("add", ".")
+        git("commit", "-qm", "tool change")
+        self.assertEqual(outputs(base), self.PYTHON)
+        (self.root / "shared.py").write_text("value = 2\n")
+        git("add", ".")
+        git("commit", "-qm", "mixed unknown")
+        self.assertEqual(outputs(base), self.FULL)
+        self.assertEqual(outputs("0" * 40), self.FULL)
 
 
 if __name__ == "__main__":
