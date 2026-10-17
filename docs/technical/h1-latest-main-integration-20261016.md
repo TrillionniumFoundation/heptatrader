@@ -1,8 +1,11 @@
 # Pocket4 H1 SDK research × current Execution main integration
 
-**Research only (2026-10-16 PDT).** Original main `e64f077`; H1
-research `5b5f199`. All integration work occurs in a separate Pocket4
-worktree, never in the active trading release or original dirty checkout.
+**Research only (2026-10-16 PDT).** Original main `e64f077`,
+advanced to `3f795d8` in the same research-only integration; H1 research
+`5b5f199`. Both main updates (`9e97521`, `3f795d8`) preserve native
+one-lock Broker account evidence and refuse unknown-as-zero. All work
+remains in a separate Pocket4 worktree, never in the active trading
+release or original dirty checkout.
 
 Source merge preserved both original-main global Broker order/client
 identity and the original H1 native STOP echo/status diagnostics.
@@ -38,3 +41,21 @@ Execution and Driver units still use their preexisting pinned binaries;
 no systemd selector, broker credentials, PAPER entry risk rule, or native
 protective stop order was altered. A synthetic test cannot certify
 the independently protected Driver-stop lifecycle from P0 #331.
+
+## New original-main Broker account evidence incorporated
+
+During this integration the original main advanced to `3f795d8`
+(`9e97521` adds one-lock Broker evidence with conservative UNKNOWN
+rather than zero; `3f795d8` merges it). It was merged into this
+isolated H1 research branch **without conflict**. The resulting original
+Execution service binary linked successfully (SHA256
+`d741f104b6a5d5e22439c6ab719e0d7b6b658f8dcde37ad096ea095c3962d320`).
+Latest combined Pocket4 original-SDK-enabled H1/Coordinator/Adapter/PAPER
+profile/startup/quote/full-runtime recovery suite was rerun and passed
+**20/20** in **45.46 seconds**, zero new failures. Frozen log:
+`~/.local/state/heptatrader/operator-evidence/h1-main-integration-20261016-v1/h1-latest-main-3f795d8-20-ctest.log`,
+SHA256 `98ad46255d20eaffd1bfce8c3b70ab44fbc3785d9ba7507168633af8568b8806`.
+
+**This remains source-only research and does not certify actual Broker
+STP/OCA acceptance, protective coverage during Driver absence, or safe
+systemd maintenance.** The resident Execution binary was not replaced.
