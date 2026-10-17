@@ -1750,7 +1750,7 @@ void TestResearchH1OcaSamplesActualAdapterAccountAndOrders() {
     (void)valid;
     assert(f.broker->places==0 && f.broker->cancels==0);
 }
-void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict() {
+void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(bool laterGood) {
     // Same-session Broker callbacks must never roll an H1 status diagnostic
     // back to earlier trusted contents after a contradictory newer permId.
     // The original callback identities, rather than simulated fills, are used.
@@ -1813,9 +1813,12 @@ void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict() {
     assert(f.adapter.InspectResearchH1OcaAccountScope(
         original,refs,scope,reason));
     assert(!scope.sdkNativeStopUnfilledRemainingMatches);
-    // Backdated good callback: queue-processing order cannot resurrect a
-    // contradicted native H1 Stop; the global inventory must fail closed.
-    f.Push(status);
+    // A callback with the ORIGINAL permId must not erase the evidence of
+    // a contradictory permId even when newer by timestamp. Backdated and
+    // later-valid replays are separate adversarial scenarios.
+    auto replay=status;
+    if (laterGood) replay.queueIngressMonotonicNs=555400;
+    f.Push(replay);
     assert(!f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
     assert(!f.adapter.InspectResearchH1OcaAccountScope(
         original,refs,scope,reason));
@@ -1826,7 +1829,8 @@ void TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict() {
 
 int main() {
     TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
-    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict();
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(false);
+    TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(true);
     TestNativeOrderIdOutOfInt32RangeCannotReachFakeBroker();
     TestResearchNativeAdapterH1IdLeaseUsesActualSendLockAndOms();
     TestResearchH1NativeLeaseAfterFreshAdapterRestart();
