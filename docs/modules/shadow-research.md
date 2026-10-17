@@ -50,3 +50,5 @@ script to its artifact inputs/outputs, explains timestamp/unit and numeric
 rules, gives feature/resampling and bar algorithms, decision examples, durable
 history/runner boundaries and replay economics. The [finalization contract](../technical/shadow-finalization.md) defines the source-level final audit producer, fixture scope and remaining external evidence limits.
 Research status remains EXPERIMENTAL after this documentation and test work.
+
+Original-source Tiny MLP Shadow90 two-gap source study: [Pocket4 original gap audit](../technical/laya-original-quote-two-gap-20261016.md); never upgrades an original CENSORED result.
