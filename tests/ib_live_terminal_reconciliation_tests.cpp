@@ -3185,7 +3185,113 @@ void TestOriginalH1SdkAndGlobalPermIdConflictFailsClosed()
     assert(f.broker->places==0 && f.broker->cancels==0);
     }
 }
+
+void TestH1ParentTerminalNeedsExactEconomicFilledQuantity() {
+    // Only original Broker completedOrder(Filled) + an exact, account/client-
+    // bound execDetails.cumQty can qualify the advisory parent fill.
+    // A child STOP, physical FX cash and the original H1 alone cannot.
+    for (int mode=0;mode<7;++mode) {
+        Fixture f(false,false,true); // one terminal download is still pending
+        hepta_bracket_h1::FrozenBracket original;
+        original.originalCommandKey="native-h1-parent-qty-research";
+        original.account="DU123";original.owner="owner-h1-parent";
+        original.sessionId="h1-qa";original.executionDomain="PAPER";
+        original.contractId=12087792;original.clientId=73;
+        original.parentOrderId=4200;original.childOrderId=4201;
+        original.connectionEpoch=f.adapter.GetConnectionEpoch();
+        original.positionGeneration=1;original.ownerFenceToken=23;
+        original.intentObservedAtMs=1792080000123ULL;
+        original.quantity=25000;original.side="BUY";
+        original.referencePrice=1.1205;original.stopPrice=1.11825;
+        original.minTick=.00005;
+        hepta_bracket_h1::BoundRefs refs;std::string reason;
+        assert(hepta_bracket_h1::BuildFrozenRefs(original,refs,reason));
+        if (mode!=0) {
+            auto completed=f.Event(IBEventType::CompletedOrder);
+            completed.id=original.parentOrderId;
+            completed.key=(mode==3 ? "Cancelled" : "Filled");
+            completed.account=original.account;
+            completed.brokerClientId=original.clientId;
+            completed.order.orderRef=refs.parentRef;
+            f.Push(completed);
+        }
+        if (mode!=1) {
+            auto exec=f.Event(IBEventType::ExecutionDetails);
+            exec.id=original.parentOrderId;
+            exec.requestId=f.broker->executionsRequest;
+            exec.account=original.account;
+            exec.brokerClientId=original.clientId;
+            exec.order.orderRef= mode==4 ? std::string() : refs.parentRef;
+            exec.key="native-parent-exec";
+            exec.value="BOT";exec.number=original.referencePrice;
+            exec.number2=(mode==2||mode==5) ?
+                original.quantity/2 : original.quantity;
+            f.Push(exec);
+            if(mode==5)f.Push(exec); // duplicate half is NOT a full fill
+        }
+        f.Push(f.Event(IBEventType::CompletedOrdersEnd));
+        auto end=f.Event(IBEventType::ExecutionDetailsEnd);
+        end.requestId=f.broker->executionsRequest;
+        f.Push(end);
+        const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+        assert(terminal.complete);
+        const auto cumulative=
+            terminal.executionCumulativeQtyByCorrelation.find(refs.parentCorrelation);
+        if(mode==1||mode==4) {
+            assert(cumulative==terminal.executionCumulativeQtyByCorrelation.end());
+        } else if(mode==2||mode==5) {
+            assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
+            assert(cumulative->second==original.quantity/2);
+        } else {
+            // Missing or cancelled completedOrder does not erase a real
+            // economic execution; both are independently required to qualify.
+            assert(cumulative!=terminal.executionCumulativeQtyByCorrelation.end());
+            assert(cumulative->second==original.quantity);
+        }
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        auto stop=f.Event(IBEventType::OpenOrder);
+        stop.id=original.childOrderId;
+        stop.account=original.account;stop.value="Submitted";
+        stop.contract.symbol="EUR";stop.contract.secType="CASH";
+        stop.contract.currency="USD";stop.contract.exchange="IDEALPRO";
+        stop.order.orderRef=refs.childRef;stop.order.orderType="STP";
+        stop.order.action="SELL";stop.order.totalQuantity=original.quantity;
+        stop.order.auxPrice=original.stopPrice;
+        stop.brokerPermId=990101;
+        stop.brokerParentOrderId=original.parentOrderId;
+        stop.brokerOcaGroup=refs.ocaGroup;
+        stop.brokerTransmit=true;
+        auto& n=stop.nativeOrder;
+        n.present=true;n.contractId=original.contractId;
+        n.orderId=original.childOrderId;n.permanentId=990101;
+        n.parentId=original.parentOrderId;n.clientId=original.clientId;
+        n.transmit=true;n.account=original.account;n.action="SELL";
+        n.orderType="STP";n.timeInForce="GTC";
+        n.orderRef=refs.childRef;n.ocaGroup=refs.ocaGroup;
+        n.ocaType=1;n.triggerMethod=0;
+        n.stopAuxPrice=original.stopPrice;n.totalQuantity=original.quantity;
+        f.Push(stop);f.Push(f.Event(IBEventType::OpenOrderEnd));
+        assert(f.adapter.ReqRiskRefresh());
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value="-75000";f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        f.Push(f.Event(IBEventType::PositionEnd));
+        IBH1OcaAdapterScopeObservation observed;
+        assert(f.adapter.InspectResearchH1OcaAccountScope(
+            original,refs,observed,reason));
+        assert(observed.originalAccountAndOrderSetConsistent);
+        const bool exact=(mode==6); // Filled parent + full original execDetails
+        assert(observed.originalParentFilledTerminalAndQtyCorrelated==exact);
+        assert(!observed.nativeStopBrokerWorkingProven &&
+               !observed.maySendOrdinaryExit && !observed.mayStopDriver);
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
 int main() {
+    TestH1ParentTerminalNeedsExactEconomicFilledQuantity();
     TestResearchH1OcaSamplesActualAdapterAccountAndOrders();
     TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(false);
     TestH1StopOldStatusCannotRestoreAfterBrokerPermIdConflict(true);
