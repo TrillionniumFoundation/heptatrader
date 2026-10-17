@@ -51,6 +51,26 @@ struct ExecutionOwnedActiveOrderProjection
     std::set<long> unmappedOrderIds;
 };
 
+// One coordinator-lock snapshot of the ORIGINAL native account admission
+// projection. Counts are local HOT OMS evidence, never Broker-global orders or
+// independently surviving protective stop evidence.
+struct ExecutionAccountLocalDrainObservation
+{
+    bool present = false;
+    bool sessionOwnerFenced = false;
+    bool sessionOwnerRecoveryOnly = false;
+    bool accountEntryFenced = false;
+    bool mutationBlocked = false;
+    bool riskMutationDispatchInFlight = false;
+    std::uint64_t venueDispatchesInFlight = 0;
+    std::uint64_t ownedOrders = 0;
+    std::uint64_t uncertainCommands = 0;
+    std::uint64_t unattributedOwnedOrders = 0;
+    std::uint64_t unattributedUncertainCommands = 0;
+    bool localHotProjectionQuiescent = false;
+    std::string mutationBlockReason;
+};
+
 struct ExecutionCoordinatorCallbacks
 {
     VenuePlacement placement;
@@ -179,6 +199,10 @@ public:
     bool EnterAccountNewEntryFence(const AgentExecutionContext& context,
                                    std::size_t& outstanding, std::string& reason);
     bool IsAccountNewEntryFenced(const std::string& account) const;
+    // Read-only, same-lock owner/account/dispatch snapshot. Never a Broker
+    // stop permit. Missing/invalid context makes observation absent.
+    ExecutionAccountLocalDrainObservation ObserveAccountLocalDrain(
+        const AgentExecutionContext& context) const;
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);
     bool IsSessionOwnerFenced(const std::string& agentId, const std::string& sessionId) const;
     bool IsSessionOwnerRecoveryOnly(const std::string& agentId,
