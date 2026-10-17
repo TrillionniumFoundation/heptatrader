@@ -1762,6 +1762,106 @@ void TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection()
     assert(conflict.broker->places==0 && conflict.broker->cancels==0);
 }
 
+
+void TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState() {
+    Fixture f;
+    auto stop=f.Event(IBEventType::OpenOrder);
+    stop.id=921;stop.brokerClientId=999;stop.brokerPermId=900921;
+    stop.value="Submitted";stop.order.action="SELL";stop.order.orderType="STP";
+    stop.order.auxPrice=99.0;stop.order.totalQuantity=1;stop.brokerTransmit=true;
+    f.Push(stop);
+    auto view=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(view.complete && view.VisibleActiveOrderCount()==1);
+    assert(view.visibleProtectiveCandidatesByPermId.size()==1);
+    assert(view.visibleProtectiveCandidatesByPermId.at(900921).stopTrigger==99.0);
+    f.Push(stop);
+    assert(f.adapter.GetAuthoritativeCorrelationSnapshot().complete);
+    auto changed=stop;changed.order.auxPrice=98.0;f.Push(changed);
+    view=f.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!view.complete && view.visibleProtectiveCandidatesByPermId.empty());
+    assert(view.reasonCode=="IB_PROTECTIVE_INCREMENTAL_CONFLICT_REQUIRES_REFRESH");
+    assert(f.broker->places==0 && f.broker->cancels==0);
+
+    Fixture removed;removed.Push(stop);
+    auto plain=stop;plain.order.orderType="LMT";removed.Push(plain);
+    view=removed.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!view.complete && view.visibleProtectiveCandidatesByPermId.empty());
+    assert(view.reasonCode=="IB_PROTECTIVE_INCREMENTAL_REMOVED_REQUIRES_REFRESH");
+
+    Fixture manual;
+    auto tws=stop;tws.id=0;tws.brokerClientId=0;tws.brokerPermId=990001;
+    manual.Push(tws);tws.brokerPermId=990002;manual.Push(tws);
+    view=manual.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(view.complete && view.VisibleActiveOrderCount()==2);
+    assert(view.unboundManualPermanentIds.size()==2);
+    assert(view.visibleProtectiveCandidatesByPermId.size()==2);
+    assert(manual.broker->places==0 && manual.broker->cancels==0);
+
+    Fixture own;
+    const long id=own.Place();
+    auto echo=own.Event(IBEventType::OpenOrder);
+    echo.id=id;echo.brokerClientId=73;echo.brokerPermId=990023;
+    echo.value="Submitted";echo.order.action="BUY";echo.order.orderType="STP";
+    echo.order.totalQuantity=1;echo.order.auxPrice=97.0;
+    own.Push(echo);
+    assert(own.adapter.GetAuthoritativeCorrelationSnapshot().
+           visibleProtectiveCandidatesByPermId.count(990023)==1);
+    auto terminal=own.Status("Cancelled",0);terminal.id=id;own.Push(terminal);
+    view=own.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(view.complete && view.activeOrderIds.count(id)==0);
+    assert(view.activeOrderByPermanentId.count(990023)==0);
+    assert(view.visibleProtectiveCandidatesByPermId.count(990023)==0);
+}
+
+void TestForeignNumeric201202CannotCreateOwnTerminal() {
+    Fixture own;const long id=own.Place();
+    assert(own.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.count(id)==1);
+    for(int code : {201,202}) {
+        auto event=own.Event(IBEventType::Error);
+        event.id=id;event.brokerClientId=999;
+        event.key=std::to_string(code);event.account="DU123";
+        own.Push(event);
+        const auto still=own.adapter.GetAuthoritativeCorrelationSnapshot();
+        assert(still.complete && still.activeOrderIds.count(id)==1);
+        assert(still.activeOrderClientIdsByOrderId.at(id)==73);
+    }
+    auto other=own.Event(IBEventType::Error);
+    other.id=id;other.brokerClientId=73;other.key="202";
+    other.account="DU_OTHER";own.Push(other);
+    assert(own.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.count(id)==1);
+    assert(own.broker->places==1 && own.broker->cancels==0);
+
+    Fixture foreign;
+    auto visible=foreign.Event(IBEventType::OpenOrder);
+    visible.id=936;visible.brokerClientId=999;visible.brokerPermId=990936;
+    visible.value="Submitted";foreign.Push(visible);
+    auto error=foreign.Event(IBEventType::Error);
+    error.id=936;error.brokerClientId=-1;error.key="202";
+    foreign.Push(error);
+    auto stayed=foreign.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!stayed.complete && stayed.activeOrderIds.empty());
+    assert(stayed.reasonCode==
+        "IB_FOREIGN_TERMINAL_ERROR_REQUIRES_GLOBAL_REFRESH");
+    assert(foreign.broker->places==0 && foreign.broker->cancels==0);
+
+    Fixture foreignStatus;
+    auto protective=foreignStatus.Event(IBEventType::OpenOrder);
+    protective.id=937;protective.brokerClientId=999;
+    protective.brokerPermId=990937;protective.value="Submitted";
+    protective.order.orderType="STP";protective.order.action="SELL";
+    protective.order.totalQuantity=1;protective.order.auxPrice=95;
+    foreignStatus.Push(protective);
+    const auto before=foreignStatus.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(before.complete && before.visibleProtectiveCandidatesByPermId.count(990937));
+    auto terminal=foreignStatus.Event(IBEventType::OrderStatus);
+    terminal.id=937;terminal.brokerClientId=999;terminal.key="Cancelled";
+    foreignStatus.Push(terminal);
+    const auto closed=foreignStatus.adapter.GetAuthoritativeCorrelationSnapshot();
+    assert(!closed.complete && closed.visibleProtectiveCandidatesByPermId.empty());
+    assert(closed.reasonCode=="IB_FOREIGN_TERMINAL_REQUIRES_GLOBAL_REFRESH");
+    assert(foreignStatus.broker->places==0 && foreignStatus.broker->cancels==0);
+}
+
 void TestAdapterForwardsBoundedHandshakeBudget() {
     Broker* broker=new Broker();
     HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
@@ -1820,6 +1920,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }

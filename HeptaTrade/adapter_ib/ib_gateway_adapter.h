@@ -518,6 +518,10 @@ private:
                                      const std::string& correlationId,
                                      int brokerClientId,
                                      std::int64_t brokerPermId = 0);
+    // A post-OpenOrderEnd OpenOrder callback updates protective metadata
+    // alongside native active identity, not only on full census refresh.
+    void ObserveIncrementalProtectiveMetadata(const IBEvent& event);
+
     void InvalidateCorrelationSnapshot(const std::string& reason);
     void InvalidateTerminalCorrelationSnapshot(const std::string& reason);
     void FinalizeTerminalCorrelationSnapshot();

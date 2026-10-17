@@ -65,6 +65,40 @@ bool ParseBrokerErrorCode(const std::string& value, int& code) {
     code = static_cast<int>(parsed);
     return true;
 }
+bool IsIbVisibleProtectiveCandidate(const IBEvent& event) {
+    const std::string& type=event.order.orderType;
+    return type=="STP" || type=="STP LMT" ||
+        type=="TRAIL" || type=="TRAIL LIMIT" ||
+        !event.brokerOcaGroup.empty() || event.brokerParentOrderId!=0;
+}
+
+IBVisibleProtectiveOrderCandidate MakeIbVisibleProtectiveCandidate(
+    const IBEvent& event)
+{
+    IBVisibleProtectiveOrderCandidate candidate;
+    candidate.orderType=event.order.orderType;
+    candidate.action=event.order.action;
+    candidate.ocaGroup=event.brokerOcaGroup;
+    candidate.parentOrderId=event.brokerParentOrderId;
+    candidate.transmit=event.brokerTransmit;
+    candidate.stopTrigger=event.order.auxPrice;
+    candidate.totalQuantity=event.order.totalQuantity;
+    candidate.brokerClientId=event.brokerClientId;
+    candidate.orderId=static_cast<long>(event.id);
+    return candidate;
+}
+
+bool SameIbVisibleProtectiveCandidate(
+    const IBVisibleProtectiveOrderCandidate& a,
+    const IBVisibleProtectiveOrderCandidate& b)
+{
+    return a.orderType==b.orderType && a.action==b.action &&
+        a.ocaGroup==b.ocaGroup && a.parentOrderId==b.parentOrderId &&
+        a.transmit==b.transmit && a.stopTrigger==b.stopTrigger &&
+        a.totalQuantity==b.totalQuantity &&
+        a.brokerClientId==b.brokerClientId && a.orderId==b.orderId;
+}
+
 }  // namespace
 
 void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& reason) {
@@ -171,6 +205,40 @@ bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
     m_correlationSnapshot.activeOrderIds.insert(orderId);
     m_correlationSnapshot.activeOrderClientIdsByOrderId[orderId] = brokerClientId;
     return true;
+}
+
+void HeptaIBGatewayAdapter::ObserveIncrementalProtectiveMetadata(
+    const IBEvent& event)
+{
+    if (!m_correlationSnapshot.complete ||
+        event.type!=IBEventType::OpenOrder ||
+        event.account!=m_cfg.account || event.id<0 ||
+        event.id>LONG_MAX || event.brokerClientId<0)
+        return;
+    if (event.brokerPermId<=0) {
+        if (IsIbVisibleProtectiveCandidate(event))
+            m_correlationSnapshot.protectiveMetadataIncomplete=true;
+        return;
+    }
+    auto& visible=m_correlationSnapshot.visibleProtectiveCandidatesByPermId;
+    const auto previous=visible.find(event.brokerPermId);
+    if (!IsIbVisibleProtectiveCandidate(event)) {
+        // An existing stop/OCA becoming an ordinary order must NOT leave an
+        // outdated protective candidate in a completed active projection.
+        // The new all-client download is required to re-establish its shape.
+        if (previous!=visible.end())
+            InvalidateCorrelationSnapshot(
+                "IB_PROTECTIVE_INCREMENTAL_REMOVED_REQUIRES_REFRESH");
+        return;
+    }
+    const auto candidate=MakeIbVisibleProtectiveCandidate(event);
+    if (previous!=visible.end() &&
+        !SameIbVisibleProtectiveCandidate(previous->second,candidate)) {
+        InvalidateCorrelationSnapshot(
+            "IB_PROTECTIVE_INCREMENTAL_CONFLICT_REQUIRES_REFRESH");
+        return;
+    }
+    visible[event.brokerPermId]=candidate;
 }
 
 void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
@@ -567,26 +635,33 @@ bool HeptaIBGatewayAdapter::CorrelateOpenOrderEvent(const IBEvent& event) {
             InvalidateCorrelationSnapshot("IB_ACTIVE_ORDER_CLIENT_ID_UNKNOWN");
         if (acceptedBrokerOpenOrder &&
             !m_correlationRefreshPending && m_correlationSnapshot.complete) {
+            bool merged = false;
             if (event.brokerClientId != m_cfg.clientId) {
-                MergeIncrementalActiveOrder(
+                merged = MergeIncrementalActiveOrder(
                     static_cast<long>(event.id), std::string(),
                     event.brokerClientId, event.brokerPermId);
-                return acceptedBrokerOpenOrder;
-            }
-            std::string correlationId;
-            std::string decodeReason;
-            if (DecodeVenueOrderRef(
-                    event.order.orderRef, correlationId, decodeReason)) {
-                MergeIncrementalActiveOrder(
-                    static_cast<long>(event.id), correlationId,
-                    event.brokerClientId, event.brokerPermId);
-            } else if (event.order.orderRef.compare(0, 2, "H1") == 0) {
-                InvalidateCorrelationSnapshot(decodeReason);
             } else {
-                MergeIncrementalActiveOrder(
-                    static_cast<long>(event.id), std::string(),
-                    event.brokerClientId, event.brokerPermId);
+                std::string correlationId;
+                std::string decodeReason;
+                if (DecodeVenueOrderRef(
+                        event.order.orderRef, correlationId, decodeReason)) {
+                    merged = MergeIncrementalActiveOrder(
+                        static_cast<long>(event.id), correlationId,
+                        event.brokerClientId, event.brokerPermId);
+                } else if (event.order.orderRef.compare(0, 2, "H1") == 0) {
+                    InvalidateCorrelationSnapshot(decodeReason);
+                } else {
+                    merged = MergeIncrementalActiveOrder(
+                        static_cast<long>(event.id), std::string(),
+                        event.brokerClientId, event.brokerPermId);
+                }
             }
+            // The same callback that adds an account-wide active identity
+            // must also reconcile Broker stop/OCA/parent CANDIDATE metadata.
+            // Otherwise health can show a new active order but zero
+            // protective candidates, or retain an obsolete candidate.
+            if (merged && m_correlationSnapshot.complete)
+                ObserveIncrementalProtectiveMetadata(event);
         }
     }
     return acceptedBrokerOpenOrder;
@@ -607,10 +682,13 @@ void HeptaIBGatewayAdapter::RetireTerminalActiveOrder(
     for (auto it = m_correlationSnapshot.activeOrderByPermanentId.begin();
          it != m_correlationSnapshot.activeOrderByPermanentId.end();) {
         if (it->second.first == m_cfg.clientId &&
-            it->second.second == orderId)
+            it->second.second == orderId) {
+            m_correlationSnapshot.visibleProtectiveCandidatesByPermId.erase(
+                it->first);
             it = m_correlationSnapshot.activeOrderByPermanentId.erase(it);
-        else
+        } else {
             ++it;
+        }
     }
     for (std::map<std::string, long>::iterator it =
              m_correlationSnapshot.activeOrderIdsByCorrelation.begin();
@@ -624,10 +702,23 @@ void HeptaIBGatewayAdapter::RetireTerminalActiveOrder(
 
 void HeptaIBGatewayAdapter::ApplyOrderStatusTransition(
     const IBEvent& event) {
-    // Native orderStatus includes the Broker client ID. A foreign status
-    // must not create local cancel authority for a colliding numeric ID.
-    if (event.brokerClientId >= 0 && event.brokerClientId != m_cfg.clientId)
+    // Native orderStatus includes the Broker client ID. Foreign terminal
+    // statuses NEVER grant our owner cancel/terminal authority, but if a
+    // known foreign active order has ended, keeping its old protective
+    // candidate as a current complete census is equally misleading.
+    if (event.brokerClientId >= 0 && event.brokerClientId != m_cfg.clientId) {
+        if (m_correlationSnapshot.complete && IsIbFinalStatus(event.key) &&
+            event.id >= 0 && event.id <= LONG_MAX &&
+            (event.account.empty() || event.account == m_cfg.account)) {
+            const auto known=m_correlationSnapshot.activeOrderClientIdsByOrderId.find(
+                static_cast<long>(event.id));
+            if (known!=m_correlationSnapshot.activeOrderClientIdsByOrderId.end() &&
+                known->second==event.brokerClientId)
+                InvalidateCorrelationSnapshot(
+                    "IB_FOREIGN_TERMINAL_REQUIRES_GLOBAL_REFRESH");
+        }
         return;
+    }
     const long orderId = static_cast<long>(event.id);
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
@@ -821,10 +912,41 @@ void HeptaIBGatewayAdapter::ApplyBrokerErrorTransition(
             m_liveTerminalBindings.end() &&
         m_liveTerminalBindings.at(static_cast<long>(event.id)).connectionEpoch ==
             m_connectionEpoch;
-    if (event.id < 0 ||
+    if (event.id < 0 || event.id > LONG_MAX ||
         (errorCode != 201 && errorCode != 202 && !cashSizeParseRejected))
         return;
     const long orderId = static_cast<long>(event.id);
+    // Error 201/202 carries a numeric order id, which is scoped to an IB API
+    // client. Another client's same-number rejection/cancel must NOT create
+    // this owner's terminal acknowledgement or drain an active order.
+    // Unscoped SDK errors are retained as diagnostics but never elevated
+    // to account-wide permanent-identity proof.
+    const auto activeOwner =
+        m_correlationSnapshot.activeOrderClientIdsByOrderId.find(orderId);
+    const bool foreignReported =
+        event.brokerClientId >= 0 && event.brokerClientId != m_cfg.clientId;
+    const bool mappedForeign =
+        m_correlationSnapshot.complete &&
+        activeOwner != m_correlationSnapshot.activeOrderClientIdsByOrderId.end() &&
+        activeOwner->second != m_cfg.clientId;
+    const bool accountMismatch =
+        !event.account.empty() && event.account != m_cfg.account;
+    if (foreignReported || accountMismatch ||
+        (event.brokerClientId < 0 && mappedForeign)) {
+        // Positive foreign or unscoped same-number Broker terminal errors
+        // cannot safely remove original or foreign protective evidence.
+        // Invalidate a currently COMPLETE observed foreign order, requiring
+        // an original new all-client download before believing its status.
+        if (mappedForeign && !accountMismatch &&
+            (event.brokerClientId < 0 ||
+             event.brokerClientId == activeOwner->second))
+            InvalidateCorrelationSnapshot(
+                "IB_FOREIGN_TERMINAL_ERROR_REQUIRES_GLOBAL_REFRESH");
+        EmitObsEvent("broker.foreign_order_error_not_local_terminal",
+            "\"orderId\":" + std::to_string(orderId) +
+            ",\"errorCode\":" + std::to_string(errorCode));
+        return;
+    }
     const std::string status =
         errorCode == 202 ? "Cancelled" : "Rejected";
     m_orderLifecycle.RecordBrokerStatus(orderId, status, true);
@@ -1467,37 +1589,18 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
         // Observe Broker-native stop/OCA/parent metadata on the ORIGINAL
         // account-wide callback. Never infer protective survival from this
         // label alone, and never bind/change orders or create cancel authority.
-        const bool stopType =
-            outEvent.order.orderType == "STP" ||
-            outEvent.order.orderType == "STP LMT" ||
-            outEvent.order.orderType == "TRAIL" ||
-            outEvent.order.orderType == "TRAIL LIMIT";
-        if (stopType || !outEvent.brokerOcaGroup.empty() ||
-            outEvent.brokerParentOrderId != 0) {
+        if (IsIbVisibleProtectiveCandidate(outEvent)) {
             if (outEvent.brokerPermId <= 0) {
                 m_pendingProtectiveMetadataIncomplete = true;
             } else {
-                IBVisibleProtectiveOrderCandidate candidate;
-                candidate.orderType = outEvent.order.orderType;
-                candidate.action = outEvent.order.action;
-                candidate.ocaGroup = outEvent.brokerOcaGroup;
-                candidate.parentOrderId = outEvent.brokerParentOrderId;
-                candidate.transmit = outEvent.brokerTransmit;
-                candidate.stopTrigger = outEvent.order.auxPrice;
-                candidate.totalQuantity = outEvent.order.totalQuantity;
-                candidate.brokerClientId = outEvent.brokerClientId;
-                candidate.orderId = orderId;
+                const IBVisibleProtectiveOrderCandidate candidate =
+                    MakeIbVisibleProtectiveCandidate(outEvent);
                 const auto existing =
                     m_pendingProtectiveCandidatesByPermId.emplace(
                         outEvent.brokerPermId, candidate);
                 if (!existing.second &&
-                    (existing.first->second.orderType != candidate.orderType ||
-                     existing.first->second.action != candidate.action ||
-                     existing.first->second.ocaGroup != candidate.ocaGroup ||
-                     existing.first->second.parentOrderId != candidate.parentOrderId ||
-                     existing.first->second.transmit != candidate.transmit ||
-                     existing.first->second.stopTrigger != candidate.stopTrigger ||
-                     existing.first->second.totalQuantity != candidate.totalQuantity)) {
+                    !SameIbVisibleProtectiveCandidate(
+                        existing.first->second, candidate)) {
                     MarkCallbackConflict(m_correlationRefreshConflict);
                     m_correlationSnapshot.reasonCode =
                         "IB_PROTECTIVE_PERMID_METADATA_CONFLICT";
