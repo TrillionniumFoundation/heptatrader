@@ -1,5 +1,9 @@
 ﻿#include "ib_gateway_adapter.h"
+#include "../execution/ib_bracket_h1_identity.h"
+#include "ib_h1_native_stop_echo_research.h"
+#include "ib_h1_native_stop_remaining_research.h"
 #include "ib_venue_correlation.h"
+#include "../execution/ib_h1_native_id_restart_floor.h"
 #include <ctime>
 #include <cmath>
 #include <sstream>
@@ -539,6 +543,171 @@ HeptaIBGatewayAdapter::GetAuthoritativeRecoveryAuditSnapshot() const {
     return BuildRecoveryAuditSnapshotLocked();
 }
 
+bool HeptaIBGatewayAdapter::InspectResearchH1OcaAccountScope(
+    const hepta_bracket_h1::FrozenBracket& original,
+    const hepta_bracket_h1::BoundRefs& refs,
+    IBH1OcaAdapterScopeObservation& observation,
+    std::string& reason) const
+{
+    observation=IBH1OcaAdapterScopeObservation{};
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    if(!m_api || !m_api->IsConnected() || !m_connected ||
+       m_terminalTransportHalted ||
+       original.executionDomain!="PAPER" ||
+       original.account.empty() || original.account!=m_cfg.account ||
+       !IsPaperAccount(m_cfg.account) ||
+       original.clientId<=0 || original.clientId!=m_cfg.clientId ||
+       original.contractId!=12087792 ||
+       original.childOrderId<=0 ||
+       m_connectionEpoch==0 ||
+       m_connectionEpoch<original.connectionEpoch ||
+       m_cfg.authoritativeCashFxContracts.count("EUR.USD")!=1) {
+        reason="H1_OCA_ADAPTER_EXACT_ACCOUNT_OWNER_OR_CONTRACT_INVALID";
+        return false;
+    }
+    const InstrumentRef& fx=m_cfg.authoritativeCashFxContracts.at("EUR.USD");
+    if(fx.symbol!="EUR" || fx.secType!="CASH" ||
+       fx.currency!="USD" || fx.exchange!="IDEALPRO") {
+        reason="H1_OCA_ADAPTER_FX_CASH_CONTRACT_CHANGED";
+        return false;
+    }
+    if(!hepta_bracket_h1::VerifyFrozenRefs(original,refs,reason))
+        return false;
+    const IBAuthoritativeRecoveryAuditSnapshot snap=
+        BuildRecoveryAuditSnapshotLocked();
+    if(!m_eventStreamAuthoritative ||
+       !m_h1NativeStopRefreshAccountWide ||
+       !snap.active.complete || !snap.risk.complete ||
+       !snap.risk.coherentRefreshComplete ||
+       !snap.risk.accountComplete || !snap.risk.positionsComplete ||
+       !snap.risk.fxCashComplete ||
+       snap.active.generation==0 || snap.risk.generation==0 ||
+       snap.risk.accountGeneration==0 || snap.risk.positionsGeneration==0 ||
+       snap.risk.fxCashGeneration==0 ||
+       snap.active.connectionEpoch!=m_connectionEpoch ||
+       snap.risk.connectionEpoch!=m_connectionEpoch ||
+       snap.postFillRiskReconciliationPending ||
+       snap.exposureGeneration!=snap.riskAbsorbedExposureGeneration ||
+       snap.newConnectionEpochRequired ||
+       snap.callbackConflictMetricsSaturated || snap.callbackConflictCount!=0) {
+        reason="H1_OCA_ADAPTER_ACTIVE_RISK_BARRIER_INCOMPLETE";
+        return false;
+    }
+    const auto id=snap.active.activeOrderIdsByCorrelation.find(
+        refs.childCorrelation);
+    if(snap.active.activeOrderIds.size()!=1 ||
+       snap.active.activeOrderIdsByCorrelation.size()!=1 ||
+       id==snap.active.activeOrderIdsByCorrelation.end() ||
+       id->second!=original.childOrderId ||
+       snap.active.activeOrderIds.count(original.childOrderId)!=1) {
+        reason="H1_OCA_ADAPTER_ORIGINAL_ACTIVE_STOP_NOT_UNIQUE";
+        return false;
+    }
+    const auto position=snap.positionQuantities.find("EUR.USD");
+    const double expected=original.side=="BUY" ?
+        original.quantity:-original.quantity;
+    if(position==snap.positionQuantities.end() ||
+       !std::isfinite(position->second) || position->second!=expected ||
+       snap.risk.grossAbsolutePosition < std::fabs(expected)) {
+        reason="H1_OCA_ADAPTER_PHYSICAL_FX_EXPOSURE_MISMATCH";
+        return false;
+    }
+    observation.originalAccountAndOrderSetConsistent=true;
+    const auto nativeStop=m_h1NativeStopOpenOrderEchoes.find(
+        original.childOrderId);
+    // A native SDK echo and a global Broker-visible protective candidate
+    // originate from the SAME original openOrder. Do not claim even
+    // diagnostic H1 correspondence if their parent/OCA/transmit or
+    // permanent identity disagrees; the two read-only projections must
+    // establish the same original owner/contract/child without invention.
+    const bool brokerCensusStopConsistent=[&]() {
+        if(nativeStop==m_h1NativeStopOpenOrderEchoes.end()) return false;
+        const IBEvent& e=nativeStop->second;
+        if(e.brokerPermId<=0 ||
+           e.brokerPermId!=e.nativeOrder.permanentId ||
+           e.brokerParentOrderId!=e.nativeOrder.parentId ||
+           e.brokerOcaGroup!=e.nativeOrder.ocaGroup ||
+           e.brokerTransmit!=e.nativeOrder.transmit) return false;
+        const auto owner=snap.active.activeOrderByPermanentId.find(
+            e.brokerPermId);
+        const auto candidate=snap.active.visibleProtectiveCandidatesByPermId.find(
+            e.brokerPermId);
+        if(owner==snap.active.activeOrderByPermanentId.end() ||
+           candidate==snap.active.visibleProtectiveCandidatesByPermId.end())
+            return false;
+        const auto& b=candidate->second;
+        return owner->second.first==original.clientId &&
+            owner->second.second==original.childOrderId &&
+            b.brokerClientId==original.clientId &&
+            b.orderId==original.childOrderId &&
+            b.orderRef==refs.childRef &&
+            b.orderType=="STP" &&
+            b.action==(original.side=="BUY" ? "SELL":"BUY") &&
+            b.parentOrderId==original.parentOrderId &&
+            b.ocaGroup==refs.ocaGroup && b.transmit &&
+            b.sdkNativePresent && b.nativeContractId==original.contractId &&
+            b.nativeOcaType==1 && b.nativeTimeInForce=="GTC" &&
+            b.nativeTriggerMethod==0 && b.stopTrigger==original.stopPrice &&
+            b.totalQuantity==original.quantity;
+    }();
+    if(brokerCensusStopConsistent &&
+       hepta_ib_h1_native_stop_echo::MatchesOriginalSdkStop(
+           nativeStop->second,original,refs,m_connectionEpoch)) {
+        observation.sdkNativeStopEchoMatches=true;
+        observation.sdkNativeStopPermanentId=
+            nativeStop->second.nativeOrder.permanentId;
+        const auto latestStatus=m_h1NativeStopOrderStatusEchoes.find(
+            original.childOrderId);
+        if(latestStatus!=m_h1NativeStopOrderStatusEchoes.end() &&
+           hepta_ib_h1_native_stop_remaining::MatchesUnfilledStopStatus(
+               nativeStop->second,latestStatus->second,
+               original,refs,m_connectionEpoch)) {
+            observation.sdkNativeStopUnfilledRemainingMatches=true;
+            observation.sdkNativeStopRemainingQuantity=
+                latestStatus->second.number3;
+            // Exact SDK order identity AND physical position are not enough:
+            // all four independent Broker evidence legs must be recent on
+            // the SAME host monotonic clock, never supplied by an agent.
+            constexpr std::uint64_t kMaxAgeNs = 3000000000ULL;
+            const auto nowNs=static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            auto age = [&](std::uint64_t timestamp,std::uint64_t& ageMs) {
+                if(timestamp==0 || timestamp>nowNs ||
+                   nowNs-timestamp>kMaxAgeNs) return false;
+                ageMs=(nowNs-timestamp)/1000000ULL;
+                return true;
+            };
+            const bool a=age(m_h1AccountWideOrderEndMonotonicNs,
+                observation.activeOrderBarrierAgeMs);
+            const bool b=age(m_h1CoherentRiskEndMonotonicNs,
+                observation.coherentRiskBarrierAgeMs);
+            const bool c=age(nativeStop->second.queueIngressMonotonicNs,
+                observation.stopNativeEchoAgeMs);
+            const bool d=age(latestStatus->second.queueIngressMonotonicNs,
+                observation.stopRemainingStatusAgeMs);
+            observation.brokerObservationClockBounded = a && b && c && d &&
+                latestStatus->second.queueIngressMonotonicNs >=
+                    nativeStop->second.queueIngressMonotonicNs;
+        }
+    }
+    observation.exactStopNativeOrderId=original.childOrderId;
+    observation.brokerSignedFxPosition=position->second;
+    observation.connectionEpoch=m_connectionEpoch;
+    observation.riskGeneration=snap.risk.generation;
+    observation.activeOrdersGeneration=snap.active.generation;
+    // Bounded callback freshness does not prove the stop's real trigger,
+    // ongoing server-held availability or safe OCA cancellation/overfill.
+    // Never qualify any actual exit from this observation.
+    observation.nativeStopBrokerWorkingProven=false;
+    observation.stopPriceTriggerProven=false;
+    observation.accountSnapshotFreshnessProven=false;
+    observation.maySendOrdinaryExit=false;
+    observation.mayStopDriver=false;
+    reason.clear();
+    return true;
+}
+
 IBAuthoritativeRecoveryAuditSnapshot
 HeptaIBGatewayAdapter::BeginRecoveryAuditBarrier() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
@@ -809,6 +978,7 @@ bool HeptaIBGatewayAdapter::BeginCoherentRiskRefresh(
     m_coherentRiskRefreshPositionGeneration = m_riskGeneration + 2;
     m_riskSnapshot.complete = false;
     m_riskSnapshot.coherentRefreshComplete = false;
+    m_h1CoherentRiskEndMonotonicNs = 0;
     m_coherentRiskRefreshDispatching = true;
     const bool accountDispatched = ReqAccountSummary();
     const bool positionsDispatched = accountDispatched && ReqPositions();
@@ -911,6 +1081,10 @@ bool HeptaIBGatewayAdapter::BeginOpenOrderRefresh(bool accountWide) {
     m_pendingProtectiveCandidatesByPermId.clear();
     m_pendingProtectiveMetadataIncomplete = false;
     m_pendingMissingPermanentId = false;
+    m_h1NativeStopOpenOrderEchoes.clear();
+    m_h1NativeStopOrderStatusEchoes.clear();
+    m_h1NativeStopRefreshAccountWide = accountWide;
+    m_h1AccountWideOrderEndMonotonicNs = 0;
     m_correlationSnapshot.connectionEpoch = m_connectionEpoch;
     m_correlationSnapshot.generation = m_correlationGeneration;
     m_correlationSnapshot.complete = false;
@@ -1732,12 +1906,86 @@ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
     }
 }
 
+bool HeptaIBGatewayAdapter::ReserveResearchH1NativeIdPair(
+    const std::string& exactPaperAccount,
+    std::uint64_t expectedConnectionEpoch,
+    const OmsJournal& exactOwnerJournal,
+    const std::function<bool(long,long)>& durablePair,
+    long& parentId, long& stopId, std::string& reason,
+    int expectedExactBrokerClientId)
+{
+    parentId=-1;stopId=-1;
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    if (!m_api || !m_connected || !m_api->IsConnected() ||
+        m_terminalTransportHalted || expectedConnectionEpoch==0 ||
+        expectedConnectionEpoch!=m_connectionEpoch ||
+        exactPaperAccount!=m_cfg.account || !IsPaperAccount(m_cfg.account) ||
+        (expectedExactBrokerClientId != -1 &&
+         (expectedExactBrokerClientId <= 0 ||
+          expectedExactBrokerClientId != m_cfg.clientId)) ||
+        !durablePair) {
+        reason="H1_NATIVE_ADAPTER_OWNER_OR_EPOCH_UNAVAILABLE";
+        return false;
+    }
+    long brokerNext=-1;
+    try {
+        brokerNext=m_api->GetLastValidOrderId();
+    } catch (...) {
+        reason="H1_NATIVE_BROKER_NEXT_VALID_ID_EXCEPTION";
+        return false;
+    }
+    if (brokerNext<=0 || m_localOrderSeed<=0 ||
+        brokerNext>=std::numeric_limits<int>::max()-2 ||
+        m_localOrderSeed>=std::numeric_limits<int>::max()-2) {
+        reason="H1_NATIVE_BROKER_NEXT_VALID_ID_UNSAFE";
+        return false;
+    }
+    // The same API mutex protects normal NextOrderId/PlaceOrder. Before
+    // leasing a new H1 group, the caller's original owner OMS must replay
+    // completely, contain only paired identities, and prove that the fresh
+    // broker nextValidId is beyond EVERY native H1 ID ever reserved.
+    // Any POSSIBLY_SENT original child remains UNKNOWN even with a higher ID,
+    // until an independent complete broker order/execution reconciliation.
+    const auto history=hepta_h1_restart_floor::Inspect(exactOwnerJournal);
+    if (!hepta_h1_restart_floor::AuthorizeResearchIdFloor(
+            history,brokerNext,reason))
+        return false;
+    const long first=std::max(brokerNext,m_localOrderSeed);
+    if (first>=std::numeric_limits<int>::max()-2) {
+        reason="H1_NATIVE_BROKER_ID_PAIR_OVERFLOW";
+        return false;
+    }
+    // Hold the same adapter API lock as every normal PlaceOrder path.
+    // Pre-consume both IDs even on a failed/throwing durable callback:
+    // ambiguous OMS/connection outcome can never reuse them in this process.
+    m_localOrderSeed=first+2;
+    try {
+        if (!durablePair(first,first+1)) {
+            reason="H1_NATIVE_PAIR_DURABLE_COMMIT_UNKNOWN";
+            return false;
+        }
+    } catch (...) {
+        reason="H1_NATIVE_PAIR_DURABLE_COMMIT_EXCEPTION_UNKNOWN";
+        return false;
+    }
+    parentId=first;stopId=first+1;
+    reason.clear();
+    return true;
+}
+
 long HeptaIBGatewayAdapter::NextOrderId() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    long ibOrderId = GetLastValidOrderId();
-    if (ibOrderId > 0) {
-        if (m_localOrderSeed < ibOrderId) m_localOrderSeed = ibOrderId;
-    }
+    const long ibOrderId = GetLastValidOrderId();
+    const long brokerOrderIdMax =
+        static_cast<long>(std::numeric_limits<std::int32_t>::max());
+    // TWS OrderId is int32 even when this Linux host's long is 64-bit.
+    // Never downcast a newer broker floor or a depleted local seed into a
+    // wrapped/negative native order ID. Other production risk gates remain.
+    if (ibOrderId > brokerOrderIdMax) return -1;
+    if (ibOrderId > 0 && m_localOrderSeed < ibOrderId)
+        m_localOrderSeed = ibOrderId;
+    if (m_localOrderSeed < 1 || m_localOrderSeed > brokerOrderIdMax)
+        return -1;
     return m_localOrderSeed++;
 }
 
