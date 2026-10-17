@@ -157,6 +157,10 @@ struct IBAuthoritativeTerminalCorrelationSnapshot {
 // the active, terminal, risk, position and post-fill views so callers cannot
 // compose a false zero from independently sampled generations.
 struct IBAuthoritativeRecoveryAuditSnapshot {
+    // Captured under the exact SAME adapter mutex as active/terminal/risk.
+    // A separate IsConnected or event-stream read can mix connection epochs.
+    bool transportConnected = false;
+    bool eventStreamAuthoritative = false;
     IBAuthoritativeCorrelationSnapshot active;
     IBAuthoritativeTerminalCorrelationSnapshot terminal;
     IBAuthoritativeRiskSnapshot risk;

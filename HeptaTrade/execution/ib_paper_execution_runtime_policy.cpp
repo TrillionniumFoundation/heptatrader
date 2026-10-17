@@ -1,4 +1,5 @@
 #include "ib_paper_execution_runtime_internal.h"
+#include "ib_paper_account_broker_evidence.h"
 #include <cstdint>
 #include <map>
 #include <set>
@@ -270,8 +271,17 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
     result.status = ExecutionCommandStatus::Accepted;
     if (command.query == "system.get_health")
     {
+        const IBAuthoritativeRecoveryAuditSnapshot broker =
+            m_config.profile.userScope && m_adapter ?
+                m_adapter->GetAuthoritativeRecoveryAuditSnapshot() :
+                IBAuthoritativeRecoveryAuditSnapshot();
+        // For USER PAPER, the visible connector state is read under the
+        // SAME original adapter lock as all Broker risk/order evidence.
+        // External qualification retains its established response path.
         const std::uint32_t authorizedConnectorCount =
-            m_adapter && m_adapter->IsConnected() ? 1U : 0U;
+            m_config.profile.userScope ?
+                (broker.transportConnected ? 1U : 0U) :
+                (m_adapter && m_adapter->IsConnected() ? 1U : 0U);
         std::ostringstream health;
         health << "{\"source\":\"IB\",\"authoritative\":true,"
                << "\"paper_order_mode\":\""
@@ -300,12 +310,22 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             std::string guardReason;
             const bool nativeNewRiskGuardBlocked = !m_killSwitch ||
                 m_killSwitch->BlocksRiskIncrease(guardReason);
-            const auto risk = m_adapter->GetAuthoritativeRiskSnapshot();
-            const auto orders = m_adapter->GetAuthoritativeCorrelationSnapshot();
-            const bool snapshotsReady = risk.complete && risk.coherentRefreshComplete &&
+            // These three Broker views AND transport/stream provenance must
+            // be sampled under one ORIGINAL adapter mutex. Independent risk,
+            // active and terminal reads can mix incompatible generations
+            // while the EReader applies callbacks.
+            const auto& risk = broker.risk;
+            const auto& orders = broker.active;
+            const auto accountBroker = InspectIbPaperAccountBrokerEvidence(
+                broker, m_config.profile.clientId);
+            const bool snapshotsReady =
+                broker.transportConnected && broker.eventStreamAuthoritative &&
+                risk.complete && risk.coherentRefreshComplete &&
                 risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
                 orders.complete && risk.connectionEpoch != 0 &&
-                risk.connectionEpoch == orders.connectionEpoch && !PostFillRiskRefreshPending();
+                risk.connectionEpoch == orders.connectionEpoch &&
+                !broker.postFillRiskReconciliationPending &&
+                !PostFillRiskRefreshPending();
             if (startupReadOnly) reason = StartupRecoveryReadOnlyReason();
             else if (!local.present) reason = "NATIVE_ACCOUNT_LOCAL_OBSERVATION_UNAVAILABLE";
             else if (fenced) reason = "SESSION_OWNER_FENCED";
@@ -315,11 +335,30 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
             else if (nativeNewRiskGuardBlocked)
                 reason = guardReason.empty() ? "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN" : guardReason;
             else if (riskDispatchInFlight) reason = "RISK_MUTATION_DISPATCH_IN_FLIGHT";
-            else if (authorizedConnectorCount != 1) reason = "IB_CONNECTION_UNAVAILABLE";
+            else if (authorizedConnectorCount != 1 ||
+                     !broker.transportConnected) reason = "IB_CONNECTION_UNAVAILABLE";
             else if (!snapshotsReady) reason = "AUTHORITATIVE_STATE_INCOMPLETE";
             health << ",\"startup_recovery_read_only\":" << (startupReadOnly ? "true" : "false")
                    << ",\"terminal_download_complete\":"
-                   << (m_adapter->GetAuthoritativeTerminalCorrelationSnapshot().complete ? "true" : "false")
+                   << (broker.terminal.complete ? "true" : "false")
+                   << ",\"account_broker_sample_scope\":\"ORIGINAL_ADAPTER_MUTEX_NOT_POST_FENCE\""
+                   << ",\"account_broker_sample_connected\":"
+                   << (broker.transportConnected ? "true" : "false")
+                   << ",\"account_broker_sample_event_stream_authoritative\":"
+                   << (broker.eventStreamAuthoritative ? "true" : "false")
+                   << ",\"account_broker_sample_coherent\":"
+                   << (accountBroker.snapshotCoherent ? "true" : "false")
+                   << ",\"account_broker_zero_observed\":"
+                   << (accountBroker.brokerZeroObserved ? "true" : "false")
+                   << ",\"account_broker_global_active_order_count\":"
+                   << (accountBroker.snapshotCoherent ?
+                       std::to_string(accountBroker.globalActiveOrders) : "null")
+                   << ",\"account_broker_foreign_active_order_count\":"
+                   << (accountBroker.snapshotCoherent ?
+                       std::to_string(accountBroker.foreignActiveOrders) : "null")
+                   << ",\"account_broker_reason\":\""
+                   << accountBroker.reasonCode << "\""
+                   << ",\"account_broker_post_fence_refresh_proven\":false"
                    << ",\"owner_fenced\":" << (fenced ? "true" : "false")
                    << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
                    << ",\"account_new_entry_fenced\":" << (accountEntryFenced ? "true" : "false")

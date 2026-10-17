@@ -1,5 +1,6 @@
 #include "execution/ib_paper_execution_profile.h"
 #include "execution/ib_paper_execution_runtime_config.h"
+#include "execution/ib_paper_account_broker_evidence.h"
 #include "../HeptaTrade/execution/ib_paper_fx_cash_restart_catchup.h"
 
 #include <cassert>
@@ -1238,6 +1239,127 @@ void TestAccountNewEntryFenceRequiresConfiguredNativeCustodian()
     ::unlink(path.c_str());
 }
 
+
+IBAuthoritativeRecoveryAuditSnapshot CompleteSameAdapterBrokerFixture()
+{
+    IBAuthoritativeRecoveryAuditSnapshot sample;
+    sample.transportConnected = true;
+    sample.eventStreamAuthoritative = true;
+    sample.active.complete = true;
+    sample.active.connectionEpoch = 7;
+    sample.active.generation = 12;
+    sample.terminal.complete = true;
+    sample.terminal.connectionEpoch = 7;
+    sample.terminal.generation = 11;
+    sample.terminal.exposureGeneration = 2;
+    sample.risk.complete = true;
+    sample.risk.coherentRefreshComplete = true;
+    sample.risk.accountComplete = true;
+    sample.risk.positionsComplete = true;
+    sample.risk.fxCashComplete = true;
+    sample.risk.connectionEpoch = 7;
+    sample.risk.generation = 15;
+    sample.risk.riskAbsorbedExposureGeneration = 2;
+    sample.risk.grossAbsolutePosition = 0.0;
+    sample.exposureGeneration = 2;
+    sample.terminalExposureGeneration = 2;
+    sample.riskAbsorbedExposureGeneration = 2;
+    sample.barrierComplete = true;
+    sample.positionQuantities["EUR.USD"] = 0.0;
+    sample.positionQuantities["BTC.USD"] = 0.0;
+    return sample;
+}
+
+void TestSingleBrokerLockEvidenceCannotFabricateGlobalAccountZero()
+{
+    const auto baseline = CompleteSameAdapterBrokerFixture();
+    const auto clean = InspectIbPaperAccountBrokerEvidence(baseline, 701);
+    assert(clean.snapshotCoherent && clean.brokerZeroObserved);
+    assert(clean.globalActiveOrders == 0 && clean.foreignActiveOrders == 0);
+    assert(std::string(clean.reasonCode) ==
+        "IB_ACCOUNT_BROKER_ZERO_OBSERVED_NOT_STOP_PERMIT");
+    const auto demand = [&](const std::function<void(
+        IBAuthoritativeRecoveryAuditSnapshot&)>& corrupt, const char* reason) {
+        auto snapshot = baseline;
+        corrupt(snapshot);
+        const auto observed = InspectIbPaperAccountBrokerEvidence(snapshot, 701);
+        assert(!observed.brokerZeroObserved);
+        assert(std::string(observed.reasonCode) == reason);
+    };
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.transportConnected = false;},
+           "IB_ACCOUNT_BROKER_NOT_CONNECTED");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.eventStreamAuthoritative = false;},
+           "IB_ACCOUNT_BROKER_EVENT_STREAM_UNTRUSTED");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.complete = false;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.terminal.complete = false;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.positionsComplete = false;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.fxCashComplete = false;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.coherentRefreshComplete = false;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.generation = 0;},
+           "IB_ACCOUNT_BROKER_SNAPSHOT_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.terminal.connectionEpoch = 8;},
+           "IB_ACCOUNT_BROKER_CONNECTION_EPOCH_MISMATCH");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.connectionEpoch = 6;},
+           "IB_ACCOUNT_BROKER_CONNECTION_EPOCH_MISMATCH");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.activeOrderIds.insert(146);},
+           "IB_ACCOUNT_BROKER_CLIENT_IDENTITY_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.activeOrderIds.insert(146);
+                       x.active.activeOrderClientIdsByOrderId[146] = -1;},
+           "IB_ACCOUNT_BROKER_CLIENT_IDENTITY_INCOMPLETE");
+    // A manual TWS order may be unbound with API orderId=0. Its existence
+    // must not become a false empty account just because there is no local
+    // numeric order identity (permId is a separate Broker-wide identity).
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.activeOrderIds.insert(0);
+                       x.active.activeOrderClientIdsByOrderId[0] = 0;},
+           "IB_ACCOUNT_BROKER_CLIENT_IDENTITY_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.activeOrderIds.insert(146);
+                       x.active.activeOrderClientIdsByOrderId[146] = 999;
+                       x.active.activeOrderIdsByCorrelation["foreign-H1"] = 146;},
+           "IB_ACCOUNT_BROKER_CORRELATION_SCOPE_INVALID");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.barrierComplete = false;},
+           "IB_ACCOUNT_BROKER_RECOVERY_BARRIER_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.newConnectionEpochRequired = true;},
+           "IB_ACCOUNT_BROKER_RECOVERY_BARRIER_INCOMPLETE");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.postFillRiskReconciliationPending = true;},
+           "IB_ACCOUNT_BROKER_POSTFILL_RECONCILIATION_PENDING");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.riskAbsorbedExposureGeneration = 1;},
+           "IB_ACCOUNT_BROKER_EXPOSURE_GENERATION_MISMATCH");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.terminalExposureGeneration = 1;},
+           "IB_ACCOUNT_BROKER_EXPOSURE_GENERATION_MISMATCH");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.positionQuantities["EUR.USD"] =
+                           std::numeric_limits<double>::quiet_NaN();},
+           "IB_ACCOUNT_BROKER_POSITION_INVALID");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.grossAbsolutePosition = -0.01;},
+           "IB_ACCOUNT_BROKER_POSITION_INVALID");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.positionQuantities["BTC.USD"] = 0.001;},
+           "IB_ACCOUNT_BROKER_POSITION_REMAINS");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.positionQuantities["BTC.USD"] = 1e-12;},
+           "IB_ACCOUNT_BROKER_POSITION_REMAINS");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.risk.grossAbsolutePosition = 0.001;},
+           "IB_ACCOUNT_BROKER_POSITION_REMAINS");
+    demand([](IBAuthoritativeRecoveryAuditSnapshot& x){x.active.activeOrderIds.insert(146);
+                       x.active.activeOrderClientIdsByOrderId[146] = 999;},
+           "IB_ACCOUNT_BROKER_ACTIVE_ORDERS_REMAIN");
+    auto foreign = baseline;
+    foreign.active.activeOrderIds.insert(281);
+    foreign.active.activeOrderClientIdsByOrderId[281] = 999;
+    const auto foreignObs = InspectIbPaperAccountBrokerEvidence(foreign, 701);
+    assert(foreignObs.snapshotCoherent && !foreignObs.brokerZeroObserved);
+    assert(foreignObs.foreignActiveOrders == 1);
+    auto original = baseline;
+    original.active.activeOrderIds.insert(290);
+    original.active.activeOrderClientIdsByOrderId[290] = 701;
+    original.active.activeOrderIdsByCorrelation["own-correlation"] = 290;
+    const auto originalObs = InspectIbPaperAccountBrokerEvidence(original, 701);
+    assert(originalObs.snapshotCoherent && !originalObs.brokerZeroObserved);
+    assert(originalObs.foreignActiveOrders == 0);
+}
+
 void TestObservationProfileCannotBorrowTradingAuthority()
 {
     if (::geteuid()==0 || ::getegid()==0) return;
@@ -1274,6 +1396,7 @@ void TestObservationProfileCannotBorrowTradingAuthority()
 
 int main()
 {
+    TestSingleBrokerLockEvidenceCannotFabricateGlobalAccountZero();
     TestObservationProfileCannotBorrowTradingAuthority();
     TestAccountNewEntryFenceRequiresConfiguredNativeCustodian();
     TestFxCashRestartCatchUpZeroFillApiCancellation();
