@@ -11,6 +11,8 @@ import math
 from pathlib import Path
 
 from .action_quality_research import probabilities
+from .resident_training_v2 import action_observation
+from collections import Counter
 from .dataset import BIN_EDGES_BPS,question
 from .integrity import ContractError,digest,read_json,sha_file
 
@@ -29,6 +31,7 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
     if len(paths)>MAX_CLOSED_PLANS:
         raise ContractError("V2_CLOSED_SOURCE_PLAN_CAP")
     pending_excluded=0;closed_plans=0;rows=[];seen=set()
+    action_abstention_counts=Counter()
     for pf in paths:
         directory=pf.parent
         qf=directory/"qualification.json"
@@ -119,7 +122,6 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
                     any(c not in "0123456789abcdef" for c in receipt)):
                 raise ContractError("V2_CLOSED_SOURCE_OUTCOME_RECEIPT_CHANGED")
             probs=probabilities(pred["parent_probs"],7)
-            act=probabilities(pred["candidate_act_escalate_probs"],2)
             target=outcome.get("target_class")
             ret=outcome.get("return_bps")
             if (type(target) is not int or not 0<=target<7 or
@@ -128,10 +130,13 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
                 raise ContractError("V2_CLOSED_SOURCE_PRICE_LABEL_CHANGED")
             expected_brier=sum((a-float(k==target))**2 for k,a in enumerate(probs))
             parent_correct=max(range(7),key=lambda k:probs[k])==target
-            expected_action_brier=2*(act[0]-float(parent_correct))**2
-            if (abs(expected_brier-outcome["parent_brier"])>1e-5 or
-                    abs(expected_action_brier-outcome["action_head_brier"])>1e-5):
+            if (type(outcome.get("parent_brier")) not in (int,float) or
+                    not math.isfinite(outcome["parent_brier"]) or
+                    abs(expected_brier-outcome["parent_brier"])>1e-5):
                 raise ContractError("V2_CLOSED_SOURCE_SCORING_CHANGED")
+            action=action_observation(plan,pred,parent_correct=parent_correct,outcome=outcome)
+            if action["abstention_reason"] is not None:
+                action_abstention_counts[action["abstention_reason"]]+=1
             rowkey=(anchor,horizon)
             if rowkey in seen:
                 raise ContractError("V2_CLOSED_SOURCE_DUPLICATE_TRAINING_ANCHOR")
@@ -161,6 +166,8 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
        "closed_plans_in_scope":closed_plans,
        "pending_plans_excluded":pending_excluded,
        "training_rows":n,
+       "action_abstentions":sum(action_abstention_counts.values()),
+       "action_abstention_counts":dict(sorted(action_abstention_counts.items())),
        "frozen_parent_correct_ACT":good,
        "frozen_parent_wrong_ESCALATE":n-good,
        "action_training_two_class_supported":(n>=16 and good>=4 and n-good>=4),

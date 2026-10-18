@@ -1,4 +1,4 @@
-"""Independent offline verification of all 24 locally sealed IB PAPER health bytes.
+"""Shared sealed-health audit and historical 24-cycle command entry.
 
 No market connection, order, native owner or training. A complete source-health
 snapshot is one observational source artifact, not signed broker provenance.
@@ -111,7 +111,7 @@ def check_status(status,period,receipt):
             "market_quote_age_at_original_assessment_ms":age,
             "source_prefixes_sha256":status["source_prefix_digest"]}
 
-def verify_all(root):
+def verify_all(root,*,schema=SCHEMA,cohort=COHORT,count=N,final_max_bytes=15000):
     root=Path(root)
     demand(root.is_absolute() and not root.is_symlink()
            and root.stat().st_uid==os.geteuid()
@@ -120,14 +120,14 @@ def verify_all(root):
     plan,plan_hash=raw_obj(root,"plan.json",15000)
     start,_=raw_obj(root,"worker-start.json",8192)
     sandbox,_=raw_obj(root,"sandbox.json",8192)
-    final,final_hash=raw_obj(root,"final.json",15000)
-    demand(plan.get("schema")==COHORT+".plan.v1"
-           and plan.get("full_snapshots_count")==N
+    final,final_hash=raw_obj(root,"final.json",final_max_bytes)
+    demand(plan.get("schema")==cohort+".plan.v1"
+           and plan.get("full_snapshots_count")==count
            and plan.get("original_monitor_rules")==RULE
            and plan.get("candidate_assessment_cadence_ms")==STEP
            and plan.get("maximum_status_age_ms")==MAX_AGE
            and plan.get("cycle_schedule_ms")==[
-               plan["first_cycle_start_ms"]+STEP*i for i in range(N)]
+               plan["first_cycle_start_ms"]+STEP*i for i in range(count)]
            and plan.get("trade_authority") is False
            and plan.get("no_production_monitor_cutover") is True
            and plan.get("broker_requests_or_orders_sent")==0,
@@ -136,12 +136,12 @@ def verify_all(root):
            and start.get("no_restart") is True
            and start.get("production_monitor_not_modified") is True
            and start.get("broker_orders_sent")==0
-           and final.get("schema")==COHORT+".final.v1"
+           and final.get("schema")==cohort+".final.v1"
            and final.get("plan_sha256")==plan_hash
            and final.get("no_prod_monitor_cutover") is True
            and final.get("production_trading_grant") is False
            and final.get("broker_orders_sent")==0
-           and len(final.get("cycles",[]))==N,
+           and len(final.get("cycles",[]))==count,
            "ORIGINAL_ARCHIVE_PLAN_OR_FINAL_CHANGED")
     previous="0"*64
     collected=[]
@@ -149,7 +149,7 @@ def verify_all(root):
     missing=0
     for i,expected in enumerate(plan["cycle_schedule_ms"]):
         row,row_hash=raw_obj(root,"cycle-%02d-receipt.json"%i,16384)
-        demand(row.get("schema")==COHORT+".cycle.v1"
+        demand(row.get("schema")==cohort+".cycle.v1"
                and row.get("index")==i and row.get("frozen_target_ms")==expected
                and row.get("previous_receipt_sha256")==previous
                and row.get("original_period_sha256")==plan["period_sha256"]
@@ -199,13 +199,13 @@ def verify_all(root):
             report_summary.append(info)
     demand(final["receipt_chain_head"]==previous
            and final["full_snapshots_written"]==len(collected)
-           and len(collected)+missing==N,
+           and len(collected)+missing==count,
            "ORIGINAL_24_CYCLES_NOT_RECONCILED")
     # If any source status is missing/failed, timing is not fully proven.
     worst_publish_age=max((r["status_age_at_published_ms"]
                             for r in collected),default=None)
     worst_before_next=None
-    if len(collected)==N:
+    if len(collected)==count:
         for first,second in zip(collected,collected[1:]):
             delta=second["status_age_at_published_ms"]+(
                 second["original_asof_ms"]-first["original_asof_ms"])
@@ -213,19 +213,19 @@ def verify_all(root):
                 worst_before_next=delta
     source_ready=sum(x["state"]=="READY_FOR_REVIEW_NOT_AUTHORIZATION" for x in collected)
     no_late=all(0<=x["clock_lag_ms"]<=3000 for x in collected)
-    timing= (len(collected)==N and no_late
+    timing= (len(collected)==count and no_late
              and worst_publish_age is not None and worst_publish_age<=MAX_AGE
              and worst_before_next is not None and worst_before_next<=MAX_AGE)
     return {
-        "schema":SCHEMA,
+        "schema":schema,
         "verified_at_utc":datetime.now(timezone.utc).isoformat(),
         "plan_sha256":plan_hash,
         "final_sha256":final_hash,
         "original_cycle_record_chain_head":previous,
-        "cycle_count_expected":N,
+        "cycle_count_expected":count,
         "complete_original_health_json_count":len(collected),
         "missing_or_censored_original_health_count":missing,
-        "full_24_probe_snapshots_verified":len(collected)==N,
+        "full_24_probe_snapshots_verified":len(collected)==count,
         "source_ready_cycle_count":source_ready,
         "source_hold_cycle_count":len(collected)-source_ready,
         "worst_local_published_source_age_ms":worst_publish_age,
@@ -233,7 +233,7 @@ def verify_all(root):
         "all_decision_time_snapshot_ages_within_30s":timing,
         "state":"PASS_FULLBYTE_ORIGINAL_SOURCE_CUSTODY_TIMING_ONLY" if timing
                 else "HOLD_INCOMPLETE_OR_STALE_ORIGINAL_SOURCE_SNAPSHOTS",
-        "source_100pct_ready_attested":len(collected)==N and source_ready==N,
+        "source_100pct_ready_attested":len(collected)==count and source_ready==count,
         "source_signed_by_ib":False,
         "independent_hardware_utc_witness":False,
         "prod_monitor_cadence_switch_approved":False,
@@ -262,12 +262,13 @@ def persist(result,output):
     finally:os.close(dirfd)
     return digest(raw)
 
-def main():
+def main(verify_fn=None):
+    verify_fn=verify_all if verify_fn is None else verify_fn
     p=argparse.ArgumentParser()
     p.add_argument("--root",type=Path,required=True)
     p.add_argument("--output",type=Path,required=True)
     args=p.parse_args()
-    r=verify_all(args.root)
+    r=verify_fn(args.root)
     output_sha=persist(r,args.output)
     print(json.dumps({
         "state":r["state"],"complete":r["complete_original_health_json_count"],

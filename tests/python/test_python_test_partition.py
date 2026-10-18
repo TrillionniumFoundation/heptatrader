@@ -20,9 +20,11 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertEqual(set.union(*groups.values()),
                          {p.name for p in (ROOT / "tests/python").glob("test_*.py")})
         self.assertEqual(sum(map(len, groups.values())), len(set.union(*groups.values())))
-        self.assertEqual(groups["learning"], {"test_laya_frozen_price_numpy.py",
-                                              "test_laya_resident_action_v2_research.py",
-                                              "test_neuron256_archived_kernel_learning.py"})
+        required = {"test_laya_frozen_price_numpy.py",
+                    "test_laya_resident_action_v2_research.py",
+                    "test_neuron256_archived_kernel_learning.py",
+                    "test_research_contract_smoke.py"}
+        self.assertTrue(required <= groups["learning"])
         self.assertFalse(groups["learning"] & groups["core"])
 
     def test_future_test_defaults_to_core_and_install_is_not_duplicated(self) -> None:
@@ -96,6 +98,35 @@ class PythonTestPartitionTests(unittest.TestCase):
              mock.patch.object(unittest.TestLoader, "loadTestsFromName", return_value=suite), \
              contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(runner.main(["--lane", "core"]), 1)
+
+    def test_learning_listing_includes_nested_cpu_suites_without_imports(self):
+        expected={"laya_cell.tests.test_resident_row_worker",
+                  "laya_cell.tests.test_resident_price_baselines"}
+        for lane in ("learning", "core"):
+            with self.subTest(lane=lane), mock.patch.object(runner, "configure_import_paths",
+                    side_effect=AssertionError("listing must not import")), \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(runner.main(["--lane", lane, "--list"]), 0)
+                listed=set(stdout.getvalue().splitlines())
+                self.assertEqual(expected & listed, expected if lane=="learning" else set())
+
+    def test_nested_learning_runs_in_same_suite_after_an_ordinary_failure(self):
+        seen=[]
+        class Failed(unittest.TestCase):
+            def runTest(self):
+                seen.append("ordinary")
+                self.fail("fixture")
+        class Nested(unittest.TestCase):
+            def runTest(self):
+                seen.append("nested")
+        def load(name):
+            return unittest.TestSuite([Failed() if name=="a_ordinary" else Nested()])
+        with mock.patch.object(runner, "partitions", return_value={"learning":{"a_ordinary.py"}}), \
+             mock.patch.object(runner, "NESTED_LEARNING_MODULES", frozenset({"z_nested"})), \
+             mock.patch.object(unittest.TestLoader, "loadTestsFromName", side_effect=load), \
+             contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(["--lane", "learning"]), 1)
+        self.assertEqual(seen, ["ordinary", "nested"])
 
 
 if __name__ == "__main__":

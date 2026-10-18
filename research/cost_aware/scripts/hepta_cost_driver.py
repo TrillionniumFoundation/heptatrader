@@ -23,8 +23,8 @@ from hepta_cost_policy import (CostError, FORECAST_VERSION, MODEL_ID, HORIZONS,
     dec, digest, validate_forecast)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
-BASE_DRIVER_SHA256 = "12fb61ad9355737379e8a8908c3ee7861e726d6787d894a9c7a6cd4afdff7ebf"
-BASE_COMMIT = "3d0ea24d659ed2bb718930c41205621356774873"
+BASE_DRIVER_SHA256 = "709c0981c58e0642f7ef1af7efea85ce153ef92a24ae2ce24bdb38aaccc2d4e4"
+BASE_COMMIT = "4df4aab12d67b151902e1531565558d82a986d7c"
 CANDIDATE_SCHEMA = {
     "type": "object", "required": ["action", "confidence", "rationale", "horizon_sec", "scenarios", "invalidation_price"],
     "additionalProperties": False,

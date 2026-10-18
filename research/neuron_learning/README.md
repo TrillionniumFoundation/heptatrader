@@ -171,3 +171,53 @@ produces the separately hashed library actually tested and installed on pocket4.
 Ordinary core builds do not acquire a ROCm dependency. The build-ownership check
 remains enabled; this exact experimental backend exclusion does not wildcard
 other research sources or weaken normal core reachability.
+
+## Resident objective v2
+
+The explicit `heptatrader.laya-resident-objective.v2` profile keeps the existing
+state, reserved row ledger, trial history, source checks and trading controls.
+Existing v1 candidates and frozen future plans retain their original semantics.
+
+A job still reserves at most 32 mature rows and attempts at most 16 disjoint
+two-row updates. V2 spreads those rows across each horizon's available time
+range without looking at labels. The candidate records actual time coverage,
+label age, class counts and the maximum number of nonoverlapping target
+intervals. That last count does not establish statistical independence.
+
+The price objective remains observed future MID interval cross-entropy with the
+existing teacher auxiliary. The action target remains the genuinely frozen
+parent's correctness. Only supported, balanced action pairs update the action
+adapter; single-class or insufficient causal support produces an explicit
+abstention and no action probability. AdamW momentum cannot update an action
+adapter on a subsequent unsupported batch. Price updates and price outcome
+labels remain usable when action abstains.
+
+Each new v2 candidate also freezes a uniform distribution, Laplace-1 class
+priors by horizon, and a 77-parameter CPU multinomial logistic model. The simple
+model uses ten causal features from the exact same quote state and reserved
+rows, train-only normalization and a fixed 128-step optimization. Candidate,
+frozen parent, uniform, prior and logistic forecasts are committed and scored
+on the same original future input, endpoint, target and observed cohort.
+Reports include Brier score, negative log-likelihood and hits; a zero
+probability for the observed class records infinite NLL, not a dropped row.
+
+This is a price-prediction comparison. It does not measure execution PnL, equal
+optimizer budgets, or CPU-only availability on slots where Laya failed to
+commit a prediction. Existing qualification rules are unchanged; qualification
+alone does not establish superiority over the newly reported references.
+
+Prepare an opt-in configuration from the actual installed resident config with
+`python -m laya_cell.resident_training_v2 --from-config EXISTING_CONFIG
+--runtime-directory VERIFIED_RELEASE --output NEW_CONFIG`. This command changes
+no service and starts no GPU work. Keep the existing resource-guard wrapper
+and point it at the new config and matching SHA; do not substitute the wrapper
+JSON for the resident config or reset the queue/trial counters.
+
+Pocket4's 2026-10-18 check reconstructed the latest job's original unreserved
+population from its frozen 512-sample dataset and the scheduler ledger. The
+old selector reproduced all 32 reserved IDs. Under the same budget, v2 expanded
+anchor coverage from 167.220 seconds to 2,400.889 seconds; target classes
+increased from three to five and nonoverlapping intervals from one to eight.
+The available population itself covered only about 40 minutes. This verifies
+sampling behavior, not a forward model advantage. Representation caching and
+GPU batching remain deferred until a model route earns forward evidence.

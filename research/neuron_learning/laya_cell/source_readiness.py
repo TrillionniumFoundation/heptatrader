@@ -70,9 +70,10 @@ def next_monitor_deadline(cadence_seconds, assessment_started, assessment_finish
  return max(assessment_started+cadence_seconds,assessment_finished+1)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);p.add_argument('--verified-sealed-cache',action='store_true');a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);p.add_argument('--verified-sealed-cache',action='store_true');p.add_argument('--stale-hold-refresh-seconds',type=int,default=0);a=p.parse_args()
  if not 10<=a.refresh_seconds<=60 or not 0<=a.max_cycles<=24:p.error('READINESS_CADENCE_OR_CYCLE_LIMIT')
- if (a.refresh_seconds!=60 or a.max_cycles>0 or a.verified_sealed_cache) and not a.sandbox:p.error('FASTER_OR_FINITE_OR_CACHE_MODE_REQUIRES_SANDBOX')
+ if (a.refresh_seconds!=60 or a.max_cycles>0 or a.verified_sealed_cache or a.stale_hold_refresh_seconds) and not a.sandbox:p.error('FASTER_OR_FINITE_OR_CACHE_MODE_REQUIRES_SANDBOX')
+ if a.stale_hold_refresh_seconds and not 30<=a.stale_hold_refresh_seconds<=3600:p.error('STALE_HOLD_REVALIDATION_INTERVAL')
  os.umask(0o077);c=read_json(a.config);stop=False
  if a.sandbox:
   from sandbox import enter
@@ -89,19 +90,26 @@ def main():
  if a.verified_sealed_cache:
   from .verified_sealed_readiness_cache import VerifiedSealedReadinessCache
   cache=VerifiedSealedReadinessCache()
+ heartbeat=None
+ if a.stale_hold_refresh_seconds:
+  from .readiness_heartbeat import StaleReadinessHeartbeat
+  heartbeat=StaleReadinessHeartbeat(a.stale_hold_refresh_seconds)
+ def full_assess(config,now=None):
+  return assess(config,now,quote_loader=cache.read_quotes if cache is not None else None)
  cycles=0
  while not stop:
   assessment_started=time.monotonic()
-  try:status=assess(c,quote_loader=cache.read_quotes if cache is not None else None)
+  try:status=heartbeat.assess(c,full_assess) if heartbeat is not None else full_assess(c)
   except Exception as exc:status={'at_ms':int(time.time()*1000),'state':'HOLD_NEW_FUSION_WINDOW','reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],'orders_sent':0}
   atomic(a.output,status)
   finished=time.monotonic();cycles+=1
   if a.once:print(json.dumps({k:v for k,v in status.items() if k not in ('probes','source_prefixes')}),flush=True);break
   if a.refresh_seconds!=60:
-   published_ms=int(time.time()*1000);original_ms=status.get('at_ms')
+   published_ms=int(time.time()*1000);original_ms=status.get('source_asof_ms',status.get('at_ms'))
    print(json.dumps({'schema':'heptatrader.source-readiness-cadence-lab.v1','cycle':cycles,
       'assess_ms':round((finished-assessment_started)*1000),
       'source_asof_ms':original_ms,'published_ms':published_ms,
+       'assessment_kind':status.get('assessment_kind','FULL_SOURCE_ASSESSMENT'),'evaluation_asof_ms':status.get('at_ms'),
       'published_source_age_ms':(published_ms-original_ms if type(original_ms) is int else None),
       'state':status.get('state'),'usable':status.get('usable'),
       'trade_authority':False,'orders_sent':0}),flush=True)
@@ -111,6 +119,8 @@ def main():
    left=deadline-time.monotonic()
    if left<=0:break
    time.sleep(min(1,left))
+ if heartbeat is not None:
+  print(json.dumps({'schema':'heptatrader.stale-readiness-heartbeat.v1','full_assessments':heartbeat.full_assessments,'hold_heartbeats':heartbeat.hold_heartbeats,'cached_ready_allowed':False,'orders_sent':0}),flush=True)
  if cache is not None:
   print(json.dumps({'schema':'heptatrader.readiness-verified-sealed-cache-counters.v1',
    **cache.counters()}),flush=True)

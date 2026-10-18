@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 
 from .integrity import ContractError, digest, read_json, sha_file
+from .resident_training_v2 import action_observation
 
 SCHEMA = "heptatrader.action-quality-research.v1"
 MIN_ROWS_PER_DAY = 10
@@ -52,6 +53,7 @@ def collect_closed(root):
     seen = set()
     evidence = hashlib.sha256()
     source_count = 0
+    action_abstention_counts = Counter()
     for file in plans:
         qualifier = file.parent / "qualification.json"
         if not qualifier.exists():
@@ -96,18 +98,18 @@ def collect_closed(root):
             seen.add(anchor)
             parent = probabilities(p["parent_probs"], 7)
             candidate = probabilities(p["candidate_probs"], 7)
-            action = probabilities(p["candidate_act_escalate_probs"], 2)
             target = obs.get("target_class")
             if type(target) is not int or not 0 <= target < 7:
                 raise ContractError("CALIBRATION_TARGET")
             parent_correct = max(range(7), key=lambda i: parent[i]) == target
-            raw_brier = brier_for_correctness(action[0], parent_correct)
-            if (type(obs.get("action_head_brier")) not in (float, int) or
-                    abs(raw_brier - obs["action_head_brier"]) > 1e-5):
-                raise ContractError("CALIBRATION_REPORTED_SCORE_CHANGED")
+            action = action_observation(plan, p, parent_correct=parent_correct, outcome=obs)
             evidence.update(str(f).encode() + bytes.fromhex(sha_file(f)))
             evidence.update(str(pred).encode() + bytes.fromhex(sha_file(pred)))
             source_count += 2
+            if action["abstention_reason"] is not None:
+                action_abstention_counts[action["abstention_reason"]] += 1
+                continue
+            raw_brier = action["action_brier"]
             rows.append({"anchor_ms": anchor,
                          "utc_day": datetime.fromtimestamp(anchor / 1000, tz=timezone.utc).date().isoformat(),
                          "parent_confidence": max(parent),
@@ -115,13 +117,17 @@ def collect_closed(root):
                          "candidate_probabilities": list(candidate),
                          "target_class": target,
                          "parent_correct": parent_correct,
-                         "raw_action_correct_probability": action[0],
+                         "raw_action_correct_probability": action["action_correct_probability"],
+                         "action_output_profile": action["action_output_profile"],
                          "raw_action_brier": raw_brier,
                          "plan_id": plan["plan_id"]})
     if not rows:
-        raise ContractError("CALIBRATION_NO_CLOSED_OBSERVATIONS")
+        detail = ":" + json.dumps(dict(action_abstention_counts), sort_keys=True) if action_abstention_counts else ""
+        raise ContractError("CALIBRATION_NO_CLOSED_OBSERVATIONS" + detail)
     return sorted(rows, key=lambda r: r["anchor_ms"]), {
         "source_files_sha256": evidence.hexdigest(), "source_files_count": source_count,
+        "action_abstentions": sum(action_abstention_counts.values()),
+        "action_abstention_counts": dict(sorted(action_abstention_counts.items())),
         "observations": len(rows), "closed_plans": sum((p.parent / "qualification.json").exists() for p in plans),
         "pending_plans_excluded": sum(not (p.parent / "qualification.json").exists() for p in plans)}
 

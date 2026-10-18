@@ -1,4 +1,4 @@
-"""Standalone offline cross-host audit of exact first 32 frozen PAPER health snapshots.
+"""Shared offline archive verifier and historical first-32 command entry.
 Reads an untrusted tar archive WITHOUT extracting or opening broker sockets.
 This first-32 receipt is not proof that the planned 480-cycle trial passed.
 """
@@ -36,9 +36,9 @@ def read_private(path,limit=4000000):
       and p.stat().st_uid==os.geteuid() and p.stat().st_size<limit
       and not (stat.S_IMODE(p.stat().st_mode)&0o077),"UNSAFE_PRIVATE_FILE")
  return p.read_bytes()
-def archive(path):
+def archive(path,count=32):
  expected={"plan.json","worker-start.json","sandbox.json"}|{
-  f"cycle-{i:02d}-{suffix}.json" for i in range(32) for suffix in ("receipt","status")}
+  f"cycle-{i:02d}-{suffix}.json" for i in range(count) for suffix in ("receipt","status")}
  b=read_private(path)
  d={}
  with tarfile.open(fileobj=io.BytesIO(b),mode="r:gz") as tf:
@@ -50,7 +50,9 @@ def archive(path):
    need(len(d[member.name])==member.size,"ARCHIVE_TRUNCATION")
  need(set(d)==expected,"ARCHIVE_MISSING_OR_EXTRA_SOURCE")
  return d,sha(b)
-def verify(d,report,pins=PIN):
+def verify(d,report,pins=PIN,*,count=32,
+           schema="heptatrader.fx-sustained-qian-crosshost-first32.v1",
+           provenance_field="local_qian_original_bytes_reparsed"):
  need(all(sha(d[name])==pins[key] for key,name in (
       ("plan","plan.json"),("worker","worker-start.json"),
       ("sandbox","sandbox.json"))),
@@ -77,10 +79,10 @@ def verify(d,report,pins=PIN):
    "SOURCE_SANDBOX_ATTESTATION_CHANGED")
  need(sha(report[0])==pins["report"],"OLD_AUDIT_CONTENT_CHANGED")
  old=report[1]
- need(old.get("contiguous_prefix_cycles_checked")==32 and old.get("future_cycles_NOT_verified")==448,
+ need(old.get("contiguous_prefix_cycles_checked")==count and old.get("future_cycles_NOT_verified")==480-count,
       "OLD_AUDIT_FALSE_COMPLETION")
  previous="0"*64; rows=[]
- for i in range(32):
+ for i in range(count):
   b=d[f"cycle-{i:02d}-receipt.json"];r=parse(b)
   sb=d[f"cycle-{i:02d}-status.json"];q=parse(sb)
   target=p["first_cycle_start_ms"]+15000*i
@@ -126,35 +128,40 @@ def verify(d,report,pins=PIN):
        and reference["asof_ms"]==at,
        "POCKET4_QIAN_INDEPENDENT_RECOMPUTATION_DISAGREES")
   rows.append({"at_ms":at,"published_ms":published,"usable":usable,"status_sha256":sha(sb)})
- need(previous==pins["head"],"FIRST32_ORIGINAL_CHAIN_HEAD_CHANGED")
+ need(previous==pins["head"],f"FIRST{count}_ORIGINAL_CHAIN_HEAD_CHANGED")
  max_age=max(x["published_ms"]-x["at_ms"] for x in rows)
  next_age=max(b["published_ms"]-a["at_ms"] for a,b in zip(rows,rows[1:]))
  need(max_age==old["worst_published_original_source_age_ms"]
       and next_age==old["worst_status_age_at_next_publication_ms"],
       "CROSSHOST_TIMING_RECOMPUTATION_MISMATCH")
- return dict(schema="heptatrader.fx-sustained-qian-crosshost-first32.v1",
+ return dict(schema=schema,
    inspected_at_utc=datetime.now(timezone.utc).isoformat(),
    plan_sha256=pins["plan"],original_report_sha256=pins["report"],
-   original_first32_chain_head=pins["head"],verified_count=32,
-   frozen_target_count=480,unverified_count=448,
-   ready_count=32,hold_count=0,max_publish_age_ms=max_age,
+   **{f"original_first{count}_chain_head":pins["head"]},verified_count=count,
+   frozen_target_count=480,unverified_count=480-count,
+   ready_count=count,hold_count=0,max_publish_age_ms=max_age,
    max_age_before_next_publication_ms=next_age,
-   local_qian_original_bytes_reparsed=True,
+   **{provenance_field:True},
    independently_signed_IB_quote=False,original_source_ib_signed=False,
    quote_source_independent_from_pocket4=False,
    production_approval=False,model_or_strategy_qualified=False,
    model_training_or_promotion_admitted=False,
    final_480_accepted=False,product_witness_enrolled=False,
    broker_orders_sent=0,trade_authority=False)
-def main():
+def main(archive_fn=None,verify_fn=None,*,source_path=__file__,count=32,
+         success_status="QIAN_FIRST32_INDEPENDENTLY_RECOMPUTED_NOT_480"):
+ archive_fn=archive if archive_fn is None else archive_fn
+ verify_fn=verify if verify_fn is None else verify_fn
  a=argparse.ArgumentParser()
  for k in ("bundle","original-report","output"):a.add_argument("--"+k,required=True,type=Path)
  args=a.parse_args()
- d,bundle_sha=archive(args.bundle)
+ d,bundle_sha=archive_fn(args.bundle)
  raw=read_private(args.original_report)
- r=verify(d,(raw,parse(raw)))
+ r=verify_fn(d,(raw,parse(raw)))
  r["read_only_archive_sha256"]=bundle_sha
- r["standalone_verifier_source_sha256"]=sha(Path(__file__).read_bytes())
+ r["standalone_verifier_source_sha256"]=sha(Path(source_path).read_bytes())
+ if Path(source_path).resolve()!=Path(__file__).resolve():
+  r["shared_verifier_source_sha256"]=sha(Path(__file__).read_bytes())
  dest=args.output
  need(dest.is_absolute() and not dest.exists() and not dest.is_symlink()
       and dest.parent.is_dir() and stat.S_IMODE(dest.parent.stat().st_mode)==0o700,
@@ -165,7 +172,7 @@ def main():
  dr=os.open(dest.parent,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(dr)
  finally:os.close(dr)
- print(json.dumps({"status":"QIAN_FIRST32_INDEPENDENTLY_RECOMPUTED_NOT_480",
-  "ready_count":32,"max_next_age_ms":r["max_age_before_next_publication_ms"],
+ print(json.dumps({"status":success_status,
+  "ready_count":count,"max_next_age_ms":r["max_age_before_next_publication_ms"],
   "receipt_sha256":sha(b),"orders":0},sort_keys=True))
 if __name__=="__main__":main()

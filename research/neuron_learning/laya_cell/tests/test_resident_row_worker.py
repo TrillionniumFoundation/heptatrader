@@ -7,18 +7,21 @@ from unittest.mock import patch
 import torch
 from safetensors.torch import save_file
 from laya_cell import resident_train as t
+from laya_cell import resident_training_v2 as v2_profile
 from laya_cell.resident_model import ResidentDecisionCell,PROFILE
 from laya_cell.resident_row_accounting import SCHEMA,row_id,verify_candidate
 from laya_cell.integrity import digest,sha_file
 from laya_cell.tests.test_resident import TinyPretrained
+
 
 class NativeFixture:
  def __init__(self,*args):pass
  def predictive_utility(self,*args):return {'receipt_digest':'e'*64}
  def propose(self,*args):return {'proposal_digest':'f'*64}
 
+
 class WorkerRowIntegration(unittest.TestCase):
- def run_fixture(self,n,rollback=False):
+ def run_fixture(self,n,rollback=False,*,v2=False,correct_rows=0):
   torch.set_num_threads(1)
   with tempfile.TemporaryDirectory() as td,ExitStack() as stack:
    root=Path(td);base=root/'base';base.mkdir();(base/'base-manifest.json').write_text('{}')
@@ -27,26 +30,60 @@ class WorkerRowIntegration(unittest.TestCase):
    manifest={'base_id':'a'*64,'base_revision':'cpu-synthetic-only','window':{'training_end_ms':0},
              'adapter_sha256':sha_file(parent/'adapter.safetensors')}
    manifest['candidate_id']=digest(manifest);(parent/'candidate.json').write_text(json.dumps(manifest))
-   data=root/'dataset.json';data.write_text('{}')
    rows=[{'sample_id':str(i),'horizon_sec':300,'outcome_receipt_digest':str(i),'anchor_ms':100+i,
           'target_class':i%7,'teacher_probs':None} for i in range(n)]
+   def encode(tok,selected):return {'x':torch.tensor([[int(r['sample_id'])/100,0.1,0.2] for r in selected])}
+   dataset={};cutoff=999
+   if v2:
+    dataset={'samples':[]}
+    with torch.no_grad():
+     for i,r in enumerate(rows):
+      choice=int(cell(**encode(None,[r]))[0].argmax(-1)[0])
+      r['target_class']=choice if i<correct_rows else (choice+1)%7
+      r['anchor_ms']+=1000000
+      bid=1.+(i%5)*.00001
+      r['state']={'instrument':'EUR.USD','anchor_ms':r['anchor_ms'],
+       'reference_mid':str(bid+.00001),'horizon_sec':300,
+       'columns':['offset_ms','bid','ask'],
+       'quotes':[[j*10000,str(bid+j*.000001),str(bid+j*.000001+.00002)] for j in range(-5,1)]}
+      outcome={'observed_at_ms':r['anchor_ms']+300000,
+               'available_at_ms':r['anchor_ms']+300001}
+      r['outcome_receipt_digest']=digest(outcome)
+      dataset['samples'].append({'sample_id':r['sample_id'],'outcome_receipts':[outcome,None]})
+    cutoff=rows[-1]['anchor_ms']+300002
+   data=root/'dataset.json';data.write_text(json.dumps(dataset))
    ids=[row_id(r) for r in rows]
-   cfg={'objective':t.OBJECTIVE,'profile':PROFILE,'base_directory':str(base),'output_directory':str(root/'out'),
+   cfg={'objective':v2_profile.OBJECTIVE if v2 else t.OBJECTIVE,'profile':PROFILE,
+        'base_directory':str(base),'output_directory':str(root/'out'),
         'baseline_directory':str(root/'baseline'),'parent_directory':str(parent),'parent_id':manifest['candidate_id'],
-        'dataset':str(data),'dataset_sha256':sha_file(data),'window':{'training_end_ms':999},
+        'dataset':str(data),'dataset_sha256':sha_file(data),'window':{'training_end_ms':cutoff},
         'training_row_ids':ids,'training_row_accounting_schema':SCHEMA,'native_binary':'fixture-only',
         'native_binary_sha256':'b'*64,'data_fingerprint':digest(ids),'generation':2}
-   def encode(tok,selected):return {'x':torch.tensor([[int(r['sample_id'])/100,0.1,0.2] for r in selected])}
    replacements={'verify_baseline':lambda p:'d'*64,'verify_source_prefixes':lambda d:None,
                  'rows_for_training':lambda d,w:(rows,{}),'require_pocket4_gpu':lambda:torch.device('cpu'),
-                 'load_verified_laya':lambda b,m:(TinyPretrained(),None,'a'*64),'encode_rows':encode,'ResidentNative':NativeFixture}
+                 'load_verified_laya':lambda b,m:(TinyPretrained(),None,'a'*64),
+                 'encode_rows':encode,'ResidentNative':NativeFixture}
    for name,value in replacements.items():stack.enter_context(patch.object(t,name,value))
    stack.enter_context(patch.object(torch.cuda,'reset_peak_memory_stats'))
    stack.enter_context(patch.object(torch.cuda,'get_device_properties',return_value=SimpleNamespace(gcnArchName='CPU_SYNTHETIC_FIXTURE')))
    stack.enter_context(patch.object(torch.cuda,'max_memory_allocated',return_value=0))
+   active_cell=[None];action_snapshots=[];action_gradient_absent=[]
+   original_init=ResidentDecisionCell.__init__;original_step=torch.optim.AdamW.step
+   def remember_cell(current,*args,**kwargs):
+    original_init(current,*args,**kwargs);active_cell[0]=current
+   def observe_step(optimizer,*args,**kwargs):
+    action={name:p for name,p in active_cell[0].named_parameters()
+            if p.requires_grad and '.act_head.' in name}
+    self.assertTrue(action)
+    action_gradient_absent.append(all(p.grad is None for p in action.values()))
+    result=original_step(optimizer,*args,**kwargs)
+    action_snapshots.append({name:p.detach().clone() for name,p in action.items()})
+    return result
+   stack.enter_context(patch.object(ResidentDecisionCell,'__init__',remember_cell))
+   stack.enter_context(patch.object(torch.optim.AdamW,'step',observe_step))
    if rollback:
     original=ResidentDecisionCell.norm_report
-    def reject(cell):return {**original(cell),'within_profile':False}
+    def reject(current):return {**original(current),'within_profile':False}
     stack.enter_context(patch.object(ResidentDecisionCell,'norm_report',reject))
    candidate=t.run_job(cfg,old_learner_verified=True);verify_candidate(cfg,candidate)
    loaded=json.loads((root/'out/candidate.json').read_text());verify_candidate(cfg,loaded)
@@ -54,8 +91,38 @@ class WorkerRowIntegration(unittest.TestCase):
    self.assertEqual(len(loaded['steps']),(n+1)//2)
    self.assertEqual(loaded['row_accounting']['applied_count'],0 if rollback else n)
    self.assertEqual(loaded['changed_parameters']==0,rollback)
+   return loaded,action_snapshots,action_gradient_absent
  def test_32_reserved_rows_have_32_real_backward_pass_inputs(self):self.run_fixture(32)
  def test_odd_last_batch_trains_all_21_rows(self):self.run_fixture(21)
  def test_rejected_steps_are_logged_as_rollback_not_applied(self):self.run_fixture(16,True)
+ def test_v2_one_class_updates_price_and_never_updates_action(self):
+  c,_,absent=self.run_fixture(32,v2=True)
+  self.assertEqual(c['objective'],v2_profile.OBJECTIVE)
+  self.assertEqual(c['action_training_profile']['labels'],{'ACT_correct':0,'ESCALATE_wrong':32})
+  self.assertFalse(c['action_optimizer_admitted'])
+  self.assertEqual(c['action_update_steps'],0)
+  self.assertTrue(all(absent))
+  self.assertTrue(all(step['action_loss']==0 for step in c['steps']))
+  self.assertEqual(sum(v for n,v in c['changed_by_tensor'].items() if '.act_head.' in n),0)
+  self.assertEqual(c['row_statistics']['anchor_span_ms'],31)
+  self.assertEqual(c['row_statistics']['maximum_nonoverlapping_target_intervals'],1)
+ def test_v2_majority_only_tail_does_not_update_action_via_adam_momentum(self):
+  c,states,absent=self.run_fixture(32,v2=True,correct_rows=4)
+  self.assertEqual(c['action_training_profile']['labels'],{'ACT_correct':4,'ESCALATE_wrong':28})
+  self.assertTrue(c['action_optimizer_admitted'])
+  self.assertEqual(c['action_update_steps'],4)
+  self.assertEqual(absent,[False]*4+[True]*12)
+  self.assertTrue(all(step['action_loss']==0 for step in c['steps'][4:]))
+  for state in states[4:]:
+   for name,value in state.items():self.assertTrue(torch.equal(value,states[3][name]),name)
+ def test_v2_norm_rejection_restores_real_parameters_and_accounting(self):
+  c,_,_=self.run_fixture(16,True,v2=True,correct_rows=4)
+  self.assertEqual(c['action_update_steps'],0)
+  self.assertEqual(c['changed_parameters'],0)
+ def test_v2_odd_batch_keeps_every_original_price_row(self):
+  c,_,_=self.run_fixture(21,v2=True)
+  self.assertEqual(c['row_statistics']['rows'],21)
+  self.assertEqual(c['row_accounting']['applied_count'],21)
+
 
 if __name__=='__main__':unittest.main()

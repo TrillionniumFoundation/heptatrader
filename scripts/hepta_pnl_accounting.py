@@ -640,7 +640,7 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
 
 
 def instrument_report(events: list[dict], period: dict, instrument: str, observation: dict, now_ms: int,
-                      driver_state: dict | None = None) -> dict:
+                      driver_state: dict | None = None, *, ledger_provider=None) -> dict:
     result = {"instrument": instrument, "currency": "USD", "ledger_complete": False, "valuation_complete": False,
               "position": None, "broker_position": observation.get("quantity"), "entry_cost_basis": None,
               "realized_gross_pnl": None, "unrealized_gross_pnl": None, "gross_total_pnl": None,
@@ -659,7 +659,7 @@ def instrument_report(events: list[dict], period: dict, instrument: str, observa
     try:
         with localcontext() as context:
             context.prec = 40
-            ledger = replay(events, period, instrument, now_ms)
+            ledger = (ledger_provider or replay)(events, period, instrument, now_ms)
             book = ledger.pop("book")
             # Keep the view bounded; accounting always consumes the full bounded journal.
             # This is only a display tail, not a truncated accounting input.
@@ -722,12 +722,12 @@ def instrument_report(events: list[dict], period: dict, instrument: str, observa
 
 
 def build_report(events: list[dict], period: dict, observations: dict, now_ms: int,
-                 driver_states: dict | None = None) -> dict:
+                 driver_states: dict | None = None, *, ledger_provider=None) -> dict:
     validate_period(period)
     if now_ms < period["started_at_ms"]:
         raise EvidenceError("PERIOD_IS_IN_FUTURE")
     rows = [instrument_report(events, period, i, observations.get(i, {}), now_ms,
-                              (driver_states or {}).get(i)) for i in INSTRUMENTS]
+                              (driver_states or {}).get(i), ledger_provider=ledger_provider) for i in INSTRUMENTS]
     totals: dict[str, Any] = {"currency": "USD"}
     for name in ("realized_gross_pnl", "unrealized_gross_pnl", "gross_total_pnl", "fees_paid",
                  "realized_net_pnl", "unrealized_net_pnl", "net_total_pnl"):

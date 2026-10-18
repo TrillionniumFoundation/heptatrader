@@ -15,6 +15,8 @@ from .dataset import rows_for_training,verify_source_prefixes,encode_rows
 from .native import NativePorts
 from .train import supervised_loss,verify_old_learner_inactive,verify_baseline
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,row_id,batches,receipt,checked_ids
+from . import resident_training_v2 as training_v2
+from . import resident_price_baselines as price_refs
 
 OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
  'auxiliary_teacher_weight':.1,'action_loss_weight':.01,
@@ -27,7 +29,7 @@ OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED
 class ResidentNative(NativePorts):
  def propose(self,cell,parent,dataset,utility,measurement,gradient,generation):
   out=self.call({'op':'laya_resident_proposal','base_id':cell.base_id,'selected_artifact_digest':parent,
-   'generation':generation,'dataset_digest':dataset,'update_rule_digest':digest({'profile':PROFILE,'objective':OBJECTIVE}),
+   'generation':generation,'dataset_digest':dataset,'update_rule_digest':digest({'profile':PROFILE,'objective':getattr(self,'objective',OBJECTIVE)}),
    'modulator_digest':utility,'eligibility_digest':gradient,'evaluation_digest':digest(measurement),
    'layers':cell.native_parameter_rows()})
   if out.get('status')!='RequiresIndependentAcceptance' or out.get('selection_performed') is not False:
@@ -47,7 +49,8 @@ def validate_parent(path):
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  if not old_learner_verified:verify_old_learner_inactive()
- if c.get('objective')!=OBJECTIVE or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ v2=c['objective']==training_v2.OBJECTIVE
  base=Path(c['base_directory']);out=Path(c['output_directory'])
  if out.exists():raise ContractError('NEW_CANDIDATE_OUTPUT_REQUIRED')
  baseline_id=verify_baseline(Path(c['baseline_directory']))
@@ -57,25 +60,32 @@ def run_job(c,*,old_learner_verified=False):
  if sha_file(dataset_path)!=c['dataset_sha256']:raise ContractError('DATASET_CHANGED')
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
+ if v2:rows=training_v2.timed_rows(rows,dataset)
+ eligible_rows=list(rows)
  if c.get('training_row_accounting_schema')!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
  if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')
  training_batches=batches(rows)
+ frozen_price_baselines=price_refs.freeze(rows,c['window']['training_end_ms']) if v2 else None
  device=require_pocket4_gpu();torch.cuda.reset_peak_memory_stats()
  raw,tok,base_id=load_verified_laya(base,read_json(base/'base-manifest.json'))
  if base_id!=parent['base_id']:raise ContractError('PARENT_BASE_MISMATCH')
  from safetensors.torch import load_file,save_file
  cell=ResidentDecisionCell(raw,base_id);cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True)
  initial=cell.trainable_state();native=ResidentNative(Path(c['native_binary']),c['native_binary_sha256'])
+ native.objective=c['objective']
  parent_cutoff=parent.get('trained_until_ms',parent['window']['training_end_ms'])
  # Derive targets once from the frozen predecessor, never from the improving student.
- targets={};parent_scores=[]
+ targets={};parent_scores=[];parent_action_logits={}
  with torch.no_grad():
   for row in rows:
    batch={k:v.to(device) for k,v in encode_rows(tok,[row]).items()};p,a=cell(**batch)
    key=digest([row['sample_id'],row['horizon_sec']]);truth=torch.tensor([row['target_class']],device=device)
    targets[key]=int(answer_targets(p,truth)[0]) if parent_cutoff<=row['anchor_ms'] else None
    parent_scores.append(float(F.cross_entropy(p,truth)))
+   if v2:parent_action_logits[key]=a[0].detach().cpu()
+ action_training_profile=None
+ if v2:action_training_profile,training_batches=training_v2.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
  optimizer=torch.optim.AdamW([p for p in cell.parameters() if p.requires_grad],lr=.0001,weight_decay=0.)
  steps=[];cell.train(True);seen_action=set();applied_action=0
  # Disjoint two-row batches, no inflated unique-sample count from overlapping slices.
@@ -89,15 +99,27 @@ def run_job(c,*,old_learner_verified=False):
   ay=torch.tensor([v if v is not None else 0 for v in action_values],device=device)
   saved=cell.trainable_state();opt=copy.deepcopy(optimizer.state_dict());optimizer.zero_grad(set_to_none=True)
   p,a=cell(**batch);price_loss=supervised_loss(p,truth,teacher,tm)
-  act_loss=action_loss(a[am],ay[am]) if am.any() else a.sum()*0
-  loss=price_loss+.01*act_loss;loss.backward()
+  action_step_eligible=bool(am.any())
+  if v2:
+   from .resident_action_v2_research import balanced_action_loss
+   action_step_eligible=bool(action_training_profile and action_training_profile['action_optimizer_admitted'] and len(set(v for v in action_values if v is not None))==2)
+   act_loss=(balanced_action_loss(a[am],ay[am]==0,price_loss,action_training_profile)
+             if action_training_profile is not None and am.any() else a.sum()*0)
+   loss=price_loss+act_loss
+  else:
+   act_loss=action_loss(a[am],ay[am]) if am.any() else a.sum()*0
+   loss=price_loss+.01*act_loss
+  loss.backward()
+  if v2 and not action_step_eligible:
+   for name,param in cell.named_parameters():
+    if param.requires_grad and '.act_head.' in name:param.grad=None
   for name,param in cell.named_parameters():
    if not param.requires_grad and param.grad is not None:raise ContractError('FROZEN_GRADIENT')
   torch.nn.utils.clip_grad_norm_([p for p in cell.parameters() if p.requires_grad],1.,error_if_nonfinite=True)
   gradient=digest({n:tensor_hash(p.grad) for n,p in cell.named_parameters() if p.grad is not None})
   optimizer.step();norm=cell.norm_report();applied=norm['within_profile']
   if not applied:cell.restore_trainable(saved);optimizer.load_state_dict(opt)
-  elif am.any():applied_action+=1
+  elif action_step_eligible:applied_action+=1
   seen_action.update(digest([r['sample_id'],r['horizon_sec']]) for r,v in zip(selected,action_values) if v is not None)
   step={'applied':applied,'training_row_ids':[row_id(r) for r in selected],
    'loss':float(loss.detach()),'price_loss':float(price_loss.detach()),
@@ -108,7 +130,7 @@ def run_job(c,*,old_learner_verified=False):
   for r in rows:
    batch={k:v.to(device) for k,v in encode_rows(tok,[r]).items()};p,a=cell(**batch);truth=torch.tensor([r['target_class']],device=device)
    after_scores.append(float(F.cross_entropy(p,truth)));brier.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
- utility=native.predictive_utility(brier,rows,digest(dataset),digest(OBJECTIVE))
+ utility=native.predictive_utility(brier,rows,digest(dataset),digest(c['objective']))
  measurement={'training_only':True,'rows':len(rows),'unique_action_labels':len(seen_action),
   'parent_ce':sum(parent_scores)/len(rows),'candidate_ce':sum(after_scores)/len(rows),
   'candidate_brier':sum(brier)/len(rows),'action_target_counts':{str(k):list(targets.values()).count(k) for k in (0,1,None)}}
@@ -122,7 +144,7 @@ def run_job(c,*,old_learner_verified=False):
   'base_id':base_id,'base_revision':parent['base_revision'],'parent_id':parent['candidate_id'],
   'generation':c['generation']+1,'frozen_bootstrap_id':baseline_id,'dataset_id':digest(dataset),
   'dataset_file_sha256':c['dataset_sha256'],'data_fingerprint':c['data_fingerprint'],
-  'trained_until_ms':c['window']['training_end_ms'],'window':c['window'],'profile':PROFILE,'objective':OBJECTIVE,
+  'trained_until_ms':c['window']['training_end_ms'],'window':c['window'],'profile':PROFILE,'objective':c['objective'],
   'tensor_mask':sorted(tensors),'adapter_sha256':sha_file(out/'adapter.safetensors'),
   'trainable_parameters':sum(t.numel() for t in tensors.values()),'changed_parameters':sum(changes.values()),
   'changed_by_tensor':changes,'action_head_trained':any('.act_head.' in n and v for n,v in changes.items()),
@@ -135,6 +157,14 @@ def run_job(c,*,old_learner_verified=False):
   'status':'REQUIRES_INDEPENDENT_FUTURE_EVALUATION','pnl_reward_used':False,
   'pnl_note':'REMOTE_BEHAVIOR_REWARDS_CANNOT_BE_LAYA_POLICY_GRADIENT',
   'automatic_cutover':False,'broker_orders_sent':0,'canonical_owner_activation_claimed':False}
+ if v2:
+  record.update(selection_policy=training_v2.SELECTION,price_baselines=frozen_price_baselines,
+   row_statistics=training_v2.coverage(rows,c['window']['training_end_ms']),
+   eligible_pool_statistics=training_v2.coverage(eligible_rows,c['window']['training_end_ms']),
+   action_training_profile=action_training_profile,
+   action_output_profile=training_v2.ACTION_OUTPUT,
+   action_optimizer_admitted=bool(action_training_profile and action_training_profile['action_optimizer_admitted']),
+   action_unsupported_reason=(None if action_training_profile and action_training_profile['action_optimizer_admitted'] else 'NO_BALANCED_CAUSAL_PARENT_CORRECTNESS_TRAINING'))
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

@@ -91,6 +91,34 @@ class SealedEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
+    def test_v2_abstention_is_counted_without_becoming_action_calibration(self):
+        from laya_cell.resident_training_v2 import ACTION_OUTPUT
+        self.build(name="legacy", n=1)
+        self.build(name="v2", date="2026-10-08", n=1)
+        directory=self.root/"v2"
+        plan=json.loads((directory/"plan.json").read_text())
+        plan.update(action_output_profile=ACTION_OUTPUT,action_training_profile_id=None,
+                    action_optimizer_admitted=False)
+        plan.pop("plan_id");plan["plan_id"]=digest(plan)
+        (directory/"plan.json").write_text(json.dumps(plan))
+        qualification=json.loads((directory/"qualification.json").read_text())
+        qualification["plan_id"]=plan["plan_id"]
+        (directory/"qualification.json").write_text(json.dumps(qualification))
+        pp=directory/"prediction-000.json";op=directory/"outcome-000.json"
+        prediction=json.loads(pp.read_text())
+        prediction.update(plan_id=plan["plan_id"],action_output_profile=ACTION_OUTPUT,
+            candidate_act_escalate_probs=None,action_inference={"frozen_profile_id":None,
+            "action_correct_probs":None,"model_or_trade_permission":False})
+        pp.write_text(json.dumps(prediction))
+        outcome=json.loads(op.read_text())
+        outcome.update(plan_id=plan["plan_id"],prediction_file_sha256=sha_file(pp),action_head_brier=None)
+        op.write_text(json.dumps(outcome))
+        rows,source=collect_closed(self.root)
+        self.assertEqual(len(rows),1)
+        self.assertEqual(source["action_abstentions"],1)
+        self.assertEqual(source["action_abstention_counts"],{"NO_BALANCED_ACTION_TRAINING":1})
+        self.assertEqual(source["source_files_count"],8)
+
     def build(self, name="trial", date="2026-10-07", n=12, correct_every=10, pending=False):
         d=self.root/name;d.mkdir()
         start=int(datetime.fromisoformat(date+"T12:00:00+00:00").timestamp()*1000)

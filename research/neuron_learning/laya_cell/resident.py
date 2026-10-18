@@ -14,6 +14,8 @@ from .promotion import RULE,rule_for_trial
 from .promotion_power import PROTOCOL
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
+from . import resident_training_v2 as training_v2
+from . import resident_price_baselines as price_refs
 from .resident_queue import inspect as inspect_evaluation_queue
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
@@ -31,6 +33,10 @@ def config_check(config):
  for rel,expected in config.get('runtime_sha256',{}).items():
   if Path(rel).is_absolute() or '..' in Path(rel).parts:raise ContractError('RUNTIME_PATH_ESCAPE')
   if sha_file(Path(config['runtime_directory'])/rel)!=expected:raise ContractError('RUNTIME_CHANGED:'+rel)
+ if training_v2.enabled(config.get('objective')):
+  if config['objective']!=training_v2.OBJECTIVE:raise ContractError('RESIDENT_V2_OBJECTIVE_CHANGED')
+  if any(not config.get('runtime_sha256',{}).get(p) for p in training_v2.RUNTIME_PINS):
+   raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
  budget_policy(config)
  if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
  if config.get('future_source_read_profile') is not None:
@@ -101,6 +107,16 @@ class Supervisor:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=pinned
+  if training_v2.enabled(candidate.get('objective')):
+   plan['price_baselines']=price_refs.validate(candidate.get('price_baselines'))
+   plan['action_output_profile']=training_v2.ACTION_OUTPUT
+   calibration=candidate.get('action_training_profile')
+   plan['action_training_profile_id']=calibration['profile_id'] if calibration else None
+   plan['action_optimizer_admitted']=bool(candidate.get('action_optimizer_admitted'))
+   for name in training_v2.RUNTIME_PINS:
+    expected=self.c.get('runtime_sha256',{}).get(name)
+    if not expected:raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
+    plan['evaluation_runtime_sha256'][name]=expected
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -271,7 +287,7 @@ class Supervisor:
   if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
   if len(new)<16:return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
-  chosen=select_rows(new);row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
+  chosen=(training_v2.select_covered_rows(new) if training_v2.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
   if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')
   parent_id=parent['candidate_id'];generation=int(parent.get('generation',2))

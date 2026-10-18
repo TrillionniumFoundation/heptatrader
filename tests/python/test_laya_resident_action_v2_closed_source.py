@@ -71,6 +71,28 @@ class ClosedOriginalParentSourceTests(unittest.TestCase):
                 "parent_brier":sum((p-float(j==target))**2 for j,p in enumerate(PROBS)),
                 "action_head_brier":2*(ACTION[0]-float(correct))**2}
             save(self.dir/("outcome-%03d.json"%i),y)
+    def test_nullable_action_keeps_all_original_parent_correctness_labels(self):
+        from laya_cell.resident_training_v2 import ACTION_OUTPUT
+        self.plan.update(action_output_profile=ACTION_OUTPUT,action_training_profile_id=None,
+                         action_optimizer_admitted=False)
+        self.plan.pop("plan_id");self.plan["plan_id"]=digest(self.plan);self._plan()
+        for i in range(16):
+            pp=self.dir/("prediction-%03d.json"%i);op=self.dir/("outcome-%03d.json"%i)
+            prediction=json.loads(pp.read_text())
+            prediction.update(plan_id=self.plan["plan_id"],action_output_profile=ACTION_OUTPUT,
+                candidate_act_escalate_probs=None,action_inference={"frozen_profile_id":None,
+                "action_correct_probs":None,"model_or_trade_permission":False})
+            save(pp,prediction)
+            outcome=json.loads(op.read_text())
+            outcome.update(plan_id=self.plan["plan_id"],prediction_file_sha256=sha_file(pp),
+                           action_head_brier=None)
+            save(op,outcome)
+        result=self.collect();manifest=check_train_source(result)
+        self.assertEqual(manifest["training_rows"],16)
+        self.assertEqual(manifest["frozen_parent_correct_ACT"],4)
+        self.assertEqual(manifest["frozen_parent_wrong_ESCALATE"],12)
+        self.assertEqual(manifest["action_abstention_counts"],{"NO_BALANCED_ACTION_TRAINING":16})
+
     def collect(self):
         return collect_parent_closed_train(self.root,PARENT,CUTOFF)
     def test_real_signed_closed_rows_make_balanced_v2_population(self):

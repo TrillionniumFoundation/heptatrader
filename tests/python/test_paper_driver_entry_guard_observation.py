@@ -27,6 +27,9 @@ class EntryGuardObservabilityTests(unittest.TestCase):
             # ownership policy itself is outside this observability test.
             if uid==0:patch(driver,"private_dir",side_effect=lambda p:p.mkdir(parents=True,exist_ok=True,mode=0o700))
             patch(driver,"now_ms",return_value=self.NOW);patch(driver,"INSTRUMENT","BTC.USD")
+            # This fixture exercises actual entry checks; host maintenance is
+            # covered separately by the inference-mode tests.
+            patch(driver,"entry_inference_hold_reason",return_value=None)
             patch(driver,"DECISION_SEC",0)
             for key in ("QTY","QUANTITY_TOLERANCE","NATIVE_ENDPOINT","CLOSE_RECEIPT_ROOT"):
                 patch(driver,key,getattr(driver,key))
