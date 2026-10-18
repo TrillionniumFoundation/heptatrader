@@ -74,6 +74,7 @@ class StackedCiReachabilityTests(unittest.TestCase):
         self.assertEqual(python_steps[run_index].get('if'),
                          "steps.scope.outputs.run_python == 'true'")
         self.assertIn('torch==2.8.0', python_steps[install_index]['run'])
+        self.assertIn('safetensors==0.8.0', python_steps[install_index]['run'])
         self.assertIn('torch.version.cuda is None', python_steps[install_index]['run'])
         self.assertFalse(any('actions/cache@' in str(x) for x in ci['jobs']['core']['steps']))
 

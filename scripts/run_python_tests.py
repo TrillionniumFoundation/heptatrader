@@ -47,8 +47,9 @@ EXTERNAL_TESTS = frozenset({
     "test_train_v2_physical_native_roundtrip.py",
 })
 
-# These numerical research suites are the routine tests requiring Torch.
+# These numerical research suites require Torch or safetensors.
 LEARNING_TESTS = frozenset({
+    "test_laya_frozen_price_numpy.py",
     "test_laya_resident_action_v2_research.py",
     "test_neuron256_archived_kernel_learning.py",
 })
