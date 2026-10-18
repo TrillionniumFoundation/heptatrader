@@ -101,6 +101,7 @@ def probability_metrics(price_logits, action_logits, price_targets, action_targe
             "price_target_counts": torch.bincount(yp, minlength=7).tolist(),
             "action_nll": float(-al[rows, ya].mean()),
             "action_brier": float((ap - yah).square().sum(-1).mean()),
+            "pACT": tensor_summary(ap[:, 0]),
             "ACT_targets": int((ya == 0).sum()),
             "ACT_at_half": int((ap[:, 0] >= .5).sum()),
             "ACT_at_five_sixths": int((ap[:, 0] >= 5/6).sum()),
@@ -117,3 +118,38 @@ def normalize_cls_input(value):
         raise ValueError("ACTION_INPUT_772_FINITE_REQUIRED")
     normalized = torch.nn.functional.layer_norm(value[:, :768], (768,), eps=1e-5)
     return torch.cat((normalized, value[:, 768:]), dim=-1)
+
+
+def fit_training_prior_offset(margins, prior, *, split):
+    """Match a frozen training prior with an intercept; do not fit labels/rank."""
+    if split != "train" or not math.isfinite(prior) or not 0 < prior < 1:
+        raise ValueError("INTERIOR_FROZEN_TRAIN_PRIOR_REQUIRED")
+    m = margins.detach().to(device="cpu", dtype=torch.float64)
+    if m.ndim != 1 or m.numel() < 2 or not bool(torch.isfinite(m).all()):
+        raise ValueError("FINITE_TRAIN_MARGIN_VECTOR_REQUIRED")
+    logit_prior = math.log(prior/(1-prior))
+    low = logit_prior-float(m.max())
+    high = logit_prior-float(m.min())
+    for _ in range(80):
+        midpoint = (low+high)/2
+        if float(torch.sigmoid(m+midpoint).mean()) < prior:
+            low = midpoint
+        else:
+            high = midpoint
+    offset = (low+high)/2
+    return {"schema":"heptatrader.train-prior-action-offset.v1", "split":"train",
+            "method":"UNIQUE_INTERCEPT_MATCH_TO_FROZEN_TRAIN_POOL_PRIOR",
+            "offset":offset, "training_rows":len(m), "frozen_training_prior":prior,
+            "training_mean_probability_fp64":float(torch.sigmoid(m+offset).mean()),
+            "bisection_iterations":80, "final_bracket":[low, high],
+            "mean_probability_residual_fp64":float(torch.sigmoid(m+offset).mean())-prior,
+            "individual_labels_used_in_offset_fit":False,
+            "slope":1., "ranking_changed_in_real_arithmetic":False}
+
+
+def apply_margin_offset(action_logits, offset):
+    """Symmetric fixed logit shift; leaves gradient paths and class order intact."""
+    if action_logits.ndim != 2 or action_logits.shape[1] != 2 or not math.isfinite(offset):
+        raise ValueError("ACTION_OFFSET_SHAPE_OR_FINITE")
+    adjustment = action_logits.new_tensor([offset/2, -offset/2])
+    return action_logits + adjustment

@@ -69,6 +69,29 @@ class ReadoutDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_cls_input(torch.ones(2, 771))
 
+    def test_prior_offset_is_train_only_and_preserves_ranking(self):
+        from laya_cell.resident_readout_diagnostics import fit_training_prior_offset, apply_margin_offset
+        margins = torch.tensor([30.9, 31., 31.05, 31.1], dtype=torch.float64)
+        profile = fit_training_prior_offset(margins, .05, split="train")
+        self.assertAlmostEqual(profile["training_mean_probability_fp64"], .05, places=14)
+        logits = torch.stack([margins/2, -margins/2], -1).requires_grad_()
+        shifted = apply_margin_offset(logits, profile["offset"])
+        self.assertTrue(torch.equal(shifted[:,0].argsort(), logits[:,0].argsort()))
+        torch.testing.assert_close(shifted.sum(-1), logits.sum(-1))
+        shifted.sum().backward()
+        torch.testing.assert_close(logits.grad, torch.ones_like(logits))
+        self.assertFalse(profile["individual_labels_used_in_offset_fit"])
+        with self.assertRaises(ValueError):
+            fit_training_prior_offset(margins, .05, split="holdout")
+
+    def test_prior_offset_constant_case_and_invalid_input(self):
+        from laya_cell.resident_readout_diagnostics import fit_training_prior_offset
+        profile = fit_training_prior_offset(torch.tensor([31., 31.]), .25, split="train")
+        self.assertAlmostEqual(profile["offset"], -math.log(3)-31, places=12)
+        for prior in (0., 1., float("nan")):
+            with self.assertRaises(ValueError):
+                fit_training_prior_offset(torch.tensor([31., 31.]), prior, split="train")
+
 
 if __name__ == "__main__":
     unittest.main()
