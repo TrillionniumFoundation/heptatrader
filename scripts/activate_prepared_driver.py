@@ -238,9 +238,14 @@ def read_flat_state(path, instrument):
         if type(value.get(name)) is not int or value[name] < 0:
             fail("DRIVER_ACCOUNTING_INVALID:" + name)
     # Old entry correlations can remain populated at zero position. Keep them.
+    # This one entry-prefixed field is live loop telemetry, not trade identity:
+    # it can appear, change its timestamp/reason, or disappear under the hold.
+    # Unknown entry_* fields remain protected.
     correlation = {
         name: item for name, item in value.items()
-        if name in BUSINESS_FIELDS or name.startswith("entry_")
+        if name in BUSINESS_FIELDS or (
+            name.startswith("entry_") and name != "entry_inference_pause"
+        )
     }
     return raw, correlation
 
@@ -532,6 +537,7 @@ def maintenance_upgrade(
             + " ".join(argv_for(candidate)) + "\n"
         ).encode()
         _, original_correlation = read_flat_state(state_path, instrument)
+        receipt["original_business_correlation"] = original_correlation
         verify_binary(sessionctl, sessionctl_sha)
         environment = audit_environment(
             int(before["heptatrader-gateway.service"]["MainPID"]),
@@ -572,6 +578,11 @@ def maintenance_upgrade(
         def state_unchanged():
             raw, correlation = read_flat_state(state_path, instrument)
             if correlation != original_correlation:
+                receipt["business_correlation_changed_fields"] = sorted(
+                    name for name in correlation.keys() | original_correlation.keys()
+                    if name not in correlation or name not in original_correlation
+                    or correlation[name] != original_correlation[name]
+                )
                 fail("DRIVER_BUSINESS_CORRELATION_CHANGED")
             return raw
 
