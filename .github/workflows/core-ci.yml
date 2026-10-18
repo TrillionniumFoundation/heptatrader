@@ -115,12 +115,14 @@ jobs:
         continue-on-error: true # cache outage must not become a new dev gate
         with:
           path: ~/.cache/pip
-          key: heptatrader-cpu-torch-2.8.0-v1-${{ runner.os }}-${{ runner.arch }}
+          key: heptatrader-cpu-torch-2.8.0-safetensors-0.8.0-v2-${{ runner.os }}-${{ runner.arch }}
       - name: Install pinned CPU research test dependency
         if: steps.scope.outputs.run_learning == 'true'
         run: |
           python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
           "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install --only-binary=:all: safetensors==0.8.0
+          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import safetensors; assert safetensors.__version__ == "0.8.0"; print(safetensors.__version__)'
           "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
           echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
       - name: Python learning tests once

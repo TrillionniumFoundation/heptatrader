@@ -20,7 +20,8 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertEqual(set.union(*groups.values()),
                          {p.name for p in (ROOT / "tests/python").glob("test_*.py")})
         self.assertEqual(sum(map(len, groups.values())), len(set.union(*groups.values())))
-        self.assertEqual(groups["learning"], {"test_laya_resident_action_v2_research.py",
+        self.assertEqual(groups["learning"], {"test_laya_frozen_price_numpy.py",
+                                              "test_laya_resident_action_v2_research.py",
                                               "test_neuron256_archived_kernel_learning.py"})
         self.assertFalse(groups["learning"] & groups["core"])
 

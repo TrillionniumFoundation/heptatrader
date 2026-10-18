@@ -108,15 +108,17 @@ Report input availability, zero-spread frequency, direction, daily results, cost
 
 The focused contract suite covers schedule boundaries, latest admission, late information, missing targets, source rotation/integrity, persistence deadlines, orphan recovery, assessment binding, clock-floor recovery and current-input eligibility independent of future labels.
 
+The three observer/cost contract files use unittest and are discovered by the repository's core lane. Frozen NumPy identity tests belong explicitly to the learning lane, whose CI environment installs pinned safetensors 0.8.0. Missing research dependencies fail that lane instead of turning into skipped acceptance.
+
 ```sh
-PYTHONPATH=scripts:research/neuron_learning python3 -m pytest -q \
-  tests/python/test_laya_price_cost_proxy.py \
-  tests/python/test_laya_price_five_session.py \
-  tests/python/test_laya_original_price_source_window.py \
-  tests/python/test_laya_price_original_live_features.py \
-  tests/python/test_laya_price_year_gpu.py
+PYTHONPATH=scripts:research/neuron_learning:tests/python python3 -m unittest \
+  test_laya_price_cost_proxy \
+  test_laya_price_five_session \
+  test_laya_original_price_source_window \
+  test_laya_price_original_live_features \
+  test_laya_price_year_gpu
 ```
 
-Run `tests/python/test_laya_frozen_price_numpy.py` with the NumPy/safetensors research runtime. Its optional dependency skip in a minimal core environment is not a substitute for this deployment gate. Numeric agreement with the already frozen training result is checked without retraining.
+Run `tests/python/test_laya_frozen_price_numpy.py` with the NumPy/safetensors research runtime. The CI scope keeps learning feedback enabled for a change to the inference module or its test. Numeric agreement with the already frozen training result is checked without retraining.
 
 Keep private broker receipts, data, weights, action books and deployment evidence on Pocket4. Only source, tests and documentation belong in the repository.

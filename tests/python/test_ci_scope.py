@@ -148,3 +148,12 @@ class ComponentScopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrozenPriceLearningScopeTests(unittest.TestCase):
+    def test_frozen_inference_and_its_test_require_learning_feedback(self):
+        import ci_scope
+        for path in ("research/neuron_learning/laya_cell/frozen_price_numpy.py",
+                     "tests/python/test_laya_frozen_price_numpy.py"):
+            with self.subTest(path=path):
+                self.assertTrue(ci_scope.scope_for_paths([path])["run_learning"])
