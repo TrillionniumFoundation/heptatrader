@@ -7,8 +7,9 @@ positions and opening holds. A first installation still requires an authoritativ
 flat lane; activation of changed trading code requires owner-controlled continuity.
 """
 from __future__ import annotations
-import argparse,ast,errno,fcntl,hashlib,importlib.util,json,os,re,shutil,subprocess,tempfile,time
+import argparse,ast,errno,fcntl,hashlib,json,os,re,shutil,subprocess,tempfile,time
 from pathlib import Path
+from hepta_verified_loader import load_verified_module
 from hepta_decision_attribution import canonical,digest,read_private,strict
 
 
@@ -24,11 +25,12 @@ def state_ok(s):
  return (abs(float(s.get('position',0)))<=1e-9 and s.get('pending') is None and not s.get('halt_new_entries')
    and not s.get('owner_fence_recovery_required') and not s.get('lease_uncertain') and not s.get('risk_halt_reason'))
 
-def runtime_filenames(instrument):
+def runtime_filenames(instrument,*,legacy=False):
  names={'hepta_decision_attribution.py','heptatrader_attributed_driver.py',
         'heptatrader_paper_driver.py'}
  if instrument=='BTC.USD':
   names.update({'heptatrader_btc_economics_driver.py','hepta_btc_entry_policy.py'})
+ if not legacy:names.add('hepta_verified_loader.py')
  return names
 
 
@@ -62,7 +64,11 @@ def inspect_resident(command,instrument):
      strict(period_raw).get('execution_domain')!='PAPER'):
   raise RuntimeError('ATTRIBUTION_INSTALLED_PERIOD_CHANGED')
  hashes=m.get('runtime_sha256')
- if not isinstance(hashes,dict) or set(hashes)!=runtime_filenames(instrument):
+ loader=m.get('runtime_loader')
+ allowed=[runtime_filenames(instrument)]
+ if loader is None:allowed.append(runtime_filenames(instrument,legacy=True))
+ if (loader not in (None,'verified-bytes.v1') or not isinstance(hashes,dict)
+     or set(hashes) not in allowed):
   raise RuntimeError('ATTRIBUTION_INSTALLED_RUNTIME_INCOMPLETE')
  for name,expected in hashes.items():
   if (type(expected) is not str or len(expected)!=64 or
@@ -78,6 +84,36 @@ def inspect_resident(command,instrument):
 
 def unit_for(instrument):
  return 'heptatrader-paper-driver.service' if instrument=='EUR.USD' else 'heptatrader-crypto-driver.service'
+
+
+def inspect_running_runtime(unit,instrument):
+ """Report configured and actual process identities independently, read-only."""
+ if instrument not in ('EUR.USD','BTC.USD') or unit!=unit_for(instrument):
+  raise ValueError('ATTRIBUTION_INSPECTION_UNIT_SCOPE')
+ result={'schema':'heptatrader.attribution-runtime-inspection.v1','unit':unit,
+         'instrument':instrument,'captured_at_ms':int(time.time()*1000),
+         'trade_authority':False,'service_changed':False}
+ try:
+  result['configured']=inspect_resident(show(unit)['ExecStart'],instrument)
+ except Exception as exc:
+  result['configured']={'status':'UNVERIFIED','error':type(exc).__name__+':'+str(exc)}
+ try:
+  # Lazy import avoids a module-import cycle. Activation retains strict matching
+  # by default; this branch only inspects the argv of the observed process.
+  from activate_prepared_driver import running_driver
+  running=dict(running_driver(unit,instrument,require_configured_match=False))
+  running['service']=running.pop('status')
+  running['status']='RUNNING_VERIFIED'
+  result['running']=running
+ except Exception as exc:
+  result['running']={'status':'UNVERIFIED','error':type(exc).__name__+':'+str(exc)}
+ verified=(result['configured'].get('status')=='INSTALLED_VERIFIED'
+           and result['running'].get('status')=='RUNNING_VERIFIED')
+ matches=(result['configured']['manifest_sha256']==result['running']['manifest_sha256']) if verified else None
+ result['configured_matches_running']=matches
+ result['status']=('CONFIGURED_AND_RUNNING_VERIFIED' if matches else
+                   'CONFIGURED_DIFFERS_FROM_RUNNING' if verified else 'INSPECTION_INCOMPLETE')
+ return result
 
 
 def _source_literal(raw,name):
@@ -138,7 +174,7 @@ def prepare_upgrade(instrument):
  manifest=dict(installed)
  manifest.pop('created_at_ms',None)
  runtime_bytes_changed=hashes!=installed['runtime_sha256']
- manifest.update(source_sha=source_sha,runtime_sha256=hashes,
+ manifest.update(source_sha=source_sha,runtime_sha256=hashes,runtime_loader='verified-bytes.v1',
                  prepared_from_manifest_sha256=observed['manifest_sha256'],
                  runtime_bytes_changed=runtime_bytes_changed,
                  trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed),
@@ -223,13 +259,12 @@ def install(instrument,evidence):
  if strict(period_raw).get('execution_domain')!='PAPER':raise RuntimeError('PERIOD_NOT_PAPER')
  release=h/'.local/share/heptatrader/decision-attribution/releases'/source_sha/instrument
  release.mkdir(mode=0o700,parents=True,exist_ok=False)
- names=['hepta_decision_attribution.py','heptatrader_attributed_driver.py','heptatrader_paper_driver.py']
- if instrument=='BTC.USD':names+=['heptatrader_btc_economics_driver.py','hepta_btc_entry_policy.py']
+ names=sorted(runtime_filenames(instrument))
  hashes={}
  for name in names:
   private_write(release/name,(source/name).read_bytes());hashes[name]=sha(release/name)
  if btc_profile:private_write(release/'profile.json',read_private(btc_profile,65536))
- manifest={'schema':'heptatrader.attribution-producer.v1','source_sha':source_sha,'instrument':instrument,
+ manifest={'schema':'heptatrader.attribution-producer.v1','runtime_loader':'verified-bytes.v1','source_sha':source_sha,'instrument':instrument,
   'execution_domain':'PAPER','period_path':str(period_path),'period_sha256':period_hash,'runtime_sha256':hashes,
   'btc_profile_sha256':sha(release/'profile.json') if btc_profile else None,
   'journal_directory':str(h/'.local/state/heptatrader/neuron-learning/attribution'/period_hash/instrument),
@@ -249,7 +284,7 @@ def install(instrument,evidence):
   current_raw=read_private(state_path,1048576);current=strict(current_raw)
   if not state_ok(current):raise RuntimeError('EXPOSURE_CHANGED_DURING_STOP')
   lock=os.open(state_path.parent/'driver.lock',os.O_RDWR|os.O_CLOEXEC|os.O_NOFOLLOW);fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-  spec=importlib.util.spec_from_file_location('attribution_deploy_snapshot',base_path);base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+  base=load_verified_module('attribution_deploy_snapshot',base_path,hashes['heptatrader_paper_driver.py'])
   base.INSTRUMENT=instrument
   live_health=base.native(str(h/'.local/bin/heptatrader'),'system.get_health')
   if live_health.get('execution_mode')!='PAPER':raise RuntimeError('RUNTIME_MODE_NOT_PAPER')
@@ -285,7 +320,7 @@ def main():
  mode.add_argument('--prepare-upgrade',action='store_true')
  a=p.parse_args();os.umask(0o077)
  if a.inspect_only:
-  print(json.dumps(inspect_resident(show(unit_for(a.instrument))['ExecStart'],a.instrument),sort_keys=True),flush=True)
+  print(json.dumps(inspect_running_runtime(unit_for(a.instrument),a.instrument),sort_keys=True),flush=True)
  elif a.prepare_upgrade:
   prepare_upgrade(a.instrument)
  else:

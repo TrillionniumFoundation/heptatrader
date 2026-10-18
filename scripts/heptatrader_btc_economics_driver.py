@@ -5,8 +5,9 @@
 fee-aware edge and anti-churn admission. FX has no path through this executable.
 """
 from __future__ import annotations
-import argparse,copy,hashlib,importlib.util,json,os,stat,sys
+import argparse,copy,hashlib,json,os,stat,sys
 from pathlib import Path
+from hepta_verified_loader import SourceHashMismatch,load_verified_module
 from hepta_btc_entry_policy import PROFILE,HORIZONS,PolicyError,canonical,digest,number,validate_forecast,validate_control,reserve,evaluate
 BASE_SHA256='709c0981c58e0642f7ef1af7efea85ce153ef92a24ae2ce24bdb38aaccc2d4e4'
 SCHEMA={'type':'object','required':['action','confidence','rationale','expected_move_bps','horizon_sec'],
@@ -16,9 +17,9 @@ SCHEMA={'type':'object','required':['action','confidence','rationale','expected_
 
 def load_base(path):
  path=Path(path)
- if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest()!=BASE_SHA256:raise PolicyError('BTC_BASE_DRIVER_IDENTITY')
- spec=importlib.util.spec_from_file_location('hepta_btc_pinned_base',path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
- return m
+ if path.is_symlink():raise PolicyError('BTC_BASE_DRIVER_IDENTITY')
+ try:return load_verified_module('hepta_btc_pinned_base',path,BASE_SHA256)
+ except SourceHashMismatch as exc:raise PolicyError('BTC_BASE_DRIVER_IDENTITY') from exc
 
 def load_profile(path):
  path=Path(path);st=path.lstat()
@@ -137,10 +138,10 @@ def attach(driver,config,*,period_check=None):
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--base-driver',type=Path,required=True);p.add_argument('--profile',type=Path,required=True)
- p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');a=p.parse_args()
+ p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');p.add_argument('--recover-owner',action='store_true');a=p.parse_args()
  os.umask(0o077);c=load_profile(a.profile);m=load_base(a.base_driver);close=attach(m,c)
  # No LIVE selector, cash sizing override or canary permission is exposed.
- sys.argv=[str(a.base_driver),'--instrument','BTC.USD']+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])
+ sys.argv=[str(a.base_driver),'--instrument','BTC.USD']+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])+(['--recover-owner'] if a.recover_owner else [])
  try:return m.main()
  finally:close()
 if __name__=='__main__':raise SystemExit(main())

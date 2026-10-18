@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Observation-only launcher over immutable existing FX or BTC PAPER behavior."""
 from __future__ import annotations
-import argparse,hashlib,importlib.util,os,sys
+import argparse,hashlib,os,sys
 from pathlib import Path
+from hepta_verified_loader import load_verified_module
 from hepta_decision_attribution import Capture,Journal,read_private,strict
 
 
@@ -25,13 +26,13 @@ def load_manifest(path):
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,required=True)
- p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');a=p.parse_args();os.umask(0o077)
+ p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');p.add_argument('--recover-owner',action='store_true');a=p.parse_args();os.umask(0o077)
  m,manifest_sha=load_manifest(a.manifest);root=Path(__file__).resolve().parent;base=root/'heptatrader_paper_driver.py'
- spec=importlib.util.spec_from_file_location('hepta_attributed_pinned_base',base);driver=importlib.util.module_from_spec(spec);spec.loader.exec_module(driver)
+ driver=load_verified_module('hepta_attributed_pinned_base',base,m['runtime_sha256']['heptatrader_paper_driver.py'])
  driver.INSTRUMENT=m['instrument'];close_economics=None
  if m['instrument']=='BTC.USD':
   import heptatrader_btc_economics_driver as btc
-  if hashlib.sha256(base.read_bytes()).hexdigest()!=btc.BASE_SHA256:raise ValueError('BTC_BASE_BINDING')
+  if m['runtime_sha256']['heptatrader_paper_driver.py']!=btc.BASE_SHA256:raise ValueError('BTC_BASE_BINDING')
   profile=root/'profile.json'
   if hashlib.sha256(read_private(profile,65536)).hexdigest()!=m['btc_profile_sha256']:raise ValueError('BTC_PROFILE_CHANGED')
   close_economics=btc.attach(driver,btc.load_profile(profile))
@@ -44,7 +45,7 @@ def main():
    journal=Journal(m['journal_directory'],m,manifest_sha)
    observer=Capture(journal,driver,m).install()
   except Exception as exc:print('DECISION_ATTRIBUTION_UNAVAILABLE:'+type(exc).__name__,file=sys.stderr,flush=True)
-  sys.argv=[str(base),'--instrument',m['instrument']]+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])
+  sys.argv=[str(base),'--instrument',m['instrument']]+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])+(['--recover-owner'] if a.recover_owner else [])
   return driver.main()
  finally:
   if observer is not None:observer()

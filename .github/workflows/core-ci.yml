@@ -100,15 +100,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
       - name: Documentation links preflight
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_documentation.py
-      - name: Python behavior and source tests once
-        if: steps.scope.outputs.run_python == 'true'
+      - name: Python core behavior tests
+        if: ${{ !cancelled() && steps.scope.outputs.run_python != 'false' }}
+        run: python3 scripts/run_python_tests.py --lane core
+      - name: Python source contracts
+        if: ${{ !cancelled() && steps.scope.outputs.run_python != 'false' }}
+        run: python3 scripts/run_python_tests.py --lane source
+      - name: Whitespace check
+        if: ${{ !cancelled() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/run_python_tests.py --lane core
-          python3 scripts/run_python_tests.py --lane source
-      - name: Whitespace check
-        run: git diff --check
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            git -c http.version=HTTP/1.1 fetch --no-tags --depth=2 origin "$HEAD_SHA"
+            if git rev-parse --verify 'HEAD^' >/dev/null 2>&1; then
+              git diff --check HEAD^ "$HEAD_SHA" --
+            else
+              git diff-tree --check --root -r "$HEAD_SHA" --
+            fi
+          else
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null
+            git diff --check "$BASE_SHA" "$HEAD_SHA" --
+          fi
 
   learning:
     name: python-learning-exact-head

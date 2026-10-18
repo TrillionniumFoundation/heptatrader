@@ -86,7 +86,9 @@ class DevelopmentCiTests(unittest.TestCase):
                 ("scripts/run_python_tests.py --lane source", "run_python"),
                 ("scripts/run_python_tests.py --lane learning", "run_learning")):
             _, job, step = self.step(ci, command)
-            self.assertEqual(step.get("if"), "steps.scope.outputs." + flag + " == 'true'")
+            self.assertIn("steps.scope.outputs." + flag, step.get("if", ""))
+            self.assertRegex(step.get("if", ""), r"(== 'true'|!= 'false')")
+            self.assertNotIn("continue-on-error", step)
             scopes = [item for item in job["steps"] if item.get("id") == "scope"]
             self.assertEqual(len(scopes), 1)
             self.assertIn("scripts/ci_scope.py --base", scopes[0]["run"])
@@ -96,8 +98,85 @@ class DevelopmentCiTests(unittest.TestCase):
     def test_documentation_diagnostics_remain_unconditional(self):
         ci = workflow("core-ci.yml")
         _, _, docs = self.step(ci, "scripts/check_documentation.py")
-        self.assertNotIn("if", docs)
+        self.assertIn("!cancelled()", docs.get("if", ""))
+        self.assertNotIn("steps.scope", docs.get("if", ""))
         self.assertNotIn("continue-on-error", docs)
+
+    def test_docs_core_source_each_report_after_an_earlier_failure(self):
+        ci = workflow("core-ci.yml")
+        docs = self.step(ci, "scripts/check_documentation.py")[2]
+        core = self.step(ci, "scripts/run_python_tests.py --lane core")[2]
+        source = self.step(ci, "scripts/run_python_tests.py --lane source")[2]
+        self.assertEqual(len({id(docs), id(core), id(source)}), 3)
+        for step in (docs, core, source):
+            self.assertIn("!cancelled()", step.get("if", ""))
+            self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("--lane source", core["run"])
+        self.assertNotIn("--lane core", source["run"])
+
+    def test_whitespace_checks_committed_event_range_with_a_clean_worktree(self):
+        import os
+        import subprocess
+        import tempfile
+
+        ci = workflow("core-ci.yml")
+        _, _, step = self.step(ci, "git diff --check")
+        script = step["run"]
+        self.assertIn("github.event.pull_request.base.sha", step["env"]["BASE_SHA"])
+        self.assertIn("github.event.pull_request.head.sha", step["env"]["HEAD_SHA"])
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-whitespace-") as directory:
+            root = Path(directory)
+            def git(*args, check=True):
+                return subprocess.run(["git", *args], cwd=root, check=check,
+                                      text=True, capture_output=True)
+            git("init", "-q")
+            git("config", "user.email", "ci-fixture@example.invalid")
+            git("config", "user.name", "CI Fixture")
+            path = root / "fixture.txt"
+            path.write_text("clean\n")
+            git("add", "fixture.txt")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD").stdout.strip()
+            path.write_text("clean\ntrailing   \n")
+            git("add", "fixture.txt")
+            git("commit", "-qm", "introduce whitespace")
+            head = git("rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(git("diff", "--check").stdout, "")
+            def check_range(previous, current):
+                return subprocess.run(["bash", "-c", script], cwd=root, text=True,
+                                      capture_output=True,
+                                      env={**os.environ, "BASE_SHA": previous, "HEAD_SHA": current})
+            bad = check_range(base, head)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("trailing whitespace", bad.stdout + bad.stderr)
+            path.write_text("clean\ntrailing\n")
+            git("add", "fixture.txt")
+            git("commit", "-qm", "fix whitespace")
+            fixed = git("rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(check_range(head, fixed).returncode, 0)
+            self.assertNotEqual(check_range("f" * 40, fixed).returncode, 0)
+
+    def test_operator_scope_is_bounded_and_missing_dependencies_stay_full(self):
+        import tempfile
+        import ci_scope
+
+        python_only = {"run_native": False, "run_python": True, "run_learning": False}
+        full = {"run_native": True, "run_python": True, "run_learning": True}
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-scope-") as directory:
+            root = Path(directory)
+            for group in ci_scope.VERIFIED_PYTHON_GROUPS:
+                for name in group:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+            for name in ("scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py",
+                         "scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py"):
+                self.assertEqual(ci_scope.scope_for_paths([name], root), python_only, name)
+            for name in ("scripts/heptatrader_paper_driver.py", "scripts/hepta_verified_loader.py",
+                         "research/neuron_learning/laya_cell/resident_train.py", "scripts/new_operator.py"):
+                self.assertEqual(ci_scope.scope_for_paths([name], root), full, name)
+            (root / "tests/python/test_activate_prepared_driver.py").unlink()
+            self.assertEqual(ci_scope.scope_for_paths(["scripts/activate_prepared_driver.py"], root), full)
 
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")

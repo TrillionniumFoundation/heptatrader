@@ -182,7 +182,7 @@ def inspect_manifest(manifest, instrument):
     return observed
 
 
-def running_driver(unit, instrument):
+def running_driver(unit, instrument, *, require_configured_match=True):
     status = fence.show_unit(unit)
     if (status["ActiveState"] != "active"
             or not status["MainPID"].isdigit()
@@ -194,11 +194,23 @@ def running_driver(unit, instrument):
     if (service["MainPID"] != status["MainPID"]
             or service["ActiveState"] != status["ActiveState"]):
         fail("DRIVER_CHANGED_DURING_INSPECTION")
-    observed = attribution.inspect_resident(service["ExecStart"], instrument)
+    argv = proc_bytes(pid, "cmdline").rstrip(b"\0").split(b"\0")
+    if require_configured_match:
+        observed = attribution.inspect_resident(service["ExecStart"], instrument)
+    else:
+        if len(argv) != 5:
+            fail("RUNNING_DRIVER_ARGV_MISMATCH")
+        try:
+            actual_manifest = Path(argv[4].decode("utf-8"))
+        except UnicodeDecodeError:
+            fail("RUNNING_DRIVER_ARGV_MISMATCH")
+        # argv_for validates the exact permitted invocation and path syntax;
+        # inspect_resident remains the one validator of the manifest and bytes.
+        command = "ExecStart={ argv[]=" + " ".join(argv_for(actual_manifest)) + " ; }"
+        observed = attribution.inspect_resident(command, instrument)
     if observed["status"] != "INSTALLED_VERIFIED":
         fail("EXISTING_ATTRIBUTION_REQUIRED")
     manifest = Path(observed["release"]) / "manifest.json"
-    argv = proc_bytes(pid, "cmdline").rstrip(b"\0").split(b"\0")
     if argv != [item.encode() for item in argv_for(manifest)]:
         fail("RUNNING_DRIVER_ARGV_MISMATCH")
     if key is None or pid_key(pid) != key:
@@ -211,6 +223,7 @@ def running_driver(unit, instrument):
         "status": final, "manifest": str(manifest),
         "manifest_sha256": observed["manifest_sha256"],
         "runtime_sha256": observed["runtime_sha256"], "pid_key": key,
+        "source_sha": observed.get("source_sha"), "release": observed["release"],
     }
 
 
@@ -419,7 +432,13 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         ),
         behavior_equivalence_assessed=False,
     )
-    names = attribution.runtime_filenames(instrument)
+    # inspect_manifest has already accepted exactly a current or immutable
+    # legacy runtime layout. Keep that candidate's layout when validating the
+    # preparation, including pre-existing legacy candidates used for rollback.
+    expected.pop("runtime_loader", None)
+    if "runtime_loader" in new:
+        expected["runtime_loader"] = new["runtime_loader"]
+    names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}
     files = {

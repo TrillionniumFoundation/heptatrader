@@ -12,13 +12,17 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
 import stat
 import sys
 import threading
+# Source checkout entry points and copied runtime entry points use one loader.
+_repository_scripts = Path(__file__).resolve().parents[3] / "scripts"
+if (_repository_scripts / "hepta_verified_loader.py").is_file():
+    sys.path.insert(0, str(_repository_scripts))
+from hepta_verified_loader import SourceHashMismatch, load_verified_module
 from hepta_cost_policy import (CostError, FORECAST_VERSION, MODEL_ID, HORIZONS,
     dec, digest, validate_forecast)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
@@ -246,14 +250,10 @@ def load_pinned_driver(path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022 or info.st_nlink != 1:
         raise CostError("BASE_DRIVER_FILE_UNSAFE")
-    content = path.read_bytes()
-    if hashlib.sha256(content).hexdigest() != BASE_DRIVER_SHA256:
-        raise CostError("BASE_DRIVER_HASH_MISMATCH_REVIEW_REQUIRED")
-    spec = importlib.util.spec_from_file_location("hepta_pinned_paper_driver", path)
-    module = importlib.util.module_from_spec(spec)
-    # Execute the already hashed bytes, not a second unpinned file read.
-    exec(compile(content, str(path), "exec"), module.__dict__)
-    return module
+    try:
+        return load_verified_module("hepta_pinned_paper_driver", path, BASE_DRIVER_SHA256)
+    except SourceHashMismatch as exc:
+        raise CostError("BASE_DRIVER_HASH_MISMATCH_REVIEW_REQUIRED") from exc
 
 
 def main():
