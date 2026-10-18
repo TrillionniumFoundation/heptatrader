@@ -111,6 +111,91 @@ class FeedHealthTests(unittest.TestCase):
             self.assertTrue(prefix["ended"])
             self.assertEqual(header["broker_orders_sent"],0)
 
+
+class QuoteProbeBackoffTests(unittest.TestCase):
+    def test_repeated_closed_failures_are_bounded_and_success_resets_cadence(self):
+        from laya_cell.feed_health import QuoteProbeBackoff
+        closed = int(datetime(2026, 10, 17, 12, tzinfo=timezone.utc).timestamp() * 1000)
+        backoff = QuoteProbeBackoff()
+        for i in range(10):
+            backoff.observe("FAILURE", {"reason": "UNREADY"}, closed + i * 30000)
+        self.assertEqual(backoff.interval_seconds, 30)
+        backoff.observe("FAILURE", {"reason": "TRANSPORT"}, closed + 310000)
+        self.assertEqual(backoff.interval_seconds, 1)
+        backoff.observe("QUOTE", quote(), closed + 311000)
+        self.assertEqual(backoff.interval_seconds, 1)
+        self.assertEqual(backoff.same_failure_count, 0)
+        self.assertIsNone(backoff.snapshot()["last_failure_reason"])
+
+    def test_open_session_failure_bound_and_opening_deadline(self):
+        from laya_cell.feed_health import QuoteProbeBackoff
+        opening = int(datetime(2026, 10, 18, 21, 15, tzinfo=timezone.utc).timestamp() * 1000)
+        backoff = QuoteProbeBackoff()
+        for i in range(10):
+            backoff.observe("FAILURE", {"reason": "UNREADY"}, opening - 10000 + i * 100)
+        backoff.observe("FAILURE", {"reason": "UNREADY"}, opening - 100)
+        self.assertEqual(backoff.next_probe_at_ms, opening)
+        for i in range(10):
+            backoff.observe("FAILURE", {"reason": "UNREADY"}, opening + i * 10000)
+        self.assertEqual(backoff.interval_seconds, 5)
+
+    def test_backoff_heartbeats_do_not_append_quotes_or_lose_source_failure(self):
+        import signal
+        closed = datetime(2026, 10, 17, 12, tzinfo=timezone.utc).timestamp()
+        clock = [0.0]; snapshots = []; probes = []; handlers = {}
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td); period = home / ".config/heptatrader/pnl-period.json"
+            period.parent.mkdir(parents=True); period.write_text('{"execution_domain":"PAPER"}')
+            def read(argv, **kwargs):
+                self.assertEqual(argv[-3:], ["call", "market.get_quote", "instrument=EUR.USD"])
+                probes.append(clock[0])
+                clock[0] += 0.01
+                return SimpleNamespace(returncode=0, stdout="invalid")
+            def heartbeat(path, value):
+                snapshots.append(json.loads(json.dumps(value)))
+                atomic_status(path, value)
+            with patch("laya_cell.shadow_source.Path.home", return_value=home), \
+                 patch("laya_cell.shadow_source.subprocess.run", side_effect=read), \
+                 patch("laya_cell.shadow_source.time.time", side_effect=lambda: closed + clock[0]), \
+                 patch("laya_cell.shadow_source.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("laya_cell.shadow_source.time.sleep", side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+                 patch("laya_cell.shadow_source.atomic_status", side_effect=heartbeat), \
+                 patch("laya_cell.shadow_source.signal.signal", side_effect=lambda sig, fn: handlers.__setitem__(sig, fn)):
+                collect(home / "capture", 90)
+            _, quotes, prefix = read_source(home / "capture/quotes.jsonl")
+            report = json.loads((home / "capture/collector-receipt.json").read_text())
+        self.assertEqual(quotes, [])
+        self.assertTrue(prefix["ended"])
+        self.assertLess(len(probes), 12)
+        self.assertEqual(report["counts"]["FAILURE"], len(probes))
+        self.assertGreater(len(snapshots), 15)
+        for first, second in zip(snapshots, snapshots[1:]):
+            self.assertLessEqual(second["at_ms"] - first["at_ms"], 6100)
+            self.assertEqual(feed_status(first, None, False, second["at_ms"])["data_state"], "CAPTURE_UNAVAILABLE")
+        self.assertEqual(report["data_health"]["probe_schedule"]["interval_seconds"], 30)
+
+    def test_sigterm_interrupts_backoff_and_seals_original_chain(self):
+        import signal
+        closed = datetime(2026, 10, 17, 12, tzinfo=timezone.utc).timestamp()
+        clock = [0.0]; handlers = {}
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td); period = home / ".config/heptatrader/pnl-period.json"
+            period.parent.mkdir(parents=True); period.write_text('{"execution_domain":"PAPER"}')
+            def sleep(seconds):
+                self.assertLessEqual(seconds, 1)
+                clock[0] += seconds
+                if clock[0] >= 20:
+                    handlers[signal.SIGTERM](signal.SIGTERM, None)
+            with patch("laya_cell.shadow_source.Path.home", return_value=home), \
+                 patch("laya_cell.shadow_source.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="invalid")), \
+                 patch("laya_cell.shadow_source.time.time", side_effect=lambda: closed + clock[0]), \
+                 patch("laya_cell.shadow_source.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("laya_cell.shadow_source.time.sleep", side_effect=sleep), \
+                 patch("laya_cell.shadow_source.signal.signal", side_effect=lambda sig, fn: handlers.__setitem__(sig, fn)):
+                collect(home / "capture", 90)
+            self.assertLessEqual(clock[0], 21)
+            self.assertTrue(read_source(home / "capture/quotes.jsonl")[2]["ended"])
+
 if __name__=="__main__":unittest.main()
 
 

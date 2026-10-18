@@ -603,6 +603,25 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
 
+
+    def test_pid_bound_loop_progress_finishes_without_three_state_versions(self):
+        def progress(record):
+            key = self._current_key()
+            record["resident_loop_progress"] = {
+                "schema": "heptatrader.driver-loop-progress.v1",
+                "pid": int(key[0]), "start_ticks": key[1],
+                "iteration": self.state_writes,
+                "at_ms": int(activation.time.time() * 1000),
+            }
+        self.observation_mutation = progress
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual(result["startup_progress_basis"], "PID_BOUND_RESIDENT_LOOP")
+        self.assertLess(result["startup_observed_state_versions"], 3)
+        self.assertEqual(str(result["startup_resident_loop_progress"]["pid"]), self._current_key()[0])
+        self.assertEqual(result["original_business_correlation"], self.business)
+        self.assertEqual(len(self._events("audit")), 1)
+
     def _write_pause_observation(self, record):
         record["entry_inference_pause"] = {
             "reason_code": "PERSISTENT_MAINTENANCE_HOLD",
@@ -823,6 +842,24 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(_identity(self.exec_path), before_exec)
         self.assertEqual(self._current_key(), self.original_key)
         self.assertEqual(self.state_path.read_bytes(), self.initial_state_raw)
+
+
+
+class ResidentLoopProgressTests(unittest.TestCase):
+    def test_only_current_process_after_start_can_prove_loop_progress(self):
+        driver = {"pid_key": ("42002", "42103")}
+        progress = {"schema": "heptatrader.driver-loop-progress.v1",
+                    "pid": 42002, "start_ticks": "42103", "iteration": 1, "at_ms": 1001}
+        def check(value):
+            return activation.resident_loop_progress(_json_bytes({"resident_loop_progress": value}),
+                                                     driver, 1000, 1010)
+        self.assertEqual(check(progress), progress)
+        for fields in ({"pid": 42001}, {"start_ticks": "old"}, {"at_ms": 999}, {"at_ms": 1011},
+                       {"iteration": 0}, {"pid": True}, {"iteration": True}, {"at_ms": True},
+                       {"schema": "other"}):
+            with self.subTest(fields=fields):
+                self.assertIsNone(check({**progress, **fields}))
+        self.assertIsNone(check(None))
 
 
 if __name__ == "__main__":

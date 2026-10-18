@@ -9,6 +9,7 @@ FX_MAX_QUANTITY=100000.0
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
 NATIVE_ENDPOINT=None
 CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
+RESIDENT_LOOP_PROGRESS_SCHEMA="heptatrader.driver-loop-progress.v1"
 QUANTITY_TOLERANCE=1e-9
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
@@ -30,10 +31,8 @@ def run(argv,timeout=20):
     return subprocess.run([str(x) for x in argv],stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
 
-def entry_inference_hold_reason(state,home,uid):
-    """Cheap entry-only pause; absence of a marker never grants trade authority."""
-    if state.get("halt_new_entries"):
-        return "DRIVER_NEW_ENTRY_HALT"
+def maintenance_entry_hold_reason(home,uid):
+    """Read existing entry holds without changing them or granting authority."""
     markers=((Path(home)/".local/state/heptatrader/operator-maintenance/maintenance-hold.json",
               "PERSISTENT_MAINTENANCE_HOLD"),
              (Path("/run/user")/str(uid)/"heptatrader/control/kill-switch",
@@ -47,6 +46,33 @@ def entry_inference_hold_reason(state,home,uid):
             return "ENTRY_HOLD_STATE_UNAVAILABLE"
         return reason
     return None
+
+
+def entry_inference_hold_reason(state,home,uid):
+    """Cheap entry-only pause; absence of a marker never grants trade authority."""
+    if state.get("halt_new_entries"):
+        return "DRIVER_NEW_ENTRY_HALT"
+    return maintenance_entry_hold_reason(home,uid)
+
+
+def recovery_entry_hold_reason(state,home,uid):
+    reason=maintenance_entry_hold_reason(home,uid)
+    if reason: return reason
+    if state.get("risk_halt_reason"): return "DRIVER_RISK_HALT"
+    if state.get("settlement_hold_reason"): return "DRIVER_SETTLEMENT_HOLD"
+    # Recovery owns its own halt. A known pre-existing independent halt stays
+    # separate; legacy states without ownership metadata retain their old path.
+    if (state.get("halt_new_entries") and state.get("owner_fence_owned_halt") is False
+            and not state.get("lease_renewal_owned_halt")):
+        return "DRIVER_NEW_ENTRY_HALT"
+    return None
+
+
+def resident_process_identity():
+    fields=Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()
+    if len(fields)<=19 or not fields[19].isdigit():
+        raise DriverError("resident process identity unavailable")
+    return {"pid":os.getpid(),"start_ticks":fields[19]}
 
 
 def record_entry_guard(state,state_path,result,decision_action,*,failure=None):
@@ -301,6 +327,8 @@ def latch_owner_fence(state,path,reason):
         state["owner_fence_owned_halt"]=not state.get("halt_new_entries",False)
     state["owner_fence_recovery_required"]=True
     state["owner_fence_block_reason"]=reason
+    state["owner_control_recovery"]={"state":"AUDIT_REQUIRED","reason_code":reason,"checked_at_ms":now_ms()}
+    state["owner_recovery_wait_reason"]="OWNER_AUDIT_REQUIRED"
     state["halt_new_entries"]=True
     state["last_error"]="owner fence recovery required: "+reason
     atomic_json(path,state)
@@ -906,13 +934,37 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
         state["owner_recovery_phase"]="VERIFY_PREVIEW"
         state["owner_resume_confirmed_ms"]=now_ms()
         atomic_json(path,state)
-    snap=snapshot(cli,state,path); owner=snap["owner_health"]
+        control=snapshot(cli,state,path,False)
+    else:
+        control=snap
+    owner=control["owner_health"]
     if owner["owner_fenced"]:
         state["owner_recovery_phase"]="AUDIT_REQUIRED"; atomic_json(path,state)
         raise DriverError("owner fenced again before verification")
-    if (owner["owner_recovery_only"] or owner["mutation_ready"] is not True or
-            snap["active"] or not recovery_position_flat(snap)):
+    if owner["owner_recovery_only"] or control["active"] or not recovery_position_flat(control):
+        state["owner_recovery_wait_reason"]="CONTROL_RECONCILIATION_REQUIRED"
+        atomic_json(path,state)
+        raise DriverError("post-resume authoritative control reconciliation is not ready")
+    state["owner_control_recovery"]={"state":"RESTORED","checked_at_ms":now_ms(),
+        "service_epoch":control["service_epoch"],"service_fencing_generation":control["service_generation"],
+        "lease_generation":state["lease_generation"],"entry_ready":False}
+    pause=recovery_entry_hold_reason(state,Path.home(),uid)
+    if pause or owner["mutation_ready"] is not True:
+        state["owner_recovery_wait_reason"]=pause or "ENTRY_MUTATION_GATE_NOT_READY"
+        atomic_json(path,state)
+        return False
+    state["owner_recovery_wait_reason"]="ENTRY_SNAPSHOT_REQUIRED"
+    atomic_json(path,state)
+    snap=snapshot(cli,state,path); owner=snap["owner_health"]
+    if (owner["owner_fenced"] or owner["owner_recovery_only"] or owner["mutation_ready"] is not True
+            or snap["active"] or not recovery_position_flat(snap)
+            or snap["service_epoch"]!=control["service_epoch"]
+            or snap["service_generation"]!=control["service_generation"]):
         raise DriverError("post-resume authoritative mutation gate is not ready")
+    pause=recovery_entry_hold_reason(state,Path.home(),uid)
+    if pause:
+        state["owner_recovery_wait_reason"]=pause;atomic_json(path,state);return False
+    state["owner_recovery_wait_reason"]="ENTRY_PREVIEW_REQUIRED"
     guard=run([cli,"paper-on"],10)
     if guard.returncode!=0: raise DriverError("post-audit local PAPER guard not ready")
     # Capability verification only: this permit is never submitted or persisted.
@@ -935,6 +987,9 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
         owner_recovery_service_epoch=snap["service_epoch"],owner_recovery_last_reason="",
         lease_uncertain=False,lease_renewal_state="IDLE",lease_renewal_drain=False,
         lease_renewal_owned_halt=False,lease_last_renew_ms=now_ms(),last_error="")
+    state["owner_recovery_wait_reason"]=""
+    state["owner_control_recovery"]["entry_ready"]=True
+    state["owner_control_recovery"]["checked_at_ms"]=now_ms()
     if clear_owned_halt and not state.get("risk_halt_reason"): state["halt_new_entries"]=False
     atomic_json(path,state)
     return True
@@ -1096,8 +1151,11 @@ def main():
         raise DriverError("operator settlement hold requires full authoritative reconciliation before resident trading")
     if crypto and not crypto_roundtrip_qualified(state):
         raise DriverError("crypto resident driver requires a correlation-bound completed round trip")
+    process_identity=resident_process_identity();loop_iteration=0
     while not stop:
-        started=time.monotonic()
+        started=time.monotonic();loop_iteration+=1
+        state["resident_loop_progress"]={"schema":RESIDENT_LOOP_PROGRESS_SCHEMA,**process_identity,
+            "iteration":loop_iteration,"at_ms":now_ms()}
         try:
             pending_mode=state.get("pending") is not None
             snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
@@ -1129,6 +1187,19 @@ def main():
                 model_worker=None
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
+            if pause_reason:
+                state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
+                    "scope":"ENTRY_INFERENCE_ONLY"}
+                # Retain an in-flight worker until it ends, and never consume its
+                # pre-hold answer after resumption or start an overlapping worker.
+                if model_worker is not None:
+                    model_worker_discarded=True
+                    if model_worker.done(): model_worker=None
+                atomic_json(state_path,state)
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            state.pop("entry_inference_pause",None)
             if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
                 raise DriverError("authoritative mutation state is not ready")
             # Risk halts use the existing native CLOSE path before any quote
@@ -1160,19 +1231,6 @@ def main():
                     atomic_json(state_path,state)
                     if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
-            if pause_reason:
-                state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
-                    "scope":"ENTRY_INFERENCE_ONLY"}
-                # Retain an in-flight worker until it ends, and never consume its
-                # pre-hold answer after resumption or start an overlapping worker.
-                if model_worker is not None:
-                    model_worker_discarded=True
-                    if model_worker.done(): model_worker=None
-                atomic_json(state_path,state)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            state.pop("entry_inference_pause",None)
             if model_worker is not None and model_worker.done():
                 try:
                     if model_worker_discarded:

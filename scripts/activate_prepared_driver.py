@@ -250,6 +250,25 @@ def read_flat_state(path, instrument):
     return raw, correlation
 
 
+def resident_loop_progress(raw, driver, started_ms, checked_ms):
+    """Recognize progress emitted after driver startup for this exact process.
+
+    The field is diagnostic only. Release identity, holds, owner audit and
+    unchanged business correlations are still checked independently.
+    """
+    value = strict(raw).get("resident_loop_progress")
+    if (not isinstance(value, dict)
+            or value.get("schema") != "heptatrader.driver-loop-progress.v1"
+            or type(value.get("pid")) is not int
+            or type(value.get("start_ticks")) is not str
+            or type(value.get("iteration")) is not int or value["iteration"] < 1
+            or type(value.get("at_ms")) is not int
+            or not started_ms <= value["at_ms"] <= checked_ms
+            or (str(value["pid"]), value["start_ticks"]) != tuple(driver["pid_key"])):
+        return None
+    return {name: value[name] for name in ("schema", "pid", "start_ticks", "iteration", "at_ms")}
+
+
 def state_version(path):
     item = Path(path).lstat()
     return item.st_dev, item.st_ino, item.st_mtime_ns, item.st_ctime_ns
@@ -653,6 +672,7 @@ def maintenance_upgrade(
             # operator_lock stays held, but driver.lock must be released.
             context()
             baseline = state_version(state_path)
+            started_ms = int(time.time() * 1000)
             ctl("start", unit)
             receipt["operations"].append("START_SELECTED_DRIVER")
             deadline = time.monotonic() + 30
@@ -668,18 +688,23 @@ def maintenance_upgrade(
                         first = actual
                     else:
                         same_driver(first, actual)
-                    state_unchanged()
+                    raw = state_unchanged()
+                    progress = resident_loop_progress(raw, actual, started_ms, int(time.time() * 1000))
                     version = state_version(state_path)
                     if version != baseline:
                         writes.add(version)
-                    # main holds driver.lock before every state write. Startup
-                    # can write twice before its final qualification checks.
-                    # A third version proves progress in the resident loop,
-                    # including its ordinary no-quote/error observation path.
-                    if len(writes) >= 3:
+                    # New drivers report entry into the loop for this PID/start
+                    # identity. Retain the previous observation for rollback to
+                    # releases predating this field; it needs three state writes.
+                    if progress is not None or len(writes) >= 3:
                         context(actual)
                         state_unchanged()
                         receipt["startup_observed_state_versions"] = len(writes)
+                        receipt["startup_progress_basis"] = (
+                            "PID_BOUND_RESIDENT_LOOP" if progress is not None else "LEGACY_STATE_WRITES"
+                        )
+                        if progress is not None:
+                            receipt["startup_resident_loop_progress"] = progress
                         return actual
                 except (RuntimeError, FileNotFoundError) as error:
                     transient = isinstance(error, FileNotFoundError) or str(error) in {

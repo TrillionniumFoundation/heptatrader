@@ -16,7 +16,7 @@ import stat
 import subprocess
 import time
 import uuid
-from .feed_health import CaptureHealth, atomic_status, UPDATE_SECONDS
+from .feed_health import CaptureHealth, QuoteProbeBackoff, atomic_status, UPDATE_SECONDS
 
 SCHEMA='heptatrader.laya-shadow-quotes.v1'
 MAX_BYTES=64*1024*1024
@@ -147,6 +147,13 @@ def collect(root,seconds):
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     seq=0;previous='0'*64;stop=False;counts={}
     health=CaptureHealth(path,period_sha,int(time.time()*1000));last_health_write=0.0
+    backoff=QuoteProbeBackoff();probe_started=0.0
+    def health_snapshot(at_ms,completed=False):
+        return {**health.snapshot(at_ms,completed=completed),"probe_schedule":backoff.snapshot()}
+    def write_progress(clock,completed=False):
+        nonlocal last_health_write
+        atomic_status(root/'collector-status.json',health_snapshot(int(time.time()*1000),completed))
+        last_health_write=clock
     def append(kind,data):
         nonlocal seq,previous,last_health_write
         body={'schema':SCHEMA,'sequence':seq,'previous':previous,'at_ms':int(time.time()*1000),'kind':kind,'data':data}
@@ -158,9 +165,9 @@ def collect(root,seconds):
         os.fsync(fd);previous=checksum;seq+=1;counts[kind]=counts.get(kind,0)+1
         health.observe(kind,data,body['at_ms'])
         clock=time.monotonic()
+        backoff.observe(kind,data,body['at_ms'],clock-probe_started)
         if kind in ('HEADER','END') or clock-last_health_write>=UPDATE_SECONDS:
-            atomic_status(root/'collector-status.json',health.snapshot(body['at_ms'],completed=kind=='END'))
-            last_health_write=clock
+            write_progress(clock,completed=kind=='END')
     def finish(*_):
         nonlocal stop
         stop=True
@@ -168,10 +175,19 @@ def collect(root,seconds):
     append('HEADER',{'source':'IB_TOOL_GATEWAY','instrument':'EUR.USD','execution_domain':'PAPER',
         'period_sha256':period_sha,'write_operations_allowed':[],'broker_orders_sent':0,
         'collector_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()})
-    deadline=time.monotonic()+seconds
+    deadline=time.monotonic()+seconds;next_probe=0.0
     try:
-        while not stop and time.monotonic()<deadline:
-            begin=time.monotonic()
+        while not stop:
+            clock=time.monotonic()
+            if clock>=deadline:break
+            if clock-last_health_write>=UPDATE_SECONDS:
+                write_progress(clock)
+            if clock<next_probe:
+                # Bounded sleeps keep SIGTERM responsive and publish liveness
+                # without appending fake observations or extending quote TTL.
+                time.sleep(min(1.0,deadline-clock,next_probe-clock))
+                continue
+            probe_started=clock
             if hashlib.sha256(period.read_bytes()).hexdigest()!=period_sha:
                 append('FAILURE',{'reason':'ACCOUNTING_PERIOD_CHANGED'});break
             if os.fstat(fd).st_size>MAX_BYTES-65536:
@@ -186,11 +202,11 @@ def collect(root,seconds):
                 reason=str(exc)
                 if len(reason)>100 or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in reason):reason=type(exc).__name__
                 append('FAILURE',{'reason':reason,'quote_timestamp_rewritten':False})
-            time.sleep(max(.1,1-(time.monotonic()-begin)))
+            next_probe=time.monotonic()+backoff.delay_seconds
         append('END',{'broker_orders_sent':0})
     finally:os.close(fd)
     report={'path':str(path),'events':seq,'counts':counts,'chain_head':previous,'broker_orders_sent':0,
-            'data_health':health.snapshot(int(time.time()*1000),completed=True)}
+            'data_health':health_snapshot(int(time.time()*1000),completed=True)}
     with (root/'collector-receipt.json').open('x') as f:f.write(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report),flush=True)
 
