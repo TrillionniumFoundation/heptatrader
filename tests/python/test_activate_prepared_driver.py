@@ -165,6 +165,7 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.marker_calls = 0
         self.clock = 100.0
         self.state_writes = 0
+        self.observation_mutation = None
         self.has_started = False
         self.observations = 0
         self.die_after_observations = None
@@ -313,6 +314,8 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.state_writes += 1
         record = json.loads(self.state_path.read_bytes())
         record["history"] = {"fixture_observation": self.state_writes}
+        if self.observation_mutation is not None:
+            self.observation_mutation(record)
         temporary = self.state_path.with_name(
             "state.fixture-" + str(self.state_writes) + ".tmp"
         )
@@ -599,6 +602,88 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         stopped = self._events("stop")[0]
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
+
+    def _write_pause_observation(self, record):
+        record["entry_inference_pause"] = {
+            "reason_code": "PERSISTENT_MAINTENANCE_HOLD",
+            "checked_at_ms": self.state_writes,
+            "scope": "ENTRY_INFERENCE_ONLY",
+        }
+
+    def _seed_pause_observation(self):
+        record = json.loads(self.state_path.read_bytes())
+        record["entry_inference_pause"] = {
+            "reason_code": "DRIVER_NEW_ENTRY_HALT",
+            "checked_at_ms": 0,
+            "scope": "ENTRY_INFERENCE_ONLY",
+        }
+        _put(self.state_path, _json_bytes(record))
+
+    def test_pause_added_during_startup_does_not_change_business_identity(self):
+        self.observation_mutation = self._write_pause_observation
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertGreaterEqual(result["startup_observed_state_versions"], 3)
+        raw, business = activation.read_flat_state(self.state_path, self.instrument)
+        self.assertEqual(business, self.business)
+        self.assertIn("entry_inference_pause", json.loads(raw))
+        self.assertEqual(result["original_business_correlation"], self.business)
+        self.assertEqual(len(self._events("audit")), 1)
+
+    def test_pause_timestamp_and_reason_can_change_during_startup(self):
+        self._seed_pause_observation()
+        self.observation_mutation = self._write_pause_observation
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        pause = json.loads(self.state_path.read_bytes())["entry_inference_pause"]
+        self.assertGreater(pause["checked_at_ms"], 0)
+        self.assertEqual(pause["reason_code"], "PERSISTENT_MAINTENANCE_HOLD")
+
+    def test_pause_removed_during_startup_does_not_change_business_identity(self):
+        self._seed_pause_observation()
+        self.observation_mutation = lambda record: record.pop("entry_inference_pause", None)
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertNotIn("entry_inference_pause", json.loads(self.state_path.read_bytes()))
+
+    def test_pause_observation_does_not_block_audited_candidate_rollback(self):
+        self.observation_mutation = self._write_pause_observation
+        self.start_mode = "active-failure"
+        result = self._upgrade()
+        self._assert_original_restored(result)
+        self.assertEqual(len(self._events("audit")), 2)
+        self.assertEqual(len(self._events("stop")), 2)
+
+    def _assert_business_mutation_stays_rejected(self, field, value):
+        def mutate(record):
+            self._write_pause_observation(record)
+            record[field] = value
+        self.observation_mutation = mutate
+        try:
+            result = self._upgrade()
+            self.assertEqual(result["status"], "FAILED", result)
+            self.assertIn("DRIVER_BUSINESS_CORRELATION_CHANGED", result["error"])
+            self.assertEqual(result["business_correlation_changed_fields"], [field])
+            self.assertEqual(result["original_business_correlation"], self.business)
+            self.assertEqual(result["rollback"], "INCOMPLETE_HELD", result)
+            self.assertTrue(result["selected_stop_guard_restored"])
+            self.assertTrue(result["maintenance_markers_preserved"])
+            # The changed business record cannot authorize a rollback stop.
+            self.assertEqual(len(self._events("audit")), 1)
+            self.assertEqual(len(self._events("stop")), 1)
+        finally:
+            self.observation_mutation = None
+            _put(self.state_path, self.initial_state_raw)
+
+    def test_trade_correlation_change_still_rejects_with_pause_updates(self):
+        self._assert_business_mutation_stays_rejected(
+            "entry_decision_id", "unexpected-trade-correlation",
+        )
+
+    def test_unknown_entry_observation_lookalike_remains_protected(self):
+        self._assert_business_mutation_stays_rejected(
+            "entry_inference_pause_extra", {"checked_at_ms": 42},
+        )
 
     def test_native_audit_failure_does_not_stop_or_touch_execstart(self):
         self.audit_mode = "reject-first"
