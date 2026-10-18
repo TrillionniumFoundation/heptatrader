@@ -9,6 +9,7 @@ from pathlib import Path
 from .integrity import ContractError,read_json,digest,sha_file,canonical
 from .resident_data import collect
 from .resident_rewards import current as rewards_current
+from .resident_reward_cache import RewardRefreshGuard, FULL_REVERIFY_SECONDS
 from .resident_store import database,write_once,atomic,get_meta,put_meta,admit_job,complete_job
 from .promotion import RULE,rule_for_trial
 from .promotion_power import PROTOCOL
@@ -70,8 +71,8 @@ class Supervisor:
  def stop_signal(self,*_):
   self.stop=True
   if self.child and self.child.poll() is None:self.child.terminate()
- def write_status(self,**extra):
-  self.storage=inspect_storage(self.c)
+ def write_status(self,*,storage=None,**extra):
+  self.storage=inspect_storage(self.c) if storage is None else storage
   stats={s:self.db.execute('SELECT count(*) FROM jobs WHERE status=?',(s,)).fetchone()[0] for s in ('ADMITTED','RUNNING','COMPLETED','FAILED')}
   state={'schema':'heptatrader.laya-resident-status.v1','at_ms':int(time.time()*1000),'job_counts':stats,
     'last_candidate_id':get_meta(self.db,'last_completed_candidate'),'historical_confirmed_pnl_rewards':self.db.execute('SELECT count(*) FROM rewards').fetchone()[0],
@@ -80,6 +81,8 @@ class Supervisor:
     'execution_reward_is_not_model_credit':True,
     'reward_sync_at_ms':get_meta(self.db,'last_reward_sync_ms'),
     'reward_sync_interval_seconds':REWARD_SYNC_INTERVAL_SECONDS,
+     'reward_full_reverify_interval_seconds':FULL_REVERIFY_SECONDS,
+     'reward_refresh_guard':getattr(self,'_reward_refresh_guard',None).status() if getattr(self,'_reward_refresh_guard',None) else None,
     'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT',
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
@@ -212,6 +215,28 @@ class Supervisor:
   folder.mkdir(parents=True,mode=0o700,exist_ok=True)
   _publish(self,key,record,candidate,job,folder)
   return True
+ def _closed_registration_unchanged(self,row):
+  """Negative-only wait: recheck today's calendar, preserve the old policy receipt."""
+  from .resident_plan_admission import KEY_PREFIX,_identity,_check_record,_unreserved_history
+  from .resident_plan_calendar import calendar_admission
+  record=get_meta(self.db,KEY_PREFIX+row['id'])
+  if not isinstance(record,dict) or record.get('state')!='DEFERRED' or record.get('reason')!='MARKET_SESSION_CLOSED':return False
+  job=json.loads(row['payload']);candidate=read_json(Path(job['output_directory'])/'candidate.json')
+  _check_record(record,_identity(self,row['id'],candidate,job))
+  checked=int(time.time()*1000)
+  if checked<max(record['checked_at_ms'],self.c['future_plan_admission_effective_at_ms']):
+   raise ContractError('FORWARD_CALENDAR_CLOCK_REGRESSION')
+  current=_unreserved_history(self)
+  proposal=self._evaluation_plan(row['id'],candidate,job,current+1,checked)
+  decision=calendar_admission(candidate,proposal,checked)
+  if decision.get('state')!='DEFERRED' or decision.get('reason')!='MARKET_SESSION_CLOSED' or decision.get('ready') is not False:return False
+  previous=record.get('calendar')
+  if not isinstance(previous,dict):return False
+  def business(value):return {k:v for k,v in value.items() if k not in ('now_ms','plan_interval_ms')}
+  if business(previous)!=business(decision):return False
+  path=Path(self.c['evaluation_directory'])/row['id']/'registration-status.json'
+  try:return path.exists() and read_json(path)==record
+  except (ContractError,ValueError,OSError):return False
  def reconcile_evaluation_queue(self):
   if self.c.get('future_plan_admission_profile') is not None:
    from .resident_plan_admission import resume_reservations
@@ -222,7 +247,8 @@ class Supervisor:
       and queue['pending_original_trials']
       and self._finish_impossible_forward_registration(waiting[0])):
    waiting,registration=self._waiting_evaluations()
-  if waiting and queue['pending_original_trials']==0:
+  if (waiting and queue['pending_original_trials']==0
+      and not (self.c.get('future_plan_admission_profile') is not None and self._closed_registration_unchanged(waiting[0]))):
    if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
    queue=inspect_evaluation_queue(self.c)
    waiting,registration=self._waiting_evaluations()
@@ -232,16 +258,23 @@ class Supervisor:
  def sync_rewards(self,now=None):
   """Bookkeeping under the scheduler lock, never the heavy-worker lease.
 
-  The same loop may call both queue_preflight and step. A monotonic cache
-  avoids repeating a full ledger replay, but never survives process restart.
-  All reward rows and current IDs commit together; conflicts retain old state.
+  A watched, unchanged source snapshot keeps its original as-of timestamp;
+  every input mutation or five-minute bound forces complete replay. Without
+  usable watches the original one-minute refresh remains. No cache survives
+  process restart. Reward rows and current IDs commit together.
   """
   if now is None:now=int(time.time()*1000)
   tick=time.monotonic();previous=getattr(self,'_reward_sync_tick',None)
-  if (previous is not None and 0<=tick-previous<REWARD_SYNC_INTERVAL_SECONDS
-      and now>=self._reward_snapshot['at_ms']):
-   return self._reward_snapshot
-  rewards=rewards_current(self.c,now)
+  guard=getattr(self,'_reward_refresh_guard',None)
+  if guard is None:self._reward_refresh_guard=guard=RewardRefreshGuard()
+  unchanged=guard.state(self.c,now,tick)
+  if previous is not None and now>=self._reward_snapshot['at_ms']:
+   if unchanged=='UNCHANGED':return self._reward_snapshot
+   if unchanged!='CHANGED' and 0<=tick-previous<REWARD_SYNC_INTERVAL_SECONDS:return self._reward_snapshot
+  self._reward_sync_tick=None
+  watched=guard.begin(self.c,now,tick)
+  rewards=(rewards_current(self.c,now,source_observer=guard.observe) if watched
+           else rewards_current(self.c,now))
   with self.db:
    for r in rewards['rewards']:
     stored=self.db.execute('SELECT payload FROM rewards WHERE id=?',(r['reward_id'],)).fetchone()
@@ -257,6 +290,7 @@ class Supervisor:
    put_meta(self.db,'last_reward_sync_ms',rewards['at_ms'])
   atomic(self.root/'rewards-status.json',rewards)
   self._reward_snapshot=rewards;self._reward_sync_tick=tick
+  guard.finish(self.c,rewards,now)
   return rewards
  def queue_preflight(self):
   # Negative-only admission optimization; completing an already-trained
@@ -264,14 +298,14 @@ class Supervisor:
   config_check(self.c)
   self.storage=inspect_storage(self.c)
   if not self.storage['admission_ready']:
-   return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
+   return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
   self.sync_rewards()
   queue=self.reconcile_evaluation_queue()
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if queue['deferred_training_candidates']:
-   return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
+   return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
-   return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
+   return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
   return None
  def step(self):
   now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()

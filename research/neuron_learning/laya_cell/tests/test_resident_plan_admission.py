@@ -530,6 +530,84 @@ class RegistrationTests(unittest.TestCase):
 
 
 
+    def closed_fixture(self, name):
+        sunday = int(datetime(2026, 10, 18, 20, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        service, candidate, job = self.fixture(self.root / name, sunday)
+        self.addCleanup(service.db.close)
+        record = self.register(service, candidate, job, clock=lambda: sunday)
+        self.assertEqual(record["state"], "DEFERRED")
+        self.assertEqual(record["reason"], "MARKET_SESSION_CLOSED")
+        return sunday, service, candidate, job, record
+
+    def test_stable_closed_reconcile_preserves_receipt_without_registration(self):
+        from laya_cell import resident
+        sunday, service, candidate, job, record = self.closed_fixture("closed-fast-wait")
+        path = Path(service.c["evaluation_directory"]) / "job" / "registration-status.json"
+        before = path.read_bytes()
+        changes = service.db.total_changes
+        with (patch.object(resident.time, "time", return_value=(sunday + 1000) / 1000),
+              patch.object(resident, "inspect_evaluation_queue", wraps=resident.inspect_evaluation_queue) as queue,
+              patch.object(service, "_waiting_evaluations", wraps=service._waiting_evaluations) as waiting,
+              patch.object(service, "candidate_done", wraps=service.candidate_done) as registration):
+            result = service.reconcile_evaluation_queue()
+        self.assertEqual(result["deferred_training_candidates"], 1)
+        self.assertEqual(result["forward_registration_wait_reasons"], ["MARKET_SESSION_CLOSED"])
+        self.assertEqual(queue.call_count, 1)
+        self.assertEqual(waiting.call_count, 1)
+        registration.assert_not_called()
+        self.assertEqual(service.db.total_changes, changes)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + "job"), record)
+        self.capture.assert_not_called()
+
+    def test_closed_reconcile_takes_original_source_path_at_open(self):
+        from laya_cell import resident
+        sunday, service, candidate, job, record = self.closed_fixture("closed-open")
+        opened = int(datetime(2026, 10, 18, 21, 15, tzinfo=timezone.utc).timestamp() * 1000)
+        self.capture.return_value = fresh_proof(opened)
+        with (patch.object(resident.time, "time", return_value=opened / 1000),
+              patch.object(service, "candidate_done", wraps=service.candidate_done) as registration):
+            result = service.reconcile_evaluation_queue()
+        registration.assert_called_once()
+        self.capture.assert_called_once()
+        self.assertEqual(result["deferred_training_candidates"], 0)
+        self.assertEqual(get_meta(service.db, "evaluation_trial"), 1)
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + "job")["state"], "PUBLISHED")
+
+    def test_expired_closed_wait_becomes_original_terminal_receipt(self):
+        from laya_cell import resident
+        sunday, service, candidate, job, record = self.closed_fixture("closed-expired")
+        expired = candidate["window"]["validation_end_ms"] + 1
+        with patch.object(resident.time, "time", return_value=expired / 1000):
+            result = service.reconcile_evaluation_queue()
+        self.assertEqual(result["deferred_training_candidates"], 0)
+        self.assertEqual(get_meta(service.db, "evaluation_trial", 0), 0)
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + "job")["state"], "NO_FORWARD_TRIAL")
+        self.capture.assert_not_called()
+
+    def test_missing_advisory_status_is_republished_by_original_registration(self):
+        from laya_cell import resident
+        sunday, service, candidate, job, record = self.closed_fixture("closed-missing-status")
+        path = Path(service.c["evaluation_directory"]) / "job" / "registration-status.json"
+        path.unlink()
+        with (patch.object(resident.time, "time", return_value=(sunday + 1000) / 1000),
+              patch.object(service, "candidate_done", wraps=service.candidate_done) as registration):
+            result = service.reconcile_evaluation_queue()
+        registration.assert_called_once()
+        self.assertTrue(path.exists())
+        self.assertEqual(result["deferred_training_candidates"], 1)
+        self.assertEqual(get_meta(service.db, "evaluation_trial", 0), 0)
+        self.capture.assert_not_called()
+
+    def test_stable_closed_wait_still_rejects_clock_regression(self):
+        from laya_cell import resident
+        sunday, service, candidate, job, record = self.closed_fixture("closed-clock")
+        with patch.object(resident.time, "time", return_value=(sunday - 1) / 1000):
+            with self.assertRaisesRegex(ContractError, "FORWARD_CALENDAR_CLOCK_REGRESSION"):
+                service.reconcile_evaluation_queue()
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + "job"), record)
+
+
 class OriginalReceiptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

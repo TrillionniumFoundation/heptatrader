@@ -74,9 +74,9 @@ def assemble(report,bindings,period_id,instrument='EUR.USD'):
 def source_bindings(config,instrument,now_ms):
  from data import exports
  from hepta_decision_attribution import verified_bindings
- exact={};exact_issues=[]
+ exact={};exact_issues=[];directory_cache={}
  for registration in config.get('decision_attribution_registrations',{}).get(instrument,[]):
-  found,issues=verified_bindings(registration,instrument,config['period_sha256'])
+  found,issues=verified_bindings(registration,instrument,config['period_sha256'],directory_cache=directory_cache)
   for command,value in found.items():
    if command in exact and exact[command]!=value:raise ContractError('MULTIPLE_EXACT_ATTRIBUTIONS')
    exact[command]=value
@@ -108,7 +108,7 @@ def source_bindings(config,instrument,now_ms):
  return bindings,excluded+exact_issues
 
 
-def current(config,now_ms):
+def current(config,now_ms,*,source_observer=None):
  from data import prefix,strict
  import hepta_pnl_accounting as accounting
  result={'schema':'heptatrader.laya-reward-status.v2','at_ms':now_ms,'execution_rewards':[],'rewards':[],
@@ -120,6 +120,7 @@ def current(config,now_ms):
   raw,source=prefix(config['oms_path']);result['source_prefix']=source
   if source['trailing_uncommitted_bytes']:raise ContractError('INCOMPLETE_OMS_TAIL')
   events=[strict(x) for x in raw.splitlines()]
+  if source_observer is not None:source_observer(max((e['ts_ms'] for e in events if type(e.get('ts_ms')) is int),default=0))
   instruments=config.get('reward_instruments',['EUR.USD','BTC.USD'])
   if not instruments or any(i not in ('EUR.USD','BTC.USD') for i in instruments):raise ContractError('REWARD_INSTRUMENT_SCOPE')
   for instrument in instruments:
