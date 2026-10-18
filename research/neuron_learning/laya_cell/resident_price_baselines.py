@@ -18,6 +18,11 @@ SPEC={'kind':'MULTINOMIAL_LOGISTIC_FLOAT64','features':list(FEATURES),
  'standardized_feature_clip':6.,'initial_weights':'ZERO',
  'initial_bias':'LOG_LAPLACE_1_GLOBAL_TRAIN_PRIOR'}
 MODELS=('laya_candidate','frozen_parent','uniform','train_prior','linear_softmax')
+VALUE_RULE={'schema':'heptatrader.laya-price-value-rule.v1',
+ 'primary_horizon_seconds':300,'comparators':['uniform','train_prior','linear_softmax'],
+ 'metric':'PAIRED_SAME_WINDOW_MEAN_BRIER', 'minimum_mean_improvement':1e-6,
+ 'additional_to_existing_parent_and_observation_rules':True,
+ 'scope':'PRICE_PREDICTION_NOT_EXECUTION_PROFIT', 'automatic_execution_selection':False}
 
 
 def _number(value):
@@ -207,3 +212,46 @@ def summarize(outcomes):
    'mean_nll':sum(v['nll'] for v in values)/len(values) if values and not infinite else None,
    'nll_is_infinite':infinite,'hits':sum(v['hit'] for v in values)}
  return result
+
+
+def validate_value_rule(plan):
+ """A missing declaration is legacy; a changed declaration is never inferred."""
+ rule=plan.get('price_value_rule')
+ if rule is None:return None
+ if rule!=VALUE_RULE or plan.get('rule',{}).get('horizon_ms')!=300000:
+  raise ContractError('PRICE_VALUE_RULE_CHANGED')
+ validate(plan.get('price_baselines'))
+ return rule
+
+
+def value_assessment(plan,observed):
+ rule=validate_value_rule(plan)
+ if rule is None:return None,[]
+ profile_id=plan['price_baselines']['profile_id']
+ values=[]
+ for outcome in observed:
+  if (outcome.get('plan_id')!=plan['plan_id'] or outcome.get('horizon_sec')!=300
+      or outcome.get('price_baseline_profile_id')!=profile_id):
+   raise ContractError('PRICE_VALUE_SAME_WINDOW_IDENTITY')
+  scores=outcome.get('same_window_price_scores')
+  if not isinstance(scores,dict) or set(scores)!=set(MODELS):
+   raise ContractError('PRICE_VALUE_SCORE_POPULATION')
+  scores={name:score.get('brier') if isinstance(score,dict) else None for name,score in scores.items()}
+  if any(type(v) not in (int,float) or not math.isfinite(v) or not 0<=v<=2 for v in scores.values()):
+   raise ContractError('PRICE_VALUE_BRIER_SCORE')
+  if (not math.isclose(scores['laya_candidate'],outcome['candidate_brier'],rel_tol=0,abs_tol=1e-12)
+      or not math.isclose(scores['frozen_parent'],outcome['parent_brier'],rel_tol=0,abs_tol=1e-12)):
+   raise ContractError('PRICE_VALUE_CANDIDATE_SCORE_CHANGED')
+  values.append(scores)
+ report={'rule_id':digest(rule),'primary_horizon_seconds':300,'observed':len(values),
+  'same_observations_for_every_comparator':True,'comparisons':{},
+  'scope':rule['scope'],'execution_profitability_proven':False}
+ reasons=[]
+ for name in rule['comparators']:
+  deltas=[scores[name]-scores['laya_candidate'] for scores in values]
+  mean=sum(deltas)/len(deltas) if deltas else None
+  passed=mean is not None and mean>rule['minimum_mean_improvement']
+  report['comparisons'][name]={'mean_brier_improvement':mean,'value_floor_passed':passed}
+  if not passed:reasons.append('NO_POSITIVE_BRIER_IMPROVEMENT_VS_'+name.upper())
+ report['all_comparators_beaten']=not reasons
+ return report,reasons

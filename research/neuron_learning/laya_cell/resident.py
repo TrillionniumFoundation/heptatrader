@@ -15,6 +15,7 @@ from .promotion_power import PROTOCOL
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
 from . import resident_training_v2 as training_v2
+from . import resident_training_v3 as training_v3
 from . import resident_price_baselines as price_refs
 from .resident_queue import inspect as inspect_evaluation_queue
 
@@ -37,6 +38,10 @@ def config_check(config):
   if config['objective']!=training_v2.OBJECTIVE:raise ContractError('RESIDENT_V2_OBJECTIVE_CHANGED')
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v2.RUNTIME_PINS):
    raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
+ if training_v3.enabled(config.get('objective')):
+  if config['objective']!=training_v3.OBJECTIVE:raise ContractError('RESIDENT_V3_OBJECTIVE_CHANGED')
+  if any(not config.get('runtime_sha256',{}).get(p) for p in training_v3.RUNTIME_PINS):
+   raise ContractError('RESIDENT_V3_RUNTIME_PINS_REQUIRED')
  budget_policy(config)
  if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
  if config.get('future_source_read_profile') is not None:
@@ -107,16 +112,19 @@ class Supervisor:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=pinned
-  if training_v2.enabled(candidate.get('objective')):
+  training_policy=training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+  if training_policy.enabled(candidate.get('objective')):
    plan['price_baselines']=price_refs.validate(candidate.get('price_baselines'))
    plan['action_output_profile']=training_v2.ACTION_OUTPUT
    calibration=candidate.get('action_training_profile')
    plan['action_training_profile_id']=calibration['profile_id'] if calibration else None
    plan['action_optimizer_admitted']=bool(candidate.get('action_optimizer_admitted'))
-   for name in training_v2.RUNTIME_PINS:
+   for name in training_policy.RUNTIME_PINS:
     expected=self.c.get('runtime_sha256',{}).get(name)
     if not expected:raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=expected
+  if training_v3.enabled(candidate.get('objective')):
+   plan['price_value_rule']={**price_refs.VALUE_RULE,'comparators':list(price_refs.VALUE_RULE['comparators'])}
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -276,7 +284,10 @@ class Supervisor:
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
-  dataset,rows,quality,_=collect(self.c,now)
+  if training_v3.enabled(self.c.get('objective')):
+   reserved={row[0] for row in self.db.execute('SELECT id FROM consumed_rows')}
+   dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved)
+  else:dataset,rows,quality,_=collect(self.c,now)
   new=[]
   for r in rows:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
@@ -287,7 +298,8 @@ class Supervisor:
   if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
   if len(new)<16:return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
-  chosen=(training_v2.select_covered_rows(new) if training_v2.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
+  training_policy=training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
+  chosen=(training_policy.select_covered_rows(new) if training_policy.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
   if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')
   parent_id=parent['candidate_id'];generation=int(parent.get('generation',2))

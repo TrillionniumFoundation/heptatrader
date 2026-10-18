@@ -8,6 +8,7 @@ import torch
 from safetensors.torch import save_file
 from laya_cell import resident_train as t
 from laya_cell import resident_training_v2 as v2_profile
+from laya_cell import resident_training_v3 as v3_profile
 from laya_cell.resident_model import ResidentDecisionCell,PROFILE
 from laya_cell.resident_row_accounting import SCHEMA,row_id,verify_candidate
 from laya_cell.integrity import digest,sha_file
@@ -21,7 +22,7 @@ class NativeFixture:
 
 
 class WorkerRowIntegration(unittest.TestCase):
- def run_fixture(self,n,rollback=False,*,v2=False,correct_rows=0):
+ def run_fixture(self,n,rollback=False,*,v2=False,v3=False,correct_rows=0):
   torch.set_num_threads(1)
   with tempfile.TemporaryDirectory() as td,ExitStack() as stack:
    root=Path(td);base=root/'base';base.mkdir();(base/'base-manifest.json').write_text('{}')
@@ -34,7 +35,7 @@ class WorkerRowIntegration(unittest.TestCase):
           'target_class':i%7,'teacher_probs':None} for i in range(n)]
    def encode(tok,selected):return {'x':torch.tensor([[int(r['sample_id'])/100,0.1,0.2] for r in selected])}
    dataset={};cutoff=999
-   if v2:
+   if v2 or v3:
     dataset={'samples':[]}
     with torch.no_grad():
      for i,r in enumerate(rows):
@@ -53,7 +54,7 @@ class WorkerRowIntegration(unittest.TestCase):
     cutoff=rows[-1]['anchor_ms']+300002
    data=root/'dataset.json';data.write_text(json.dumps(dataset))
    ids=[row_id(r) for r in rows]
-   cfg={'objective':v2_profile.OBJECTIVE if v2 else t.OBJECTIVE,'profile':PROFILE,
+   cfg={'objective':v3_profile.OBJECTIVE if v3 else v2_profile.OBJECTIVE if v2 else t.OBJECTIVE,'profile':PROFILE,
         'base_directory':str(base),'output_directory':str(root/'out'),
         'baseline_directory':str(root/'baseline'),'parent_directory':str(parent),'parent_id':manifest['candidate_id'],
         'dataset':str(data),'dataset_sha256':sha_file(data),'window':{'training_end_ms':cutoff},
@@ -123,6 +124,29 @@ class WorkerRowIntegration(unittest.TestCase):
   c,_,_=self.run_fixture(21,v2=True)
   self.assertEqual(c['row_statistics']['rows'],21)
   self.assertEqual(c['row_accounting']['applied_count'],21)
+
+ def test_v3_one_class_updates_price_without_action_gradients(self):
+  c,_,absent=self.run_fixture(32,v3=True)
+  self.assertEqual(c['objective'],v3_profile.OBJECTIVE)
+  self.assertEqual(c['action_training_profile']['batch_balance_strategy'],v3_profile.ACTION_BALANCE)
+  self.assertFalse(c['action_optimizer_admitted'])
+  self.assertEqual(c['action_update_steps'],0)
+  self.assertTrue(all(absent))
+  self.assertEqual(sum(v for n,v in c['changed_by_tensor'].items() if '.act_head.' in n),0)
+  self.assertEqual(c['row_statistics']['horizon_counts'],{'300':32})
+ def test_v3_majority_tail_cannot_move_action_via_adam_momentum(self):
+  c,states,absent=self.run_fixture(32,v3=True,correct_rows=4)
+  self.assertEqual(c['action_training_profile']['labels'],{'ACT_correct':4,'ESCALATE_wrong':28})
+  self.assertEqual(c['action_update_steps'],4)
+  self.assertEqual(absent,[False]*4+[True]*12)
+  self.assertEqual(c['row_accounting']['applied_count'],32)
+  for state in states[4:]:
+   for name,value in state.items():self.assertTrue(torch.equal(value,states[3][name]),name)
+ def test_v3_rollback_preserves_original_tensors_and_row_accounting(self):
+  c,_,_=self.run_fixture(16,True,v3=True,correct_rows=4)
+  self.assertEqual(c['action_update_steps'],0)
+  self.assertEqual(c['changed_parameters'],0)
+  self.assertEqual(c['row_accounting']['applied_count'],0)
 
 
 if __name__=='__main__':unittest.main()

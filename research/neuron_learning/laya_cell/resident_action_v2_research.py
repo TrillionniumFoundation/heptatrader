@@ -20,6 +20,7 @@ MAX_TRAIN_ROWS = 4096
 ACTION_WEIGHT_CAP = 0.1
 MAX_ACTION_LOSS_FRACTION = 0.20
 MAX_TRAIN_TEMPERATURE = 1_000_000.0
+PAIRED_BATCH_BALANCE = "DISJOINT_ONE_ACT_ONE_ESCALATE_UNWEIGHTED_CE"
 
 def _validated_rows(rows, *, cutoff_ms):
     if type(cutoff_ms) is not int or cutoff_ms<=0:
@@ -93,6 +94,8 @@ def _check_profile(profile):
             profile.get("raw_pretrained_action_logit_interface_unchanged") is not True or
             type(profile.get("action_optimizer_admitted")) is not bool):
         raise ContractError("V2_ACTION_FROZEN_PROFILE_CHANGED")
+    if profile.get("batch_balance_strategy") not in (None, PAIRED_BATCH_BALANCE):
+        raise ContractError("ACTION_BATCH_BALANCE_PROFILE_CHANGED")
     counts=profile["labels"]
     if (type(counts.get("ACT_correct")) is not int or
             type(counts.get("ESCALATE_wrong")) is not int or
@@ -165,6 +168,12 @@ def balanced_action_loss(action_logits, parent_correct, primary_price_loss, prof
         total/(2*p["labels"]["ACT_correct"]),
         total/(2*p["labels"]["ESCALATE_wrong"])],
         device=action_logits.device,dtype=action_logits.dtype)
+    if p.get("batch_balance_strategy") == PAIRED_BATCH_BALANCE:
+        # A v3 batch is already one genuine ACT and one genuine ESCALATE.
+        # Applying original-population class weights here would balance twice.
+        if counts.tolist() != [1, 1]:
+            raise ContractError("ACTION_DISJOINT_PAIR_REQUIRED")
+        weights = None
     # Runtime logits need not be clipped or modified at inference; this
     # is the loss of a future, separately versioned action calibration.
     scaled=action_logits/p["action_temperature_training_only"]

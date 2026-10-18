@@ -18,6 +18,7 @@ from .resident_model import ResidentDecisionCell
 from .native import NativePorts
 from .resident_train import validate_parent
 from . import resident_training_v2 as training_v2
+from . import resident_training_v3 as training_v3
 from . import resident_price_baselines as price_refs
 
 
@@ -34,15 +35,20 @@ def predict(config,plan_path,slot):
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
- v2=training_v2.enabled(candidate.get('objective'))
+ training_policy=training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+ v2=training_policy.enabled(candidate.get('objective'))
  calibration=candidate.get('action_training_profile') if v2 else None
  price_reference_profile=price_refs.validate(candidate.get('price_baselines')) if v2 else None
  if v2 and (plan.get('price_baselines')!=price_reference_profile or price_reference_profile['training_cutoff_ms']!=candidate['trained_until_ms']):raise ContractError('PRICE_BASELINE_CANDIDATE_SCOPE')
  expected_output=training_v2.ACTION_OUTPUT if v2 else None
  if plan.get('action_output_profile')!=expected_output:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
- if v2 and (candidate.get('objective')!=training_v2.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
+ if v2 and (candidate.get('objective')!=training_policy.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
   raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
  if v2 and (type(plan.get('action_optimizer_admitted')) is not bool or plan['action_optimizer_admitted']!=bool(calibration and calibration['action_optimizer_admitted'])):raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
+ if training_policy is training_v3:
+  if plan.get('price_value_rule')!=price_refs.VALUE_RULE:raise ContractError('PRICE_VALUE_RULE_REQUIRED_FOR_V3')
+  price_refs.validate_value_rule(plan)
+  if calibration is not None and calibration.get('batch_balance_strategy')!=training_v3.ACTION_BALANCE:raise ContractError('ACTION_BATCH_BALANCE_PROFILE_CHANGED')
  if not 0<=slot<plan['rule']['slots']:raise ContractError('SLOT_BOUND')
  due_start=plan['start_ms']+slot*plan['rule']['slot_spacing_ms'];late=due_start+plan['rule']['input_grace_ms']
  if int(time.time()*1000)>late:raise ContractError('SLOT_ALREADY_MISSED')

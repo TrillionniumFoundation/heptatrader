@@ -68,9 +68,13 @@ def measure(plan,slot,prediction,quotes,now_ms):
   action_brier=training_v2.action_observation(plan,prediction,parent_correct=parent_correct)['action_brier']
  else:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
  comparison={}
+ if plan.get('price_value_rule') is not None:
+  price_refs.validate_value_rule(plan)
+  if prediction.get('horizon_sec')!=300 or prediction.get('input',{}).get('horizon_sec')!=300:raise ContractError('PRICE_VALUE_PRIMARY_HORIZON')
+  comparison['horizon_sec']=300
  if plan.get('price_baselines') is not None:
-  comparison={'price_baseline_profile_id':plan['price_baselines']['profile_id'],
-   'same_window_price_scores':price_refs.measure(plan['price_baselines'],prediction,target)}
+  comparison.update(price_baseline_profile_id=plan['price_baselines']['profile_id'],
+   same_window_price_scores=price_refs.measure(plan['price_baselines'],prediction,target))
  return {**base,**comparison,'status':'OBSERVED','path_gap':False,'reason':None,'return_bps':value,'target_class':target,
   'candidate_brier':score(p),'parent_brier':score(parent),'candidate_hit':max(range(7),key=lambda i:p[i])==target,
   'bootstrap_hit':bisect_right(BIN_EDGES_BPS,prediction['bootstrap_point_bps'])==target,

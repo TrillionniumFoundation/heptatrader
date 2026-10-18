@@ -1,5 +1,12 @@
 # Pocket4 Laya ACT/ESCALATE v2: isolated training research
 
+> Historical research record: the state descriptions below refer to the
+> original trial39/v2 study and its frozen evidence. They are not a live-service
+> status report. The later v3 objective corrects double balancing only for new
+> hash-bound profiles and adds a 300-second prospective baseline rule; see
+> [the versioned resident policy](../../research/neuron_learning/laya_cell/RESIDENT.md#versioned-training-policy-and-the-300-second-experiment).
+> Existing candidate, calibration and qualification evidence is preserved.
+
 ## Current state and scope
 
 NONPRODUCTION RESEARCH SOURCE. This is a numerical successor plan for
