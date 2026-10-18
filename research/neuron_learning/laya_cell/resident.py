@@ -148,12 +148,56 @@ class Supervisor:
   if self.c.get('future_plan_admission_profile') is None:return rows,{}
   from .resident_plan_admission import waiting_candidates
   return waiting_candidates(self,rows)
+ def _finish_impossible_forward_registration(self,row):
+  """Finish an impossible unallocated calendar window without starting a trial."""
+  from .resident_plan_admission import (
+    KEY_PREFIX,_identity,_check_record,_unreserved_history,_sealed,_publish)
+  from .resident_plan_calendar import calendar_admission
+  job=json.loads(row['payload']);key=KEY_PREFIX+row['id']
+  candidate=read_json(Path(job['output_directory'])/'candidate.json')
+  folder=Path(self.c['evaluation_directory'])/row['id']
+  if self.db.in_transaction:raise ContractError('FORWARD_CALENDAR_TRANSACTION_SCOPE')
+  record=None
+  self.db.execute('BEGIN IMMEDIATE')
+  try:
+   identity=_identity(self,row['id'],candidate,job)
+   previous=get_meta(self.db,key)
+   if previous is not None:
+    _check_record(previous,identity)
+    if not (folder/'plan.json').exists():
+     if previous['state']=='NO_FORWARD_TRIAL':
+      # Complete a DB-first publication with its original identity and time.
+      record=previous
+     elif previous['state']=='DEFERRED':
+      checked=int(time.time()*1000)
+      if checked<self.c['future_plan_admission_effective_at_ms']:
+       raise ContractError('FORWARD_CALENDAR_BEFORE_POLICY_EFFECTIVE')
+      if checked<previous['checked_at_ms']:
+       raise ContractError('FORWARD_CALENDAR_CLOCK_REGRESSION')
+      current=_unreserved_history(self)
+      proposal=self._evaluation_plan(row['id'],candidate,job,current+1,checked)
+      decision=calendar_admission(candidate,proposal,checked)
+      if decision['state']=='NO_FORWARD_TRIAL':
+       record=_sealed(identity,'NO_FORWARD_TRIAL',checked,
+         reason=decision['reason'],calendar=decision)
+       put_meta(self.db,key,record)
+   self.db.commit()
+  except BaseException:
+   self.db.rollback();raise
+  if record is None:return False
+  folder.mkdir(parents=True,mode=0o700,exist_ok=True)
+  _publish(self,key,record,candidate,job,folder)
+  return True
  def reconcile_evaluation_queue(self):
   if self.c.get('future_plan_admission_profile') is not None:
    from .resident_plan_admission import resume_reservations
    resume_reservations(self)
   queue=inspect_evaluation_queue(self.c)
   waiting,registration=self._waiting_evaluations()
+  if (self.c.get('future_plan_admission_profile') is not None and waiting
+      and queue['pending_original_trials']
+      and self._finish_impossible_forward_registration(waiting[0])):
+   waiting,registration=self._waiting_evaluations()
   if waiting and queue['pending_original_trials']==0:
    if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
    queue=inspect_evaluation_queue(self.c)

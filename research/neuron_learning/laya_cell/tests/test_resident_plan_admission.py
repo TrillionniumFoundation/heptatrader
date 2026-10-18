@@ -316,6 +316,220 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
 
+    def pending_calendar_fixture(self, name, now=SATURDAY, count=1, futile=True):
+        from laya_cell.promotion import assess
+        from laya_cell.promotion_power import PROTOCOL
+        self.queue.stop()
+        service, candidate, job = self.fixture(self.root / name, now)
+        self.addCleanup(service.db.close)
+        service.c['promotion_protocol'] = PROTOCOL
+        evaluation = Path(service.c['evaluation_directory'])
+        adapter = (Path(job['output_directory']) / 'adapter.safetensors').read_bytes()
+        last_plan = None
+        for trial in range(1, count + 1):
+            created = now - 60000 - (count - trial) * 86400000
+            previous = copy.deepcopy(candidate)
+            previous.update(created_at_ms=created - 1000,
+                            trained_until_ms=created - 2000,
+                            data_fingerprint='previous-' + str(trial))
+            previous['window'] = {'training_end_ms': created - 2000,
+                                  'validation_start_ms': created - 1999,
+                                  'validation_end_ms': created - 2000 + 86400000}
+            previous.pop('candidate_id')
+            previous['candidate_id'] = digest(previous)
+            output = self.root / name / 'previous-candidates' / str(trial)
+            output.mkdir(parents=True)
+            (output / 'adapter.safetensors').write_bytes(adapter)
+            write_once(output / 'candidate.json', previous)
+            previous_job = {**job, 'output_directory': str(output)}
+            plan = service._evaluation_plan('previous-' + str(trial), previous,
+                                            previous_job, trial, created)
+            plan['plan_id'] = digest(plan)
+            folder = evaluation / ('previous-' + str(trial))
+            admission.publish_immutable(folder / 'plan.json', plan)
+            if trial < count:
+                admission.publish_immutable(folder / 'qualification.json',
+                    assess(plan, [], plan['outcome_end_ms']))
+            elif futile:
+                for slot in range(plan['rule']['max_censored'] + 1):
+                    admission.publish_immutable(folder / ('outcome-%03d.json' % slot), {
+                        'candidate_id': plan['candidate_id'], 'plan_id': plan['plan_id'],
+                        'slot': slot, 'status': 'CENSORED',
+                        'reason': 'NO_PREDICTION_IN_FIXED_SLOT',
+                        'evaluated_at_ms': plan['start_ms']
+                            + slot * plan['rule']['slot_spacing_ms']
+                            + plan['rule']['input_grace_ms'] + 1})
+            last_plan = plan
+        with service.db:
+            put_meta(service.db, 'evaluation_trial', count)
+        checked = now + 3600000 if futile else now
+        record = self.register(service, candidate, job, clock=lambda: checked)
+        self.assertEqual(record['state'], 'DEFERRED')
+        self.assertEqual(record['reason'], 'PRIOR_ORIGINAL_TRIAL_PENDING')
+        history = {p: p.read_bytes() for p in evaluation.glob('previous-*/*') if p.is_file()}
+        return service, candidate, job, record, history, last_plan
+
+    def test_reconcile_terminal_calendar_releases_wait_before_original_trial_end(self):
+        created = SATURDAY + 19 * 60000
+        checked = int(datetime(2026, 10, 18, 2, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        service, candidate, job, prior, history, frozen = self.pending_calendar_fixture(
+            'terminal', created, count=41)
+        self.assertLess(checked, frozen['outcome_end_ms'])
+        proposal = service._evaluation_plan('job', candidate, job, 42, checked)
+        self.assertGreater(proposal['rule']['slots'], 12)
+        expected = admission.calendar_admission(candidate, proposal, checked)
+        self.assertEqual(expected['state'], 'NO_FORWARD_TRIAL')
+        self.assertEqual(expected['reason'], 'NO_CONTINUOUS_OPEN_WINDOW_FITS')
+        service.c['runtime_sha256']['learn/laya_cell/resident.py'] = '1' * 64
+        with patch('laya_cell.resident.time.time', return_value=checked / 1000):
+            queue = service.reconcile_evaluation_queue()
+        record = get_meta(service.db, admission.KEY_PREFIX + 'job')
+        folder = Path(service.c['evaluation_directory']) / 'job'
+        self.assertEqual(read_json(folder / 'no-forward-trial.json'), record)
+        self.assertEqual(record['state'], 'NO_FORWARD_TRIAL')
+        self.assertEqual(record['calendar'], expected)
+        self.assertEqual(record['policy_runtime_sha256'], prior['policy_runtime_sha256'])
+        self.assertEqual(record['candidate_manifest_sha256'], prior['candidate_manifest_sha256'])
+        self.assertFalse(record['trial_allocated'])
+        self.assertFalse(record['performance_assessment'])
+        self.assertEqual(record['broker_orders_sent'], 0)
+        self.assertFalse((folder / 'plan.json').exists())
+        self.assertEqual(get_meta(service.db, 'evaluation_trial'), 41)
+        self.assertEqual(len(list(Path(service.c['evaluation_directory']).glob('*/plan.json'))), 41)
+        self.assertEqual(queue['deferred_training_candidates'], 0)
+        self.assertEqual(queue['pending_original_trials'], 1)
+        self.assertEqual(queue['futile_pending_trials'], 1)
+        self.assertEqual(queue['viable_pending_evaluations'], 0)
+        self.assertEqual(queue['completed_candidates_without_forward_trial'], 1)
+        self.assertEqual({p: p.read_bytes() for p in history}, history)
+        self.assertEqual(service.db.execute("SELECT status FROM jobs WHERE id='job'").fetchone()[0],
+                         'COMPLETED')
+        self.capture.assert_not_called()
+
+    def test_reconcile_keeps_feasible_calendar_waiting_for_original_trial(self):
+        sunday = int(datetime(2026, 10, 18, 20, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        for name, now, ready in (('ready', NOW, True), ('future-open', sunday, False)):
+            with self.subTest(name=name):
+                service, candidate, job, before, history, frozen = self.pending_calendar_fixture(
+                    name, now, futile=False)
+                proposal = service._evaluation_plan('job', candidate, job, 2, now)
+                decision = admission.calendar_admission(candidate, proposal, now)
+                self.assertEqual(decision['ready'], ready)
+                self.assertNotEqual(decision['state'], 'NO_FORWARD_TRIAL')
+                with patch('laya_cell.resident.time.time', return_value=now / 1000):
+                    queue = service.reconcile_evaluation_queue()
+                self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + 'job'), before)
+                self.assertEqual(get_meta(service.db, 'evaluation_trial'), 1)
+                self.assertEqual(queue['deferred_training_candidates'], 1)
+                self.assertEqual(queue['pending_original_trials'], 1)
+                self.assertEqual(queue['forward_registration_wait_reasons'],
+                                 ['PRIOR_ORIGINAL_TRIAL_PENDING'])
+                folder = Path(service.c['evaluation_directory']) / 'job'
+                self.assertFalse((folder / 'no-forward-trial.json').exists())
+                self.assertFalse((folder / 'plan.json').exists())
+                self.assertEqual({p: p.read_bytes() for p in history}, history)
+        self.capture.assert_not_called()
+
+    def test_reconcile_recovers_db_first_calendar_terminal_without_retiming(self):
+        service, candidate, job, prior, history, frozen = self.pending_calendar_fixture('terminal-crash')
+        checked = int(datetime(2026, 10, 18, 2, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        with patch('laya_cell.resident.time.time', return_value=checked / 1000):
+            with patch.object(admission, '_publish', side_effect=OSError('synthetic terminal crash')):
+                with self.assertRaises(OSError):
+                    service.reconcile_evaluation_queue()
+        first = get_meta(service.db, admission.KEY_PREFIX + 'job')
+        self.assertEqual(first['state'], 'NO_FORWARD_TRIAL')
+        self.assertFalse(service.db.in_transaction)
+        receipt = Path(service.c['evaluation_directory']) / 'job' / 'no-forward-trial.json'
+        self.assertFalse(receipt.exists())
+        waiting, report = service._waiting_evaluations()
+        self.assertEqual(len(waiting), 1)
+        self.assertIn('TERMINAL_RECEIPT_PUBLICATION_PENDING', report['forward_registration_wait_reasons'])
+        with patch('laya_cell.resident.time.time', return_value=(checked + 60000) / 1000):
+            queue = service.reconcile_evaluation_queue()
+        self.assertEqual(read_json(receipt), first)
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + 'job'), first)
+        self.assertEqual(get_meta(service.db, 'evaluation_trial'), 1)
+        self.assertEqual(queue['deferred_training_candidates'], 0)
+        self.assertEqual({p: p.read_bytes() for p in history}, history)
+        self.capture.assert_not_called()
+
+    def test_reconcile_calendar_terminal_rejects_changed_bound_evidence(self):
+        checked = int(datetime(2026, 10, 18, 2, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        for change in ('manifest', 'receipt', 'policy-pin'):
+            with self.subTest(change=change):
+                service, candidate, job, before, history, frozen = self.pending_calendar_fixture(
+                    'changed-' + change)
+                if change == 'manifest':
+                    changed = copy.deepcopy(candidate)
+                    changed['created_at_ms'] += 1
+                    (Path(job['output_directory']) / 'candidate.json').write_bytes(canonical(changed) + b'\n')
+                elif change == 'receipt':
+                    changed = {**before, 'registration_id': '0' * 64}
+                    with service.db:
+                        put_meta(service.db, admission.KEY_PREFIX + 'job', changed)
+                else:
+                    service.c['runtime_sha256'][admission.RUNTIME_PIN[0]] = 'c' * 64
+                original_meta = get_meta(service.db, admission.KEY_PREFIX + 'job')
+                with patch('laya_cell.resident.time.time', return_value=checked / 1000):
+                    with self.assertRaises(ContractError):
+                        service.reconcile_evaluation_queue()
+                self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + 'job'), original_meta)
+                self.assertFalse(service.db.in_transaction)
+                self.assertEqual(get_meta(service.db, 'evaluation_trial'), 1)
+                folder = Path(service.c['evaluation_directory']) / 'job'
+                self.assertFalse((folder / 'no-forward-trial.json').exists())
+                self.assertFalse((folder / 'plan.json').exists())
+                self.assertEqual({p: p.read_bytes() for p in history}, history)
+        self.capture.assert_not_called()
+
+    def test_reconcile_allocated_trial_never_becomes_calendar_terminal(self):
+        from laya_cell.promotion_power import PROTOCOL
+        self.queue.stop()
+        for initial in ('RESERVED', 'PUBLISHED'):
+            with self.subTest(initial=initial):
+                service, candidate, job = self.fixture(self.root / ('allocated-' + initial))
+                self.addCleanup(service.db.close)
+                service.c['promotion_protocol'] = PROTOCOL
+                self.capture.side_effect = None
+                self.capture.return_value = fresh_proof()
+                if initial == 'RESERVED':
+                    with patch.object(admission, '_publish', side_effect=OSError('synthetic reservation crash')):
+                        with self.assertRaises(OSError):
+                            self.register(service, candidate, job)
+                else:
+                    self.register(service, candidate, job)
+                before = get_meta(service.db, admission.KEY_PREFIX + 'job')
+                self.assertEqual(before['state'], initial)
+                original = before['plan']
+                self.capture.reset_mock()
+                self.capture.side_effect = AssertionError('allocated trial must not read new source')
+                with patch('laya_cell.resident.time.time', return_value=SATURDAY / 1000):
+                    with patch.object(service, '_finish_impossible_forward_registration',
+                                      wraps=service._finish_impossible_forward_registration) as terminal:
+                        queue = service.reconcile_evaluation_queue()
+                folder = Path(service.c['evaluation_directory']) / 'job'
+                self.assertEqual(read_json(folder / 'plan.json'), original)
+                self.assertFalse((folder / 'no-forward-trial.json').exists())
+                self.assertEqual(get_meta(service.db, 'evaluation_trial'), 1)
+                self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + 'job')['state'], 'PUBLISHED')
+                self.assertEqual(queue['deferred_training_candidates'], 0)
+                terminal.assert_not_called()
+                self.capture.assert_not_called()
+
+    def test_reconcile_calendar_clock_regression_preserves_deferred_record(self):
+        service, candidate, job, before, history, frozen = self.pending_calendar_fixture('clock-regression')
+        with patch('laya_cell.resident.time.time', return_value=(before['checked_at_ms'] - 1) / 1000):
+            with self.assertRaisesRegex(ContractError, 'FORWARD_CALENDAR_CLOCK_REGRESSION'):
+                service.reconcile_evaluation_queue()
+        self.assertEqual(get_meta(service.db, admission.KEY_PREFIX + 'job'), before)
+        self.assertEqual(get_meta(service.db, 'evaluation_trial'), 1)
+        self.assertFalse(service.db.in_transaction)
+        self.assertEqual({p: p.read_bytes() for p in history}, history)
+        self.capture.assert_not_called()
+
+
+
 class OriginalReceiptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

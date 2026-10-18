@@ -129,3 +129,20 @@ The pinned regular-session calendar next opens Sunday **2026-10-18 21:15 UTC / 1
 Both recent historical training completions generated automatic, completed COMGR receipts. Each removed only 52 terminal COMGR files totaling **191,734,856 bytes**, with training_evidence_pruned=false. The final resident state footprint was **670,890,632 bytes** against the unchanged 12 GiB quota.
 
 Detailed snapshot and failure diagnostics are retained as final-runtime-audit.json and worker-failure-detail-audit.json in the Pocket4 evidence directory. This is source/operation evidence; no performance acceptance, model promotion or order follows from it.
+
+
+## Resolve impossible windows while the previous trial is pending
+
+The resident scheduler now rechecks the calendar for an already deferred,
+unallocated candidate before waiting for an earlier original trial. If the
+existing calendar and next-trial rule prove that no complete open interval
+fits, it publishes the existing NO_FORWARD_TRIAL terminal receipt and releases
+that candidate from the training queue. A still feasible candidate continues
+to wait for the original trial. No new trial number, source capture or model
+qualification is produced by this check.
+
+The three admission policy modules and their original effective time stay
+unchanged. Existing registration identities remain valid. A terminal DB
+commit interrupted before immutable publication is recovered with the same
+receipt identity and time. Original frozen plans and outcomes continue through
+their original evaluation path.
