@@ -43,6 +43,8 @@ class MainQuoteOrderingTests(unittest.TestCase):
                     ".config/heptatrader/crypto.token"):
                     path=home/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("fixture")
                 stack.enter_context(patch.object(d.Path,"home",return_value=home))
+                # Quote-ordering fixtures must not inherit the host native kill switch.
+                stack.enter_context(patch.object(d,"maintenance_entry_hold_reason",return_value=None))
                 stack.enter_context(patch.object(sys,"argv",[str(ROOT/"scripts/heptatrader_paper_driver.py"),
                     "--once","--instrument",instrument]))
                 stack.enter_context(patch.object(d,"load_state",return_value=state))

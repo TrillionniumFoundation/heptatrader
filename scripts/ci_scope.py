@@ -2,7 +2,7 @@
 """Scope routine CI to the changed components; uncertain changes run every lane.
 
 Repository docs, research READMEs and dated observation reports are prose.
-Other research contracts/configuration keep full feedback. Three Python tools and their tests
+Other research contracts/configuration keep full feedback. Verified Python tools and their tests
 run every core/source Python test without a native rebuild or model dependency.
 Any unknown, shared, CI, missing or renamed-outside-group path restores full CI.
 """
@@ -21,6 +21,11 @@ VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/hepta_pnl_report.py", "tests/python/test_pnl_cli.py",
                "tests/python/test_account_observation.py"}),
     frozenset({"scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py"}),
+    # These operators inspect/control existing release identities; they do not
+    # build native code or import the learning/model runtime.
+    frozenset({"scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
+    frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
+               "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
 )
 
 

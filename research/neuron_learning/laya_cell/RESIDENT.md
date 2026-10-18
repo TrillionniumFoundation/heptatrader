@@ -15,13 +15,14 @@ Three user services are separate from the trading target:
 | `heptatrader-laya-trainer.service` | Admit distinct mature data batches; launch bounded GPU jobs |
 | `heptatrader-laya-evaluator.service` | Predict before each reserved horizon, observe outcomes, assess qualification |
 
-Training is considered every 15 minutes, only with at least 16 previously
-unconsumed mature sample/horizon/outcome identities. A job uses at most 64 rows,
-16 disjoint two-row optimizer steps, and a 600-second worker budget. At most two
-candidates wait for evaluation. Source and output budgets stop work when full,
-without pruning unfavorable history. The read-only feed is capped at 512 MiB;
-the combined resident state is capped at 2 GiB. Those are explicit finite capacity
-limits, not a claim of unlimited unattended operation.
+The active configuration and each immutable job declare the scheduling interval,
+row budget, worker timeout, queue limit and storage limits. Training requires
+at least 16 previously unconsumed mature sample/horizon/outcome identities. The
+v2/v3 objectives admit at most 32 rows and 16 disjoint two-row optimizer steps;
+older objective records retain their original limits. Source and output budgets
+stop work when full, without pruning unfavorable history. Installer defaults
+are not evidence of the limits in a running service: inspect its configured
+release and loaded runtime identity together.
 
 The bootstrap seed and all previously closed probe sources can enter *later*
 training, including sources from censored probes. They cannot retroactively
@@ -37,6 +38,46 @@ completed candidates are bound to parent, data and native-binary digests.
 Restart either recovers the exact committed candidate or marks an interrupted
 uncommitted job failed. It never blindly repeats a partially written job.
 
+## Versioned training policy and the 300-second experiment
+
+`resident_training_v3.configuration_for_release` prepares an explicit successor
+configuration. It preserves the fixed parent, state directories, native identity
+and prior trial history, and binds the new objective and runtime files. Installing
+source code alone does not change a frozen candidate or an existing future plan.
+
+| Objective | Data and action semantics | Future comparison |
+|---|---|---|
+| v1 | Preserved in its original candidate and job records | Original frozen plan rule |
+| v2 | Existing 300/900-second selection and action calibration semantics | Existing frozen plan, with baseline reporting when declared |
+| v3 | Mature 300-second history across time buckets; disjoint action pairs use unweighted CE | New plans also require improvement over all three simple price comparators |
+
+For v3, the upstream collector checks the complete available original quote
+history before its 512-anchor cap. It requires a mature 300-second endpoint,
+original availability timestamps, a continuous raw path and an unreserved row
+identity. It spreads eligible anchors across six-hour buckets, combines them
+with valid seed history, then applies the final 768-sample cap. The worker still
+uses at most 32 rows. Wider historical coverage describes the training pool;
+it does not establish independent observations or future model performance.
+
+Action calibration still uses only the frozen parent's genuine training labels.
+A new hash-bound `DISJOINT_ONE_ACT_ONE_ESCALATE_UNWEIGHTED_CE` marker tells the
+loss that each admitted action batch already has one ACT and one ESCALATE row.
+It therefore does not apply inverse-frequency weights a second time. A 4 ACT /
+28 ESCALATE pool yields four disjoint action pairs; the remaining rows can train
+price prediction. Unsupported one-class batches abstain, and their action
+parameter gradients remain `None` so Adam momentum cannot move the action head.
+Old profiles without this marker keep their original semantics.
+
+Each v3 future plan freezes the uniform, training class-prior and linear-softmax
+comparators before evaluation. On the same observed 300-second windows, Laya
+must improve mean paired Brier loss by more than `1e-6` against each comparator,
+in addition to the existing parent, bootstrap, observation, censoring and
+alpha-spending requirements. Missing or inconsistent baseline scores fail
+validation. Old plans without the additional rule retain their original result.
+A pass remains shadow qualification; it neither proves trading profitability nor
+selects a model for execution. Representation-cache work remains deferred until
+this prospective comparison supplies evidence that the model route is useful.
+
 ## Original Laya action head, not a new trade-action network
 
 The complete Laya checkpoint and 321,908,995 original parameters remain frozen.
@@ -48,11 +89,12 @@ The native 4,096-delta, 0.5% per-layer and 0.25% global limits are unchanged.
 
 The checkpoint's original action meanings are **ACT / ESCALATE** (answer locally
 or request escalation), not BUY / SELL. The original configuration gives a wrong
-answer cost and an escalation cost. This first integration trains a supervised
-correctness/routing target, not a cost-optimal routing policy: the frozen
-predecessor's predicted interval is compared with a later real market label, then
-ACT/ESCALATE cross entropy is added at weight 0.01. Targets are fixed before the
-candidate update. Market prediction supervision stays primary, with an optional
+answer cost and an escalation cost. The supervised correctness/routing target
+compares the frozen predecessor's predicted interval with a later real market
+label. The original v1 objective adds ACT/ESCALATE cross entropy at weight 0.01;
+v2/v3 use their declared train-only calibration and bounded action contribution.
+Targets are fixed before the candidate update. Market prediction supervision
+stays primary, with an optional
 exact-input remote-distribution teacher. Remote confidence and model prose never
 become outcome truth, win probabilities or broker authorization.
 
@@ -86,12 +128,15 @@ means `pnl_reward_ready=false`, not a manufactured zero-return training target.
 
 ## Independent automatic qualification, not completed automatic promotion
 
-Each candidate gets a fixed future plan: twelve slots six minutes apart, each
-predicting a five-minute price interval with a one-minute input window. Missing
-and censored slots are preserved. Qualification needs ten observable windows,
-no more than two censored slots, at least two outcome classes, positive mean
-paired Brier improvement over the fixed predecessor, and no worse interval hit
-count than the frozen bootstrap. A one-sided paired sign screening rule uses a
+Each candidate gets a fixed future plan with slots six minutes apart, each
+predicting a five-minute price interval with a one-minute input window. The
+plan's frozen rule determines slot and minimum-observation counts: the legacy
+rule uses twelve slots and ten observations, while the declared power protocol
+can require a larger plan. Missing and censored slots are preserved.
+Qualification also requires the plan's censoring limit, at least two outcome
+classes, positive mean paired Brier improvement over the fixed predecessor,
+and no worse interval hit count than the frozen bootstrap. A one-sided paired
+sign screening rule uses a
 summable alpha allocation `0.05 / (trial * (trial + 1))` across repeated candidates.
 Nonoverlapping intervals do not prove independent market observations; this
 screen is not a complete causal/clustered statistical efficacy qualification.
@@ -101,8 +146,9 @@ pre-deployment plan lacking those bindings is retained as rejected, not rewritte
 or silently resumed under changed semantics. Candidate, input, timestamps and
 weights cannot be substituted. Child prediction never imports or runs an
 optimizer. No additional remote model requests are made just to obtain a score:
-parent and bootstrap are the current paired baselines; an unpaired remote output
-is not presented as a same-input comparison.
+parent and bootstrap remain the paired reference models, with the additional
+frozen price comparators required by new v3 plans. An unpaired remote output is
+not presented as a same-input comparison.
 
 A statistical pass has status `QUALIFIED_AWAITING_CANONICAL_OWNER`, and **cannot
 change a selected model**. It prepares an explicitly unadmitted local owner-outbox

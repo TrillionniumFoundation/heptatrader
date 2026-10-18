@@ -16,6 +16,7 @@ from unittest import mock
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
 import install_decision_attribution as installer
+import activate_prepared_driver as activation
 import hepta_btc_entry_policy as policy
 
 
@@ -100,7 +101,7 @@ class PrepareUpgradeTests(unittest.TestCase):
    stack.enter_context(mock.patch.object(installer,'state_ok',side_effect=AssertionError('state gate called')))
    stack.enter_context(mock.patch.object(installer.subprocess,'check_output',side_effect=git_only))
    stack.enter_context(mock.patch.object(installer.subprocess,'run',side_effect=AssertionError('subprocess mutation called')))
-   stack.enter_context(mock.patch.object(installer.importlib.util,'spec_from_file_location',side_effect=AssertionError('candidate code imported')))
+   stack.enter_context(mock.patch.object(installer,'load_verified_module',side_effect=AssertionError('candidate code imported')))
    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
    yield show
 
@@ -247,6 +248,58 @@ class PrepareUpgradeTests(unittest.TestCase):
     self._prepare('EUR.USD',service)
   result=self._prepare('EUR.USD',service)
   self.assertEqual(result['status'],'PREPARED_NOT_ACTIVATED');self._unchanged()
+
+ def _legacy_resident_layout(self,instrument,label):
+  service,old,resident=self._resident(instrument,label)
+  (resident/'hepta_verified_loader.py').unlink()
+  old['runtime_sha256'].pop('hepta_verified_loader.py')
+  old.pop('runtime_loader',None)
+  self._put(resident/'manifest.json',(installer.canonical(old)+'\n').encode())
+  return service,old,resident
+
+ def test_legacy_resident_prepares_candidate_that_activation_can_verify(self):
+  # Only validate release bytes: neither release is imported or activated.
+  for instrument in ('EUR.USD','BTC.USD'):
+   with self.subTest(instrument=instrument):
+    service,old,resident=self._legacy_resident_layout(instrument,'legacy-parent')
+    before={p.name:p.read_bytes() for p in resident.iterdir()}
+    prepared=self._prepare(instrument,service)
+    manifest=Path(prepared['manifest'])
+    new=json.loads(manifest.read_bytes())
+    self.assertEqual(new['runtime_loader'],'verified-bytes.v1')
+    installed={'manifest':str(resident/'manifest.json'),
+               'manifest_sha256':installer.sha(resident/'manifest.json')}
+    observed=activation.verify_prepared(manifest,prepared['manifest_sha256'],instrument,installed)
+    self.assertEqual(observed['status'],'INSTALLED_VERIFIED')
+    self.assertEqual(set(observed['runtime_sha256']),installer.runtime_filenames(instrument))
+    self.assertEqual({p.name:p.read_bytes() for p in resident.iterdir()},before)
+    self._unchanged()
+
+ def test_existing_legacy_prepared_layout_remains_verifiable(self):
+  for instrument in ('EUR.USD','BTC.USD'):
+   with self.subTest(instrument=instrument):
+    _,old,resident=self._legacy_resident_layout(instrument,'legacy-prepared-parent')
+    installed={'manifest':str(resident/'manifest.json'),
+               'manifest_sha256':installer.sha(resident/'manifest.json')}
+    candidate=self.root/'legacy-prepared'/instrument
+    names=set(old['runtime_sha256'])
+    if instrument=='BTC.USD':names.add('profile.json')
+    for name in names:self._put(candidate/name,(resident/name).read_bytes())
+    new=dict(old);new.pop('created_at_ms',None)
+    new.update(source_sha=self.source_sha,
+               prepared_from_manifest_sha256=installed['manifest_sha256'],
+               runtime_bytes_changed=False,trading_behavior_changed=False,
+               behavior_equivalence_assessed=False,created_at_ms=456)
+    manifest=candidate/'manifest.json'
+    self._put(manifest,(installer.canonical(new)+'\n').encode())
+    result=activation.verify_prepared(manifest,installer.sha(manifest),instrument,installed)
+    self.assertEqual(set(result['runtime_sha256']),installer.runtime_filenames(instrument,legacy=True))
+    self.assertFalse((candidate/'hepta_verified_loader.py').exists())
+    new['runtime_loader']='unsupported-loader'
+    self._put(manifest,(installer.canonical(new)+'\n').encode())
+    with self.assertRaisesRegex(RuntimeError,'RUNTIME_INCOMPLETE'):
+     activation.verify_prepared(manifest,installer.sha(manifest),instrument,installed)
+    self._unchanged()
 
  def test_explicit_prepare_cli_needs_no_evidence_directory(self):
   with mock.patch.object(sys,'argv',['install_decision_attribution.py','--instrument','EUR.USD','--prepare-upgrade']), \

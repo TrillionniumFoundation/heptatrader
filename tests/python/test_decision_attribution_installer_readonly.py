@@ -128,6 +128,113 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
         self.assertEqual(status['status'], 'NOT_INSTRUMENTED')
         self.assertFalse(status['trade_authority'])
 
+    def _observed_process(self, manifest, *, argv=None, keys=None):
+        import contextlib
+        import activate_prepared_driver as activation
+        stack = contextlib.ExitStack()
+        status = dict(ActiveState="active", MainPID="4201", InvocationID="e" * 32)
+        actual = activation.argv_for(manifest) if argv is None else argv
+        def read_proc(pid, name):
+            self.assertEqual((pid, name), (4201, "cmdline"))
+            return b"\0".join(item.encode() for item in actual) + b"\0"
+        stack.enter_context(patch.object(activation.fence, "show_unit", return_value=status))
+        stack.enter_context(patch.object(installer, "show", return_value=self.service))
+        identity = {"side_effect": keys} if keys is not None else {"return_value": ("4201", "12345")}
+        stack.enter_context(patch.object(activation, "pid_key", **identity))
+        stack.enter_context(patch.object(activation, "proc_bytes", side_effect=read_proc))
+        stack.enter_context(patch.object(activation, "ctl", side_effect=AssertionError("inspection changed service")))
+        return stack
+
+    def _legacy_release(self, instrument="EUR.USD"):
+        release = self.root / ("legacy-" + instrument)
+        release.mkdir()
+        hashes = {}
+        for name in installer.runtime_filenames(instrument, legacy=True):
+            raw = (ROOT / "scripts" / name).read_bytes()
+            if name == "heptatrader_attributed_driver.py":
+                raw = b"# Synthetic immutable pre-loader launcher fixture.\n"
+            self._put(release / name, raw)
+            hashes[name] = hashlib.sha256(raw).hexdigest()
+        manifest = dict(self.manifest, instrument=instrument, source_sha="b" * 40,
+                        runtime_sha256=hashes)
+        manifest.pop("runtime_loader", None)
+        if instrument == "BTC.USD":
+            self._put(release / "profile.json", b"{}\n")
+            manifest["btc_profile_sha256"] = installer.sha(release / "profile.json")
+        path = release / "manifest.json"
+        self._put(path, (json.dumps(manifest, sort_keys=True) + "\n").encode())
+        return path
+
+    def test_exact_legacy_layouts_remain_inspectable_and_tamper_detected(self):
+        import activate_prepared_driver as activation
+        for instrument in ("EUR.USD", "BTC.USD"):
+            with self.subTest(instrument=instrument):
+                path = self._legacy_release(instrument)
+                command = "ExecStart={ argv[]=" + " ".join(activation.argv_for(path)) + " ; }"
+                result = installer.inspect_resident(command, instrument)
+                self.assertEqual(result["status"], "INSTALLED_VERIFIED")
+                self.assertEqual(set(result["runtime_sha256"]), installer.runtime_filenames(instrument, legacy=True))
+                base = path.parent / "heptatrader_paper_driver.py"
+                self._put(base, base.read_bytes() + b"\n# changed\n")
+                with self.assertRaisesRegex(RuntimeError, "RUNTIME_CHANGED"):
+                    installer.inspect_resident(command, instrument)
+
+    def test_new_layout_cannot_silently_drop_the_verified_loader(self):
+        self.manifest["runtime_loader"] = "verified-bytes.v1"
+        self.manifest["runtime_sha256"] = dict(self.hashes)
+        del self.manifest["runtime_sha256"]["hepta_verified_loader.py"]
+        self._manifest()
+        with self.assertRaisesRegex(RuntimeError, "RUNTIME_INCOMPLETE"):
+            installer.inspect_resident(self.command, "EUR.USD")
+
+    def test_unknown_runtime_file_is_not_an_accepted_legacy_layout(self):
+        self.manifest["runtime_sha256"] = dict(self.hashes, unexpected_module="0" * 64)
+        self._manifest()
+        with self.assertRaisesRegex(RuntimeError, "RUNTIME_INCOMPLETE"):
+            installer.inspect_resident(self.command, "EUR.USD")
+
+    def test_configured_and_running_revisions_are_independent(self):
+        import activate_prepared_driver as activation
+        actual = self._legacy_release()
+        with self._observed_process(actual):
+            result = installer.inspect_running_runtime(installer.unit_for("EUR.USD"), "EUR.USD")
+            with self.assertRaisesRegex(RuntimeError, "RUNNING_DRIVER_ARGV_MISMATCH"):
+                activation.running_driver(installer.unit_for("EUR.USD"), "EUR.USD")
+        self.assertEqual(result["status"], "CONFIGURED_DIFFERS_FROM_RUNNING")
+        self.assertFalse(result["configured_matches_running"])
+        self.assertEqual(result["configured"]["source_sha"], "a" * 40)
+        self.assertEqual(result["running"]["source_sha"], "b" * 40)
+        self.assertEqual(result["running"]["manifest"], str(actual))
+        self.assertEqual(result["running"]["pid_key"], ("4201", "12345"))
+        self.assertFalse(result["service_changed"])
+
+    def test_bad_configuration_does_not_hide_valid_running_legacy(self):
+        actual = self._legacy_release()
+        base = self.release / "heptatrader_paper_driver.py"
+        self._put(base, base.read_bytes() + b"\n# configuration tamper\n")
+        with self._observed_process(actual):
+            result = installer.inspect_running_runtime(installer.unit_for("EUR.USD"), "EUR.USD")
+        self.assertEqual(result["configured"]["status"], "UNVERIFIED")
+        self.assertEqual(result["running"]["status"], "RUNNING_VERIFIED")
+        self.assertEqual(result["running"]["source_sha"], "b" * 40)
+        self.assertIsNone(result["configured_matches_running"])
+
+    def test_extra_process_arguments_are_not_reported_as_pinned_runtime(self):
+        import activate_prepared_driver as activation
+        argv = activation.argv_for(self.manifest_path) + ["--unexpected"]
+        with self._observed_process(self.manifest_path, argv=argv):
+            result = installer.inspect_running_runtime(installer.unit_for("EUR.USD"), "EUR.USD")
+        self.assertEqual(result["running"]["status"], "UNVERIFIED")
+        self.assertIn("ARGV_MISMATCH", result["running"]["error"])
+        self.assertNotIn("source_sha", result["running"])
+
+    def test_pid_reuse_during_inspection_is_an_explicit_error(self):
+        with self._observed_process(self.manifest_path, keys=[("4201", "12345"), ("4201", "67890")]):
+            result = installer.inspect_running_runtime(installer.unit_for("EUR.USD"), "EUR.USD")
+        self.assertEqual(result["running"]["status"], "UNVERIFIED")
+        self.assertIn("DRIVER_CHANGED_DURING_INSPECTION", result["running"]["error"])
+        self.assertIsNone(result["configured_matches_running"])
+
 
 if __name__ == '__main__':
     unittest.main()

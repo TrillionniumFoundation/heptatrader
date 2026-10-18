@@ -85,4 +85,8 @@ class RewardSyncTests(unittest.TestCase):
   self.assertEqual(result['state'],'HOLD_NEW_TRAINING_STORAGE');self.source.assert_not_called()
   self.assertEqual(self.counts(),(0,0,0,0))
 
+ def test_held_preflight_uses_one_storage_snapshot(self):
+  self.s.queue_preflight()
+  self.storage.assert_called_once()
+
 if __name__=='__main__':unittest.main()

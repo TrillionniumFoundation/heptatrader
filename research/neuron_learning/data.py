@@ -141,6 +141,16 @@ def features(qs,known):
     return [max(-8,min(8,x)) for x in values]
 
 
+def sample_identity(qs,scope,kind,input_id=None):
+    return {'scope':scope,'source_input_id':input_id,'anchor_ms':qs[-1]['t'],
+            'input_kind':kind,'quotes':qs,'feature_version':FEATURE_VERSION}
+
+
+def observed_receipt(quote,horizon,target):
+    return {'source_receipt':quote['receipt'],'observed_at_ms':quote['t'],
+            'available_at_ms':quote['known_at_ms'],'target_scaled':target,'horizon_sec':horizon}
+
+
 def make_sample(qs,known,scope,kind,input_id=None,teacher=None):
     if not 6<=len(qs)<=24:raise ValueError('INPUT_HISTORY_BOUND')
     if any(x['t']>known for x in qs) or qs[-1]['t']>known:raise ValueError('INPUT_FROM_FUTURE')
@@ -150,8 +160,7 @@ def make_sample(qs,known,scope,kind,input_id=None,teacher=None):
         frame_rows.append(features(qs[:i],qs[i-1].get('known_at_ms',qs[i-1]['t'])))
         times.append(qs[i-1]['t'])
     anchor=qs[-1]
-    identity={'scope':scope,'source_input_id':input_id,'anchor_ms':anchor['t'],
-              'input_kind':kind,'quotes':qs,'feature_version':FEATURE_VERSION}
+    identity=sample_identity(qs,scope,kind,input_id)
     return {'sample_id':digest(identity),'scope':scope,'anchor_ms':anchor['t'],'known_at_ms':known,
         'reference_mid':anchor['mid'],'input_kind':kind,'source_input_id':input_id,
         'input_snapshot':identity,'input_gap':gap>MAX_GAP_MS,
@@ -177,8 +186,7 @@ def label(sample,quotes,times,now):
         target=10000*(quotes[end]['mid']/sample['reference_mid']-1)/100
         if abs(target)>8:
             sample['label_reasons'][j]='RETURN_OUT_OF_PROFILE';continue
-        receipt={'source_receipt':quotes[end]['receipt'],'observed_at_ms':times[end],
-                 'available_at_ms':quotes[end]['known_at_ms'],'target_scaled':target,'horizon_sec':horizon}
+        receipt=observed_receipt(quotes[end],horizon,target)
         sample['targets'][j]=target;sample['outcome_receipts'][j]=receipt;sample['label_reasons'][j]='OBSERVED'
     return sample
 

@@ -188,20 +188,11 @@ class Capture:
    self.journal.close()
   return close
 
-def verified_bindings(registration,instrument,period_sha256):
- """Only a registered producer and a complete exact graph grant local attribution.
-
- Does NOT mint canonical-owner acceptance, settlement, fees or policy gradient.
- """
- path=Path(registration['manifest']);raw=read_private(path,65536)
- if hashlib.sha256(raw).hexdigest()!=registration['sha256']:raise ValueError('PRODUCER_MANIFEST_CHANGED')
- m=strict(raw)
- if (m.get('schema')!='heptatrader.attribution-producer.v1' or m.get('instrument')!=instrument
-     or m.get('period_sha256')!=period_sha256 or m.get('execution_domain')!='PAPER'):
-  raise ValueError('PRODUCER_SCOPE')
- files=sorted(Path(m['journal_directory']).glob('*.jsonl'))
+def _verified_producer_graphs(directory,instrument,period_sha256):
+ """Validate a complete directory snapshot before selecting registered producers."""
+ files=sorted(Path(directory).glob('*.jsonl'))
  if len(files)>128:raise ValueError('PRODUCER_FILE_BOUND')
- groups={};issues=[];prefixes=[];completed_prefixes={};witnesses={}
+ groups={};prefixes=[];completed_prefixes={};witnesses={}
  for p in files:
   blob=read_private(p);blob=blob[:blob.rfind(b'\n')+1]
   full_prefix={'path':str(p),'bytes':len(blob),'sha256':hashlib.sha256(blob).hexdigest()}
@@ -218,10 +209,10 @@ def verified_bindings(registration,instrument,period_sha256):
        {'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}]
    groups.setdefault(producer,[]).append(r)
   if file_producer is not None:completed_prefixes.setdefault(file_producer,[]).append(full_prefix)
- bindings={};invalid_commands=set()
+ graphs=[]
  for producer,records in groups.items():
   records.sort(key=lambda r:r['sequence']);previous='0'*64;requests={};responses={};decisions={};commands=[];bad=False;order={'REQUEST':{},'RESPONSE':{},'DECISION':{}}
-  health=Path(m['journal_directory'])/(producer+'.health.json')
+  health=Path(directory)/(producer+'.health.json')
   if health.exists():
    h=strict(read_private(health,65536));bad=bool(h.get('dropped') or h.get('error'))
   headers=[x['data'] for x in records if x.get('kind')=='HEADER']
@@ -245,6 +236,31 @@ def verified_bindings(registration,instrument,period_sha256):
     if key in target and target[key]!=v:raise ValueError('CONFLICTING_REQUEST_RECORD')
     target[key]=v;order[kind].setdefault(key,i)
    elif kind=='COMMAND_BINDING':commands.append((v,i))
+  graphs.append((producer,producer_manifest,requests,responses,decisions,commands,bad,order))
+ return graphs,witnesses
+
+def verified_bindings(registration,instrument,period_sha256,*,directory_cache=None):
+ """Only a registered producer and a complete exact graph grant local attribution.
+
+ Does NOT mint canonical-owner acceptance, settlement, fees or policy gradient.
+ """
+ path=Path(registration['manifest']);raw=read_private(path,65536)
+ if hashlib.sha256(raw).hexdigest()!=registration['sha256']:raise ValueError('PRODUCER_MANIFEST_CHANGED')
+ m=strict(raw)
+ if (m.get('schema')!='heptatrader.attribution-producer.v1' or m.get('instrument')!=instrument
+     or m.get('period_sha256')!=period_sha256 or m.get('execution_domain')!='PAPER'):
+  raise ValueError('PRODUCER_SCOPE')
+ directory=Path(m['journal_directory'])
+ key=(str(directory),instrument,period_sha256)
+ # The caller owns this cache for one refresh only. Each manifest is still
+ # read and pinned above; health files and whole chains are checked once per directory.
+ if directory_cache is None:
+  graphs,witnesses=_verified_producer_graphs(directory,instrument,period_sha256)
+ else:
+  if key not in directory_cache:directory_cache[key]=_verified_producer_graphs(directory,instrument,period_sha256)
+  graphs,witnesses=directory_cache[key]
+ bindings={};invalid_commands=set();issues=[]
+ for producer,producer_manifest,requests,responses,decisions,commands,bad,order in graphs:
   # One instrument/period directory may retain multiple immutable behavior
   # producers. Verify every producer chain, then attribute ONLY the registered
   # identity. Never relabel old25k decisions as newUSD100k, and reject a producer

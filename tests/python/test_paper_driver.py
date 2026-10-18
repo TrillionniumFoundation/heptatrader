@@ -392,7 +392,7 @@ class DriverPolicyTests(unittest.TestCase):
             self.assertTrue(state["halt_new_entries"])
             self.assertEqual(history[-1]["owner_recovery_phase"],"VERIFY_PREVIEW")
             return {"approved":True,"preview_permit":"private-test-permit","service_epoch":"epoch-1","service_fencing_generation":1}
-        with patch.object(d,"atomic_json",save),patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview):
+        with patch.object(d,"recovery_entry_hold_reason",return_value=None),patch.object(d,"atomic_json",save),patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview):
             d.latch_owner_fence(state,Path("/unused"),"SESSION_OWNER_FENCED")
             self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000))
         self.assertFalse(state["halt_new_entries"])
@@ -410,7 +410,7 @@ class DriverPolicyTests(unittest.TestCase):
         snap={"position":0.0,"gross_position":0.0,"active":[],"quote":{"ask":1.1},
             "owner_health":{"owner_fenced":False,"owner_recovery_only":False,"mutation_ready":True},
             "service_epoch":"epoch-1","service_generation":1}
-        with patch.object(d,"atomic_json"),patch.object(d,"snapshot",return_value=snap), \
+        with patch.object(d,"recovery_entry_hold_reason",return_value=None),patch.object(d,"atomic_json"),patch.object(d,"snapshot",return_value=snap), \
              patch.object(d,"run",return_value=subprocess.CompletedProcess([],0,"","")) as run, \
              patch.object(d,"native",side_effect=d.DriverError("quote stale")):
             with self.assertRaisesRegex(d.DriverError,"quote stale"):
@@ -509,11 +509,11 @@ class CryptoDriverPolicyTests(unittest.TestCase):
             self.assertTrue(any(f.startswith("cash_quantity=") for f in fields))
             self.assertFalse(any(f.startswith("quantity=") or f.startswith("limit_price=") for f in fields))
             return {"approved":True,"preview_permit":"test-only-permit","service_epoch":"native-epoch","service_fencing_generation":3}
-        with patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview),\
+        with patch.object(d,"recovery_entry_hold_reason",return_value=None),patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview),\
              patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
             d.latch_owner_fence(state,Path("/unused"),"OPERATOR_AUDITED_RECOVERY")
             self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","sessionctl","socket","original-token-path",1000))
-        self.assertEqual(snap_calls,[False,True]);self.assertEqual(len(calls),2)
+        self.assertEqual(snap_calls,[False,False,True]);self.assertEqual(len(calls),2)
         self.assertEqual(state["lease_generation"],2);self.assertEqual(state["owner_recovery_phase"],"VERIFIED")
         self.assertFalse(state["halt_new_entries"]);self.assertIsNone(state["pending"])
         self.assertEqual(state["entries"],0);self.assertEqual(state["exits"],0);self.assertEqual(state["gross_pnl"],0)
@@ -543,7 +543,7 @@ class CryptoDriverPolicyTests(unittest.TestCase):
             self.assertIn("quantity=89015",fields)
             self.assertFalse(any(f.startswith("cash_quantity=") for f in fields))
             return {"approved":True,"preview_permit":"test-only-permit","service_epoch":"native-epoch","service_fencing_generation":3}
-        with patch.object(d,"INSTRUMENT","EUR.USD"),patch.object(d,"QTY",100000.0),             patch.object(d,"QUANTITY_TOLERANCE",1e-9),patch.object(d,"snapshot",snap),             patch.object(d,"run",run),patch.object(d,"native",preview),             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
+        with patch.object(d,"recovery_entry_hold_reason",return_value=None),patch.object(d,"INSTRUMENT","EUR.USD"),patch.object(d,"QTY",100000.0),             patch.object(d,"QUANTITY_TOLERANCE",1e-9),patch.object(d,"snapshot",snap),             patch.object(d,"run",run),patch.object(d,"native",preview),             patch.object(d,"atomic_json",lambda _,v:saved.append(copy.deepcopy(v))):
             d.latch_owner_fence(state,Path("/unused"),"SESSION_RECOVERY_ONLY")
             self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","sessionctl","socket","token",1000))
         self.assertEqual(state["lease_generation"],2)
@@ -932,5 +932,87 @@ class CumulativeSettlementTests(unittest.TestCase):
             elif kind==4:row["broker_execution_ambiguous"]=True
             elif kind==5:row["broker_execution_ids"]=[False]
             with self.subTest(kind=kind):self.assertIsNone(d.recent_fill({"recent_orders":[row]},pending,"BUY"))
+
+
+class ControlRecoveryPhasesTests(unittest.TestCase):
+    def setUp(self):
+        self.state = {"instrument": "EUR.USD", "position": 0.0, "pending": None,
+                      "lease_generation": 1, "owner_fence_recovery_required": True,
+                      "owner_fence_owned_halt": True, "halt_new_entries": True,
+                      "owner_recovery_phase": "VERIFY_PREVIEW"}
+        self.control = {"position": 0.0, "gross_position": 0.0, "active": [],
+                        "quote": {"ask": 1.1},
+                        "owner_health": {"owner_fenced": False, "owner_recovery_only": False,
+                                         "mutation_ready": True},
+                        "service_epoch": "epoch-1", "service_generation": 3}
+
+    def test_maintenance_keeps_confirmed_control_without_repeating_resume_or_entry_work(self):
+        from unittest.mock import patch
+        import subprocess, tempfile
+        self.state["owner_recovery_phase"] = "AUDIT_REQUIRED"
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            marker = home / ".local/state/heptatrader/operator-maintenance/maintenance-hold.json"
+            marker.parent.mkdir(parents=True); marker.write_text("{}")
+            calls = []
+            def snap(_cli, _state, _path, require_quote=True):
+                calls.append(require_quote)
+                self.assertFalse(require_quote)
+                return self.control
+            ack = subprocess.CompletedProcess([], 0,
+                '{"accepted":true,"reason_code":"SESSION_OWNER_RESUMED","lease_generation":2}', "")
+            with patch.object(d.Path, "home", return_value=home), patch.object(d, "atomic_json"), \
+                 patch.object(d, "snapshot", side_effect=snap), patch.object(d, "run", return_value=ack) as run, \
+                 patch.object(d, "native") as native:
+                for _ in range(2):
+                    self.assertFalse(d.recover_owner(self.state, Path("/unused"), "cli", "sessionctl", "socket", "token", 987654))
+                run.assert_called_once()
+                self.assertIn("paper-resume", run.call_args.args[0])
+                native.assert_not_called()
+            self.assertEqual(calls, [False, False, False])
+        self.assertEqual(self.state["owner_control_recovery"]["state"], "RESTORED")
+        self.assertFalse(self.state["owner_control_recovery"]["entry_ready"])
+        self.assertEqual(self.state["owner_recovery_wait_reason"], "PERSISTENT_MAINTENANCE_HOLD")
+        self.assertEqual(self.state["owner_recovery_phase"], "VERIFY_PREVIEW")
+        self.assertEqual(self.state["lease_generation"], 2)
+        self.assertTrue(self.state["owner_fence_recovery_required"])
+        self.assertTrue(self.state["halt_new_entries"])
+
+    def test_control_ready_but_mutation_unready_does_not_request_entry_snapshot(self):
+        from unittest.mock import patch
+        self.control["owner_health"]["mutation_ready"] = False
+        with patch.object(d, "atomic_json"), patch.object(d, "snapshot", return_value=self.control) as snap, \
+             patch.object(d, "maintenance_entry_hold_reason", return_value=None), \
+             patch.object(d, "run") as run, patch.object(d, "native") as native:
+            self.assertFalse(d.recover_owner(self.state, Path("/unused"), "cli", "s", "s", "t", 1000))
+            self.assertEqual([c.args[3] for c in snap.call_args_list], [False])
+            run.assert_not_called(); native.assert_not_called()
+        self.assertEqual(self.state["owner_recovery_wait_reason"], "ENTRY_MUTATION_GATE_NOT_READY")
+        self.assertEqual(self.state["owner_control_recovery"]["state"], "RESTORED")
+
+    def test_service_generation_change_between_control_and_quote_preserves_fence(self):
+        from unittest.mock import patch
+        changed = {**self.control, "service_generation": 4}
+        with patch.object(d, "atomic_json"), \
+             patch.object(d, "snapshot", side_effect=[self.control, changed]), \
+             patch.object(d, "maintenance_entry_hold_reason", return_value=None), \
+             patch.object(d, "run") as run, patch.object(d, "native") as native:
+            with self.assertRaisesRegex(d.DriverError, "mutation gate"):
+                d.recover_owner(self.state, Path("/unused"), "cli", "s", "s", "t", 1000)
+            run.assert_not_called(); native.assert_not_called()
+        self.assertTrue(self.state["owner_fence_recovery_required"])
+        self.assertTrue(self.state["halt_new_entries"])
+        self.assertFalse(self.state["owner_control_recovery"]["entry_ready"])
+
+    def test_independent_halt_is_not_claimed_by_control_recovery(self):
+        from unittest.mock import patch
+        cases = [({"risk_halt_reason": "LIMIT"}, "DRIVER_RISK_HALT"),
+                 ({"settlement_hold_reason": "MISMATCH"}, "DRIVER_SETTLEMENT_HOLD"),
+                 ({"owner_fence_owned_halt": False}, "DRIVER_NEW_ENTRY_HALT")]
+        for values, expected in cases:
+            state = {**self.state, **values}
+            with self.subTest(expected=expected), patch.object(d, "maintenance_entry_hold_reason", return_value=None):
+                self.assertEqual(d.recovery_entry_hold_reason(state, Path("/unused"), 1000), expected)
+
 
 if __name__=="__main__": unittest.main()

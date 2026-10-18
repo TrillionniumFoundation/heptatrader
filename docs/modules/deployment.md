@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`, `scripts/hepta_verified_loader.py`, `scripts/hepta_runtime_identity.py`
+Tests: `tests/python/test_documentation_links.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`, `tests/python/test_verified_python_loader.py`, `tests/python/test_runtime_identity.py`, `tests/python/test_attributed_driver_launcher.py`, `tests/python/test_activate_prepared_driver.py`, `tests/python/test_decision_attribution_installer_readonly.py`, `tests/python/test_decision_attribution_prepare_upgrade.py`
 
 ## Scope
 
@@ -105,3 +105,34 @@ boundaries. The original execution authority remains unchanged.
 The FX/NAV candidate and its non-authorizing probe/assurance components are tracked in
 [PR #178 consolidation](../technical/pr178-candidate-consolidation-20261008.md).
 Source ownership does not approve Broker deployment or strict NAV.
+
+## Configured and running runtime identity
+
+Run `python3 -B scripts/hepta_runtime_identity.py` from the source checkout for a
+read-only JSON view of configured executables and the actual service processes.
+It reports native executable hashes from their configured path and `/proc/PID/exe`
+separately, together with process identity and the relevant runtime configuration.
+A configured artifact is not evidence that its bytes are loaded by the process.
+
+For the PAPER driver releases, use
+`python3 -B scripts/install_decision_attribution.py --instrument EUR.USD --inspect-only`
+or the same command with `BTC.USD`. The configured and running entries separately
+verify their release manifest and copied runtime hashes. The running entry uses
+actual process argv, PID start ticks and service invocation identity. A changed
+configuration can therefore be shown beside the still-running previous release.
+An inspection error is explicit; `configured_matches_running` is null when both
+identities cannot be verified. These commands do not restart units or call a broker.
+
+The recorded `source_sha` describes source provenance; `runtime_sha256` binds the
+exact copied files. Current releases include the common verified-bytes loader and
+mark it as `runtime_loader=verified-bytes.v1`. Inspection and prepared-candidate
+validation also retain the exact immutable legacy runtime layouts: three files
+for EUR.USD and five for BTC.USD, without the new loader marker. The BTC profile
+remains separately pinned. Unknown layouts, unsupported loader markers and changed
+bytes are rejected. Activation retains its default requirement that configured
+and running driver identities match before it changes a service.
+
+The BTC, cost and attribution adapters share `hepta_verified_loader.py`. The
+loader verifies a target buffer against its required SHA-256 and executes that
+same buffer. New attributed manifests and BTC runtime receipts include the copied
+loader; the CostResearch installation places it beside the cost driver entry point.

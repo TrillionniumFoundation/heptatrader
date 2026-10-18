@@ -24,7 +24,7 @@ import time
 from typing import Callable
 
 from hepta_pnl_accounting import (EvidenceError, INSTRUMENTS, amount, build_report,
-                                  number, positive_int, validate_period, replay as replay_ledger)
+                                  number, positive_int, validate_period, ledger_noop, replay as replay_ledger)
 from hepta_pnl_watch import StableJournalBytes
 
 READ_TOOLS = frozenset({"system.get_health", "orders.list", "portfolio.list_positions", "market.get_quote"})
@@ -223,11 +223,13 @@ class IncrementalOMSParser:
         self._events = []
         self._max_event_at_ms = 0
         self._files = StableJournalBytes(read_private, lambda: now_ms())
+        self._ledger_revision = 0
         self._ledger_scope = None
         self._ledger_clock = None
         self._ledgers = {}
         self.hits = 0
         self.appends = 0
+        self.ledger_preserving_appends = 0
         self.rebuilds = 0
 
     def read(self, path: Path):
@@ -272,6 +274,13 @@ class IncrementalOMSParser:
                 raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
             events = [strict_json(line.decode()) for line in lines]
             appended = False
+        # Only a cryptographically verified append of known operational
+        # records can retain ledger state. Rewrites/truncation may have changed
+        # prior economics even when every new record is operational.
+        if appended and all(ledger_noop(event) for event in parsed):
+            self.ledger_preserving_appends += 1
+        else:
+            self._ledger_revision += 1
         self._events, self._sha, self._size = events, sha, len(raw)
         self._max_event_at_ms = max((event["ts_ms"] for event in events
                                      if type(event.get("ts_ms")) is int), default=0)
@@ -285,7 +294,7 @@ class IncrementalOMSParser:
     def replay_ledger(self, events, period, instrument, at_ms):
         if events is not self._events or self._sha is None:
             raise EvidenceError("OMS_CACHE_EVENTS_IDENTITY")
-        scope = (self._sha, json.dumps(period, sort_keys=True,
+        scope = (self._ledger_revision, json.dumps(period, sort_keys=True,
                                       separators=(",", ":"), allow_nan=False))
         if (scope != self._ledger_scope or
                 (self._ledger_clock is not None and at_ms < self._ledger_clock)):

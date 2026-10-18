@@ -162,6 +162,25 @@ def _binding(event: dict) -> tuple:
             side(event.get("side")), event.get("instrument"), event.get("account"), event.get("trace_id"))
 
 
+def ledger_noop(event: dict) -> bool:
+    """True only for known records with no effect on this replay contract.
+
+    Error 202 can settle an executed order's cancelled remainder. Commissions
+    and completedOrder records may omit instrument, so no subject filter can
+    prove that they are irrelevant. Unknown kinds remain accounting changes.
+    Restrict reuse to the observed empty execution-ID shape; nonempty or
+    malformed IDs still reach the canonical replay's validation.
+    """
+    execution_id = event.get("broker_execution_id")
+    if execution_id not in (None, ""):
+        return False
+    kind = event.get("event")
+    if kind in ("broker_completed_orders_end", "broker_execution_details_end"):
+        return True
+    risk = event.get("risk_code")
+    return kind == "broker_error" and isinstance(risk, str) and risk != "IB_ERROR_202"
+
+
 def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> dict:
     """Replay the existing one-pending-command-per-instrument strategy contract.
 

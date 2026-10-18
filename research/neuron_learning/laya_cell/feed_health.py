@@ -25,6 +25,52 @@ def atomic_status(path, value):
     os.replace(tmp, path)
 
 
+
+class QuoteProbeBackoff:
+    """Bound failed reads while keeping calendar and source authority separate."""
+    def __init__(self):
+        self.last_reason = None
+        self.same_failure_count = 0
+        self.calendar_open = None
+        self.delay_seconds = 1.0
+        self.last_probe_at_ms = None
+        self.next_probe_at_ms = None
+        self.interval_seconds = 1.0
+
+    def observe(self, kind, data, at_ms, elapsed_seconds=0.0):
+        if kind not in ("QUOTE", "FAILURE"):
+            return
+        calendar = session_clock(datetime.fromtimestamp(at_ms / 1000, timezone.utc))
+        is_open = calendar["calendar_regular_session_open"]
+        reason = data.get("reason", "UNSPECIFIED_CAPTURE_FAILURE") if kind == "FAILURE" else None
+        if reason is None:
+            self.same_failure_count = 0
+            interval = 1.0
+        else:
+            self.same_failure_count = (self.same_failure_count + 1
+                if reason == self.last_reason and is_open == self.calendar_open else 1)
+            interval = float(min(5 if is_open else 30, 2 ** min(self.same_failure_count - 1, 5)))
+        self.last_reason = reason
+        self.calendar_open = is_open
+        self.interval_seconds = interval
+        delay = max(0.1, interval - max(0.0, elapsed_seconds))
+        opening = calendar.get("next_regular_calendar_open_utc")
+        if opening is not None:
+            until_open = (round(datetime.fromisoformat(opening).timestamp() * 1000) - at_ms) / 1000
+            delay = min(delay, max(0.0, until_open))
+        self.delay_seconds = delay
+        self.last_probe_at_ms = at_ms
+        self.next_probe_at_ms = at_ms + round(delay * 1000)
+
+    def snapshot(self):
+        return {"last_probe_at_ms": self.last_probe_at_ms,
+                "next_probe_at_ms": self.next_probe_at_ms,
+                "interval_seconds": self.interval_seconds,
+                "same_failure_count": self.same_failure_count,
+                "last_failure_reason": self.last_reason,
+                "calendar_open_at_probe": self.calendar_open,
+                "diagnostic_only_not_quote_freshness": True}
+
 class CaptureHealth:
     def __init__(self, path, period_sha256, now_ms):
         self.path = str(path)

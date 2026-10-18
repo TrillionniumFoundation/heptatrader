@@ -24,6 +24,8 @@ def rule_for_trial(trial, protocol=None):
 
 
 def validate_plan_rule(plan):
+ from .resident_price_baselines import validate_value_rule
+ validate_value_rule(plan)
  rule=plan.get('rule')
  if rule==RULE:return rule
  if not isinstance(rule,dict) or rule.get('schema')!=SCHEMA:raise ContractError('PROMOTION_RULE_CHANGED')
@@ -68,6 +70,10 @@ def assess(plan,results,now_ms):
     unconditional_efficacy_proven=False,power_is_design_assumption=True)
  if sum(r['candidate_hit'] for r in observed)<sum(r['bootstrap_hit'] for r in observed):
   reasons.append('BELOW_BOOTSTRAP_INTERVAL_ACCURACY')
+ if plan.get('price_value_rule') is not None:
+  from .resident_price_baselines import value_assessment
+  value_report,value_reasons=value_assessment(plan,observed)
+  base['same_window_price_value']=value_report;reasons.extend(value_reasons)
  return {**base,'state':'QUALIFIED_AWAITING_CANONICAL_OWNER' if not reasons else 'REJECTED',
   'statistical_qualification':not reasons,'observed':len(observed),'censored':censored,
   'mean_brier_improvement':mean,'paired_sign_p':p,'alpha':alpha,'wins':wins,'non_ties':n,

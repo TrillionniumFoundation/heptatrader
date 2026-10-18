@@ -199,6 +199,9 @@ install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-user.conf"
 
 # Optional standalone cost research. No automatic trading-driver replacement,
 # calibration activation or dependency that starts an execution service.
+install(FILES "${PROJECT_SOURCE_DIR}/scripts/hepta_verified_loader.py"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader/cost-aware"
+    COMPONENT CostResearch EXCLUDE_FROM_ALL)
 set(_hepta_cost_research_helpers
     hepta_cost_policy.py hepta_cost_capture.py hepta_cost_driver.py
     hepta_cost_observer.py hepta_cost_replay.py hepta_cost_demo.py

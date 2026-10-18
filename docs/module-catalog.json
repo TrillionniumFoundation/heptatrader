@@ -368,8 +368,7 @@
       "status": "EXPERIMENTAL",
       "document": "docs/modules/research-sdk.md",
       "implementation": [
-        "research",
-        "research/examples/paper_command_main.cpp"
+        "research"
       ],
       "tests": [
         "tests/research/market_data_tests.cpp",
@@ -439,8 +438,6 @@
         "scripts/hepta_maintenance_latch.py",
         "scripts/reconcile_maintenance_alias.py",
         "scripts/heptatrader_paper_driver.py",
-        "systemd/user/heptatrader-paper-driver.service",
-        "systemd/user/heptatrader-crypto-driver.service",
         "scripts/hepta_pnl_accounting.py",
         "scripts/hepta_pnl_report.py",
         "scripts/hepta_pnl_watch.py",
@@ -456,7 +453,9 @@
         "scripts/install_risk_stop_fence.py",
         "scripts/hepta_maintenance_exposure_preflight.py",
         "scripts/hepta_nav_assurance.py",
-        "scripts/activate_prepared_driver.py"
+        "scripts/activate_prepared_driver.py",
+        "scripts/hepta_verified_loader.py",
+        "scripts/hepta_runtime_identity.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -476,7 +475,13 @@
         "tests/python/test_btc_entry_economics.py",
         "tests/python/test_decision_attribution.py",
         "tests/python/test_fx_original_no_churn.py",
-        "tests/python/test_nav_assurance.py"
+        "tests/python/test_nav_assurance.py",
+        "tests/python/test_verified_python_loader.py",
+        "tests/python/test_runtime_identity.py",
+        "tests/python/test_attributed_driver_launcher.py",
+        "tests/python/test_activate_prepared_driver.py",
+        "tests/python/test_decision_attribution_installer_readonly.py",
+        "tests/python/test_decision_attribution_prepare_upgrade.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -488,17 +493,7 @@
       "implementation": [
         ".github",
         ".agents",
-        "scripts",
-        "scripts/check_component_coverage.py",
-        "scripts/check_documentation.py",
-        "scripts/ci_scope.py",
-        "scripts/check_gap_register.py",
-        "scripts/dev_core.sh",
-        "scripts/verify_build_ownership.py",
-        "scripts/verify_exact_git_index.py",
-        "scripts/run_python_tests.py",
-        "scripts/render_protocol_reference.py",
-        "scripts/source_json.py"
+        "scripts"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",

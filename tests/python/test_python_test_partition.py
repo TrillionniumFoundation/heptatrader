@@ -101,7 +101,8 @@ class PythonTestPartitionTests(unittest.TestCase):
 
     def test_learning_listing_includes_nested_cpu_suites_without_imports(self):
         expected={"laya_cell.tests.test_resident_row_worker",
-                  "laya_cell.tests.test_resident_price_baselines"}
+                  "laya_cell.tests.test_resident_price_baselines",
+                  "laya_cell.tests.test_resident_training_v3"}
         for lane in ("learning", "core"):
             with self.subTest(lane=lane), mock.patch.object(runner, "configure_import_paths",
                     side_effect=AssertionError("listing must not import")), \
@@ -109,6 +110,30 @@ class PythonTestPartitionTests(unittest.TestCase):
                 self.assertEqual(runner.main(["--lane", lane, "--list"]), 0)
                 listed=set(stdout.getvalue().splitlines())
                 self.assertEqual(expected & listed, expected if lane=="learning" else set())
+
+    def test_import_failure_does_not_suppress_valid_modules_in_the_lane(self):
+        with tempfile.TemporaryDirectory(prefix="hepta-import-lane-") as directory:
+            root = Path(directory)
+            marker = root / "valid-ran"
+            broken, valid = "a_hepta_fixture_broken", "z_hepta_fixture_valid"
+            (root / (broken + ".py")).write_text("raise ImportError('fixture missing dependency')\n")
+            (root / (valid + ".py")).write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                "class Valid(unittest.TestCase):\n"
+                "    def test_runs(self):\n"
+                f"        Path({str(marker)!r}).write_text('ran')\n")
+            groups = {"core": {broken + ".py", valid + ".py"}}
+            with mock.patch.object(runner, "partitions", return_value=groups), \
+                 mock.patch.object(runner, "configure_import_paths"), \
+                 mock.patch.object(sys, "path", [str(root), *sys.path]), \
+                 mock.patch.dict(sys.modules), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                result = runner.main(["--lane", "core"])
+            self.assertEqual(result, 1)
+            self.assertEqual(marker.read_text(), "ran")
+            self.assertIn("fixture missing dependency", stderr.getvalue())
+            self.assertIn("Ran 2 tests", stderr.getvalue())
 
     def test_nested_learning_runs_in_same_suite_after_an_ordinary_failure(self):
         seen=[]

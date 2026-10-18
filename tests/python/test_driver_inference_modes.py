@@ -91,7 +91,7 @@ class DriverInferenceModesTests(unittest.TestCase):
                     self.worker.assert_not_called()
                     self.submit.assert_not_called()
 
-    def test_flat_maintenance_preserves_quote_and_lease_work_without_model(self):
+    def test_flat_maintenance_preserves_lease_without_quote_or_model(self):
         self.make_hold()
         before = len(self.state["history"])
         with self.harness(["--once"]):
@@ -99,11 +99,36 @@ class DriverInferenceModesTests(unittest.TestCase):
             self.worker.assert_not_called()
             self.submit.assert_not_called()
             self.renew.assert_called()
-            self.quote.assert_called_once()
-        self.assertEqual(len(self.state["history"]), before + 1)
+            self.quote.assert_not_called()
+        self.assertEqual(len(self.state["history"]), before)
         self.assertEqual(self.state["entry_inference_pause"]["reason_code"],
                          "PERSISTENT_MAINTENANCE_HOLD")
         self.assertTrue(self.hold.exists())
+
+    def test_flat_hold_is_recorded_even_when_mutation_gate_is_not_ready(self):
+        self.make_hold()
+        self.snap["owner_health"]["mutation_ready"] = False
+        with self.harness(["--once"]):
+            self.assertEqual(self.d.main(), 0)
+            self.quote.assert_not_called()
+            self.worker.assert_not_called()
+            self.submit.assert_not_called()
+        self.assertEqual(self.state["entry_inference_pause"]["reason_code"],
+                         "PERSISTENT_MAINTENANCE_HOLD")
+
+    def test_loop_progress_belongs_to_current_process_even_under_hold(self):
+        self.make_hold()
+        identity = self.d.resident_process_identity()
+        with self.harness(["--once"]):
+            self.assertEqual(self.d.main(), 0)
+        progress = self.state["resident_loop_progress"]
+        self.assertEqual(progress, {
+            "schema": self.d.RESIDENT_LOOP_PROGRESS_SCHEMA,
+            **identity, "iteration": 1, "at_ms": self.clock[0],
+        })
+        state_path = self.home / ".local/state/heptatrader/paper-driver/state.json"
+        # The same existing atomic state writer persists this observation.
+        self.assertEqual(__import__("json").loads(state_path.read_text())["resident_loop_progress"], progress)
 
     def test_driver_entry_halt_also_pauses_only_flat_inference(self):
         self.state["halt_new_entries"] = True

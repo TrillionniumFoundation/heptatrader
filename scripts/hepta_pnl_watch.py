@@ -20,6 +20,7 @@ class _ChangeWatch:
         self.fd = -1
         self._file_wd = self._parent_wd = -1
         self._name = b""
+        self.last_events = []
 
     @property
     def available(self):
@@ -30,7 +31,7 @@ class _ChangeWatch:
         if fd >= 0:
             os.close(fd)
 
-    def arm(self, path):
+    def arm(self, path, *, directory=False):
         self.close()
         if sys.platform != 'linux':
             return False
@@ -44,6 +45,8 @@ class _ChangeWatch:
             if self.fd < 0:
                 return False
             file_mask = 0x2 | 0x4 | 0x8 | 0x400 | 0x800 | 0x2000 | 0x02000000
+            if directory:
+                file_mask |= 0x40 | 0x80 | 0x100 | 0x200 | 0x01000000
             parent_mask = 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x2000 | 0x01000000
             self._file_wd = add(self.fd, os.fsencode(path), file_mask)
             self._parent_wd = add(self.fd, os.fsencode(Path(path).parent), parent_mask)
@@ -57,6 +60,7 @@ class _ChangeWatch:
             return False
 
     def changed(self):
+        self.last_events = []
         if self.fd < 0:
             return True
         found = False
@@ -83,6 +87,7 @@ class _ChangeWatch:
                     if (wd != self._parent_wd or not name or name == self._name
                             or mask & (0x400 | 0x800 | 0x2000 | 0x4000 | 0x8000)):
                         found = True
+                        self.last_events.append((wd == self._file_wd, mask, _cookie, name))
                     offset = end
             self.close()
             return True

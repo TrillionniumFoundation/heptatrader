@@ -60,6 +60,7 @@ LEARNING_TESTS = frozenset({
 NESTED_LEARNING_MODULES = frozenset({
     "laya_cell.tests.test_resident_row_worker",
     "laya_cell.tests.test_resident_price_baselines",
+    "laya_cell.tests.test_resident_training_v3",
 })
 
 
@@ -123,9 +124,11 @@ def main(argv: list[str] | None = None) -> int:
     loader = unittest.TestLoader()
     modules = {Path(name).stem for name in selected} | nested
     suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in sorted(modules))
-    if loader.errors or not suite.countTestCases():
-        for error in loader.errors:
-            print(error, file=sys.stderr)
+    # Import failures are represented by unittest._FailedTest instances.
+    # Run them with the valid modules so a broken import cannot hide the rest
+    # of the lane, while the aggregate result still fails.
+    if not suite.countTestCases():
+        print("Selected lane contains no tests.", file=sys.stderr)
         return 1
     print(f"Python lane={args.lane}: {len(selected)} files, {len(nested)} nested modules, "
           f"{suite.countTestCases()} cases", flush=True)

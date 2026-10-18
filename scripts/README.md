@@ -59,3 +59,44 @@ Supervisor test fixtures accept standard absolute `TMPDIR` for owned temporary
 state. Their defaults remain `/tmp`; record filesystem context for measurements.
 The existing coordinator `--generation-growth N` diagnostic likewise accepts
 `TMPDIR`. A tmpfs run measures software cost, not physical storage durability.
+
+## Runtime identity and driver inspection
+
+From the source checkout, use the read-only views:
+
+```sh
+python3 -B scripts/hepta_runtime_identity.py
+python3 -B scripts/install_decision_attribution.py --instrument EUR.USD --inspect-only
+python3 -B scripts/install_decision_attribution.py --instrument BTC.USD --inspect-only
+```
+
+The runtime view emits JSON for the current units, distinguishing configured
+executable/configuration hashes from the actual process identities and loaded
+native executable hashes. Driver inspection independently verifies the configured
+release and the release named by the real process argv, including their source
+revision and manifest/runtime hashes. It reports disagreement or an explicit
+inspection error; it does not substitute configured provenance for running proof.
+`configured_matches_running` is null if either identity cannot be verified.
+
+`hepta_verified_loader.py` is the shared pinned Python loader for BTC, cost and
+attribution adapters and installer snapshots. It executes the same source buffer
+whose SHA-256 was verified. New attributed runtime manifests and BTC installation
+receipts include the copied loader; the CostResearch installation places it beside
+the cost entry point. Immutable legacy attributed layouts remain inspectable and
+usable by the existing candidate/rollback validation. The attributed and BTC
+launchers forward `--recover-owner` to the base driver's existing recovery checks.
+
+## CI result isolation and scope
+
+The Python job gives documentation, core behavior and source contracts their own
+steps in one environment. A failed documentation or core step does not suppress
+the remaining diagnostics; failures still fail the job. Learning retains its
+independent job. Within a Python lane, an import failure runs as a failing unittest
+alongside valid modules instead of preventing every test in that lane from running.
+
+`ci_scope.py` keeps a bounded list of verified Python operator groups and requires
+their dependency/test files to exist. Activation and runtime-identity helper edits
+can run the Python lane without native builds or model installation. Unknown or
+shared source changes remain full scope. The whitespace check inspects the event's
+committed base/head range, with a bounded parent/root fallback for events lacking
+a base; an unresolved supplied base is an error.

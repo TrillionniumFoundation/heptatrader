@@ -16,6 +16,7 @@ from .native import NativePorts
 from .train import supervised_loss,verify_old_learner_inactive,verify_baseline
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,row_id,batches,receipt,checked_ids
 from . import resident_training_v2 as training_v2
+from . import resident_training_v3 as training_v3
 from . import resident_price_baselines as price_refs
 
 OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
@@ -49,8 +50,9 @@ def validate_parent(path):
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  if not old_learner_verified:verify_old_learner_inactive()
- if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
- v2=c['objective']==training_v2.OBJECTIVE
+ if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ training_policy=training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
+ v2=c['objective']!=OBJECTIVE
  base=Path(c['base_directory']);out=Path(c['output_directory'])
  if out.exists():raise ContractError('NEW_CANDIDATE_OUTPUT_REQUIRED')
  baseline_id=verify_baseline(Path(c['baseline_directory']))
@@ -60,7 +62,8 @@ def run_job(c,*,old_learner_verified=False):
  if sha_file(dataset_path)!=c['dataset_sha256']:raise ContractError('DATASET_CHANGED')
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
- if v2:rows=training_v2.timed_rows(rows,dataset)
+ if v2:rows=training_policy.timed_rows(rows,dataset)
+ if training_policy is training_v3:rows=training_v3.primary_rows(rows)
  eligible_rows=list(rows)
  if c.get('training_row_accounting_schema')!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
@@ -85,7 +88,7 @@ def run_job(c,*,old_learner_verified=False):
    parent_scores.append(float(F.cross_entropy(p,truth)))
    if v2:parent_action_logits[key]=a[0].detach().cpu()
  action_training_profile=None
- if v2:action_training_profile,training_batches=training_v2.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
+ if v2:action_training_profile,training_batches=training_policy.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
  optimizer=torch.optim.AdamW([p for p in cell.parameters() if p.requires_grad],lr=.0001,weight_decay=0.)
  steps=[];cell.train(True);seen_action=set();applied_action=0
  # Disjoint two-row batches, no inflated unique-sample count from overlapping slices.
@@ -158,7 +161,7 @@ def run_job(c,*,old_learner_verified=False):
   'pnl_note':'REMOTE_BEHAVIOR_REWARDS_CANNOT_BE_LAYA_POLICY_GRADIENT',
   'automatic_cutover':False,'broker_orders_sent':0,'canonical_owner_activation_claimed':False}
  if v2:
-  record.update(selection_policy=training_v2.SELECTION,price_baselines=frozen_price_baselines,
+  record.update(selection_policy=training_policy.SELECTION,price_baselines=frozen_price_baselines,
    row_statistics=training_v2.coverage(rows,c['window']['training_end_ms']),
    eligible_pool_statistics=training_v2.coverage(eligible_rows,c['window']['training_end_ms']),
    action_training_profile=action_training_profile,
