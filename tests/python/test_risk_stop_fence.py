@@ -1,19 +1,25 @@
 """Exact opt-in systemd risk-path stop-fence tests; no real unit operations."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import fcntl
+import os
 import subprocess
+import threading
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import install_risk_stop_fence as fence
+import hepta_maintenance_latch as latch
 
 
 def fixture_home(path: Path):
     home = path / "alex"
     unit_dir = home / ".config/systemd/user"
     unit_dir.mkdir(parents=True)
+    (home / ".local/state/heptatrader").mkdir(mode=0o700, parents=True)
     environment = home / ".config/heptatrader/execution.env"
     environment.parent.mkdir(exist_ok=True)
     environment.write_text(
@@ -162,6 +168,101 @@ class RiskStopFenceContract(unittest.TestCase):
                 path=home/'.config/systemd/user'/(name+'.d')/fence.GUARD_NAME
                 self.assertFalse(path.exists(),'installation without receipt changed stop policy')
             self.assertGreaterEqual(commands.count(('systemctl','--user','daemon-reload')),2)
+
+    def test_installer_waits_for_existing_latch_lock_before_observation(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = fixture_home(Path(td))
+            lock_path = home / ".local/state/heptatrader" / latch.LOCK
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            attempted = threading.Event()
+            real_flock = fcntl.flock
+            def waiting_flock(other, flags):
+                attempted.set()
+                return real_flock(other, flags)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    with (
+                        patch.object(latch.fcntl, "flock", side_effect=waiting_flock),
+                        patch.object(fence, "show_unit",
+                                     side_effect=lambda name: status(home, name)) as observe,
+                        patch.object(fence.subprocess, "run",
+                                     return_value=subprocess.CompletedProcess([], 0)) as reload,
+                    ):
+                        future = pool.submit(fence.install, home)
+                        try:
+                            self.assertTrue(attempted.wait(timeout=3))
+                            self.assertFalse(future.done())
+                            observe.assert_not_called()
+                            reload.assert_not_called()
+                        finally:
+                            real_flock(fd, fcntl.LOCK_UN)
+                        result = future.result(timeout=3)
+                        self.assertTrue(result["all_effective_refuse_manual_stop"])
+            finally:
+                os.close(fd)
+
+    def test_receipt_failure_keeps_shared_lock_through_rollback(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = fixture_home(Path(td))
+            lock_path = home / ".local/state/heptatrader" / latch.LOCK
+            calls = []
+            def assert_locked():
+                fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+            def reload(argv, **_):
+                assert_locked()
+                calls.append(tuple(argv))
+                return subprocess.CompletedProcess(argv, 0)
+            def failed_receipt(_):
+                assert_locked()
+                raise OSError("RECEIPT_WRITE_FAILED")
+            with (
+                patch.object(fence, "show_unit",
+                             side_effect=lambda name: status(home, name)),
+                patch.object(fence.subprocess, "run", side_effect=reload),
+            ):
+                with self.assertRaisesRegex(OSError, "RECEIPT_WRITE_FAILED"):
+                    fence.install(home, persist_receipt=failed_receipt)
+                self.assertEqual(len(calls), 2)
+                self.assertTrue(all(not (home / ".config/systemd/user" /
+                    (name + ".d") / fence.GUARD_NAME).exists() for name in fence.RISK_UNITS))
+                fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+                result = fence.install(home)
+                self.assertEqual(set(result["install_status"].values()), {"INSTALLED"})
+                self.assertTrue(all(status(home, name)["RefuseManualStop"] == "yes"
+                                    for name in fence.RISK_UNITS))
+
+    def test_unsafe_shared_lock_refused_before_any_unit_operation(self):
+        for kind in ("symlink", "hardlink", "permissions"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as td:
+                home = fixture_home(Path(td))
+                root = home / ".local/state/heptatrader"
+                lock = root / latch.LOCK
+                if kind == "symlink":
+                    target = root / "foreign"; target.write_bytes(b"")
+                    target.chmod(0o600); lock.symlink_to(target)
+                elif kind == "hardlink":
+                    target = root / "foreign"; target.write_bytes(b"")
+                    target.chmod(0o600); os.link(target, lock)
+                else:
+                    lock.write_bytes(b""); lock.chmod(0o640)
+                with (
+                    patch.object(fence, "show_unit") as observe,
+                    patch.object(fence.subprocess, "run") as reload,
+                ):
+                    with self.assertRaises((OSError, fence.StopFenceError)):
+                        fence.install(home)
+                    observe.assert_not_called()
+                    reload.assert_not_called()
 
     def test_conflicting_dropin_aborts_without_partial_install(self):
         with tempfile.TemporaryDirectory() as td:
