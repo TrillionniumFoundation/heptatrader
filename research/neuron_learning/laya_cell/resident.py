@@ -38,6 +38,9 @@ def config_check(config):
   if config['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
   if any(config.get('runtime_sha256',{}).get(rel) is None for rel in RUNTIME_PIN):
    raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
+ if config.get('future_plan_admission_profile') is not None:
+  from .resident_plan_admission import check_config as check_forward_plan_config
+  check_forward_plan_config(config)
  return config
 
 
@@ -82,21 +85,8 @@ class Supervisor:
   complete_job(self.db,row['id'],candidate)
   self.register_evaluation(row['id'],candidate,job)
   return True
- def register_evaluation(self,job_id,candidate,job):
-  folder=Path(self.c['evaluation_directory'])/job_id;folder.mkdir(parents=True,mode=0o700,exist_ok=True)
-  path=folder/'plan.json'
-  if path.exists():
-   old=read_json(path)
-   if old['candidate_id']!=candidate['candidate_id']:raise ContractError('EVALUATION_CANDIDATE_CONFLICT')
-   return
-  # The frozen rule still permits only one original PENDING trial.
-  # A trained artifact may wait, but does not create an overlapping trial.
-  if inspect_evaluation_queue(self.c)['pending_original_trials']:
-   return
-  with self.db:
-   trial=get_meta(self.db,'evaluation_trial',0)+1;put_meta(self.db,'evaluation_trial',trial)
-  rule=rule_for_trial(trial,self.c.get('promotion_protocol'))
-  now=int(time.time()*1000);start=now+120000
+ def _evaluation_plan(self,job_id,candidate,job,trial,now):
+  rule=rule_for_trial(trial,self.c.get('promotion_protocol'));start=now+120000
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
    'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000,
@@ -111,14 +101,33 @@ class Supervisor:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=pinned
-  plan['plan_id']=digest(plan);write_once(path,plan)
+  return plan
+ def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
   request={'schema':'heptatrader.unadmitted-laya-owner-handoff.v1','candidate_id':candidate['candidate_id'],
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json'),'dataset_id':candidate['dataset_id'],
    'parent_id':candidate['parent_id'],'native_proposal_digest':candidate['plasticity']['proposal_digest'],
    'required_owners':['learning.ledger','learning.operator','learning.artifacts','qualification','runtime.agentd'],
    'state':'UNADMITTED_CANONICAL_OWNER_NOT_ENROLLED','canonical_fact':False,'effect_authority':False}
-  write_once(self.root/'owner-outbox'/(candidate['candidate_id']+'.json'),request)
+  writer(self.root/'owner-outbox'/(candidate['candidate_id']+'.json'),request)
+ def register_evaluation(self,job_id,candidate,job):
+  folder=Path(self.c['evaluation_directory'])/job_id;folder.mkdir(parents=True,mode=0o700,exist_ok=True)
+  path=folder/'plan.json'
+  if self.c.get('future_plan_admission_profile') is not None:
+   # The policy handles existing plans/reservations before checking NEW admission.
+   from .resident_plan_admission import register
+   return register(self,job_id,candidate,job)
+  if path.exists():
+   old=read_json(path)
+   if old['candidate_id']!=candidate['candidate_id']:raise ContractError('EVALUATION_CANDIDATE_CONFLICT')
+   return
+  if inspect_evaluation_queue(self.c)['pending_original_trials']:
+   return
+  with self.db:
+   trial=get_meta(self.db,'evaluation_trial',0)+1;put_meta(self.db,'evaluation_trial',trial)
+  plan=self._evaluation_plan(job_id,candidate,job,trial,int(time.time()*1000))
+  plan['plan_id']=digest(plan);write_once(path,plan)
+  self._write_evaluation_handoff(candidate,job)
  def recover(self):
   if self.c.get('promotion_protocol')==PROTOCOL:
    floor=self.c.get('promotion_legacy_trial_floor')
@@ -133,14 +142,23 @@ class Supervisor:
    # Lost children are not blindly restarted over partially written candidates.
    with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('FAILED',row['id']))
    write_once(self.root/'failures'/(row['id']+'.json'),{'reason':'INTERRUPTED_JOB_NO_COMMITTED_CANDIDATE','job_id':row['id'],'rows_remain_consumed':True})
+ def _waiting_evaluations(self):
+  rows=[row for row in self.db.execute("SELECT * FROM jobs WHERE status='COMPLETED' ORDER BY created_ms").fetchall()
+        if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
+  if self.c.get('future_plan_admission_profile') is None:return rows,{}
+  from .resident_plan_admission import waiting_candidates
+  return waiting_candidates(self,rows)
  def reconcile_evaluation_queue(self):
+  if self.c.get('future_plan_admission_profile') is not None:
+   from .resident_plan_admission import resume_reservations
+   resume_reservations(self)
   queue=inspect_evaluation_queue(self.c)
-  waiting=[row for row in self.db.execute("SELECT * FROM jobs WHERE status='COMPLETED' ORDER BY created_ms").fetchall()
-           if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
+  waiting,registration=self._waiting_evaluations()
   if waiting and queue['pending_original_trials']==0:
    if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
    queue=inspect_evaluation_queue(self.c)
-   waiting=[row for row in waiting if not (Path(self.c['evaluation_directory'])/row['id']/'plan.json').exists()]
+   waiting,registration=self._waiting_evaluations()
+  queue.update(registration)
   queue['deferred_training_candidates']=len(waiting)
   return queue
  def sync_rewards(self,now=None):
@@ -183,7 +201,7 @@ class Supervisor:
   queue=self.reconcile_evaluation_queue()
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if queue['deferred_training_candidates']:
-   return self.write_status(state='CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END',**queue)
+   return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
    return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
   return None
@@ -194,7 +212,7 @@ class Supervisor:
    return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
   rewards=self.sync_rewards(now)
   queue=self.reconcile_evaluation_queue()
-  if queue['deferred_training_candidates']:return self.write_status(state='CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END',**queue)
+  if queue['deferred_training_candidates']:return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)

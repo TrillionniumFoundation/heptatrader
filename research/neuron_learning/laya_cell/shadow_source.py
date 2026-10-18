@@ -16,6 +16,7 @@ import stat
 import subprocess
 import time
 import uuid
+from .feed_health import CaptureHealth, atomic_status, UPDATE_SECONDS
 
 SCHEMA='heptatrader.laya-shadow-quotes.v1'
 MAX_BYTES=64*1024*1024
@@ -145,8 +146,9 @@ def collect(root,seconds):
     period_sha=hashlib.sha256(period_raw).hexdigest()
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     seq=0;previous='0'*64;stop=False;counts={}
+    health=CaptureHealth(path,period_sha,int(time.time()*1000));last_health_write=0.0
     def append(kind,data):
-        nonlocal seq,previous
+        nonlocal seq,previous,last_health_write
         body={'schema':SCHEMA,'sequence':seq,'previous':previous,'at_ms':int(time.time()*1000),'kind':kind,'data':data}
         checksum=digest(body);raw=canonical({**body,'sha256':checksum})+b'\n';off=0
         while off<len(raw):
@@ -154,6 +156,11 @@ def collect(root,seconds):
             if written<=0:raise OSError('SOURCE_SHORT_WRITE')
             off+=written
         os.fsync(fd);previous=checksum;seq+=1;counts[kind]=counts.get(kind,0)+1
+        health.observe(kind,data,body['at_ms'])
+        clock=time.monotonic()
+        if kind in ('HEADER','END') or clock-last_health_write>=UPDATE_SECONDS:
+            atomic_status(root/'collector-status.json',health.snapshot(body['at_ms'],completed=kind=='END'))
+            last_health_write=clock
     def finish(*_):
         nonlocal stop
         stop=True
@@ -182,7 +189,8 @@ def collect(root,seconds):
             time.sleep(max(.1,1-(time.monotonic()-begin)))
         append('END',{'broker_orders_sent':0})
     finally:os.close(fd)
-    report={'path':str(path),'events':seq,'counts':counts,'chain_head':previous,'broker_orders_sent':0}
+    report={'path':str(path),'events':seq,'counts':counts,'chain_head':previous,'broker_orders_sent':0,
+            'data_health':health.snapshot(int(time.time()*1000),completed=True)}
     with (root/'collector-receipt.json').open('x') as f:f.write(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report),flush=True)
 
