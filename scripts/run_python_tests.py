@@ -52,6 +52,7 @@ LEARNING_TESTS = frozenset({
     "test_laya_frozen_price_numpy.py",
     "test_laya_resident_action_v2_research.py",
     "test_neuron256_archived_kernel_learning.py",
+    "test_research_contract_smoke.py",
 })
 
 

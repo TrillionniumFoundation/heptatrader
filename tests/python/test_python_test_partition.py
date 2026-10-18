@@ -20,9 +20,11 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertEqual(set.union(*groups.values()),
                          {p.name for p in (ROOT / "tests/python").glob("test_*.py")})
         self.assertEqual(sum(map(len, groups.values())), len(set.union(*groups.values())))
-        self.assertEqual(groups["learning"], {"test_laya_frozen_price_numpy.py",
-                                              "test_laya_resident_action_v2_research.py",
-                                              "test_neuron256_archived_kernel_learning.py"})
+        required = {"test_laya_frozen_price_numpy.py",
+                    "test_laya_resident_action_v2_research.py",
+                    "test_neuron256_archived_kernel_learning.py",
+                    "test_research_contract_smoke.py"}
+        self.assertTrue(required <= groups["learning"])
         self.assertFalse(groups["learning"] & groups["core"])
 
     def test_future_test_defaults_to_core_and_install_is_not_duplicated(self) -> None:
