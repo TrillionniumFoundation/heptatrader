@@ -8,6 +8,7 @@ The trading services are neither started nor stopped by this program.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -23,7 +24,8 @@ import time
 from typing import Callable
 
 from hepta_pnl_accounting import (EvidenceError, INSTRUMENTS, amount, build_report,
-                                  number, positive_int, validate_period)
+                                  number, positive_int, validate_period, replay as replay_ledger)
+from hepta_pnl_watch import StableJournalBytes
 
 READ_TOOLS = frozenset({"system.get_health", "orders.list", "portfolio.list_positions", "market.get_quote"})
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
@@ -213,27 +215,47 @@ def observe(reader: Callable, period: dict, instrument: str) -> dict:
 
 
 class IncrementalOMSParser:
-    """In-process watch cache bound to the exact original OMS byte prefix.
-
-    Full source bytes are still read and hash-checked on every cycle. Only JSON
-    decoding is avoided for unchanged history. Never trust size/mtime alone,
-    infer missing fees, overwrite the journal or persist a cached identity.
-    """
+    """Reuse verified bytes and ledger state; always obtain fresh valuations."""
     def __init__(self):
         self._size = 0
         self._sha = None
+        self._raw = None
         self._events = []
+        self._max_event_at_ms = 0
+        self._files = StableJournalBytes(read_private, lambda: now_ms())
+        self._ledger_scope = None
+        self._ledger_clock = None
+        self._ledgers = {}
         self.hits = 0
         self.appends = 0
         self.rebuilds = 0
+
+    def read(self, path: Path):
+        return self._files.read(path, MAX_JOURNAL_BYTES)
+
+    def verify(self, path: Path):
+        self._files.verify(path)
+
+    def close(self):
+        self._files.close()
+
+    @property
+    def journal_sha256(self):
+        if self._sha is None:
+            raise EvidenceError("OMS_CACHE_NOT_VERIFIED")
+        return self._sha.hex()
 
     def parse(self, raw: bytes) -> list[dict]:
         if type(raw) is not bytes or len(raw) > MAX_JOURNAL_BYTES:
             raise EvidenceError("OMS_INPUT_TYPE_OR_SIZE")
         if raw and not raw.endswith(b"\n"):
             raise EvidenceError("OMS_INCOMPLETE_TAIL")
+        if raw is self._raw:
+            self.hits += 1
+            return self._events
         sha = hashlib.sha256(raw).digest()
         if self._sha == sha and self._size == len(raw):
+            self._raw = raw
             self.hits += 1
             return self._events
         if (self._sha is not None and len(raw) > self._size
@@ -250,13 +272,33 @@ class IncrementalOMSParser:
                 raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
             events = [strict_json(line.decode()) for line in lines]
             appended = False
-        # Never poison a valid cache on malformed, truncated or partial bytes.
         self._events, self._sha, self._size = events, sha, len(raw)
+        self._max_event_at_ms = max((event["ts_ms"] for event in events
+                                     if type(event.get("ts_ms")) is int), default=0)
+        self._raw = raw
         if appended:
             self.appends += 1
         else:
             self.rebuilds += 1
         return events
+
+    def replay_ledger(self, events, period, instrument, at_ms):
+        if events is not self._events or self._sha is None:
+            raise EvidenceError("OMS_CACHE_EVENTS_IDENTITY")
+        scope = (self._sha, json.dumps(period, sort_keys=True,
+                                      separators=(",", ":"), allow_nan=False))
+        if (scope != self._ledger_scope or
+                (self._ledger_clock is not None and at_ms < self._ledger_clock)):
+            self._ledgers = {}
+            self._ledger_scope = scope
+        self._ledger_clock = at_ms
+        # Future terminal witnesses become effective as the clock advances.
+        if self._max_event_at_ms > at_ms:
+            self._ledgers = {}
+            return replay_ledger(events, period, instrument, at_ms)
+        if instrument not in self._ledgers:
+            self._ledgers[instrument] = replay_ledger(events, period, instrument, at_ms)
+        return copy.deepcopy(self._ledgers[instrument])
 
 
 def collect(reader: Callable, period_path: Path, state_root: Path,
@@ -265,7 +307,8 @@ def collect(reader: Callable, period_path: Path, state_root: Path,
     period = strict_json(raw_period.decode())
     validate_period(period)
     journal = state_root / "execution/oms-journal.jsonl"
-    raw_journal, journal_fingerprint = read_private(journal, MAX_JOURNAL_BYTES)
+    raw_journal, journal_fingerprint = (journal_parser.read(journal) if journal_parser is not None
+                                       else read_private(journal, MAX_JOURNAL_BYTES))
     if journal_parser is None:
         if raw_journal and not raw_journal.endswith(b"\n"):
             raise EvidenceError("OMS_INCOMPLETE_TAIL")
@@ -297,8 +340,12 @@ def collect(reader: Callable, period_path: Path, state_root: Path,
         path = state_root / ("crypto-driver" if instrument == "BTC.USD" else "paper-driver") / "state.json"
         if load_private(path).get("day_one_started_at_ms") != period["started_at_ms"]:
             raise EvidenceError("DRIVER_ACCOUNTING_PERIOD_CHANGED")
-    report = build_report(events, period, observations, now_ms(), states)
-    report.update(period_sha256=hashlib.sha256(raw_period).hexdigest(), journal_sha256=hashlib.sha256(raw_journal).hexdigest(),
+    if journal_parser is not None:
+        journal_parser.verify(journal)
+    report = build_report(events, period, observations, now_ms(), states,
+                          ledger_provider=journal_parser.replay_ledger if journal_parser is not None else None)
+    journal_sha256 = journal_parser.journal_sha256 if journal_parser is not None else hashlib.sha256(raw_journal).hexdigest()
+    report.update(period_sha256=hashlib.sha256(raw_period).hexdigest(), journal_sha256=journal_sha256,
                   journal_records=len(events), journal_fingerprint=list(journal_fingerprint), producer_source_sha=source_revision(),
                   observation_details=observations)
     return report
@@ -695,6 +742,8 @@ def main(argv=None) -> int:
         deadline = start + args.interval_sec
         while not stop and time.monotonic() < deadline:
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+    if journal_parser is not None:
+        journal_parser.close()
     return 0
 
 
