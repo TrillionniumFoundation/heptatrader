@@ -1,5 +1,6 @@
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(HEPTA_CORE_TEST_TARGETS)
@@ -163,6 +164,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         PRIVATE -Wl,--wrap=fsync -Wl,--wrap=rename)
 endif()
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
+
+add_executable(hepta_sessionctl_owner_audit_tests
+    sessionctl_owner_audit_tests.cpp
+    ../HeptaTrade/cli/hepta_sessionctl_owner_audit.cpp
+    ../HeptaTrade/cli/hepta_sessionctl_command.cpp
+    ../HeptaTrade/tool_host/agent_os_runtime_config.cpp
+    ../HeptaTrade/tool_host/execution_gateway_runtime_config.cpp)
+target_link_libraries(hepta_sessionctl_owner_audit_tests PRIVATE
+    hepta_session_audit hepta_session_supervisor_core
+    hepta_execution_client hepta_execution_server hepta_agent_execution_support
+    Threads::Threads OpenSSL::Crypto ZLIB::ZLIB)
+hepta_register_core_test(hepta_sessionctl_owner_audit_tests)
+set_tests_properties(hepta_sessionctl_owner_audit_tests PROPERTIES TIMEOUT 30)
+
 
 add_executable(hepta_agent_simulator_e2e_tests
     agent_simulator_e2e_tests.cpp)

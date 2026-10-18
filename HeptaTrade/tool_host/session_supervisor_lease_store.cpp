@@ -750,8 +750,30 @@ bool SessionSupervisorLeaseStore::Init(const std::string& path,
     return true;
 }
 
+bool SessionSupervisorLeaseStore::LoadExisting(const std::string& path,
+    const std::string& keyPath, const std::string& cleanupLockPath,
+    std::uint32_t expectedLockUid, std::uint32_t expectedLockGid,
+    std::string& reason)
+{
+    if (path.empty()) { reason = "LEASE_STORE_PATH_REQUIRED"; return false; }
+    ScopedCleanupLock cleanupLock;
+    if (!cleanupLock.AcquireSharedForInit(
+            cleanupLockPath, expectedLockUid, expectedLockGid, reason))
+        return false;
+    if (!InitStoreState(path, keyPath, reason, false)) return false;
+    const int previousCleanupLockFd = m_cleanupLockFd;
+    m_cleanupLockFd = cleanupLock.Release();
+    if (previousCleanupLockFd >= 0)
+    {
+        ::flock(previousCleanupLockFd, LOCK_UN);
+        ::close(previousCleanupLockFd);
+    }
+    reason.clear();
+    return true;
+}
+
 bool SessionSupervisorLeaseStore::InitStoreState(const std::string& path,
-    const std::string& keyPath, std::string& reason)
+    const std::string& keyPath, std::string& reason, bool createMissing)
 {
     if (path.empty()) { reason = "LEASE_STORE_PATH_REQUIRED"; return false; }
     if (!LoadKey(keyPath, reason)) return false;
@@ -769,6 +791,11 @@ bool SessionSupervisorLeaseStore::InitStoreState(const std::string& path,
     if (!LoadEncryptedPlaintextLocked(path, plaintext, missing, reason)) return false;
     if (missing)
     {
+        if (!createMissing)
+        {
+            reason = "LEASE_STORE_EXISTING_SOURCE_REQUIRED";
+            return false;
+        }
         if (PersistLocked(reason) != PersistOutcome::Committed) return false;
     }
     else if (!ParsePlaintext(plaintext, reason)) return false;

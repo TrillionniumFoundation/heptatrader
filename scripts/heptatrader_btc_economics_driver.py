@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse,copy,hashlib,importlib.util,json,os,stat,sys
 from pathlib import Path
 from hepta_btc_entry_policy import PROFILE,HORIZONS,PolicyError,canonical,digest,number,validate_forecast,validate_control,reserve,evaluate
-BASE_SHA256='16504eaef4d539bb612175b6e9a6783b8015520d3978477a510aa5f645300ab7'
+BASE_SHA256='12fb61ad9355737379e8a8908c3ee7861e726d6787d894a9c7a6cd4afdff7ebf'
 SCHEMA={'type':'object','required':['action','confidence','rationale','expected_move_bps','horizon_sec'],
  'additionalProperties':False,'properties':{'action':{'enum':['BUY','SELL','HOLD']},
  'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string','minLength':1,'maxLength':2000},

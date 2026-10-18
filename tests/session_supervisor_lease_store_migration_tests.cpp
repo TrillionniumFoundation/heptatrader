@@ -2151,6 +2151,103 @@ void TestLinuxOPathOpensSearchOnlyLockParent()
 #endif
 }
 
+struct LoadExistingFiles
+{
+    std::string directory, path, keyPath, lockPath;
+    LoadExistingFiles()
+    {
+        char pattern[] = "/tmp/hepta-load-existing-XXXXXX";
+        char* created = ::mkdtemp(pattern);
+        assert(created != nullptr);
+        directory = created;
+        assert(::chmod(directory.c_str(), 0711) == 0);
+        path = directory + "/leases";
+        keyPath = directory + "/key";
+        lockPath = directory + "/cleanup.lock";
+        WriteFile(keyPath, std::string(32, 'K'), 0600);
+        WriteFile(lockPath, "", 0644);
+    }
+    ~LoadExistingFiles()
+    {
+        ::unlink(path.c_str());
+        ::unlink(keyPath.c_str());
+        ::unlink(lockPath.c_str());
+        ::rmdir(directory.c_str());
+    }
+    bool Load(SessionSupervisorLeaseStore& store, std::string& reason) const
+    {
+        return store.LoadExisting(path, keyPath, lockPath,
+            static_cast<std::uint32_t>(::geteuid()),
+            static_cast<std::uint32_t>(::getegid()), reason);
+    }
+    bool Init(SessionSupervisorLeaseStore& store, std::string& reason) const
+    {
+        return store.Init(path, keyPath, lockPath,
+            static_cast<std::uint32_t>(::geteuid()),
+            static_cast<std::uint32_t>(::getegid()), reason);
+    }
+};
+
+void AssertLoadExistingFileUnchanged(const std::string& path,
+    const std::string& bytes, const struct stat& before)
+{
+    struct stat after;
+    assert(::lstat(path.c_str(), &after) == 0);
+    assert(after.st_dev == before.st_dev && after.st_ino == before.st_ino);
+    assert(after.st_mode == before.st_mode && after.st_size == before.st_size);
+    assert(ReadFile(path) == bytes);
+}
+void TestLoadExistingNeverCreatesMissingStore()
+{
+    LoadExistingFiles files;
+    const std::string keyBytes = ReadFile(files.keyPath);
+    struct stat keyBefore, absent;
+    assert(::lstat(files.keyPath.c_str(), &keyBefore) == 0);
+    std::string reason;
+    {
+        SessionSupervisorLeaseStore reader;
+        assert(!files.Load(reader, reason));
+        assert(reason == "LEASE_STORE_EXISTING_SOURCE_REQUIRED");
+    }
+    errno = 0;
+    assert(::lstat(files.path.c_str(), &absent) == -1 && errno == ENOENT);
+    AssertLoadExistingFileUnchanged(files.keyPath, keyBytes, keyBefore);
+}
+void TestLoadExistingPreservesFilesAndSharesCleanupLock()
+{
+    LoadExistingFiles files;
+    std::string reason;
+    {
+        SessionSupervisorLeaseStore bootstrap;
+        assert(files.Init(bootstrap, reason));
+    }
+    const std::string storeBytes = ReadFile(files.path);
+    const std::string keyBytes = ReadFile(files.keyPath);
+    struct stat storeBefore, keyBefore;
+    assert(::lstat(files.path.c_str(), &storeBefore) == 0);
+    assert(::lstat(files.keyPath.c_str(), &keyBefore) == 0);
+    const int lockFd = ::open(files.lockPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    assert(lockFd >= 0);
+    assert(::flock(lockFd, LOCK_SH | LOCK_NB) == 0);
+    {
+        SessionSupervisorLeaseStore first, second;
+        assert(files.Load(first, reason));
+        assert(files.Load(second, reason));
+        assert(first.List().empty() && second.List().empty());
+        assert(::flock(lockFd, LOCK_UN) == 0);
+        errno = 0;
+        assert(::flock(lockFd, LOCK_EX | LOCK_NB) == -1);
+        assert(errno == EWOULDBLOCK || errno == EAGAIN);
+        AssertLoadExistingFileUnchanged(files.path, storeBytes, storeBefore);
+        AssertLoadExistingFileUnchanged(files.keyPath, keyBytes, keyBefore);
+    }
+    assert(::flock(lockFd, LOCK_EX | LOCK_NB) == 0);
+    assert(::flock(lockFd, LOCK_UN) == 0);
+    assert(::close(lockFd) == 0);
+    AssertLoadExistingFileUnchanged(files.path, storeBytes, storeBefore);
+    AssertLoadExistingFileUnchanged(files.keyPath, keyBytes, keyBefore);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2160,6 +2257,8 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--writer-exclusion")
     { TestCommitWriterExclusionAndReopen(); TestSeparateProcessWritersPreserveConfirmedCommits(); return 0; }
     assert(argc == 1);
+    TestLoadExistingNeverCreatesMissingStore();
+    TestLoadExistingPreservesFilesAndSharesCleanupLock();
     TestCommitWriterExclusionAndReopen();
     TestSeparateProcessWritersPreserveConfirmedCommits();
     TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity();
