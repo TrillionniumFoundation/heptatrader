@@ -61,5 +61,80 @@ class RuntimeIdentityTests(unittest.TestCase):
         self.assertFalse(result["python_in_memory_module_bytes_verified"])
 
 
+
+
+class AggregateRuntimeIdentityTests(unittest.TestCase):
+    def _probe_records(self):
+        return {
+            unit: {"unit": unit, "status": "FIXTURE_PROBE_RESULT",
+                   "probe_payload": {"configured_sha256": "a" * 64,
+                                     "loaded_sha256": "b" * 64,
+                                     "pid": 7000 + index}}
+            for index, unit in enumerate(identity.UNITS)
+        }
+    def test_all_units_keep_generic_identity_and_only_drivers_get_release_identity(self):
+        paper = "heptatrader-paper-driver.service"
+        crypto = "heptatrader-crypto-driver.service"
+        probes = self._probe_records()
+        releases = {
+            paper: {
+                "status": "CONFIGURED_DIFFERS_FROM_RUNNING",
+                "configured": {"source_sha": "c" * 40, "manifest_sha256": "1" * 64},
+                "running": {"source_sha": "d" * 40, "manifest_sha256": "2" * 64},
+                "configured_matches_running": False,
+            },
+            crypto: {
+                "status": "CONFIGURED_AND_RUNNING_VERIFIED",
+                "configured": {"source_sha": "e" * 40, "manifest_sha256": "3" * 64},
+                "running": {"source_sha": "e" * 40, "manifest_sha256": "3" * 64},
+                "configured_matches_running": True,
+            },
+        }
+        with patch.object(identity, "inspect_unit", side_effect=lambda unit: dict(probes[unit])) as probe, \
+             patch.object(identity.attribution, "inspect_running_runtime",
+                          side_effect=lambda unit, instrument: releases[unit]) as release:
+            result = identity.inspect()
+        self.assertEqual(set(result["units"]), set(identity.UNITS))
+        self.assertEqual(probe.call_count, len(identity.UNITS))
+        self.assertCountEqual([item.args for item in probe.call_args_list], [(unit,) for unit in identity.UNITS])
+        self.assertCountEqual([(item.args, item.kwargs) for item in release.call_args_list],
+                              [((paper, "EUR.USD"), {}), ((crypto, "BTC.USD"), {})])
+        for unit, expected in probes.items():
+            observed = result["units"][unit]
+            self.assertEqual({key: observed[key] for key in expected}, expected)
+            if unit in releases:self.assertEqual(observed["driver_release"], releases[unit])
+            else:self.assertNotIn("driver_release", observed)
+        self.assertIs(result["units"][paper]["driver_release"]["configured_matches_running"], False)
+        self.assertFalse(result["trade_authority"]);self.assertFalse(result["service_changed"])
+    def test_one_driver_release_error_preserves_the_other_units_and_native_evidence(self):
+        paper = "heptatrader-paper-driver.service";crypto = "heptatrader-crypto-driver.service"
+        probes = self._probe_records()
+        crypto_release = {
+            "status": "CONFIGURED_AND_RUNNING_VERIFIED",
+            "configured": {"source_sha": "e" * 40, "manifest_sha256": "3" * 64},
+            "running": {"source_sha": "e" * 40, "manifest_sha256": "3" * 64},
+            "configured_matches_running": True,
+        }
+        def release_probe(unit, instrument):
+            if unit == paper:raise RuntimeError("fixture running manifest unavailable")
+            self.assertEqual((unit, instrument), (crypto, "BTC.USD"))
+            return crypto_release
+        with patch.object(identity, "inspect_unit", side_effect=lambda unit: dict(probes[unit])), \
+             patch.object(identity.attribution, "inspect_running_runtime", side_effect=release_probe) as release:
+            result = identity.inspect()
+        self.assertEqual(set(result["units"]), set(identity.UNITS));self.assertEqual(release.call_count, 2)
+        for unit, expected in probes.items():
+            observed=result["units"][unit]
+            self.assertEqual({key: observed[key] for key in expected}, expected)
+            if unit not in (paper, crypto):self.assertNotIn("driver_release", observed)
+        failed=result["units"][paper]["driver_release"]
+        self.assertEqual(failed["status"], "INSPECTION_INCOMPLETE")
+        self.assertIn("fixture running manifest unavailable", failed["error"])
+        self.assertIsNone(failed["configured_matches_running"]);self.assertNotIn("running", failed)
+        self.assertFalse(failed["trade_authority"]);self.assertFalse(failed["service_changed"])
+        self.assertEqual(result["units"][crypto]["driver_release"], crypto_release)
+        self.assertFalse(result["trade_authority"]);self.assertFalse(result["service_changed"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,8 @@ RUNTIME_PINS = tuple(dict.fromkeys(previous.RUNTIME_PINS + (
     'learn/laya_cell/resident_training_v3.py',
     'learn/laya_cell/resident_data.py', 'learn/laya_cell/resident_train.py',
     'learn/laya_cell/resident_predict.py', 'learn/laya_cell/promotion.py',
-    'learn/data.py')))
+    'learn/data.py', 'learn/laya_cell/resident_reward_cache.py',
+    'scripts/hepta_pnl_watch.py')))
 OBJECTIVE = {**deepcopy(previous.OBJECTIVE), 'schema': SCHEMA,
     'row_selection': SELECTION, 'primary_horizon_seconds': PRIMARY_HORIZON_SECONDS,
     'training_horizons_seconds': [PRIMARY_HORIZON_SECONDS],

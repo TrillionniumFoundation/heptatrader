@@ -161,11 +161,27 @@ def inspect_unit(unit):
 
 def inspect():
     units = {}
+    driver_instruments = {
+        "heptatrader-paper-driver.service": "EUR.USD",
+        "heptatrader-crypto-driver.service": "BTC.USD",
+    }
     for unit in UNITS:
         try:
             units[unit] = inspect_unit(unit)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             units[unit] = {"unit": unit, "status": "IDENTITY_UNAVAILABLE", "error": str(exc)}
+        instrument = driver_instruments.get(unit)
+        if instrument is not None:
+            try:
+                units[unit]["driver_release"] = attribution.inspect_running_runtime(unit, instrument)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                units[unit]["driver_release"] = {
+                    "schema": "heptatrader.attribution-runtime-inspection.v1",
+                    "unit": unit, "instrument": instrument,
+                    "status": "INSPECTION_INCOMPLETE", "error": str(exc),
+                    "configured_matches_running": None,
+                    "trade_authority": False, "service_changed": False,
+                }
     return {"schema": "heptatrader.runtime-identity.v1", "at_ms": int(time.time() * 1000),
             "units": units, "trade_authority": False, "service_changed": False}
 
