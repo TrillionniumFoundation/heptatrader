@@ -192,6 +192,13 @@ public:
               std::uint32_t expectedLockUid,
               std::uint32_t expectedLockGid,
               std::string& reason);
+    // Load an existing encrypted owner store without creating or persisting it.
+    // Shared cleanup coordination and normal stable-file/key checks still apply.
+    bool LoadExisting(const std::string& path, const std::string& keyPath,
+                      const std::string& cleanupLockPath,
+                      std::uint32_t expectedLockUid,
+                      std::uint32_t expectedLockGid,
+                      std::string& reason);
     // One-shot, cleanup-only migration for the pre-owner HSL4/HSL5 PAPER
     // layouts. Every PAPER record in the legacy source must match the fixed
     // scope and already be expired and free of predecessor/fence/recovery
@@ -245,7 +252,7 @@ public:
 private:
     bool InitStoreState(const std::string& path,
                         const std::string& keyPath,
-                        std::string& reason);
+                        std::string& reason, bool createMissing = true);
     static std::string HexEncode(const std::string& value);
     static bool HexDecode(const std::string& value, std::string& decoded);
     bool LoadKey(const std::string& keyPath, std::string& reason);

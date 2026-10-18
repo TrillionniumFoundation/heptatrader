@@ -146,3 +146,48 @@ unchanged. Existing registration identities remain valid. A terminal DB
 commit interrupted before immutable publication is recovered with the same
 receipt identity and time. Original frozen plans and outcomes continue through
 their original evaluation path.
+
+## Pocket4 calendar-terminal activation, 2026-10-18
+
+PR #429 is merged. The staged runtime changed only resident.py and its ordinary
+source pin; the three policy pins, policy effective time 1792278717089, all other
+configuration fields and all five resource-guard module pins stayed identical.
+The 44 targeted admission, calendar and durable-scheduler tests passed.
+
+The existing trainer received its supported SIGUSR1 drain request. After its
+normal exit and release of scheduler.lock, the existing final systemd drop-in
+was replaced with the candidate configuration. The readmission timer was
+restored. The new trainer PID is 3255541; its actual command, Python path and
+working directory point to forward-calendar-terminal-08549a92a9d00cb8cdc8.
+The evaluator PID 1933818 and its invocation were preserved.
+
+At 2026-10-18 03:14:19 UTC, the original candidate 7becfed53974 had an immutable
+NO_FORWARD_TRIAL receipt matching its SQLite record. The calendar reason was
+NO_CONTINUOUS_OPEN_WINDOW_FITS, trial_allocated=false and
+performance_assessment=false. Its training result remains COMPLETED.
+The original trial counter stayed 41, every previous plan and recorded outcome
+was preserved, and trial c15cb8b1abdc continued its original pending window.
+
+A subsequent historical-training job de320045ca6f completed as candidate
+7bd3b2c37c67. The completed-job count increased from 41 to 42. This is observed
+training progress after the queue release; it is not a promotion or trade permit.
+
+Pocket4 evidence is under
+/home/alex/.local/state/heptatrader/operator-evidence/driver-handoff-20261018/:
+training-forward-calendar-stage.json,
+training-forward-calendar-deployment.json,
+training-forward-calendar-live-outcome.json and forward-calendar-targeted-tests.txt.
+
+## Driver registration continuation on 2026-10-18
+
+The calendar-terminal runtime remained active while the two prepared drivers
+were actually upgraded. Its trainer subsequently loaded append-only attribution
+registrations (EUR.USD 3 to 4, BTC.USD 1 to 2) through the supported normal drain.
+The runtime and all 64 source pins were unchanged. The old evaluator process,
+41 existing plans, 64 original-trial outcomes and trial counter 41 were preserved
+at the configuration cutover. A normal reward sync after startup succeeded.
+
+The 2026-10-18T04:40:06.252000+00:00 snapshot shows 46 completed jobs,
+zero deferred candidates and the original pending trial still bound to its original
+plan. A NO_FORWARD_TRIAL result remains a calendar outcome rather than a performance
+rejection. New registration does not allocate a trial or require a new broker order.

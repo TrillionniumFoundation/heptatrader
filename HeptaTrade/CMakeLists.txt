@@ -361,9 +361,12 @@ target_link_libraries(heptactl PRIVATE hepta_native_tool_client)
 
 add_executable(hepta_sessionctl
     cli/hepta_sessionctl.cpp
+    cli/hepta_sessionctl_owner_audit.cpp
     cli/hepta_sessionctl_command.cpp
     cli/hepta_sessionctl_terminal_cleanup.cpp
-    tool_host/unix_session_supervisor_client.cpp)
+    tool_host/unix_session_supervisor_client.cpp
+    tool_host/agent_os_runtime_config.cpp
+    tool_host/execution_gateway_runtime_config.cpp)
 set_target_properties(hepta_sessionctl PROPERTIES
     OUTPUT_NAME "hepta-sessionctl")
 target_include_directories(hepta_sessionctl PRIVATE
@@ -371,6 +374,7 @@ target_include_directories(hepta_sessionctl PRIVATE
 target_link_libraries(hepta_sessionctl PRIVATE
     hepta_session_audit
     hepta_session_supervisor_core
+    hepta_execution_client
     Threads::Threads
     OpenSSL::Crypto ZLIB::ZLIB)
 
