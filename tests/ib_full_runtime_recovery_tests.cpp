@@ -84,6 +84,8 @@ struct Shared {
     std::atomic<int> reconnectPositionEndDelayMs{0};
     std::atomic<int> reconnectCode{1101};
     std::atomic<bool> omitPositions{false};
+    std::atomic<bool> emitBtcQuotes{true}, emitFxQuotes{true};
+    std::atomic<unsigned> btcQuoteRequests{0}, fxQuoteRequests{0};
     std::atomic<int> cashBalanceOverride{0};
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
@@ -97,6 +99,28 @@ class NeverEnableTrading final:public IbPaperKillSwitchReader {
 public:IbPaperKillSwitchObservation Observe()const override {
     IbPaperKillSwitchObservation x;x.state=IbPaperKillSwitchState::Engaged;x.reasonCode="OFFLINE_FIXTURE_NO_TRADING";return x;
 }};
+// Used only inside this kernel-isolated, socket-free executable. A disarmed
+// in-memory reader prevents a kill gate from masking quote admission failures.
+class UnheldQuoteRegression final:public IbPaperKillSwitchReader {
+public:IbPaperKillSwitchObservation Observe()const override {
+    IbPaperKillSwitchObservation x;x.state=IbPaperKillSwitchState::Disarmed;return x;
+}};
+struct IbFullRuntimeRecoveryAccess {
+    static IbPaperExecutionPolicyAuthority& policy(IbPaperExecutionRuntimeComposition& r) {
+        return *r.m_policyAuthority;
+    }
+    static MarketQuoteSnapshot quote(IbPaperExecutionRuntimeComposition& r,const std::string& instrument) {
+        return r.AuthoritativeQuote(instrument);
+    }
+    static bool riskReady(IbPaperExecutionRuntimeComposition& r,std::string& reason) {
+        return r.AllowsRiskIncrease(reason);
+    }
+    static bool finalSend(IbPaperExecutionRuntimeComposition& r,
+        const IBFinalOrderSendContext& context,const IBContractLite& contract,
+        const IBOrderLite& order,std::string& reason) {
+        return r.AuthorizeFinalBrokerSend(&context,contract,order,&reason);
+    }
+};
 class FullBroker final:public IIBApiWrapper {
     std::shared_ptr<Shared> s;
     bool connected=false,cashReady=true;
@@ -183,7 +207,9 @@ public:
             if(delay>0)std::this_thread::sleep_for(std::chrono::milliseconds(delay));
         }
         if(c.secType=="CASH"&&!cashReady)return false;
-        check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;return true;
+        check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;
+        if(c.secType=="CASH")++s->fxQuoteRequests;else ++s->btcQuoteRequests;
+        return true;
     }
     bool CancelMktData(int id)override {
         const auto found=quotes.find(id);check(found!=quotes.end(),"cancel owned quote only");
@@ -207,7 +233,8 @@ public:
     bool PollOnce(int)override {
         if(ms()-lastTicks>80) {
             lastTicks=ms();
-            for(const auto& q:quotes)if(q.second.secType!="CASH"||cashReady)for(int leg=1;leg<=2;++leg){
+            for(const auto& q:quotes)if((q.second.secType=="CASH" ?
+                cashReady&&s->emitFxQuotes.load() : s->emitBtcQuotes.load()))for(int leg=1;leg<=2;++leg){
                 auto e=make(IBEventType::TickPrice);e.id=q.first;e.key=std::to_string(leg);
                 e.number=q.second.secType=="CASH"?(leg==1?1.12:1.1201):(leg==1?80000:80001);events.push_back(e);
             }
@@ -245,7 +272,7 @@ struct Fixture {
     std::string dir;std::shared_ptr<Shared> shared=std::make_shared<Shared>();
     std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
     IbPaperExecutionRuntimeConfig savedConfig;
-    explicit Fixture(bool seeded=false,bool unknown=false) {
+    explicit Fixture(bool seeded=false,bool unknown=false,bool deferStart=false) {
         // Test-only storage choice: do not depend on another task's /tmp capacity.
         // Production credential/control paths and validation remain unchanged.
         const char* configured=::getenv("TMPDIR");
@@ -301,14 +328,18 @@ struct Fixture {
             e.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'8');check(j.Append(e),"unknown original intent");
             e.eventType="place_send_attempt";e.eventId="unknown:attempt";e.status="send_attempt";check(j.Append(e),"unknown original attempt");
         }
-        savedConfig=c;start(c);
+        savedConfig=c;if(!deferStart)start(c);
     }
-    void start(const IbPaperExecutionRuntimeConfig& c) {
+    std::string startFailure;
+    void start(const IbPaperExecutionRuntimeConfig& c,bool riskUnheld=false,bool expectReady=true) {
         std::shared_ptr<Shared> state=shared;
         IbPaperExecutionRuntimeTestHooks hooks;hooks.onStage=[state](const char* name){state->stage(name);};
         hooks.reconnectApiFactory=[state](){return std::unique_ptr<IIBApiWrapper>(new FullBroker(state));};
-        runtime.reset(new IbPaperExecutionRuntimeComposition(c,std::unique_ptr<IIBApiWrapper>(new FullBroker(shared)),hooks,std::make_shared<NeverEnableTrading>()));
-        std::string reason;const bool started=runtime->Start(reason);
+        std::shared_ptr<IbPaperKillSwitchReader> kill=std::make_shared<NeverEnableTrading>();
+        if(riskUnheld)kill=std::make_shared<UnheldQuoteRegression>();
+        runtime.reset(new IbPaperExecutionRuntimeComposition(c,std::unique_ptr<IIBApiWrapper>(new FullBroker(shared)),hooks,kill));
+        std::string reason;const bool started=runtime->Start(reason);startFailure=reason;
+        if(!expectReady){check(!started,"incomplete cold broker barrier must not start");return;}
         check(started,"FULL_RUNTIME_START: "+reason);
         check(runtime->IsRunning(),"real IPC/poller ready");
     }
@@ -703,6 +734,154 @@ struct Fixture {
         check(quarantined>=2,"old and future callback epochs retain quarantine diagnostics");
     }
 };
+static PlaceOrderCommand quoteRegressionOrder(bool btc,const std::string& request) {
+    PlaceOrderCommand c;c.context.agentId=btc?"fixture-btc":"fixture-fx";
+    c.context.sessionId=btc?"session-btc":"session-fx";c.context.toolCallId=request;
+    c.context.account="DU90001";c.context.venue="IB";c.context.executionDomain="PAPER";
+    c.instrument=btc?"BTC.USD":"EUR.USD";c.contract=contract(btc);
+    c.order.action="BUY";c.order.orderType="MKT";c.timeInForce=btc?"IOC":"DAY";
+    // At the synthetic 80k ask, $25 stays within the existing 0.0005 BTC
+    // canary quantity envelope; quote tests must not be masked by size refusal.
+    c.order.totalQuantity=btc?0:1;c.order.cashQuantity=btc?25:0;
+    c.expiresAtMs=ms()+1000;return c;
+}
+static IBFinalOrderSendContext quoteBinding(const MarketQuoteSnapshot& q,bool btc) {
+    IBFinalOrderSendContext c;c.authoritativeQuoteBound=true;c.instrument=q.instrument;
+    c.timeInForce=btc?"IOC":"DAY";c.quoteSubscriptionId=q.subscriptionId;
+    c.quoteObservedAtMs=q.observedAtMs;c.quoteStaleAfterMs=q.staleAfterMs;
+    c.quoteBid=q.bid;c.quoteAsk=q.ask;return c;
+}
+static void unquotedControlLifecycle(bool btc) {
+    Fixture f(false,false,true);
+    f.shared->emitBtcQuotes=!btc;f.shared->emitFxQuotes=btc;
+    f.savedConfig.primaryQuoteInstrument=f.savedConfig.profile.userPrimaryQuoteInstrument=
+        btc?"BTC.USD":"EUR.USD";
+    std::string auth,reason;
+    check(f.savedConfig.profile.BuildAuthorizationCredential(auth,reason),"quote lifecycle auth fixture");
+    check(::unlink(f.savedConfig.authorizationCredentialPath.c_str())==0,
+          "replace only this fixture's private authorization after choosing primary");
+    writePrivate(f.savedConfig.authorizationCredentialPath,auth+"\n");
+    f.start(f.savedConfig,true);
+    auto& policy=IbFullRuntimeRecoveryAccess::policy(*f.runtime);
+    const auto primary=f.savedConfig.primaryQuoteInstrument;
+    check(!f.runtime->QuoteHealthForObservation().ReadyForOperations(),
+          "control start must not manufacture primary quote readiness");
+    check(IbFullRuntimeRecoveryAccess::riskReady(*f.runtime,reason),
+          "quote negative must not be masked by a risk/kill hold: "+reason);
+    const auto order=quoteRegressionOrder(btc,"missing-primary");
+    const auto rejected=policy.PlaceOrder(order);
+    check(rejected.status==ExecutionCommandStatus::Rejected&&
+          rejected.reasonCode=="AUTHORITATIVE_QUOTE_UNAVAILABLE",
+          "missing quote rejects actual policy entry: "+rejected.reasonCode);
+    ExecutionReadCommand read;read.context=order.context;read.query="portfolio.list_positions";
+    check(policy.ReadAuthoritativeState(read).status==ExecutionCommandStatus::Accepted,
+          "broker state is queryable while primary quote is absent");
+    read.query="market.get_quote";read.instrument=primary;
+    check(policy.ReadAuthoritativeState(read).reasonCode=="AUTHORITATIVE_QUOTE_UNREADY",
+          "control availability never claims an unavailable quote is fresh");
+    const auto primaryRequests=btc?f.shared->btcQuoteRequests.load():f.shared->fxQuoteRequests.load();
+    const auto epoch=f.runtime->Adapter().GetConnectionEpoch();
+    std::this_thread::sleep_for(std::chrono::milliseconds(f.savedConfig.readinessTimeoutMs+100));
+    check(f.runtime->IsRunning()&&!f.runtime->HasFatalRuntimeError()&&
+          f.runtime->Adapter().GetConnectionEpoch()==epoch&&
+          primaryRequests==(btc?f.shared->btcQuoteRequests.load():f.shared->fxQuoteRequests.load()),
+          "completed control lifecycle outlives startup deadline without primary resubscription");
+    const auto waitForPrimary=[&]() {
+        const auto until=ms()+1500;
+        while(ms()<until) {
+            if(IbFullRuntimeRecoveryAccess::quote(*f.runtime,primary).IsFresh(ms()))return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        throw std::runtime_error("current native primary callbacks did not restore freshness");
+    };
+    if(btc)f.shared->emitBtcQuotes=true;else f.shared->emitFxQuotes=true;
+    waitForPrimary();
+    // Stop fixture emission and let queued callbacks settle so the exact
+    // pre-send binding is deterministic, without weakening the production lock.
+    f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    const auto fresh=IbFullRuntimeRecoveryAccess::quote(*f.runtime,primary);
+    const auto bound=quoteBinding(fresh,btc);
+    const bool freshBindingAccepted=IbFullRuntimeRecoveryAccess::finalSend(
+        *f.runtime,bound,order.contract,order.order,reason);
+    check(freshBindingAccepted,
+          "current fresh binding reaches the unheld final send check: "+reason+
+          " instrument="+fresh.instrument+" subscription="+fresh.subscriptionId+
+          " now="+std::to_string(ms())+" observed="+std::to_string(fresh.observedAtMs)+
+          " expiry="+std::to_string(fresh.staleAfterMs));
+    check(f.runtime->Adapter().GetConnectionEpoch()==epoch,
+          "first quote restores freshness without an extra connection");
+    const auto staleAt=fresh.staleAfterMs+50;
+    while(ms()<staleAt)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto stale=policy.PlaceOrder(quoteRegressionOrder(btc,"stale-primary"));
+    check(stale.status==ExecutionCommandStatus::Rejected&&
+          stale.reasonCode=="AUTHORITATIVE_QUOTE_STALE",
+          "aged quote rejects policy before any broker send: "+stale.reasonCode);
+    check(!IbFullRuntimeRecoveryAccess::finalSend(*f.runtime,bound,order.contract,order.order,reason)&&
+          reason=="IB_PAPER_PLACE_QUOTE_CHANGED_BEFORE_SEND",
+          "a previously accepted binding expires at the final send boundary: "+reason);
+    f.reconnect(1102);
+    const auto recoveredEpoch=f.runtime->Adapter().GetConnectionEpoch();
+    check(!f.runtime->QuoteHealthForObservation().ReadyForOperations(),
+          "completed reconnect preserves missing-quote truth");
+    std::this_thread::sleep_for(std::chrono::milliseconds(f.savedConfig.reconnectTimeoutMs+100));
+    check(f.runtime->IsRunning()&&!f.runtime->HasFatalRuntimeError()&&
+          f.runtime->Adapter().GetConnectionEpoch()==recoveredEpoch,
+          "recovered control remains live beyond the original reconnect deadline");
+    check(IbFullRuntimeRecoveryAccess::riskReady(*f.runtime,reason),
+          "recovered broker evidence is complete independently of quote: "+reason);
+    if(btc)f.shared->emitBtcQuotes=true;else f.shared->emitFxQuotes=true;
+    waitForPrimary();f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    auto current=quoteBinding(IbFullRuntimeRecoveryAccess::quote(*f.runtime,primary),btc);
+    check(IbFullRuntimeRecoveryAccess::finalSend(*f.runtime,current,order.contract,order.order,reason),
+          "new epoch fresh binding passes the same final check: "+reason);
+    current.quoteSubscriptionId=bound.quoteSubscriptionId;
+    check(!IbFullRuntimeRecoveryAccess::finalSend(*f.runtime,current,order.contract,order.order,reason)&&
+          reason=="IB_PAPER_PLACE_QUOTE_CHANGED_BEFORE_SEND",
+          "fresh timestamps cannot lend authority to an old-epoch subscription");
+    check(f.shared->orderCalls==0,"all synthetic quote cases perform zero broker order methods");
+}
+static void unquotedNewEpochRejectsStillFreshOldBinding() {
+    Fixture f(false,false,true);f.start(f.savedConfig,true);
+    const auto quoteDeadline=ms()+1500;
+    while(ms()<quoteDeadline&&
+          !IbFullRuntimeRecoveryAccess::quote(*f.runtime,"BTC.USD").IsFresh(ms()))
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    const auto order=quoteRegressionOrder(true,"old-epoch-still-in-ttl");
+    const auto quote=IbFullRuntimeRecoveryAccess::quote(*f.runtime,"BTC.USD");
+    const auto bound=quoteBinding(quote,true);std::string reason;
+    check(IbFullRuntimeRecoveryAccess::finalSend(*f.runtime,bound,order.contract,order.order,reason),
+          "old connection begins with a valid unheld send binding: "+reason);
+    f.reconnect(1102);
+    check(ms()<quote.staleAfterMs,"old quote remains within its original TTL for this regression");
+    check(!f.runtime->QuoteHealthForObservation().ReadyForOperations()&&
+          IbFullRuntimeRecoveryAccess::riskReady(*f.runtime,reason),
+          "new connection control is recovered with no current quote and no unrelated hold");
+    check(!IbFullRuntimeRecoveryAccess::finalSend(*f.runtime,bound,order.contract,order.order,reason)&&
+          reason=="IB_PAPER_PLACE_QUOTE_CHANGED_BEFORE_SEND"&&f.shared->orderCalls==0,
+          "old cached binding cannot authorize a new connection even before its original expiry");
+}
+static void unquotedRecoveryFailuresRemainClosed() {
+    {Fixture f(false,false,true);f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+     f.shared->omitPositions=true;f.start(f.savedConfig,false,false);
+     check(f.startFailure=="IB_PAPER_AUTHORITATIVE_SNAPSHOTS_TIMEOUT",
+           "missing cold account/position cohort retains original timeout: "+f.startFailure);
+     check(f.shared->orderCalls==0,"cold incomplete barrier never sends");}
+    {Fixture f(false,false,true);f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+     f.start(f.savedConfig);f.missingPositionsFailsClosed();}
+    {Fixture f(false,false,true);f.shared->emitBtcQuotes=false;f.shared->emitFxQuotes=false;
+     f.start(f.savedConfig);f.shared->signal(10197);
+     const auto until=ms()+1500;
+     while(ms()<until&&!f.runtime->HasFatalRuntimeError())
+         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+     std::string reason;check(f.runtime->HasFatalRuntimeError(&reason)&&!f.runtime->IsRunning(),
+           "current epoch 10197 stays fatal while awaiting a first quote");
+     check(reason.find("10197")!=std::string::npos&&f.shared->orderCalls==0,
+           "original market-data conflict reason and no-send behavior retained: "+reason);}
+}
 static IBEvent corroboratedCashError(std::uint64_t epoch,const std::string& code) {
     IBEvent e;e.type=IBEventType::Error;e.key=code;e.id=e.requestId=1000901;
     e.connectionEpoch=epoch;e.brokerClientId=701;e.contract=contract(false);
@@ -735,6 +914,12 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
 }
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==1||(argc==2&&std::string(argv[1])=="--unquoted-control-only")) {
+        unquotedControlLifecycle(true);unquotedControlLifecycle(false);
+        unquotedNewEpochRejectsStillFreshOldBinding();
+        unquotedRecoveryFailuresRemainClosed();
+        if(argc==2){std::cout<<"PASS 6 unquoted control lifecycle cases; original send gates and 10197 preserved; zero order methods\n";return 0;}
+    }
     if(argc==2&&std::string(argv[1])=="--secdef-only") {
         {Fixture f(true);f.unscopedSecDefFarmLossRetainsEconomicRecovery();}
         {Fixture f(true);auto event=IBEvent{};event.type=IBEventType::Error;
@@ -819,6 +1004,6 @@ int main(int argc,char**argv){try{
         invalidate(e);f.uncorroboratedMarketDataErrorClosesRecovery(e);
     }
     unknownRequestErrorsStillBlockQuoteAdmission();
-    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<15+invalidMarketDataScopes.size()<<"}"<<std::endl;
+    std::cout<<"{\"schema\":\"heptatrader.full-runtime-recovery-test.v1\",\"full_start_executed\":true,\"production_reconnect_loop_executed\":true,\"same_journal_runtime_reconstruction\":true,\"kernel_network_denied\":true,\"synthetic_broker\":true,\"broker_socket_calls\":0,\"order_method_calls\":0,\"local_cash_error_economic_barrier_preserved\":true,\"raw_local_errors_retained\":4,\"different_epoch_errors_quarantined\":true,\"uncorroborated_error_scope_cases\":"<<invalidMarketDataScopes.size()<<",\"live_recovery_qualified\":false,\"scenarios\":"<<21+invalidMarketDataScopes.size()<<"}"<<std::endl;
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}

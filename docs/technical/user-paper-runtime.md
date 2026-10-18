@@ -90,6 +90,24 @@ streams and the external qualification profile do not use this fallback. A new
 startup must pass the existing complete reconciliation contract before trading
 can resume. An available socket or locally accepted command is never a fill.
 
+### Control availability while awaiting the first quote
+
+A normal user-scoped PAPER runtime may finish startup or reconnect once the
+current Broker account, positions, FX cash, active/terminal orders and coherent
+recovery barrier are complete, and the current primary market-data request has
+actually been sent. The first BID/ASK callback is not a prerequisite for serving
+recovery and read queries. A missing primary quote therefore does not, by itself,
+restart a fully synchronized control service during a closed session or source
+outage. Current-epoch 10197 and other existing fatal admission failures remain
+fatal; missing or inconsistent Broker evidence still fails the original barrier.
+
+Control availability does not mark prices ready. `market.get_quote` continues to
+report unavailable/stale data, and every new order still passes both policy quote
+validation and the final native send check against the current subscription and
+original quote expiry. New-epoch recovery invalidates old quote bindings even
+while their previous TTL has not expired. Canonical qualification and
+observation-only profiles retain their existing quote-required startup behavior.
+
 ## Normal commands and model selection
 
 The `heptatrader-user` command provides `start`, `restart`, `stop`, `status` and
