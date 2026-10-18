@@ -367,7 +367,8 @@ bool IbPaperExecutionRuntimeComposition::ReconnectAuthoritativeStateReady(
         active.generation != 0 &&
         terminal.connectionEpoch == connectionEpoch && terminal.complete &&
         terminal.generation != 0 &&
-        quotes.connectionEpoch == connectionEpoch && quotes.ReadyForOperations() &&
+        quotes.connectionEpoch == connectionEpoch &&
+        QuoteSubscriptionReadyForLifecycle(m_config, quotes, connectionEpoch) &&
         quotes.generation != 0 && recovery.barrierComplete &&
         !recovery.postFillRiskReconciliationPending &&
         recovery.terminalExposureGeneration <=

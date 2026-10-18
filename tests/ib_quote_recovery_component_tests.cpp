@@ -1,6 +1,7 @@
 // Actual Runtime::RefreshStaleSecondaryCashQuote + adapter + subscription set.
 // This executable has no network transport. It is not a live Broker certificate.
 #include "execution/ib_paper_execution_runtime_composition.h"
+#include "execution/ib_paper_execution_runtime_internal.h"
 #include "adapter_ib/ib_admission_event_policy.h"
 #include <iostream>
 #include <cstdlib>
@@ -407,6 +408,69 @@ struct IbQuoteRecoveryFixture {
         require(runtime->m_quoteSubscriptions->GetHealth().ReadyForOperations(),"primary still present");
         noOrders();
     }
+    void testControlLifecycleWaitsForPrimaryDispatch() {
+        using ib_paper_execution_runtime_internal::QuoteSubscriptionReadyForLifecycle;
+        auto& subscriptions=*runtime->m_quoteSubscriptions;
+        const auto user=runtime->m_config;
+        auto canonical=user;canonical.profile.userScope=false;
+        auto observer=user;observer.profile.observationOnly=true;
+        const auto original=subscriptions.GetHealth();
+        require(original.ReadyForOperations(),"original fixture primary is ready");
+        for(const auto& config:{user,canonical,observer})
+            require(QuoteSubscriptionReadyForLifecycle(config,original,api->epoch),
+                    "original quote-ready success is preserved in every scope");
+        runtime->m_adapter->Disconnect();clock+=20000;
+        require(runtime->m_adapter->Connect(100),"real adapter reconnects fake transport");
+        const auto epoch=api->epoch;const auto generation=original.generation+1;
+        require(epoch>original.connectionEpoch,"adapter advances the actual epoch");
+        const auto plan=subscriptions.BeginCycle(epoch,generation,clock);
+        require(plan.accepted,"current epoch cycle accepted");
+        auto health=subscriptions.GetHealth();
+        require(!health.ReadyForOperations()&&health.dispatchedRequestIds.empty(),
+                "new epoch cannot inherit quote or dispatch evidence");
+        require(!QuoteSubscriptionReadyForLifecycle(user,health,epoch),
+                "allocated but unsent primary cannot restore control");
+        int primary=0,secondary=0;
+        for(const auto& request:plan.subscriptions) {
+            if(request.instrument==user.primaryQuoteInstrument)primary=request.requestId;
+            else {
+                secondary=request.requestId;
+                require(runtime->m_adapter->ReqMktData(request.requestId,request.contract),
+                        "actual secondary request succeeds");
+                require(subscriptions.RecordDispatchResult(generation,request.requestId,true),
+                        "secondary native dispatch receipt recorded");
+            }
+        }
+        require(primary>0&&secondary>0,"both configured instruments are represented");
+        require(!QuoteSubscriptionReadyForLifecycle(user,subscriptions.GetHealth(),epoch),
+                "secondary-only dispatch cannot restore primary control");
+        for(const auto& request:plan.subscriptions)if(request.requestId==primary) {
+            require(runtime->m_adapter->ReqMktData(request.requestId,request.contract),
+                    "actual current primary request succeeds");
+            require(subscriptions.RecordDispatchResult(generation,request.requestId,true),
+                    "primary native dispatch receipt recorded");
+        }
+        health=subscriptions.GetHealth();
+        require(!health.ReadyForOperations(),"sending never fabricates the first primary quote");
+        require(QuoteSubscriptionReadyForLifecycle(user,health,epoch),
+                "user control may await the first callback after actual primary send");
+        require(!QuoteSubscriptionReadyForLifecycle(canonical,health,epoch)&&
+                !QuoteSubscriptionReadyForLifecycle(observer,health,epoch),
+                "qualification and observation-only retain quote-required semantics");
+        require(!QuoteSubscriptionReadyForLifecycle(user,health,epoch+1),
+                "a sent primary cannot authorize a different connection epoch");
+        runtime->m_adapter->Disconnect();clock+=20000;
+        require(runtime->m_adapter->Connect(100),"second real adapter reconnect");
+        require(api->epoch>epoch,"second epoch advances");
+        const auto next=subscriptions.BeginCycle(api->epoch,generation+1,clock);
+        require(next.accepted&&subscriptions.GetHealth().dispatchedRequestIds.empty(),
+                "cross-epoch cycle discards all previously sent request identities");
+        require(!subscriptions.RecordDispatchResult(generation,primary,true),
+                "late old-generation receipt cannot resurrect a previous request");
+        require(!QuoteSubscriptionReadyForLifecycle(user,subscriptions.GetHealth(),api->epoch),
+                "new epoch awaits its own primary native dispatch");
+        noOrders();
+    }
     void testRealAdapterEpochBoundary() {
         auto oldEpoch=api->epoch;int oldId=fxId;
         runtime->m_adapter->Disconnect();clock+=20000;
@@ -433,6 +497,7 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowBefore); }
         { IbQuoteRecoveryFixture f;f.testSdkException(SocketFreeApi::ThrowAfter); }
         { IbQuoteRecoveryFixture f;f.testRealAdapterEpochBoundary(); }
+        { IbQuoteRecoveryFixture f;f.testControlLifecycleWaitsForPrimaryDispatch(); }
         { IbQuoteRecoveryFixture f;f.testMaintainedDataDoesNotResubscribeOrRestamp(); }
         { IbQuoteRecoveryFixture f;f.testLostDataBeforeQuotesAndOldEpochIsolation(); }
         { IbQuoteRecoveryFixture f;f.testSecondaryFarmLossDoesNotKillPrimary(); }
@@ -448,7 +513,7 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testFailureToPersistNativeRefusalCannotRearm(); }
         { IbQuoteRecoveryFixture f;f.testTradeMarkerCannotLocalizeCashRefusal(); }
         { IbQuoteRecoveryFixture f;f.testDifferentCashContractCannotBorrowPendingRequestIdentity(); }
-        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":21}\n";
+        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":22}\n";
         return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }

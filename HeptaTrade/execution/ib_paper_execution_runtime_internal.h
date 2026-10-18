@@ -70,6 +70,33 @@ inline bool IsActiveAuthoritativeQuoteRequest(
             return true;
     return false;
 }
+// Recovery/control availability does not certify a tradeable price. A normal
+// user runtime may wait for its first primary callback after the current native
+// subscription was actually sent. Policy and final send still require a fresh,
+// identity-bound quote; qualification and observation-only keep their old gate.
+inline bool QuoteSubscriptionReadyForLifecycle(
+    const IbPaperExecutionRuntimeConfig& config,
+    const IBAuthoritativeQuoteSubscriptionHealth& health,
+    std::uint64_t connectionEpoch)
+{
+    if (health.ReadyForOperations()) return true;
+    if (!config.profile.userScope || config.profile.observationOnly ||
+        connectionEpoch == 0 || health.connectionEpoch != connectionEpoch ||
+        health.generation == 0 || config.primaryQuoteInstrument.empty() ||
+        health.primaryInstrument != config.primaryQuoteInstrument)
+        return false;
+    const auto primary = health.contracts.find(config.primaryQuoteInstrument);
+    if (primary == health.contracts.end()) return false;
+    const auto& contract = primary->second;
+    if (!contract.active || contract.requestId <= 0 ||
+        !contract.dispatchAccepted || contract.nativeRequestRejected)
+        return false;
+    // GetHealth snapshots the current cycle under one lock. BeginCycle clears
+    // old requests on an epoch change; same-epoch preserved tickers remain valid.
+    for (const int requestId : health.dispatchedRequestIds)
+        if (requestId == contract.requestId) return true;
+    return false;
+}
 inline bool HasActiveAuthoritativeQuoteCycle(
     const IBAuthoritativeQuoteSubscriptionSet* subscriptions)
 {
