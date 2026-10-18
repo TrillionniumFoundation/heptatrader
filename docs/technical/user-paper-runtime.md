@@ -494,3 +494,19 @@ fails until an explicit \`maintenance-release\`. See
 for exact path, limitations and failure handling. **Even a confirmed latch
 never grants permission to stop any exposed Driver**; Broker-owner atomic
 no-new-entry and verified flat/no-pending/no-active orders are still required.
+
+## Model dependency and maintenance inference
+
+Reconciliation, owner recovery, session rearm and the dedicated canary mode use
+their existing native operations without requiring the OpenClaw executable.
+The resident loop checks the model executable only when it is ready to start
+inference, so missing model software does not prevent quote collection or
+original-command reconciliation.
+
+When flat, a driver entry halt, persistent maintenance marker or native kill
+switch pauses entry inference. Quote observations, lease handling and pending
+command reconciliation continue; open-position safety exits and exit decisions
+retain their existing path. The driver records the current pause reason in
+`entry_inference_pause`. An answer already running when a hold appears is
+discarded, and no second worker starts before it finishes. Marker absence grants
+no permission: the existing `paper-on` and native checks still govern every entry.

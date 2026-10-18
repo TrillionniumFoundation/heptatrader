@@ -30,6 +30,25 @@ def run(argv,timeout=20):
     return subprocess.run([str(x) for x in argv],stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
 
+def entry_inference_hold_reason(state,home,uid):
+    """Cheap entry-only pause; absence of a marker never grants trade authority."""
+    if state.get("halt_new_entries"):
+        return "DRIVER_NEW_ENTRY_HALT"
+    markers=((Path(home)/".local/state/heptatrader/operator-maintenance/maintenance-hold.json",
+              "PERSISTENT_MAINTENANCE_HOLD"),
+             (Path("/run/user")/str(uid)/"heptatrader/control/kill-switch",
+              "NATIVE_KILL_SWITCH_PRESENT"))
+    for path,reason in markers:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return "ENTRY_HOLD_STATE_UNAVAILABLE"
+        return reason
+    return None
+
+
 def record_entry_guard(state,state_path,result,decision_action,*,failure=None):
     """Persist the last actual check; this is not a current-readiness flag."""
     def bounded(value,limit):
@@ -1020,7 +1039,7 @@ def main():
     token=str(home/".config/heptatrader"/("crypto.token" if crypto else "paper.token"))
     if crypto:
         NATIVE_ENDPOINT=[str(home/".local/share/heptatrader/current/bin/heptactl"),"--socket",socket,"--token-file",token]
-    for x in (cli,binary,sessionctl,openclaw,token):
+    for x in (cli,binary,sessionctl,token):
         if not Path(x).exists(): raise DriverError("required runtime missing: "+x)
     stop=False
     def stopping(_sig,_frame):
@@ -1037,7 +1056,7 @@ def main():
             state["halt_new_entries"]=True
         else: latch_owner_fence(state,state_path,"SESSION_RENEWAL_UNCERTAIN")
     if not args.reconcile_only: atomic_json(state_path,state)
-    model_worker=None
+    model_worker=None; model_worker_discarded=False
     if args.canary_roundtrip:
         try:return canary_roundtrip(state,state_path,cli,binary,socket,token,str(outbox))
         finally:os.close(lock)
@@ -1141,8 +1160,23 @@ def main():
                     atomic_json(state_path,state)
                     if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
+            if pause_reason:
+                state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
+                    "scope":"ENTRY_INFERENCE_ONLY"}
+                # Retain an in-flight worker until it ends, and never consume its
+                # pre-hold answer after resumption or start an overlapping worker.
+                if model_worker is not None:
+                    model_worker_discarded=True
+                    if model_worker.done(): model_worker=None
+                atomic_json(state_path,state)
+                if args.once: break
+                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            state.pop("entry_inference_pause",None)
             if model_worker is not None and model_worker.done():
                 try:
+                    if model_worker_discarded:
+                        raise DriverError("model decision discarded after entry inference hold")
                     candidate=model_worker.result()
                     age=now_ms()-model_worker.observed_at_ms
                     if abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
@@ -1153,7 +1187,7 @@ def main():
                     state["last_decision_ms"]=now_ms(); state["last_error"]=""
                 except Exception as error:
                     state["last_error"]=("model HOLD: "+str(error))[:500]
-                model_worker=None
+                model_worker=None; model_worker_discarded=False
             if snap["active"]:
                 state["last_error"]="active broker order present; observing only"
             elif abs(pos)>QUANTITY_TOLERANCE and decision is not None:
@@ -1174,7 +1208,10 @@ def main():
                 prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
             due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
             if model_worker is None and due and len(state["history"])>=6:
+                if not Path(openclaw).exists():
+                    raise DriverError("model runtime missing: "+openclaw)
                 state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
+                model_worker_discarded=False
                 model_worker=ModelWorker(openclaw,state_dir,state["history"],pos)
             atomic_json(state_path,state)
         except Exception as e:
