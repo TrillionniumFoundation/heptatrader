@@ -12,6 +12,8 @@ from .resident_store import write_once,atomic
 from .resident_data import read_quotes
 from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess,validate_plan_rule
+from . import resident_training_v2 as training_v2
+from . import resident_price_baselines as price_refs
 
 
 def suppress_new_work_for_frozen_failure(plan, results):
@@ -56,13 +58,23 @@ def measure(plan,slot,prediction,quotes,now_ms):
    raise ContractError('PROBABILITY_VECTOR')
   return sum((p-(i==target))**2 for i,p in enumerate(probs))
  p=prediction['candidate_probs'];parent=prediction['parent_probs'];act=prediction['candidate_act_escalate_probs']
- if len(act)!=2 or any(not math.isfinite(x) for x in act):raise ContractError('ACT_ESCALATE_VECTOR')
  parent_correct=max(range(7),key=lambda i:parent[i])==target
  action_target=0 if parent_correct else 1
- return {**base,'status':'OBSERVED','path_gap':False,'reason':None,'return_bps':value,'target_class':target,
+ action_profile=plan.get('action_output_profile')
+ if action_profile is None:
+  if len(act)!=2 or any(not math.isfinite(x) for x in act):raise ContractError('ACT_ESCALATE_VECTOR')
+  action_brier=sum((v-(i==action_target))**2 for i,v in enumerate(act))
+ elif action_profile==training_v2.ACTION_OUTPUT:
+  action_brier=training_v2.action_observation(plan,prediction,parent_correct=parent_correct)['action_brier']
+ else:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
+ comparison={}
+ if plan.get('price_baselines') is not None:
+  comparison={'price_baseline_profile_id':plan['price_baselines']['profile_id'],
+   'same_window_price_scores':price_refs.measure(plan['price_baselines'],prediction,target)}
+ return {**base,**comparison,'status':'OBSERVED','path_gap':False,'reason':None,'return_bps':value,'target_class':target,
   'candidate_brier':score(p),'parent_brier':score(parent),'candidate_hit':max(range(7),key=lambda i:p[i])==target,
   'bootstrap_hit':bisect_right(BIN_EDGES_BPS,prediction['bootstrap_point_bps'])==target,
-  'action_head_brier':sum((v-(i==action_target))**2 for i,v in enumerate(act)),
+  'action_head_brier':action_brier,
   'outcome_receipt':quotes[b]['receipt'],'outcome_ms':times[b]}
 
 
@@ -223,6 +235,7 @@ class Evaluator:
    results=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
    observed+=sum(r['status']=='OBSERVED' for r in results);censored+=sum(r['status']=='CENSORED' for r in results)
    assessment=assess(plan,results,int(time.time()*1000))
+   if plan.get('price_baselines') is not None:assessment['same_window_price_baselines']=price_refs.summarize(results)
    if assessment['state']!='PENDING':write_once(path.parent/'qualification.json',assessment)
    else:atomic(path.parent/'progress.json',assessment)
    counts[assessment['state']]=counts.get(assessment['state'],0)+1

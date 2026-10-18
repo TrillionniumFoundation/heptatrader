@@ -17,6 +17,8 @@ from .model import load_verified_laya
 from .resident_model import ResidentDecisionCell
 from .native import NativePorts
 from .resident_train import validate_parent
+from . import resident_training_v2 as training_v2
+from . import resident_price_baselines as price_refs
 
 
 def predict(config,plan_path,slot):
@@ -32,6 +34,15 @@ def predict(config,plan_path,slot):
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
+ v2=training_v2.enabled(candidate.get('objective'))
+ calibration=candidate.get('action_training_profile') if v2 else None
+ price_reference_profile=price_refs.validate(candidate.get('price_baselines')) if v2 else None
+ if v2 and (plan.get('price_baselines')!=price_reference_profile or price_reference_profile['training_cutoff_ms']!=candidate['trained_until_ms']):raise ContractError('PRICE_BASELINE_CANDIDATE_SCOPE')
+ expected_output=training_v2.ACTION_OUTPUT if v2 else None
+ if plan.get('action_output_profile')!=expected_output:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
+ if v2 and (candidate.get('objective')!=training_v2.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
+  raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
+ if v2 and (type(plan.get('action_optimizer_admitted')) is not bool or plan['action_optimizer_admitted']!=bool(calibration and calibration['action_optimizer_admitted'])):raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
  if not 0<=slot<plan['rule']['slots']:raise ContractError('SLOT_BOUND')
  due_start=plan['start_ms']+slot*plan['rule']['slot_spacing_ms'];late=due_start+plan['rule']['input_grace_ms']
  if int(time.time()*1000)>late:raise ContractError('SLOT_ALREADY_MISSED')
@@ -83,7 +94,13 @@ def predict(config,plan_path,slot):
   cell.restore_trainable(parent_tensors);parent_probs=cell(**batch)[0].softmax(-1)[0].cpu().tolist()
   cell.restore_trainable(candidate_tensors);p,a=cell(**batch)
   probs=p.softmax(-1)[0].cpu().tolist();action=a.softmax(-1)[0].cpu().tolist()
+  if v2:
+   action_report=training_v2.action_inference(a,calibration)
+   correct=action_report['action_correct_probs']
+   value=correct[0] if correct is not None else None
+   action=[value,1-value] if value is not None else None
  cell.assert_frozen()
+ if v2:price_reference_forecast=price_refs.forecast(price_reference_profile,row['state'])
  native=NativePorts(Path(config['native_binary']),config['native_binary_sha256'])
  features=native.call({'op':'neuron','episodes':[sample['native_episode']]})
  x=np.asarray(sample['raw_features']+features['episodes'][0]['activation'],dtype=np.float64)
@@ -100,6 +117,8 @@ def predict(config,plan_path,slot):
   'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),'broker_orders_sent':0}
  if plan.get('future_source_read_profile') is not None:
   result['source_read_profile']=source_profile
+ if v2:result['action_output_profile']=training_v2.ACTION_OUTPUT;result['action_inference']=action_report
+ if v2:result['price_baseline_forecast']=price_reference_forecast
  result['input_receipt_sha256']=sha_file(input_path)
  timing.update(prediction_committed_at_ms=available,phase='COMPLETE')
  result['timing']=timing
