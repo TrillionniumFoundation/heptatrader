@@ -10,11 +10,14 @@ import argparse
 import hashlib
 import json
 import os
+import pwd
 import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import hepta_maintenance_latch as maintenance_latch
 
 GUARD_NAME = "95-risk-stop-continuity.conf"
 GUARD_TEXT = "[Unit]\nRefuseManualStop=yes\n"
@@ -146,6 +149,16 @@ def write_new(path: Path, data: bytes) -> None:
 def install(home: Path, *, persist_receipt=None) -> dict:
     if os.geteuid() == 0:
         raise StopFenceError("NON_ROOT_USER_SYSTEMD_ONLY")
+    try:
+        with maintenance_latch.operator_lock(home / ".local/state/heptatrader"):
+            return _install_locked(home, persist_receipt=persist_receipt)
+    except maintenance_latch.HoldError as exc:
+        raise StopFenceError(str(exc)) from exc
+
+
+def _install_locked(home: Path, *, persist_receipt=None) -> dict:
+    if os.geteuid() == 0:
+        raise StopFenceError("NON_ROOT_USER_SYSTEMD_ONLY")
     check_paper_config(home / ".config/heptatrader/execution.env")
     uid = os.geteuid()
     user_units = home / ".config/systemd/user"
@@ -233,7 +246,8 @@ def main() -> None:
     def persist_receipt(report):
         raw = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
         write_new(filename, raw)
-    report = install(Path.home(), persist_receipt=persist_receipt)
+    report = install(Path(pwd.getpwuid(os.geteuid()).pw_dir),
+                     persist_receipt=persist_receipt)
     raw = filename.read_bytes()
     print(json.dumps({
         "state": report["state"],
