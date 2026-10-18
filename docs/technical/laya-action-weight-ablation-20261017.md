@@ -173,3 +173,7 @@ learning with simple supervised and training-prior baselines using a new time
 split. Freeze preprocessing, calibration and tuning using training/development
 data before assessing an independent future cohort. The present reused holdout
 must not choose the next weight, temperature, threshold, steps or candidate.
+
+## Completed readout follow-up — 2026-10-18
+
+The subsequent [training-only readout diagnosis and prior control](laya-readout-diagnostics-20261018.md) now measures hidden-state scale and frozen-weight contributions. It explains the saturated action margin, proves the fixed-representation limitation of the current adapter budget, and reports a separate normalization plus fixed training-prior intercept control. The previous ablation and its historical holdout results above remain unchanged.
