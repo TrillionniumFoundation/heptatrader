@@ -289,6 +289,7 @@ class HistoricalSessionIOTests(unittest.TestCase):
             return 187
 
         def reqHeadTimeStamp(self, rid, contract, what, use_rth, fmt):
+            self.sent[87] = self.sent.get(87, 0) + 1
             self.calls.append(('HEAD', rid, what))
             if self.fail_first:
                 self.errors.append({'request_id': rid, 'code': 162,
@@ -299,6 +300,7 @@ class HistoricalSessionIOTests(unittest.TestCase):
 
         def reqHistoricalData(self, rid, contract, end, duration, bar_size,
                               what, use_rth, fmt, keep_up, options):
+            self.sent[20] = self.sent.get(20, 0) + 1
             self.calls.append(('HISTORY', rid, what))
             if what == 'SCHEDULE':
                 self.schedules[rid] = {'sessions': []}

@@ -30,6 +30,36 @@ def run(argv,timeout=20):
     return subprocess.run([str(x) for x in argv],stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
 
+def record_entry_guard(state,state_path,result,decision_action,*,failure=None):
+    """Persist the last actual check; this is not a current-readiness flag."""
+    def bounded(value,limit):
+        return " ".join(value[:8192].split())[:limit] if isinstance(value,str) else ""
+    code=None if result is None else result.returncode
+    stdout="" if result is None else result.stdout
+    stderr="" if result is None else result.stderr
+    payload={}
+    if isinstance(stdout,str) and len(stdout)<=8192:
+        try:payload=strict_json(stdout)
+        except (ValueError,TypeError,RecursionError):pass
+    def field(names,limit):
+        for name in names:
+            value=bounded(payload.get(name),limit)
+            if value:return value
+        return ""
+    status=field(("status","state"),64)
+    reason=field(("reason_code","reason","state","status"),256)
+    if failure is not None:
+        status="CALL_ERROR";reason=bounded(str(failure),256) or "guard call failed"
+    else:
+        status=status or ("OK" if code==0 else "ERROR")
+        reason=reason or bounded(stderr,256) or bounded(stdout,256)
+        if not reason and code!=0:reason="exit status "+str(code)
+    observation={"checked_at_ms":now_ms(),"returncode":code,"status":status,"reason":reason,
+        "decision_action":bounded(decision_action,16),"scope":"LAST_ACTUAL_ENTRY_GUARD_CHECK"}
+    state["last_entry_guard"]=observation
+    atomic_json(state_path,state)
+    return observation
+
 def private_dir(path):
     path.mkdir(parents=True,exist_ok=True,mode=0o700)
     st=path.lstat()
@@ -1133,8 +1163,14 @@ def main():
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
                         q,exit_reason=why)
             elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and entry_candidate_allowed(decision):
-                guard=run([cli,"paper-on"],10)
-                if guard.returncode!=0: raise DriverError("paper guard release failed")
+                try:
+                    guard=run([cli,"paper-on"],10)
+                except Exception as error:
+                    record_entry_guard(state,state_path,None,decision["action"],failure=error)
+                    raise
+                observation=record_entry_guard(state,state_path,guard,decision["action"])
+                if guard.returncode!=0:
+                    raise DriverError("paper guard release failed: "+observation["reason"])
                 prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
             due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
             if model_worker is None and due and len(state["history"])>=6:

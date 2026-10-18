@@ -58,8 +58,62 @@ def schedule_extent(schedule,request):
         return None
     return (start,end)
 
+def verified_probe_sessions(root, plan):
+    """A RECEIVED chunk is not sufficient to salvage a failed demand probe.
+
+    Admit new opt-in data only through successful immutable sessions that
+    actually received each chunk. A later all-cache run cannot certify a
+    response originating in a failed session. Legacy datasets are unchanged.
+    """
+    if not plan['config'].get('cash_hmds_probe_on_unknown', False):
+        return []
+    wanted = {digest({'contract': plan['config']['contract'], **p})
+              for p in plan['requests']}
+    proven, witnesses = set(), []
+    for path in sorted((root / 'sessions').glob('*.json')):
+        session = read(path)
+        if (session.get('config_sha256') != digest(plan['config']) or
+                session.get('paper_verified') is not True or session.get('exception')):
+            continue
+        farm = session.get('same_connection_cash_hmds', {})
+        if (farm.get('fatal') is not False or farm.get('reconnects') != 0 or
+                farm.get('unknown_probe_invalidated', False)):
+            continue
+        probe = farm.get('unknown_price_bar_probe')
+        if session.get('startup_readiness') == 'UNKNOWN_PROBE_REQUIRED':
+            if (not isinstance(probe, dict) or probe.get('completed') is not True or
+                    probe.get('verified') is not True or type(probe.get('rows')) is not int or
+                    probe['rows'] <= 0):
+                continue
+        if probe:
+            if any(e.get('code') == 2105 for e in farm.get('notices', [])[probe['notice_count']:]):
+                continue
+            bound = False
+            for key in wanted:
+                receipt_path = root / 'chunks' / key / 'receipt.json'
+                if not receipt_path.exists():
+                    continue
+                receipt = read(receipt_path)
+                if (receipt.get('request_id') == probe.get('request_id') and
+                        receipt.get('request', {}).get('kind') == 'bars' and
+                        receipt.get('state') == 'RECEIVED' and
+                        receipt.get('rows') == probe['rows'] and
+                        receipt.get('response_sha256') == probe.get('response_sha256')):
+                    bound = True
+            if not bound:
+                continue
+        keys = {r['request_key'] for r in session.get('results', [])
+                if r.get('state') == 'RECEIVED' and r.get('resumed') is False}
+        if keys & wanted:
+            proven.update(keys & wanted)
+            witnesses.append({'path': str(path), 'sha256': sha(path)})
+    if wanted - proven:
+        raise EvidenceError('DEMAND_PROBE_SOURCE_SESSION_NOT_PROVEN')
+    return witnesses
+
 def collect(root):
     root=Path(root);plan=read(root/'plan.json');series={k:{} for k in ('MIDPOINT','BID','ASK')}
+    source_sessions=verified_probe_sessions(root,plan)
     duplicate=collections.Counter();partial=collections.Counter();outside=collections.Counter();sources=[];schedules=[];errors=[];heads={};calendar_ranges=[];calendar_issues=[]
     target_start=min(interval_epoch(p['requested_start_utc']) for p in plan['requests'] if p['kind']=='bars')
     target_end=max(interval_epoch(p['requested_end_utc']) for p in plan['requests'] if p['kind']=='bars')
@@ -152,6 +206,8 @@ def collect(root):
     dataset={'schema':'heptatrader.historical-paired-bars.v1','source_plan_sha256':sha(root/'plan.json'),
         'sources':sources,'bars':joined,'coverage':coverage,'trade_authority':False,
         'actual_execution_rewards':0,'live_evaluation_repaired':False}
+    if source_sessions:
+        dataset['source_sessions']=source_sessions
     dataset['dataset_id']=digest(dataset)
     return dataset
 

@@ -142,6 +142,23 @@ first blocks new entries, drains exposure through the existing reduce-only path,
 and reconciles the original pending command. Routine renewal must neither install
 a recovery-only fence nor release an existing owner fence.
 
+### Last actual entry-guard observation
+
+Before an ordinary resident OPEN, the driver records the result of its existing
+`paper-on` call as `state.json:last_entry_guard`. The record contains
+`checked_at_ms`, `returncode`, bounded `status` and `reason`,
+`decision_action`, and `scope=LAST_ACTUAL_ENTRY_GUARD_CHECK`. Structured CLI
+reasons are retained; malformed output has a bounded diagnostic fallback, and
+a timeout or process-start error is recorded as `CALL_ERROR`.
+
+A later HOLD or SELL decision may clear the ordinary `last_error` field while
+retaining this observation and its original timestamp. Only a later actual
+entry-guard call replaces it. Interpret it as the result at that timestamp;
+current readiness still requires fresh native health, quotes and the original
+entry checks. Recording the observation adds no extra `paper-on` call and
+keeps the existing return-code gate, send identity, close path and maintenance
+holds unchanged.
+
 ## Audited owner-fence recovery
 
 `SESSION_OWNER_FENCED` and uncertain renewal persist an independent recovery latch
