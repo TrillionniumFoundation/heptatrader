@@ -55,6 +55,13 @@ LEARNING_TESTS = frozenset({
 })
 
 
+# In-package CPU fixture suites share the same learning execution and result.
+NESTED_LEARNING_MODULES = frozenset({
+    "laya_cell.tests.test_resident_row_worker",
+    "laya_cell.tests.test_resident_price_baselines",
+})
+
+
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
     discovered = {p.name for p in (root / "tests/python").glob("test_*.py") if p.is_file()}
     explicit = (SOURCE_TESTS, LEARNING_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS)
@@ -107,17 +114,20 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
     selected = set.union(*groups.values()) if args.lane == "all" else groups[args.lane]
+    nested = NESTED_LEARNING_MODULES if args.lane in ("learning", "all") else frozenset()
     if args.list:
-        print("\n".join(sorted(selected)))
+        print("\n".join(sorted(selected | nested)))
         return 0
     configure_import_paths()
     loader = unittest.TestLoader()
-    suite = unittest.TestSuite(loader.loadTestsFromName(Path(name).stem) for name in sorted(selected))
+    modules = {Path(name).stem for name in selected} | nested
+    suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in sorted(modules))
     if loader.errors or not suite.countTestCases():
         for error in loader.errors:
             print(error, file=sys.stderr)
         return 1
-    print(f"Python lane={args.lane}: {len(selected)} files, {suite.countTestCases()} cases", flush=True)
+    print(f"Python lane={args.lane}: {len(selected)} files, {len(nested)} nested modules, "
+          f"{suite.countTestCases()} cases", flush=True)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if result.skipped:
         print("Selected tests were skipped; this is not complete partition acceptance.", file=sys.stderr)

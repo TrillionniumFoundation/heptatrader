@@ -443,6 +443,7 @@
         "systemd/user/heptatrader-crypto-driver.service",
         "scripts/hepta_pnl_accounting.py",
         "scripts/hepta_pnl_report.py",
+        "scripts/hepta_pnl_watch.py",
         "scripts/hepta_account_pnl.py",
         "scripts/hepta_account_observer.py",
         "scripts/hepta_account_activity.py",
