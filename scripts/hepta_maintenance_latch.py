@@ -7,6 +7,7 @@ transient native kill-switch. A durable operator hold makes resident
 admission fence, NOT a native owner fence or maintenance-stop permit.
 """
 from __future__ import annotations
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -118,6 +119,30 @@ def _hold_record(data: bytes | None) -> dict | None:
     return record
 
 
+@contextmanager
+def operator_lock(state_root: Path):
+    """Share the existing owner lock across latch and unit-policy transactions."""
+    if os.geteuid() == 0:
+        raise HoldError("ROOT_NOT_ALLOWED")
+    root_fd = _directory(state_root, 0o700)
+    lock_fd = None
+    try:
+        lock_fd = os.open(
+            LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600, dir_fd=root_fd)
+        meta = os.fstat(lock_fd)
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1
+                or meta.st_uid != os.geteuid()
+                or stat.S_IMODE(meta.st_mode) != 0o600):
+            raise HoldError("UNSAFE_OPERATOR_LOCK")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(root_fd)
+
+
 def perform(action: str, control: Path, state_root: Path, *,
             reason: str | None = None, task: str | None = None,
             resume_when: str | None = None) -> dict:
@@ -133,104 +158,93 @@ def perform(action: str, control: Path, state_root: Path, *,
         raise HoldError("ROOT_NOT_ALLOWED")
     # The existing PAPER runtime parent uses 0700, native control uses 0750.
     parent_fd = _directory(control.parent, 0o700)
-    root_fd = _directory(state_root, 0o700)
     try:
-        ctrl_fd = _directory(control, 0o750, exact_links=2)
-        maint = state_root / "operator-maintenance"
-        maint_fd = _directory(maint, 0o700, make=True)
-        try:
-            # Reuse the existing operator maintenance lock across CLI and rollout.
-            lock = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-                           0o600, dir_fd=root_fd)
+        with operator_lock(state_root):
+            ctrl_fd = _directory(control, 0o750, exact_links=2)
             try:
-                meta = os.fstat(lock)
-                if (not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1
-                        or meta.st_uid != os.geteuid()
-                        or stat.S_IMODE(meta.st_mode) != 0o600):
-                    raise HoldError("UNSAFE_OPERATOR_LOCK")
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                hold_raw = _file(maint_fd, HOLD, 0o600)
-                record = _hold_record(hold_raw)
-                hold = record is not None
-                marker = _file(ctrl_fd, SWITCH, 0o440)
-                # Native Execution accepts a 0440 single-link marker even
-                # when the payload is empty. It creates empty markers on
-                # startup/recovery; that is an INDEPENDENT safety hold, not
-                # the ordinary CLI's exactly tagged pause.
-                independent_empty = marker == b""
-                other_native = marker is not None and marker not in (b"engaged\n", b"")
-                if other_native and action != "maintenance-status":
-                    raise HoldError("UNKNOWN_EXISTING_NATIVE_KILLSWITCH")
-                if action == "paper-on":
-                    if hold:
-                        raise HoldError("BLOCKED_BY_PERSISTENT_MAINTENANCE_HOLD")
-                    if marker is not None:
-                        if independent_empty:
-                            raise HoldError("INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE")
-                        _unlink(ctrl_fd, SWITCH, 0o440)
-                elif action in ("pause", "maintenance-hold"):
-                    if action == "maintenance-hold" and not hold:
-                        payload = {"schema": SCHEMA, "uid": os.geteuid(),
-                                   "effect": "NEW_PAPER_RISK_HOLD_ONLY",
-                                   "created_at_ms": int(time.time() * 1000),
-                                   "created_by": "heptatrader-cli", "created_by_pid": os.getpid(),
-                                   **{key: value for key, value in metadata.items() if value is not None}}
-                        raw = (json.dumps(payload, sort_keys=True, separators=(",", ":"))
-                               + "\n").encode()
-                        if len(raw) > 4096:
-                            raise HoldError("HOLD_DESCRIPTION_TOO_LARGE")
-                        if not _write_once(maint_fd, HOLD, raw, 0o600):
-                            raise HoldError("RACING_HOLD_CREATION")
-                        hold = True
-                    if marker is None:
-                        if not _write_once(ctrl_fd, SWITCH, b"engaged\n", 0o440):
-                            raise HoldError("RACING_KILLSWITCH_CREATION")
-                elif action == "maintenance-release":
-                    if not hold or marker is None:
-                        raise HoldError("RELEASE_REQUIRES_BOTH_VALID_MARKERS")
-                    # Under the same exclusive lock. Keep native entry block
-                    # installed until the explicit persistent latch is retired.
-                    _unlink(maint_fd, HOLD, 0o600)
-                    hold = False
-                    try:
-                        # Release only the operator's own tagged CLI marker.
-                        # Execution's zero-byte recovery marker is a separate
-                        # owner and must survive maintenance-release intact.
-                        if not independent_empty:
+                maint = state_root / "operator-maintenance"
+                maint_fd = _directory(maint, 0o700, make=True)
+                try:
+                    hold_raw = _file(maint_fd, HOLD, 0o600)
+                    record = _hold_record(hold_raw)
+                    hold = record is not None
+                    marker = _file(ctrl_fd, SWITCH, 0o440)
+                    # Native Execution accepts a 0440 single-link marker even
+                    # when the payload is empty. It creates empty markers on
+                    # startup/recovery; that is an INDEPENDENT safety hold, not
+                    # the ordinary CLI's exactly tagged pause.
+                    independent_empty = marker == b""
+                    other_native = marker is not None and marker not in (b"engaged\n", b"")
+                    if other_native and action != "maintenance-status":
+                        raise HoldError("UNKNOWN_EXISTING_NATIVE_KILLSWITCH")
+                    if action == "paper-on":
+                        if hold:
+                            raise HoldError("BLOCKED_BY_PERSISTENT_MAINTENANCE_HOLD")
+                        if marker is not None:
+                            if independent_empty:
+                                raise HoldError("INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE")
                             _unlink(ctrl_fd, SWITCH, 0o440)
-                    except Exception:
-                        # Restore the original owner's reason and creation time.
-                        _write_once(maint_fd, HOLD, hold_raw, 0o600)
-                        raise
-                # Report the post-action state, without granting service-stop authority.
-                marker = _file(ctrl_fd, SWITCH, 0o440)
-                record = _hold_record(_file(maint_fd, HOLD, 0o600))
-                origin = ("ABSENT" if marker is None else
-                          "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
-                          "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
-                          "UNRECOGNIZED_INDEPENDENT_NATIVE")
-                blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
-                if marker is not None:
-                    blockers.append(origin)
-                details = None if record is None else {
-                    "uid": record["uid"], "created_at_ms": record["created_at_ms"],
-                    "age_seconds": max(0, (int(time.time() * 1000) - record["created_at_ms"]) // 1000),
-                    "created_by": record.get("created_by"),
-                    "reason": record.get("reason"), "task": record.get("task"),
-                    "resume_when": record.get("resume_when")}
-                return {"schema": "heptatrader.maintenance-latch-status.v1",
-                        "action": action, "persistent_hold": record is not None,
-                        "native_kill_switch_engaged": marker is not None,
-                        "native_marker_origin": origin, "hold_details": details,
-                        "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
-                        "may_stop_driver": False, "broker_orders_sent": 0}
+                    elif action in ("pause", "maintenance-hold"):
+                        if action == "maintenance-hold" and not hold:
+                            payload = {"schema": SCHEMA, "uid": os.geteuid(),
+                                       "effect": "NEW_PAPER_RISK_HOLD_ONLY",
+                                       "created_at_ms": int(time.time() * 1000),
+                                       "created_by": "heptatrader-cli", "created_by_pid": os.getpid(),
+                                       **{key: value for key, value in metadata.items() if value is not None}}
+                            raw = (json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                                   + "\n").encode()
+                            if len(raw) > 4096:
+                                raise HoldError("HOLD_DESCRIPTION_TOO_LARGE")
+                            if not _write_once(maint_fd, HOLD, raw, 0o600):
+                                raise HoldError("RACING_HOLD_CREATION")
+                            hold = True
+                        if marker is None:
+                            if not _write_once(ctrl_fd, SWITCH, b"engaged\n", 0o440):
+                                raise HoldError("RACING_KILLSWITCH_CREATION")
+                    elif action == "maintenance-release":
+                        if not hold or marker is None:
+                            raise HoldError("RELEASE_REQUIRES_BOTH_VALID_MARKERS")
+                        # Under the same exclusive lock. Keep native entry block
+                        # installed until the explicit persistent latch is retired.
+                        _unlink(maint_fd, HOLD, 0o600)
+                        hold = False
+                        try:
+                            # Release only the operator's own tagged CLI marker.
+                            # Execution's zero-byte recovery marker is a separate
+                            # owner and must survive maintenance-release intact.
+                            if not independent_empty:
+                                _unlink(ctrl_fd, SWITCH, 0o440)
+                        except Exception:
+                            # Restore the original owner's reason and creation time.
+                            _write_once(maint_fd, HOLD, hold_raw, 0o600)
+                            raise
+                    # Report the post-action state, without granting service-stop authority.
+                    marker = _file(ctrl_fd, SWITCH, 0o440)
+                    record = _hold_record(_file(maint_fd, HOLD, 0o600))
+                    origin = ("ABSENT" if marker is None else
+                              "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
+                              "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
+                              "UNRECOGNIZED_INDEPENDENT_NATIVE")
+                    blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
+                    if marker is not None:
+                        blockers.append(origin)
+                    details = None if record is None else {
+                        "uid": record["uid"], "created_at_ms": record["created_at_ms"],
+                        "age_seconds": max(0, (int(time.time() * 1000) - record["created_at_ms"]) // 1000),
+                        "created_by": record.get("created_by"),
+                        "reason": record.get("reason"), "task": record.get("task"),
+                        "resume_when": record.get("resume_when")}
+                    return {"schema": "heptatrader.maintenance-latch-status.v1",
+                            "action": action, "persistent_hold": record is not None,
+                            "native_kill_switch_engaged": marker is not None,
+                            "native_marker_origin": origin, "hold_details": details,
+                            "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
+                            "may_stop_driver": False, "broker_orders_sent": 0}
+                finally:
+                    os.close(maint_fd)
             finally:
-                os.close(lock)
-        finally:
-            os.close(maint_fd)
-            os.close(ctrl_fd)
+                os.close(ctrl_fd)
     finally:
-        os.close(root_fd)
         os.close(parent_fd)
 
 

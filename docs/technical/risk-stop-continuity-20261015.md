@@ -106,3 +106,18 @@ The next production gate is a tested Execution-owned/broker-side
 reduce-only protective authority that survives driver absence without
 creating duplicate commands, false zero fills or conflicting owners. No
 PAPER orders or involuntary flatten are authorized by this shield.
+
+
+## Serialize guard installation with the existing maintenance latch
+
+The installer now holds the same owner-private operator-maintenance.lock as
+paper-on and maintenance-release for the entire unit-policy transaction,
+including the initial observation, verification, receipt and failure rollback.
+Previously a second installer could accept a first installer's guard files,
+then lose them when the first installer later rolled back. The shared lock
+serializes these cooperative operations without adding a permit file or a
+new approval step. Both CLI entry points resolve the owner's home from the
+passwd database, so different HOME values cannot select different locks.
+
+This change only coordinates existing local tools. It does not authorize a
+driver stop, release an existing hold, or add native execution capabilities.
