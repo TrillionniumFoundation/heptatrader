@@ -14,6 +14,26 @@ class DocsOnlyScope(unittest.TestCase):
     def test_documentation_only(self):
         self.assertTrue(docs_only(["README.md", "docs/technical/a.md", "docs/b.md"]))
 
+    def test_research_readmes_and_dated_reports_are_prose(self):
+        self.assertTrue(docs_only([
+            "research/README.md", "research/train_v2/README.md",
+            "research/train_v2/FX_ORIGINAL_HEALTH_FIRST160_PHYSICAL_20261013.md",
+        ]))
+
+    def test_research_contracts_and_configuration_keep_full_feedback(self):
+        for path in ("research/MODELS.md", "research/CLIENT_PACKAGE.md",
+                     "research/train_v2/contract.md",
+                     "research/train_v2/SOURCE_CONTRACT_20261013.md",
+                     "research/train_v2/CONFIG_20261013.md",
+                     "research/train_v2/plan.json",
+                     "research/train_v2/config.yaml",
+                     "research/train_v2/source.py"):
+            with self.subTest(path=path):
+                self.assertFalse(docs_only([path]))
+                self.assertEqual(
+                    scope_for_paths([path]),
+                    {"run_native": True, "run_python": True, "run_learning": True})
+
     def test_empty_must_not_skip_everything(self):
         self.assertFalse(docs_only([]))
 

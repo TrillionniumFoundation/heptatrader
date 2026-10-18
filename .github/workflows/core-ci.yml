@@ -107,7 +107,43 @@ jobs:
           set -euo pipefail
           python3 scripts/run_python_tests.py --lane core
           python3 scripts/run_python_tests.py --lane source
-      # Install the model dependency only after the independent Python feedback.
+      - name: Whitespace check
+        run: git diff --check
+
+  learning:
+    name: python-learning-exact-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Use bounded Git HTTP transport
+        run: git config --global http.version HTTP/1.1
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Identify native, Python and learning change scopes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+          fi
+          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
+      - name: Install Python research test dependencies
+        if: steps.scope.outputs.run_learning == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends python3-numpy python3-venv python3-cryptography
+      # Learning feedback is independent from behavioral and metadata failures.
       # Cache downloaded wheel bytes; every learning run installs the pinned version.
       - name: Cache CPU research dependency downloads
         if: steps.scope.outputs.run_learning == 'true'
@@ -131,5 +167,3 @@ jobs:
           OMP_NUM_THREADS: "1"
           MKL_NUM_THREADS: "1"
         run: python3 scripts/run_python_tests.py --lane learning
-      - name: Whitespace check
-        run: git diff --check

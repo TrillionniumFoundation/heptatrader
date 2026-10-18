@@ -167,6 +167,7 @@ def _module_ownership(
     production = [path for path in tracked if _is_production(path) or any(
         _matches(implementation, path) for implementation, _ in entries)]
     owners: dict[str, str] = {}
+    ownership_errors: list[str] = []
     for path in production:
         matches = [
             (len(implementation), implementation, module_id)
@@ -174,7 +175,8 @@ def _module_ownership(
             if _matches(implementation, path)
         ]
         if not matches:
-            raise CoverageError(f"unowned production path: {path}")
+            ownership_errors.append(f"unowned production path: {path}")
+            continue
         longest = max(item[0] for item in matches)
         selected = {(item[1], item[2]) for item in matches if item[0] == longest}
         selected_modules = {item[1] for item in selected}
@@ -183,10 +185,14 @@ def _module_ownership(
                 f"{implementation}->{module_id}"
                 for implementation, module_id in sorted(selected)
             )
-            raise CoverageError(f"ambiguous production ownership for {path}: {detail}")
+            ownership_errors.append(f"ambiguous production ownership for {path}: {detail}")
+            continue
         owner = next(iter(selected_modules))
         owners[path] = owner
         module_paths[owner].append(path)
+
+    if ownership_errors:
+        raise CoverageError("\n".join(ownership_errors))
 
     for module_id, paths in unbuilt_by_module.items():
         wrong_owner = sorted(path for path in paths if owners.get(path) != module_id)
@@ -226,7 +232,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
         _module_ownership(root, tracked, catalog)
         return []
     except CoverageError as error:
-        return [str(error)]
+        return str(error).splitlines()
 
 
 def main(argv: list[str] | None = None) -> int:

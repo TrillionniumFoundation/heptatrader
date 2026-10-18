@@ -330,7 +330,12 @@
         "scripts/research_laya_price_original_one.py",
         "scripts/research_laya_price_original_shadow90.py",
         "scripts/research_laya_original_asof_finality.py",
-        "scripts/research_laya_original90_gap_audit.py"
+        "scripts/research_laya_original90_gap_audit.py",
+        "scripts/research_laya_history_increment_replay.py",
+        "scripts/research_laya_next_history_cpu.py",
+        "scripts/research_laya_price_cost_proxy.py",
+        "scripts/research_laya_price_five_session.py",
+        "scripts/research_laya_price_readout_diagnostics.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
@@ -449,7 +454,8 @@
         "scripts/install_decision_attribution.py",
         "scripts/install_risk_stop_fence.py",
         "scripts/hepta_maintenance_exposure_preflight.py",
-        "scripts/hepta_nav_assurance.py"
+        "scripts/hepta_nav_assurance.py",
+        "scripts/activate_prepared_driver.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -481,7 +487,7 @@
       "implementation": [
         ".github",
         ".agents",
-        "scripts/README.md",
+        "scripts",
         "scripts/check_component_coverage.py",
         "scripts/check_documentation.py",
         "scripts/ci_scope.py",

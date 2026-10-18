@@ -42,7 +42,7 @@ class ComponentCoverageTests(unittest.TestCase):
                  "broker_mutation": "SOLE_AUTHORITY", "production_authorized": False},
                 {"id": "repository-control", "status": "CURRENT",
                  "document": "docs/modules/repository-control.md",
-                 "implementation": ["scripts/check.py"], "tests": ["scripts/check.py"],
+                 "implementation": ["scripts"], "tests": ["scripts/check.py"],
                  "broker_mutation": "NONE", "production_authorized": False},
             ],
         }
@@ -70,15 +70,46 @@ class ComponentCoverageTests(unittest.TestCase):
             self.assertTrue(any("unowned production path" in item and "new_component" in item
                                 for item in errors), errors)
 
-    def test_new_unowned_script_fails_closed(self) -> None:
+    def test_new_script_inherits_its_directory_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
             script = root / "scripts/new_release_path.py"
             script.write_text("print('unowned')\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(root), "add", script.relative_to(root)], check=True)
             errors = coverage.validate(root)
-            self.assertTrue(any("unowned production path: scripts/new_release_path.py" in item
-                                for item in errors), errors)
+            self.assertEqual(errors, [])
+            owners, _, _ = coverage._module_ownership(
+                root, coverage._tracked_files(root),
+                coverage._load_json(root / "docs/module-catalog.json"))
+            self.assertEqual(owners["scripts/new_release_path.py"], "repository-control")
+
+    def test_all_unowned_components_are_reported_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            paths = ["new_runtime/first.py", "new_runtime/second.py",
+                     "new_native/entry.cpp"]
+            for relative in paths:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("unused fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            self.assertCountEqual(
+                coverage.validate(root),
+                ["unowned production path: " + path for path in paths])
+
+    def test_more_specific_domain_owner_overrides_directory_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            catalog_path = root / "docs/module-catalog.json"
+            catalog = json.loads(catalog_path.read_text())
+            next(module for module in catalog["modules"]
+                 if module["id"] == "execution-service")["implementation"].append(
+                     "scripts/check.py")
+            (root / "scripts/general.py").write_text("pass\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "scripts/general.py"], check=True)
+            owners, _, _ = coverage._module_ownership(
+                root, coverage._tracked_files(root), catalog)
+            self.assertEqual(owners["scripts/check.py"], "execution-service")
 
     def test_owned_cpp_source_does_not_require_a_second_build_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

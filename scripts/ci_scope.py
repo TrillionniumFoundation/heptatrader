@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Scope routine CI to the changed components; uncertain changes run every lane.
 
-Markdown keeps documentation checks. Three reviewed Python tools and their tests
+Repository docs, research READMEs and dated observation reports are prose.
+Other research contracts/configuration keep full feedback. Three Python tools and their tests
 run every core/source Python test without a native rebuild or model dependency.
 Any unknown, shared, CI, missing or renamed-outside-group path restores full CI.
 """
@@ -33,6 +34,12 @@ def docs_only(paths: list[str]) -> bool:
             return False
         if path == "README.md":
             continue
+        if len(components) >= 2 and components[0] == "research":
+            name = components[-1]
+            # Reports are prose; unnamed research contracts retain full CI.
+            if name == "README.md" or re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*_(?:PHYSICAL|AUDIT|CLOSEOUT|FORENSICS)_20[0-9]{6}\.md", name):
+                continue
+            return False
         if len(components) < 2 or components[0] != "docs" or not path.endswith(".md"):
             return False
     return True
