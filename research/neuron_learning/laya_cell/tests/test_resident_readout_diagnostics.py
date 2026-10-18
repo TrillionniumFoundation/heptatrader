@@ -55,6 +55,20 @@ class ReadoutDiagnosticsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tensor_summary(x)
 
+    def test_cls_intervention_preserves_features_and_input(self):
+        from laya_cell.resident_readout_diagnostics import normalize_cls_input
+        cls = torch.arange(768, dtype=torch.float64).repeat(2, 1) * 100 + 9000
+        features = torch.tensor([[.7, .2, .4, 7/255], [.6, .1, .5, 7/255]], dtype=torch.float64)
+        original = torch.cat((cls, features), dim=-1)
+        saved = original.clone()
+        result = normalize_cls_input(original)
+        self.assertTrue(torch.equal(original, saved))
+        self.assertTrue(torch.equal(result[:, 768:], features))
+        torch.testing.assert_close(result[:, :768].mean(-1), torch.zeros(2, dtype=torch.float64), atol=1e-12, rtol=0)
+        torch.testing.assert_close(result[:, :768].var(-1, unbiased=False), torch.ones(2, dtype=torch.float64), atol=1e-10, rtol=0)
+        with self.assertRaises(ValueError):
+            normalize_cls_input(torch.ones(2, 771))
+
 
 if __name__ == "__main__":
     unittest.main()

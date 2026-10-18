@@ -104,5 +104,16 @@ def probability_metrics(price_logits, action_logits, price_targets, action_targe
             "ACT_targets": int((ya == 0).sum()),
             "ACT_at_half": int((ap[:, 0] >= .5).sum()),
             "ACT_at_five_sixths": int((ap[:, 0] >= 5/6).sum()),
+            "margin_abs_gt20": int((margin.abs() > 20).sum()),
+            "fp32_recomputed_pACT_equals_one": int((action_logits.detach().to(device="cpu", dtype=torch.float32).softmax(-1)[:, 0] == 1).sum()),
+            "fp32_recomputed_pACT_equals_zero": int((action_logits.detach().to(device="cpu", dtype=torch.float32).softmax(-1)[:, 0] == 0).sum()),
             "raw_margin_auc_training_only": auc,
             "action_margin": tensor_summary(margin)}
+
+
+def normalize_cls_input(value):
+    """Research intervention on CLS768 only; preserve four price features."""
+    if value.ndim != 2 or value.shape[1] != 772 or not bool(torch.isfinite(value).all()):
+        raise ValueError("ACTION_INPUT_772_FINITE_REQUIRED")
+    normalized = torch.nn.functional.layer_norm(value[:, :768], (768,), eps=1e-5)
+    return torch.cat((normalized, value[:, 768:]), dim=-1)
