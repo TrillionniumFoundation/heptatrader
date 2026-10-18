@@ -49,7 +49,20 @@ def validate(c):
     validate_cutoff(end, c.get('cutoff_policy', 'OLDER_THAN_24H'))
     request_window_days(c)
     validate_wait(c.get('cash_hmds_startup_wait_sec', 0))
+    validate_probe_options(c)
     return end
+
+
+def validate_probe_options(c):
+    for key in ('skip_head_timestamp_requests', 'cash_hmds_probe_on_unknown'):
+        if type(c.get(key, False)) is not bool:
+            raise EvidenceError('HISTORY_PROBE_OPTION_MUST_BE_BOOLEAN')
+    if 'head_probe_on_unknown' in c or 'unknown_probe_kind' in c:
+        raise EvidenceError('LEGACY_PROBE_OPTIONS_UNSUPPORTED_USE_CASH_HMDS_PROBE_ON_UNKNOWN')
+    if c.get('cash_hmds_probe_on_unknown', False):
+        if not c.get('cash_hmds_startup_wait_sec', 0) or not c.get('skip_head_timestamp_requests', False):
+            raise EvidenceError('UNKNOWN_PROBE_REQUIRES_BOUNDED_WAIT_AND_PRICE_BAR_FIRST')
+
 
 def validate_cutoff(end, policy='OLDER_THAN_24H', now=None):
     """An explicit offline-only mode accepts the previous completed UTC day.
@@ -99,7 +112,9 @@ def make_app(c):
             if code not in ALLOWED:raise EvidenceError('NON_HISTORY_MESSAGE_REFUSED:'+str(code))
             if code!=71 and not self.paper:raise EvidenceError('PAPER_NOT_VERIFIED')
             if sum(self.sent.values())>=80:raise EvidenceError('OUTBOUND_MESSAGE_CAP')
-            fence = self.farm.dispatch(code, int(fields[1])) if self.farm is not None and code in (20, 87) else nullcontext()
+            fence = (self.farm.dispatch(code, int(fields[1]),
+                        request_kind=self.guard.plans.get(int(fields[1]), {}).get('kind'))
+                     if self.farm is not None and code in (20, 87) else nullcontext())
             with fence:
                 self.guard.check(msg,self.paper,self.serverVersion())
                 self.sent[code]+=1
@@ -145,7 +160,8 @@ def make_app(c):
 
 def plans(c,end):
     days=request_window_days(c)
-    out=[{'kind':'head','what':what,'end':''} for what in ('MIDPOINT','BID','ASK')]
+    out=[] if c.get('skip_head_timestamp_requests', False) else [
+        {'kind':'head','what':what,'end':''} for what in ('MIDPOINT','BID','ASK')]
     for i in range(c['chunks']):
         until=end-timedelta(days=30*i)
         for what in ('MIDPOINT','BID','ASK','SCHEDULE'):
@@ -247,7 +263,11 @@ def _run_locked(c,end,root):
     preflight_existing(root,c,end)
     app,contract=make_app(c);thread=None;results=[];sent_now=0;last=0
     session={'schema':'heptatrader.historical-download-session.v1','started_ms':int(time.time()*1000),
-        'config_sha256':digest(c),'trade_authority':False,'results':results}
+        'config_sha256':digest(c),'trade_authority':False,'results':results,
+        'collector_sources': {name: {'path': str(Path(__file__).with_name(name)),
+            'sha256': sha(Path(__file__).with_name(name))}
+            for name in ('ib_history.py', 'history_farm_readiness.py', 'egress.py', 'common.py')},
+        'head_timestamp_requests_skipped': c.get('skip_head_timestamp_requests', False)}
     try:
         app.connect(c['host'],c['port'],c['client_id'])
         thread=threading.Thread(target=app.run,daemon=True);thread.start()
@@ -257,7 +277,9 @@ def _run_locked(c,end,root):
         if c.get('cash_hmds_startup_wait_sec', 0):
             if getattr(app, 'farm', None) is None:
                 raise EvidenceError('REQUIRED_HMDS_READINESS_TRACKER_MISSING')
-            session['startup_readiness'] = app.farm.wait(c['cash_hmds_startup_wait_sec'], alive=lambda: app.isConnected() and not app.dead)
+            session['startup_readiness'] = app.farm.wait(
+                c['cash_hmds_startup_wait_sec'], alive=lambda: app.isConnected() and not app.dead,
+                allow_unknown_probe=c.get('cash_hmds_probe_on_unknown', False))
         for index,plan in enumerate(plans(c,end)):
             key=digest({'contract':CONTRACT,**plan});directory=root/'chunks'/key
             r=verified_receipt(directory,plan)
@@ -298,6 +320,15 @@ def _run_locked(c,end,root):
             write_once(directory / 'receipt.json', receipt)
             results.append({'request_key':key,'state':state,'resumed':False,'rows':receipt['rows']})
             atomic(root/'progress.json',session)
+            farm = getattr(app, 'farm', None)
+            if farm is not None and farm.is_probe(rid):
+                try:
+                    farm.complete_probe(rid, received=state == 'RECEIVED',
+                        rows=receipt['rows'], response_sha256=receipt['response_sha256'])
+                except EvidenceError:
+                    if stop_reason:
+                        raise EvidenceError(stop_reason)
+                    raise
             print(json.dumps({'kind':plan['what'],'end':plan['end'],'state':state,'rows':receipt['rows']}),flush=True)
             if stop_reason:
                 raise EvidenceError(stop_reason)
@@ -307,7 +338,10 @@ def _run_locked(c,end,root):
         app.disconnect()
         if thread:thread.join(timeout=2)
         session.update(ended_ms=int(time.time()*1000),paper_verified=app.paper,
-            requests_sent_this_run=sent_now,outbound_message_counts=dict(app.sent),
+            request_methods_invoked_this_run=sent_now,
+            requests_sent_this_run=sum(app.sent.get(code, 0) for code in (20, 87)),
+            request_count_scope='GUARD_ADMITTED_SDK_DISPATCH_ATTEMPTS_NOT_WIRE_ACK',
+            outbound_message_counts=dict(app.sent),
             cash_hmds_state=getattr(app,'cash_hmds_state','UNKNOWN'),
             allowed_outbound_codes=sorted(ALLOWED),broker_orders_sent=0,errors=app.errors)
         if getattr(app, 'farm', None) is not None:

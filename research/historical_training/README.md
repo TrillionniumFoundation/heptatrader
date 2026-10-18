@@ -448,3 +448,6 @@ See [BATCHED_FROZEN_COHORT_20261013.md](../train_v2/BATCHED_FROZEN_COHORT_202610
 This is a separate OPT-IN batch-only original sealed-source reader. The
 prior paged_price_window implementation, production data source and frozen
 3x4 original outcomes are not modified. No new trading/economic authority.
+
+For bounded incremental collection when the history farm is demand-idle or has
+not yet emitted a notice, see [Historical data demand probe](IB_HISTORY_DEMAND_PROBE.md).
