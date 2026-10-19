@@ -201,7 +201,10 @@ class SignedX230ReceiptTests(X230LocalChainTests):
 
     def test_signature_bitflip_fails_closed(self):
         original=self.envelope["signature_hex"]
-        self.envelope["signature_hex"]="00"+original[2:]
+        damaged=bytearray.fromhex(original)
+        damaged[0]^=1
+        self.envelope["signature_hex"]=damaged.hex()
+        self.assertNotEqual(self.envelope["signature_hex"],original)
         with self.assertRaisesRegex(ValueError,"X230_SIGNED_RECOMPUTATION_INVALID_SIGNATURE"):
             verify(self.root,self.envelope)
 
