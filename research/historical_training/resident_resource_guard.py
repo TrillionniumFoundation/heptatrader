@@ -182,7 +182,15 @@ class Gate:
         self.last_admission=report
         atomic(self.root/(self.role+'-admission.json'),report)
         return report
-    def check(self):
+    def check(self, *, forward_registration=None):
+        # Registration checks the same prospective source requirements as the
+        # evaluator, without acquiring a worker lease or allocating a trial.
+        if forward_registration is not None:
+            if (self.role!='trainer' or type(forward_registration) is not dict
+                or set(forward_registration)!={'job_id','candidate_id'}
+                or any(type(v) is not str or not v
+                       for v in forward_registration.values())):
+                raise EvidenceError('FORWARD_PREFLIGHT_SUBJECT_INVALID')
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
             if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
@@ -190,7 +198,7 @@ class Gate:
             current=int(time.time()*1000)
             memory=parse_meminfo(Path('/proc/meminfo').read_text())
             pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
-            if self.role=='trainer':
+            if self.role=='trainer' and forward_registration is None:
                 # The resident still validates immutable sources, causal mature
                 # labels and unused rows before training. Current live readiness
                 # is a requirement for prospective evaluation, not that dataset.
@@ -240,7 +248,16 @@ class Gate:
                 'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}
         if self.draining:
             report['admit_new_worker']=False;report['reasons'].append('SUPERVISOR_DRAIN_REQUESTED')
-        report['role']=self.role;atomic(self.root/(self.role+'-admission.json'),report);return report
+        report['role']=self.role
+        name=self.role+'-admission.json'
+        if forward_registration is not None:
+            report.update(admission_scope='FORWARD_REGISTRATION_PREFLIGHT',
+                          subject=dict(forward_registration),trial_allocated=False,
+                          worker_launched=False,worker_launch_authority=False,
+                          actual_launch_guard_still_required=True)
+            name=self.role+'-forward-admission.json'
+        atomic(self.root/name,report)
+        return report
     def acquire(self,subject):
         fast_denial=self._priority_negative_preflight()
         report=fast_denial if fast_denial is not None else self._prioritize_background(self.check())
@@ -257,7 +274,38 @@ class Gate:
         name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')
         if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
         return False
-    def release(self):self.lease.release()
+    def maintain_caches(self):
+        if self.c.get('cache_maintenance')!='TERMINAL_TASK_COMGR_ONLY_V1':
+            return
+        now=time.monotonic()
+        if self.lease.fd is None and now-getattr(self,'_last_cache_sweep',0)<60:
+            return
+        self._last_cache_sweep=now
+        try:
+            from .resident_comgr_cache import sweep_terminal
+            try:
+                report=sweep_terminal(self.c,existing_lease_fd=self.lease.fd)
+            except BlockingIOError:
+                report={'phase':'HEAVY_LEASE_BUSY','removed_files':0,'removed_bytes':0}
+            atomic(self.root/(self.role+'-cache-maintenance.json'),{
+                'at_ms':int(time.time()*1000),'phase':report['phase'],
+                'removed_files':report.get('removed_files',0),'removed_bytes':report.get('removed_bytes',0),
+                'training_result_changed':False})
+        except Exception as exc:
+            failure={'at_ms':int(time.time()*1000),'phase':'MAINTENANCE_FAILED',
+                     'error':str(exc),'training_result_changed':False}
+            try:
+                atomic(self.root/(self.role+'-cache-maintenance.json'),failure)
+            except Exception:
+                try:print(json.dumps(failure),flush=True)
+                except Exception:pass
+
+    def release(self):
+        # Parent wait/reap is complete on normal worker paths; the terminal
+        # selector also refuses paths referenced by an unreaped/orphan worker.
+        try:self.maintain_caches()
+        finally:self.lease.release()
+
 
 
 def evaluator_idle_poll_seconds(gate,tasks):
@@ -301,8 +349,61 @@ def guarded_evaluator_class(base,gate):
     return GuardedEvaluator
 
 
+class _ForwardRegistrationHold(Exception):
+    def __init__(self,report):
+        self.report=report
+        super().__init__('FORWARD_REGISTRATION_RESOURCE_OR_SOURCE_HOLD')
+
+
 def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
+        def register_evaluation(self,job_id,candidate,job):
+            if self.c.get('future_plan_admission_profile') is None:
+                return super().register_evaluation(job_id,candidate,job)
+            previous=getattr(self,'_forward_registration_context',None)
+            self._forward_registration_context=(job_id,candidate['candidate_id'])
+            try:
+                result=super().register_evaluation(job_id,candidate,job)
+            except _ForwardRegistrationHold as exc:
+                if self.db.in_transaction:
+                    raise EvidenceError('FORWARD_PREFLIGHT_ROLLBACK_REQUIRED') from exc
+                self._forward_registration_preflight=exc.report
+                return {'state':'FORWARD_REGISTRATION_GUARD_HOLD',
+                        'job_id':job_id,'candidate_id':candidate['candidate_id'],
+                        'trial_allocated':False,'performance_assessment':False,
+                        'resource_admission':exc.report}
+            else:
+                last=getattr(self,'_forward_registration_preflight',None)
+                if last and last.get('subject',{}).get('job_id')==job_id:
+                    self._forward_registration_preflight=None
+                return result
+            finally:
+                self._forward_registration_context=previous
+
+        def _evaluation_plan(self,job_id,candidate,job,trial,now):
+            proposal=super()._evaluation_plan(job_id,candidate,job,trial,now)
+            context=getattr(self,'_forward_registration_context',None)
+            if context is None:
+                return proposal
+            if context!=(job_id,candidate['candidate_id']):
+                raise EvidenceError('FORWARD_PREFLIGHT_CONTEXT_CHANGED')
+            # This existing virtual call runs INSIDE the frozen registration
+            # transaction, after recovery and pending-trial checks. The exact
+            # proposal/time below is what the frozen calendar will assess next.
+            from laya_cell.resident_plan_calendar import calendar_admission
+            if calendar_admission(candidate,proposal,now)['ready']:
+                report=gate.check(forward_registration={
+                    'job_id':job_id,'candidate_id':candidate['candidate_id']})
+                if report.get('admit_new_worker') is not True:
+                    raise _ForwardRegistrationHold(report)
+            return proposal
+
+        def write_status(self,**extra):
+            preflight=getattr(self,'_forward_registration_preflight',None)
+            if preflight is not None:
+                extra['forward_registration_preflight']=preflight
+            return super().write_status(**extra)
+
         def step(self):
             preflight=getattr(self,'queue_preflight',None)
             held=preflight() if preflight is not None else None
@@ -317,6 +418,10 @@ def guarded_trainer_class(base,gate):
 
 
 def verify_config(c):
+    if c.get('cache_maintenance') not in (None,'TERMINAL_TASK_COMGR_ONLY_V1'):
+        raise EvidenceError('UNREVIEWED_CACHE_MAINTENANCE_PROFILE')
+    if c.get('cache_maintenance') and not c.get('guard_files_sha256',{}).get('resident_comgr_cache.py'):
+        raise EvidenceError('CACHE_MAINTENANCE_RUNTIME_NOT_PINNED')
     if c.get('schema')!='heptatrader.resident-admission-wrapper-config.v1' or c.get('trade_authority') is not False:
         raise EvidenceError('GUARD_CONFIG_SCOPE')
     if c.get('resource_rule')!=RESOURCE_RULE or c.get('max_heavy_workers')!=1:raise EvidenceError('RESOURCE_RULE_CHANGED')
@@ -324,9 +429,10 @@ def verify_config(c):
         from .value_priority_admission import verify_policy,_load_pinned
         verify_policy(c['value_priority'])
         _load_pinned(c['value_priority'])
-        if set(c.get('guard_files_sha256',{}))!={
-            'common.py','resident_live_source.py','resident_resource_guard.py',
-            'value_priority_admission.py'}:
+        expected={'common.py','resident_live_source.py','resident_resource_guard.py',
+                  'value_priority_admission.py'}
+        if c.get('cache_maintenance'):expected.add('resident_comgr_cache.py')
+        if set(c.get('guard_files_sha256',{}))!=expected:
             raise EvidenceError('PRIORITY_RUNTIME_NOT_PINNED')
     if sha(c['original_config'])!=c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
     original=read(c['original_config'])

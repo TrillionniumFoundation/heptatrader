@@ -156,6 +156,30 @@ record. There is no configured owner endpoint or inferred owner acknowledgement.
 This version therefore does NOT complete true automatic promotion. The fixed
 reference is not silently switched when the local screen passes.
 
+### Source readiness before allocating a forward trial
+
+The resident resource guard checks prospective source readiness inside the
+existing registration transaction, through the supervisor's proposal hook.
+For a calendar-feasible new plan, both the proposal before source capture and
+the proposal after capture must pass the same source, memory and pressure
+checks used by the evaluator. Historical training's resource-only admission
+does not waive this prospective source check.
+
+A denied preflight rolls back before a trial or reservation is allocated.
+The completed candidate stays in the existing waiting queue and is retried;
+waiting also prevents additional training jobs from accumulating. The
+`FORWARD_REGISTRATION_GUARD_HOLD` diagnostic identifies that candidate and is
+not a performance rejection. Existing immutable plans, reserved publications
+and terminal receipts retain their original recovery paths and times.
+Non-registration calendar probes do not invoke the guard.
+
+`trainer-forward-admission.json` records the subject, check time and reasons
+separately from actual worker admission. Passing this preflight grants no
+worker lease or GPU access. Each future prediction still needs the original
+launch-time source/resource check and shared heavy-worker lease; later source
+loss can still censor its original slot. Evaluator admission deferrals are
+recorded in the existing per-plan diagnostic path when supported by its runtime.
+
 ## Canonical Agentd boundary: explicitly incomplete
 
 The canonical source snapshot is `hepta-private-ci@78fdb0cf...`. Its
@@ -200,6 +224,14 @@ release with exact Python, accounting and native bytes. `--update-owned` is
 required to replace any of the three already-owned service units; previous units
 are backed up, and old runtime releases are not overwritten. No other unit is
 stopped or altered. Each service has CPU, memory, task and low-priority limits.
+
+The guard release pins its common, live-source, priority and wrapper modules.
+The optional `TERMINAL_TASK_COMGR_ONLY_V1` profile also pins
+`resident_comgr_cache.py`; trainer and evaluator can use the same reviewed
+guard release with their own existing resident configurations. This profile
+retains the already-deployed cleanup of terminal compiler-cache files under
+the shared heavy-worker lock, including identity checks and cleanup receipts.
+It does not remove model artifacts, source evidence or active worker files.
 
 GPU workers enter existing Landlock/seccomp confinement before torch threads
 start. Only declared assets and input prefixes are readable; writes are confined
