@@ -9,7 +9,7 @@ import argparse,copy,hashlib,json,os,stat,sys
 from pathlib import Path
 from hepta_verified_loader import SourceHashMismatch,load_verified_module
 from hepta_btc_entry_policy import PROFILE,HORIZONS,PolicyError,canonical,digest,number,validate_forecast,validate_control,reserve,evaluate
-BASE_SHA256='6818578aa5b31715092f0c288675632e106724edefd55941e87d276f5b21f521'
+BASE_SHA256='73cfe8f036acf80dde8b42bd235c40f2cd79f2a92fc896b6d068216a60187d42'
 SCHEMA={'type':'object','required':['action','confidence','rationale','expected_move_bps','horizon_sec'],
  'additionalProperties':False,'properties':{'action':{'enum':['BUY','SELL','HOLD']},
  'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string','minLength':1,'maxLength':2000},
@@ -137,11 +137,15 @@ def attach(driver,config,*,period_check=None):
  return close
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--base-driver',type=Path,required=True);p.add_argument('--profile',type=Path,required=True)
+ p=argparse.ArgumentParser();p.add_argument('--base-driver',type=Path,required=True);p.add_argument('--profile',type=Path)
  p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');p.add_argument('--recover-owner',action='store_true');a=p.parse_args()
- os.umask(0o077);c=load_profile(a.profile);m=load_base(a.base_driver);close=attach(m,c)
+ control_only=a.reconcile_only or a.recover_owner
+ if not control_only and a.profile is None:p.error('--profile is required for entry-capable modes')
+ os.umask(0o077);m=load_base(a.base_driver);close=None
+ if not control_only:close=attach(m,load_profile(a.profile))
  # No LIVE selector, cash sizing override or canary permission is exposed.
  sys.argv=[str(a.base_driver),'--instrument','BTC.USD']+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])+(['--recover-owner'] if a.recover_owner else [])
  try:return m.main()
- finally:close()
+ finally:
+  if close is not None:close()
 if __name__=='__main__':raise SystemExit(main())

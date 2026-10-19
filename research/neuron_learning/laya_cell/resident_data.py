@@ -10,33 +10,40 @@ from .shadow_source import read_source
 from .dataset import rows_for_training
 
 
-def read_quotes(config,now_ms):
- if sha_file(Path(config['period_path']))!=config['period_sha256']:raise ContractError('RESIDENT_PERIOD_CHANGED')
- from .source_archive import inventory
- feed_paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
- sealed,pages=inventory(config,feed_paths)
- # Historical probes are independent signed training sources. They cannot
- # rewrite the real-time feed or retroactively validate a model.
- extra=[Path(x) for x in config.get('completed_history_sources',[])]
- if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
- paths=list(dict.fromkeys(feed_paths+extra))
- if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
- quotes={};prefixes=list(pages)
- for i,path in enumerate(paths):
-  header,records,prefix=read_source(path)
-  if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
-  if i<len(sealed):
-   if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
-  else:
-   prefixes.append(prefix)
-  for q in records:
-   if q['known_at_ms']>now_ms:continue
-   old=quotes.get(q['t'])
-   if old and (Decimal(str(old['bid']))!=Decimal(str(q['bid'])) or Decimal(str(old['ask']))!=Decimal(str(q['ask']))):
-    raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
-   if old is None or q['known_at_ms']<old['known_at_ms']:quotes[q['t']]=q
- ordered=[{**quotes[t],"bid":float(quotes[t]["bid"]),"ask":float(quotes[t]["ask"])} for t in sorted(quotes)]
- return ordered,prefixes
+def read_quotes(config,now_ms,*,read_hints=None):
+    if read_hints is not None:
+        read_hints.clear()
+    if sha_file(Path(config['period_path']))!=config['period_sha256']:
+        raise ContractError('RESIDENT_PERIOD_CHANGED')
+    from .source_archive import inventory
+    feed_paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
+    sealed,pages=inventory(config,feed_paths)
+    # Completed probes remain separate immutable training sources.
+    extra=[Path(x) for x in config.get('completed_history_sources',[])]
+    if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
+    paths=list(dict.fromkeys(feed_paths+extra))
+    if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
+    quotes={};prefixes=list(pages)
+    for i,path in enumerate(paths):
+        header,records,prefix=read_source(path)
+        if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
+        if i<len(sealed):
+            if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        else:prefixes.append(prefix)
+        for q in records:
+            if read_hints is not None:
+                for stamp in (q['known_at_ms'],q['t']+300000):
+                    if stamp>now_ms:
+                        old_stamp=read_hints.get('next_input_ms')
+                        read_hints['next_input_ms']=stamp if old_stamp is None else min(old_stamp,stamp)
+            if q['known_at_ms']>now_ms:continue
+            old=quotes.get(q['t'])
+            if old and (Decimal(str(old['bid']))!=Decimal(str(q['bid'])) or Decimal(str(old['ask']))!=Decimal(str(q['ask']))):raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
+            if old is None or q['known_at_ms']<old['known_at_ms']:quotes[q['t']]=q
+    ordered=[{**quotes[t],'bid':float(quotes[t]['bid']),'ask':float(quotes[t]['ask'])} for t in sorted(quotes)]
+    if read_hints is not None:
+        read_hints['complete']=True
+    return ordered,prefixes
 
 
 def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids):
@@ -97,7 +104,8 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  reserved=set(reserved_row_ids)
  if any(not isinstance(key,str) or len(key)!=64 or any(c not in '0123456789abcdef' for c in key) for key in reserved):
   raise ContractError('TRAINING_RESERVED_ROW_IDENTITY')
- ordered,prefixes=read_quotes(config,now_ms)
+ clock_hints={}
+ ordered,prefixes=(read_quotes(config,now_ms,read_hints=clock_hints) if use_v3 else read_quotes(config,now_ms))
  times=[q['t'] for q in ordered];exclusions=[];scope=config['period_sha256']+':EUR.USD'
  sampled=[]
  for q in ordered:
@@ -151,6 +159,11 @@ def collect(config,now_ms,*,reserved_row_ids=()):
   'latest_quote_ms':times[-1] if times else None,'exclusion_counts':dict(Counter(x['reason'] for x in invalid)),
   'window':window}
  if use_v3:quality['training_pool']=pool
+ from .resident_input_wait import next_timestamp_ms
+ seed_next=next_timestamp_ms(seed['samples'],now_ms) if use_v3 else None
+ future_times=[stamp for stamp in (clock_hints.get('next_input_ms'),seed_next) if stamp is not None]
+ quality['training_input_clock_complete']=bool(use_v3 and clock_hints.get('complete'))
+ quality['next_training_input_ms']=min(future_times) if future_times else None
  return dataset,rows,quality,ordered
 
 

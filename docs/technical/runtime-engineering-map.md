@@ -99,31 +99,31 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 
 ## Test ownership
 
-Behavior-bearing evidence is intentionally assigned once:
+Routine pull request validation uses the current `core-ci.yml` workflow. Native,
+Python, and learning validation provide separate feedback. Within Python
+validation, documentation, core behavior, and source structure checks are reported
+independently so an earlier failed check does not hide the remaining results.
 
-- **Core Runtime CI** owns the canonical build/CTest, core/install/process Python partitions, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
-- **GCC/Clang reliability lanes** independently own sanitizer behavior.
-- **Source and Monitoring CI** owns documentation structure, component/build ownership, capability truth and source-gap contracts and its disjoint source Python partition.
-- **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
+`scripts/ci_scope.py` selects the runtime lanes. Prose-only changes retain
+documentation feedback. Verified Python operators run the Python checks; source
+monitoring, the shared change watcher, PnL watchers, and price baselines also retain
+learning integration checks. Changes to an unknown or other shared component,
+CI logic, or a deleted, missing, or retyped required file restore full validation.
+The verified loader and attribution installer additionally check their known
+imports and required support files. Changing a support file does not inherit a
+helper's scope exemption.
 
-A pull request whose changed paths are confined to `README.md`, Markdown under `docs/`, `doc/`
-or `pic/` still runs the complete source-truth/documentation partition, but skips
-the Prometheus/Alertmanager process chain. The same narrow exemption applies to
-exact Data/Analytics/Replay/Strategy computation files and their declared public
-headers. The four existing offline regression files (`market_data_tests.cpp`,
-`analytics_tests.cpp`, `replay_tests.cpp`, and `replay_model_cases.h` under
-`tests/research/`) share this exemption, including when changed with their
-algorithm. The exemption never skips their native tests. Native clients,
-build/package graphs, installed-SDK and process tests, unknown research paths
-and mixed changes retain monitoring and release acceptance. The complete NUL-delimited Git diff must
-succeed before an exemption is considered; filenames cannot inject another row. Pushes, merge candidates and any source,
-script, systemd, monitoring or workflow change retain that process acceptance.
-The same classifier now scopes installed release acceptance; policy JSON remains full-scope. Skipping an unrelated process chain does not inherit or manufacture monitoring
-evidence for the documentation-only revision.
+`scripts/run_python_tests.py` owns the disjoint Python test partitions. Behavior
+tests, including source-proof cache behavior, remain in the core partition;
+source structure checks belong to the source partition. A test should have one
+runner owner. Components retain the integration checks needed by their consumers.
 
-The required-check inventory contains only behavior-bearing contexts. Historical compatibility shims were removed so branch protection cannot mistake an empty job for engineering evidence.
-
-A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.
+Release-tag package and install checks and manual sanitizer, SDK, and broker
+acceptance workflows serve their stated release or operator acceptance purposes.
+They are not additional prerequisites for every routine helper edit. The retained
+Windows Desktop IB workflow profiles have the legacy scope described in
+[Deployment](../modules/deployment.md); current Pocket4 operating instructions are
+owned by that module.
 
 ## Performance budget and measurement
 

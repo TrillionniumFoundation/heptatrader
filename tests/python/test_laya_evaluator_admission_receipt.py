@@ -3,6 +3,7 @@
 No broker, GPU, Value-work modification, or installation in live Laya.
 """
 import json,tempfile,time,unittest
+from unittest.mock import patch
 from pathlib import Path
 from historical_training.resident_resource_guard import guarded_evaluator_class
 from laya_cell.integrity import ContractError,digest,sha_file
@@ -132,5 +133,33 @@ class AdmissionReceiptTests(unittest.TestCase):
   self.assertEqual(out['status'],'CENSORED')
   self.assertEqual(out['reason'],'NO_PREDICTION_IN_FIXED_SLOT')
   self.assertNotIn('first_admission_denial_sha256',out)
+
+ def test_terminal_assessment_updates_qualification_and_progress(self):
+     evaluator = self.active_evaluator()
+     terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'REJECTED', 'observed': 0, 'censored': 1}
+     with patch('laya_cell.resident_evaluate.assess', return_value=terminal) as assess:
+         evaluator.step()
+     assess.assert_called_once()
+     qualification = json.loads((self.folder / 'qualification.json').read_text())
+     progress = json.loads((self.folder / 'progress.json').read_text())
+     self.assertEqual(qualification, terminal)
+     self.assertEqual(progress, qualification)
+
+ def test_closed_qualification_preserves_bytes_and_skips_source_work(self):
+     evaluator = self.active_evaluator()
+     terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'REJECTED', 'observed': 0, 'censored': 1}
+     stale_progress = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'PENDING', 'observed': 0, 'censored': 0}
+     (self.folder / 'qualification.json').write_text(json.dumps(terminal, indent=2) + '\n', encoding='utf-8')
+     (self.folder / 'progress.json').write_text(json.dumps(stale_progress, separators=(',', ':')) + '\n', encoding='utf-8')
+
+     def contents():
+         return {str(path.relative_to(self.folder)): path.read_bytes() for path in self.folder.rglob('*') if path.is_file()}
+     before = contents()
+     with patch('laya_cell.resident_evaluate.assess', side_effect=AssertionError('closed plan must not be reassessed')) as assess, patch('laya_cell.resident_evaluate.read_quotes', side_effect=AssertionError('closed plan must not read quotes')) as read_quotes, patch('laya_cell.resident_source_policy.read_for_pending_outcomes', side_effect=AssertionError('closed plan must not read bounded sources')) as read_pending:
+         evaluator.step()
+     assess.assert_not_called()
+     read_quotes.assert_not_called()
+     read_pending.assert_not_called()
+     self.assertEqual(contents(), before)
 
 if __name__=='__main__':unittest.main()

@@ -186,5 +186,34 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.assertIn('NO_CAUSAL_ORIGINAL_QUOTE',';'.join(denied['reasons']))
         refresh.assert_called_once()
 
+
+    def test_resource_denial_never_opens_source_status_or_refreshes(self):
+        self.health.unlink()
+        for role, kwargs in (('evaluator', {}), ('trainer', {'forward_registration': {'job_id':'job','candidate_id':'c'*64}})):
+            with self.subTest(role=role),\
+                 patch('historical_training.resident_resource_guard.parse_meminfo',return_value={**MEM,'SwapFree':0}),\
+                 patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI),\
+                 patch('historical_training.resident_live_source.refresh',side_effect=AssertionError('NO_SOURCE_IO')) as refresh:
+                report=Gate(self.config,role).check(**kwargs)
+            self.assertEqual(report['reasons'],['HOST_SWAP_RESERVE_BELOW_1GIB'])
+            self.assertFalse(report['admit_new_worker'])
+            self.assertTrue(report['source_refresh_skipped_for_resource_denial'])
+            self.assertFalse(report['original_live_source_evidence']['fresh_original_live_source_proven'])
+            refresh.assert_not_called()
+
+    def test_recovered_resources_require_fresh_source_after_lease_again(self):
+        self.source.update(state='READY_FOR_REVIEW_NOT_AUTHORIZATION',usable=24,unusable=0,reasons=[],latest_source_quote_ms=int(time.time()*1000)-100)
+        self.persist()
+        gate=Gate(self.config,'evaluator')
+        with patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
+             patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI),\
+             patch('historical_training.resident_live_source.refresh',return_value=(self.source,{'fixture':True})) as refresh,\
+             patch.object(gate.lease,'acquire',return_value=True) as lease:
+            self.assertTrue(gate.acquire({'plan':'fixture','slot':0}))
+        self.assertEqual(refresh.call_count,2)
+        lease.assert_called_once()
+
+
+
 if __name__=='__main__':
     unittest.main()

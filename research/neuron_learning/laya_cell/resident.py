@@ -83,7 +83,7 @@ class Supervisor:
     'reward_sync_interval_seconds':REWARD_SYNC_INTERVAL_SECONDS,
      'reward_full_reverify_interval_seconds':FULL_REVERIFY_SECONDS,
      'reward_refresh_guard':getattr(self,'_reward_refresh_guard',None).status() if getattr(self,'_reward_refresh_guard',None) else None,
-    'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT',
+    'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT','training_lineage':{'mode':'INDEPENDENT_CANDIDATES_FROM_CONFIGURED_PARENT','configured_parent_directory':self.c.get('initial_parent_directory'),'optimizer_reset_each_job':True,'completed_jobs_are_cumulative_updates':False},
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
     'broker_orders_sent':0,'storage':self.storage,**extra}
@@ -111,6 +111,7 @@ class Supervisor:
    from .resident_source_policy import RECENT,RUNTIME_PIN
    if self.c['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
    plan['future_source_read_profile']=RECENT
+   plan['future_outcome_read_profile']='ARCHIVE_VERIFIED_PENDING_OUTCOME_V1'
    for name in RUNTIME_PIN:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
@@ -292,6 +293,24 @@ class Supervisor:
   self._reward_snapshot=rewards;self._reward_sync_tick=tick
   guard.finish(self.c,rewards,now)
   return rewards
+ def _training_cadence_wait(self,now,queue):
+  last=get_meta(self.db,'last_job_created_ms',0)
+  if type(last) is not int or last<0:raise ContractError('TRAINING_CADENCE_TIMESTAMP_INVALID')
+  if now<last:raise ContractError('TRAINING_CLOCK_REGRESSION')
+  if now-last>=MIN_CADENCE_MS:return None
+  return self.write_status(storage=self.storage,state='COLLECTING_BETWEEN_TRAINING_JOBS',
+    reason='TRAINING_CADENCE_NOT_DUE',next_training_due_ms=last+MIN_CADENCE_MS,
+    training_data_refresh_performed=False,**queue)
+ def _training_wait_preflight(self,now,queue):
+  cadence=self._training_cadence_wait(now,queue)
+  if cadence is not None:return cadence
+  waiting=getattr(self,'_training_input_wait',None)
+  if waiting is None:return None
+  reserved={row[0] for row in self.db.execute('SELECT id FROM consumed_rows')}
+  held=waiting.lookup(self.c,reserved,now)
+  if held is None:return None
+  payload={**queue,**held,'state':'WAITING_FOR_NEW_MATURE_LABELS','reason_codes':['UNCHANGED_TRAINING_INPUTS']}
+  return self.write_status(**payload)
  def queue_preflight(self):
   # Negative-only admission optimization; completing an already-trained
   # artifact's deferred registration never takes GPU or training authority.
@@ -306,7 +325,7 @@ class Supervisor:
    return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
    return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
-  return None
+  return self._training_wait_preflight(int(time.time()*1000),queue)
  def step(self):
   now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()
   self.storage=inspect_storage(self.c)
@@ -318,8 +337,16 @@ class Supervisor:
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
+  held=self._training_wait_preflight(now,queue)
+  if held is not None:return held
+  from .resident_input_wait import InputWait,input_signature
+  reserved={row[0] for row in self.db.execute('SELECT id FROM consumed_rows')}
+  _input_wait=getattr(self,'_training_input_wait',None)
+  if _input_wait is None:
+   _input_wait=InputWait(input_signature)
+   self._training_input_wait=_input_wait
+  _input_before=_input_wait.begin(self.c,reserved,now) if training_v3.enabled(self.c.get('objective')) else None
   if training_v3.enabled(self.c.get('objective')):
-   reserved={row[0] for row in self.db.execute('SELECT id FROM consumed_rows')}
    dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved)
   else:dataset,rows,quality,_=collect(self.c,now)
   new=[]
@@ -327,10 +354,9 @@ class Supervisor:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
    if not self.db.execute('SELECT 1 FROM consumed_rows WHERE id=?',(key,)).fetchone():new.append((key,r))
   state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,**queue,'reward_reason':rewards['reason']}
-  last=get_meta(self.db,'last_job_created_ms',0)
-  if now<last:raise ContractError('TRAINING_CLOCK_REGRESSION')
-  if now-last<MIN_CADENCE_MS:return self.write_status(state='COLLECTING_BETWEEN_TRAINING_JOBS',**state)
-  if len(new)<16:return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
+  if len(new)<16:
+   _input_wait.remember(self.c,reserved,now,_input_before,quality=quality,mature_rows=len(rows),new_mature_rows=len(new),clock_complete=quality.get('training_input_clock_complete') is True,next_input_ms=quality.get('next_training_input_ms'))
+   return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
   training_policy=training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
   chosen=(training_policy.select_covered_rows(new) if training_policy.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
@@ -341,7 +367,7 @@ class Supervisor:
   job_id=digest({'fingerprint':fingerprint,'parent':parent_id,'profile':self.c['profile'],'objective':self.c['objective']})
   job={**self.c,'schema':'heptatrader.laya-resident-job.v1','dataset':str(dataset_path),'dataset_sha256':sha_file(dataset_path),
     'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':ROW_ACCOUNTING_SCHEMA,
-    'parent_directory':self.c['initial_parent_directory'],
+    'parent_directory':self.c['initial_parent_directory'],'parent_manifest_sha256':sha_file(Path(self.c['initial_parent_directory'])/'candidate.json'),
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}
   job_path=self.root/'jobs'/(job_id+'.json');write_once(job_path,job)

@@ -138,8 +138,8 @@ def _load_pages(config):
     return pages, prefixes, pins
 
 
-def verify_prefix(pin, *, sealed=False):
-    """Verify exact prefix bytes with O_NOFOLLOW; sealed files cannot grow."""
+def _open_prefix(pin, *, sealed=False):
+    """Validate the original identity and return its open fd and stat."""
     if type(pin) is not dict or not {"path", "bytes", "sha256"} <= pin.keys():
         raise ContractError("SOURCE_PREFIX_INVALID")
     path = Path(pin["path"])
@@ -155,8 +155,28 @@ def verify_prefix(pin, *, sealed=False):
             st.st_mode & 0o077 or st.st_size < size or
             (sealed and (pin.get("ended") is not True or st.st_size != size))):
             raise ContractError("SOURCE_PREFIX_FILE_CHANGED")
+        return fd, st
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def prefix_version(pin, *, sealed=False):
+    """Validated local file identity, not proof of its original bytes."""
+    fd, st = _open_prefix(pin, sealed=sealed)
+    try:
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                st.st_ctime_ns, st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
+    finally:
+        os.close(fd)
+
+
+def verify_prefix(pin, *, sealed=False):
+    """Verify exact prefix bytes with O_NOFOLLOW; sealed files cannot grow."""
+    fd, _ = _open_prefix(pin, sealed=sealed)
+    try:
         hash_ = hashlib.sha256()
-        remaining = size
+        remaining = pin["bytes"]
         final_byte = b""
         while remaining:
             chunk = os.read(fd, min(1024 * 1024, remaining))

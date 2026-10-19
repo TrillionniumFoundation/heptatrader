@@ -53,6 +53,9 @@ def run_job(c,*,old_learner_verified=False):
  baseline_id=verify_baseline(Path(c['baseline_directory']))
  parent_dir=Path(c['parent_directory']);parent=validate_parent(parent_dir)
  if parent['candidate_id']!=c['parent_id']:raise ContractError('PARENT_SUBSTITUTED')
+ parent_manifest_sha256=sha_file(parent_dir/'candidate.json')
+ if c.get('parent_manifest_sha256',parent_manifest_sha256)!=parent_manifest_sha256:
+  raise ContractError('PARENT_MANIFEST_CHANGED')
  dataset_path=Path(c['dataset'])
  if sha_file(dataset_path)!=c['dataset_sha256']:raise ContractError('DATASET_CHANGED')
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
@@ -142,7 +145,7 @@ def run_job(c,*,old_learner_verified=False):
  save_file(tensors,str(out/'adapter.safetensors'));(out/'adapter.safetensors').chmod(0o400)
  changes={n:int((v.cpu()!=initial[n].cpu()).sum()) for n,v in tensors.items()}
  record={'schema':'heptatrader.laya-resident-candidate.v1','created_at_ms':int(time.time()*1000),
-  'base_id':base_id,'base_revision':parent['base_revision'],'parent_id':parent['candidate_id'],
+  'base_id':base_id,'base_revision':parent['base_revision'],'parent_id':parent['candidate_id'],'training_lineage':{'mode':'INDEPENDENT_CANDIDATES_FROM_CONFIGURED_PARENT','parent_directory':str(parent_dir),'parent_candidate_id':parent['candidate_id'],'parent_manifest_sha256':parent_manifest_sha256,'optimizer_reset_each_job':True,'optimizer_state_restored':False},
   'generation':c['generation']+1,'frozen_bootstrap_id':baseline_id,'dataset_id':digest(dataset),
   'dataset_file_sha256':c['dataset_sha256'],'data_fingerprint':c['data_fingerprint'],
   'trained_until_ms':c['window']['training_end_ms'],'window':c['window'],'profile':PROFILE,'objective':c['objective'],

@@ -17,7 +17,7 @@ def install(config_path,start,update_owned=False,only=None):
  for p in sorted(source.glob('*.py')):files['learn/laya_cell/'+p.name]=p
  for name in ('data.py','sandbox.py'):files['learn/'+name]=learn/name
  # Existing authoritative accounting replay is pinned with this release.
- for name in ('hepta_pnl_accounting.py','hepta_decision_attribution.py','hepta_pnl_watch.py'):
+ for name in ('hepta_pnl_accounting.py','hepta_decision_attribution.py','hepta_pnl_watch.py','hepta_change_watch.py'):
   files['scripts/'+name]=repo/'scripts'/name
  files['bin/hepta-trader-neuron-native']=Path(c['native_binary'])
  inventory={name:sha_file(path) for name,path in files.items()};release_id=digest(inventory)

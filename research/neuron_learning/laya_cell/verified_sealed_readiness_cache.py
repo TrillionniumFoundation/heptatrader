@@ -1,8 +1,9 @@
 """SHA-verified source decoding with an optional bounded readiness view.
 
 The full reader preserves the canonical inventory and complete quote result.
-The readiness view still validates every sealed original at consumption, but
-can reuse an earlier successful global conflict check for identical old bytes.
+The readiness view validates sealed originals and may explicitly reuse bounded
+local change-observation proofs of SHA receipts. It also reuses the earlier
+successful global conflict check for identical old bytes.
 Unsealed sources are always parsed; any newly overlapping content falls back
 to a complete merge before a new historical conclusion is committed.
 """
@@ -14,17 +15,128 @@ import time
 from pathlib import Path
 
 from .integrity import ContractError, digest, sha_file
-from .source_archive import inventory, inventory_index, verify_prefix
+from .source_archive import inventory, inventory_index, verify_prefix, prefix_version
 from .shadow_source import read_source
 
 MAX_CACHED_SEGMENTS = 320
 MAX_CACHED_QUOTE_RECORDS = 180000
 
 
+
+class _SealedOriginalProofs:
+    """Bound SHA receipts to unchanged local files and a continuously held watch.
+
+    Entries contain no source bytes. Unsupported/lost watches, file changes,
+    clock regression and the bounded deadline all require raw SHA again.
+    This is local change-observation evidence, not an independent signature.
+    """
+
+    def __init__(self, reverify_ms):
+        from hepta_change_watch import _ChangeWatch
+        self._watch = _ChangeWatch()
+        self._clock = time.monotonic
+        self.reverify_ms = reverify_ms
+        self._entries = {}
+        self._signature = None
+        self._full_at = self._last_clock = self._last_wall = None
+        self.full_verifications = self.full_bytes = self.reuses = self.invalidations = 0
+        self.last_full_wall_ms = None
+
+    def close(self):
+        self._watch.close()
+        self._entries.clear()
+        self._signature = None
+        self._full_at = None
+
+    def begin(self, pins, wall_ms):
+        stamp = self._clock()
+        signature = tuple(digest(pin) for pin in pins)
+        changed = self._watch.changed()
+        regressed = ((self._last_clock is not None and stamp < self._last_clock) or
+                     (self._last_wall is not None and wall_ms < self._last_wall))
+        expired = self._full_at is None or not 0 <= (stamp-self._full_at)*1000 < self.reverify_ms
+        self._force = (changed or regressed or expired or signature != self._signature
+                       or not self._watch.available)
+        if self._force:
+            self.invalidations += bool(self._entries)
+            self.close()
+            self._signature = signature
+            self._watch.arm_many([pin["path"] for pin in pins])
+        self._last_clock, self._last_wall = stamp, wall_ms
+        self._stamp, self._wall_ms = stamp, wall_ms
+        self._pass_watched = self._watch.available
+        self._pending = {}
+        self._versions = {}
+        self._pin_count = len(pins)
+        self._full_count = 0
+
+    def verify(self, pin):
+        signature = digest(pin)
+        before = prefix_version(pin, sealed=True)
+        previous = self._entries.get(pin["path"])
+        reused = (not self._force and self._pass_watched and
+                  previous == (signature, before))
+        if reused:
+            self.reuses += 1
+        else:
+            verify_prefix(pin, sealed=True)
+            self.full_verifications += 1
+            self.full_bytes += pin["bytes"]
+            self._full_count += 1
+            if prefix_version(pin, sealed=True) != before:
+                self.close()
+                raise ContractError("READINESS_ORIGINAL_CHANGED_DURING_PASS")
+        self._pending[pin["path"]] = (signature, before)
+        self._versions[pin["path"]] = (dict(pin), before)
+        return not reused
+
+    def finish(self):
+        changed = self._watch.changed() if self._pass_watched else False
+        if len(self._versions) != self._pin_count:
+            self.close()
+            raise ContractError("READINESS_ORIGINAL_PROOF_INCOMPLETE")
+        for pin, version in self._versions.values():
+            if prefix_version(pin, sealed=True) != version:
+                changed = True
+        # Check events again after walking identities, including overflow and
+        # changes racing the last source parse or a directory replacement.
+        if self._pass_watched:
+            changed = self._watch.changed() or changed or not self._watch.available
+        if changed:
+            self.close()
+            raise ContractError("READINESS_ORIGINAL_CHANGED_DURING_PASS")
+        if self._pass_watched:
+            self._entries = self._pending
+            if self._full_count == self._pin_count:
+                self._full_at = self._stamp
+                self.last_full_wall_ms = self._wall_ms
+        else:
+            self._entries.clear()
+            self._full_at = None
+
+    def counters(self):
+        return {
+            "original_proof_policy": "SHA256_WITH_CONTINUOUS_LOCAL_CHANGE_OBSERVATION",
+            "original_proof_reverify_ms": self.reverify_ms,
+            "original_proof_watch_available": self._watch.available,
+            "original_proof_entries": len(self._entries),
+            "original_proof_full_sha256_verifications": self.full_verifications,
+            "original_proof_full_sha256_bytes": self.full_bytes,
+            "original_proof_reuses": self.reuses,
+            "original_proof_invalidations": self.invalidations,
+            "original_proof_last_full_at_ms": self.last_full_wall_ms,
+        }
+
+
 class VerifiedSealedReadinessCache:
     """One process and frozen config; no independently signed source claims."""
 
-    def __init__(self):
+    def __init__(self, *, original_proof_reverify_ms=0):
+        if (type(original_proof_reverify_ms) is not int or
+                original_proof_reverify_ms and not 60000 <= original_proof_reverify_ms <= 3600000):
+            raise ContractError("READINESS_ORIGINAL_PROOF_INTERVAL")
+        self._proofs = _SealedOriginalProofs(original_proof_reverify_ms) if original_proof_reverify_ms else None
+        self._proof_pass = False
         self._config_digest = None
         self._cached = OrderedDict()
         self._cached_records = 0
@@ -39,6 +151,16 @@ class VerifiedSealedReadinessCache:
         self.history_fallbacks = 0
         self.retired_segments_reverified = 0
 
+    def close(self):
+        if self._proofs is not None:
+            self._proofs.close()
+
+    def _verify_original(self, pin):
+        if self._proof_pass:
+            return self._proofs.verify(pin)
+        verify_prefix(pin, sealed=True)
+        return True
+
     def _trim(self):
         while (len(self._cached) > MAX_CACHED_SEGMENTS or
                self._cached_records > MAX_CACHED_QUOTE_RECORDS):
@@ -50,8 +172,8 @@ class VerifiedSealedReadinessCache:
         key = str(path)
         entry = self._cached.get(key) if pin is not None else None
         if entry is not None and entry[2] == pin:
-            verify_prefix(pin, sealed=True)
-            self.sealed_hits_bytes_reverified_at_use += 1
+            if self._verify_original(pin):
+                self.sealed_hits_bytes_reverified_at_use += 1
             header, records, prefix, accepted_at_ms = entry
             if wall_ms < accepted_at_ms:
                 raise ContractError("READINESS_CACHE_CLOCK_REGRESSED")
@@ -62,7 +184,7 @@ class VerifiedSealedReadinessCache:
             # sealed size/END/path checks, then binds the strict parse receipt
             # to the very same pin, including any uncommitted tail.
             if pin is not None and not inventory_verified:
-                verify_prefix(pin, sealed=True)
+                self._verify_original(pin)
             header, records, prefix = read_source(path)
             if header["period_sha256"] != config["period_sha256"]:
                 raise ContractError("CROSS_PERIOD_FEED")
@@ -208,6 +330,9 @@ class VerifiedSealedReadinessCache:
         feed_names = tuple(str(p) for p in feed_paths)
         wall_ms = int(time.time() * 1000)
         history = self._reusable_history(sealed, feed_names, now_ms, earliest_ms, wall_ms)
+        self._proof_pass = self._proofs is not None and earliest_ms is not None
+        if self._proof_pass:
+            self._proofs.begin(sealed, wall_ms)
         merged = {}
         summaries = {}
         prefixes = list(pages)
@@ -215,8 +340,8 @@ class VerifiedSealedReadinessCache:
             key = str(path)
             pin = sealed[index] if index < len(sealed) else None
             if history is not None and key in history["retired"]:
-                verify_prefix(pin, sealed=True)
-                self.retired_segments_reverified += 1
+                if self._verify_original(pin):
+                    self.retired_segments_reverified += 1
                 summaries[key] = history["sources"][key]
                 boundary = summaries[key]["latest_quote"]
                 if boundary is not None and boundary["t"] == history["latest_t"]:
@@ -250,6 +375,8 @@ class VerifiedSealedReadinessCache:
             {**merged[t], "bid": float(merged[t]["bid"]), "ask": float(merged[t]["ask"])}
             for t in times
         ]
+        if self._proof_pass:
+            self._proofs.finish()
         if earliest_ms is not None:
             self._commit_history(history, sealed, feed_names, summaries,
                                  now_ms, earliest_ms)
@@ -257,6 +384,7 @@ class VerifiedSealedReadinessCache:
 
     def counters(self):
         return {
+            **(self._proofs.counters() if self._proofs is not None else {}),
             "archive_inventories_full_sha256_reverified": self.archive_inventory_verified,
             "archive_indexes_reverified": self.archive_index_verified,
             "sealed_decoding_reused": self.sealed_hits,

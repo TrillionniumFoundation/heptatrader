@@ -3,9 +3,10 @@
 Status: CURRENT
 Applies to: repository HEAD
 
-The canonical module list is the catalog-generated table in
-[`index.md`](index.md). This historical URL remains as a redirect for bookmarks;
-it does not carry a second manually maintained module inventory.
+Use the maintained module navigation in [`index.md`](index.md). This historical
+URL remains a redirect for bookmarks; it does not carry a second module inventory.
+The component catalog records ownership. Updating a developer contract does not
+require regenerating a navigation table.
 
 Start with the [runtime engineering map](technical/runtime-engineering-map.md),
 then the owning module and its technical references. Source status, document

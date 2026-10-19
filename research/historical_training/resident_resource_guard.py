@@ -198,16 +198,28 @@ class Gate:
             current=int(time.time()*1000)
             memory=parse_meminfo(Path('/proc/meminfo').read_text())
             pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
+            resources=assess_resources(memory,pressure,current,
+                os.path.lexists(self.c['manual_hold_path']))
             if self.role=='trainer' and forward_registration is None:
                 # The resident still validates immutable sources, causal mature
                 # labels and unused rows before training. Current live readiness
                 # is a requirement for prospective evaluation, not that dataset.
-                report=assess_resources(memory,pressure,current,
-                    os.path.lexists(self.c['manual_hold_path']))
+                report=resources
                 report['admission_scope']='HISTORICAL_TRAINING_RESOURCES_ONLY'
                 report['historical_dataset_validation']='PENDING_IN_RESIDENT_STEP'
                 report['original_live_source_evidence']={
                     'status':'NOT_REQUESTED_FOR_HISTORICAL_TRAINING',
+                    'source_ttl_ms':5000,
+                    'fresh_original_live_source_proven':False,
+                    'broker_queries_sent':0}
+            elif not resources['admit_new_worker'] or self.draining:
+                # Refusal needs no source authority. Never refresh a large raw
+                # segment when the original resource rule already forbids work.
+                report=resources
+                report['admit_new_worker']=False
+                report['source_refresh_skipped_for_resource_denial']=True
+                report['original_live_source_evidence']={
+                    'status':'NOT_COLLECTED_WHILE_RESOURCES_HELD',
                     'source_ttl_ms':5000,
                     'fresh_original_live_source_proven':False,
                     'broker_queries_sent':0}
@@ -322,6 +334,26 @@ def evaluator_idle_poll_seconds(gate,tasks):
     return 2
 
 
+def _prediction_retry_window(path,slot,attempt,now_ms):
+    # Timing-only negative cache; a returned value cannot admit a worker.
+    try:
+        plan=read(path)
+        rule=plan['rule']
+        if (plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'})
+                or type(slot) is not int or not 0<=slot<rule['slots']
+                or type(plan.get('start_ms')) is not int
+                or type(rule.get('slot_spacing_ms')) is not int):
+            return None
+        start=plan['start_ms']+slot*rule['slot_spacing_ms']
+        if now_ms>=start:return None
+        delay_ms=min(10000,2000*2**min(max(attempt-1,0),3),start-now_ms)
+        return {'plan':str(path),'slot':slot,'attempt':attempt,
+                'denied_at_ms':now_ms,'slot_start_ms':start,
+                'next_probe_at_ms':now_ms+delay_ms}
+    except (OSError,ValueError,KeyError,TypeError):
+        return None
+
+
 def guarded_evaluator_class(base,gate):
     class GuardedEvaluator(base):
         def launch(self,path,slot):
@@ -332,6 +364,13 @@ def guarded_evaluator_class(base,gate):
                 if callable(receipt):
                     receipt(path,slot,['PRIOR_EVALUATOR_CHILD_ACTIVE'])
                 return
+            key=(str(path),slot);tick=time.monotonic();wall=int(time.time()*1000)
+            previous=getattr(self,'_launch_retry',None)
+            if (isinstance(previous,dict) and previous.get('key')==key
+                and not getattr(gate,'draining',False)
+                and previous['denied_at_ms']<=wall<previous['slot_start_ms']
+                and previous['checked_tick']<=tick<previous['next_tick']):
+                return
             if not gate.acquire({'plan':str(path),'slot':slot}):
                 prior=getattr(gate,'last_admission',None)
                 reasons=prior.get('reasons') if isinstance(prior,dict) else None
@@ -340,7 +379,17 @@ def guarded_evaluator_class(base,gate):
                 receipt=getattr(self,'record_admission_deferral',None)
                 if callable(receipt):
                     receipt(path,slot,reasons)
+                same=(isinstance(previous,dict) and previous.get('key')==key
+                    and previous['denied_at_ms']<=wall and previous['checked_tick']<=tick
+                    and not getattr(gate,'draining',False))
+                attempt=previous.get('attempt',0)+1 if same else 1
+                wall=int(time.time()*1000);tick=time.monotonic()
+                retry=_prediction_retry_window(path,slot,attempt,wall)
+                self._launch_retry=({**retry,'key':key,'checked_tick':tick,
+                    'next_tick':tick+(retry['next_probe_at_ms']-wall)/1000,
+                    'reason_codes':list(reasons)} if retry is not None else None)
                 return
+            self._launch_retry=None
             try:super().launch(path,slot)
             except Exception:gate.release();raise
         def reap(self):
@@ -402,6 +451,9 @@ def guarded_trainer_class(base,gate):
             preflight=getattr(self,'_forward_registration_preflight',None)
             if preflight is not None:
                 extra['forward_registration_preflight']=preflight
+                if extra.get('pending_original_trials')==0 and extra.get('deferred_training_candidates',0)>0:
+                    extra['forward_registration_wait_reasons']=list(preflight.get('reasons',[]))
+                    extra['forward_registration_wait_checked_at_ms']=preflight.get('at_ms')
             return super().write_status(**extra)
 
         def step(self):

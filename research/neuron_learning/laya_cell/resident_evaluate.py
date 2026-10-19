@@ -153,6 +153,7 @@ class Evaluator:
   # A source scan is only needed for a genuinely mature prediction.
   # Never spend a full archive decode while every active trial is already lost.
   quotes=None;prefixes=None;quote_clock=None
+  _outcome_source_snapshots={}
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
   counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0
@@ -226,12 +227,38 @@ class Evaluator:
     pred=read_json(prediction)
     if now<pred['anchor_ms']+rule['horizon_ms']:continue
     # A snapshot collected before a long GPU call must never decide maturity.
-    if quotes is None:
-     # Freeze the causal as-of time BEFORE loading the evidence. A later
-     # wall-clock value paired with this older snapshot could otherwise
-     # manufacture an early OUTCOME_MISSING censor at the 15-second grace.
+    from .resident_source_policy import PENDING_OUTCOMES,read_for_pending_outcomes,validate_pending_prediction
+    _read_profile=plan.get('future_outcome_read_profile')
+    if _read_profile is None:
+     _source_key=('full',)
+    elif _read_profile==PENDING_OUTCOMES:
+     validate_pending_prediction(plan,pred,slot)
+     _source_key=('plan',plan['plan_id'])
+    else:
+     raise ContractError('UNKNOWN_PENDING_OUTCOME_SOURCE_PROFILE')
+    _cached_source=_outcome_source_snapshots.get(_source_key)
+    if (_cached_source is None or (_read_profile is not None and _cached_source[3].get(slot)!=pred['anchor_ms'])):
      quote_clock=int(time.time()*1000)
-     quotes,prefixes=read_quotes(self.c,quote_clock)
+     if _read_profile is None:
+      quotes,prefixes=read_quotes(self.c,quote_clock)
+      _pending_anchors={}
+     else:
+      _pending_predictions=[pred]
+      _pending_anchors={slot:pred['anchor_ms']} if pred['anchor_ms']+rule['horizon_ms']<=quote_clock else {}
+      for _pending_slot in range(rule['slots']):
+       if _pending_slot==slot:continue
+       _pending_prediction_path=path.parent / f'prediction-{_pending_slot:03}.json'
+       _pending_outcome_path=path.parent / f'outcome-{_pending_slot:03}.json'
+       if _pending_outcome_path.exists() or not _pending_prediction_path.exists():continue
+       _pending_prediction=read_json(_pending_prediction_path)
+       validate_pending_prediction(plan,_pending_prediction,_pending_slot)
+       _pending_predictions.append(_pending_prediction)
+       _pending_anchor=_pending_prediction.get('anchor_ms')
+       if type(_pending_anchor) is int and _pending_anchor+rule['horizon_ms']<=quote_clock:
+        _pending_anchors[_pending_slot]=_pending_anchor
+      quotes,prefixes,_actual_source_profile=read_for_pending_outcomes(self.c,plan,quote_clock,_pending_predictions)
+     _outcome_source_snapshots[_source_key]=(quotes,prefixes,quote_clock,_pending_anchors)
+    quotes,prefixes,quote_clock,_cached_pending_anchors=_outcome_source_snapshots[_source_key]
     result=measure(plan,slot,pred,quotes,quote_clock)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
@@ -240,13 +267,17 @@ class Evaluator:
    observed+=sum(r['status']=='OBSERVED' for r in results);censored+=sum(r['status']=='CENSORED' for r in results)
    assessment=assess(plan,results,int(time.time()*1000))
    if plan.get('price_baselines') is not None:assessment['same_window_price_baselines']=price_refs.summarize(results)
-   if assessment['state']!='PENDING':write_once(path.parent/'qualification.json',assessment)
-   else:atomic(path.parent/'progress.json',assessment)
+   if assessment['state'] != 'PENDING':
+    write_once(path.parent / 'qualification.json', assessment)
+    atomic(path.parent / 'progress.json', assessment)
+   else:
+    atomic(path.parent / 'progress.json', assessment)
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
    'prediction_prewarm_ms':90000,'worker_failure_details':worker_errors,
    'latest_quote_ms':quotes[-1]['t'] if quotes else None,
+   'latest_quote_scope':'OUTCOME_SOURCE_SNAPSHOT_NOT_GLOBAL_SOURCE_HEALTH',
    'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,

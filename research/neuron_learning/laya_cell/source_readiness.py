@@ -76,11 +76,17 @@ def next_monitor_deadline(cadence_seconds, assessment_started, assessment_finish
  return max(assessment_started+cadence_seconds,assessment_finished+1)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);p.add_argument('--verified-sealed-cache',action='store_true');p.add_argument('--stale-hold-refresh-seconds',type=int,default=0);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--sandbox',action='store_true');p.add_argument('--refresh-seconds',type=int,default=60);p.add_argument('--max-cycles',type=int,default=0);p.add_argument('--verified-sealed-cache',action='store_true');p.add_argument('--stale-hold-refresh-seconds',type=int,default=0);p.add_argument('--original-proof-reverify-seconds',type=int,default=0);a=p.parse_args()
  if not 10<=a.refresh_seconds<=60 or not 0<=a.max_cycles<=24:p.error('READINESS_CADENCE_OR_CYCLE_LIMIT')
- if (a.refresh_seconds!=60 or a.max_cycles>0 or a.verified_sealed_cache or a.stale_hold_refresh_seconds) and not a.sandbox:p.error('FASTER_OR_FINITE_OR_CACHE_MODE_REQUIRES_SANDBOX')
+ if (a.refresh_seconds!=60 or a.max_cycles>0 or a.verified_sealed_cache or a.stale_hold_refresh_seconds or a.original_proof_reverify_seconds) and not a.sandbox:p.error('FASTER_OR_FINITE_OR_CACHE_MODE_REQUIRES_SANDBOX')
  if a.stale_hold_refresh_seconds and not 30<=a.stale_hold_refresh_seconds<=3600:p.error('STALE_HOLD_REVALIDATION_INTERVAL')
+ if a.original_proof_reverify_seconds and (not a.verified_sealed_cache or not 60<=a.original_proof_reverify_seconds<=3600):p.error('ORIGINAL_PROOF_REQUIRES_CACHE_AND_BOUNDED_INTERVAL')
  os.umask(0o077);c=read_json(a.config);stop=False
+ # Load the exact shared reader dependency before the existing sandbox.
+ cache=None
+ if a.verified_sealed_cache:
+  from .verified_sealed_readiness_cache import VerifiedSealedReadinessCache
+  cache=VerifiedSealedReadinessCache(original_proof_reverify_ms=a.original_proof_reverify_seconds*1000)
  if a.sandbox:
   from sandbox import enter
   a.output.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -92,10 +98,6 @@ def main():
   nonlocal stop
   stop=True
  signal.signal(signal.SIGTERM,finish);signal.signal(signal.SIGINT,finish)
- cache=None
- if a.verified_sealed_cache:
-  from .verified_sealed_readiness_cache import VerifiedSealedReadinessCache
-  cache=VerifiedSealedReadinessCache()
  heartbeat=None
  if a.stale_hold_refresh_seconds:
   from .readiness_heartbeat import StaleReadinessHeartbeat
@@ -138,4 +140,5 @@ def main():
  if cache is not None:
   print(json.dumps({'schema':'heptatrader.readiness-verified-sealed-cache-counters.v1',
    **cache.counters()}),flush=True)
+  cache.close()
 if __name__=='__main__':main()

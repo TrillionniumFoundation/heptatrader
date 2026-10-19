@@ -30,7 +30,7 @@ def main():
  m,manifest_sha=load_manifest(a.manifest);root=Path(__file__).resolve().parent;base=root/'heptatrader_paper_driver.py'
  driver=load_verified_module('hepta_attributed_pinned_base',base,m['runtime_sha256']['heptatrader_paper_driver.py'])
  driver.INSTRUMENT=m['instrument'];close_economics=None
- if m['instrument']=='BTC.USD':
+ if m['instrument']=='BTC.USD' and not (a.reconcile_only or a.recover_owner):
   import heptatrader_btc_economics_driver as btc
   if m['runtime_sha256']['heptatrader_paper_driver.py']!=btc.BASE_SHA256:raise ValueError('BTC_BASE_BINDING')
   profile=root/'profile.json'

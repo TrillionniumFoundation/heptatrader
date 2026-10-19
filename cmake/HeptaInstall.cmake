@@ -70,6 +70,8 @@ set(_hepta_runtime_helpers
     scripts/heptatrader_paper_driver.py
     scripts/hepta_pnl_accounting.py
     scripts/hepta_pnl_report.py
+    scripts/hepta_pnl_watch.py
+    scripts/hepta_change_watch.py
     scripts/hepta_account_pnl.py
     scripts/hepta_account_observer.py
     scripts/hepta_nav_assurance.py

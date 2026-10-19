@@ -54,8 +54,10 @@ is never converted into a successful skip.
 Use the narrowest durable implementation boundary. Directory ownership explains
 where a component belongs; it does not prove its API, state or tests are fully
 documented. Add or update the human developer contract when behavior changes,
-not merely a metadata row. One catalog generates module navigation in
-`docs/index.md`; the historical development index remains a redirect.
+not merely a metadata row. The catalog records implementation ownership.
+`docs/index.md` provides maintained module navigation; the historical development
+index remains a redirect. A contract change does not require regenerating a second
+index.
 
 The lightweight historical `OmsRecover` projection under `tests/compat/` is a
 test translation unit, not shipped implementation. Build reachability is a
