@@ -136,5 +136,96 @@ class AggregateRuntimeIdentityTests(unittest.TestCase):
         self.assertFalse(result["trade_authority"]);self.assertFalse(result["service_changed"])
 
 
+class ConfigurationIdentityTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hepta-config-identity-")
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        self.original = self.home / "resident.json"
+        self.original.write_text(json.dumps({
+            "schema": "heptatrader.laya-resident-config.v1",
+            "runtime_directory": "/fixture/resident-release",
+            "unrelated_secret": "fixture-private-secret",
+        }))
+        self.original.chmod(0o400)
+        self.guard = self.home / ".local/share/heptatrader/resident-resource-guard/releases/fixture/configs/trainer.json"
+        self.guard.parent.mkdir(parents=True)
+        self.payload = {
+            "schema": "heptatrader.resident-admission-wrapper-config.v1",
+            "trade_authority": False, "original_config": str(self.original),
+            "original_config_sha256": hashlib.sha256(self.original.read_bytes()).hexdigest(),
+        }
+        self.write_guard(self.payload)
+
+    def write_guard(self, payload, mode=0o444):
+        if self.guard.exists():self.guard.chmod(0o600)
+        self.guard.write_text(json.dumps(payload))
+        self.guard.chmod(mode)
+
+    def inspect(self, path=None):
+        with patch.object(identity.Path, "home", return_value=self.home):
+            return identity.configuration_identity(["python", "--config", str(path or self.guard)])
+
+    def test_installed_read_only_guard_reveals_the_pinned_private_runtime(self):
+        result = self.inspect()
+        self.assertEqual(result["sha256"], hashlib.sha256(self.guard.read_bytes()).hexdigest())
+        original = result["original_configuration"]
+        self.assertTrue(original["guard_pin_matches"])
+        self.assertEqual(original["runtime_directory"], "/fixture/resident-release")
+        self.assertEqual(self.inspect(self.original)["runtime_directory"], "/fixture/resident-release")
+        self.assertNotIn("fixture-private-secret", json.dumps(result))
+        self.assertEqual(self.guard.stat().st_mode & 0o777, 0o444)
+        self.assertEqual(self.original.stat().st_mode & 0o777, 0o400)
+        with self.assertRaisesRegex(ValueError, "ATTRIBUTION_FILE_SCOPE"):
+            identity.attribution.read_private(self.guard, 1048576)
+        self.write_guard({**self.payload, "original_config_sha256": "0" * 64})
+        self.assertFalse(self.inspect()["original_configuration"]["guard_pin_matches"])
+
+    def test_exception_does_not_admit_other_public_or_writable_configs(self):
+        other = self.home / "unrelated.json"
+        other.write_bytes(self.guard.read_bytes()); other.chmod(0o444)
+        with self.assertRaisesRegex(ValueError, "CONFIGURATION_GUARD_FILE_SCOPE"):
+            self.inspect(other)
+        for changed in ({**self.payload, "schema": "unrelated"},
+                        {**self.payload, "trade_authority": True}):
+            self.write_guard(changed)
+            with self.assertRaisesRegex(ValueError, "CONFIGURATION_GUARD_SCOPE"):
+                self.inspect()
+        for mode in (0o644, 0o664):
+            self.write_guard(self.payload, mode)
+            with self.assertRaisesRegex(ValueError, "ATTRIBUTION_FILE_SCOPE"):
+                self.inspect()
+
+    def test_foreign_owner_and_links_cannot_use_the_read_only_exception(self):
+        with patch.object(identity.os, "geteuid", return_value=identity.os.geteuid() + 1):
+            with self.assertRaisesRegex(ValueError, "CONFIGURATION_GUARD_FILE_SCOPE"):
+                self.inspect()
+        link = self.home / "alias"
+        link.hardlink_to(self.guard)
+        with self.assertRaisesRegex(ValueError, "CONFIGURATION_GUARD_FILE_SCOPE"):
+            self.inspect()
+        link.unlink()
+        self.guard.unlink()
+        self.guard.symlink_to(self.original)
+        with self.assertRaises(OSError):self.inspect()
+
+    def test_changed_or_oversize_guard_is_not_a_stable_identity(self):
+        real_read = identity.os.read
+        def changing_read(fd, count):
+            raw = real_read(fd, count)
+            self.guard.chmod(0o600)
+            with self.guard.open("ab") as stream:stream.write(b"\n")
+            self.guard.chmod(0o444)
+            return raw
+        with patch.object(identity.os, "read", side_effect=changing_read):
+            with self.assertRaisesRegex(ValueError, "CONFIGURATION_CHANGED_DURING_INSPECTION"):
+                self.inspect()
+        self.guard.chmod(0o600)
+        self.guard.write_bytes(b" " * (1048576 + 1))
+        self.guard.chmod(0o444)
+        with self.assertRaisesRegex(ValueError, "CONFIGURATION_GUARD_FILE_SCOPE"):
+            self.inspect()
+
+
 if __name__ == "__main__":
     unittest.main()
