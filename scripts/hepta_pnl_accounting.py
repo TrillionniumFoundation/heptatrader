@@ -7,6 +7,7 @@ have independent completeness. Unknown values are null, not synthetic zeroes.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, localcontext
 import re
@@ -537,8 +538,11 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
     broker_cancel_witnesses = []
     owner_terminal_witnesses = []
     executions = []
+    fills_by_command: dict[str, list[Fill]] = {}
+    for fill in fills.values():
+        fills_by_command.setdefault(fill.command, []).append(fill)
     for sent in sorted(sends.values(), key=lambda e: (e["ts_ms"], e["req_id"])):
-        points = sorted((f for f in fills.values() if f.command == sent["req_id"]), key=lambda f: f.cumulative)
+        points = sorted(fills_by_command.get(sent["req_id"], ()), key=lambda f: f.cumulative)
         if len(points) > 128:
             raise EvidenceError("EXECUTION_CAPACITY_EXCEEDED")
         previous_quantity = previous_notional = individual_notional = ZERO
@@ -678,8 +682,10 @@ def instrument_report(events: list[dict], period: dict, instrument: str, observa
     try:
         with localcontext() as context:
             context.prec = 40
-            ledger = (ledger_provider or replay)(events, period, instrument, now_ms)
-            book = ledger.pop("book")
+            source_ledger = (ledger_provider or replay)(events, period, instrument, now_ms)
+            # The cache may lend its full ledger. Never mutate it or expose its book.
+            book = source_ledger["book"]
+            ledger = {key: value for key, value in source_ledger.items() if key != "book"}
             # Keep the view bounded; accounting always consumes the full bounded journal.
             # This is only a display tail, not a truncated accounting input.
             ledger["execution_details_total"] = len(ledger["executions"])
@@ -688,6 +694,8 @@ def instrument_report(events: list[dict], period: dict, instrument: str, observa
             for key in ("fee_missing_execution_ids", "fee_conflicting_execution_ids", "settlement_pending_command_ids"):
                 ledger[key + "_total"] = len(ledger[key])
                 ledger[key] = ledger[key][:128]
+            # Copy only the bounded display, including its nested objects.
+            ledger = copy.deepcopy(ledger)
             result.update(ledger)
             result.update(ledger_complete=True, position=amount(book.quantity), entry_cost_basis=amount(book.cost) if book.quantity else None,
                           realized_gross_pnl=amount(book.realized), fees_paid=amount(book.paid_fees) if ledger["fees_complete"] else None,

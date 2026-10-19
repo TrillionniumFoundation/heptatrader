@@ -2,7 +2,7 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`, `scripts/hepta_verified_loader.py`, `scripts/hepta_runtime_identity.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`, `scripts/hepta_change_watch.py`, `scripts/hepta_verified_loader.py`, `scripts/hepta_runtime_identity.py`
 Tests: `tests/python/test_documentation_links.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`, `tests/python/test_verified_python_loader.py`, `tests/python/test_runtime_identity.py`, `tests/python/test_attributed_driver_launcher.py`, `tests/python/test_activate_prepared_driver.py`, `tests/python/test_decision_attribution_installer_readonly.py`, `tests/python/test_decision_attribution_prepare_upgrade.py`
 
 ## Scope
@@ -46,6 +46,20 @@ The IB PAPER service depends on the Broker egress policy, runtime directory crea
 
 ## Configuration
 
+The XML resolver and `HeptaTrade` configuration paths are retained for the legacy
+Windows launcher. For the current Pocket4 resident deployment, inspect the
+installed unit and environment together with its release manifest and runtime
+identity. Report the configured release and observed process identity separately.
+
+`--original-proof-reverify-seconds` is off by default. In the sandboxed
+`verified-sealed-cache` readiness path, it can reuse a previous original-file SHA
+verification while file identities and continuous change observation remain valid;
+it also requires periodic full SHA verification. Index verification still runs on
+every pass, and the ordinary full-history reader retains original SHA verification.
+This process-local cache applies to the controlled append/close producer's sealed
+files, with no persistent writable mappings. It does not provide an independent
+broker signature or a guarantee against arbitrary hostile writers.
+
 Files ending in `.example` are templates. A deployment copies them to root-owned host paths, replaces placeholders, validates the resulting contract and records a digest. Secrets use systemd credentials or an equivalent protected facility rather than world-readable environment files.
 
 Run `hepta-preflight` twice: artifact-only before privileged transfer and static-host mode after installing the exact approved archive. Then run the unprivileged unit lint, `systemd-analyze verify`, and a disposable service startup/readiness probe. The receipt always has `authorization_effect=NONE`; the protected Broker campaign remains a separate step.
@@ -59,6 +73,12 @@ Deploy immutable artifacts by version and digest, stop mutation admission, recon
 Units should expose service state, restart count, readiness, socket ownership, credential availability without value disclosure, network-policy state, kill-switch state and exact artifact digest. Preflight and qualification receipts should be indexed by the same package SHA-256. Host checks are operational evidence, not repository-source evidence.
 
 ## Known limitations
+
+The manual `desktop-ib-builder` and `desktop-ib-paper` workflow profiles describe
+their historical Windows Desktop IB hosts. They are not routine pull request
+prerequisites or evidence that the current Pocket4 release has passed acceptance.
+Acceptance of the current trading and training runtime requires Pocket4 evidence;
+use the active unit, release manifest, and observed process identity for that host.
 
 The repository still does not create organization teams, branch rulesets, protected environments, trusted runner assignments, Broker credentials, TWS/IB Gateway or PAPER accounts. It also lacks a distribution-specific post-install transaction and log-rotation policy for every supported distribution. Until those external controls and Broker-observed qualification are supplied, PAPER remains qualification-gated and LIVE remains unavailable.
 

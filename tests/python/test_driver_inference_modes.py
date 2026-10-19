@@ -177,7 +177,7 @@ class DriverInferenceModesTests(unittest.TestCase):
     def test_inflight_answer_is_discarded_after_hold_without_parallel_worker(self):
         self.make_model_runtime()
         answer = Mock()
-        answer.done.side_effect = [False, True]
+        answer.done.side_effect = lambda: sleeps[0] >= 2
         answer.observed_at_ms = self.clock[0]
         answer.position = 0.0
         answer.result.return_value = {"action": "BUY", "confidence": 1.0, "rationale": "old"}
@@ -193,14 +193,14 @@ class DriverInferenceModesTests(unittest.TestCase):
                 self.d.signal, "signal", side_effect=lambda sig, fn: handlers.__setitem__(sig, fn)))
             stack.enter_context(patch.object(self.d.time, "sleep", side_effect=sleep))
             stack.enter_context(patch.object(self.d, "entry_inference_hold_reason",
-                                            side_effect=[None, "PERSISTENT_MAINTENANCE_HOLD", None]))
+                                            side_effect=lambda *_args: "PERSISTENT_MAINTENANCE_HOLD" if sleeps[0] == 1 else None))
             self.worker.return_value = answer
             self.assertEqual(self.d.main(), 0)
             self.worker.assert_called_once()
             answer.result.assert_not_called()
             self.submit.assert_not_called()
         self.assertEqual(self.state["decisions"], 0)
-        self.assertIn("discarded after entry inference hold", self.state["last_error"])
+        self.assertIn("discarded after inference hold", self.state["last_error"])
 
     def test_unreadable_hold_state_conservatively_pauses_inference(self):
         with patch.object(self.d.Path, "lstat", side_effect=PermissionError("unreadable")):

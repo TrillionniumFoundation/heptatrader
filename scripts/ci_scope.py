@@ -9,8 +9,10 @@ Any unknown, shared, CI, missing or renamed-outside-group path restores full CI.
 """
 from __future__ import annotations
 import argparse
+import ast
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -27,22 +29,86 @@ VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
     frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
                "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
+    frozenset({"scripts/hepta_verified_loader.py", "tests/python/test_verified_python_loader.py"}),
+    frozenset({"scripts/install_decision_attribution.py",
+               "tests/python/test_decision_attribution_installer_readonly.py",
+               "tests/python/test_decision_attribution_prepare_upgrade.py"}),
 )
+
+# These support files must exist, but changing one does not inherit the helper's
+# exemption. Keep this check local to the two verified Python entry points.
+VERIFIED_HELPER_DEPENDENCIES = {
+    "scripts/hepta_verified_loader.py": (
+        frozenset(),
+        frozenset({
+            "scripts/heptatrader_attributed_driver.py",
+            "scripts/heptatrader_btc_economics_driver.py",
+            "scripts/heptatrader_paper_driver.py",
+            "scripts/hepta_btc_entry_policy.py",
+            "scripts/hepta_decision_attribution.py",
+            "scripts/install_decision_attribution.py",
+            "scripts/install_btc_entry_runtime.py",
+            "research/cost_aware/scripts/hepta_cost_driver.py",
+            "cmake/HeptaInstall.cmake",
+            "tests/python/test_attributed_driver_launcher.py",
+            "tests/python/test_btc_entry_economics.py",
+            "tests/python/test_cost_research.py",
+            "tests/python/test_cmake_install_behavior.py",
+            "tests/python/test_development_ci.py",
+        }),
+    ),
+    "scripts/install_decision_attribution.py": (
+        frozenset({"hepta_verified_loader", "hepta_decision_attribution", "activate_prepared_driver"}),
+        frozenset({
+            "scripts/hepta_verified_loader.py",
+            "scripts/hepta_decision_attribution.py",
+            "scripts/activate_prepared_driver.py",
+            "scripts/heptatrader_attributed_driver.py",
+            "scripts/heptatrader_paper_driver.py",
+            "scripts/heptatrader_btc_economics_driver.py",
+            "scripts/hepta_btc_entry_policy.py",
+            "tests/python/test_verified_python_loader.py",
+            "tests/python/test_activate_prepared_driver.py",
+            "tests/python/test_runtime_identity.py",
+        }),
+    ),
+}
+
+
+def _helper_imports_known(root: Path, path: str, local_imports: frozenset[str]) -> bool:
+    tree = ast.parse((root / path).read_bytes(), filename=path)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                return False
+            names = [node.module or ""]
+        else:
+            continue
+        if any(name.split(".", 1)[0] not in sys.stdlib_module_names
+               and name not in local_imports for name in names):
+            return False
+    return True
 
 # These components consume existing native interfaces. Keep all Python/source
 # and learning integration tests while avoiding an unrelated native rebuild.
 VERIFIED_PYTHON_LEARNING_GROUPS = (
     frozenset({
         "scripts/hepta_pnl_watch.py",
+        "scripts/hepta_change_watch.py",
         "tests/python/test_pnl_watch_regression.py",
         "tests/python/test_pnl_append_ledger.py",
+        "tests/python/test_pnl_bounded_view.py",
         "tests/python/test_pnl_journal_cache.py",
     }),
     frozenset({
         "research/neuron_learning/laya_cell/source_readiness.py",
+        "scripts/hepta_change_watch.py",
         "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
         "research/neuron_learning/laya_cell/readiness_heartbeat.py",
         "tests/python/test_verified_sealed_readiness_cache.py",
+        "tests/python/test_source_original_proof_cache.py",
         "tests/python/test_fx_source_monitor_cadence.py",
         "tests/python/test_readiness_heartbeat.py",
     }),
@@ -91,10 +157,16 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
     # A deleted/retyped tool or missing paired test must not qualify for exemption.
     needed = set.union(*(set(group) for group in groups
                          if group.intersection(changed)))
+    helpers = [path for path in VERIFIED_HELPER_DEPENDENCIES if path in needed]
+    for path in helpers:
+        needed.update(VERIFIED_HELPER_DEPENDENCIES[path][1])
     try:
         if any((root / path).is_symlink() or not (root / path).is_file() for path in needed):
             return full
-    except OSError:
+        if any(not _helper_imports_known(root, path, VERIFIED_HELPER_DEPENDENCIES[path][0])
+               for path in helpers):
+            return full
+    except (OSError, SyntaxError, ValueError, UnicodeError):
         return full
     return {
         "run_native": False,

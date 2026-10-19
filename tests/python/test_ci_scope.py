@@ -9,7 +9,7 @@ import tempfile
 
 from ci_scope import (
     docs_only, diff_paths, scope_for_paths,
-    VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS,
+    VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS, VERIFIED_HELPER_DEPENDENCIES,
 )
 
 
@@ -105,9 +105,68 @@ class ComponentScopeTests(unittest.TestCase):
         self.addCleanup(box.cleanup)
         self.root = Path(box.name)
         groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS
-        for path in frozenset.union(*groups):
+        fixture_paths = set(frozenset.union(*groups))
+        for _, support in VERIFIED_HELPER_DEPENDENCIES.values():
+            fixture_paths.update(support)
+        for path in fixture_paths:
             target = self.root / path
             target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("pass\n")
+
+    def test_verified_loader_and_installer_use_python_feedback(self):
+        for path in (
+            "scripts/hepta_verified_loader.py",
+            "tests/python/test_verified_python_loader.py",
+            "scripts/install_decision_attribution.py",
+            "tests/python/test_decision_attribution_installer_readonly.py",
+            "tests/python/test_decision_attribution_prepare_upgrade.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON)
+        self.assertEqual(scope_for_paths([
+            "scripts/hepta_verified_loader.py", "scripts/hepta_change_watch.py",
+        ], self.root), self.PYTHON_LEARNING)
+
+    def test_helper_support_is_required_but_does_not_exempt_changes(self):
+        helpers = ["scripts/hepta_verified_loader.py", "scripts/install_decision_attribution.py"]
+        for path in (
+            "scripts/heptatrader_paper_driver.py", "scripts/hepta_decision_attribution.py",
+            "research/cost_aware/scripts/hepta_cost_driver.py", "cmake/HeptaInstall.cmake",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+                self.assertEqual(scope_for_paths([helpers[0], path], self.root), self.FULL)
+        support = self.root / "scripts/heptatrader_paper_driver.py"
+        support.unlink()
+        for helper in helpers:
+            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+        support.symlink_to(self.root / "scripts/hepta_maintenance_latch.py")
+        for helper in helpers:
+            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+
+    def test_helper_import_expansion_and_invalid_source_restore_full_feedback(self):
+        for helper in ("scripts/hepta_verified_loader.py", "scripts/install_decision_attribution.py"):
+            for source in ("import torch\n", "import unregistered_runtime\n",
+                           "from . import runtime\n", "def invalid(\n"):
+                with self.subTest(helper=helper, source=source):
+                    (self.root / helper).write_text(source)
+                    self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+            (self.root / helper).write_text("from pathlib import Path\nimport hashlib\n")
+            self.assertEqual(scope_for_paths([helper], self.root), self.PYTHON)
+        installer = self.root / "scripts/install_decision_attribution.py"
+        installer.write_text("import hepta_verified_loader\nimport hepta_decision_attribution\n"
+                             "import activate_prepared_driver\n")
+        self.assertEqual(scope_for_paths([str(installer.relative_to(self.root))], self.root), self.PYTHON)
+
+    def test_missing_helper_restores_full_even_for_a_paired_test(self):
+        (self.root / "scripts/hepta_verified_loader.py").unlink()
+        self.assertEqual(scope_for_paths(["tests/python/test_verified_python_loader.py"], self.root), self.FULL)
+
+    def test_shared_change_watcher_requires_both_consumer_test_sets(self):
+        for test_path in ("tests/python/test_pnl_journal_cache.py", "tests/python/test_source_original_proof_cache.py"):
+            target = self.root / test_path
+            target.unlink()
+            self.assertEqual(scope_for_paths(["scripts/hepta_change_watch.py"], self.root), self.FULL)
             target.write_text("pass\n")
 
     def test_verified_tools_tests_and_docs_use_full_python_only(self):
@@ -125,13 +184,16 @@ class ComponentScopeTests(unittest.TestCase):
     def test_monitors_and_baselines_keep_python_and_learning_without_native(self):
         for path in (
             "scripts/hepta_pnl_watch.py",
+            "scripts/hepta_change_watch.py",
             "tests/python/test_pnl_watch_regression.py",
             "tests/python/test_pnl_append_ledger.py",
+            "tests/python/test_pnl_bounded_view.py",
             "tests/python/test_pnl_journal_cache.py",
             "research/neuron_learning/laya_cell/source_readiness.py",
             "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
             "research/neuron_learning/laya_cell/readiness_heartbeat.py",
             "tests/python/test_verified_sealed_readiness_cache.py",
+            "tests/python/test_source_original_proof_cache.py",
             "tests/python/test_fx_source_monitor_cadence.py",
             "tests/python/test_readiness_heartbeat.py",
             "research/neuron_learning/laya_cell/resident_price_baselines.py",

@@ -10,7 +10,8 @@ Status: CURRENT
 - `check_component_coverage.py` derives the production file set from the exact Git index and assigns each path to the most-specific module implementation boundary. It does not consume a duplicate build graph.
 - `verify_build_ownership.py` observes the selected live CMake File API model, verifies canonical module ownership and proves every tracked owned C/C++ implementation source is built or explicitly declared `unbuilt`. `--report` can emit a diagnostic graph without making it repository source truth.
 - `check_gap_register.py` validates an extensible issue inventory; open work is allowed. `--release-profile core` or `ib-paper` additionally rejects explicitly scoped unresolved release blockers. It never grants Broker authority.
-- `resolve_hepta_config.py` and `verify_oms_journal_replay.py` support configuration and recovery checks where applicable.
+- `resolve_hepta_config.py` supports the legacy Windows / `HeptaTrade` XML configuration paths. Current Pocket4 runtime identification uses the installed unit and environment, release manifest, and observed process identity; see [Deployment](../docs/modules/deployment.md).
+- `verify_oms_journal_replay.py` verifies the journal replay contract used by recovery checks.
 
 ## Release and preflight
 
@@ -95,8 +96,19 @@ independent job. Within a Python lane, an import failure runs as a failing unitt
 alongside valid modules instead of preventing every test in that lane from running.
 
 `ci_scope.py` keeps a bounded list of verified Python operator groups and requires
-their dependency/test files to exist. Activation and runtime-identity helper edits
-can run the Python lane without native builds or model installation. Unknown or
-shared source changes remain full scope. The whitespace check inspects the event's
-committed base/head range, with a bounded parent/root fallback for events lacking
-a base; an unresolved supplied base is an error.
+their support and test files to exist. Activation, runtime-identity, verified-loader,
+and attribution-installer edits can run the Python lane without native builds or
+model installation. The latter two also check their known imports; adding an
+unknown import restores full validation. A support file does not inherit a helper's
+scope exemption when the support file itself changes. Source monitoring, PnL
+watching, and their shared `hepta_change_watch.py` helper retain Python and learning
+feedback. Other shared or unknown source changes and missing, deleted, or retyped
+required files restore full scope.
+
+The retained Desktop IB workflow profiles are manual legacy host profiles; their
+scope is described in [Deployment](../docs/modules/deployment.md). Acceptance of
+the current trading and training runtime requires Pocket4 evidence.
+
+The whitespace check inspects the event's committed base/head range, with a
+bounded parent/root fallback for events lacking a base; an unresolved supplied
+base is an error.

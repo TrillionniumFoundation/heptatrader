@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .integrity import ContractError, sha_file
 from .shadow_source import read_source, strict
-from .source_archive import inventory, verify_prefix
+from .source_archive import inventory, inventory_index, verify_prefix
 
 MAX_FOOTER_BYTES = 65536
 MIN_CAUSAL_SPAN_MS = 360000
@@ -107,7 +107,7 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     # A concurrent archive rotation cannot silently change the pin
     # population used to build this new as-of decision.
     after_paths = sorted(feed.glob("segment-*/quotes.jsonl"))
-    after_archived, after_pages = inventory(config, after_paths)
+    after_archived, after_pages = inventory_index(config, after_paths)
     if paths != after_paths or archived != after_archived or pages != after_pages:
         raise ContractError("RECENT_SOURCE_ARCHIVE_CHANGED_DURING_READ")
     # Recheck all originally sealed bytes after collecting the tail:
@@ -117,5 +117,67 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     ordered = [
         {**quotes[t], "bid": float(quotes[t]["bid"]),
          "ask": float(quotes[t]["ask"])} for t in sorted(quotes)
+    ]
+    return ordered, prefixes
+
+
+def read_original_quote_range(config, now_ms, first_ms, last_ms):
+    '''Read a pending outcome range plus its first later known quote.
+
+    The successor preserves ENDPOINT_GAP versus OUTCOME_MISSING and grace.
+    A sealed END bounds every quote: observed_at <= QUOTE.at <= END.at.
+    Original archive bytes remain verified before and after this projection.
+    '''
+    if (any(type(value) is not int for value in (now_ms, first_ms, last_ms))
+            or not 0 < first_ms <= last_ms <= now_ms):
+        raise ContractError('PENDING_OUTCOME_SOURCE_INVALID_RANGE')
+    if config.get('completed_history_sources'):
+        raise ContractError('PENDING_OUTCOME_SOURCE_COMPLETED_PROBES_UNSUPPORTED')
+    if sha_file(Path(config['period_path'])) != config['period_sha256']:
+        raise ContractError('RESIDENT_PERIOD_CHANGED')
+    feed = Path(config['feed_directory'])
+    paths = sorted(feed.glob('segment-*/quotes.jsonl'))
+    archived, pages = inventory(config, paths)
+    quotes = {}
+    prefixes = list(pages)
+    successor_ms = None
+    for index, path in enumerate(paths):
+        if index < len(archived) and _sealed_end_timestamp(archived[index]) < first_ms:
+            continue
+        header, records, pin = read_source(path)
+        if header['period_sha256'] != config['period_sha256']:
+            raise ContractError('CROSS_PERIOD_FEED')
+        if index < len(archived):
+            if pin != archived[index]:
+                raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        else:
+            prefixes.append(pin)
+        for quote in records:
+            stamp = quote['t']
+            if quote['known_at_ms'] > now_ms or stamp < first_ms:
+                continue
+            if stamp > last_ms:
+                if successor_ms is not None and stamp > successor_ms:
+                    continue
+                if successor_ms is not None and stamp < successor_ms:
+                    quotes.pop(successor_ms, None)
+                successor_ms = stamp
+            previous = quotes.get(stamp)
+            if previous and (
+                    Decimal(str(previous['bid'])) != Decimal(str(quote['bid']))
+                    or Decimal(str(previous['ask'])) != Decimal(str(quote['ask']))):
+                raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
+            if previous is None or quote['known_at_ms'] < previous['known_at_ms']:
+                quotes[stamp] = quote
+    after_paths = sorted(feed.glob('segment-*/quotes.jsonl'))
+    after_archived, after_pages = inventory_index(config, after_paths)
+    if paths != after_paths or archived != after_archived or pages != after_pages:
+        raise ContractError('PENDING_OUTCOME_SOURCE_ARCHIVE_CHANGED_DURING_READ')
+    for pin in archived:
+        verify_prefix(pin, sealed=True)
+    ordered = [
+        {**quotes[stamp], 'bid': float(quotes[stamp]['bid']),
+         'ask': float(quotes[stamp]['ask'])}
+        for stamp in sorted(quotes)
     ]
     return ordered, prefixes

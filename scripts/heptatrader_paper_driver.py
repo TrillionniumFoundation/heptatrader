@@ -55,6 +55,37 @@ def entry_inference_hold_reason(state,home,uid):
     return maintenance_entry_hold_reason(home,uid)
 
 
+def model_inference_hold_reason(state,snap,home,uid):
+    """A sampling decision cannot run while its result is unusable; this grants no authority."""
+    if state.get("pending") is not None:
+        return "ORIGINAL_COMMAND_PENDING"
+    if state.get("owner_fence_recovery_required"):
+        return "OWNER_CONTROL_RECOVERY"
+    if snap["active"]:
+        return "ACTIVE_BROKER_ORDER"
+    if abs(float(snap["position"]))<=QUANTITY_TOLERANCE:
+        reason=entry_inference_hold_reason(state,home,uid)
+        if reason: return reason
+        if snap["owner_health"].get("mutation_ready") is not True:
+            return "AUTHORITATIVE_MUTATION_NOT_READY"
+    elif state.get("halt_new_entries"):
+        return "HALT_REDUCE_ONLY"
+    return None
+
+
+def sync_model_inference(state,worker,discarded,reason):
+    """Own an invalidated in-flight call until completion; never consume its old answer."""
+    if reason is None:
+        state.pop("model_inference_pause",None)
+    else:
+        state["model_inference_pause"]={"reason_code":reason,"checked_at_ms":now_ms(),
+            "scope":"MODEL_INFERENCE_ONLY"}
+        if worker is not None:
+            discarded=True
+            if worker.done(): worker=None
+    return worker,discarded
+
+
 def recovery_entry_hold_reason(state,home,uid):
     reason=maintenance_entry_hold_reason(home,uid)
     if reason: return reason
@@ -1161,6 +1192,9 @@ def main():
             snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
             if not pending_mode and state.get("active_lease_continuation_supported"):
                 maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),pos,len(snap["active"]),None)
+            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
+            model_worker,model_worker_discarded=sync_model_inference(
+                state,model_worker,model_worker_discarded,inference_reason)
             if pending_mode:
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
                 if args.once: break
@@ -1168,7 +1202,6 @@ def main():
                 continue
             if state.get("owner_fence_recovery_required"):
                 state["position"]=pos; state["halt_new_entries"]=True
-                model_worker=None
                 if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
                         exit_reason="OWNER_RECOVERY_REDUCE_ONLY")
@@ -1184,18 +1217,17 @@ def main():
             state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
                 pos,len(snap["active"]),state.get("pending"))
             if state.get("owner_fence_recovery_required"):
-                model_worker=None
+                model_worker,model_worker_discarded=sync_model_inference(
+                    state,model_worker,model_worker_discarded,"OWNER_CONTROL_RECOVERY")
+                atomic_json(state_path,state)
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
             pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
             if pause_reason:
                 state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
                     "scope":"ENTRY_INFERENCE_ONLY"}
-                # Retain an in-flight worker until it ends, and never consume its
-                # pre-hold answer after resumption or start an overlapping worker.
-                if model_worker is not None:
-                    model_worker_discarded=True
-                    if model_worker.done(): model_worker=None
+                model_worker,model_worker_discarded=sync_model_inference(
+                    state,model_worker,model_worker_discarded,pause_reason)
                 atomic_json(state_path,state)
                 if args.once: break
                 time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
@@ -1231,10 +1263,13 @@ def main():
                     atomic_json(state_path,state)
                     if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
+            model_worker,model_worker_discarded=sync_model_inference(
+                state,model_worker,model_worker_discarded,inference_reason)
             if model_worker is not None and model_worker.done():
                 try:
                     if model_worker_discarded:
-                        raise DriverError("model decision discarded after entry inference hold")
+                        raise DriverError("model decision discarded after inference hold")
                     candidate=model_worker.result()
                     age=now_ms()-model_worker.observed_at_ms
                     if abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
@@ -1264,8 +1299,12 @@ def main():
                 if guard.returncode!=0:
                     raise DriverError("paper guard release failed: "+observation["reason"])
                 prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
+            # A command prepared in this same iteration also blocks the next worker.
+            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
+            model_worker,model_worker_discarded=sync_model_inference(
+                state,model_worker,model_worker_discarded,inference_reason)
             due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
-            if model_worker is None and due and len(state["history"])>=6:
+            if inference_reason is None and model_worker is None and due and len(state["history"])>=6:
                 if not Path(openclaw).exists():
                     raise DriverError("model runtime missing: "+openclaw)
                 state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)

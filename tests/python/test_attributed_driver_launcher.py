@@ -29,7 +29,7 @@ class RecoveryLauncherTests(unittest.TestCase):
         load.assert_called_once_with("hepta_attributed_pinned_base", base, "a" * 64)
         self.assertEqual(seen, [[str(base), "--instrument", "EUR.USD", "--recover-owner"]])
 
-    def test_direct_btc_recovery_uses_existing_profile_and_base(self):
+    def test_direct_btc_recovery_does_not_attach_entry_profile(self):
         seen = []
         driver = SimpleNamespace(main=lambda: seen.append(list(sys.argv)) or 0)
         close = mock.Mock()
@@ -40,7 +40,7 @@ class RecoveryLauncherTests(unittest.TestCase):
              mock.patch.object(btc, "attach", return_value=close):
             self.assertEqual(btc.main(), 0)
         self.assertEqual(seen, [["/fixture/base.py", "--instrument", "BTC.USD", "--recover-owner"]])
-        close.assert_called_once_with()
+        close.assert_not_called()
 
     def test_failed_pinned_import_never_reaches_optional_journal_or_driver(self):
         manifest = {"instrument": "EUR.USD", "journal_directory": "/fixture/journal", "runtime_sha256": {"heptatrader_paper_driver.py": "a" * 64}}

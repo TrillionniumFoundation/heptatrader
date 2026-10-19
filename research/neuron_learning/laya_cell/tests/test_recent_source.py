@@ -104,11 +104,9 @@ class RecentSourceStrictParityTests(unittest.TestCase):
  def test_new_archive_page_during_read_not_passed_as_same_snapshot(self):
   arch,pages=inventory(self.config,sorted(
    self.source.feed.glob('segment-*/quotes.jsonl')))
-  def changed(*args,**kw):
-   changed.calls+=1
-   return (arch,pages) if changed.calls==1 else (arch,pages+[{'changed':True}])
-  changed.calls=0
-  with patch('laya_cell.resident_recent_source.inventory',side_effect=changed):
+  with patch('laya_cell.resident_recent_source.inventory',return_value=(arch,pages)), \
+       patch('laya_cell.resident_recent_source.inventory_index',
+             return_value=(arch,pages+[{'changed':True}])):
    with self.assertRaisesRegex(ContractError,
            'RECENT_SOURCE_ARCHIVE_CHANGED_DURING_READ'):
     read_recent_original_quotes(self.config,self.now)

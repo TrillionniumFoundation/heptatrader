@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
+    "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
     "scripts/hepta_nav_assurance.py",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
@@ -61,6 +62,8 @@ def installed_fixture(*, readme: bool = False):
                 "adapters/mcp/hepta_mcp_server.py",
                 "scripts/hepta_pnl_accounting.py",
                 "scripts/hepta_pnl_report.py",
+                "scripts/hepta_pnl_watch.py",
+                "scripts/hepta_change_watch.py",
                 "scripts/hepta_account_pnl.py",
                 "scripts/hepta_account_observer.py",
                 "scripts/hepta_nav_assurance.py",
@@ -132,7 +135,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:
-            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
+            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_pnl_watch.py", "hepta_change_watch.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
                 p=prefix/"libexec/heptatrader"/name
                 self.assertTrue(p.is_file())
                 self.assertTrue(os.access(p,os.X_OK))
@@ -152,6 +155,22 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
                 result=subprocess.run([sys.executable,"-B",str(prefix/"libexec/heptatrader"/helper),"--help"],
                     capture_output=True,text=True,timeout=5)
                 self.assertEqual(result.returncode,0,result.stderr)
+
+            # Verify the import closure using only installed project files.
+            installed_scripts = prefix / "libexec/heptatrader"
+            probe = (
+                "import sys; from pathlib import Path; "
+                "sys.path.insert(0, sys.argv[1]); "
+                "import hepta_pnl_report, hepta_pnl_watch, hepta_change_watch; "
+                "installed = Path(sys.argv[1]).resolve(); "
+                "assert all(Path(module.__file__).resolve().parent == installed "
+                "for module in (hepta_pnl_report, hepta_pnl_watch, hepta_change_watch))"
+            )
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", probe, str(installed_scripts)],
+                cwd=prefix, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_installed_nav_assurance_keeps_unsupported_source_ineligible(self) -> None:
         with installed_fixture() as tree:

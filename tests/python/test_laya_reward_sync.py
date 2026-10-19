@@ -49,7 +49,9 @@ class RewardSyncTests(unittest.TestCase):
   self.queue.return_value=EMPTY;gate=MagicMock();gate.acquire.return_value=False
   gate.last_admission={'reasons':['OTHER_RESEARCH_WORKER_ACTIVE']}
   self.s.__class__=guarded_trainer_class(m.Supervisor,gate)
-  result=self.s.step();self.assertEqual(result['state'],'HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE')
+  # Exercise resource rejection after cadence is due; bookkeeping still runs first.
+  with patch.object(m.time,'time',return_value=1000.0):result=self.s.step()
+  self.assertEqual(result['state'],'HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE')
   self.assertEqual(self.counts(),(1,1,0,0));self.collect.assert_not_called()
  def test_same_tick_and_subinterval_do_not_repeat_ledger_scan(self):
   self.s.queue_preflight();self.clock.return_value=110.0;self.s.step()

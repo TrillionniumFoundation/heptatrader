@@ -309,6 +309,11 @@ class IncrementalOMSParser:
         return events
 
     def replay_ledger(self, events, period, instrument, at_ms):
+        """Return an independent complete ledger for callers that need all evidence."""
+        return copy.deepcopy(self._cached_ledger(events, period, instrument, at_ms))
+
+    def _cached_ledger(self, events, period, instrument, at_ms):
+        """Borrow the verified ledger; the report projection must treat it as read-only."""
         if events is not self._events or self._sha is None:
             raise EvidenceError("OMS_CACHE_EVENTS_IDENTITY")
         scope = (self._ledger_revision, json.dumps(period, sort_keys=True,
@@ -324,7 +329,7 @@ class IncrementalOMSParser:
             return replay_ledger(events, period, instrument, at_ms)
         if instrument not in self._ledgers:
             self._ledgers[instrument] = replay_ledger(events, period, instrument, at_ms)
-        return copy.deepcopy(self._ledgers[instrument])
+        return self._ledgers[instrument]
 
 
 def collect(reader: Callable, period_path: Path, state_root: Path,
@@ -369,7 +374,7 @@ def collect(reader: Callable, period_path: Path, state_root: Path,
     if journal_parser is not None:
         journal_parser.verify(journal)
     report = build_report(events, period, observations, now_ms(), states,
-                          ledger_provider=journal_parser.replay_ledger if journal_parser is not None else None)
+                          ledger_provider=journal_parser._cached_ledger if journal_parser is not None else None)
     journal_sha256 = journal_parser.journal_sha256 if journal_parser is not None else hashlib.sha256(raw_journal).hexdigest()
     report.update(period_sha256=hashlib.sha256(raw_period).hexdigest(), journal_sha256=journal_sha256,
                   journal_records=len(events), journal_fingerprint=list(journal_fingerprint), producer_source_sha=source_revision(),

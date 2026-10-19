@@ -54,3 +54,61 @@ def read_for_future_plan(config, plan, now_ms):
         return (*read_recent_original_quotes(config, now_ms), mode)
     from .resident_data import read_quotes
     return (*read_quotes(config, now_ms), mode)
+
+
+PENDING_OUTCOMES = 'ARCHIVE_VERIFIED_PENDING_OUTCOME_V1'
+
+
+def validate_pending_prediction(plan, prediction, expected_slot=None):
+    if not isinstance(prediction, dict):
+        raise ContractError('PENDING_OUTCOME_PREDICTION_IDENTITY')
+    slot = prediction.get('slot')
+    slots = plan['rule']['slots']
+    if (type(slots) is not int or slots <= 0 or type(slot) is not int
+            or not 0 <= slot < slots
+            or prediction.get('candidate_id') != plan['candidate_id']
+            or prediction.get('plan_id') != plan['plan_id']
+            or (expected_slot is not None and slot != expected_slot)):
+        raise ContractError('PENDING_OUTCOME_PREDICTION_IDENTITY')
+    anchor = prediction.get('anchor_ms')
+    if type(anchor) is not int or anchor <= 0:
+        raise ContractError('PENDING_OUTCOME_ANCHOR')
+    return anchor
+
+
+def pending_outcome_bounds(plan, predictions, now_ms):
+    horizon = plan['rule']['horizon_ms']
+    if (type(now_ms) is not int or now_ms <= 0
+            or type(horizon) is not int or horizon <= 0):
+        raise ContractError('PENDING_OUTCOME_TIME_BOUND')
+    anchors = []
+    seen_slots = set()
+    for prediction in predictions:
+        anchor = validate_pending_prediction(plan, prediction)
+        slot = prediction['slot']
+        if slot in seen_slots:
+            raise ContractError('DUPLICATE_PENDING_OUTCOME_SLOT')
+        seen_slots.add(slot)
+        if anchor + horizon <= now_ms:
+            anchors.append(anchor)
+    if not anchors:
+        return None
+    return min(anchors), min(now_ms, max(anchors) + horizon + 5000)
+
+
+def read_for_pending_outcomes(config, plan, now_ms, predictions):
+    from .resident_data import read_quotes
+    from .resident_recent_source import read_original_quote_range
+    profile = plan.get('future_outcome_read_profile')
+    if profile is None:
+        return (*read_quotes(config, now_ms), 'FULL_ORIGINAL_HISTORY')
+    if profile != PENDING_OUTCOMES:
+        raise ContractError('UNKNOWN_PENDING_OUTCOME_SOURCE_PROFILE')
+    if declared_profile(config, plan) != RECENT:
+        raise ContractError('PENDING_OUTCOME_REQUIRES_DECLARED_RECENT_SOURCE')
+    if config.get('completed_history_sources'):
+        return (*read_quotes(config, now_ms), 'FULL_ORIGINAL_HISTORY_WITH_COMPLETED_SOURCES')
+    bounds = pending_outcome_bounds(plan, predictions, now_ms)
+    if bounds is None:
+        return [], [], PENDING_OUTCOMES
+    return (*read_original_quote_range(config, now_ms, *bounds), PENDING_OUTCOMES)

@@ -172,7 +172,7 @@ class DevelopmentCiTests(unittest.TestCase):
             for name in ("scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py",
                          "scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py"):
                 self.assertEqual(ci_scope.scope_for_paths([name], root), python_only, name)
-            for name in ("scripts/heptatrader_paper_driver.py", "scripts/hepta_verified_loader.py",
+            for name in ("scripts/heptatrader_paper_driver.py",
                          "research/neuron_learning/laya_cell/resident_train.py", "scripts/new_operator.py"):
                 self.assertEqual(ci_scope.scope_for_paths([name], root), full, name)
             (root / "tests/python/test_activate_prepared_driver.py").unlink()

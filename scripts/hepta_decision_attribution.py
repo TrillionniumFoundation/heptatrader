@@ -15,6 +15,7 @@ SCHEMA='heptatrader.exact-decision-attribution.v1'
 MAX_RECORD=262144
 MAX_STREAM=16*1024*1024
 MAX_TOTAL=256*1024*1024
+HEALTH_HEARTBEAT_SECONDS=10.0
 
 def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False)
 def digest(v):return hashlib.sha256(canonical(v).encode()).hexdigest()
@@ -54,6 +55,7 @@ class Journal:
   if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.geteuid() or s.st_mode&0o077:raise ValueError('PRIVATE_DIRECTORY_REQUIRED')
   self.manifest=manifest;self.manifest_sha=manifest_sha256;self.id=uuid.uuid4().hex
   self.q=queue.Queue(capacity);self.stop=threading.Event();self.dropped=0;self.error=None;self.count=0
+  self._health_state=None;self._health_monotonic=None
   self.worker=threading.Thread(target=self._worker,name='decision-attribution-writer',daemon=True);self.worker.start()
  def emit(self,kind,data):
   try:
@@ -75,6 +77,7 @@ class Journal:
      if n<=0:raise OSError('SHORT_WRITE')
      offset+=n
     os.fsync(fd);seq+=1;prev=sha;size+=len(raw);self.count+=1
+    self._health()
    def open_segment():
     nonlocal fd,size
     if sum(p.stat().st_size for p in self.root.glob('*.jsonl'))>=MAX_TOTAL:raise ValueError('STORAGE_CAP_NO_PRUNING')
@@ -92,20 +95,26 @@ class Journal:
      if size>=MAX_STREAM-MAX_RECORD:segment+=1;open_segment()
      append(item)
     finally:self.q.task_done()
-   self._health()
+   self._health(force=True)
   except Exception as exc:
    self.error=type(exc).__name__+':'+str(exc)[:80]
-   try:self._health()
+   try:self._health(force=True)
    except Exception:pass
   finally:
    if fd is not None:os.close(fd)
- def _health(self):
+ def _health(self,force=False):
+  # Only the writer calls this: business evidence is immediate, idle liveness is bounded.
+  stamp=time.monotonic();state=(self.count,self.dropped,self.error)
+  if (not force and state==self._health_state and self._health_monotonic is not None
+      and 0<=stamp-self._health_monotonic<HEALTH_HEARTBEAT_SECONDS):return False
   p=self.root/(self.id+'.health.json');tmp=p.with_suffix('.next')
-  body={'producer_id':self.id,'written_records':self.count,'dropped':self.dropped,'error':self.error,
+  body={'producer_id':self.id,'written_records':state[0],'dropped':state[1],'error':state[2],
         'at_ms':int(time.time()*1000),'order_operations':0}
   fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
   with os.fdopen(fd,'w') as f:f.write(canonical(body)+'\n')
   os.replace(tmp,p)
+  self._health_state=state;self._health_monotonic=stamp
+  return True
  def close(self):self.stop.set();self.worker.join(timeout=3)
 
 class Capture:
