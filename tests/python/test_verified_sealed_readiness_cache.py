@@ -449,5 +449,122 @@ class RecentViewTests(unittest.TestCase):
             h.rows[h.p2][0]["known_at_ms"] = 4000
             self.assertEqual(cache.read_quotes(h.config, 3000, earliest_ms=1500)[0], [])
 
+    def test_new_quotes_end_and_new_segment_do_not_reparse_retired_history(self):
+        tmp, h, cache = self.new()
+        h.rows[h.p2].insert(0, dict(h.rows[h.p1][0], source="tail"))
+        recovery = h.feed / "segment-recovery-live"
+        recovery.mkdir(mode=0o700)
+        recovery_source = recovery / "quotes.jsonl"
+        recovery_source.write_bytes(b"original recovery source\n")
+        recovery_source.chmod(0o600)
+        h.rows[recovery_source] = [dict(h.rows[h.p1][0], t=500, known_at_ms=530)]
+        ended = {recovery_source}
+        def index(config, paths):
+            self.assertEqual(paths, sorted(h.rows))
+            return [dict(pin) for pin in h.sealed], list(h.pinned_pages)
+        def reader(path):
+            h.parses.append(str(path))
+            prefix = next((dict(pin) for pin in h.sealed if pin["path"] == str(path)), None)
+            if prefix is None:
+                raw = path.read_bytes()
+                prefix = {"path": str(path), "bytes": len(raw),
+                          "sha256": hashlib.sha256(raw).hexdigest(),
+                          "uncommitted_tail_bytes": 0, "ended": path in ended}
+            return h.headers.copy(), [dict(row) for row in h.rows[path]], prefix
+        with tmp, patch.object(h, "index", index), patch.object(h, "read_source", reader), h.patched():
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            for change in ("new_quote", "end", "new_segment"):
+                with self.subTest(change=change):
+                    if change == "new_quote":
+                        h.rows[h.p2].append({"t": 3000, "known_at_ms": 3040, "bid": "2", "ask": "3"})
+                        h.p2.write_bytes(h.p2.read_bytes() + b"new quote\n")
+                    elif change == "end":
+                        ended.add(h.p2)
+                        h.p2.write_bytes(h.p2.read_bytes() + b"END\n")
+                    else:
+                        folder = h.feed / "segment-003"
+                        folder.mkdir(mode=0o700)
+                        path = folder / "quotes.jsonl"
+                        path.write_bytes(b"next original segment\n")
+                        path.chmod(0o600)
+                        h.rows[path] = [{"t": 4000, "known_at_ms": 4040, "bid": "3", "ask": "4"}]
+                    actual = cache.read_quotes(h.config, 5000, earliest_ms=1500)
+                    full, pins = VerifiedSealedReadinessCache().read_quotes(h.config, 5000)
+                    self.assertEqual(actual, ([row for row in full if row["t"] >= 1500], pins))
+                    self.assertEqual(cache.sealed_misses, 1)
+                    self.assertEqual(cache.history_fallbacks, 0)
+
+    def test_changed_old_semantics_still_require_complete_history(self):
+        for change in ("old_price", "boundary_price", "known_at", "receipt", "delete", "reorder", "insert"):
+            with self.subTest(change=change):
+                tmp, h, cache = self.new()
+                h.rows[h.p1].insert(0, dict(h.rows[h.p1][0], t=900, known_at_ms=930))
+                h.rows[h.p2][:0] = [dict(row, source="tail") for row in h.rows[h.p1]]
+                with tmp, h.patched():
+                    cache.read_quotes(h.config, 3000, earliest_ms=1500)
+                    if change in ("old_price", "boundary_price"):
+                        h.rows[h.p2][change == "boundary_price"].update(bid="9", ask="10")
+                    elif change == "known_at":
+                        h.rows[h.p2][0]["known_at_ms"] = 940
+                    elif change == "receipt":
+                        h.rows[h.p2][0]["receipt"] = "f" * 64
+                    elif change == "delete":
+                        h.rows[h.p2].pop(0)
+                    elif change == "reorder":
+                        h.rows[h.p2][:2] = reversed(h.rows[h.p2][:2])
+                    else:
+                        h.rows[h.p2].insert(1, dict(h.rows[h.p2][0], t=950, known_at_ms=980))
+                    h.p2.write_bytes(h.p2.read_bytes() + b"changed historical semantics\n")
+                    if change in ("old_price", "boundary_price"):
+                        with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                            cache.read_quotes(h.config, 4000, earliest_ms=1500)
+                        with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                            VerifiedSealedReadinessCache().read_quotes(h.config, 4000)
+                    else:
+                        actual = cache.read_quotes(h.config, 4000, earliest_ms=1500)
+                        full, pins = VerifiedSealedReadinessCache().read_quotes(h.config, 4000)
+                        self.assertEqual(actual, ([row for row in full if row["t"] >= 1500], pins))
+                    self.assertEqual(cache.history_fallbacks, 1)
+
+    def test_appended_prefix_cannot_reuse_old_rows_that_only_now_become_visible(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p2].append({"t": 1000, "known_at_ms": 3500, "bid": "9", "ask": "10"})
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            h.rows[h.p2].append({"t": 3000, "known_at_ms": 3900, "bid": "2", "ask": "3"})
+            h.p2.write_bytes(h.p2.read_bytes() + b"newer quote\n")
+            with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                cache.read_quotes(h.config, 4000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            self.assertEqual(cache.history_fallbacks, 1)
+
+
+    def test_inserted_source_with_old_conflict_requires_complete_history(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            folder = h.feed / "segment-0015"
+            folder.mkdir(mode=0o700)
+            path = folder / "quotes.jsonl"
+            path.write_bytes(b"new source with an old quote\n")
+            path.chmod(0o600)
+            original_reader = h.read_source
+            def reader(source):
+                if source != path:
+                    return original_reader(source)
+                return h.headers.copy(), [{"t": 1000, "known_at_ms": 2900, "bid": "9", "ask": "10"}], {
+                    "path": str(path), "bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "uncommitted_tail_bytes": 0, "ended": False}
+            def index(config, paths):
+                self.assertEqual(paths, [h.p1, path, h.p2])
+                return [dict(h.pin)], list(h.pinned_pages)
+            with patch.object(module, "inventory_index", index), patch.object(module, "read_source", reader):
+                with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                    cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            self.assertEqual(cache.history_fallbacks, 1)
+
+
 
 if __name__=="__main__":unittest.main()
