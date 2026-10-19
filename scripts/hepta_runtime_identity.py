@@ -87,6 +87,55 @@ def configured_pythonpath(unit):
 
 
 
+def configuration_document(path):
+    """Read metadata from private configs or an read-only installed guard config."""
+    path = Path(path)
+    published_guard = stat.S_IMODE(path.lstat().st_mode) == 0o444
+    if not published_guard:
+        raw = attribution.read_private(path, 1048576)
+    else:
+        # This observation-only exception matches the guard installer's 0444 files.
+        releases = Path.home() / ".local/share/heptatrader/resident-resource-guard/releases"
+        try:
+            parts = path.relative_to(releases).parts
+        except ValueError:
+            parts = ()
+        if (len(parts) != 3 or parts[1] != "configs" or
+                parts[2] not in ("trainer.json", "evaluator.json") or
+                not path.is_absolute() or path.resolve(strict=True) != path):
+            raise ValueError("CONFIGURATION_GUARD_FILE_SCOPE")
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or
+                    before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o444 or
+                    not 0 < before.st_size <= 1048576):
+                raise ValueError("CONFIGURATION_GUARD_FILE_SCOPE")
+            remaining = before.st_size
+            chunks = []
+            while remaining:
+                chunk = os.read(fd, min(remaining, 1048576))
+                if not chunk:
+                    raise ValueError("CONFIGURATION_SHORT_READ")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(fd)
+            keys = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink",
+                    "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, key) != getattr(after, key) for key in keys):
+                raise ValueError("CONFIGURATION_CHANGED_DURING_INSPECTION")
+            raw = b"".join(chunks)
+        finally:
+            os.close(fd)
+    value = attribution.strict(raw)
+    if not isinstance(value, dict):
+        raise ValueError("CONFIGURATION_NOT_OBJECT")
+    if published_guard and (value.get("schema") != "heptatrader.resident-admission-wrapper-config.v1" or
+                            value.get("trade_authority") is not False):
+        raise ValueError("CONFIGURATION_GUARD_SCOPE")
+    return raw, value
+
+
 def configuration_identity(argv):
     if argv.count("--config") != 1:
         return None
@@ -94,8 +143,7 @@ def configuration_identity(argv):
     if index >= len(argv):
         raise ValueError("CONFIGURATION_ARGUMENT_MISSING")
     path = Path(argv[index])
-    raw = attribution.read_private(path, 1048576)
-    value = attribution.strict(raw)
+    raw, value = configuration_document(path)
     result = {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
               "schema": value.get("schema"), "runtime_directory": value.get("runtime_directory")}
     original = value.get("original_config")
