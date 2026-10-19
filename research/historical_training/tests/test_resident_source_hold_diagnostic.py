@@ -41,10 +41,10 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.persist()
     def persist(self):
         self.health.write_text(json.dumps(self.source,sort_keys=True)+'\n')
-    def check(self,role='evaluator'):
+    def check(self,role='evaluator',**kwargs):
         with patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
              patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI):
-            return Gate(self.config,role).check()
+            return Gate(self.config,role).check(**kwargs)
 
     def test_closed_market_hold_does_not_call_live_refresh_or_start_worker(self):
         with patch('historical_training.resident_live_source.refresh',
@@ -139,6 +139,52 @@ class ClosedMarketHoldTests(unittest.TestCase):
         r=self.check()
         self.assertFalse(r['admit_new_worker'])
         self.assertIn('OPERATOR_RESOURCE_HOLD',r['reasons'])
+
+
+    def test_forward_registration_uses_source_gate_without_changing_training_state(self):
+        subject={'job_id':'job','candidate_id':'c'*64}
+        gate=Gate(self.config,'trainer')
+        sentinel={'reason':'previous worker admission'}
+        gate.last_admission=sentinel
+        with patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
+             patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI),\
+             patch('historical_training.resident_live_source.refresh',
+                   side_effect=AssertionError('NO_REFRESH_FOR_HELD_PROBES')) as refresh,\
+             patch.object(gate.lease,'acquire',side_effect=AssertionError('NO_PREFLIGHT_LEASE')) as lease:
+            self.assertTrue(gate.check()['admit_new_worker'])
+            normal=(gate.root/'trainer-admission.json').read_bytes()
+            report=gate.check(forward_registration=subject)
+        self.assertFalse(report['admit_new_worker'])
+        self.assertIn('SOURCE_CONTINUITY_NOT_READY',report['reasons'])
+        self.assertEqual(report['subject'],subject)
+        self.assertFalse(report['trial_allocated'])
+        self.assertFalse(report['worker_launch_authority'])
+        self.assertTrue(report['actual_launch_guard_still_required'])
+        self.assertEqual((gate.root/'trainer-admission.json').read_bytes(),normal)
+        self.assertIs(gate.last_admission,sentinel)
+        self.assertEqual(json.loads((gate.root/'trainer-forward-admission.json').read_text()),report)
+        refresh.assert_not_called()
+        lease.assert_not_called()
+
+    def test_ready_forward_registration_still_requires_original_live_refresh(self):
+        subject={'job_id':'job','candidate_id':'c'*64}
+        self.source.update(state='READY_FOR_REVIEW_NOT_AUTHORIZATION',
+                           usable=24,unusable=0,reasons=[])
+        self.persist()
+        updated={**self.source,'latest_source_quote_ms':int(time.time()*1000)-500}
+        proof={'schema':'synthetic-only-not-a-broker-result','broker_queries_sent':0}
+        with patch('historical_training.resident_live_source.refresh',
+                   return_value=(updated,proof)) as refresh:
+            report=self.check('trainer',forward_registration=subject)
+        self.assertTrue(report['admit_new_worker'])
+        self.assertEqual(report['original_live_source_evidence'],proof)
+        refresh.assert_called_once()
+        with patch('historical_training.resident_live_source.refresh',
+                   side_effect=ValueError('NO_CAUSAL_ORIGINAL_QUOTE')) as refresh:
+            denied=self.check('trainer',forward_registration=subject)
+        self.assertFalse(denied['admit_new_worker'])
+        self.assertIn('NO_CAUSAL_ORIGINAL_QUOTE',';'.join(denied['reasons']))
+        refresh.assert_called_once()
 
 if __name__=='__main__':
     unittest.main()
