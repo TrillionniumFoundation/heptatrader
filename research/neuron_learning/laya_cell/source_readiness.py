@@ -39,13 +39,19 @@ def probe(quotes,start,config):
  if any(y-x>RULE['path_gap_max_ms'] for x,y in zip(times[a:b],times[a+1:b+1])):return {**result,'status':'PATH_GAP'}
  return {**result,'status':'USABLE','actual_endpoint_ms':times[b]}
 
+def probe_starts(now):
+ # Latest probe must be fully mature even for a last-grace-second input.
+ last=((now-RULE['horizon_ms']-RULE['input_grace_ms']-RULE['endpoint_tolerance_ms'])//RULE['spacing_ms'])*RULE['spacing_ms']
+ return [last-i*RULE['spacing_ms'] for i in reversed(range(RULE['input_probes']))]
+
+def readiness_cutoff_ms(now):
+ return probe_starts(now)[0]-600000
+
 def assess(config,now=None,*,quote_loader=None):
  now=int(time.time()*1000) if now is None else now
  quotes,prefixes=(quote_loader or read_quotes)(config,now)
- # Latest probe must be fully mature even for a last-grace-second input.
- last=((now-RULE['horizon_ms']-RULE['input_grace_ms']-RULE['endpoint_tolerance_ms'])//RULE['spacing_ms'])*RULE['spacing_ms']
- starts=[last-i*RULE['spacing_ms'] for i in reversed(range(RULE['input_probes']))]
- cutoff=starts[0]-600000;recent=[q for q in quotes if q['t']>=cutoff]
+ starts=probe_starts(now)
+ cutoff=readiness_cutoff_ms(now);recent=[q for q in quotes if q['t']>=cutoff]
  results=[probe(recent,start,config) for start in starts]
  counts=Counter(x['status'] for x in results);reasons=[]
  if not recent or recent[0]['t']>starts[0]-50000:reasons.append('INSUFFICIENT_COMPLETE_HISTORY_SPAN')
@@ -95,14 +101,22 @@ def main():
   from .readiness_heartbeat import StaleReadinessHeartbeat
   heartbeat=StaleReadinessHeartbeat(a.stale_hold_refresh_seconds)
  def full_assess(config,now=None):
-  return assess(config,now,quote_loader=cache.read_quotes if cache is not None else None)
+  loader=(lambda c,at:cache.read_quotes(c,at,earliest_ms=readiness_cutoff_ms(at))) if cache is not None else None
+  return assess(config,now,quote_loader=loader)
  cycles=0
  while not stop:
   assessment_started=time.monotonic()
   try:status=heartbeat.assess(c,full_assess) if heartbeat is not None else full_assess(c)
   except Exception as exc:status={'at_ms':int(time.time()*1000),'state':'HOLD_NEW_FUSION_WINDOW','reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],'orders_sent':0}
+  finished=time.monotonic();published_ms=int(time.time()*1000)
+  source_asof=status.get('source_asof_ms',status.get('at_ms'))
+  latest=status.get('latest_source_quote_ms')
+  status.update({'source_assessed_at_ms':source_asof,'published_at_ms':published_ms,
+     'assessment_elapsed_ms':round((finished-assessment_started)*1000),
+     'latest_quote_age_at_publish_ms':published_ms-latest if type(latest) is int else None})
+  if cache is not None:status['readiness_cache']=cache.counters()
   atomic(a.output,status)
-  finished=time.monotonic();cycles+=1
+  cycles+=1
   if a.once:print(json.dumps({k:v for k,v in status.items() if k not in ('probes','source_prefixes')}),flush=True);break
   if a.refresh_seconds!=60:
    published_ms=int(time.time()*1000);original_ms=status.get('source_asof_ms',status.get('at_ms'))

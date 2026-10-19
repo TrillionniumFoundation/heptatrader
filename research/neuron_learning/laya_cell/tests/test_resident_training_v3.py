@@ -56,6 +56,31 @@ class ActionBalanceV3Tests(unittest.TestCase):
   self.assertEqual(float(loss.detach()),0.)
   self.assertEqual(float(x.grad.abs().sum()),0.)
   self.assertIsNone(v3.action_inference(x,p)['action_correct_probs'])
+ def test_3_29_support_reason_is_precise_without_rewriting_frozen_profile(self):
+  p=v3.pair_calibration(self.profile(3));before=copy.deepcopy(p)
+  diagnostic=action.action_support_diagnostic(p)
+  self.assertEqual(p,before)
+  self.assertEqual(p['action_refusal_reason'],'NO_BOTH_TRUE_ACTION_LABELS')
+  self.assertEqual(diagnostic['reason'],'BOTH_LABELS_PRESENT_BUT_BELOW_MINIMUM_SUPPORT')
+  self.assertEqual(diagnostic['labels'],{'ACT_correct':3,'ESCALATE_wrong':29})
+  self.assertEqual(diagnostic['shortfall_by_label'],{'ACT_correct':1,'ESCALATE_wrong':0})
+  self.assertEqual(diagnostic['frozen_profile_id'],p['profile_id'])
+  x=torch.zeros(2,2,device='cpu',requires_grad=True)
+  loss=action.balanced_action_loss(x,torch.tensor([True,False]),torch.tensor(2.),p)
+  loss.backward()
+  self.assertEqual(float(loss.detach()),0.)
+  self.assertEqual(float(x.grad.abs().sum()),0.)
+  inference=v3.action_inference(x,p)
+  self.assertIsNone(inference['action_correct_probs'])
+  self.assertEqual(inference['action_support_diagnostic'],diagnostic)
+  self.assertEqual(p,before)
+ def test_support_diagnostic_distinguishes_missing_labels_and_admitted_support(self):
+  for correct,reason in ((0,'MISSING_TRUE_ACTION_LABEL'),(4,None),
+                         (29,'BOTH_LABELS_PRESENT_BUT_BELOW_MINIMUM_SUPPORT'),
+                         (32,'MISSING_TRUE_ACTION_LABEL')):
+   with self.subTest(correct=correct):
+    p=v3.pair_calibration(self.profile(correct))
+    self.assertEqual(action.action_support_diagnostic(p)['reason'],reason)
  def test_v3_rejects_nonpaired_two_class_batch(self):
   p=v3.pair_calibration(self.profile())
   with self.assertRaisesRegex(ContractError,'DISJOINT_PAIR'):
@@ -180,11 +205,50 @@ class PriceValueV3Tests(unittest.TestCase):
   self.assertTrue(decision['same_window_price_value']['all_comparators_beaten'])
   self.assertFalse(decision['promotion_performed'])
   self.assertFalse(decision['same_window_price_value']['execution_profitability_proven'])
+ def test_paired_diagnostic_reports_raw_count_and_conditional_uncertainty(self):
+  plan,results,now=self.fixture();before=copy.deepcopy(plan)
+  decision=assess(plan,results,now)
+  report=decision['same_window_price_value'];pair=report['comparisons']['linear_softmax']['paired_diagnostics']
+  self.assertEqual(pair['paired_observations'],12)
+  self.assertEqual((pair['wins'],pair['losses'],pair['ties']),(12,0,0))
+  self.assertEqual(pair['exploratory_one_sided_sign_p'],1/4096)
+  self.assertAlmostEqual(pair['median_brier_improvement'],.15)
+  self.assertAlmostEqual(pair['sample_sd_brier_improvement'],0.)
+  self.assertIsNone(report['uncertainty']['mean_confidence_interval'])
+  self.assertIsNone(report['uncertainty']['effective_independent_sample_size'])
+  self.assertFalse(report['uncertainty']['used_for_promotion'])
+  self.assertFalse(report['uncertainty']['serial_dependence_adjusted'])
+  self.assertEqual(plan,before)
+  self.assertEqual(assess(plan,results,plan['outcome_end_ms']-1)['state'],'PENDING')
+ def test_diagnostic_exposes_outlier_mean_without_changing_frozen_gate(self):
+  plan,results,now=self.fixture()
+  for row in results[:-1]:row['same_window_price_scores']['linear_softmax']['brier']=.39
+  results[-1]['same_window_price_scores']['linear_softmax']['brier']=.8
+  decision=assess(plan,results,now)
+  comparison=decision['same_window_price_value']['comparisons']['linear_softmax']
+  self.assertTrue(comparison['value_floor_passed'])
+  self.assertGreater(comparison['mean_brier_improvement'],0.)
+  self.assertLess(comparison['paired_diagnostics']['median_brier_improvement'],0.)
+  self.assertEqual(comparison['paired_diagnostics']['wins'],1)
+  self.assertEqual(comparison['paired_diagnostics']['losses'],11)
+  self.assertGreater(comparison['paired_diagnostics']['exploratory_one_sided_sign_p'],.99)
+  self.assertEqual(decision['state'],'QUALIFIED_AWAITING_CANONICAL_OWNER')
+ def test_paired_ties_and_missing_observations_do_not_forge_sample_size(self):
+  empty=refs.paired_brier_diagnostics([])
+  self.assertEqual(empty['paired_observations'],0)
+  self.assertIsNone(empty['median_brier_improvement'])
+  self.assertIsNone(empty['sample_sd_brier_improvement'])
+  pair=refs.paired_brier_diagnostics([.5,-.5,0.])
+  self.assertEqual((pair['wins'],pair['losses'],pair['ties']),(1,1,1))
+  self.assertEqual(pair['non_ties'],2)
+  self.assertEqual(pair['exploratory_one_sided_sign_p'],.75)
+  self.assertAlmostEqual(pair['sample_sd_brier_improvement'],.5)
  def test_censored_windows_stay_in_original_denominator(self):
   plan,results,now=self.fixture();decision=assess(plan,results[:8],now)
   self.assertEqual(decision['state'],'REJECTED')
   self.assertEqual(decision['censored'],4)
   self.assertEqual(decision['same_window_price_value']['observed'],8)
+  self.assertEqual(decision['same_window_price_value']['comparisons']['uniform']['paired_diagnostics']['paired_observations'],8)
  def test_mismatched_horizon_or_missing_comparator_refuses(self):
   plan,results,now=self.fixture();results[0]['horizon_sec']=900
   with self.assertRaisesRegex(ContractError,'SAME_WINDOW'):assess(plan,results,now)

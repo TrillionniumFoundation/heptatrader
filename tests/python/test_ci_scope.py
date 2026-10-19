@@ -7,7 +7,10 @@ import shutil
 import sys
 import tempfile
 
-from ci_scope import docs_only, diff_paths, scope_for_paths, VERIFIED_PYTHON_GROUPS
+from ci_scope import (
+    docs_only, diff_paths, scope_for_paths,
+    VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS,
+)
 
 
 class DocsOnlyScope(unittest.TestCase):
@@ -20,8 +23,17 @@ class DocsOnlyScope(unittest.TestCase):
             "research/train_v2/FX_ORIGINAL_HEALTH_FIRST160_PHYSICAL_20261013.md",
         ]))
 
+    def test_named_research_incident_report_is_prose(self):
+        paths = ["research/historical_training/RESIDENT_RESOURCE_GUARD.md"]
+        self.assertTrue(docs_only(paths))
+        self.assertEqual(
+            scope_for_paths(paths),
+            {"run_native": False, "run_python": False, "run_learning": False})
+
     def test_research_contracts_and_configuration_keep_full_feedback(self):
         for path in ("research/MODELS.md", "research/CLIENT_PACKAGE.md",
+                     "research/other/RESIDENT_RESOURCE_GUARD.md",
+                     "research/historical_training/RESIDENT_RESOURCE_GUARD.json",
                      "research/train_v2/contract.md",
                      "research/train_v2/SOURCE_CONTRACT_20261013.md",
                      "research/train_v2/CONFIG_20261013.md",
@@ -86,12 +98,14 @@ class DocsOnlyScope(unittest.TestCase):
 class ComponentScopeTests(unittest.TestCase):
     FULL = {"run_native": True, "run_python": True, "run_learning": True}
     PYTHON = {"run_native": False, "run_python": True, "run_learning": False}
+    PYTHON_LEARNING = {"run_native": False, "run_python": True, "run_learning": True}
 
     def setUp(self):
         box = tempfile.TemporaryDirectory()
         self.addCleanup(box.cleanup)
         self.root = Path(box.name)
-        for path in frozenset.union(*VERIFIED_PYTHON_GROUPS):
+        groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS
+        for path in frozenset.union(*groups):
             target = self.root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("pass\n")
@@ -108,14 +122,76 @@ class ComponentScopeTests(unittest.TestCase):
         self.assertEqual(scope_for_paths(["README.md", "docs/technical/a.md"], self.root),
                          {key: False for key in self.FULL})
 
+    def test_monitors_and_baselines_keep_python_and_learning_without_native(self):
+        for path in (
+            "scripts/hepta_pnl_watch.py",
+            "tests/python/test_pnl_watch_regression.py",
+            "tests/python/test_pnl_append_ledger.py",
+            "tests/python/test_pnl_journal_cache.py",
+            "research/neuron_learning/laya_cell/source_readiness.py",
+            "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
+            "research/neuron_learning/laya_cell/readiness_heartbeat.py",
+            "tests/python/test_verified_sealed_readiness_cache.py",
+            "tests/python/test_fx_source_monitor_cadence.py",
+            "tests/python/test_readiness_heartbeat.py",
+            "research/neuron_learning/laya_cell/resident_price_baselines.py",
+            "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
+            "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
+
+    def test_mixed_verified_components_preserve_learning_feedback(self):
+        for paths in (
+            [
+                "scripts/hepta_pnl_watch.py",
+                "research/neuron_learning/laya_cell/resident_price_baselines.py",
+                "docs/technical/account-pnl.md",
+            ],
+            [
+                "scripts/activate_prepared_driver.py",
+                "tests/python/test_verified_sealed_readiness_cache.py",
+                "research/historical_training/RESIDENT_RESOURCE_GUARD.md",
+            ],
+        ):
+            with self.subTest(paths=paths):
+                self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON_LEARNING)
+
+    def test_learning_component_missing_or_symlinked_test_restores_full(self):
+        for implementation, test_name in (
+            ("scripts/hepta_pnl_watch.py", "tests/python/test_pnl_append_ledger.py"),
+            ("research/neuron_learning/laya_cell/source_readiness.py",
+             "tests/python/test_verified_sealed_readiness_cache.py"),
+            ("research/neuron_learning/laya_cell/resident_price_baselines.py",
+             "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py"),
+        ):
+            with self.subTest(implementation=implementation):
+                test = self.root / test_name
+                test.unlink()
+                self.assertEqual(scope_for_paths([implementation], self.root), self.FULL)
+                test.symlink_to(self.root / implementation)
+                self.assertEqual(scope_for_paths([implementation], self.root), self.FULL)
+                test.unlink()
+                test.write_text("pass\n")
+                tool = self.root / implementation
+                tool.unlink()
+                self.assertEqual(scope_for_paths([test_name], self.root), self.FULL)
+                tool.write_text("pass\n")
+
     def test_unknown_shared_ci_and_invalid_paths_restore_full(self):
         for extra in ("scripts/unknown.py", "scripts/hepta_account_pnl.py",
+                      "research/neuron_learning/laya_cell/integrity.py",
+                      "research/neuron_learning/laya_cell/resident_train.py",
+                      "research/neuron_learning/laya_cell/new_monitor.py",
+                      "research/historical_training/resident_resource_guard.py",
                       "scripts/heptatrader-user", "scripts/ci_scope.py",
                       "scripts/run_python_tests.py", ".github/workflows/core-ci.yml",
                       "other/hepta_nav_assurance.py", "scripts/hepta_nav_assurance.py.bak",
                       "docs/../scripts/a.md", "requirements.txt"):
             with self.subTest(extra=extra):
                 self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py", extra],
+                                                 self.root), self.FULL)
+                self.assertEqual(scope_for_paths(["scripts/hepta_pnl_watch.py", extra],
                                                  self.root), self.FULL)
         for unknown in (None, [], [""]):
             self.assertEqual(scope_for_paths(unknown, self.root), self.FULL)
@@ -159,6 +235,11 @@ class ComponentScopeTests(unittest.TestCase):
         git("add", ".")
         git("commit", "-qm", "tool change")
         self.assertEqual(outputs(base), self.PYTHON)
+        (self.root / "research/neuron_learning/laya_cell/resident_price_baselines.py").write_text(
+            "value = 2\n")
+        git("add", ".")
+        git("commit", "-qm", "baseline change")
+        self.assertEqual(outputs(base), self.PYTHON_LEARNING)
         (self.root / "shared.py").write_text("value = 2\n")
         git("add", ".")
         git("commit", "-qm", "mixed unknown")

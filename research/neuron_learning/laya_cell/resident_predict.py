@@ -16,7 +16,7 @@ from .dataset import encode_rows
 from .model import load_verified_laya
 from .resident_model import ResidentDecisionCell
 from .native import NativePorts
-from .resident_train import validate_parent
+from .integrity import validate_candidate_artifact as validate_parent
 from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
 from . import resident_price_baselines as price_refs

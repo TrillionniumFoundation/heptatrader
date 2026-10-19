@@ -269,4 +269,185 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(report["usable"],24)
         rd.assert_called_once_with(c,1200)
 
+
+class RecentHarness(Harness):
+    def __init__(self, root):
+        super().__init__(root)
+        self.rows = {
+            self.p1: [{"t": 1000, "known_at_ms": 1030, "bid": "1.1000", "ask": "1.1002", "source": "sealed"}],
+            self.p2: [{"t": 2000, "known_at_ms": 2040, "bid": "1.2000", "ask": "1.2002", "source": "tail"}],
+        }
+        self.sealed = [self.pin]
+
+    def index(self, config, paths):
+        assert paths == [self.p1, self.p2]
+        return [dict(pin) for pin in self.sealed], list(self.pinned_pages)
+
+    def inventory(self, config, paths):
+        self.inventory_calls += 1
+        pins, pages = self.index(config, paths)
+        for pin in pins:
+            module.verify_prefix(pin, sealed=True)
+        return pins, pages
+
+    def seal_tail(self):
+        self.sealed.append({"path": str(self.p2), "bytes": self.p2.stat().st_size,
+                            "sha256": hashlib.sha256(self.p2.read_bytes()).hexdigest(),
+                            "ended": True})
+
+    def read_source(self, path):
+        header, _, prefix = super().read_source(path)
+        prefix = next((dict(pin) for pin in self.sealed if pin["path"] == str(path)), prefix)
+        return header, [dict(row) for row in self.rows[path]], prefix
+
+    def patched(self):
+        stack = super().patched()
+        stack.enter_context(patch.object(module, "inventory_index", self.index))
+        return stack
+
+
+class RecentViewTests(unittest.TestCase):
+    def new(self):
+        tmp = tempfile.TemporaryDirectory()
+        return tmp, RecentHarness(tmp.name), VerifiedSealedReadinessCache()
+
+    def test_uncached_old_segments_skip_decode_but_preserve_result_and_receipts(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched(), patch.object(module, "MAX_CACHED_QUOTE_RECORDS", 0):
+            all_rows, all_pins = VerifiedSealedReadinessCache().read_quotes(h.config, 3000)
+            h.parses.clear()
+            cold = cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            hot = cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertEqual(cold, ([q for q in all_rows if q["t"] >= 1500], all_pins))
+            self.assertEqual(hot, cold)
+            self.assertEqual(h.parses.count(str(h.p1)), 1)
+            self.assertEqual(h.parses.count(str(h.p2)), 2)
+            self.assertEqual(cache.retired_segments_reverified, 1)
+            self.assertEqual(cache.counters()["cached_original_quote_records"], 0)
+
+    def test_retired_same_size_mutation_is_rejected_at_consumption(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            raw = h.p1.read_bytes()
+            h.p1.write_bytes(b"X" + raw[1:])
+            with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_HASH_CHANGED"):
+                cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertEqual(cache.history_reused, 0)
+
+    def test_changed_tail_with_late_old_conflict_requires_complete_merge(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            h.rows[h.p2].append({"t": 1000, "known_at_ms": 2900, "bid": "9", "ask": "10"})
+            h.p2.write_bytes(h.p2.read_bytes() + b"late original row\n")
+            with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            self.assertEqual(cache.history_fallbacks, 1)
+
+    def test_unchanged_tail_future_known_overlap_is_not_a_prior_proof(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p2].append({"t": 1000, "known_at_ms": 3500, "bid": "9", "ask": "10"})
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                cache.read_quotes(h.config, 4000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            self.assertEqual(cache.history_fallbacks, 1)
+
+    def test_unseen_sealed_rows_are_not_retired(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p1][0]["known_at_ms"] = 3500
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            cache.read_quotes(h.config, 4000, earliest_ms=1500)
+            self.assertIsNotNone(cache._history)
+
+    def test_backward_asof_or_wider_window_rebuilds_the_original_population(self):
+        for at_ms, cutoff in ((1500, 1200), (3000, 500)):
+            with self.subTest(at_ms=at_ms, cutoff=cutoff):
+                tmp, h, cache = self.new()
+                with tmp, h.patched():
+                    cache.read_quotes(h.config, 3000, earliest_ms=1500)
+                    actual, pins = cache.read_quotes(h.config, at_ms, earliest_ms=cutoff)
+                    full, expected_pins = VerifiedSealedReadinessCache().read_quotes(h.config, at_ms)
+                    expected = [q for q in full if q["t"] >= cutoff] or full[-1:]
+                    self.assertEqual((actual, pins), (expected, expected_pins))
+                    self.assertEqual(cache.history_fallbacks, 1)
+
+    def test_cutoff_boundary_is_included_and_not_retired(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            rows, _ = cache.read_quotes(h.config, 3000, earliest_ms=1000)
+            self.assertEqual([q["t"] for q in rows], [1000, 2000])
+            self.assertIsNone(cache._history)
+
+    def test_latest_old_quote_remains_bound_to_original_retired_source(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p1][0]["known_at_ms"] = 1150
+            h.rows[h.p2] = [dict(h.rows[h.p1][0], known_at_ms=1120, source="tail")]
+            cold, _ = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            self.assertEqual(cold[0]["source"], "tail")
+            h.rows[h.p2] = [{"t": 4000, "known_at_ms": 4500, "bid": "2", "ask": "3"}]
+            h.p2.write_bytes(b"changed active original\n")
+            hot = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            full, pins = VerifiedSealedReadinessCache().read_quotes(h.config, 3000)
+            self.assertEqual(hot, (full[-1:], pins))
+            self.assertEqual(hot[0][0]["known_at_ms"], 1150)
+            self.assertEqual(hot[0][0]["source"], "sealed")
+            self.assertEqual(cache.history_fallbacks, 0)
+
+    def test_retired_equal_timestamp_ties_keep_original_segment_order(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p2] = [dict(h.rows[h.p1][0], source="second")]
+            h.seal_tail()
+            first = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            second = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            self.assertEqual(first, second)
+            self.assertEqual(second[0][0]["source"], "sealed")
+
+    def test_new_sealed_inventory_rebuilds_before_retiring_more_sources(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            cache.read_quotes(h.config, 3000, earliest_ms=2500)
+            h.seal_tail()
+            recent = cache.read_quotes(h.config, 3000, earliest_ms=2500)
+            full, pins = VerifiedSealedReadinessCache().read_quotes(h.config, 3000)
+            self.assertEqual(recent, (full[-1:], pins))
+            self.assertEqual(cache.history_fallbacks, 1)
+            self.assertEqual(cache.counters()["retired_decoded_segments"], 2)
+
+    def test_returned_rows_do_not_mutate_historical_conclusion(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p2] = []
+            first, _ = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            first[0]["bid"] = 99
+            first[0]["known_at_ms"] = 1
+            second, _ = cache.read_quotes(h.config, 3000, earliest_ms=2000)
+            self.assertEqual(second[0]["bid"], 1.1)
+            self.assertEqual(second[0]["known_at_ms"], 1030)
+
+    def test_failed_result_construction_does_not_publish_new_history(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            with patch.object(module, "float", side_effect=ValueError("conversion"), create=True):
+                with self.assertRaisesRegex(ValueError, "conversion"):
+                    cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+            cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNotNone(cache._history)
+
+    def test_no_causally_available_quote_stays_empty(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p1][0]["known_at_ms"] = 3500
+            h.rows[h.p2][0]["known_at_ms"] = 4000
+            self.assertEqual(cache.read_quotes(h.config, 3000, earliest_ms=1500)[0], [])
+
+
 if __name__=="__main__":unittest.main()

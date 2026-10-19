@@ -144,10 +144,12 @@ class AppendLedgerRegressionTests(unittest.TestCase):
         self.assertEqual(self.parser.rebuilds, 2)
         self.assertEqual(self.parser.appends, 0)
         self.assertEqual(self.parser.ledger_preserving_appends, 0)
+        self.assertEqual(self.parser.journal_sha256, hashlib.sha256(self.raw).hexdigest())
     def test_future_append_and_clock_rollback_keep_existing_revalidation(self):
         with mock.patch.object(report, "replay_ledger", wraps=report.replay_ledger) as raw:
             self.parser.replay_ledger(self.events, self.period, "BTC.USD", NOW)
             self.append([{"event":"broker_execution_details_end", "ts_ms":NOW+100}])
+            self.append([{"event":"broker_completed_orders_end", "ts_ms":NOW-1}])
             for at_ms in (NOW, NOW+50, NOW+100):
                 actual = self.parser.replay_ledger(self.events, self.period, "BTC.USD", at_ms)
                 self.assertEqual(actual, accounting.replay(self.events, self.period, "BTC.USD", at_ms))
@@ -156,6 +158,24 @@ class AppendLedgerRegressionTests(unittest.TestCase):
             self.assertEqual(raw.call_count, 4)
             self.parser.replay_ledger(self.events, self.period, "BTC.USD", NOW+100)
             self.assertEqual(raw.call_count, 5)
+
+    def test_removed_future_timestamp_does_not_keep_ledger_uncacheable(self):
+        future = {"event": "broker_execution_details_end", "ts_ms": NOW + 100}
+        for replacement in ([], [dict(future, ts_ms=NOW - 100)]):
+            with self.subTest(replacement=replacement):
+                self.reset_parser(basic() + [future])
+                with mock.patch.object(report, "replay_ledger", wraps=report.replay_ledger) as raw:
+                    self.ledgers(NOW)
+                    self.raw = oms_bytes(basic() + replacement)
+                    self.events = self.parser.parse(self.raw)
+                    first = self.ledgers(NOW)
+                    self.assert_full_ledgers(first, NOW)
+                    second = self.ledgers(NOW + 1)
+                    self.assert_full_ledgers(second, NOW + 1)
+                    self.assertEqual(raw.call_count, 4)
+                self.assertEqual(self.parser.rebuilds, 2)
+                self.assertEqual(self.parser.appends, 0)
+                self.assertEqual(self.parser.journal_sha256, hashlib.sha256(self.raw).hexdigest())
 
 if __name__ == "__main__":
     unittest.main()

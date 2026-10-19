@@ -1,10 +1,10 @@
 """CPU contracts for explicitly frozen resident price comparisons."""
-import copy,math,tempfile,unittest
+import copy,json,math,subprocess,sys,tempfile,unittest
 from pathlib import Path
 import numpy as np
 from laya_cell import resident_price_baselines as b
 from laya_cell import resident_training_v2 as v2
-from laya_cell.integrity import ContractError,digest,sha_file
+from laya_cell.integrity import ContractError,canonical,digest,sha_file,validate_candidate_artifact
 from laya_cell.resident_row_accounting import row_id
 from laya_cell.resident_evaluate import measure
 
@@ -126,6 +126,91 @@ class PriceBaselineTests(unittest.TestCase):
   self.assertTrue(report['models']['laya_candidate']['nll_is_infinite'])
   self.assertAlmostEqual(report['models']['uniform']['mean_nll'],math.log(7))
   self.assertAlmostEqual(report['models']['laya_candidate']['mean_brier'],(2.+6/7)/2)
+
+class TrainingDiagnosticTests(unittest.TestCase):
+ def candidate(self):
+  rows,cutoff=population()
+  candidate={'schema':'heptatrader.laya-resident-candidate.v1',
+   'objective':copy.deepcopy(v2.OBJECTIVE),'price_baselines':b.freeze(rows,cutoff),
+   'action_update_steps':0,'action_training_profile':None,
+   'measurement':{'training_only':True,'rows':32,'unique_action_labels':0,
+    'parent_ce':2.,'candidate_ce':1.99,'candidate_brier':.97},
+   'steps':[{'applied':True,'training_row_ids':[row_id(r) for r in rows[i:i+2]],
+    'teacher_rows':0,'gradient_norm_before_clip':2. if i==0 else .5}
+    for i in range(0,32,2)]}
+  return candidate,rows
+ def artifact(self,root):
+  candidate,_=self.candidate()
+  (root/'adapter.safetensors').write_bytes(b'SYNTHETIC_HASH_FIXTURE_NOT_A_MODEL')
+  candidate['adapter_sha256']=sha_file(root/'adapter.safetensors')
+  candidate['candidate_id']=digest(candidate)
+  (root/'candidate.json').write_bytes(canonical(candidate)+b'\n')
+  return candidate
+ def test_steps_examples_and_training_only_references_use_original_population(self):
+  candidate,rows=self.candidate();before=copy.deepcopy(candidate)
+  report=b.candidate_training_diagnostics(candidate)
+  self.assertEqual(candidate,before)
+  self.assertEqual(report['optimizer_steps'],{'attempted':16,'applied':16,'rolled_back':0})
+  self.assertEqual(report['training_examples'],{'attempted':32,'applied':32,'unique_attempted':32,'unique_applied':32})
+  self.assertEqual(report['action_optimizer_steps_applied'],0)
+  self.assertEqual(report['gradient_norm_before_clip']['steps_exceeding_cap'],1)
+  self.assertAlmostEqual(report['training_metrics']['parent_minus_candidate_ce'],.01)
+  references=report['same_training_rows_baselines']
+  self.assertTrue(references['same_row_ids_as_recorded_steps'])
+  self.assertTrue(references['prior_fit_reuses_scored_labels'])
+  self.assertFalse(references['held_out']);self.assertFalse(report['future_value_proven'])
+  self.assertAlmostEqual(references['models']['uniform']['brier'],6/7)
+  self.assertAlmostEqual(references['models']['uniform']['nll'],math.log(7))
+  profile=candidate['price_baselines']
+  expected=[b.probability_metrics(profile['train_prior_by_horizon'][str(r['horizon_sec'])]['probs'],r['target_class']) for r in rows]
+  self.assertAlmostEqual(references['models']['train_prior']['brier'],sum(x['brier'] for x in expected)/32)
+  self.assertAlmostEqual(references['models']['train_prior']['nll'],sum(x['nll'] for x in expected)/32)
+ def test_rollback_and_old_missing_gradient_receipts_are_not_counted_as_updates(self):
+  candidate,_=self.candidate();candidate['steps'][-1]['applied']=False
+  for step in candidate['steps']:
+   del step['gradient_norm_before_clip'];del step['teacher_rows']
+  report=b.candidate_training_diagnostics(candidate)
+  self.assertEqual(report['optimizer_steps'],{'attempted':16,'applied':15,'rolled_back':1})
+  self.assertEqual(report['training_examples']['applied'],30)
+  self.assertEqual(report['training_examples']['unique_applied'],30)
+  self.assertEqual(report['gradient_norm_before_clip']['recorded_steps'],0)
+  self.assertIsNone(report['gradient_norm_before_clip']['mean'])
+  self.assertIsNone(report['teacher_rows_in_recorded_steps'])
+ def test_shared_artifact_validator_and_audit_preserve_original_hash_contract(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);candidate=self.artifact(root);raw=(root/'candidate.json').read_bytes()
+   self.assertEqual(validate_candidate_artifact(root),candidate)
+   report=b.audit_candidate_training(root)
+   self.assertEqual(report['candidate_id'],candidate['candidate_id'])
+   self.assertEqual((root/'candidate.json').read_bytes(),raw)
+   candidate['measurement']['rows']=31
+   (root/'candidate.json').write_bytes(canonical(candidate))
+   with self.assertRaisesRegex(ContractError,'PARENT_MANIFEST_HASH'):b.audit_candidate_training(root)
+   (root/'candidate.json').write_bytes(raw)
+   (root/'adapter.safetensors').write_bytes(b'SYNTHETIC_CORRUPTION')
+   with self.assertRaisesRegex(ContractError,'PARENT_ADAPTER_HASH'):b.audit_candidate_training(root)
+ def test_cpu_audit_does_not_import_training_or_model_libraries(self):
+  code='''
+import importlib.abc,json,sys
+from pathlib import Path
+sys.path[:0]=json.loads(sys.argv[2])
+class NoHeavyImports(importlib.abc.MetaPathFinder):
+ def find_spec(self,fullname,path=None,target=None):
+  if fullname.split('.')[0] in {'torch','transformers','safetensors'}:
+   raise AssertionError('heavy import: '+fullname)
+sys.meta_path.insert(0,NoHeavyImports())
+from laya_cell.resident_price_baselines import audit_candidate_training
+report=audit_candidate_training(Path(sys.argv[1]))
+assert report['diagnostics']['optimizer_steps']['attempted']==16
+assert report['diagnostics']['action_support_diagnostic']['reason']=='INSUFFICIENT_CAUSAL_PARENT_CORRECTNESS_ROWS'
+assert 'laya_cell.resident_train' not in sys.modules
+assert not any(name.split('.')[0] in {'torch','transformers','safetensors'} for name in sys.modules)
+'''
+  with tempfile.TemporaryDirectory() as td:
+   self.artifact(Path(td))
+   result=subprocess.run([sys.executable,'-c',code,td,json.dumps(sys.path)],capture_output=True,text=True,timeout=30)
+   self.assertEqual(result.returncode,0,result.stderr)
+
 
 class ExplicitConfigurationTests(unittest.TestCase):
  def fixture(self,root):

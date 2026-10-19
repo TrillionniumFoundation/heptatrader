@@ -37,6 +37,15 @@ def sha_file(path:Path)->str:
  with path.open('rb') as s:
   for c in iter(lambda:s.read(1024**2),b''):h.update(c)
  return h.hexdigest()
+def validate_candidate_artifact(path:Path)->dict:
+ """Verify resident manifests/adapters without importing a model or trainer.
+
+ Keep the original parent-validation errors for existing callers and receipts.
+ """
+ candidate=read_json(path/'candidate.json')
+ if candidate.get('candidate_id')!=digest({k:v for k,v in candidate.items() if k!='candidate_id'}):raise ContractError('PARENT_MANIFEST_HASH')
+ if sha_file(path/'adapter.safetensors')!=candidate['adapter_sha256']:raise ContractError('PARENT_ADAPTER_HASH')
+ return candidate
 def git_blob(raw:bytes)->str:return hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
 def verify_snapshot(root:Path,manifest:dict)->str:
  if root.is_symlink() or not root.is_dir():raise ContractError('MODEL_DIRECTORY_INVALID')

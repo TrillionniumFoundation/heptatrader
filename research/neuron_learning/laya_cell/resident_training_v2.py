@@ -148,9 +148,10 @@ def prepare_action(rows, targets, parent_action_logits, cutoff_ms):
 
 def action_inference(logits, calibration):
     """Use the same frozen temperature at inference; absent support has no p."""
-    from .resident_action_v2_research import v2_action_inference
+    from .resident_action_v2_research import action_support_diagnostic,v2_action_inference
     if calibration is None:
         return {'status': 'INSUFFICIENT_CAUSAL_PARENT_CORRECTNESS_ROWS',
+                'action_support_diagnostic': action_support_diagnostic(None),
                 'frozen_profile_id': None, 'action_correct_probs': None,
                 'recommendations': ['ESCALATE_ONLY_NO_BALANCED_TRAINING']*len(logits),
                 'model_or_trade_permission': False}

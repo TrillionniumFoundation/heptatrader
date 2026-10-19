@@ -1,8 +1,15 @@
 """Adversarial tests for byte-exact original-PAPER health source monitoring."""
 from __future__ import annotations
 import json,os,tempfile
+from contextlib import redirect_stdout
+import io
+import sys
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+
+from train_v2 import fx_original_health_fullcycle as fullcycle
+from train_v2 import fx_original_health_sustained as sustained
 
 from train_v2.fx_original_health_fullcycle import (
     AuditHold, canonical, digest, owner_dir, write_once, verify_status,
@@ -217,5 +224,87 @@ class FullCycleTests(unittest.TestCase):
             persist({"schema":SCHEMA,"trade_authority":False},p)
             with self.assertRaisesRegex(IntegrityHold,"AUDIT_OUTPUT_MUST_BE_NEW"):
                 persist({"schema":SCHEMA,"trade_authority":True},p)
+
+class SharedCohortRunnerTests(unittest.TestCase):
+    def setUp(self):
+        box=tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self.directory=Path(box.name)
+        self.next_cohort=0
+        self.period=self.directory/"period.json"
+        self.period.write_bytes(canonical({"execution_domain":"PAPER"})+b"\n")
+        self.config=self.directory/"config.json"
+        self.config.write_bytes(canonical({
+            "schema":"heptatrader.laya-resident-config.v1",
+            "automatic_trading":False,"period_path":str(self.period),
+            "period_sha256":digest(self.period.read_bytes()),
+            "feed_directory":"/home/alex/.local/state/heptatrader/synthetic-source",
+        })+b"\n")
+        self.installed=self.directory/"installed-monitor.py"
+        self.installed.write_text("# synthetic monitor fixture only\n")
+        for path in (self.period,self.config,self.installed):path.chmod(0o600)
+
+    def make_plan(self,module):
+        root=self.directory/("cohort-%d"%self.next_cohort)
+        self.next_cohort+=1
+        with patch.object(fullcycle,"now_ms",return_value=START):
+            result=module.preseal(root,self.config,self.installed)
+        return root,json.loads((root/"plan.json").read_text()),result
+
+    def test_both_entries_preserve_exact_cohort_and_cli_identity(self):
+        for module in (fullcycle,sustained):
+            with self.subTest(entry=module.__name__):
+                root,plan,result=self.make_plan(module)
+                self.assertEqual(plan["schema"],module.SCHEMA+".plan.v1")
+                self.assertEqual(plan["full_snapshots_count"],module.N)
+                self.assertEqual(result["full_snapshots_expected"],module.N)
+                first=plan["first_cycle_start_ms"]
+                self.assertGreaterEqual(first,START+module.MIN_LEAD_MS)
+                self.assertLess(first,START+module.MIN_LEAD_MS+STEP_MS)
+                self.assertEqual(plan["cycle_schedule_ms"],
+                                 [first+i*STEP_MS for i in range(module.N)])
+                self.assertEqual(plan["cohort_runner_sha256"],
+                                 digest(Path(module.__file__).read_bytes()))
+                self.assertEqual(plan["cohort_core_sha256"],fullcycle.code_sha())
+                self.assertEqual(module.verify_plan(root)[1],plan)
+                output=io.StringIO()
+                with patch.object(sys,"argv",["cohort","--mode","verify","--root",str(root)]), \
+                     patch.object(fullcycle.os,"umask"),redirect_stdout(output):
+                    module.main()
+                self.assertEqual(json.loads(output.getvalue())["expected_cycles"],module.N)
+                self.assertFalse(plan["trade_authority"])
+                self.assertEqual(plan["broker_requests_or_orders_sent"],0)
+
+    def test_new_plan_requires_both_own_entry_and_shared_core_pins(self):
+        for field in ("cohort_runner_sha256","cohort_core_sha256"):
+            for replacement in (None,"0"*64):
+                with self.subTest(field=field,replacement=replacement):
+                    root,plan,_=self.make_plan(sustained)
+                    if replacement is None:del plan[field]
+                    else:plan[field]=replacement
+                    (root/"plan.json").write_bytes(canonical(plan)+b"\n")
+                    with self.assertRaisesRegex(AuditHold,"FROZEN_SOURCE_PLAN_INVALID"):
+                        sustained.verify_plan(root)
+
+    def test_changed_core_is_refused_even_when_entry_bytes_match(self):
+        root,plan,_=self.make_plan(sustained)
+        original_read=Path.read_bytes
+        core_path=Path(fullcycle.__file__)
+        def changed_core(path):
+            raw=original_read(path)
+            return raw+b"\n# changed shared implementation\n" if path==core_path else raw
+        with patch.object(Path,"read_bytes",changed_core):
+            self.assertEqual(sustained.code_sha(),plan["cohort_runner_sha256"])
+            with self.assertRaisesRegex(AuditHold,"FROZEN_SOURCE_PLAN_INVALID"):
+                sustained.verify_plan(root)
+
+    def test_other_cohort_cannot_verify_the_same_plan(self):
+        root,_,_=self.make_plan(fullcycle)
+        with self.assertRaisesRegex(AuditHold,"FROZEN_SOURCE_PLAN_INVALID"):
+            sustained.verify_plan(root)
+        for name in ("AuditHold","verify_status","canonical","digest","owner_dir",
+                     "write_once","private_source","strict","wait_to","require"):
+            self.assertIs(getattr(sustained,name),getattr(fullcycle,name),name)
+
 
 if __name__=="__main__":unittest.main()
