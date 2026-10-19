@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from decimal import Decimal
+import hashlib
 import time
 from pathlib import Path
 
-from .integrity import ContractError, digest, sha_file
+from .integrity import ContractError, canonical, digest, sha_file
 from .source_archive import inventory, inventory_index, verify_prefix, prefix_version
 from .shadow_source import read_source
 
@@ -209,10 +210,24 @@ class VerifiedSealedReadinessCache:
         return records, prefix, accepted_at_ms
 
     @staticmethod
-    def _summary(records, prefix, accepted_at_ms):
+    def _summary(records, prefix, accepted_at_ms, *, historical_cutoff=None):
         # Include every strictly parsed row, even one not yet visible as of
         # this assessment. A previous visible subset is not a future proof.
         latest = max(records, key=lambda q: (q["t"], -q["known_at_ms"]), default=None)
+        overlap = None
+        if historical_cutoff is not None:
+            checksum = hashlib.sha256()
+            count = 0
+            max_known = 0
+            for quote in records:
+                if quote["t"] <= historical_cutoff:
+                    # Preserve the complete parser output, including receipt
+                    # and order. No additional deduplication or old row cache.
+                    checksum.update(canonical(quote) + b"\n")
+                    count += 1
+                    max_known = max(max_known, quote["known_at_ms"])
+            overlap = {"cutoff": historical_cutoff, "count": count,
+                       "max_known_at_ms": max_known, "sha256": checksum.hexdigest()}
         return {
             "latest_quote": dict(latest) if latest is not None else None,
             "prefix": dict(prefix),
@@ -220,14 +235,20 @@ class VerifiedSealedReadinessCache:
             "max_t": max((q["t"] for q in records), default=None),
             "max_known_at_ms": max((q["known_at_ms"] for q in records), default=0),
             "accepted_at_ms": accepted_at_ms,
+            "historical_overlap": overlap,
         }
 
     def _reusable_history(self, sealed, feed_names, now_ms, earliest_ms, wall_ms):
         old = self._history
         if old is None or earliest_ms is None:
             return None
+        old_names = set(old["feed_paths"])
+        retained_order = tuple(name for name in feed_names if name in old_names)
+        # A long-lived recovery directory can sort after each newly rotated
+        # tail. Preserve all old sources in order; new sources are still fully
+        # parsed below and any overlap with retired history forces a full merge.
         if (tuple(sealed) != old["sealed"] or
-                feed_names[:len(old["feed_paths"])] != old["feed_paths"] or
+                retained_order != old["feed_paths"] or
                 now_ms < old["asof_ms"] or earliest_ms < old["earliest_ms"]):
             self.history_fallbacks += 1
             self._history = None
@@ -248,15 +269,19 @@ class VerifiedSealedReadinessCache:
             if old is None or q["known_at_ms"] < old["known_at_ms"]:
                 merged[q["t"]] = q
 
+    @staticmethod
+    def _retired_sources(sealed, summaries, now_ms, earliest_ms):
+        return frozenset(
+            pin["path"] for pin in sealed
+            if (summaries[pin["path"]]["max_t"] is None or
+                summaries[pin["path"]]["max_t"] < earliest_ms)
+            and summaries[pin["path"]]["max_known_at_ms"] <= now_ms
+        )
+
     def _commit_history(self, previous, sealed, feed_names, summaries,
                         now_ms, earliest_ms):
         if previous is None:
-            retired = frozenset(
-                pin["path"] for pin in sealed
-                if (summaries[pin["path"]]["max_t"] is None or
-                    summaries[pin["path"]]["max_t"] < earliest_ms)
-                and summaries[pin["path"]]["max_known_at_ms"] <= now_ms
-            )
+            retired = self._retired_sources(sealed, summaries, now_ms, earliest_ms)
             if not retired:
                 self._history = None
                 return
@@ -336,6 +361,7 @@ class VerifiedSealedReadinessCache:
         merged = {}
         summaries = {}
         prefixes = list(pages)
+        historical_cutoff = history["latest_t"] if history is not None else None
         for index, path in enumerate(paths):
             key = str(path)
             pin = sealed[index] if index < len(sealed) else None
@@ -353,17 +379,30 @@ class VerifiedSealedReadinessCache:
             if pin is None:
                 prefixes.append(prefix)
             if earliest_ms is not None:
-                summary = self._summary(records, prefix, accepted_at_ms)
+                if pin is None and index == len(sealed) and history is None:
+                    retired = self._retired_sources(sealed, summaries, now_ms, earliest_ms)
+                    historical_cutoff = max(
+                        (summaries[name]["max_t"] for name in retired
+                         if summaries[name]["max_t"] is not None), default=None)
+                summary = self._summary(
+                    records, prefix, accepted_at_ms,
+                    historical_cutoff=historical_cutoff if pin is None else None)
                 summaries[key] = summary
                 if (history is not None and history["latest_t"] is not None and
                         summary["min_t"] is not None and
                         summary["min_t"] <= history["latest_t"]):
                     before = history["sources"].get(key)
-                    if (before is None or prefix != before["prefix"] or
+                    overlap = summary["historical_overlap"]
+                    unchanged_overlap = (
+                        pin is None and before is not None and overlap is not None and
+                        overlap == before.get("historical_overlap") and
+                        overlap["max_known_at_ms"] <= history["asof_ms"])
+                    if not unchanged_overlap and (
+                            before is None or prefix != before["prefix"] or
                             before["max_known_at_ms"] > history["asof_ms"]):
-                        # The current full receipt must be unchanged. Merely
-                        # retaining an old valid prefix after an append is
-                        # insufficient: a late quote can conflict with old data.
+                        # A strict full parse may prove that an append or END
+                        # changed no old quote. Otherwise an old receipt alone
+                        # cannot rule out a late cross-history conflict.
                         self._history = None
                         self.history_fallbacks += 1
                         return self.read_quotes(config, now_ms, earliest_ms=earliest_ms)
