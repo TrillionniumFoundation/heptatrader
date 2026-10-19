@@ -237,8 +237,12 @@ def verify_archive_pin_sequence(pins):
         verify_page_pin(pin)
 
 
-def inventory(config, paths):
-    """Read every page, check no archived segment has been omitted/reordered."""
+def inventory_index(config, paths):
+    """Verify the complete ledger and ordered paths, NOT original source bytes.
+
+    Consumers must verify every returned original pin before using its data.
+    The ordinary inventory() API below continues doing both checks.
+    """
     pages, prefixes, pins = _load_pages(config)
     feed = Path(config["feed_directory"])
     if len(prefixes) > len(paths):
@@ -247,9 +251,16 @@ def inventory(config, paths):
         path = paths[i]
         if prefix.get("path") != str(path) or path.parent.parent != feed:
             raise ContractError("SOURCE_ARCHIVE_REORDERED_OR_MISSING")
-        verify_prefix(prefix, sealed=True)
     if len(paths) - len(prefixes) > UNSEALED_BOUND:
         raise ContractError("SOURCE_UNSEALED_SEGMENT_BOUND")
+    return prefixes, pins
+
+
+def inventory(config, paths):
+    """Verify every page and every ordered original sealed segment."""
+    prefixes, pins = inventory_index(config, paths)
+    for prefix in prefixes:
+        verify_prefix(prefix, sealed=True)
     return prefixes, pins
 
 

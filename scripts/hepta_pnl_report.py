@@ -222,6 +222,7 @@ class IncrementalOMSParser:
         self._raw = None
         self._events = []
         self._max_event_at_ms = 0
+        self._has_event_at_ms = False
         self._files = StableJournalBytes(read_private, lambda: now_ms())
         self._ledger_revision = 0
         self._ledger_scope = None
@@ -255,13 +256,23 @@ class IncrementalOMSParser:
         if raw is self._raw:
             self.hits += 1
             return self._events
-        sha = hashlib.sha256(raw).digest()
+        append_candidate = self._sha is not None and len(raw) > self._size
+        prefix_matches = False
+        if append_candidate:
+            # Verify the old prefix once, then continue the same digest over
+            # the suffix. The view does not copy the historical byte prefix.
+            view = memoryview(raw)
+            digest = hashlib.sha256(view[:self._size])
+            prefix_matches = digest.digest() == self._sha
+            digest.update(view[self._size:])
+            sha = digest.digest()
+        else:
+            sha = hashlib.sha256(raw).digest()
         if self._sha == sha and self._size == len(raw):
             self._raw = raw
             self.hits += 1
             return self._events
-        if (self._sha is not None and len(raw) > self._size
-                and hashlib.sha256(raw[:self._size]).digest() == self._sha):
+        if append_candidate and prefix_matches:
             lines = raw[self._size:].splitlines()
             if len(lines) + len(self._events) > MAX_JOURNAL_RECORDS:
                 raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
@@ -274,6 +285,12 @@ class IncrementalOMSParser:
                 raise EvidenceError("OMS_RECORD_BOUND_EXCEEDED")
             events = [strict_json(line.decode()) for line in lines]
             appended = False
+        max_event_at_ms = max((event["ts_ms"]
+                              for event in (parsed if appended else events)
+                              if type(event.get("ts_ms")) is int), default=None)
+        if appended and self._has_event_at_ms:
+            max_event_at_ms = (self._max_event_at_ms if max_event_at_ms is None
+                               else max(self._max_event_at_ms, max_event_at_ms))
         # Only a cryptographically verified append of known operational
         # records can retain ledger state. Rewrites/truncation may have changed
         # prior economics even when every new record is operational.
@@ -282,8 +299,8 @@ class IncrementalOMSParser:
         else:
             self._ledger_revision += 1
         self._events, self._sha, self._size = events, sha, len(raw)
-        self._max_event_at_ms = max((event["ts_ms"] for event in events
-                                     if type(event.get("ts_ms")) is int), default=0)
+        self._has_event_at_ms = max_event_at_ms is not None
+        self._max_event_at_ms = max_event_at_ms if self._has_event_at_ms else 0
         self._raw = raw
         if appended:
             self.appends += 1

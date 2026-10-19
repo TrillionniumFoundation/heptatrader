@@ -21,6 +21,9 @@ from train_v2.fx_source_cache_prewarm_480 import (
 from train_v2.fx_original_health_sustained import AuditHold
 from train_v2 import fx_source_cache_prewarm_480 as campaign
 from train_v2 import fx_verified_cache_480 as cache_contract
+from train_v2 import fx_source_cache_prewarm_probe as pilot_campaign
+from train_v2 import fx_original_health_sustained as source_archive
+from train_v2 import fx_original_health_fullcycle as shared_archive
 
 class Frozen480Tests(unittest.TestCase):
     def setUp(self):
@@ -133,5 +136,63 @@ class Frozen480Tests(unittest.TestCase):
     def test_missing_fixture_cannot_claim_validation(self):
         self.failed.unlink()
         with self.assertRaises(FileNotFoundError):require_prior_negative_and_pilot()
+
+    def make_consumer_plan(self,module):
+        period=self.root/"paper-period.json"
+        period.write_text(json.dumps({"execution_domain":"PAPER"}))
+        period.chmod(0o600)
+        config=self.root/"resident-config.json"
+        config.write_text(json.dumps({
+            "schema":"heptatrader.laya-resident-config.v1",
+            "automatic_trading":False,"period_path":str(period),
+            "period_sha256":self.sha(period),
+            "feed_directory":"/home/alex/.local/state/heptatrader/synthetic-source",
+        }))
+        config.chmod(0o600)
+        root=self.root/module.__name__.rsplit(".",1)[-1]
+        if module is cache_contract:
+            module.preseal(root=root,config_file=config,installed_source=self.monitor)
+        else:
+            module.preseal(root=root,config_path=config,installed_monitor=self.monitor)
+        return root,json.loads((root/"plan.json").read_text())
+
+    def test_all_consumer_plans_require_entry_and_shared_core_pins(self):
+        for module in (cache_contract,campaign,pilot_campaign):
+            with self.subTest(module=module.__name__):
+                root,plan=self.make_consumer_plan(module)
+                pins=plan["source_archive_code_pins"]
+                self.assertEqual(pins,source_archive.code_pins())
+                self.assertEqual(module.verify_plan(root)[1],plan)
+                reason=("CACHE480_FROZEN_PLAN_CHANGED" if module is cache_contract
+                        else "FROZEN_WARMUP_PROTOCOL_CHANGED")
+                for changed in (None,{**pins,"entry_sha256":"0"*64},
+                                {**pins,"core_sha256":"0"*64}):
+                    altered={**plan}
+                    if changed is None:del altered["source_archive_code_pins"]
+                    else:altered["source_archive_code_pins"]=changed
+                    (root/"plan.json").write_bytes(module.canonical(altered)+b"\n")
+                    with self.assertRaisesRegex(AuditHold,reason):
+                        module.verify_plan(root)
+
+    def test_consumer_own_file_pin_cannot_hide_a_changed_helper_core(self):
+        for module in (cache_contract,campaign,pilot_campaign):
+            with self.subTest(module=module.__name__):
+                root,plan=self.make_consumer_plan(module)
+                self.assertEqual(module.verify_plan(root)[1],plan)
+                read_bytes=Path.read_bytes
+                def changed_core(path):
+                    raw=read_bytes(path)
+                    return (raw+b"\n# changed helper implementation\n"
+                            if path==Path(shared_archive.__file__) else raw)
+                own_key=("runner_code_sha256" if module is cache_contract
+                         else "research_code_sha256")
+                reason=("CACHE480_FROZEN_PLAN_CHANGED" if module is cache_contract
+                        else "FROZEN_WARMUP_PROTOCOL_CHANGED")
+                with patch.object(Path,"read_bytes",changed_core):
+                    self.assertEqual(self.sha(Path(module.__file__)),plan[own_key])
+                    self.assertEqual(source_archive.code_sha(),
+                                     plan["source_archive_code_pins"]["entry_sha256"])
+                    with self.assertRaisesRegex(AuditHold,reason):
+                        module.verify_plan(root)
 
 if __name__=="__main__":unittest.main()

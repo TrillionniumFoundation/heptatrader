@@ -27,6 +27,7 @@ from .fx_verified_cache_480 import (
 )
 from .fx_original_health_sustained import (
     owner_dir, write_once, private_source, strict, require, canonical,
+    code_pins as archive_code_pins,
 )
 
 SCHEMA="heptatrader.fx-cache-prewarm-source-health.v1"
@@ -79,6 +80,7 @@ def preseal(*,root,config_path,installed_monitor):
        "original_monitor_path":str(installed_monitor),
        "original_monitor_sha256":"63bcef1a6d8bc22e3c2fb10d1dcebc1457559538e6a959004e61eeb88c09c320",
        "research_code_sha256":code_sha(),
+       "source_archive_code_pins":archive_code_pins(),
        "original_period_sha256":cfg["period_sha256"],
        "original_feed_root":cfg["feed_directory"],
        "source_readiness_rule":RULE,
@@ -105,6 +107,7 @@ def verify_plan(root):
     p=strict(private_source(root/"plan.json",16384))
     require(p.get("schema")==SCHEMA+".plan.v1"
             and p.get("research_code_sha256")==code_sha()
+            and p.get("source_archive_code_pins")==archive_code_pins()
             and p.get("source_readiness_rule")==RULE
             and p.get("count")==N and p.get("spacing_ms")==STEP_MS
             and p.get("cycle_schedule_ms")==fixed_grid(p["registered_at_ms"])

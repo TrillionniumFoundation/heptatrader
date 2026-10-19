@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from copy import deepcopy
-from .integrity import ContractError,digest
+from .integrity import ContractError,digest,validate_candidate_artifact
 from .dataset import BIN_EDGES_BPS
 from .resident_row_accounting import row_id,MAX_TRAINING_ROWS
 
@@ -214,6 +214,64 @@ def summarize(outcomes):
  return result
 
 
+def candidate_training_diagnostics(candidate):
+ """Explain existing training receipts; no model import, forward pass or fit."""
+ measurement=candidate.get('measurement',{})
+ objective=candidate.get('objective',{})
+ recorded_steps=candidate.get('steps')
+ steps=recorded_steps if isinstance(recorded_steps,list) else []
+ rows_recorded=isinstance(recorded_steps,list) and all(isinstance(s.get('training_row_ids'),list) for s in steps)
+ ids=[key for s in steps for key in s.get('training_row_ids',[])]
+ applied_ids=[key for s in steps if s['applied'] for key in s.get('training_row_ids',[])]
+ norms=[s['gradient_norm_before_clip'] for s in steps if 'gradient_norm_before_clip' in s]
+ cap=objective.get('gradient_norm_cap')
+ before,after=measurement.get('parent_ce'),measurement.get('candidate_ce')
+ improvement=before-after if type(before) in (int,float) and type(after) in (int,float) else None
+ report={'schema':'heptatrader.laya-training-diagnostics.v1','training_only':True,
+  'future_value_proven':False,'rows':measurement.get('rows'),
+  'optimizer_steps':({'attempted':len(steps),'applied':sum(s['applied'] is True for s in steps),
+    'rolled_back':sum(s['applied'] is False for s in steps)} if isinstance(recorded_steps,list) else None),
+  'training_examples':({'attempted':len(ids),'applied':len(applied_ids),
+    'unique_attempted':len(set(ids)),'unique_applied':len(set(applied_ids))} if rows_recorded else None),
+  'optimizer_reset_each_job':objective.get('optimizer_reset_each_job'),
+  'action_optimizer_steps_applied':candidate.get('action_update_steps'),
+  'unique_causal_action_rows':measurement.get('unique_action_labels'),
+  'teacher_rows_in_recorded_steps':(sum(s['teacher_rows'] for s in steps)
+    if isinstance(recorded_steps,list) and all('teacher_rows' in s for s in steps) else None),
+  'price_loss_definition':'PRIMARY_CE_PLUS_FIXED_TEACHER_TERM_WHEN_PRESENT',
+  'teacher_auxiliary_weight':objective.get('auxiliary_teacher_weight'),
+  'gradient_norm_before_clip':{'recorded_steps':len(norms),
+    'mean':sum(norms)/len(norms) if norms else None,'maximum':max(norms) if norms else None,
+    'cap':cap,'steps_exceeding_cap':sum(n>cap for n in norms) if norms and type(cap) in (int,float) else None},
+  'training_metrics':{'parent_ce':before,'candidate_ce':after,
+    'parent_minus_candidate_ce':improvement,'candidate_brier':measurement.get('candidate_brier')},
+  'same_training_rows_baselines':None}
+ if 'action_training_profile' in candidate:
+  from .resident_action_v2_research import action_support_diagnostic
+  report['action_support_diagnostic']=action_support_diagnostic(candidate['action_training_profile'])
+ profile=candidate.get('price_baselines')
+ if profile is not None:
+  profile=validate(profile);n=profile['training_rows'];scores={}
+  for name in ('uniform','train_prior'):
+   weighted=[]
+   for prior in profile['train_prior_by_horizon'].values():
+    probs=profile['uniform_probs'] if name=='uniform' else prior['probs']
+    weighted.extend((count,probability_metrics(probs,target))
+      for target,count in enumerate(prior['class_counts']) if count)
+   scores[name]={'brier':sum(count*value['brier'] for count,value in weighted)/n,
+                 'nll':sum(count*value['nll'] for count,value in weighted)/n}
+  report['same_training_rows_baselines']={'rows':n,'models':scores,
+   'frozen_profile_id':profile['profile_id'],'held_out':False,
+   'prior_fit_reuses_scored_labels':True,
+   'same_row_ids_as_recorded_steps':(digest(sorted(set(ids)))==profile['training_row_ids_digest'] if rows_recorded else None)}
+ return report
+
+
+def audit_candidate_training(directory):
+ candidate=validate_candidate_artifact(directory)
+ return {'candidate_id':candidate['candidate_id'],'diagnostics':candidate_training_diagnostics(candidate)}
+
+
 def validate_value_rule(plan):
  """A missing declaration is legacy; a changed declaration is never inferred."""
  rule=plan.get('price_value_rule')
@@ -222,6 +280,21 @@ def validate_value_rule(plan):
   raise ContractError('PRICE_VALUE_RULE_CHANGED')
  validate(plan.get('price_baselines'))
  return rule
+
+
+def paired_brier_diagnostics(deltas):
+ """Descriptive pairs and a conditional sign calculation, never a gate."""
+ n=len(deltas);ordered=sorted(deltas);tolerance=1e-12
+ mean=sum(deltas)/n if n else None
+ wins=sum(d>tolerance for d in deltas);losses=sum(d< -tolerance for d in deltas)
+ non_ties=wins+losses
+ median=(ordered[n//2] if n%2 else (ordered[n//2-1]+ordered[n//2])/2) if n else None
+ return {'paired_observations':n,'wins':wins,'losses':losses,'ties':n-non_ties,
+  'tie_tolerance':tolerance,'non_ties':non_ties,
+  'win_fraction_non_ties':wins/non_ties if non_ties else None,
+  'median_brier_improvement':median,
+  'sample_sd_brier_improvement':math.sqrt(sum((d-mean)**2 for d in deltas)/(n-1)) if n>1 else None,
+  'exploratory_one_sided_sign_p':sum(math.comb(non_ties,k) for k in range(wins,non_ties+1))/2**non_ties if non_ties else 1.0}
 
 
 def value_assessment(plan,observed):
@@ -246,12 +319,21 @@ def value_assessment(plan,observed):
  report={'rule_id':digest(rule),'primary_horizon_seconds':300,'observed':len(values),
   'same_observations_for_every_comparator':True,'comparisons':{},
   'scope':rule['scope'],'execution_profitability_proven':False}
+ report['uncertainty']={'diagnostic_only':True,'value_floor_tests_mean_only':True,
+  'scope':'CONDITIONAL_ON_OBSERVED_FIXED_SLOTS','censored_outcomes_not_imputed':True,
+  'mean_confidence_interval':None,
+  'mean_interval_reason':'NO_PREREGISTERED_DEPENDENCE_AWARE_MEAN_INTERVAL',
+  'sign_null_assumption':'CONDITIONAL_ON_NON_TIE_COUNT_INDEPENDENT_FAIR_SIGNS',
+  'sign_test_does_not_bound_mean_improvement':True,
+  'serial_dependence_adjusted':False,'multiple_comparators_adjusted':False,
+  'effective_independent_sample_size':None,'used_for_promotion':False}
  reasons=[]
  for name in rule['comparators']:
   deltas=[scores[name]-scores['laya_candidate'] for scores in values]
   mean=sum(deltas)/len(deltas) if deltas else None
   passed=mean is not None and mean>rule['minimum_mean_improvement']
-  report['comparisons'][name]={'mean_brier_improvement':mean,'value_floor_passed':passed}
+  report['comparisons'][name]={'mean_brier_improvement':mean,'value_floor_passed':passed,
+   'paired_diagnostics':paired_brier_diagnostics(deltas)}
   if not passed:reasons.append('NO_POSITIVE_BRIER_IMPROVEMENT_VS_'+name.upper())
  report['all_comparators_beaten']=not reasons
  return report,reasons

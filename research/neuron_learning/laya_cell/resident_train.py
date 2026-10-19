@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 from .integrity import ContractError,read_json,digest,sha_file,canonical
+from .integrity import validate_candidate_artifact as validate_parent
 from .model import load_verified_laya,require_pocket4_gpu,tensor_hash
 from .resident_model import ResidentDecisionCell,PROFILE,answer_targets,action_loss
 from .dataset import rows_for_training,verify_source_prefixes,encode_rows
@@ -40,12 +41,6 @@ class ResidentNative(NativePorts):
 def immutable(path,value):
  with path.open('xb') as f:f.write(canonical(value)+b'\n');f.flush();os.fsync(f.fileno())
  path.chmod(0o400)
-
-def validate_parent(path):
- parent=read_json(path/'candidate.json')
- if parent.get('candidate_id')!=digest({k:v for k,v in parent.items() if k!='candidate_id'}):raise ContractError('PARENT_MANIFEST_HASH')
- if sha_file(path/'adapter.safetensors')!=parent['adapter_sha256']:raise ContractError('PARENT_ADAPTER_HASH')
- return parent
 
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
@@ -118,16 +113,19 @@ def run_job(c,*,old_learner_verified=False):
     if param.requires_grad and '.act_head.' in name:param.grad=None
   for name,param in cell.named_parameters():
    if not param.requires_grad and param.grad is not None:raise ContractError('FROZEN_GRADIENT')
-  torch.nn.utils.clip_grad_norm_([p for p in cell.parameters() if p.requires_grad],1.,error_if_nonfinite=True)
+  gradient_norm_before_clip=torch.nn.utils.clip_grad_norm_([p for p in cell.parameters() if p.requires_grad],1.,error_if_nonfinite=True)
   gradient=digest({n:tensor_hash(p.grad) for n,p in cell.named_parameters() if p.grad is not None})
   optimizer.step();norm=cell.norm_report();applied=norm['within_profile']
   if not applied:cell.restore_trainable(saved);optimizer.load_state_dict(opt)
   elif action_step_eligible:applied_action+=1
   seen_action.update(digest([r['sample_id'],r['horizon_sec']]) for r,v in zip(selected,action_values) if v is not None)
   step={'applied':applied,'training_row_ids':[row_id(r) for r in selected],
+   'training_examples':len(selected),'teacher_rows':sum(r['teacher_probs'] is not None for r in selected),
+   'action_optimizer_update':bool(applied and action_step_eligible),
+   'gradient_norm_before_clip':float(gradient_norm_before_clip.detach()),
    'loss':float(loss.detach()),'price_loss':float(price_loss.detach()),
    'action_loss':float(act_loss.detach()),'action_labels':int(am.sum()),'gradient_digest':gradient,'norm':norm}
-  steps.append(step);print(json.dumps({'step':len(steps),**{k:step[k] for k in ('applied','price_loss','action_loss','action_labels')}}),flush=True)
+  steps.append(step);print(json.dumps({'step':len(steps),**{k:step[k] for k in ('applied','training_examples','teacher_rows','gradient_norm_before_clip','price_loss','action_loss','action_labels','action_optimizer_update')}}),flush=True)
  cell.eval();cell.assert_frozen();brier=[];after_scores=[]
  with torch.no_grad():
   for r in rows:
@@ -168,6 +166,7 @@ def run_job(c,*,old_learner_verified=False):
    action_output_profile=training_v2.ACTION_OUTPUT,
    action_optimizer_admitted=bool(action_training_profile and action_training_profile['action_optimizer_admitted']),
    action_unsupported_reason=(None if action_training_profile and action_training_profile['action_optimizer_admitted'] else 'NO_BALANCED_CAUSAL_PARENT_CORRECTNESS_TRAINING'))
+ record['training_diagnostics']=price_refs.candidate_training_diagnostics(record)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

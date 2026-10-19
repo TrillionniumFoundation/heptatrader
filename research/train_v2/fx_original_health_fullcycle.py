@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -25,6 +26,15 @@ MIN_LEAD_MS=60000
 MAX_SOURCE_AGE_MS=30000
 MAX_LATE_MS=3000
 STATES={"READY_FOR_REVIEW_NOT_AUTHORIZATION","HOLD_NEW_FUSION_WINDOW"}
+
+@dataclass(frozen=True)
+class CohortProfile:
+    schema: str
+    count: int
+    minimum_lead_ms: int
+
+PROFILE=CohortProfile(SCHEMA,N,MIN_LEAD_MS)
+
 class AuditHold(ValueError): pass
 
 def require(ok, reason):
@@ -35,8 +45,9 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 def canonical(o):
     return json.dumps(o,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
-def code_sha():
-    return digest(Path(__file__).read_bytes())
+def code_sha(runner_path=None):
+    """Keep entry-file identity separate from the common implementation."""
+    return digest(Path(__file__ if runner_path is None else runner_path).read_bytes())
 def owner_dir(p, create=False):
     p=Path(p)
     require(p.is_absolute() and ".." not in p.parts and not p.is_symlink(),"ARCHIVE_DIR_INVALID")
@@ -133,7 +144,7 @@ def verify_status(status, expected_period, assumed_start_ms):
             issues.append("READY_CLAIM_WITH_UNQUALIFIED_IB_SOURCE")
     return sorted(set(issues))
 
-def preseal(root,config_path,installed_path):
+def preseal(root,config_path,installed_path,*,profile=PROFILE,runner_path=None):
     root=Path(root)
     config_path,installed_path=Path(config_path),Path(installed_path)
     cfg=read_json(config_path)
@@ -147,20 +158,21 @@ def preseal(root,config_path,installed_path):
             and cfg["feed_directory"].startswith("/home/alex/.local/state/heptatrader/"),
             "PRODUCTION_HEALTH_PROVENANCE_INVALID")
     now=now_ms()
-    start=((now+MIN_LEAD_MS+STEP_MS-1)//STEP_MS)*STEP_MS
+    start=((now+profile.minimum_lead_ms+STEP_MS-1)//STEP_MS)*STEP_MS
     plan={
-        "schema":SCHEMA+".plan.v1",
+        "schema":profile.schema+".plan.v1",
         "registered_at_ms":now,
         "first_cycle_start_ms":start,
-        "cycle_schedule_ms":[start+i*STEP_MS for i in range(N)],
-        "full_snapshots_count":N,
+        "cycle_schedule_ms":[start+i*STEP_MS for i in range(profile.count)],
+        "full_snapshots_count":profile.count,
         "candidate_assessment_cadence_ms":STEP_MS,
         "config_path":str(config_path),
         "config_sha256":sha(config_path),
         "installed_prod_source_path":str(installed_path),
         "installed_prod_source_sha256":sha(installed_path),
         "sandbox_candidate_source_sha256":sha(Path(__file__).parent.parent/"neuron_learning"/"laya_cell"/"source_readiness.py"),
-        "cohort_runner_sha256":code_sha(),
+        "cohort_runner_sha256":code_sha(runner_path),
+        "cohort_core_sha256":code_sha(),
         "period_sha256":cfg["period_sha256"],
         "original_feed_dir":cfg["feed_directory"],
         "original_monitor_rules":RULE,
@@ -178,18 +190,19 @@ def preseal(root,config_path,installed_path):
     write_once(root/"plan.json",canonical(plan)+b"\n")
     return {"state":"FUTURE_SOURCE_FULL_SNAPSHOTS_PRESEALED",
             "first_cycle_start_ms":start,"plan_sha256":sha(root/"plan.json"),
-            "full_snapshots_expected":N,"no_trading":True}
+            "full_snapshots_expected":profile.count,"no_trading":True}
 
-def verify_plan(root):
+def verify_plan(root,*,profile=PROFILE,runner_path=None):
     root=owner_dir(root)
     plan=strict(private_source(root/"plan.json",16000))
-    require(plan.get("schema")==SCHEMA+".plan.v1"
-            and plan.get("cohort_runner_sha256")==code_sha()
-            and plan.get("full_snapshots_count")==N
+    require(plan.get("schema")==profile.schema+".plan.v1"
+            and plan.get("cohort_runner_sha256")==code_sha(runner_path)
+            and plan.get("cohort_core_sha256")==code_sha()
+            and plan.get("full_snapshots_count")==profile.count
             and plan.get("candidate_assessment_cadence_ms")==STEP_MS
             and plan.get("cycle_schedule_ms")==[
-                plan["first_cycle_start_ms"]+i*STEP_MS for i in range(N)]
-            and plan.get("registered_at_ms")+MIN_LEAD_MS<=plan["first_cycle_start_ms"]
+                plan["first_cycle_start_ms"]+i*STEP_MS for i in range(profile.count)]
+            and plan.get("registered_at_ms")+profile.minimum_lead_ms<=plan["first_cycle_start_ms"]
             and plan.get("maximum_status_age_ms")==MAX_SOURCE_AGE_MS
             and plan.get("maximum_schedule_delay_ms")==MAX_LATE_MS
             and plan.get("no_production_monitor_cutover") is True
@@ -212,11 +225,11 @@ def wait_to(target):
         ms=target-now_ms()
         time.sleep(min(2.,max(.003,(ms-50)/1000)))
 
-def run(root):
-    root,plan,cfg=verify_plan(root)
+def run(root,*,profile=PROFILE,runner_path=None):
+    root,plan,cfg=verify_plan(root,profile=profile,runner_path=runner_path)
     require(now_ms()<plan["first_cycle_start_ms"],"MISSED_FIRST_FUTURE_CYCLE")
     write_once(root/"worker-start.json",canonical({
-        "schema":SCHEMA+".worker.v1","start_ms":now_ms(),
+        "schema":profile.schema+".worker.v1","start_ms":now_ms(),
         "plan_sha256":sha(root/"plan.json"),"no_restart":True,
         "production_monitor_not_modified":True,"broker_orders_sent":0,
     })+b"\n")
@@ -269,7 +282,7 @@ def run(root):
                         "status_sha256":None,"original_asof_ms":None,
                         "publisher_eligible":False,"source_ready":False}
         record.update({
-            "schema":SCHEMA+".cycle.v1","index":i,
+            "schema":profile.schema+".cycle.v1","index":i,
             "frozen_target_ms":target,"assessment_started_ms":started,
             "record_sealed_at_ms":now_ms(),
             "previous_receipt_sha256":previous,
@@ -283,12 +296,12 @@ def run(root):
         print(json.dumps({"cycle":i,"state":record["state"],
                           "source_ready":record["source_ready"],"broker_orders_sent":0}),flush=True)
     complete={
-        "schema":SCHEMA+".final.v1",
+        "schema":profile.schema+".final.v1",
         "plan_sha256":sha(root/"plan.json"),
         "receipt_chain_head":previous,
         "cycles":records,
         "full_snapshots_written":sum(
-            (root/("cycle-%02d-status.json"%i)).exists() for i in range(N)),
+            (root/("cycle-%02d-status.json"%i)).exists() for i in range(profile.count)),
         "no_prod_monitor_cutover":True,
         "production_trading_grant":False,"broker_orders_sent":0,
     }
@@ -296,7 +309,7 @@ def run(root):
     return {"state":"FINITE_ORIGINAL_HEALTH_FULLCYCLE_RESEARCH_COMPLETE",
             "snapshots":complete["full_snapshots_written"],"broker_orders_sent":0}
 
-def main():
+def main(*,profile=PROFILE,runner_path=None):
     p=argparse.ArgumentParser()
     p.add_argument("--mode",required=True,choices=("preseal","verify","run"))
     p.add_argument("--root",type=Path,required=True)
@@ -306,11 +319,12 @@ def main():
     os.umask(0o077)
     if args.mode=="preseal":
         require(args.config and args.installed_source,"MISSING_PRESEAL_ROOT")
-        result=preseal(args.root,args.config,args.installed_source)
+        result=preseal(args.root,args.config,args.installed_source,
+                       profile=profile,runner_path=runner_path)
     elif args.mode=="verify":
-        _,pl,_=verify_plan(args.root)
+        _,pl,_=verify_plan(args.root,profile=profile,runner_path=runner_path)
         result={"state":"FULLCYCLE_RESEARCH_PLAN_CODE_AND_PERIOD_MATCH",
                 "expected_cycles":len(pl["cycle_schedule_ms"]),"no_trading":True}
-    else:result=run(args.root)
+    else:result=run(args.root,profile=profile,runner_path=runner_path)
     print(json.dumps(result,sort_keys=True),flush=True)
 if __name__=="__main__":main()

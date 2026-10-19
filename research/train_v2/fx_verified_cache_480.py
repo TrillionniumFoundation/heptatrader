@@ -19,7 +19,7 @@ from laya_cell.source_readiness import RULE, assess
 from laya_cell.verified_sealed_readiness_cache import VerifiedSealedReadinessCache
 from .fx_original_health_sustained import (
     AuditHold, N, STEP_MS, MAX_LATE_MS, MAX_SOURCE_AGE_MS, MIN_LEAD_MS,
-    now_ms, canonical, code_sha as _old_code_sha, digest, owner_dir,
+    now_ms, canonical, code_pins as archive_code_pins, digest, owner_dir,
     write_once, private_source, strict, verify_status, wait_to, require,
 )
 
@@ -79,6 +79,7 @@ def preseal(*,root,config_file,installed_source):
         "source_module_sha256":FAST_MONITOR_SHA,
         "verified_sealed_cache_sha256":VERIFIED_CACHE_SHA,
         "runner_code_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "source_archive_code_pins":archive_code_pins(),
         "period_sha256":cfg["period_sha256"],
         "original_feed_dir":cfg["feed_directory"],
         "exact_original_monitor_rule":RULE,
@@ -108,6 +109,7 @@ def verify_plan(root):
     require(plan.get("schema")==SCHEMA+".plan.v1"
             and plan.get("runner_code_sha256")==hashlib.sha256(
                 Path(__file__).read_bytes()).hexdigest()
+            and plan.get("source_archive_code_pins")==archive_code_pins()
             and plan.get("source_module_sha256")==FAST_MONITOR_SHA
             and plan.get("verified_sealed_cache_sha256")==VERIFIED_CACHE_SHA
             and plan.get("installed_monitor_sha256")==ORIGINAL_MONITOR_SHA

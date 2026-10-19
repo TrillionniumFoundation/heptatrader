@@ -114,6 +114,34 @@ def _check_profile(profile):
 
 
 
+def action_support_diagnostic(profile):
+    """Explain support without changing an already frozen action profile."""
+    result={"schema":"heptatrader.laya-action-support-diagnostic.v1",
+            "minimum_causal_rows":MIN_TRAIN_ROWS,
+            "minimum_unique_rows_per_label":MIN_EACH_LABEL,
+            "diagnostic_only":True}
+    if profile is None:
+        return {**result,"frozen_profile_id":None,"labels":None,
+                "shortfall_by_label":None,"action_optimizer_admitted":False,
+                "legacy_refusal_reason":None,
+                "reason":"INSUFFICIENT_CAUSAL_PARENT_CORRECTNESS_ROWS"}
+    p=_check_profile(profile)
+    counts={name:p["labels"][name] for name in ("ACT_correct","ESCALATE_wrong")}
+    shortfall={name:max(0,MIN_EACH_LABEL-count) for name,count in counts.items()}
+    if p["action_optimizer_admitted"]:
+        reason=None
+    elif any(count<=0 for count in counts.values()):
+        reason="MISSING_TRUE_ACTION_LABEL"
+    elif any(shortfall.values()):
+        reason="BOTH_LABELS_PRESENT_BUT_BELOW_MINIMUM_SUPPORT"
+    else:
+        reason="FROZEN_PROFILE_DID_NOT_ADMIT_ACTION_TRAINING"
+    return {**result,"frozen_profile_id":p["profile_id"],"labels":counts,
+            "shortfall_by_label":shortfall,
+            "action_optimizer_admitted":p["action_optimizer_admitted"],
+            "legacy_refusal_reason":p.get("action_refusal_reason"),"reason":reason}
+
+
 def stratified_action_pairs(rows, profile):
     """Disjoint genuine ACT/ESCALATE pairs, no synthetic/future labels.
 
@@ -224,6 +252,7 @@ def v2_action_inference(action_logits, profile):
     if not p["action_optimizer_admitted"]:
         return {"schema":"heptatrader.laya-action-v2-inference-research.v1",
                 "status":"NO_TRAINING_SUPPORT_ALL_ESCALATE",
+                "action_support_diagnostic":action_support_diagnostic(p),
                 "frozen_profile_id":p["profile_id"],
                 "training_only_temperature":None,
                 "action_correct_probs":None,
@@ -249,6 +278,7 @@ def v2_action_inference(action_logits, profile):
             suggestions.append(research_action_recommendation(p,probability)["signal"])
     return {"schema":"heptatrader.laya-action-v2-inference-research.v1",
             "status":"FROZEN_TRAIN_TEMPERATURE_RESEARCH_ONLY",
+            "action_support_diagnostic":action_support_diagnostic(p),
             "frozen_profile_id":p["profile_id"],
             "training_only_temperature":t,
             "action_correct_probs":valid,
