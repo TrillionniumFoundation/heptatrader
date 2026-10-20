@@ -131,10 +131,29 @@ connectivity or model availability is not hosted CI, an external qualification
 receipt, a profitable strategy, or LIVE authority.
 
 `pause` engages only the user-owned new-risk guard; it does not cancel existing
-orders or assert flatness. `paper-on` explicitly releases that guard only while
-both user services are active. Native quote/risk/identity checks remain mandatory.
-A target restart re-creates an engaged guard, so deliberate re-enablement is
-explicit and password-free. Neither command changes the system profile.
+orders or assert flatness. Ordinary `paper-on` releases only the CLI-tagged
+pause while Execution and Gateway are active. It preserves an independent empty
+native startup hold, including when a resident Driver calls it automatically.
+
+After the operator has chosen to resume the existing PAPER loop, use
+`heptatrader paper-on --resume-native-hold --check` to inspect readiness, then
+`heptatrader paper-on --resume-native-hold` to release that exact empty hold.
+The explicit path reads both existing paper and crypto owners' native health,
+orders and positions; it rejects a durable maintenance hold, an independent native
+blocker, changed process identity or replaced marker. It does not require flat
+positions or confer service-stop permission. Per-order preview, quote, identity
+and risk checks remain mandatory.
+
+The native unit's loaded `ExecStartPre` must run
+`/usr/bin/python3 -B /absolute/path/to/hepta_maintenance_latch.py native-startup-hold`
+from the same versioned directory as the public wrapper's helper, with
+`Type=simple` and `KillMode=control-group`. Startup and explicit recovery share
+the existing operator lock. Startup creates an empty `0440` marker when missing
+and preserves an existing marker, without interpreting a persistent maintenance
+record. Migrating an old uncoordinated startup hook requires manager reload and
+verification of unchanged running service identities; it does not require
+restarting native Execution. A subsequent restart engages the hold again.
+Neither command changes the system profile.
 The runtime-directory preparation unit has no default dependency on basic.target;
 it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
 

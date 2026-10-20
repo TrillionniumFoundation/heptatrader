@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
-    "scripts/heptatrader-user", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
+    "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
@@ -57,6 +57,7 @@ def installed_fixture(*, readme: bool = False):
         write("scripts/hepta_preflight_core.py", "# private fixture implementation\n")
         for helper in HELPERS:
             if helper in {
+                "scripts/hepta_maintenance_latch.py",
                 "scripts/hepta_agent_mcp_launcher.py",
                 "scripts/hepta_agent_trust_domain.py",
                 "adapters/mcp/hepta_mcp_server.py",
@@ -152,7 +153,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertIn("IPAddressDeny=any", account_unit.read_text())
             self.assertIn("ReadWritePaths=%h/.local/state/heptatrader/pnl/account", account_unit.read_text())
             self.assertEqual(list(prefix.glob("**/default.target.wants/heptatrader-account-nav.service")), [])
-            for helper in ("hepta_progress.py", "hepta_pnl_report.py", "hepta_account_observer.py"):
+            for helper in ("hepta_progress.py", "hepta_pnl_report.py", "hepta_account_observer.py", "hepta_maintenance_latch.py"):
                 result=subprocess.run([sys.executable,"-B",str(prefix/"libexec/heptatrader"/helper),"--help"],
                     capture_output=True,text=True,timeout=5)
                 self.assertEqual(result.returncode,0,result.stderr)
