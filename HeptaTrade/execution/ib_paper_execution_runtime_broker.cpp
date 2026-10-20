@@ -260,26 +260,38 @@ void IbPaperExecutionRuntimeComposition::FinishBrokerReconnectObservation(
     m_brokerReconnectRefreshStartedAt = empty;
 }
 
-bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
+IbPaperExecutionRuntimeComposition::BrokerReconnectBeginResult
+IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
     std::string& reason, bool recoveryAudit)
 {
-    (void)recoveryAudit;
     if (m_reconnectPending.load())
     {
         reason.clear();
-        return true;
+        return BrokerReconnectBeginResult::Scheduled;
     }
     if (!m_adapter || !m_lifecycleGate || !m_policyAuthority ||
         !m_coordinator)
     {
         reason = "IB_PAPER_BROKER_RECONNECT_RUNTIME_UNREADY";
-        return false;
+        return BrokerReconnectBeginResult::Failed;
+    }
+    // Only an owner audit on the still-connected transport may wait without
+    // crossing a cleanup boundary. Preserve the readiness ownership held by
+    // DriveRecoveryAuditReconnect; no fence, quote or transport state changed.
+    if (recoveryAudit &&
+        (m_postFillRiskRefreshPending.load() ||
+         m_adapter->HasPendingLivePostFillRiskReconciliation()) &&
+        m_adapter->IsConnected())
+    {
+        reason.clear();
+        return BrokerReconnectBeginResult::DeferredPostFill;
     }
     {
         // Close the mutation gate before cancelling subscriptions or attempting
         // any broker IO. The service identity remains stable, but every RPC
         // other than identity probing observes EXECUTION_SERVICE_NOT_READY.
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+        m_recoveryAuditOwnsReadyGate = false;
         m_lifecycleGate->ready.store(false);
     }
     const bool livePostFillPending =
@@ -291,24 +303,33 @@ bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
     // an in-flight post-fill operation.  Only a real live fill owned by the
     // runtime/adapter blocks the disconnect boundary.
     if (livePostFillPending)
-        return FailBrokerReconnect(reason,
+    {
+        FailBrokerReconnect(reason,
             "IB_PAPER_BROKER_DISCONNECTED_DURING_POST_FILL_RECONCILIATION",
             false);
+        return BrokerReconnectBeginResult::Failed;
+    }
     // This coordinator fence closes the narrow race for a request that passed
     // the IPC lifecycle check immediately before the transport-close callback.
     // It waits for any in-flight coordinator operation; a completed send leaves
     // an owner and therefore fails closed, while a later request observes the
     // transient mutation block and cannot reach broker IO.
     if (!m_coordinator->BeginBrokerReconnectFence(reason))
-        return FailBrokerReconnect(reason, reason, false);
+    {
+        FailBrokerReconnect(reason, reason, false);
+        return BrokerReconnectBeginResult::Failed;
+    }
     if (!StopQuoteSubscriptions(&reason)) {
         DisconnectAndDrainBoundaryEvents(reason);
         m_reconnectTransportConnected.store(false);
-        return false;
+        return BrokerReconnectBeginResult::Failed;
     }
     m_reconnectTransportConnected.store(false);
     if (!DisconnectAndDrainBoundaryEvents(reason))
-        return FailBrokerReconnect(reason, reason, false);
+    {
+        FailBrokerReconnect(reason, reason, false);
+        return BrokerReconnectBeginResult::Failed;
+    }
     m_reconnectUpstreamUnavailable.store(false);
     m_reconnectUpstreamRestored.store(false);
     // Reuse the startup market-data admission state for this mutually
@@ -329,7 +350,7 @@ bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
     m_reconnectPending.store(true);
     NotifyTestStage("broker_reconnect_scheduled");
     reason.clear();
-    return true;
+    return BrokerReconnectBeginResult::Scheduled;
 }
 
 bool IbPaperExecutionRuntimeComposition::ReconnectAuthoritativeStateReady(
@@ -692,6 +713,7 @@ void IbPaperExecutionRuntimeComposition::MarkFatalRuntimeError(
     // thread that detects a fatal event while Start() is publishing readiness
     // waits for that publication, then irreversibly closes the shared gate.
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+    m_recoveryAuditOwnsReadyGate = false;
     {
         std::lock_guard<std::mutex> lock(m_fatalMutex);
         if (m_fatalReason.empty()) m_fatalReason = reason;

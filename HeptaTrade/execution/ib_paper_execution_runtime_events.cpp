@@ -480,7 +480,8 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
         !brokerControlReconnect)
         return AdapterControlAction::Route;
     std::string reconnectReason;
-    if (!BeginBrokerReconnect(reconnectReason))
+    if (BeginBrokerReconnect(reconnectReason) !=
+            BrokerReconnectBeginResult::Scheduled)
         MarkFatalRuntimeError(reconnectReason.empty() ?
             "IB_PAPER_BROKER_RECONNECT_UNSAFE" : reconnectReason);
     return AdapterControlAction::ReconnectBoundary;

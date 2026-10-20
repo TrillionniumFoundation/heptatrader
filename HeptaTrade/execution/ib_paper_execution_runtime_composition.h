@@ -188,8 +188,14 @@ private:
         std::string& reason, std::uint64_t expectedConnectionEpoch = 0);
     bool StopQuoteSubscriptions(std::string* reason = nullptr);
     bool RefreshStaleSecondaryCashQuote(std::string& reason);
-    bool BeginBrokerReconnect(std::string& reason,
-                              bool recoveryAudit = false);
+    enum class BrokerReconnectBeginResult
+    {
+        Scheduled,
+        DeferredPostFill,
+        Failed
+    };
+    BrokerReconnectBeginResult BeginBrokerReconnect(
+        std::string& reason, bool recoveryAudit = false);
     bool DriveBrokerReconnect(std::string& reason);
     bool DriveBrokerReconnectConnected(std::string& reason);
     bool AdvanceReconnectMarketDataGate(
@@ -415,6 +421,9 @@ private:
     std::atomic<bool> m_reconnectRefreshDispatched{false};
     std::atomic<bool> m_reconnectRiskRefreshDispatched{false};
     std::atomic<bool> m_recoveryAuditReconnectRequested;
+    // Protected by m_lifecycleStateMutex. A deferred owner audit may return
+    // only the readiness it closed; other lifecycle transitions revoke it.
+    bool m_recoveryAuditOwnsReadyGate = false;
     // Latched for this process. Only a new complete startup may clear it;
     // late callbacks cannot silently turn a diagnostic service into a trader.
     std::atomic<bool> m_startupRecoveryReadOnly{false};

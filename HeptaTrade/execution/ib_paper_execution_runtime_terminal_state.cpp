@@ -229,6 +229,7 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalizingLatch(
     }
     {
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+        m_recoveryAuditOwnsReadyGate = false;
         if (m_lifecycleGate)
         {
             m_lifecycleGate->ready.store(false);

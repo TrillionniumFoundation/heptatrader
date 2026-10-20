@@ -2,9 +2,11 @@
 // No native start, production state, network transport, or real broker send.
 #include "execution/ib_paper_execution_runtime_composition.h"
 #include "execution/execution_coordinator.h"
+#include "execution/unix_execution_service_server.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <dirent.h>
 #include <cstring>
 #include <iostream>
@@ -19,7 +21,15 @@ struct ReplayBroker final : IIBApiWrapper {
     void SetConnectionEpoch(std::uint64_t e) override {epoch=e;}
     std::uint64_t GetConnectionEpoch() const override {return epoch;}
     bool Connect(const IBConnectParams&) override {connected=true;return true;}
-    void Disconnect() override {connected=false;}
+    std::function<void()> onDisconnect;
+    unsigned disconnectCalls = 0;
+    void Disconnect() override {
+        connected = false;
+        ++disconnectCalls;
+        std::function<void()> callback;
+        callback.swap(onDisconnect);
+        if (callback) callback();
+    }
     bool IsConnected() const override {return connected;}
     const char* GetStatusString() const override {return "SYNTHETIC_POSTFILL_NO_SOCKET";}
     bool ReqAccountSummary() override {++requests;return true;}
@@ -83,6 +93,7 @@ struct IbPostFillReconciliationFixture {
         need(broker->places==1,"one synthetic original send only");
     }
     ~IbPostFillReconciliationFixture() {
+        if (broker) broker->onDisconnect = {};
         runtime.reset();DIR* d=::opendir(dir.c_str());
         if(d){while(auto e=::readdir(d)){if(std::strcmp(e->d_name,".")&&std::strcmp(e->d_name,".."))::unlink((dir+"/"+e->d_name).c_str());}::closedir(d);}
         ::rmdir(dir.c_str());
@@ -191,6 +202,212 @@ struct IbPostFillReconciliationFixture {
         need(runtime->m_lifecycleGate->ready.load(),
              "aborted stale audit restores the original service readiness");
     }
+    void lateLiveFillDuringRecoveryAuditDisconnectMustFailClosed() {
+        need(broker->places == 0, "boundary fixture must start without any order send");
+        need(runtime->m_adapter->ReqRiskRefresh(), "flat coherent risk refresh");
+        finishRisk(0);
+        std::string reason;
+        need(GenerateExecutionServiceIdentity(1, runtime->m_serviceIdentity, reason),
+             "real isolated service identity: " + reason);
+        need(runtime->m_journal.Init(dir + "/oms-journal.jsonl"),
+             "real isolated OMS journal");
+        runtime->BuildCoordinator();
+        need(runtime->m_coordinator && runtime->RecoveryReason().empty(),
+             "real coordinator recovered empty journal: " + runtime->RecoveryReason());
+        need(runtime->BuildPolicyAuthority(reason), "real policy authority: " + reason);
+        need(!runtime->m_coordinator->IsMutationBlocked(&reason),
+             "empty reconstructed coordinator initially unfenced: " + reason);
+        const auto before = runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(before.transportConnected && before.risk.complete &&
+             before.risk.coherentRefreshComplete && before.risk.grossAbsolutePosition == 0 &&
+             !runtime->m_adapter->HasPendingLivePostFillRiskReconciliation() &&
+             !runtime->m_postFillRiskRefreshPending.load(),
+             "real flat complete account before audit");
+        const auto epoch = runtime->m_adapter->GetConnectionEpoch();
+        const auto postFillDeadline = runtime->m_postFillDeadline;
+        const auto reconnectDeadline = runtime->m_reconnectDeadline;
+        need(postFillDeadline == Clock::time_point() &&
+             reconnectDeadline == Clock::time_point(),
+             "fixture starts with neither deadline armed");
+        const int requests = broker->requests;
+        const unsigned disconnects = broker->disconnectCalls;
+        const auto scheduled = runtime->PolicyRecoveryAuditSnapshot();
+        need(scheduled.newConnectionEpochRequired && !scheduled.barrierComplete &&
+             runtime->m_recoveryAuditReconnectRequested.load(),
+             "original flat policy audit must queue reconnect: " + scheduled.reasonCode);
+        IBEvent late = event(IBEventType::ExecutionDetails);
+        late.id = 9371;
+        late.requestId = -1;
+        late.key = "synthetic-live-fill-at-disconnect-9371";
+        late.value = "BOT";
+        late.number = 81396.25;
+        late.number2 = 0.01;
+        late.number3 = 0;
+        late.contract = btc;
+        late.order.orderRef = "manual-disconnect-boundary";
+        late.remainingQuantityKnown = false;
+        broker->onDisconnect = [this, late]() {
+            need(!runtime->m_lifecycleGate->ready.load(), "real Begin closed ready gate");
+            need(!runtime->m_quoteSubscriptions, "subscriptions stopped before disconnect");
+            broker->events.push_back(late);
+        };
+        for (int turn = 0; turn < 2; ++turn) {
+            const bool drove = runtime->DriveRecoveryAuditReconnect();
+            need(!drove && runtime->HasFatalRuntimeError(&reason) &&
+                 reason == "IB_PAPER_BROKER_DISCONNECTED_DURING_POST_FILL_RECONCILIATION",
+                 "live fill after Disconnect must fail closed instead of defer: " + reason);
+            need(!broker->connected && !runtime->m_adapter->IsConnected() &&
+                 broker->disconnectCalls == disconnects + 1,
+                 "exactly one real synthetic Disconnect boundary");
+            need(runtime->m_adapter->GetConnectionEpoch() == epoch,
+                 "no subsequent transport reconnect epoch");
+            need(runtime->m_adapter->HasPendingLivePostFillRiskReconciliation() &&
+                 !runtime->m_postFillRiskRefreshPending.load(),
+                 "adapter-only live post-fill pending without runtime reconciliation owner");
+            need(!runtime->m_reconnectPending.load() &&
+                 runtime->m_recoveryAuditReconnectRequested.load() &&
+                 !runtime->m_lifecycleGate->ready.load(),
+                 "queued audit, unscheduled reconnect, closed lifecycle gate");
+            need(runtime->m_postFillDeadline == postFillDeadline &&
+                 runtime->m_reconnectDeadline == reconnectDeadline &&
+                 runtime->m_postFillRiskRefreshAttempts == 0 &&
+                 broker->requests == requests,
+                 "neither post-fill nor reconnect deadline/refresh was started");
+            need(broker->places == 0 && broker->events.empty(),
+                 "boundary callback consumed without any order send");
+            need(runtime->m_coordinator->IsMutationBlocked(&reason) &&
+                 reason == "IB_PAPER_BROKER_RECONNECT_PENDING",
+                 "actual Begin installed original coordinator reconnect fence: " + reason);
+        }
+        unsigned retained = 0;
+        const int replayed = runtime->m_journal.Replay([&](const OmsJournalEvent& row) {
+            if (row.eventType != "broker_execution" || row.brokerExecutionId != late.key) return;
+            ++retained;
+            need(row.orderId == late.id && row.brokerRequestId == -1 &&
+                 row.brokerConnectionEpoch == epoch && row.brokerClientId == 73 &&
+                 row.account == "DU_TEST" && row.brokerCallbackType == "execDetails" &&
+                 row.brokerServiceEpoch == runtime->m_serviceIdentity.serviceEpoch &&
+                 row.instrument == "BTC.USD" && row.side == "BOT" &&
+                 row.qty == late.number2 && row.price == late.number &&
+                 row.source == "ib-api-callback",
+                 "original same-account same-epoch live callback retained exactly");
+        });
+        need(replayed >= 1 && retained == 1, "one original boundary execution persisted in real OMS");
+    }
+
+    void deferredAuditAbortRestoresOriginalReady(
+        bool stopBeforeAbort = false, bool originallyReady = true,
+        bool callBeginWhileDeferred = false) {
+        // The queued audit is a state-machine input; the separate flat-audit
+        // test covers PolicyRecoveryAuditSnapshot's real enqueue boundary.
+        if (callBeginWhileDeferred) {
+            std::string setupReason;
+            need(runtime->m_journal.Init(dir + "/oms-journal.jsonl"),
+                 "real journal for pure Begin defer");
+            runtime->BuildCoordinator();
+            need(runtime->m_coordinator && runtime->RecoveryReason().empty(),
+                 "real empty coordinator recovery: " + runtime->RecoveryReason());
+            need(runtime->BuildPolicyAuthority(setupReason),
+                 "real policy before partial fill: " + setupReason);
+            const auto initial = runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+            need(initial.active.complete && initial.terminal.complete &&
+                 initial.active.activeOrderIds.count(id) == 1,
+                 "original synthetic send retains complete active/terminal snapshots");
+            need(!runtime->m_coordinator->IsMutationBlocked(&setupReason),
+                 "pure Begin starts without coordinator fence: " + setupReason);
+        }
+        if (!originallyReady) runtime->m_lifecycleGate->ready.store(false);
+        need(runtime->m_lifecycleGate->ready.load() == originallyReady,
+             "original readiness");
+        const auto startEpoch = runtime->m_adapter->GetConnectionEpoch();
+        runtime->m_recoveryAuditReconnectRequested.store(true);
+        fill(.16509636, "synthetic-deferred-audit-partial");
+        need(runtime->m_postFillRiskRefreshPending.load() &&
+             runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),
+             "original partial fill entered both reconciliation gates");
+        need(runtime->DriveRecoveryAuditReconnect(), "first poll deferred");
+        need(!runtime->m_lifecycleGate->ready.load() &&
+             runtime->m_recoveryAuditReconnectRequested.load() &&
+             !runtime->m_reconnectPending.load(),
+             "deferred poll keeps its request and closes readiness");
+
+        if (callBeginWhileDeferred) {
+            const auto deadline = runtime->m_postFillDeadline;
+            const auto disconnects = broker->disconnectCalls;
+            std::string beginReason;
+            const auto began = runtime->BeginBrokerReconnect(beginReason, true);
+            need(began == decltype(began)::DeferredPostFill,
+                 "Begin returns typed DeferredPostFill: " + beginReason);
+            need(broker->connected && broker->disconnectCalls == disconnects &&
+                 runtime->m_adapter->GetConnectionEpoch() == startEpoch &&
+                 !runtime->m_reconnectPending.load() &&
+                 runtime->m_recoveryAuditReconnectRequested.load() &&
+                 runtime->m_postFillRiskRefreshPending.load() &&
+                 runtime->m_postFillDeadline == deadline &&
+                 !runtime->m_lifecycleGate->ready.load(),
+                 "pure Begin must defer before disconnect/fence/deadline changes: " + beginReason);
+            need(!runtime->m_coordinator->IsMutationBlocked(&beginReason),
+                 "pure Begin defer cannot install reconnect fence: " + beginReason);
+        }
+
+        fill(total, "synthetic-deferred-audit-full");
+        nativeFinal(); nativeFinal(); finishRisk(0);
+        const auto older = runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(older.risk.complete && older.risk.coherentRefreshComplete &&
+             older.risk.riskAbsorbedExposureGeneration < older.exposureGeneration,
+             "first original risk cohort predates final exposure");
+        runtime->m_postFillStableSince = Clock::now()-std::chrono::milliseconds(300);
+        runtime->m_postFillNextRetryAt = Clock::now()-std::chrono::milliseconds(1);
+        runtime->DrivePostFillRiskRefresh();
+        std::string reason;
+        need(!runtime->HasFatalRuntimeError(&reason) &&
+             runtime->m_postFillRiskRefreshPending.load(),
+             "older risk evidence waits for a newer original cohort");
+        finishRisk(0); runtime->DrivePostFillRiskRefresh();
+        need(runtime->m_postFillRiskRefreshPending.load(),
+             "original stability interval remains enforced");
+        runtime->m_postFillStableSince = Clock::now()-std::chrono::milliseconds(300);
+        runtime->DrivePostFillRiskRefresh();
+        need(!runtime->HasFatalRuntimeError(&reason) &&
+             !runtime->m_postFillRiskRefreshPending.load() &&
+             !runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),
+             "original callbacks complete post-fill before audit cancellation");
+
+        auto drift=event(IBEventType::AccountValue);
+        drift.key="CashBalance:EUR"; drift.value="1001"; push(drift);
+        const auto changed=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(!changed.risk.complete && changed.reasonCode==
+             "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE",
+             "original cash callback invalidates queued audit economics");
+
+        const auto stoppedAtSeam=std::make_shared<bool>(false);
+        const auto originalHook=runtime->m_testHooks.onStage;
+        if(stopBeforeAbort) {
+            runtime->m_testHooks.onStage=[this,stoppedAtSeam](const char* stage) {
+                if(!*stoppedAtSeam && std::strcmp(stage,
+                        "before_recovery_audit_reconnect_drain")==0) {
+                    *stoppedAtSeam=true;
+                    runtime->Stop();
+                }
+            };
+        }
+        const bool drove=runtime->DriveRecoveryAuditReconnect();
+        runtime->m_testHooks.onStage=originalHook;
+        need(drove && !runtime->HasFatalRuntimeError(&reason),
+             "second poll cancels without fatal");
+        need(*stoppedAtSeam==stopBeforeAbort, "requested Stop seam executed");
+        need(!runtime->m_recoveryAuditReconnectRequested.load() &&
+             !runtime->m_reconnectPending.load(), "no hidden reconnect after cancel");
+        need(runtime->m_lifecycleGate->ready.load()==
+                 (originallyReady && !stopBeforeAbort),
+             stopBeforeAbort ? "Stop must keep readiness closed" :
+             originallyReady ? "deferred audit must restore original readiness" :
+                               "audit must not open an originally closed gate");
+        need(broker->connected==!stopBeforeAbort &&
+             runtime->m_adapter->GetConnectionEpoch()==startEpoch && broker->places==1,
+             "preserve original epoch and single synthetic send");
+    }
+
     void rejectIncompleteEvidence(int scenario) {
         fill(scenario==2?.16509636:total,"synthetic-incomplete");
         if(scenario!=2)nativeFinal();
@@ -234,22 +451,89 @@ struct IbPostFillReconciliationFixture {
         need(broker->places==1,"no extra synthetic order");
     }
 };
-int main(int argc,char**argv){
-    try{IbPostFillReconciliationFixture f;
-        if(argc>1&&std::string(argv[1])=="--invalidated-flat-audit") {
+int main(int argc, char** argv) {
+    try {
+        if (argc > 1 && std::string(argv[1]) == "--late-live-fill-disconnect-fails-closed") {
+            IbPostFillReconciliationFixture boundary(false);
+            boundary.lateLiveFillDuringRecoveryAuditDisconnectMustFailClosed();
+            std::cout << "PASS disconnected live-fill boundary fails closed and retains journal callback; no order send\n";
+            return 0;
+        }
+        IbPostFillReconciliationFixture f;
+        if (argc > 1 && std::string(argv[1]) == "--pure-begin-deferred-audit") {
+            f.deferredAuditAbortRestoresOriginalReady(false, true, true);
+            std::cout << "PASS pure Begin defer preserved readiness ownership through original callbacks\n";
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-restores-ready") {
+            f.deferredAuditAbortRestoresOriginalReady();
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-stop") {
+            f.deferredAuditAbortRestoresOriginalReady(true);
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-originally-closed") {
+            f.deferredAuditAbortRestoresOriginalReady(false, false);
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--invalidated-flat-audit") {
             IbPostFillReconciliationFixture invalidated(false);
             invalidated.flatAuditInvalidatedBeforeDisconnectMustNotReconnect();
-            std::cout<<"PASS invalidated flat audit did not reconnect or mutate Broker\n";
+            std::cout << "PASS invalidated flat audit did not reconnect or mutate Broker\n";
             return 0;
         }
-        if(argc>1&&std::string(argv[1])=="--nonflat-owner-audit") {
+        if (argc > 1 &&
+            std::string(argv[1]) == "--nonflat-owner-audit") {
             IbPostFillReconciliationFixture nonflat(false);
             nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
-            std::cout<<"PASS nonflat rejected owner audit did not enqueue broker reconnect\n";
+            std::cout << "PASS nonflat rejected owner audit did not enqueue broker reconnect\n";
             return 0;
         }
-        f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
-        if(!(argc>1)){for(int k=0;k<3;++k){IbPostFillReconciliationFixture negative;negative.rejectIncompleteEvidence(k);}}
-        std::cout<<"PASS partial/full, duplicate, missing End, position mismatch, missing terminal and fixed timeout; synthetic only\n";return 0;
-    }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}
+        f.reproduceAdvancedExposure(
+            !(argc > 1 && std::string(argv[1]) == "--expect-old-failure"));
+        if (argc == 1) {
+            {
+                IbPostFillReconciliationFixture boundary(false);
+                boundary.lateLiveFillDuringRecoveryAuditDisconnectMustFailClosed();
+            }
+            {
+                IbPostFillReconciliationFixture pureBegin;
+                pureBegin.deferredAuditAbortRestoresOriginalReady(false, true, true);
+            }
+            for (int k = 0; k < 3; ++k) {
+                IbPostFillReconciliationFixture negative;
+                negative.rejectIncompleteEvidence(k);
+            }
+            {
+                IbPostFillReconciliationFixture deferred;
+                deferred.deferredAuditAbortRestoresOriginalReady();
+            }
+            {
+                IbPostFillReconciliationFixture stopped;
+                stopped.deferredAuditAbortRestoresOriginalReady(true);
+            }
+            {
+                IbPostFillReconciliationFixture closed;
+                closed.deferredAuditAbortRestoresOriginalReady(false, false);
+            }
+            {
+                IbPostFillReconciliationFixture invalidated(false);
+                invalidated.flatAuditInvalidatedBeforeDisconnectMustNotReconnect();
+            }
+            {
+                IbPostFillReconciliationFixture nonflat(false);
+                nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
+            }
+        }
+        std::cout << "PASS post-fill, fixed timeout and recovery audit readiness; synthetic only\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
 }
