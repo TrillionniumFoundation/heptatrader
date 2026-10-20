@@ -16,19 +16,7 @@ def command_steps(ci, command):
             for step in job["steps"] if command in step.get("run", "")]
 
 
-def ancestors(ci, name):
-    found = set()
-    pending = [name]
-    while pending:
-        job = ci["jobs"][pending.pop()]
-        needed = job.get("needs", [])
-        if isinstance(needed, str):
-            needed = [needed]
-        for dependency in needed:
-            if dependency not in found:
-                found.add(dependency)
-                pending.append(dependency)
-    return found
+
 
 
 class DevelopmentCiTests(unittest.TestCase):
@@ -48,14 +36,29 @@ class DevelopmentCiTests(unittest.TestCase):
                          "ci_change_scope", "--write-module-metadata"):
             self.assertNotIn(obsolete, commands)
 
-    def test_learning_and_native_feedback_do_not_depend_on_metadata(self):
+    def test_selected_lanes_report_after_other_lane_failures(self):
+        import re
         ci = workflow("core-ci.yml")
-        source_name, _, _ = self.step(ci, "scripts/run_python_tests.py --lane source")
-        learning_name, _, _ = self.step(ci, "scripts/run_python_tests.py --lane learning")
-        native_name, _, _ = self.step(ci, "./scripts/dev_core.sh")
-        for name in (learning_name, native_name):
-            self.assertNotEqual(name, source_name)
-            self.assertNotIn(source_name, ancestors(ci, name))
+        for command in ("./scripts/dev_core.sh",
+                        "scripts/run_python_tests.py --lane core",
+                        "scripts/run_python_tests.py --lane source",
+                        "scripts/run_python_tests.py --lane learning"):
+            with self.subTest(command=command):
+                _, _, step = self.step(ci, command)
+                condition = step.get("if", "")
+                self.assertIn("!cancelled()", condition)
+                self.assertNotIn("success()", condition)
+                self.assertIn("steps.identity.outcome == 'success'", condition)
+                self.assertIn("steps.deps.outcome == 'success'", condition)
+                allowed = {"identity", "deps"}
+                if command.endswith("--lane learning"):
+                    allowed.add("learning_install")
+                    self.assertIn("steps.learning_install.outcome == 'success'", condition)
+                dependencies = set(re.findall(
+                    r"steps\.([A-Za-z0-9_]+)\.(?:outcome|conclusion)", condition))
+                self.assertEqual(dependencies, allowed)
+                self.assertNotIn("continue-on-error", step)
+
 
     def test_routine_events_use_read_only_credentials_and_exact_source(self):
         ci = workflow("core-ci.yml")
@@ -66,7 +69,6 @@ class DevelopmentCiTests(unittest.TestCase):
         for event in ("opened", "synchronize", "reopened", "ready_for_review"):
             self.assertIn(event, ci["on"]["pull_request"]["types"])
         for job in ci["jobs"].values():
-            self.assertNotIn("if", job)
             checkouts = [step for step in job["steps"]
                          if step.get("uses", "").startswith("actions/checkout@")]
             self.assertEqual(len(checkouts), 1)
@@ -87,32 +89,61 @@ class DevelopmentCiTests(unittest.TestCase):
                 ("scripts/run_python_tests.py --lane learning", "run_learning")):
             _, job, step = self.step(ci, command)
             self.assertIn("steps.scope.outputs." + flag, step.get("if", ""))
-            self.assertRegex(step.get("if", ""), r"(== 'true'|!= 'false')")
+            self.assertIn("steps.scope.outputs." + flag + " != 'false'", step.get("if", ""))
+            self.assertNotIn("steps.scope.outcome", step.get("if", ""))
             self.assertNotIn("continue-on-error", step)
             scopes = [item for item in job["steps"] if item.get("id") == "scope"]
             self.assertEqual(len(scopes), 1)
+            self.assertNotIn("continue-on-error", scopes[0])
             self.assertIn("scripts/ci_scope.py --base", scopes[0]["run"])
             self.assertIn('--format github >> "$GITHUB_OUTPUT"', scopes[0]["run"])
             self.assertIn("github.event.pull_request.base.sha", scopes[0]["env"]["BASE_SHA"])
 
-    def test_documentation_diagnostics_remain_unconditional(self):
+    def test_documentation_and_whitespace_report_with_valid_identity(self):
         ci = workflow("core-ci.yml")
-        _, _, docs = self.step(ci, "scripts/check_documentation.py")
-        self.assertIn("!cancelled()", docs.get("if", ""))
-        self.assertNotIn("steps.scope", docs.get("if", ""))
-        self.assertNotIn("continue-on-error", docs)
+        for command in ("scripts/check_documentation.py", "git diff --check"):
+            with self.subTest(command=command):
+                _, _, step = self.step(ci, command)
+                condition = step.get("if", "")
+                self.assertIn("!cancelled()", condition)
+                self.assertIn("steps.identity.outcome == 'success'", condition)
+                self.assertNotIn("success()", condition)
+                self.assertNotIn("steps.scope", condition)
+                self.assertNotIn("steps.deps", condition)
+                self.assertNotIn("continue-on-error", step)
 
-    def test_docs_core_source_each_report_after_an_earlier_failure(self):
+
+    def test_identity_mismatch_fails_before_behavior_can_run(self):
+        import os
+        import subprocess
+        import tempfile
         ci = workflow("core-ci.yml")
-        docs = self.step(ci, "scripts/check_documentation.py")[2]
-        core = self.step(ci, "scripts/run_python_tests.py --lane core")[2]
-        source = self.step(ci, "scripts/run_python_tests.py --lane source")[2]
-        self.assertEqual(len({id(docs), id(core), id(source)}), 3)
-        for step in (docs, core, source):
-            self.assertIn("!cancelled()", step.get("if", ""))
-            self.assertNotIn("continue-on-error", step)
-        self.assertNotIn("--lane source", core["run"])
-        self.assertNotIn("--lane core", source["run"])
+        _, job, identity = self.step(ci, 'test "$(git rev-parse HEAD)"')
+        self.assertEqual(identity.get("id"), "identity")
+        self.assertNotIn("if", identity)
+        self.assertNotIn("continue-on-error", identity)
+        self.assertNotIn("continue-on-error", job)
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-identity-") as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "core.hooksPath=/dev/null",
+                     "-c", "commit.gpgsign=false",
+                     "-c", "user.name=Identity Test",
+                     "-c", "user.email=identity-test@example.invalid", *args],
+                    cwd=root, stderr=subprocess.PIPE, text=True, timeout=15).strip()
+            git("init", "-q")
+            git("commit", "--allow-empty", "-qm", "identity fixture")
+            head = git("rev-parse", "HEAD")
+            for expected, valid in ((head, True), ("f" * 40, False), ("", False)):
+                with self.subTest(expected=expected):
+                    result = subprocess.run(
+                        ["bash", "-c", identity["run"]], cwd=root,
+                        capture_output=True, text=True, timeout=15,
+                        env={**os.environ, "EXPECTED_SHA": expected})
+                    self.assertEqual(result.returncode == 0, valid,
+                                     result.stdout + result.stderr)
+
 
     def test_whitespace_checks_committed_event_range_with_a_clean_worktree(self):
         import os
@@ -269,8 +300,16 @@ class DevelopmentCiTests(unittest.TestCase):
         self.assertIn("torch.version.cuda is None", install["run"])
         self.assertLess(job["steps"].index(install), job["steps"].index(tests))
         for step in (cache, install, tests):
-            self.assertEqual(step.get("if"), "steps.scope.outputs.run_learning == 'true'")
+            condition = step.get("if", "")
+            self.assertIn("steps.scope.outputs.run_learning != 'false'", condition)
+            self.assertIn("!cancelled()", condition)
+            self.assertIn("steps.identity.outcome == 'success'", condition)
+            self.assertIn("steps.deps.outcome == 'success'", condition)
+            self.assertNotIn("success()", condition)
             self.assertNotIn("cache-hit", str(step))
+        self.assertEqual(install.get("id"), "learning_install")
+        self.assertNotIn("cache", install.get("if", ""))
+        self.assertIn("steps.learning_install.outcome == 'success'", tests.get("if", ""))
         self.assertNotIn("continue-on-error", install)
         self.assertNotIn("continue-on-error", tests)
 

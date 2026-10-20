@@ -1,86 +1,200 @@
 #!/usr/bin/env python3
-"""Pocket4-only bounded diagnosis; frozen historical rows, no deployment."""
+"""Pocket4 closed-source PRICE diagnostics; CPU only, no deployment."""
 from pathlib import Path
-from collections import Counter
-from bisect import bisect_right
-import argparse,hashlib,json,os,sys,time
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+
 import numpy as np
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"research/neuron_learning"))
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "research/neuron_learning"))
 from laya_cell import price_readout_diagnostics as d
-from laya_cell.dataset import BIN_EDGES_BPS,question
+from laya_cell import resident_action_v2_closed_source as closed
+from laya_cell.dataset import BIN_EDGES_BPS
+from laya_cell.integrity import canonical, digest, read_json
 
-SOURCE_SHA="3d701e3795cb438b5ba38f3bb7c44bed83003e040108d1378d1084635157e4a9"
-CUTOFF=1791504000000
-HOLD_END=1791590400000
 
-def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
-def digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-def write(p,v):
-    data=(json.dumps(v,sort_keys=True,allow_nan=False,separators=(",",":"))+"\n").encode()
-    with p.open("xb") as f:f.write(data);f.flush();os.fsync(f.fileno())
-    p.chmod(0o400)
-    return sha(p)
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def write_once(path, value):
+    with Path(path).open("xb") as stream:
+        stream.write(canonical(value) + b"\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    Path(path).chmod(0o400)
+    return sha(path)
+
+
+def hash_id(value):
+    if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise argparse.ArgumentTypeError("Expected a lowercase SHA256")
+    return value
+
+
+def action_counts(rows):
+    correct = sum(
+        max(range(7), key=lambda i: row["frozen_parent_probs"][i]) == row["target_class"]
+        for row in rows
+    )
+    return {"ACT_correct": correct, "ESCALATE_wrong": len(rows) - correct,
+            "source": "ORIGINAL_FROZEN_PARENT_CORRECTNESS"}
+
+
+def split_rows(rows, train_end_ms, hold_start_ms, hold_end_ms):
+    if not 0 < train_end_ms < hold_start_ms < hold_end_ms:
+        raise ValueError("Invalid fixed chronological boundaries")
+    training = sorted(
+        [r for r in rows if r["anchor_ms"] < train_end_ms
+         and r["future_outcome_available_ms"] <= train_end_ms],
+        key=lambda r: (r["anchor_ms"], r["row_id"]),
+    )
+    holdout = sorted(
+        [r for r in rows if hold_start_ms <= r["anchor_ms"] < hold_end_ms],
+        key=lambda r: (r["anchor_ms"], r["row_id"]),
+    )
+    if not training or not holdout:
+        raise ValueError("The fixed training and holdout populations must be nonempty")
+    training_ids = {r["row_id"] for r in training}
+    holdout_ids = {r["row_id"] for r in holdout}
+    if (len(training_ids) != len(training) or len(holdout_ids) != len(holdout)
+            or training_ids & holdout_ids):
+        raise ValueError("Duplicate or overlapping training/holdout row identities")
+    return training, holdout
+
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source",type=Path,required=True);p.add_argument("--evaluation-root",type=Path,required=True)
-    p.add_argument("--output",type=Path,required=True);a=p.parse_args()
-    if Path("/etc/hostname").read_text().strip()!="alex-G1628-04":raise RuntimeError("POCKET4_ONLY")
-    if sha(a.source)!=SOURCE_SHA:raise RuntimeError("FROZEN_SOURCE_CHANGED")
-    a.output.mkdir(parents=True,mode=0o700,exist_ok=False)
-    protocol={"schema":"heptatrader.price-readout-diagnostic-protocol.v1","at_ms":int(time.time()*1000),
-        "source_sha256":SOURCE_SHA,"train_cutoff_ms":CUTOFF,"holdout_end_ms":HOLD_END,
-        "arms":["parent","train_frequency","intercept_only","temperature_only"],
-        "lambda":"1/N_TRAIN","frequency_smoothing":.5,"bias_max_newton_steps":50,
-        "bias_gradient_tolerance":1e-8,"inverse_temperature_bounds":[0.,10.],
-        "holdout_previously_seen":True,"no_holdout_selection":True,
-        "code_sha256":sha(Path(d.__file__)),"runner_sha256":sha(Path(__file__)),
-        "price_bins_bps":list(BIN_EDGES_BPS),"broker_orders_sent":0,"model_promoted":False}
-    protocol_sha=write(a.output/"protocol.json",protocol)
-    source=json.loads(a.source.read_text());rows=source["rows"]
-    if len(rows)!=298 or len({r["row_id"] for r in rows})!=298:raise RuntimeError("ROW_IDENTITY")
-    train=sorted([r for r in rows if r["anchor_ms"]<CUTOFF],key=lambda r:(r["anchor_ms"],r["row_id"]))
-    hold=sorted([r for r in rows if CUTOFF<=r["anchor_ms"]<HOLD_END],key=lambda r:(r["anchor_ms"],r["row_id"]))
-    if (len(train),len(hold))!=(178,120) or any(r["future_outcome_available_ms"]>CUTOFF for r in train):
-        raise RuntimeError("FROZEN_TIME_SPLIT_CHANGED")
-    plans={}
-    for pf in list(a.evaluation_root.glob("*/plan.json"))+list(a.evaluation_root.glob("*/*/plan.json")):
-        v=json.loads(pf.read_text());plans[v["plan_id"]]=pf.parent
-    label_audit=Counter()
-    for r in rows:
-        directory=plans[r["plan_id"]];of=directory/("outcome-%03d.json"%r["slot"])
-        pf=directory/("prediction-%03d.json"%r["slot"])
-        if sha(of)!=r["outcome_sha256"] or sha(pf)!=r["prediction_sha256"]:raise RuntimeError("ORIGINAL_RECEIPT_CHANGED")
-        outcome=json.loads(of.read_text())
-        if (outcome["target_class"]!=r["target_class"] or bisect_right(BIN_EDGES_BPS,outcome["return_bps"])!=r["target_class"]
-                or outcome["outcome_receipt"]!=r["original_outcome_receipt"]
-                or r["question"]!=question(r["state"]["horizon_sec"])):
-            raise RuntimeError("LABEL_BIN_OR_PROMPT_MISMATCH")
-        label_audit[str(r["state"]["horizon_sec"])]+=1
-    tp=[r["frozen_parent_probs"] for r in train];ty=[r["target_class"] for r in train]
-    hp=[r["frozen_parent_probs"] for r in hold];hy=[r["target_class"] for r in hold]
-    started=time.monotonic();bias=d.fit_bias(tp,ty);temp=d.fit_temperature(tp,ty);freq=d.fit_frequency(ty)
-    parent=d.metrics(hp,hy)
-    if abs(parent["nll"]-2.361973169527537)>1e-6 or abs(parent["brier"]-.9908813852929451)>1e-6:
-        raise RuntimeError("ORIGINAL_PARENT_SCORE_REPRODUCTION")
-    hp_freq=np.broadcast_to(freq["probabilities"],(len(hy),7))
-    scores={"parent":parent,"train_frequency":d.metrics(hp_freq,hy),
-        "intercept_only":d.metrics(hp,hy,bias=bias["bias"]),
-        "temperature_only":d.metrics(hp,hy,inverse_temperature=temp["inverse_temperature"])}
-    result={"schema":"heptatrader.price-readout-diagnostic.v1","state":"COMPLETED_RESEARCH_ONLY",
-        "at_ms":int(time.time()*1000),"protocol_sha256":protocol_sha,"source_sha256":SOURCE_SHA,
-        "train_rows_digest":digest([r["row_id"] for r in train]),"holdout_rows_digest":digest([r["row_id"] for r in hold]),
-        "original_label_hash_and_bin_checks":len(rows),"label_mismatches":0,"horizon_seconds_counts":dict(label_audit),
-        "train_rows":len(train),"holdout_rows":len(hold),"bias_fit":bias,"temperature_fit":temp,
-        "frequency_fit":freq,"holdout_scores":scores,"elapsed_fit_seconds":time.monotonic()-started,
-        "actual_optimizer_updates":bias["applied_newton_steps"],"gpu_passes":0,"model_forward_passes":0,
-        "live_model_unchanged":True,"holdout_previously_seen":True,"new_prospective_qualification":False,
-        "broker_orders_sent":0,"policy_gradient_steps":0,"model_promoted":False}
-    h=write(a.output/"result.json",result)
-    print(json.dumps({"path":str(a.output/"result.json"),"sha256":h,"label_checks":len(rows),
-        "horizon_counts":dict(label_audit),"bias_steps":bias["applied_newton_steps"],
-        "bias":bias["bias"],"inverse_temperature":temp["inverse_temperature"],
-        "elapsed_seconds":result["elapsed_fit_seconds"],
-        "holdout":{k:{x:v[x] for x in ["rows","nll","brier","accuracy","predicted_class_counts"]} for k,v in scores.items()}}))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--evaluation-root", type=Path, required=True)
+    parser.add_argument("--parent-id", type=hash_id, required=True)
+    parser.add_argument("--cutoff-ms", type=int, required=True)
+    parser.add_argument("--train-end-ms", type=int, required=True)
+    parser.add_argument("--hold-start-ms", type=int, required=True)
+    parser.add_argument("--hold-end-ms", type=int, required=True)
+    parser.add_argument("--exclude-plan-id", type=hash_id, action="append", default=[])
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if Path("/etc/hostname").read_text().strip() != "alex-G1628-04":
+        raise RuntimeError("POCKET4_ONLY")
+    began_ms = int(time.time() * 1000)
+    if not (0 < args.train_end_ms < args.hold_start_ms < args.hold_end_ms
+            <= args.cutoff_ms <= began_ms):
+        raise ValueError("Invalid fixed chronological boundaries or future source cutoff")
 
-if __name__=="__main__":main()
+    os.umask(0o077)
+    args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
+    excluded = sorted(set(args.exclude_plan_id))
+    protocol = {
+        "schema": "heptatrader.price-readout-diagnostic-protocol.v2",
+        "at_ms": began_ms, "evaluation_root": str(args.evaluation_root.resolve(strict=True)),
+        "frozen_parent_id": args.parent_id, "source_cutoff_ms": args.cutoff_ms,
+        "train_end_ms": args.train_end_ms, "hold_start_ms": args.hold_start_ms,
+        "hold_end_ms": args.hold_end_ms, "excluded_plan_ids": excluded,
+        "horizon_seconds": 300, "price_bins_bps": list(BIN_EDGES_BPS),
+        "arms": ["parent", "uniform", "train_frequency", "intercept_only", "temperature_only"],
+        "lambda": "1/N_TRAIN", "frequency_smoothing": 0.5, "bias_max_newton_steps": 50,
+        "bias_gradient_tolerance": 1e-8, "inverse_temperature_bounds": [0.0, 10.0],
+        "no_holdout_selection": True, "holdout_previously_seen": True,
+        "retrospective_diagnostic": True, "new_prospective_qualification": False,
+        "diagnostics_code_sha256": sha(Path(d.__file__)),
+        "collector_code_sha256": sha(Path(closed.__file__)),
+        "runner_sha256": sha(Path(__file__)), "numpy_version": np.__version__,
+        "broker_orders_sent": 0, "model_promoted": False,
+    }
+    protocol_sha = write_once(args.output / "protocol.json", protocol)
+    collected = closed.collect_parent_closed_train(
+        args.evaluation_root, args.parent_id, args.cutoff_ms
+    )
+    closed.check_train_source(collected)
+    rows = [r for r in collected["rows"]
+            if r["plan_id"] not in excluded and r["state"]["horizon_sec"] == 300]
+    if any(r["parent_id"] != args.parent_id for r in rows):
+        raise ValueError("Frozen parent identity changed")
+    frozen_source = {
+        "schema": "heptatrader.price-readout-closed-source.v1",
+        "protocol_sha256": protocol_sha, "collector_manifest": collected["manifest"],
+        "excluded_plan_ids": excluded, "horizon_seconds": 300,
+        "rows": rows, "rows_digest": digest(rows),
+    }
+    source_sha = write_once(args.output / "source.json", frozen_source)
+    del collected, rows, frozen_source
+
+    # Fit the exact frozen bytes; do not rescan a live evaluation directory.
+    frozen_source = read_json(args.output / "source.json", 64 * 1024**2)
+    if (sha(args.output / "source.json") != source_sha
+            or digest(frozen_source["rows"]) != frozen_source["rows_digest"]):
+        raise ValueError("Frozen source changed")
+    training, holdout = split_rows(
+        frozen_source["rows"], args.train_end_ms, args.hold_start_ms, args.hold_end_ms
+    )
+    tp = [r["frozen_parent_probs"] for r in training]
+    ty = [r["target_class"] for r in training]
+    started = time.monotonic()
+    fits = {
+        "schema": "heptatrader.price-readout-fixed-fit.v1",
+        "protocol_sha256": protocol_sha, "source_sha256": source_sha,
+        "training_row_ids": [r["row_id"] for r in training],
+        "bias": d.fit_bias(tp, ty), "temperature": d.fit_temperature(tp, ty),
+        "frequency": d.fit_frequency(ty),
+    }
+    elapsed_fit = time.monotonic() - started
+    fit_sha = write_once(args.output / "fit.json", fits)
+
+    # Freeze coefficients before computing any holdout scores.
+    fits = read_json(args.output / "fit.json")
+    if sha(args.output / "fit.json") != fit_sha:
+        raise ValueError("Frozen fit changed")
+    hp = [r["frozen_parent_probs"] for r in holdout]
+    hy = [r["target_class"] for r in holdout]
+    scores = {
+        "parent": d.metrics(hp, hy),
+        "uniform": d.metrics(np.full((len(hy), 7), 1 / 7), hy),
+        "train_frequency": d.metrics(
+            np.broadcast_to(fits["frequency"]["probabilities"], (len(hy), 7)), hy
+        ),
+        "intercept_only": d.metrics(hp, hy, bias=fits["bias"]["bias"]),
+        "temperature_only": d.metrics(
+            hp, hy, inverse_temperature=fits["temperature"]["inverse_temperature"]
+        ),
+    }
+    result = {
+        "schema": "heptatrader.price-readout-diagnostic.v2",
+        "state": "COMPLETED_RESEARCH_ONLY", "at_ms": int(time.time() * 1000),
+        "protocol_sha256": protocol_sha, "source_sha256": source_sha, "fit_sha256": fit_sha,
+        "train_rows": len(training), "holdout_rows": len(holdout),
+        "train_rows_digest": digest([r["row_id"] for r in training]),
+        "holdout_rows_digest": digest([r["row_id"] for r in holdout]),
+        "source_rows_not_in_split": len(frozen_source["rows"]) - len(training) - len(holdout),
+        "excluded_plan_ids": excluded,
+        "original_action_labels": {
+            "training": action_counts(training), "holdout": action_counts(holdout)
+        },
+        "holdout_scores": scores, "elapsed_fit_seconds": elapsed_fit,
+        "actual_optimizer_updates": fits["bias"]["applied_newton_steps"],
+        "no_holdout_selection": True, "holdout_previously_seen": True,
+        "retrospective_diagnostic": True, "new_prospective_qualification": False,
+        "gpu_passes": 0, "model_forward_passes": 0, "broker_orders_sent": 0,
+        "policy_gradient_steps": 0, "model_promoted": False,
+    }
+    result_sha = write_once(args.output / "result.json", result)
+    fd = os.open(args.output, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    print(json.dumps({
+        "path": str(args.output / "result.json"), "sha256": result_sha,
+        "train_rows": len(training), "holdout_rows": len(holdout),
+        "original_action_labels": result["original_action_labels"],
+        "holdout": {name: {key: value[key] for key in
+            ("rows", "nll", "brier", "accuracy", "predicted_class_counts")}
+            for name, value in scores.items()},
+    }, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

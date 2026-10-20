@@ -33,11 +33,12 @@ def valid():
 class SwaplessNoProductionTests(unittest.TestCase):
     def report(self,data=None):
         return assess_isolated(*(valid() if data is None else data))
-    def test_swap_below_one_gib_preserves_original_hold(self):
+    def test_low_swap_uses_current_memory_pressure_policy(self):
         r=self.report()
-        self.assertFalse(r["legacy_production_guard_admit_new_worker"])
-        self.assertEqual(r["legacy_guard_reasons_unchanged"],
-                         ["HOST_SWAP_RESERVE_BELOW_1GIB"])
+        self.assertTrue(r["current_guard_admit_new_worker"])
+        self.assertEqual(r["current_guard_reasons"],[])
+        self.assertEqual(r["resource_profile"],"ROLE_MEMORY_PSI_V2")
+        self.assertEqual(r["swap_free_policy"],"DIAGNOSTIC_ONLY")
         self.assertTrue(r["isolated_preflight_eligible"])
         self.assertEqual(r["isolated_research_preflight"],
                          "READY_FOR_OPERATOR_REVIEW_NO_JOB")
@@ -88,8 +89,8 @@ class SwaplessNoProductionTests(unittest.TestCase):
             with self.subTest(edit=edit):
                 r=self.report(x)
                 self.assertFalse(r["isolated_preflight_eligible"])
-                self.assertFalse(r["legacy_production_guard_admit_new_worker"])
-                self.assertTrue(set(r["legacy_guard_reasons_unchanged"]) &
+                self.assertFalse(r["current_guard_admit_new_worker"])
+                self.assertTrue(set(r["current_guard_reasons"]) &
                                 set(r["isolated_hold_reasons"]))
     def test_all_lower_bounds_rejected(self):
         for field,bad in (("pids.max",0),
@@ -116,7 +117,7 @@ class SwaplessNoProductionTests(unittest.TestCase):
         x=list(valid())
         x[0]["SwapFree"]=2*GIB
         r=self.report(x)
-        self.assertTrue(r["legacy_production_guard_admit_new_worker"])
+        self.assertTrue(r["current_guard_admit_new_worker"])
         self.assertTrue(r["isolated_preflight_eligible"])
         self.assertFalse(r["automatic_training"])
     def test_legacy_model_timeline_untouched(self):

@@ -95,7 +95,6 @@ class HistoricalTrainingAdmissionTests(unittest.TestCase):
     def test_resources_manual_hold_and_drain_still_apply_to_both_roles(self):
         cases=(
             ({"available":7*g.GIB},"HOST_AVAILABLE_MEMORY_BELOW_8GIB"),
-            ({"swap":g.GIB-1024},"HOST_SWAP_RESERVE_BELOW_1GIB"),
             ({"pressure":0.2},"HOST_FULL_MEMORY_PSI_PRESSURE"),
             ({"manual":True},"OPERATOR_RESOURCE_HOLD"),
             ({"draining":True},"SUPERVISOR_DRAIN_REQUESTED"))
@@ -104,6 +103,15 @@ class HistoricalTrainingAdmissionTests(unittest.TestCase):
                 with self.subTest(role=role,reason=reason):
                     r,_,_=self.check(role,**flags)
                     self.assertFalse(r["admit_new_worker"]);self.assertIn(reason,r["reasons"])
+
+    def test_low_swap_is_diagnostic_for_both_roles(self):
+        for role in ("trainer", "evaluator"):
+            for swap in (0, g.GIB-1024):
+                with self.subTest(role=role, swap=swap):
+                    report,_,_=self.check(role, swap=swap)
+                    self.assertTrue(report["admit_new_worker"])
+                    self.assertEqual(report["reasons"], [])
+                    self.assertEqual(report["swap_free_policy"], "DIAGNOSTIC_ONLY")
 
     def test_original_config_and_period_identity_still_apply_to_both_roles(self):
         for role in ("trainer","evaluator"):

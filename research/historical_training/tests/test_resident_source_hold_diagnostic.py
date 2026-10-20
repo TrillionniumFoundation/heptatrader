@@ -189,13 +189,16 @@ class ClosedMarketHoldTests(unittest.TestCase):
 
     def test_resource_denial_never_opens_source_status_or_refreshes(self):
         self.health.unlink()
-        for role, kwargs in (('evaluator', {}), ('trainer', {'forward_registration': {'job_id':'job','candidate_id':'c'*64}})):
+        for role, kwargs, reason in (
+                ('evaluator', {}, 'HOST_AVAILABLE_MEMORY_BELOW_8GIB'),
+                ('trainer', {'forward_registration': {'job_id':'job','candidate_id':'c'*64}},
+                 'HOST_AVAILABLE_MEMORY_BELOW_REGISTRATION_RESERVE')):
             with self.subTest(role=role),\
-                 patch('historical_training.resident_resource_guard.parse_meminfo',return_value={**MEM,'SwapFree':0}),\
+                 patch('historical_training.resident_resource_guard.parse_meminfo',return_value={**MEM,'MemAvailable':GIB}),\
                  patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI),\
                  patch('historical_training.resident_live_source.refresh',side_effect=AssertionError('NO_SOURCE_IO')) as refresh:
                 report=Gate(self.config,role).check(**kwargs)
-            self.assertEqual(report['reasons'],['HOST_SWAP_RESERVE_BELOW_1GIB'])
+            self.assertEqual(report['reasons'],[reason])
             self.assertFalse(report['admit_new_worker'])
             self.assertTrue(report['source_refresh_skipped_for_resource_denial'])
             self.assertFalse(report['original_live_source_evidence']['fresh_original_live_source_proven'])
