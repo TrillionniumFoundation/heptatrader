@@ -47,7 +47,7 @@ def parse_full_psi(text):
 
 
 def assess_resources(memory,pressure,now_ms,manual_hold,*,role='trainer'):
-    if role not in ('trainer','evaluator','forward_registration'):
+    if role not in ('trainer','evaluator','value-predictor','forward_registration'):
         raise EvidenceError('RESOURCE_ADMISSION_ROLE_REQUIRED')
     # Keep the original heavy-worker RAM floor. Cold pages occupying swap are
     # not evidence of current pressure and cannot starve otherwise safe work.
@@ -139,7 +139,7 @@ class Lease:
 
 class Gate:
     def __init__(self,config,role):
-        if role not in ('trainer','evaluator'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
+        if role not in ('trainer','evaluator','value-predictor'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
         self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
         self.last_admission=None
@@ -153,7 +153,7 @@ class Gate:
         # original memory/PSI/source check, the one global flock and a second
         # source+priority check after taking that flock.
         manual=self.c.get('manual_hold_path')
-        if (self.c.get('value_priority') is None or self.draining or
+        if (self.role not in ('trainer','evaluator') or self.c.get('value_priority') is None or self.draining or
                 (manual is not None and os.path.lexists(manual))):
             return None
         try:
@@ -178,7 +178,7 @@ class Gate:
         atomic(self.root/(self.role+'-admission.json'),report)
         return report
     def _prioritize_background(self,report):
-        if not report['admit_new_worker'] or self.c.get('value_priority') is None:
+        if (self.role not in ('trainer','evaluator') or not report['admit_new_worker'] or self.c.get('value_priority') is None):
             self.last_admission=report
             return report
         try:
@@ -301,7 +301,7 @@ class Gate:
         if not path.exists():write_once(path,{'subject':subject,'decision':report,'orders_sent':0})
         return False
     def maintain_caches(self):
-        if self.c.get('cache_maintenance')!='TERMINAL_TASK_COMGR_ONLY_V1':
+        if self.role=='value-predictor' or self.c.get('cache_maintenance')!='TERMINAL_TASK_COMGR_ONLY_V1':
             return
         now=time.monotonic()
         if self.lease.fd is None and now-getattr(self,'_last_cache_sweep',0)<60:

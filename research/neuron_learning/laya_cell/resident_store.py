@@ -42,7 +42,10 @@ def put_meta(db,key,value):db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)'
 
 def admit_job(db,job_id,fingerprint,created_ms,job,rows):
  if job.get('training_row_accounting_schema') is not None:
-  if job['training_row_accounting_schema']!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
+  if job['training_row_accounting_schema']=='heptatrader.laya-gradient-row-accounting.v2':
+   from .resident_training_v4 import check_job
+   check_job(job)
+  elif job['training_row_accounting_schema']!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
   checked_ids(rows,16)
   if rows!=job.get('training_row_ids') or fingerprint!=digest(rows):raise ContractError('ROW_ACCOUNTING_JOB_BINDING')
  with db:

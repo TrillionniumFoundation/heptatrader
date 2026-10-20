@@ -72,3 +72,66 @@ class RuntimePinTests(unittest.TestCase):
       'worker_runtime_sha256':inv,'worker_runtime_inventory_digest':digest(inv)}
    validate_runtime(c);src.write_text('# changed')
    with self.assertRaisesRegex(ContractError,'RUNTIME_CHANGED'):validate_runtime(c)
+
+
+class BoundPlanEvidenceReuseTests(unittest.TestCase):
+ def setUp(self):
+  import hashlib
+  from historical_training.current100k import to_row
+  from laya_cell.financial_forward_protocol import RULE
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+  self.root=Path(self.tmp.name);self.source=self.root/'requests.jsonl'
+  self.period='1'*64;self.manifest='2'*64;requests=[];lines=[]
+  for i in range(2):
+   prompt='synthetic fixed input '+str(i)
+   request={'request_id':'request-'+str(i),'model_id':'test-model','instrument':'EUR.USD',
+    'period_sha256':self.period,'position_at_request':0,'started_at_ms':1000+i,
+    'prompt':prompt,'prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest()}
+   requests.append(request);lines.append((json.dumps({'kind':'REQUEST','data':request},sort_keys=True,separators=(',',':'))+'\n').encode())
+  self.source.write_bytes(b''.join(lines));self.source.chmod(0o600);self.rows=[]
+  for i,request in enumerate(requests):
+   prefix=b''.join(lines[:i+1]);witness={'path':str(self.source),'bytes':len(prefix),'sha256':hashlib.sha256(prefix).hexdigest()}
+   command='open-'+str(i)
+   item={'request':request,'request_sha256':digest(request),'producer_manifest_sha256':self.manifest,
+    'source_record_sha256':hashlib.sha256(lines[i]).hexdigest(),'source_prefix':witness}
+   binding={'request_id':request['request_id'],'request_sha256':digest(request),'decision_sha256':'decision-'+str(i),
+    'command':{'command_id':command,'kind':'OPEN','instrument':'EUR.USD','position_before_send':0,
+     'quantity_mode':'BASE_NOTIONAL_TARGET','target_notional_usd':100000,'side':'BUY','order_quantity':'100000'}}
+   executions=[{'execution_id':'entry-'+str(i),'command_id':command,'side':'BUY','quantity':'100000','price':'1','commission':'1','commission_currency':'USD'},
+    {'execution_id':'exit-'+str(i),'command_id':'close-'+str(i),'side':'SELL','quantity':'100000','price':'1.00001','commission':'1','commission_currency':'USD'}]
+   reward={'episode_id':'episode-'+str(i),'instrument':'EUR.USD','currency':'USD','learning_eligible':True,
+    'exact_input_bound':True,'fees_complete':True,'settlement_complete':True,'policy_gradient_allowed':False,
+    'laya_on_policy':False,'learning_exclusion_reasons':[],'behavior_model_id':'test-model','open_command_id':command,
+    'input_id':digest(request),'forecast_id':'decision-'+str(i),'executions':executions,'realized_gross_usd':'1',
+    'actual_commissions_usd':'2','realized_net_usd':'-1','input_attribution':{'producer_manifest_sha256':self.manifest,
+     'request_id':request['request_id'],'prompt_sha256':request['prompt_sha256'],'source_prefixes':[witness]}}
+   reward['reward_id']=digest(reward);self.rows.append(to_row(reward,item,binding,self.manifest,self.period))
+  self.dataset=self.root/'dataset.json'
+  self.plan={'schema':PLAN_SCHEMA,'candidate_id':'candidate','candidate_created_at_ms':1,'registered_at_ms':2,
+   'input_start_ms':3,'input_end_ms':3+RULE['window_ms'],'outcome_end_ms':3+RULE['window_ms']+RULE['closure_grace_ms'],
+   'rule':copy.deepcopy(RULE),'trial':1,'synthetic':False,'period_sha256':self.period,'head_tensor_sha256':'3'*64,
+   'training_dataset_path':str(self.dataset),'producer_registration':{'sha256':self.manifest},
+   'behavior_scope':{'behavior_profile':BEHAVIOR,'reference_notional_usd':100000,'quantity':None,
+    'producer_manifest_sha256':self.manifest,'instrument':'EUR.USD','currency':'USD','behavior_model_id':'test-model'}}
+  self.rebind_dataset()
+ def rebind_dataset(self):
+  self.dataset.write_text(json.dumps({'period_sha256':self.period,'producer_manifest_sha256':self.manifest,'rows':self.rows}));self.dataset.chmod(0o600)
+  self.candidate={'candidate_id':'candidate','created_at_ms':1,'head_sha256':'3'*64,'dataset_sha256':sha_file(self.dataset),'row_ids':[r['row_id'] for r in self.rows]}
+  self.plan.update(training_dataset_sha256=self.candidate['dataset_sha256'],training_reward_ids=[r['reward_id'] for r in self.rows],
+   training_input_ids=[r['input_id'] for r in self.rows],training_mean_usd=sum(float(r['net_usd']) for r in self.rows)/len(self.rows))
+  self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
+ def test_shared_source_read_once(self):
+  from unittest import mock
+  import hepta_decision_attribution as attribution
+  from laya_cell.current100k_forward import validate_bound_plan
+  with mock.patch.object(attribution,'read_private',wraps=attribution.read_private) as reader:
+   self.assertEqual(validate_bound_plan(self.plan,self.candidate),self.plan)
+  self.assertEqual(reader.call_count,1)
+ def test_source_mutation_rejected(self):
+  from laya_cell.current100k_forward import validate_bound_plan
+  self.source.write_bytes(self.source.read_bytes().replace(b'synthetic',b'corrupted',1))
+  with self.assertRaises(ContractError):validate_bound_plan(self.plan,self.candidate)
+ def test_economic_recomputation_is_preserved(self):
+  from laya_cell.current100k_forward import validate_bound_plan
+  self.rows[0]['net_usd']='999';self.rebind_dataset()
+  with self.assertRaisesRegex(ContractError,'CURRENT100K_FORWARD_REWARD_RECOMPUTATION'):validate_bound_plan(self.plan,self.candidate)

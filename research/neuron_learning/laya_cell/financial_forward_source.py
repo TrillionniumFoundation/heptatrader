@@ -1,12 +1,56 @@
 """Verified append-only attribution ingress and immutable financial plan registry."""
 from __future__ import annotations
-import hashlib,json,time
+import copy,hashlib,json,stat,time
 from pathlib import Path
 from .integrity import ContractError,read_json,sha_file,digest
 _original_sha_file=sha_file
 def sha_file(path):return _original_sha_file(Path(path))
-from .resident_store import write_once
-from .financial_forward_protocol import RULE,validate_candidate,validate_plan
+
+
+def file_identity(path):
+ """Cheap invalidation of a file already read with read_private this turn."""
+ p=Path(path);s=p.lstat()
+ if not stat.S_ISREG(s.st_mode):raise ContractError('VALUE_SNAPSHOT_FILE_TYPE')
+ return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_uid,s.st_gid,s.st_nlink)
+
+
+def ingress_identity(registration,period_sha256):
+ """Re-read business health, not heartbeat timestamps, before cache reuse."""
+ from hepta_decision_attribution import read_private,strict
+ raw=read_private(registration['manifest'],65536)
+ if hashlib.sha256(raw).hexdigest()!=registration['sha256']:raise ContractError('REGISTERED_PRODUCER_CHANGED')
+ manifest=strict(raw)
+ if manifest.get('instrument')!='EUR.USD' or manifest.get('execution_domain')!='PAPER' or manifest.get('period_sha256')!=period_sha256:
+  raise ContractError('FORWARD_PRODUCER_SCOPE')
+ root=Path(manifest['journal_directory']);segments=sorted(root.glob('*.jsonl'))
+ if len(segments)>128:raise ContractError('ATTRIBUTION_STORAGE_BOUND')
+ health={}
+ for path in sorted(root.glob('*.health.json')):
+  value=strict(read_private(path,65536))
+  if not isinstance(value,dict):raise ContractError('VALUE_HEALTH_SHAPE')
+  health[str(path)]={k:v for k,v in value.items() if k!='at_ms'}
+ return {'registration':digest(registration),'period_sha256':period_sha256,
+         'segments':[(str(p),file_identity(p)) for p in segments],'health':health}
+
+
+class VerifiedIngressSnapshot:
+ """One bounded turn only; never an on-disk or cross-process authorization."""
+ def __init__(self,registration,period_sha256):
+  self.registration=copy.deepcopy(registration);self.period_sha256=period_sha256
+  self.full_scans=0;self.reuses=0;self._capture()
+ def _capture(self):
+  before=ingress_identity(self.registration,self.period_sha256)
+  value=ingress(self.registration,self.period_sha256)
+  after=ingress_identity(self.registration,self.period_sha256)
+  if before!=after:raise ContractError('VALUE_SOURCE_CHANGED_DURING_INGRESS')
+  self._identity=after;self._value=value;self.full_scans+=1
+  self.captured_at_ms=int(time.time()*1000)
+ def read(self,registration,period_sha256):
+  if digest(registration)!=digest(self.registration) or period_sha256!=self.period_sha256:
+   raise ContractError('VALUE_INGRESS_SNAPSHOT_SCOPE')
+  if ingress_identity(registration,period_sha256)!=self._identity:self._capture()
+  else:self.reuses+=1
+  return copy.deepcopy(self._value)
 
 
 def ingress(registration,period_sha256):
@@ -77,6 +121,8 @@ def ingress(registration,period_sha256):
 
 
 def register_available(config):
+ from .resident_store import write_once
+ from .financial_forward_protocol import RULE,validate_candidate,validate_plan
  root=Path(config['forward_root']);plans=root/'plans';plans.mkdir(mode=0o700,parents=True,exist_ok=True)
  candidates=sorted(Path(config['value_output_root']).glob('jobs/*/artifact/candidate.json'))
  if len(candidates)>256:raise ContractError('FORWARD_CANDIDATE_CAPACITY')

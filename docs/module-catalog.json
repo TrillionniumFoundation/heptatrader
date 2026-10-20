@@ -217,8 +217,8 @@
       "implementation": [
         "HeptaTrade/adapter_ib",
         "HeptaTrade/execution/hepta_ib_executiond.cpp",
-        ".github/workflows/ib-paper-qualification.yml",
-        ".github/workflows/self-hosted-ib-availability.yml",
+        ".github/retired-workflows/ib-paper-qualification.yml",
+        ".github/retired-workflows/self-hosted-ib-availability.yml",
         "scripts/build_ib_candidate_artifact.sh",
         "scripts/verify_ib_candidate_artifact.py",
         "scripts/run_ib_paper_artifact_qualification.sh",
@@ -456,7 +456,8 @@
         "scripts/hepta_nav_assurance.py",
         "scripts/activate_prepared_driver.py",
         "scripts/hepta_verified_loader.py",
-        "scripts/hepta_runtime_identity.py"
+        "scripts/hepta_runtime_identity.py",
+        "scripts/hepta_progress.py"
       ],
       "tests": [
         "tests/python/test_systemd_units.py",
@@ -482,7 +483,8 @@
         "tests/python/test_attributed_driver_launcher.py",
         "tests/python/test_activate_prepared_driver.py",
         "tests/python/test_decision_attribution_installer_readonly.py",
-        "tests/python/test_decision_attribution_prepare_upgrade.py"
+        "tests/python/test_decision_attribution_prepare_upgrade.py",
+        "tests/python/test_hepta_progress.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

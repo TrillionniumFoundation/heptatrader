@@ -2,7 +2,7 @@
 
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`, `scripts/hepta_ib_runtime_report.py`, `HeptaTrade/cli/hepta_ib_profile.cpp`
+Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/retired-workflows/ib-paper-qualification.yml`, `.github/retired-workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`, `scripts/hepta_ib_runtime_report.py`, `HeptaTrade/cli/hepta_ib_profile.cpp`
 Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`, `tests/python/test_ib_runtime_observation.py`, `tests/ib_connection_probe_behavior.py`, `tests/user_profile_cli_tests.py`
 
 ## Scope
@@ -62,6 +62,15 @@ Canonical deployment uses logical `hepta-ib-exec:2003` and the source-controlled
 The checkout-free runner probe pins the map digest, proves the runner cannot reach port 4002, and delegates non-secret host-boundary inspection to a separately pinned root-owned helper. Canonical nftables replacement queries JSON machine state, retries only within a compiled bound and requires exact structural rule readback before either allow or deny-all is accepted. Any host-specific policy permitting UID `995` remains a root-owned deployment input bound to that map; source tests or the probe do not install it or authorize a campaign. See [`../BROKER-NETWORK-ISOLATION.md`](../BROKER-NETWORK-ISOLATION.md).
 
 ## Owner-operated qualification boundary
+
+The Desktop Actions entry points were retired on 2026-10-20. Their exact
+workflow bytes remain in `.github/retired-workflows/` as qualification and
+host-isolation reference contracts, with the existing executable source tests.
+They are not current Pocket4 deployment or GitHub Actions dispatch entry points.
+The requirements below describe that retained qualification protocol; source
+checks and the current user-session deployment do not establish its Broker
+qualification. An old artifact remains bound to its original source revision
+and verifier. New artifacts bind the archived workflow's actual source path.
 
 Qualification keeps two trust domains:
 

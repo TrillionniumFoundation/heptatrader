@@ -240,12 +240,50 @@ class ComponentScopeTests(unittest.TestCase):
                 self.assertEqual(scope_for_paths([test_name], self.root), self.FULL)
                 tool.write_text("pass\n")
 
+    def test_consumer_episode_and_value_leaves_keep_learning_without_native(self):
+        leaves = (
+            "research/historical_training/consumer_checkpoint.py",
+            "research/historical_training/install_consumer.py",
+            "research/neuron_learning/laya_cell/resident_train.py",
+            "research/neuron_learning/laya_cell/resident_training_v4.py",
+            "research/neuron_learning/laya_cell/financial_forward_source.py",
+            "research/neuron_learning/laya_cell/current100k_forward_worker.py",
+            "research/neuron_learning/laya_cell/current100k_forward.py",
+            "research/neuron_learning/laya_cell/financial_forward_evaluate.py",
+            "research/historical_training/value_timing_reconcile.py",
+            "research/historical_training/tests/test_value_predictor_resource_gate.py",
+            "research/historical_training/tests/test_resident_cache_lifecycle.py",
+        )
+        for path in leaves:
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
+        self.assertEqual(scope_for_paths(list(leaves), self.root), self.PYTHON_LEARNING)
+        self.assertEqual(scope_for_paths([leaves[0], "scripts/hepta_progress.py"],
+                                        self.root), self.PYTHON_LEARNING)
+        paired = self.root / "tests/python/test_consumer_checkpoint.py"
+        paired.unlink()
+        self.assertEqual(scope_for_paths([leaves[0]], self.root), self.FULL)
+
+    def test_progress_scope_requires_installation_support_and_stdlib_imports(self):
+        observer = "scripts/hepta_progress.py"
+        paired = "tests/python/test_hepta_progress.py"
+        self.assertEqual(scope_for_paths([observer, paired], self.root), self.PYTHON)
+        source = self.root / observer
+        source.write_text("import torch\n")
+        self.assertEqual(scope_for_paths([observer], self.root), self.FULL)
+        source.write_text("import pathlib\nimport subprocess\n")
+        self.assertEqual(scope_for_paths([observer], self.root), self.PYTHON)
+        self.assertEqual(scope_for_paths([observer, "scripts/heptatrader-user"],
+                                        self.root), self.FULL)
+        (self.root / "scripts/heptatrader-user").unlink()
+        self.assertEqual(scope_for_paths([paired], self.root), self.FULL)
+
     def test_unknown_shared_ci_and_invalid_paths_restore_full(self):
         for extra in ("scripts/unknown.py", "scripts/hepta_account_pnl.py",
                       "research/neuron_learning/laya_cell/integrity.py",
-                      "research/neuron_learning/laya_cell/resident_train.py",
+                      "research/neuron_learning/laya_cell/install_resident.py",
                       "research/neuron_learning/laya_cell/new_monitor.py",
-                      "research/historical_training/resident_resource_guard.py",
+                      "research/neuron_learning/laya_cell/financial_forward_protocol.py",
                       "scripts/heptatrader-user", "scripts/ci_scope.py",
                       "scripts/run_python_tests.py", ".github/workflows/core-ci.yml",
                       "other/hepta_nav_assurance.py", "scripts/hepta_nav_assurance.py.bak",

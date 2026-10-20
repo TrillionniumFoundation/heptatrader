@@ -30,6 +30,7 @@ def validate_value_candidate(directory,c=None):
 
 def validate_bound_plan(plan,c):
  from historical_training.current100k import BEHAVIOR,to_row
+ from .financial_value_data import ExactRequestIndex
  from .financial_forward_protocol import validate_plan
  validate_plan(plan,int(time.time()*1000))
  if plan.get('schema')!=PLAN_SCHEMA:raise ContractError('CURRENT100K_FORWARD_PLAN_SCHEMA')
@@ -47,8 +48,9 @@ def validate_bound_plan(plan,c):
      or [x['input_id'] for x in rows]!=plan['training_input_ids']
      or {x['behavior_scope']['model_id'] for x in rows}!={scope['behavior_model_id']}):
   raise ContractError('CURRENT100K_FORWARD_TRAINING_BINDING')
+ source_index=ExactRequestIndex([x['reward'] for x in rows])
  for x in rows:
-  if x!=to_row(x['reward'],x['source_request'],x['source_binding'],data['producer_manifest_sha256'],data['period_sha256']):
+  if x!=to_row(x['reward'],x['source_request'],x['source_binding'],data['producer_manifest_sha256'],data['period_sha256'],source_index=source_index):
    raise ContractError('CURRENT100K_FORWARD_REWARD_RECOMPUTATION')
  expected=sum(float(x['net_usd']) for x in rows)/len(rows)
  if plan['training_mean_usd']!=expected:raise ContractError('CURRENT100K_FORWARD_BASELINE_CHANGED')

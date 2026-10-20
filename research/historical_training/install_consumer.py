@@ -9,17 +9,45 @@ from .current100k import validate_config
 
 UNIT='heptatrader-current100k-consumer'
 
+CONSUMER_RUNTIME_FILES = (
+    'research/historical_training/consumer_launch.py',
+    'research/historical_training/consumer_checkpoint.py',
+    'research/historical_training/common.py',
+    'research/historical_training/current100k.py',
+    'research/historical_training/export_current100k.py',
+    'research/neuron_learning/sandbox.py',
+    'research/neuron_learning/data.py',
+    'research/neuron_learning/laya_cell/__init__.py',
+    'research/neuron_learning/laya_cell/integrity.py',
+    'research/neuron_learning/laya_cell/resident_rewards.py',
+    'research/neuron_learning/laya_cell/financial_forward_source.py',
+    'research/neuron_learning/laya_cell/financial_value_data.py',
+    'research/paired_net_100k_preflight/__init__.py',
+    'research/paired_net_100k_preflight/core.py',
+    'scripts/hepta_pnl_accounting.py',
+    'scripts/hepta_decision_attribution.py',
+)
+
+def runtime_inventory(repo):
+    """Hash the installed consumer closure, independent of unrelated research."""
+    repo=Path(repo).resolve(strict=True)
+    inventory={}
+    for name in CONSUMER_RUNTIME_FILES:
+        parts=Path(name).parts
+        if any(repo.joinpath(*parts[:n]).is_symlink()
+               for n in range(1,len(parts)+1)):
+            raise EvidenceError('SOURCE_SYMLINK:'+name)
+        source=repo/name
+        if not source.is_file():
+            raise EvidenceError('RUNTIME_SOURCE_MISSING:'+name)
+        inventory[name]=sha(source)
+    return inventory
+
+
 def install(base_config,receipt_path):
     validate_config(base_config)
     repo=Path(__file__).resolve().parents[2];home=Path.home()
-    inventory={}
-    for folder in ('research/neuron_learning','research/paired_net_100k_preflight','research/historical_training'):
-        for p in (repo/folder).rglob('*.py'):
-            if 'tests' in p.parts or '__pycache__' in p.parts:continue
-            if p.is_symlink():raise EvidenceError('SOURCE_SYMLINK')
-            inventory[str(p.relative_to(repo))]=sha(p)
-    for name in ('hepta_pnl_accounting.py','hepta_decision_attribution.py'):
-        p=repo/'scripts'/name;inventory[str(p.relative_to(repo))]=sha(p)
+    inventory=runtime_inventory(repo)
     release_id=digest(inventory)
     release=home/'.local/share/heptatrader/current100k-consumer/releases'/release_id
     release.mkdir(mode=0o700,parents=True,exist_ok=True)

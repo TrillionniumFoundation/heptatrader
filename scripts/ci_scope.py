@@ -33,11 +33,17 @@ VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/install_decision_attribution.py",
                "tests/python/test_decision_attribution_installer_readonly.py",
                "tests/python/test_decision_attribution_prepare_upgrade.py"}),
+    frozenset({"scripts/hepta_progress.py", "tests/python/test_hepta_progress.py"}),
 )
 
 # These support files must exist, but changing one does not inherit the helper's
-# exemption. Keep this check local to the two verified Python entry points.
+# exemption. Keep import checks local to the verified Python entry points.
 VERIFIED_HELPER_DEPENDENCIES = {
+    "scripts/hepta_progress.py": (
+        frozenset(),
+        frozenset({"scripts/heptatrader-user", "cmake/HeptaInstall.cmake",
+                   "tests/python/test_cmake_install_behavior.py"}),
+    ),
     "scripts/hepta_verified_loader.py": (
         frozenset(),
         frozenset({
@@ -142,6 +148,48 @@ VERIFIED_PYTHON_LEARNING_GROUPS = (
         "tests/python/test_value_successor_evaluator.py",
     }),
 
+    frozenset({
+        "research/historical_training/consumer_launch.py",
+        "research/historical_training/consumer_checkpoint.py",
+        "research/historical_training/current100k.py",
+        "research/historical_training/export_current100k.py",
+        "research/historical_training/install_consumer.py",
+        "research/neuron_learning/laya_cell/financial_value_data.py",
+        "tests/python/test_consumer_checkpoint.py",
+        "tests/python/test_consumer_runtime_inventory.py",
+    }),
+    frozenset({
+        "research/neuron_learning/laya_cell/resident_training_v4.py",
+        "research/neuron_learning/laya_cell/resident_train.py",
+        "research/neuron_learning/laya_cell/resident.py",
+        "research/neuron_learning/laya_cell/resident_data.py",
+        "research/neuron_learning/laya_cell/resident_predict.py",
+        "research/neuron_learning/laya_cell/resident_row_accounting.py",
+        "research/neuron_learning/laya_cell/resident_store.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_training_v4.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_row_worker.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_lineage.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
+    }),
+    frozenset({
+        "research/neuron_learning/laya_cell/financial_forward_source.py",
+        "research/neuron_learning/laya_cell/financial_forward_predict.py",
+        "research/neuron_learning/laya_cell/current100k_forward.py",
+        "research/neuron_learning/laya_cell/current100k_forward_worker.py",
+        "research/neuron_learning/laya_cell/financial_forward_evaluate.py",
+        "research/historical_training/value_timing_reconcile.py",
+        "research/historical_training/tests/test_current100k_forward_scope.py",
+        "research/historical_training/tests/test_value_front_snapshot.py",
+        "research/historical_training/tests/test_value_timing_reconcile.py",
+    }),
+    frozenset({
+        "research/historical_training/resident_comgr_cache.py",
+        "research/historical_training/resident_resource_guard.py",
+        "research/historical_training/tests/test_resident_comgr_cache.py",
+        "research/historical_training/tests/test_resident_cache_lifecycle.py",
+        "research/historical_training/tests/test_value_predictor_resource_gate.py",
+    }),
 )
 
 

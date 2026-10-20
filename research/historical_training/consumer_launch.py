@@ -25,13 +25,13 @@ def main():
         'read_only_paths':[config['runtime_root'],str(args.config),config['registration']['manifest'],sys.prefix]})
     write_once(output/'sandbox-proof.json',restrictions)
     try:
-        from .export_current100k import export
-        status=export(config)
+        from .export_current100k import export_validated
+        status=export_validated(config,manifest)
     except Exception as error:
         atomic(output/'status.json',{'state':'UNAVAILABLE_FAIL_CLOSED','at_ms':int(time.time()*1000),
             'reason':str(error),'broker_orders_sent':0,'automatic_training':False})
         raise
     finally:
         os.close(lock)
-    print(json.dumps({k:status[k] for k in ('at_ms','state','row_count','dataset_fingerprint','current100k_net_targets')}))
+    print(json.dumps({k:status[k] for k in ('at_ms','state','row_count','dataset_fingerprint','evaluation_skipped','refresh_duration_ms')}))
 if __name__=='__main__':main()

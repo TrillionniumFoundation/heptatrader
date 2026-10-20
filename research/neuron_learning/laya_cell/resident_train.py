@@ -18,6 +18,7 @@ from .train import supervised_loss,verify_old_learner_inactive,verify_baseline
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,row_id,batches,receipt,checked_ids
 from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
+from . import resident_training_v4 as training_v4
 from . import resident_price_baselines as price_refs
 
 OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
@@ -45,8 +46,9 @@ def immutable(path,value):
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  if not old_learner_verified:verify_old_learner_inactive()
- if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
- training_policy=training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
+ if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ episode=training_v4.enabled(c['objective'])
+ training_policy=training_v4 if episode else training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
  v2=c['objective']!=OBJECTIVE
  base=Path(c['base_directory']);out=Path(c['output_directory'])
  if out.exists():raise ContractError('NEW_CANDIDATE_OUTPUT_REQUIRED')
@@ -61,9 +63,11 @@ def run_job(c,*,old_learner_verified=False):
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
  if v2:rows=training_policy.timed_rows(rows,dataset)
- if training_policy is training_v3:rows=training_v3.primary_rows(rows)
+ if training_policy in (training_v3,training_v4):rows=training_v3.primary_rows(rows)
  eligible_rows=list(rows)
- if c.get('training_row_accounting_schema')!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
+ expected_accounting=training_v4.ROW_ACCOUNTING_SCHEMA if episode else ROW_ACCOUNTING_SCHEMA
+ if c.get('training_row_accounting_schema')!=expected_accounting:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
+ if episode:training_v4.check_job(c)
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
  if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')
  training_batches=batches(rows)
@@ -76,22 +80,49 @@ def run_job(c,*,old_learner_verified=False):
  initial=cell.trainable_state();native=ResidentNative(Path(c['native_binary']),c['native_binary_sha256'])
  native.objective=c['objective']
  parent_cutoff=parent.get('trained_until_ms',parent['window']['training_end_ms'])
+ # Only the new episode reuses tokenization. Values remain CPU tensors and
+ # model activations are recomputed after every optimizer update.
+ encoding_cache={};encoding_calls=0
+ def encoded(selected):
+  nonlocal encoding_calls
+  if not episode:return encode_rows(tok,selected)
+  key=tuple(row_id(r) for r in selected)
+  if key not in encoding_cache:
+   encoding_cache[key]={k:v.detach().cpu() for k,v in encode_rows(tok,selected).items()}
+   encoding_calls+=1
+  return encoding_cache[key]
+ def measure_training_rows():
+  scores=[];briers=[]
+  cell.eval()
+  with torch.no_grad():
+   for row in rows:
+    batch={k:v.to(device) for k,v in encoded([row]).items()}
+    p,_=cell(**batch);truth=torch.tensor([row['target_class']],device=device)
+    scores.append(float(F.cross_entropy(p,truth)))
+    briers.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
+  return scores,briers
+ loaded_at=time.monotonic()
  # Derive targets once from the frozen predecessor, never from the improving student.
- targets={};parent_scores=[];parent_action_logits={}
+ targets={};parent_scores=[];parent_brier=[];parent_action_logits={}
  with torch.no_grad():
   for row in rows:
-   batch={k:v.to(device) for k,v in encode_rows(tok,[row]).items()};p,a=cell(**batch)
+   batch={k:v.to(device) for k,v in encoded([row]).items()};p,a=cell(**batch)
    key=digest([row['sample_id'],row['horizon_sec']]);truth=torch.tensor([row['target_class']],device=device)
    targets[key]=int(answer_targets(p,truth)[0]) if parent_cutoff<=row['anchor_ms'] else None
    parent_scores.append(float(F.cross_entropy(p,truth)))
+   if episode:parent_brier.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
    if v2:parent_action_logits[key]=a[0].detach().cpu()
  action_training_profile=None
  if v2:action_training_profile,training_batches=training_policy.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
+ frozen_episode=(training_v4.freeze(c,training_batches,targets,action_training_profile,frozen_price_baselines) if episode else None)
+ schedule=(training_v4.schedule(training_batches) if episode else [(1,i+1,selected) for i,selected in enumerate(training_batches)])
+ curve_points=([training_v4.point(0,parent_scores,parent_brier,[],time.monotonic()-loaded_at)] if episode else [])
  optimizer=torch.optim.AdamW([p for p in cell.parameters() if p.requires_grad],lr=.0001,weight_decay=0.)
  steps=[];cell.train(True);seen_action=set();applied_action=0
- # Disjoint two-row batches, no inflated unique-sample count from overlapping slices.
- for selected in training_batches:
-  batch={k:v.to(device) for k,v in encode_rows(tok,selected).items()}
+ # Each epoch covers the same disjoint two-row batches; one optimizer survives
+ # all passes. Unique examples and repeated presentations have separate receipts.
+ for epoch,batch_index,selected in schedule:
+  batch={k:v.to(device) for k,v in encoded(selected).items()}
   truth=torch.tensor([r['target_class'] for r in selected],device=device)
   tm=torch.tensor([r['teacher_probs'] is not None for r in selected],device=device)
   teacher=torch.tensor([r['teacher_probs'] or [0.]*7 for r in selected],device=device)
@@ -128,12 +159,16 @@ def run_job(c,*,old_learner_verified=False):
    'gradient_norm_before_clip':float(gradient_norm_before_clip.detach()),
    'loss':float(loss.detach()),'price_loss':float(price_loss.detach()),
    'action_loss':float(act_loss.detach()),'action_labels':int(am.sum()),'gradient_digest':gradient,'norm':norm}
+  if episode:step.update(epoch=epoch,batch_in_epoch=batch_index)
   steps.append(step);print(json.dumps({'step':len(steps),**{k:step[k] for k in ('applied','training_examples','teacher_rows','gradient_norm_before_clip','price_loss','action_loss','action_labels','action_optimizer_update')}}),flush=True)
- cell.eval();cell.assert_frozen();brier=[];after_scores=[]
- with torch.no_grad():
-  for r in rows:
-   batch={k:v.to(device) for k,v in encode_rows(tok,[r]).items()};p,a=cell(**batch);truth=torch.tensor([r['target_class']],device=device)
-   after_scores.append(float(F.cross_entropy(p,truth)));brier.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
+  if episode and batch_index==len(training_batches) and epoch in training_v4.EPISODE['checkpoint_epochs']:
+   after_scores,brier=measure_training_rows()
+   curve_points.append(training_v4.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
+   print(json.dumps({'training_curve_checkpoint':curve_points[-1],'training_only':True}),flush=True)
+   cell.train(True)
+ cell.eval();cell.assert_frozen()
+ # The final fixed-budget checkpoint is already the final measurement.
+ if not episode:after_scores,brier=measure_training_rows()
  utility=native.predictive_utility(brier,rows,digest(dataset),digest(c['objective']))
  measurement={'training_only':True,'rows':len(rows),'unique_action_labels':len(seen_action),
   'parent_ce':sum(parent_scores)/len(rows),'candidate_ce':sum(after_scores)/len(rows),
@@ -157,7 +192,7 @@ def run_job(c,*,old_learner_verified=False):
   'torch_version':torch.__version__,'rocm_version':torch.version.hip,'wall_seconds':time.monotonic()-started,
   'max_gpu_allocated_bytes':torch.cuda.max_memory_allocated(),'native_binary_sha256':c['native_binary_sha256'],
   'utility':utility,'plasticity':proposal,'measurement':measurement,'steps':steps,'exclusions':exclusions,
-  'row_accounting':receipt(c['training_row_ids'],steps,[row_id(r) for r in rows]),
+  'row_accounting':(training_v4.receipt if episode else receipt)(c['training_row_ids'],steps,[row_id(r) for r in rows]),
   'status':'REQUIRES_INDEPENDENT_FUTURE_EVALUATION','pnl_reward_used':False,
   'pnl_note':'REMOTE_BEHAVIOR_REWARDS_CANNOT_BE_LAYA_POLICY_GRADIENT',
   'automatic_cutover':False,'broker_orders_sent':0,'canonical_owner_activation_claimed':False}
@@ -170,6 +205,21 @@ def run_job(c,*,old_learner_verified=False):
    action_optimizer_admitted=bool(action_training_profile and action_training_profile['action_optimizer_admitted']),
    action_unsupported_reason=(None if action_training_profile and action_training_profile['action_optimizer_admitted'] else 'NO_BALANCED_CAUSAL_PARENT_CORRECTNESS_TRAINING'))
  record['training_diagnostics']=price_refs.candidate_training_diagnostics(record)
+ if episode:
+  record['training_lineage'].update(mode='BOUNDED_CONTINUOUS_EPISODE_FROM_CONFIGURED_PARENT',
+   optimizer_reset_between_epochs=False,completed_jobs_are_cumulative_updates=False)
+  record['training_episode']=frozen_episode
+  record['learning_curve']=training_v4.curve(frozen_episode,curve_points,
+   record['training_diagnostics']['same_training_rows_baselines'])
+  record['training_diagnostics']['continuous_episode']={
+   'episode_id':frozen_episode['episode_id'],'epochs':training_v4.EPISODE['epochs'],
+   'unique_training_rows':len(rows),'gradient_presentations':len(rows)*training_v4.EPISODE['epochs'],
+   'optimizer_reset_between_epochs':False,'tokenization_batches':encoding_calls,
+   'load_and_validation_seconds':loaded_at-started,
+   'training_and_measurement_seconds':time.monotonic()-loaded_at,
+   'checkpoint_epochs':training_v4.EPISODE['checkpoint_epochs'],
+   'future_value_proven':False}
+  training_v4.verify_candidate(c,record)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

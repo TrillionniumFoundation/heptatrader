@@ -18,6 +18,7 @@ from .resident_budget import policy as budget_policy,inspect as inspect_storage
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
 from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
+from . import resident_training_v4 as training_v4
 from . import resident_price_baselines as price_refs
 from .resident_queue import inspect as inspect_evaluation_queue
 
@@ -80,6 +81,13 @@ def config_check(config):
   if config['objective']!=training_v3.OBJECTIVE:raise ContractError('RESIDENT_V3_OBJECTIVE_CHANGED')
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v3.RUNTIME_PINS):
    raise ContractError('RESIDENT_V3_RUNTIME_PINS_REQUIRED')
+ if (not isinstance(config.get('objective'),dict) or config['objective'].get('schema') not in
+     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA)):
+  raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
+ if training_v4.enabled(config.get('objective')):
+  training_v4.check_objective(config['objective'])
+  if any(not config.get('runtime_sha256',{}).get(p) for p in training_v4.RUNTIME_PINS):
+   raise ContractError('RESIDENT_V4_RUNTIME_PINS_REQUIRED')
  budget_policy(config)
  if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
  if config.get('future_source_read_profile') is not None:
@@ -166,6 +174,9 @@ class Supervisor:
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
     'broker_orders_sent':0,'storage':self.storage,**getattr(self,'_evaluation_queue_status',{}),**extra}
+  if training_v4.enabled(self.c.get('objective')):
+   state['training_lineage'].update(mode='BOUNDED_CONTINUOUS_EPISODE_FROM_CONFIGURED_PARENT',
+    optimizer_reset_between_epochs=False,episode_profile=training_v4.EPISODE)
   if latest_registration is not None:state['latest_candidate_registration']=latest_registration
   atomic(self.root/'status.json',state);print(json.dumps(state),flush=True);return state
  def candidate_done(self,row):
@@ -196,7 +207,8 @@ class Supervisor:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=pinned
-  training_policy=training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+  training_policy=training_v4 if training_v4.enabled(candidate.get('objective')) else training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+  if training_policy is training_v4:training_v4.check_objective(candidate['objective'])
   if training_policy.enabled(candidate.get('objective')):
    plan['price_baselines']=price_refs.validate(candidate.get('price_baselines'))
    plan['action_output_profile']=training_v2.ACTION_OUTPUT
@@ -207,7 +219,7 @@ class Supervisor:
     expected=self.c.get('runtime_sha256',{}).get(name)
     if not expected:raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=expected
-  if training_v3.enabled(candidate.get('objective')):
+  if training_v3.enabled(candidate.get('objective')) or training_v4.enabled(candidate.get('objective')):
    plan['price_value_rule']={**price_refs.VALUE_RULE,'comparators':list(price_refs.VALUE_RULE['comparators'])}
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
@@ -442,8 +454,8 @@ class Supervisor:
   if _input_wait is None:
    _input_wait=InputWait(input_signature)
    self._training_input_wait=_input_wait
-  _input_before=_input_wait.begin(self.c,reserved,now) if training_v3.enabled(self.c.get('objective')) else None
-  if training_v3.enabled(self.c.get('objective')):
+  _input_before=_input_wait.begin(self.c,reserved,now) if (training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective'))) else None
+  if training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')):
    dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved)
   else:dataset,rows,quality,_=collect(self.c,now)
   new=[]
@@ -457,7 +469,7 @@ class Supervisor:
   held=self._training_window_wait(int(time.time()*1000),queue,window=quality['window'])
   if held is not None:return held
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
-  training_policy=training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
+  training_policy=training_v4 if training_v4.enabled(self.c.get('objective')) else training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
   chosen=(training_policy.select_covered_rows(new) if training_policy.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
   if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')
@@ -465,7 +477,7 @@ class Supervisor:
   data_id=digest(dataset);dataset_path=self.root/'datasets'/(data_id+'.json');write_once(dataset_path,dataset)
   job_id=digest({'fingerprint':fingerprint,'parent':parent_id,'profile':self.c['profile'],'objective':self.c['objective']})
   job={**self.c,'schema':'heptatrader.laya-resident-job.v1','dataset':str(dataset_path),'dataset_sha256':sha_file(dataset_path),
-    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':ROW_ACCOUNTING_SCHEMA,
+    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':(training_v4.ROW_ACCOUNTING_SCHEMA if training_policy is training_v4 else ROW_ACCOUNTING_SCHEMA),
     'parent_directory':self.c['initial_parent_directory'],'parent_manifest_sha256':sha_file(Path(self.c['initial_parent_directory'])/'candidate.json'),
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}

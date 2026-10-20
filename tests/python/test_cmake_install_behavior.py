@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
-    "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
+    "scripts/heptatrader-user", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
@@ -62,6 +62,7 @@ def installed_fixture(*, readme: bool = False):
                 "adapters/mcp/hepta_mcp_server.py",
                 "scripts/hepta_pnl_accounting.py",
                 "scripts/hepta_pnl_report.py",
+                "scripts/hepta_progress.py",
                 "scripts/hepta_pnl_watch.py",
                 "scripts/hepta_change_watch.py",
                 "scripts/hepta_account_pnl.py",
@@ -135,7 +136,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:
-            for name in ("hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_pnl_watch.py", "hepta_change_watch.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
+            for name in ("hepta_progress.py", "hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_pnl_watch.py", "hepta_change_watch.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
                 p=prefix/"libexec/heptatrader"/name
                 self.assertTrue(p.is_file())
                 self.assertTrue(os.access(p,os.X_OK))
@@ -151,7 +152,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertIn("IPAddressDeny=any", account_unit.read_text())
             self.assertIn("ReadWritePaths=%h/.local/state/heptatrader/pnl/account", account_unit.read_text())
             self.assertEqual(list(prefix.glob("**/default.target.wants/heptatrader-account-nav.service")), [])
-            for helper in ("hepta_pnl_report.py", "hepta_account_observer.py"):
+            for helper in ("hepta_progress.py", "hepta_pnl_report.py", "hepta_account_observer.py"):
                 result=subprocess.run([sys.executable,"-B",str(prefix/"libexec/heptatrader"/helper),"--help"],
                     capture_output=True,text=True,timeout=5)
                 self.assertEqual(result.returncode,0,result.stderr)
