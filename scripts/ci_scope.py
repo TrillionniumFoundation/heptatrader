@@ -117,6 +117,31 @@ VERIFIED_PYTHON_LEARNING_GROUPS = (
         "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
         "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
     }),
+    # Resident orchestration consumes the existing Python/native interfaces.
+    # Keep numerical integration feedback and the default-core discovery entry
+    # for historical_training's nested guard tests.
+    frozenset({
+        "research/historical_training/resident_resource_guard.py",
+        "research/historical_training/tests/test_resident_resource_guard.py",
+        "research/neuron_learning/laya_cell/resident.py",
+        "research/neuron_learning/laya_cell/resident_store.py",
+        "research/neuron_learning/laya_cell/resident_plan_admission.py",
+        "research/neuron_learning/laya_cell/resident_plan_calendar.py",
+        "research/neuron_learning/laya_cell/tests/test_resident.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_plan_calendar.py",
+        "research/neuron_learning/laya_cell/tests/test_resident_plan_admission.py",
+        "tests/python/test_historical_training.py",
+        "tests/python/test_laya_training_cadence.py",
+        "tests/python/test_laya_training_window.py",
+    }),
+    # Successor evaluation reads frozen evidence; a native/interface or install
+    # change outside this bounded group still restores every CI lane.
+    frozenset({
+        "research/historical_training/value_successor_evaluator.py",
+        "research/historical_training/value_ledger_stream.py",
+        "tests/python/test_value_successor_evaluator.py",
+    }),
+
 )
 
 

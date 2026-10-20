@@ -178,6 +178,78 @@ class DevelopmentCiTests(unittest.TestCase):
             (root / "tests/python/test_activate_prepared_driver.py").unlink()
             self.assertEqual(ci_scope.scope_for_paths(["scripts/activate_prepared_driver.py"], root), full)
 
+    def test_resident_and_value_scopes_keep_python_and_learning_feedback(self):
+        import tempfile
+        import ci_scope
+
+        expected = {"run_native": False, "run_python": True, "run_learning": True}
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-resident-scope-") as directory:
+            root = Path(directory)
+            for group in ci_scope.VERIFIED_PYTHON_LEARNING_GROUPS:
+                for name in group:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+            cases = [
+                ["research/neuron_learning/laya_cell/resident.py"],
+                ["research/neuron_learning/laya_cell/resident_store.py"],
+                ["research/historical_training/resident_resource_guard.py"],
+                ["research/historical_training/tests/test_resident_resource_guard.py"],
+                ["tests/python/test_laya_training_window.py"],
+                ["research/historical_training/value_successor_evaluator.py",
+                 "research/historical_training/value_ledger_stream.py",
+                 "tests/python/test_value_successor_evaluator.py"],
+                ["docs/technical/runtime-cost-observations.md",
+                 "research/historical_training/resident_resource_guard.py",
+                 "research/neuron_learning/laya_cell/resident.py",
+                 "research/neuron_learning/laya_cell/resident_store.py",
+                 "tests/python/test_laya_training_cadence.py"],
+            ]
+            for paths in cases:
+                with self.subTest(paths=paths):
+                    self.assertEqual(ci_scope.scope_for_paths(paths, root), expected)
+            combined = cases[5] + cases[6] + ["tests/python/test_laya_training_window.py"]
+            self.assertEqual(ci_scope.scope_for_paths(combined, root), expected)
+
+    def test_resident_and_value_exemptions_fail_closed_for_missing_or_shared_paths(self):
+        import tempfile
+        import ci_scope
+
+        full = {"run_native": True, "run_python": True, "run_learning": True}
+        resident = "research/neuron_learning/laya_cell/resident.py"
+        successor = "research/historical_training/value_successor_evaluator.py"
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-scope-boundary-") as directory:
+            root = Path(directory)
+            for group in ci_scope.VERIFIED_PYTHON_LEARNING_GROUPS:
+                for name in group:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+            for path in (
+                    "HeptaTrade/execution/execution_coordinator.cpp",
+                    "research/neuron_learning/laya_cell/resident_train.py",
+                    "research/neuron_learning/laya_cell/install_resident.py",
+                    "research/neuron_learning/laya_cell/new_resident_helper.py",
+                    "research/historical_training/new_value_helper.py",
+                    "scripts/install_btc_entry_runtime.py",
+                    "scripts/ci_scope.py",
+                    "tests/python/test_development_ci.py",
+                    ".github/workflows/core-ci.yml",
+                    "systemd/heptatrader-laya-trainer.service"):
+                with self.subTest(path=path):
+                    self.assertEqual(ci_scope.scope_for_paths([resident, successor, path], root), full)
+            self.assertEqual(ci_scope.scope_for_paths(
+                [resident, "research/neuron_learning/laya_cell/moved_resident.py"], root), full)
+            paired = root / "tests/python/test_laya_training_window.py"
+            paired.unlink()
+            self.assertEqual(ci_scope.scope_for_paths([resident], root), full)
+            paired.touch()
+            stream = root / "research/historical_training/value_ledger_stream.py"
+            stream.unlink()
+            self.assertEqual(ci_scope.scope_for_paths([successor], root), full)
+            stream.symlink_to(root / successor)
+            self.assertEqual(ci_scope.scope_for_paths([successor], root), full)
+
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")
         _, job, tests = self.step(ci, "scripts/run_python_tests.py --lane learning")

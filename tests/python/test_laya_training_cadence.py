@@ -180,6 +180,8 @@ class CandidateRegistrationStatusTests(unittest.TestCase):
     def held_step(self, service, gate):
         before = service.db.total_changes
         with ExitStack() as stack:
+            # Status tests run in a real feasible session; window refusal has its own tests.
+            stack.enter_context(patch('laya_cell.resident.time.time', return_value=1792396800))
             stack.enter_context(patch('laya_cell.resident.config_check'))
             stack.enter_context(patch('laya_cell.resident.bootstrap_still_off'))
             storage = stack.enter_context(patch('laya_cell.resident.inspect_storage',
