@@ -12,7 +12,9 @@ from pathlib import Path
 
 from historical_training.common import EvidenceError, read, sha
 from .swapless_fault_recovery import GIB, MIB, MODES, SCHEMA as PROBE_SCHEMA
-from .swapless_resource import SCHEMA as SOURCE_SCHEMA
+# This verifier describes the sealed 2026-10-13 experiment, not current
+# resource admission. Never reinterpret its low-swap v1 evidence as v2.
+SOURCE_SCHEMA = "heptatrader.train-v2-swapless-isolated-admission.v1"
 
 SCHEMA = "heptatrader.train-v2-swapless-fault-recovery-closure.v1"
 

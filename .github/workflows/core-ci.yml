@@ -1,188 +1,129 @@
 name: Core Runtime CI
-
-on:
+'on':
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
   push:
-    branches: [main]
-  workflow_dispatch:
-
+    branches:
+    - main
+  workflow_dispatch: null
 permissions:
   contents: read
-
 concurrency:
   group: heptatrader-core-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
-
 jobs:
   core:
     name: core-runtime-exact-head
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Use bounded Git HTTP transport
-        run: git config --global http.version HTTP/1.1
-      - name: Checkout exact event subject without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact source identity
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Identify native, Python and learning change scopes
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
-          fi
-          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
-      - name: Install build dependencies
-        if: steps.scope.outputs.run_native == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
-      - name: Native build and behavior tests
-        if: steps.scope.outputs.run_native == 'true'
-        env:
-          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
-          HEPTA_JOBS: "2"
-        run: ./scripts/dev_core.sh
-      - name: Retain actual test diagnostics
-        if: always() && steps.scope.outputs.run_native == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: core-tests-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            build/core/*-results.xml
-            build/core/*-ctest.log
-            build/core/Testing/Temporary/
-          if-no-files-found: warn
-          retention-days: 7
-
-  python:
-    name: python-behavior-exact-head
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Use bounded Git HTTP transport
-        run: git config --global http.version HTTP/1.1
-      - name: Checkout exact event subject without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact source identity
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Identify native, Python and learning change scopes
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
-          fi
-          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
-      - name: Install build dependencies
-        if: steps.scope.outputs.run_python == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml python3-numpy python3-venv python3-cryptography
-      - name: Documentation links preflight
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_documentation.py
-      - name: Python core behavior tests
-        if: ${{ !cancelled() && steps.scope.outputs.run_python != 'false' }}
-        run: python3 scripts/run_python_tests.py --lane core
-      - name: Python source contracts
-        if: ${{ !cancelled() && steps.scope.outputs.run_python != 'false' }}
-        run: python3 scripts/run_python_tests.py --lane source
-      - name: Whitespace check
-        if: ${{ !cancelled() }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-          if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
-            git -c http.version=HTTP/1.1 fetch --no-tags --depth=2 origin "$HEAD_SHA"
-            if git rev-parse --verify 'HEAD^' >/dev/null 2>&1; then
-              git diff --check HEAD^ "$HEAD_SHA" --
-            else
-              git diff-tree --check --root -r "$HEAD_SHA" --
-            fi
+    - name: Use bounded Git HTTP transport
+      run: git config --global http.version HTTP/1.1
+    - name: Checkout exact event subject without credentials
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Assert exact source identity
+      env:
+        EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      id: identity
+    - name: Identify native, Python and learning change scopes
+      id: scope
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        set -euo pipefail
+        if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+          git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+        fi
+        python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
+    - name: Documentation links preflight
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+      run: python3 scripts/check_documentation.py
+    - name: Install selected lane dependencies
+      id: deps
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && (steps.scope.outputs.run_native != 'false' || steps.scope.outputs.run_python != 'false' || steps.scope.outputs.run_learning != 'false') }}
+      env:
+        RUN_NATIVE: ${{ steps.scope.outputs.run_native }}
+        RUN_LEARNING: ${{ steps.scope.outputs.run_learning }}
+      run: |
+        set -euo pipefail
+        packages=(python3-yaml python3-numpy python3-cryptography)
+        if [[ "$RUN_NATIVE" != false ]]; then packages+=(cmake ninja-build libssl-dev zlib1g-dev); fi
+        if [[ "$RUN_LEARNING" != false ]]; then packages+=(python3-venv); fi
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+    - name: Native build and behavior tests
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      env:
+        HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
+        HEPTA_JOBS: '2'
+      run: ./scripts/dev_core.sh
+    - name: Retain actual test diagnostics
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: core-tests-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          build/core/*-results.xml
+          build/core/*-ctest.log
+          build/core/Testing/Temporary/
+        if-no-files-found: warn
+        retention-days: 7
+    - name: Python core behavior tests
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
+      run: python3 scripts/run_python_tests.py --lane core
+    - name: Python source contracts
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
+      run: python3 scripts/run_python_tests.py --lane source
+    - name: Cache CPU research dependency downloads
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+      continue-on-error: true
+      with:
+        path: ~/.cache/pip
+        key: heptatrader-cpu-torch-2.8.0-safetensors-0.8.0-v2-${{ runner.os }}-${{ runner.arch }}
+    - name: Install pinned CPU research test dependency
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      run: |
+        python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
+        "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+        "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install --only-binary=:all: safetensors==0.8.0
+        "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import safetensors; assert safetensors.__version__ == "0.8.0"; print(safetensors.__version__)'
+        "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
+        echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
+      id: learning_install
+    - name: Python learning tests once
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.learning_install.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      env:
+        OMP_NUM_THREADS: '1'
+        MKL_NUM_THREADS: '1'
+      run: python3 scripts/run_python_tests.py --lane learning
+    - name: Whitespace check
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        set -euo pipefail
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+        if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+          git -c http.version=HTTP/1.1 fetch --no-tags --depth=2 origin "$HEAD_SHA"
+          if git rev-parse --verify 'HEAD^' >/dev/null 2>&1; then
+            git diff --check HEAD^ "$HEAD_SHA" --
           else
-            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-            git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null
-            git diff --check "$BASE_SHA" "$HEAD_SHA" --
+            git diff-tree --check --root -r "$HEAD_SHA" --
           fi
-
-  learning:
-    name: python-learning-exact-head
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Use bounded Git HTTP transport
-        run: git config --global http.version HTTP/1.1
-      - name: Checkout exact event subject without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact source identity
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Identify native, Python and learning change scopes
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-            git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
-          fi
-          python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
-      - name: Install Python research test dependencies
-        if: steps.scope.outputs.run_learning == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends python3-numpy python3-venv python3-cryptography
-      # Learning feedback is independent from behavioral and metadata failures.
-      # Cache downloaded wheel bytes; every learning run installs the pinned version.
-      - name: Cache CPU research dependency downloads
-        if: steps.scope.outputs.run_learning == 'true'
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        continue-on-error: true # cache outage must not become a new dev gate
-        with:
-          path: ~/.cache/pip
-          key: heptatrader-cpu-torch-2.8.0-safetensors-0.8.0-v2-${{ runner.os }}-${{ runner.arch }}
-      - name: Install pinned CPU research test dependency
-        if: steps.scope.outputs.run_learning == 'true'
-        run: |
-          python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install --only-binary=:all: safetensors==0.8.0
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import safetensors; assert safetensors.__version__ == "0.8.0"; print(safetensors.__version__)'
-          "$RUNNER_TEMP/hepta-core-python/bin/python" -c 'import torch; assert torch.__version__.split("+")[0] == "2.8.0"; assert torch.version.cuda is None; print(torch.__version__)'
-          echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
-      - name: Python learning tests once
-        if: steps.scope.outputs.run_learning == 'true'
-        env:
-          OMP_NUM_THREADS: "1"
-          MKL_NUM_THREADS: "1"
-        run: python3 scripts/run_python_tests.py --lane learning
+        else
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null
+          git diff --check "$BASE_SHA" "$HEAD_SHA" --
+        fi

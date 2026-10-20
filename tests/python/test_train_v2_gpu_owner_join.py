@@ -9,7 +9,7 @@ from train_v2.gpu_owner_join import verify_join, _safe_error
 
 def source(*, ready=True, authority=True):
     return {
-        "schema":"heptatrader.train-v2-swapless-isolated-admission.v1",
+        "schema":"heptatrader.train-v2-swapless-isolated-admission.v2",
         "isolated_preflight_eligible":ready,
         "isolated_research_preflight":(
             "READY_FOR_OPERATOR_REVIEW_NO_JOB" if ready else
@@ -19,7 +19,7 @@ def source(*, ready=True, authority=True):
         "source_authoritative_method":(
             "PINNED_ORIGINAL_GUARD_REFRESH" if authority else
             "PERIODIC_STATUS_ONLY_NO_NEW_QUOTE_PROOF"),
-        "legacy_production_guard_admit_new_worker":False,
+        "current_guard_admit_new_worker":ready,
     }
 
 

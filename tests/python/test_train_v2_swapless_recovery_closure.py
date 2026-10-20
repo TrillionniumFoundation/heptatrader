@@ -4,8 +4,7 @@ import unittest
 
 from historical_training.common import EvidenceError
 from train_v2.swapless_fault_recovery import GIB, MIB, MODES, SCHEMA as PROBE
-from train_v2.swapless_resource import SCHEMA as SOURCE
-from train_v2.swapless_recovery_closure import close
+from train_v2.swapless_recovery_closure import SOURCE_SCHEMA as SOURCE, close
 
 
 def cgroup(mode,at,pid):
@@ -83,6 +82,12 @@ def fixture():
 
 
 class SwaplessClosureTests(unittest.TestCase):
+    def test_current_policy_cannot_relabel_historical_receipt(self):
+        values=list(fixture())
+        values[3]["schema"]="heptatrader.train-v2-swapless-isolated-admission.v2"
+        with self.assertRaisesRegex(EvidenceError,"RECOVERY_ORIGINAL_GUARD_NOT_PRESERVED"):
+            close(*values)
+
     def test_actual_chain_semantics_returns_no_production_authority(self):
         result=close(*fixture())
         self.assertEqual(result["assessment"],

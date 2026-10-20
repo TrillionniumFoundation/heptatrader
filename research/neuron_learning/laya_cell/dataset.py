@@ -6,6 +6,7 @@ import hashlib,math
 from pathlib import Path
 from .integrity import ContractError,canonical,digest,read_json
 HORIZONS=(300,900)
+CAUSAL_STATE_FIELDS=('instrument','anchor_ms','reference_mid','horizon_sec','columns','quotes','quantity')
 BIN_EDGES_BPS=(-10.,-3.,-1.,1.,3.,10.)
 BIN_TEXT=('return below -10 basis points','return at least -10 and below -3 basis points','return at least -3 and below -1 basis points','return at least -1 and below 1 basis point','return at least 1 and below 3 basis points','return at least 3 and below 10 basis points','return at least 10 basis points')
 def finite(x):
@@ -102,7 +103,12 @@ def encode_rows(tokenizer,rows,max_len=1024):
  from laya.common import build_sequence,collate_items
  items=[]
  for row in rows:
-  ids,markers,stats,truncation=build_sequence(tokenizer,row['state'],row['question'],max_len=max_len,head_max_len=256,return_stats=True,return_truncation_stats=True)
+  # Upstream serializes insertion order; canonical JSON storage sorts keys.
+  # Restore causal_state's original order without mutating the frozen input.
+  state=row['state']
+  if not isinstance(state,dict) or set(state)!=set(CAUSAL_STATE_FIELDS):raise ContractError('PRICE_MODEL_STATE_FIELDS_CHANGED')
+  state={name:state[name] for name in CAUSAL_STATE_FIELDS}
+  ids,markers,stats,truncation=build_sequence(tokenizer,state,row['question'],max_len=max_len,head_max_len=256,return_stats=True,return_truncation_stats=True)
   if len(markers)!=7 or stats['options_distinct']!=7 or truncation['truncated']:raise ContractError('SILENT_INPUT_OR_OPTIONS_TRUNCATION_FORBIDDEN')
   items.append([{'ids':ids,'markers':markers,'qtype':0}])
  batch=collate_items(items,tokenizer.pad_token_id)

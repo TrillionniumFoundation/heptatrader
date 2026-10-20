@@ -1,8 +1,9 @@
 """Optional isolated swapless training-lane *preflight*, never production guard.
 
-All limits must be enforced by the kernel in THIS transient cgroup. Low global
-swap free is not excused on the live resident services; no existing worker is
-reconfigured and a passed preflight cannot dispatch a GPU job or broker request.
+The current resident RAM/PSI policy also applies here; host swap is diagnostic.
+This preflight adds kernel-enforced limits for THIS transient cgroup. It does
+not reconfigure workers or dispatch a GPU job or broker request. Historical
+v1 receipts retain their original policy meaning; new receipts use v2.
 """
 from __future__ import annotations
 import argparse
@@ -16,7 +17,7 @@ from historical_training.resident_resource_guard import (
     GIB, SOURCE_RULE, RESOURCE_RULE, assess, parse_meminfo, parse_full_psi,
 )
 
-SCHEMA="heptatrader.train-v2-swapless-isolated-admission.v1"
+SCHEMA="heptatrader.train-v2-swapless-isolated-admission.v2"
 MAX_WORKER_BYTES=6*GIB
 MIN_WORKER_BYTES=4*GIB
 SPARE_AFTER_CAP_BYTES=8*GIB+512*1024*1024
@@ -88,10 +89,9 @@ def current_cgroup():
 
 
 def assess_isolated(host,pressure,source,now_ms,period,manual_hold,cgroup):
-    """Keep original guard intact. Result cannot be production admission."""
-    original=assess(host,pressure,source,now_ms,period,manual_hold)
-    issues=[x for x in original["reasons"]
-            if x!="HOST_SWAP_RESERVE_BELOW_1GIB"]
+    """Apply the current guard, then add isolated-cgroup constraints."""
+    current=assess(host,pressure,source,now_ms,period,manual_hold)
+    issues=list(current["reasons"])
     proof=None
     try:
         proof=verify_cgroup(cgroup)
@@ -106,8 +106,11 @@ def assess_isolated(host,pressure,source,now_ms,period,manual_hold,cgroup):
     eligible=not issues
     return {
         "schema":SCHEMA,"at_ms":now_ms,
-        "legacy_production_guard_admit_new_worker":original["admit_new_worker"],
-        "legacy_guard_reasons_unchanged":original["reasons"],
+        "current_guard_admit_new_worker":current["admit_new_worker"],
+        "current_guard_reasons":current["reasons"],
+        "resource_profile":current["resource_profile"],
+        "resource_role":current["resource_role"],
+        "swap_free_policy":current["swap_free_policy"],
         "isolated_research_preflight":("READY_FOR_OPERATOR_REVIEW_NO_JOB"
                                        if eligible else "HOLD_ISOLATED_RESEARCH"),
         "isolated_preflight_eligible":eligible,
@@ -183,7 +186,8 @@ def main():
     print(json.dumps({
         "preflight":result["isolated_research_preflight"],
         "original_guard_unchanged":True,
-        "original_guard_reasons":result["legacy_guard_reasons_unchanged"],
+        "current_guard_reasons":result["current_guard_reasons"],
+        "resource_profile":result["resource_profile"],
         "isolated_hold_reasons":result["isolated_hold_reasons"],
         "kernel_swapless":bool(result["kernel_cgroup_proof"]),
         "existing_services_modified":False,

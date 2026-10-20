@@ -14,7 +14,7 @@ from pathlib import Path
 
 from historical_training.common import EvidenceError, sha
 from .gpu_owner_fence import owner_fence
-from .swapless_resource import once
+from .swapless_resource import SCHEMA as SOURCE_SCHEMA, once
 
 SCHEMA="heptatrader.train-v2-gpu-owner-original-gate-join.v1"
 
@@ -23,7 +23,7 @@ def verify_join(source, gpu, *, source_exception=None, gpu_exception=None):
     reasons=[]
     if source_exception is not None:
         reasons.append("ORIGINAL_SOURCE_CGROUP_PREFLIGHT_UNAVAILABLE")
-    elif not isinstance(source,dict) or source.get("schema")!="heptatrader.train-v2-swapless-isolated-admission.v1":
+    elif not isinstance(source,dict) or source.get("schema")!=SOURCE_SCHEMA:
         reasons.append("ORIGINAL_SOURCE_CGROUP_PREFLIGHT_INVALID")
     else:
         reasons.extend(source.get("isolated_hold_reasons") or [])

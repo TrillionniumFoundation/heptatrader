@@ -45,4 +45,39 @@ class PriceReadoutDiagnosticsTests(unittest.TestCase):
         for p,y in [(np.ones((2,7)),[0,1]),(np.full((2,7),1/7),[0.,1.]),(np.full((2,7),1/7),[False,True])]:
             with self.assertRaises(ValueError):d.fit_bias(p,y)
 
+
+class PriceReadoutSplitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        import research_laya_price_readout_diagnostics
+        cls.runner = research_laya_price_readout_diagnostics
+
+    def row(self, row_id, anchor, available):
+        return {"row_id": row_id, "anchor_ms": anchor,
+                "future_outcome_available_ms": available}
+
+    def test_late_outcomes_and_embargo_are_excluded(self):
+        rows = [self.row("fit", 80, 100), self.row("late", 90, 101),
+                self.row("gap", 105, 110), self.row("hold", 120, 125),
+                self.row("end", 130, 135)]
+        train, hold = self.runner.split_rows(rows, 100, 110, 130)
+        self.assertEqual([r["row_id"] for r in train], ["fit"])
+        self.assertEqual([r["row_id"] for r in hold], ["hold"])
+
+    def test_invalid_split_and_repeated_identity_are_rejected(self):
+        rows = [self.row("same", 80, 90), self.row("same", 120, 125)]
+        with self.assertRaisesRegex(ValueError, "Duplicate or overlapping"):
+            self.runner.split_rows(rows, 100, 110, 130)
+        with self.assertRaisesRegex(ValueError, "chronological"):
+            self.runner.split_rows(rows, 100, 90, 130)
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            self.runner.split_rows(rows, 50, 60, 70)
+
+    def test_action_labels_use_original_parent_not_calibrated_student(self):
+        rows = [{"frozen_parent_probs": [.4, .1, .1, .1, .1, .1, .1],
+                 "target_class": 1}]
+        self.assertEqual(self.runner.action_counts(rows)["ACT_correct"], 0)
+        self.assertEqual(self.runner.action_counts(rows)["ESCALATE_wrong"], 1)
+
 if __name__=="__main__":unittest.main()
