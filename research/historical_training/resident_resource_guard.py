@@ -11,7 +11,9 @@ from .common import EvidenceError,read,sha,atomic,write_once,digest
 GIB=1024**3
 SOURCE_RULE={'input_probes':24,'minimum_usable':20,'maximum_missing':4,'source_ttl_ms':5000,
              'endpoint_tolerance_ms':5000,'path_gap_max_ms':30000}
-RESOURCE_RULE={'min_available_bytes':8*GIB,'min_swap_free_bytes':GIB,'max_full_psi_avg10':1.,'max_full_psi_avg60':.1}
+RESOURCE_RULE={'profile':'ROLE_MEMORY_PSI_V2','min_available_bytes':8*GIB,
+               'registration_min_available_bytes':2*GIB,'swap_free_policy':'DIAGNOSTIC_ONLY',
+               'max_full_psi_avg10':1.,'max_full_psi_avg60':.1}
 
 
 def parse_meminfo(text):
@@ -44,20 +46,31 @@ def parse_full_psi(text):
     return out
 
 
-def assess_resources(memory,pressure,now_ms,manual_hold):
+def assess_resources(memory,pressure,now_ms,manual_hold,*,role='trainer'):
+    if role not in ('trainer','evaluator','forward_registration'):
+        raise EvidenceError('RESOURCE_ADMISSION_ROLE_REQUIRED')
+    # Keep the original heavy-worker RAM floor. Cold pages occupying swap are
+    # not evidence of current pressure and cannot starve otherwise safe work.
+    registration=role=='forward_registration'
+    minimum=RESOURCE_RULE['registration_min_available_bytes' if registration else 'min_available_bytes']
     reasons=[]
     if type(manual_hold) is not bool or manual_hold:reasons.append('OPERATOR_RESOURCE_HOLD')
-    if memory['MemAvailable']<RESOURCE_RULE['min_available_bytes']:reasons.append('HOST_AVAILABLE_MEMORY_BELOW_8GIB')
-    if memory['SwapFree']<RESOURCE_RULE['min_swap_free_bytes']:reasons.append('HOST_SWAP_RESERVE_BELOW_1GIB')
-    if pressure['avg10']>1 or pressure['avg60']>.1:reasons.append('HOST_FULL_MEMORY_PSI_PRESSURE')
+    if memory['MemAvailable']<minimum:
+        reasons.append('HOST_AVAILABLE_MEMORY_BELOW_REGISTRATION_RESERVE' if registration
+                       else 'HOST_AVAILABLE_MEMORY_BELOW_8GIB')
+    if (pressure['avg10']>RESOURCE_RULE['max_full_psi_avg10']
+            or pressure['avg60']>RESOURCE_RULE['max_full_psi_avg60']):
+        reasons.append('HOST_FULL_MEMORY_PSI_PRESSURE')
     return {'schema':'heptatrader.resident-resource-admission.v1','at_ms':now_ms,'admit_new_worker':not reasons,
         'reasons':list(dict.fromkeys(reasons)),'memory_bytes':memory,'full_memory_psi':pressure,
+        'resource_profile':RESOURCE_RULE['profile'],'resource_role':role,
+        'minimum_available_bytes':minimum,'swap_free_policy':'DIAGNOSTIC_ONLY',
         'max_new_heavy_workers_across_roles':1,'existing_workers_interrupted':False,
         'automatic_trading':False,'statistical_rule_changed':False}
 
 
-def assess(memory,pressure,source,now_ms,period_sha256,manual_hold):
-    report=assess_resources(memory,pressure,now_ms,manual_hold)
+def assess(memory,pressure,source,now_ms,period_sha256,manual_hold,*,role='trainer'):
+    report=assess_resources(memory,pressure,now_ms,manual_hold,role=role)
     reasons=report['reasons']
     try:
         fields=('at_ms','latest_source_quote_ms','usable','unusable')
@@ -198,8 +211,9 @@ class Gate:
             current=int(time.time()*1000)
             memory=parse_meminfo(Path('/proc/meminfo').read_text())
             pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
+            resource_role='forward_registration' if forward_registration is not None else self.role
             resources=assess_resources(memory,pressure,current,
-                os.path.lexists(self.c['manual_hold_path']))
+                os.path.lexists(self.c['manual_hold_path']),role=resource_role)
             if self.role=='trainer' and forward_registration is None:
                 # The resident still validates immutable sources, causal mature
                 # labels and unused rows before training. Current live readiness
@@ -240,7 +254,7 @@ class Gate:
                     # mature quality probes. Do not confuse a closed market with
                     # a corrupted historical archive.
                     report=assess(memory,pressure,source,current,
-                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']),role=resource_role)
                     report['admit_new_worker']=False
                     report['reasons']=list(dict.fromkeys(
                         report['reasons']+['SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY']))
@@ -253,7 +267,7 @@ class Gate:
                 else:
                     source,proof=refresh(original,source,current)
                     report=assess(memory,pressure,source,int(time.time()*1000),
-                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']))
+                        self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']),role=resource_role)
                     report['original_live_source_evidence']=proof
         except (OSError,ValueError,TypeError,KeyError) as exc:
             report={'schema':'heptatrader.resident-resource-admission.v1','at_ms':int(time.time()*1000),

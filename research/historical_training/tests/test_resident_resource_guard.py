@@ -3,7 +3,7 @@ import copy,math,tempfile,unittest
 from pathlib import Path
 from historical_training.common import EvidenceError
 from historical_training.resident_resource_guard import (GIB,SOURCE_RULE,RESOURCE_RULE,assess,
-    parse_meminfo,parse_full_psi,Lease,guarded_evaluator_class,guarded_trainer_class)
+    parse_meminfo,parse_full_psi,Lease,guarded_evaluator_class,guarded_trainer_class,assess_resources)
 
 NOW=1791470000000
 
@@ -22,9 +22,36 @@ class AdmissionTests(unittest.TestCase):
     def test_memory_reserve_blocks_before_worker(self):
         m,p,s,n,scope,h=fixture();m['MemAvailable']=8*GIB-1
         self.assertIn('HOST_AVAILABLE_MEMORY_BELOW_8GIB',assess(m,p,s,n,scope,h)['reasons'])
-    def test_full_swap_blocks_even_with_free_ram(self):
+    def test_cold_full_swap_does_not_starve_work_with_ram_and_no_pressure(self):
         m,p,s,n,scope,h=fixture();m['SwapFree']=0
-        self.assertIn('HOST_SWAP_RESERVE_BELOW_1GIB',assess(m,p,s,n,scope,h)['reasons'])
+        report=assess(m,p,s,n,scope,h)
+        self.assertTrue(report['admit_new_worker'])
+        self.assertEqual(report['swap_free_policy'],'DIAGNOSTIC_ONLY')
+    def test_registration_budget_does_not_authorize_heavy_work(self):
+        m,p,s,n,scope,h=fixture();m['SwapFree']=0;m['MemAvailable']=2*GIB
+        report=assess(m,p,s,n,scope,h,role='forward_registration')
+        self.assertTrue(report['admit_new_worker'])
+        self.assertEqual(report['resource_role'],'forward_registration')
+        for role in ('trainer','evaluator'):
+            self.assertFalse(assess(m,p,s,n,scope,h,role=role)['admit_new_worker'])
+        m['MemAvailable']-=1
+        self.assertIn('HOST_AVAILABLE_MEMORY_BELOW_REGISTRATION_RESERVE',
+                      assess(m,p,s,n,scope,h,role='forward_registration')['reasons'])
+    def test_full_swap_with_real_pressure_still_blocks_every_role(self):
+        m,p,s,n,scope,h=fixture();m['SwapFree']=0;p['avg10']=1.01
+        for role in ('trainer','evaluator','forward_registration'):
+            self.assertIn('HOST_FULL_MEMORY_PSI_PRESSURE',
+                          assess(m,p,s,n,scope,h,role=role)['reasons'])
+    def test_registration_still_needs_fresh_source_and_no_manual_hold(self):
+        m,p,s,n,scope,h=fixture();m['MemAvailable']=2*GIB
+        self.assertFalse(assess(m,p,s,n,scope,True,role='forward_registration')['admit_new_worker'])
+        s['latest_source_quote_ms']=n-5001
+        self.assertIn('LATEST_SOURCE_QUOTE_NOT_FRESH',
+                      assess(m,p,s,n,scope,h,role='forward_registration')['reasons'])
+    def test_unknown_resource_role_is_not_registration(self):
+        m,p,_,n,_,h=fixture()
+        with self.assertRaises(EvidenceError):
+            assess_resources(m,p,n,h,role='other')
     def test_boundary_reserves_allow(self):
         m,p,s,n,scope,h=fixture();m['MemAvailable']=8*GIB;m['SwapFree']=GIB
         self.assertTrue(assess(m,p,s,n,scope,h)['admit_new_worker'])

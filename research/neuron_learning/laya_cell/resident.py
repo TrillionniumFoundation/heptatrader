@@ -25,6 +25,42 @@ from .resident_queue import inspect as inspect_evaluation_queue
 MIN_CADENCE_MS=900000
 MAX_PENDING_EVALUATIONS=2
 REWARD_SYNC_INTERVAL_SECONDS=60
+TRAINING_TIMEOUT_SECONDS=600
+TRAINING_DISPATCH_MARGIN_MS=60000
+FORWARD_LEAD_MS=120000
+
+
+def training_forward_window(window,rule,now_ms):
+ """Negative-only preview; no artifact, trial or source authority is created.
+
+ Use the unchanged registration calendar and original rule. The entire interval
+ from immediate completion through the child timeout plus dispatch margin must
+ fit in one feasible registration interval, including the existing two-minute
+ lead. The actual candidate is still checked again by the original registrar.
+ """
+ from .resident_plan_calendar import calendar_admission
+ if type(now_ms) is not int or now_ms<0:raise ContractError('TRAINING_WINDOW_CLOCK')
+ required=('slots','slot_spacing_ms','input_grace_ms','horizon_ms')
+ if (not isinstance(rule,dict) or any(type(rule.get(k)) is not int for k in required)
+     or rule['slots']<1 or rule['slot_spacing_ms']<=0
+     or rule['input_grace_ms']<0 or rule['horizon_ms']<=0):
+  raise ContractError('TRAINING_FORWARD_RULE')
+ length=(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000
+ budget=TRAINING_TIMEOUT_SECONDS*1000+TRAINING_DISPATCH_MARGIN_MS
+ candidate={'created_at_ms':now_ms,'trained_until_ms':window['training_end_ms'],'window':dict(window)}
+ start=now_ms+FORWARD_LEAD_MS
+ proposal={'created_at_ms':now_ms,'start_ms':start,'outcome_end_ms':start+length,'rule':rule}
+ calendar=calendar_admission(candidate,proposal,now_ms)
+ intervals=calendar['feasible_start_intervals_ms']
+ ready=calendar['ready'] and any(lo<=start<=start+budget<=hi for lo,hi in intervals)
+ starts=[max(now_ms,lo-FORWARD_LEAD_MS) for lo,hi in intervals
+         if max(start,lo)+budget<=hi]
+ return {'ready':ready,'reason':('FULL_FORWARD_WINDOW_WITH_TRAINING_BUDGET' if ready
+         else 'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'),
+         'checked_at_ms':now_ms,'training_budget_ms':budget,
+         'next_training_at_ms':min(starts) if starts else None,
+         'calendar':calendar,'trial_allocated':False,
+         'future_data_availability_proven':False}
 
 
 def config_check(config):
@@ -144,7 +180,7 @@ class Supervisor:
   self.register_evaluation(row['id'],candidate,job)
   return True
  def _evaluation_plan(self,job_id,candidate,job,trial,now):
-  rule=rule_for_trial(trial,self.c.get('promotion_protocol'));start=now+120000
+  rule=rule_for_trial(trial,self.c.get('promotion_protocol'));start=now+FORWARD_LEAD_MS
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
    'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000,
@@ -345,9 +381,24 @@ class Supervisor:
   return self.write_status(storage=self.storage,state='COLLECTING_BETWEEN_TRAINING_JOBS',
     reason='TRAINING_CADENCE_NOT_DUE',next_training_due_ms=last+MIN_CADENCE_MS,
     training_data_refresh_performed=False,**queue)
+ def _training_window_wait(self,now,queue,*,window=None):
+  if self.c.get('future_plan_admission_profile') is None:return None
+  collected=window is not None
+  if window is None:
+   window={'training_end_ms':now,'validation_start_ms':now+1,'validation_end_ms':now+86400000}
+  trial=get_meta(self.db,'evaluation_trial',0)+1
+  decision=training_forward_window(window,rule_for_trial(trial,self.c.get('promotion_protocol')),now)
+  if decision['ready']:return None
+  return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_FORWARD_WINDOW',
+    waiting_stage='NEW_TRAINING_FORWARD_WINDOW_PREFLIGHT',
+    reason=decision['reason'],training_window_preflight=decision,
+    next_training_at_ms=decision['next_training_at_ms'],
+    training_data_refresh_performed=collected,rows_reserved=False,trial_allocated=False,**queue)
  def _training_wait_preflight(self,now,queue):
   cadence=self._training_cadence_wait(now,queue)
   if cadence is not None:return cadence
+  window_hold=self._training_window_wait(now,queue)
+  if window_hold is not None:return window_hold
   waiting=getattr(self,'_training_input_wait',None)
   if waiting is None:return None
   reserved={row[0] for row in self.db.execute('SELECT id FROM consumed_rows')}
@@ -403,6 +454,8 @@ class Supervisor:
   if len(new)<16:
    _input_wait.remember(self.c,reserved,now,_input_before,quality=quality,mature_rows=len(rows),new_mature_rows=len(new),clock_complete=quality.get('training_input_clock_complete') is True,next_input_ms=quality.get('next_training_input_ms'))
    return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
+  held=self._training_window_wait(int(time.time()*1000),queue,window=quality['window'])
+  if held is not None:return held
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
   training_policy=training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
   chosen=(training_policy.select_covered_rows(new) if training_policy.enabled(self.c.get('objective')) else select_rows(new));row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
@@ -424,7 +477,7 @@ class Supervisor:
   try:
    with log.open('x') as stream:
     self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','train','--config',str(job_path)],stdout=stream,stderr=stream)
-    rc=self.child.wait(timeout=600)
+    rc=self.child.wait(timeout=TRAINING_TIMEOUT_SECONDS)
    self.child=None
   except (subprocess.TimeoutExpired,Exception) as exc:
    if self.child and self.child.poll() is None:self.child.terminate();self.child.wait(timeout=15)
