@@ -204,6 +204,7 @@ def run_job(c,*,old_learner_verified=False):
    action_output_profile=training_v2.ACTION_OUTPUT,
    action_optimizer_admitted=bool(action_training_profile and action_training_profile['action_optimizer_admitted']),
    action_unsupported_reason=(None if action_training_profile and action_training_profile['action_optimizer_admitted'] else 'NO_BALANCED_CAUSAL_PARENT_CORRECTNESS_TRAINING'))
+ if 'selection_context' in c:record['selection_context']=copy.deepcopy(c['selection_context'])
  record['training_diagnostics']=price_refs.candidate_training_diagnostics(record)
  if episode:
   record['training_lineage'].update(mode='BOUNDED_CONTINUOUS_EPISODE_FROM_CONFIGURED_PARENT',

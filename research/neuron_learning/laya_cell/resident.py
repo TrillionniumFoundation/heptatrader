@@ -478,6 +478,7 @@ class Supervisor:
   job_id=digest({'fingerprint':fingerprint,'parent':parent_id,'profile':self.c['profile'],'objective':self.c['objective']})
   job={**self.c,'schema':'heptatrader.laya-resident-job.v1','dataset':str(dataset_path),'dataset_sha256':sha_file(dataset_path),
     'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':(training_v4.ROW_ACCOUNTING_SCHEMA if training_policy is training_v4 else ROW_ACCOUNTING_SCHEMA),
+    'selection_context':{'pool_count':len(new),'pool_row_ids_digest':digest(sorted(key for key,_ in new))},
     'parent_directory':self.c['initial_parent_directory'],'parent_manifest_sha256':sha_file(Path(self.c['initial_parent_directory'])/'candidate.json'),
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}
