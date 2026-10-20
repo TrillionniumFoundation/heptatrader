@@ -180,6 +180,19 @@ void TestNativeRuntimeReadsPrivateMaintenanceHold()
     };
     auto monitor=open();
     ExpectState(monitor,IbPaperKillSwitchState::Disarmed,"");
+    // Reproduce Pocket4: legitimate v4 rollout storage raises directory nlink.
+    const std::string rollout=maintenance+"/training-episode-rollout";
+    assert(::mkdir(rollout.c_str(),0700)==0);
+    CreateMarker(control);
+    ExpectState(monitor,IbPaperKillSwitchState::Engaged,
+                "IB_PAPER_KILL_SWITCH_ENGAGED");
+    assert(::unlink((control+"/kill-switch").c_str())==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Disarmed,"");
+    assert(::chmod(maintenance.c_str(),0750)==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Uncertain,
+                "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::chmod(maintenance.c_str(),0700)==0);
+    ExpectState(monitor,IbPaperKillSwitchState::Disarmed,"");
     const auto write=[&](const std::string& value) {
         const int fd=::open(hold.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
         assert(fd>=0);
@@ -246,6 +259,7 @@ void TestNativeRuntimeReadsPrivateMaintenanceHold()
                 "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
     assert(::unlink(maintenance.c_str())==0);
     monitor.reset();
+    assert(::rmdir((moved+"/training-episode-rollout").c_str())==0);
     assert(::rmdir(moved.c_str())==0);
     assert(::rmdir(control.c_str())==0);
 }

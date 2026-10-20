@@ -279,7 +279,7 @@ class NativeHoldResumeTests(unittest.TestCase):
     _make_independent_empty_marker = HoldTests._make_independent_empty_marker
 
     def health(self):
-        return {
+        value = {
             "execution_mode": "PAPER", "gateway_ready": True,
             "remote_execution_ready": True, "execution_service_epoch": "native-original",
             "execution_service_fencing_generation": 3,
@@ -297,6 +297,10 @@ class NativeHoldResumeTests(unittest.TestCase):
                 "account_local_venue_dispatches_in_flight": 0,
                 "account_local_unattributed_owned_orders": 0,
                 "account_local_unattributed_uncertain_commands": 0}}
+        if not self.kill_path.exists():
+            value["execution_authoritative_health"].update(
+                native_new_risk_guard_blocked=False, mutation_ready=True, mutation_reason="")
+        return value
 
     def command(self, argv):
         if argv[0] == "systemctl":
@@ -332,14 +336,85 @@ class NativeHoldResumeTests(unittest.TestCase):
         with patch.object(latch, "_command", side_effect=self.command) as calls:
             result = self.resume()
         self.assertFalse(self.kill_path.exists())
-        self.assertEqual(result["native_hold_resume"]["state"], "RELEASED_VERIFIED_EMPTY_MARKER")
+        self.assertEqual(result["native_hold_resume"]["state"], "RELEASED_NATIVE_GUARD_VERIFIED")
         self.assertEqual(set(result["native_hold_resume"]["owners"]), {"paper", "crypto"})
         native = [call.args[0] for call in calls.call_args_list if call.args[0][0] != "systemctl"]
-        self.assertEqual(len(native), 8)
+        self.assertEqual(len(native), 10)
         self.assertEqual({Path(args[args.index("--token-file") + 1]).name for args in native},
                          {"paper.token", "crypto.token"})
         self.assertEqual(result["broker_orders_sent"], 0)
         self.assertFalse(result["may_stop_driver"])
+
+    def test_post_unlink_native_failure_reengages_instead_of_claiming_release(self):
+        for condition in ("uncertain", "second_owner", "missing", "epoch", "generation", "service",
+                          "transport", "json", "encoding"):
+            with self.subTest(condition=condition):
+                self.kill_path.unlink(missing_ok=True)
+                self._make_independent_empty_marker()
+                def reply(argv):
+                    raw = self.command(argv)
+                    if self.kill_path.exists():
+                        return raw
+                    if argv[0] == "systemctl":
+                        return raw.replace("MainPID=100", "MainPID=101") if condition == "service" else raw
+                    if argv[-1] != "system.get_health":
+                        return raw
+                    if condition == "transport":
+                        raise HoldError("native postcheck timed out")
+                    if condition == "json":
+                        return "{"
+                    if condition == "encoding":
+                        raise UnicodeDecodeError("utf8", b"\xff", 0, 1, "bad native output")
+                    item = json.loads(raw)
+                    health = item["payload"]["execution_authoritative_health"]
+                    if condition == "uncertain" or (condition == "second_owner"
+                            and any(arg.endswith("/crypto.token") for arg in argv)):
+                        health.update(native_new_risk_guard_blocked=True, mutation_ready=False,
+                                      mutation_reason="IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN")
+                    elif condition == "missing":
+                        del health["native_new_risk_guard_blocked"]
+                    elif condition == "epoch":
+                        item["payload"]["execution_service_epoch"] = "restarted"
+                    elif condition == "generation":
+                        item["payload"]["execution_service_fencing_generation"] += 1
+                    return json.dumps(item)
+                with patch.object(latch, "_command", side_effect=reply):
+                    with self.assertRaises(latch.ResumeFailure) as failed:
+                        self.resume()
+                self.assertEqual(failed.exception.status, "NATIVE_RESUME_FAILED_REENGAGED")
+                self.assertEqual(self.kill_path.read_bytes(), b"")
+
+    def test_post_unlink_failure_reports_uncertainty_if_rearm_fails(self):
+        self._make_independent_empty_marker()
+        def reply(argv):
+            if argv[-1] == "system.get_health" and not self.kill_path.exists():
+                raise HoldError("native postcheck timed out")
+            return self.command(argv)
+        with patch.object(latch, "_command", side_effect=reply):
+            with patch.object(latch, "_write_once", side_effect=OSError("rearm failed")):
+                with self.assertRaises(latch.ResumeFailure) as failed:
+                    self.resume()
+        self.assertEqual(failed.exception.status, "NATIVE_RESUME_STATE_UNCERTAIN")
+        self.assertFalse(self.kill_path.exists())
+
+    def test_post_release_reports_resident_activity_without_reengaging(self):
+        self._make_independent_empty_marker()
+        def reply(argv):
+            raw = self.command(argv)
+            if argv[-1] == "system.get_health" and not self.kill_path.exists():
+                item = json.loads(raw)
+                item["payload"]["execution_authoritative_health"].update(
+                    mutation_ready=False, mutation_reason="RISK_MUTATION_DISPATCH_IN_FLIGHT",
+                    risk_mutation_dispatch_in_flight=True, account_local_venue_dispatches_in_flight=1)
+                return json.dumps(item)
+            return raw
+        with patch.object(latch, "_command", side_effect=reply):
+            result = self.resume()
+        self.assertFalse(self.kill_path.exists())
+        for health in result["native_hold_resume"]["post_release"].values():
+            self.assertFalse(health["native_new_risk_guard_blocked"])
+            self.assertFalse(health["mutation_ready"])
+            self.assertEqual(health["mutation_reason"], "RISK_MUTATION_DISPATCH_IN_FLIGHT")
 
     def test_read_only_check_preserves_original_empty_marker(self):
         self._make_independent_empty_marker()
@@ -347,7 +422,7 @@ class NativeHoldResumeTests(unittest.TestCase):
         with patch.object(latch, "_command", side_effect=self.command):
             result = self.resume(check_only=True)
         self.assertEqual(latch._identity(self.kill_path.stat()), before)
-        self.assertEqual(result["native_hold_resume"]["state"], "READY_CHECK_ONLY")
+        self.assertEqual(result["native_hold_resume"]["state"], "PRECHECK_ONLY_NATIVE_RELEASE_UNVERIFIED")
 
     def test_explicit_flag_is_scoped_and_never_clears_persistent_hold(self):
         for action in ("pause", "maintenance-release", "native-startup-hold"):
@@ -633,7 +708,7 @@ class NativeHoldResumeTests(unittest.TestCase):
                 self.assertTrue(self.kill_path.exists())
                 finish.set()
                 self.assertEqual(future.result(timeout=5)["native_hold_resume"]["state"],
-                                 "RELEASED_VERIFIED_EMPTY_MARKER")
+                                 "RELEASED_NATIVE_GUARD_VERIFIED")
                 out, err = process.communicate(timeout=5)
                 self.assertEqual(process.returncode, 0, err)
                 self.assertIn("'created_marker': True", out)

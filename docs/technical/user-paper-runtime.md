@@ -136,8 +136,14 @@ pause while Execution and Gateway are active. It preserves an independent empty
 native startup hold, including when a resident Driver calls it automatically.
 
 After the operator has chosen to resume the existing PAPER loop, use
-`heptatrader paper-on --resume-native-hold --check` to inspect readiness, then
+`heptatrader paper-on --resume-native-hold --check` for a read-only precheck, then
 `heptatrader paper-on --resume-native-hold` to release that exact empty hold.
+The precheck leaves the marker in place and cannot prove the native branch that
+runs only after its removal. The real command therefore re-reads both owners'
+health under the same lock after unlink/fsync, requires the original native
+instance to observe its guard clear, and restores a hold on any failed readback.
+Success reports the observed guard state and each owner's current mutation
+readiness; another in-flight request is not mistaken for a stuck hold.
 The explicit path reads both existing paper and crypto owners' native health,
 orders and positions; it rejects a durable maintenance hold, an independent native
 blocker, changed process identity or replaced marker. It does not require flat

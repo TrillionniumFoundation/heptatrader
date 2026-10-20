@@ -325,6 +325,38 @@ def _resume_observation(control: Path) -> dict:
             "services": before, "owners": observations}
 
 
+def _verify_native_release(control: Path, observation: dict) -> dict:
+    """Observe the actual native guard after unlink, under the original lock."""
+    expected = (observation["execution_service_epoch"],
+                observation["execution_service_fencing_generation"])
+    owners = {}
+    for owner in ("paper", "crypto"):
+        value = _native_payload(control, owner, "system.get_health")
+        health = value.get("execution_authoritative_health")
+        if (value.get("execution_mode") != "PAPER" or value.get("gateway_ready") is not True
+                or value.get("remote_execution_ready") is not True
+                or not isinstance(health, dict) or health.get("source") != "IB"
+                or health.get("authoritative") is not True):
+            raise HoldError("NATIVE_RELEASE_NOT_AUTHORITATIVE:" + owner)
+        identity = (value.get("execution_service_epoch"),
+                    value.get("execution_service_fencing_generation"))
+        if type(identity[1]) is not int or identity != expected:
+            raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+        if health.get("native_new_risk_guard_blocked") is not False:
+            raise HoldError("NATIVE_GUARD_NOT_RELEASED:" + owner + ":"
+                            + str(health.get("mutation_reason")))
+        if (type(health.get("mutation_ready")) is not bool
+                or not isinstance(health.get("mutation_reason"), str)):
+            raise HoldError("NATIVE_RELEASE_HEALTH_MISSING:" + owner)
+        # A resident may legitimately start a request as soon as the guard lifts.
+        # Record current readiness; do not confuse in-flight work with a stuck hold.
+        owners[owner] = {key: health[key] for key in
+                         ("native_new_risk_guard_blocked", "mutation_ready", "mutation_reason")}
+    if _service_snapshot() != observation["services"]:
+        raise HoldError("NATIVE_SERVICE_INSTANCE_CHANGED")
+    return owners
+
+
 def _status(action: str, marker: bytes | None, record: dict | None) -> dict:
     origin = ("ABSENT" if marker is None else
               "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
@@ -375,14 +407,18 @@ def _resume_native_hold(control: Path, state_root: Path, parent_fd: int, ctrl_fd
             raise HoldError("NATIVE_HOLD_CHANGED_DURING_CHECK")
         if check_only:
             return {**_status("paper-on", b"", None),
-                    "native_hold_resume": {"state": "READY_CHECK_ONLY", **observation}}
+                    "native_hold_resume": {"state": "PRECHECK_ONLY_NATIVE_RELEASE_UNVERIFIED", **observation}}
         try:
             os.unlink(SWITCH, dir_fd=ctrl_fd)
             os.fsync(ctrl_fd)
             check_bindings()
             if _file(ctrl_fd, SWITCH, 0o440) is not None:
                 raise HoldError("NATIVE_HOLD_REAPPEARED")
-        except (OSError, HoldError) as exc:
+            released = _verify_native_release(control, observation)
+            check_bindings()
+            if _file(ctrl_fd, SWITCH, 0o440) is not None:
+                raise HoldError("NATIVE_HOLD_REAPPEARED")
+        except Exception as exc:
             # Never overwrite another writer's marker. Report uncertainty if the
             # original directory cannot be confirmed or durable rearm fails.
             reengaged = False
@@ -396,7 +432,8 @@ def _resume_native_hold(control: Path, state_root: Path, parent_fd: int, ctrl_fd
                 pass
             raise ResumeFailure(str(exc), reengaged) from exc
         return {**_status("paper-on", None, None),
-                "native_hold_resume": {"state": "RELEASED_VERIFIED_EMPTY_MARKER", **observation}}
+                "native_hold_resume": {"state": "RELEASED_NATIVE_GUARD_VERIFIED",
+                                       **observation, "post_release": released}}
 
 
 def perform(action: str, control: Path, state_root: Path, *,
@@ -536,7 +573,7 @@ def main(argv=None):
     ap.add_argument("--resume-native-hold", action="store_true",
                     help="explicitly release an independently engaged empty native PAPER hold")
     ap.add_argument("--check", action="store_true",
-                    help="read-only readiness check for --resume-native-hold")
+                    help="read-only precheck; actual native release is verified only after explicit resume")
     args = ap.parse_args(argv)
     uid = os.geteuid()
     expected_control = Path(f"/run/user/{uid}/heptatrader/control")
