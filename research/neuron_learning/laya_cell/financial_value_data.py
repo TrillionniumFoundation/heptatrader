@@ -16,12 +16,61 @@ PROFILE={'schema':'heptatrader.financial-value-profile.v2','instrument':'EUR.USD
  'max_training_steps':16,'sgd_learning_rate':.05,'max_update_l2':.1,'max_parameter_l2':1.,
  'loss':'HUBER_SCALED_NET_USD','automatic_selection':False,'on_policy':False}
 
-def exact_request(reward):
+class ExactRequestIndex:
+ """Verify each distinct original prefix once within one refresh.
+
+ The index retains prefix membership and duplicate-request rejection. It does
+ not substitute a current request with similar content for the signed witness.
+ """
+ def __init__(self,rewards):
+  from hepta_decision_attribution import read_private,strict,MAX_STREAM
+  import os,stat
+  groups={}
+  for reward in rewards:
+   for witness in reward['input_attribution']['source_prefixes']:
+    size=witness['bytes'];path=str(Path(witness['path']))
+    if type(size) is not int or not 0<=size<=MAX_STREAM:
+     raise ContractError('VALUE_INPUT_PREFIX_BOUND')
+    sizes=groups.setdefault(path,{})
+    if size in sizes and sizes[size]!=witness['sha256']:
+     raise ContractError('VALUE_INPUT_PREFIX_CONFLICT')
+    sizes[size]=witness['sha256']
+  self.files={};self.prefix_reads=0
+  for path,sizes in groups.items():
+   def identity():
+    s=Path(path).lstat()
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or s.st_mode&0o077:
+     raise ContractError('VALUE_INPUT_FILE_SCOPE')
+    return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_uid,s.st_gid,s.st_nlink)
+   before=identity();blob=read_private(path,prefix_bytes=max(sizes));self.prefix_reads+=1
+   if before!=identity():raise ContractError('VALUE_INPUT_CHANGED_DURING_READ')
+   hasher=hashlib.sha256();offset=0
+   for size,wanted in sorted(sizes.items()):
+    hasher.update(blob[offset:size]);offset=size
+    if hasher.hexdigest()!=wanted or (size and blob[size-1:size]!=b'\n'):
+     raise ContractError('VALUE_INPUT_PREFIX_CHANGED')
+   requests={};offset=0
+   for line in blob.splitlines(keepends=True):
+    offset+=len(line);record=strict(line)
+    if record.get('kind')=='REQUEST':
+     value=record['data'];requests.setdefault(value.get('request_id'),[]).append((offset,value))
+   self.files[path]=(sizes,requests)
+ def matching(self,witness,rid):
+  try:sizes,requests=self.files[str(Path(witness['path']))]
+  except KeyError:raise ContractError('VALUE_INPUT_PREFIX_NOT_INDEXED') from None
+  size=witness['bytes']
+  if sizes.get(size)!=witness['sha256']:raise ContractError('VALUE_INPUT_PREFIX_NOT_INDEXED')
+  return [value for end,value in requests.get(rid,[]) if end<=size]
+
+
+def exact_request(reward,*,source_index=None):
  attribution=reward['input_attribution'];rid=attribution['request_id'];found=[]
  for witness in attribution['source_prefixes']:
   p=Path(witness['path']);fd=None
   from hepta_decision_attribution import read_private,strict
-  blob=read_private(p);prefix=blob[:witness['bytes']]
+  if source_index is not None:
+   found.extend(source_index.matching(witness,rid));continue
+  prefix=read_private(p,prefix_bytes=witness['bytes'])
   if len(prefix)!=witness['bytes'] or hashlib.sha256(prefix).hexdigest()!=witness['sha256']:
    raise ContractError('VALUE_INPUT_PREFIX_CHANGED')
   for line in prefix.splitlines():

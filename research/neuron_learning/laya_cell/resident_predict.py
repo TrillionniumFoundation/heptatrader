@@ -19,6 +19,7 @@ from .native import NativePorts
 from .integrity import validate_candidate_artifact as validate_parent
 from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
+from . import resident_training_v4 as training_v4
 from . import resident_price_baselines as price_refs
 
 
@@ -35,7 +36,12 @@ def predict(config,plan_path,slot):
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
- training_policy=training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+ objective=candidate.get('objective')
+ if (not isinstance(objective,dict) or objective.get('schema') not in
+     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA)):
+  raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
+ if training_v4.enabled(objective):training_v4.check_objective(objective)
+ training_policy=training_v4 if training_v4.enabled(objective) else training_v3 if training_v3.enabled(objective) else training_v2
  v2=training_policy.enabled(candidate.get('objective'))
  calibration=candidate.get('action_training_profile') if v2 else None
  price_reference_profile=price_refs.validate(candidate.get('price_baselines')) if v2 else None
@@ -45,7 +51,7 @@ def predict(config,plan_path,slot):
  if v2 and (candidate.get('objective')!=training_policy.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
   raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
  if v2 and (type(plan.get('action_optimizer_admitted')) is not bool or plan['action_optimizer_admitted']!=bool(calibration and calibration['action_optimizer_admitted'])):raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
- if training_policy is training_v3:
+ if training_policy in (training_v3,training_v4):
   if plan.get('price_value_rule')!=price_refs.VALUE_RULE:raise ContractError('PRICE_VALUE_RULE_REQUIRED_FOR_V3')
   price_refs.validate_value_rule(plan)
   if calibration is not None and calibration.get('batch_balance_strategy')!=training_v3.ACTION_BALANCE:raise ContractError('ACTION_BATCH_BALANCE_PROFILE_CHANGED')

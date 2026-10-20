@@ -52,6 +52,9 @@ def verify_candidate(job,candidate):
  # Do not retroactively strengthen or rewrite frozen historical receipts.
  version=job.get('training_row_accounting_schema')
  if version is None:return
+ if version=='heptatrader.laya-gradient-row-accounting.v2':
+  from .resident_training_v4 import verify_candidate as verify_episode
+  verify_episode(job,candidate);return
  if version!=SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
  wanted=job['training_row_ids'];got=candidate.get('row_accounting')
  if not isinstance(got,dict):raise ContractError('ROW_ACCOUNTING_RECEIPT_MISSING')

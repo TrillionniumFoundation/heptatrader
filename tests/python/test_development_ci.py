@@ -173,7 +173,7 @@ class DevelopmentCiTests(unittest.TestCase):
                          "scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py"):
                 self.assertEqual(ci_scope.scope_for_paths([name], root), python_only, name)
             for name in ("scripts/heptatrader_paper_driver.py",
-                         "research/neuron_learning/laya_cell/resident_train.py", "scripts/new_operator.py"):
+                         "research/neuron_learning/laya_cell/integrity.py", "scripts/new_operator.py"):
                 self.assertEqual(ci_scope.scope_for_paths([name], root), full, name)
             (root / "tests/python/test_activate_prepared_driver.py").unlink()
             self.assertEqual(ci_scope.scope_for_paths(["scripts/activate_prepared_driver.py"], root), full)
@@ -227,7 +227,7 @@ class DevelopmentCiTests(unittest.TestCase):
                     path.touch()
             for path in (
                     "HeptaTrade/execution/execution_coordinator.cpp",
-                    "research/neuron_learning/laya_cell/resident_train.py",
+                    "research/neuron_learning/laya_cell/integrity.py",
                     "research/neuron_learning/laya_cell/install_resident.py",
                     "research/neuron_learning/laya_cell/new_resident_helper.py",
                     "research/historical_training/new_value_helper.py",
@@ -282,7 +282,9 @@ class DevelopmentCiTests(unittest.TestCase):
         release = workflow("release.yml")
         self.assertIn("tags", release["on"]["push"])
         self.assertIn("scripts/accept_core_release.py", str(release))
-        self.assertTrue((ROOT / ".github/workflows/ib-paper-qualification.yml").is_file())
+        self.assertTrue((ROOT / ".github/retired-workflows/ib-paper-qualification.yml").is_file())
+        for retired in ("ib-paper-qualification.yml", "self-hosted-ib-availability.yml"):
+            self.assertFalse((ROOT / ".github/workflows" / retired).exists())
 
     def test_superseded_feedback_can_cancel_but_broker_run_cannot(self):
         ci = workflow("core-ci.yml")
@@ -290,7 +292,8 @@ class DevelopmentCiTests(unittest.TestCase):
                          "${{ github.event_name != 'workflow_dispatch' }}")
         self.assertIn("github.event_name", ci["concurrency"]["group"])
         self.assertEqual(
-            workflow("ib-paper-qualification.yml")["concurrency"]["cancel-in-progress"],
+            yaml.load((ROOT / ".github/retired-workflows/ib-paper-qualification.yml").read_text(),
+                      Loader=yaml.BaseLoader)["concurrency"]["cancel-in-progress"],
             "false")
 
 

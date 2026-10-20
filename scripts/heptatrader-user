@@ -14,15 +14,29 @@ pnl_report() {
   fi
   /usr/bin/python3 -B "$script" "$@"
 }
+progress_report() {
+  local script="$(dirname "$(readlink -f "$0")")/hepta_progress.py"
+  [[ -f "$script" ]] || script="$prefix/libexec/heptatrader/hepta_progress.py"
+  if [[ ! -f "$script" ]]; then
+    echo 'Progress UNKNOWN: the read-only progress observer is not installed.' >&2
+    return 69
+  fi
+  /usr/bin/python3 -B "$script" "$@"
+}
 case "${1:-status}" in
+  progress)
+    shift; progress_report "$@" ;;
   pnl)
     shift; pnl_report "$@" ;;
   start|restart|stop)
     exec systemctl --user "$1" heptatrader.target ;;
   status)
-    systemctl --user --no-pager status heptatrader-execution.service heptatrader-gateway.service
+    service_status=0
+    systemctl --user --no-pager status heptatrader-execution.service heptatrader-gateway.service || service_status=$?
     if [[ -e "$runtime/control/kill-switch" ]]; then echo 'PAPER guard: engaged'; else echo 'PAPER guard: not engaged (service readiness still required)'; fi
-    pnl_report --cached || true ;;
+    progress_report || true
+    pnl_report --cached || true
+    exit "$service_status" ;;
   pause|paper-on|maintenance-hold|maintenance-release|maintenance-status)
     # Resident Drivers may invoke paper-on automatically. They cannot clear
     # a persistent operator maintenance hold. Native risk checks are unchanged.
@@ -57,6 +71,6 @@ case "${1:-status}" in
       -c "mcp_servers.heptatrader.command=\"$prefix/libexec/heptatrader/hepta-user-mcp\"" \
       "You operate only the configured local IB PAPER simulator through the HeptaTrader MCP tools. Never request LIVE or change credentials, configuration, risk limits or kill switch. Obtain current tool schemas and authoritative state before acting. Use exact unqualified catalog names for tool_name, for example market.get_quote, without the heptatrader server prefix. A lost or uncertain send must be inspected under its original command ID, never resent as a new order. A quoted price or accepted request is not a fill. Do not place any order unless this user instruction explicitly asks for one. User instruction: $1" < /dev/null ;;
   *)
-    echo 'usage: heptatrader {start|restart|stop|status|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|paper-on|maintenance-hold|maintenance-release|maintenance-status|native <args>|session <args>|ask "instruction"}' >&2
+    echo 'usage: heptatrader {start|restart|stop|status|progress [--format json|--value-timing-report FILE]|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|paper-on|maintenance-hold|maintenance-release|maintenance-status|native <args>|session <args>|ask "instruction"}' >&2
     exit 64 ;;
 esac

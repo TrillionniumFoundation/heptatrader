@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = Path(".github/workflows/ib-paper-qualification.yml")
+WORKFLOW = Path(".github/retired-workflows/ib-paper-qualification.yml")
 ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 

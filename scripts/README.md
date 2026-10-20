@@ -105,10 +105,26 @@ watching, and their shared `hepta_change_watch.py` helper retain Python and lear
 feedback. Other shared or unknown source changes and missing, deleted, or retyped
 required files restore full scope.
 
-The retained Desktop IB workflow profiles are manual legacy host profiles; their
-scope is described in [Deployment](../docs/modules/deployment.md). Acceptance of
-the current trading and training runtime requires Pocket4 evidence.
+The Desktop IB workflows are retained as non-dispatched templates in
+`.github/retired-workflows/`; their executable contract tests remain. Their scope
+is described in [Deployment](../docs/modules/deployment.md). Acceptance of the
+current trading and training runtime requires Pocket4 evidence.
 
 The whitespace check inspects the event's committed base/head range, with a
 bounded parent/root fallback for events lacking a base; an unresolved supplied
 base is an error.
+
+## Training and Value progress
+
+Use `heptatrader progress` (`--format json` for structured output), or
+`python3 -B scripts/hepta_progress.py` from the checkout. The read-only observer
+separates training PRICE/ACTION progress, future evaluation, Value inventory and
+current trading blockers; historical errors remain historical. Use
+`--value-timing-report FILE` to include an independently reconciled, signed OPEN
+cohort report. `heptatrader status` includes the same progress view.
+
+Verified consumer, resident training-episode, Value prediction/reconciliation
+and compiler-cache changes select Python core/source and learning feedback.
+The progress observer is stdlib-only and selects core/source feedback. Missing
+paired tests, new external imports in the observer, shared CLI/install changes
+and unknown paths restore full validation.

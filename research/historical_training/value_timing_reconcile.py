@@ -23,7 +23,54 @@ def quantiles(values):
     a=sorted(values)
     def q(p):
         x=(len(a)-1)*p;i=int(x);return a[i]+(a[min(i+1,len(a)-1)]-a[i])*(x-i)
-    return {'count':len(a),'min':a[0],'p50':q(.5),'p90':q(.9),'max':a[-1]}
+    return {'count':len(a),'min':a[0],'p50':q(.5),'p90':q(.9),'p95':q(.95),'p99':q(.99),'max':a[-1]}
+
+
+def open_timing_summary(assessment,items,timings):
+    """Timing coverage of the exact signed OPEN cohort, separate from PnL."""
+    by_command={row['command_id']:row for row in timings}
+    no_commit=collections.Counter();late_reasons=collections.Counter()
+    phases={'preopen':collections.defaultdict(list),'late':collections.defaultdict(list)}
+    phase_commits=0;missing_binding=0
+    for item in items:
+        outcome=item['outcome'];row=by_command.get(outcome['command_id'])
+        missing_binding+=outcome.get('request_id') is None
+        if row is None:
+            no_commit[outcome.get('reason') or 'NO_VERIFIED_COMMIT']+=1
+            continue
+        group='preopen' if row['signed_before_open'] else 'late'
+        if group=='late':late_reasons[outcome.get('reason') or 'SIGNED_AT_OR_AFTER_ORIGINAL_OPEN']+=1
+        front=item['prediction'].get('front_timing')
+        if front is None:continue
+        require(isinstance(front,dict) and front.get('schema')=='heptatrader.value-prediction-front-timing.v1','FRONT_TIMING_SCHEMA')
+        flat={}
+        for scope,field in [('worker','worker_phases_ms'),('prediction','prediction_phases_ms')]:
+            values=front.get(field,{})
+            require(isinstance(values,dict),'FRONT_TIMING_PHASE_SHAPE')
+            for name,value in values.items():
+                require(isinstance(name,str) and type(value) in (int,float) and math.isfinite(value) and value>=0,'FRONT_TIMING_DURATION')
+                key=scope+'.'+name;flat[key]=value;phases[group][key].append(value)
+        entered=front.get('prediction_entered_at_ms')
+        if entered is not None:
+            require(type(entered) is int and item['prediction']['request_started_at_ms']<=entered<=item['prediction']['computed_at_ms'],'FRONT_TIMING_ENTRY_CLOCK')
+            row['request_to_prediction_entry_ms']=entered-item['prediction']['request_started_at_ms']
+        started=front.get('worker_started_at_ms')
+        if started is not None:
+            require(type(started) is int and 0<started<=item['prediction']['computed_at_ms'],'FRONT_TIMING_WORKER_CLOCK')
+            row['request_to_worker_start_ms']=started-item['prediction']['request_started_at_ms']
+        row['front_phases_ms']=flat;phase_commits+=1
+    total=assessment['total_original_trades'];timely=sum(row['signed_before_open'] for row in timings)
+    return {'open_coverage':{
+        'denominator_scope':'SIGNED_ASSESSMENT_ORIGINAL_OPEN_COHORT',
+        'total_original_opens':total,'signed_before_original_open':timely,
+        'signed_at_or_after_original_open':len(timings)-timely,'no_verified_commit':total-len(timings),
+        'preopen_commit_coverage':timely/total if total else None,
+        'signed_commit_coverage':len(timings)/total if total else None,
+        'request_binding_missing':missing_binding,'observed_settled_trades':assessment['observed_trades'],
+        'timing_only_not_statistical_qualification':True},
+        'not_preopen_reason_counts':{'no_verified_commit':dict(no_commit),'late_signed_commit':dict(late_reasons)},
+        'front_timing_commits':phase_commits,
+        'phase_latency_ms':{group:{name:quantiles(values) for name,values in sorted(rows.items())} for group,rows in phases.items()}}
 
 
 def reconcile(capture, labels=None):
@@ -33,9 +80,20 @@ def reconcile(capture, labels=None):
     signed=capture['assessment_signed'];verify_signature(signed,'evaluator',trust,pins['witness_trust_digest'],now)
     assessment={k:v for k,v in signed.items() if k not in ('signature','role_witness')}
     require(assessment==capture['assessment'],'ASSESSMENT_CONTENT')
+    items=capture['items']
+    has_order='outcome_record_ids' in assessment
+    ordered_ids=assessment.get('outcome_record_ids')
+    if has_order:
+        require(type(ordered_ids) is list and len(ordered_ids)==len(items)
+                and all(type(x) is str and len(x)==64 for x in ordered_ids)
+                and len(set(ordered_ids))==len(ordered_ids),'SIGNED_OUTCOME_RECORD_ORDER')
+        by_record={item['outcome']['record_id']:item for item in items}
+        require(len(by_record)==len(items) and set(by_record)==set(ordered_ids),
+                'SIGNED_OUTCOME_RECORD_MEMBERSHIP')
+        items=[by_record[record_id] for record_id in ordered_ids]
     semantic=[];timings=[];counts=collections.Counter();seen=set();linked=0
     labelmap={} if labels is None else {r['open_command_id']:r for r in labels['rows']}
-    for item in capture['items']:
+    for item in items:
         o=item['outcome'];cid=o['command_id'];require(cid not in seen,'DUPLICATE_COMMAND');seen.add(cid)
         require(o['record_id']==digest({k:v for k,v in o.items() if k!='record_id'}),'OUTCOME_HASH')
         result={k:v for k,v in o.items() if k not in ('source_ledger_prefix','semantic_id','record_id')}
@@ -74,7 +132,7 @@ def reconcile(capture, labels=None):
     for name,subset in [('preopen',[x for x in timings if x['signed_before_open']]),('late',[x for x in timings if not x['signed_before_open']])]:
         groups[name]={k:quantiles([x[k] for x in subset]) for k in ('request_to_open_ms','request_to_seal_ms','inference_ms','unallocated_pre_inference_ms','seal_before_open_margin_ms')}
         groups[name]['overhead_alone_exceeds_open_window']=sum(x['unallocated_pre_inference_ms']>=x['request_to_open_ms'] for x in subset)
-    return {'schema':'heptatrader.signed-value-timing-reconcile.v1','captured_at_ms':now,'status_counts':dict(counts),'commands':len(seen),'predictor_signatures_verified':len(timings),'evaluator_signatures_verified':1,'signed_outcome_set_verified':True,'observed_joined_to_exported_labels':linked,'groups':groups,'timings':timings,'raw_oms_replayed':False,'broker_signature_claim':False,'new_predictions_or_training':False,'old_outcomes_changed':False,'trade_authority':False}
+    return {**open_timing_summary(assessment,capture['items'],timings),'schema':'heptatrader.signed-value-timing-reconcile.v1','captured_at_ms':now,'status_counts':dict(counts),'commands':len(seen),'predictor_signatures_verified':len(timings),'evaluator_signatures_verified':1,'signed_outcome_set_verified':True,'signed_outcome_record_order_verified':has_order,'observed_joined_to_exported_labels':linked,'groups':groups,'timings':timings,'raw_oms_replayed':False,'broker_signature_claim':False,'new_predictions_or_training':False,'old_outcomes_changed':False,'trade_authority':False}
 
 
 def main():

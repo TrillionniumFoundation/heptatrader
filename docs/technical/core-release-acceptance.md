@@ -6,7 +6,9 @@ Applies to: broker-disabled tagged core packages on disposable Linux CI VMs
 ## Producer and consumer identity
 
 The normal pull-request/push `core-runtime-exact-head` check builds and runs
-the native core tests via `scripts/dev_core.sh`; it does **not** run
+the native core tests via `scripts/dev_core.sh` when selected by `ci_scope.py`.
+Verified Python-only changes retain their Python/source and, where applicable,
+learning feedback without a native rebuild. Ordinary CI does **not** run
 `scripts/accept_core_release.py` or authorize a trading deployment. The
 separate tagged-release workflow checks tag/VERSION equality, builds native
 tests and invokes the installed-artifact acceptance driver. Rebuilding a tag is permitted, but its newly built package must pass

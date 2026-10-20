@@ -142,6 +142,7 @@ class Evaluator:
      marker='unattributed-execution-'+digest(eid)
      if not any(x['command_id']==marker for x in results):
       results.append(baseline_missing_case(plan,marker,start,now,'ACTUAL_OPEN_UNCLOSED_WITHOUT_EXACT_INPUT'))
+   outcome_record_ids=[]
    for result in results:
     semantic=digest({k:v for k,v in result.items() if k!='observed_at_ms'});cmd=result['command_id']
     destination=path.parent/'outcomes'/cmd/(semantic+'.json')
@@ -152,6 +153,7 @@ class Evaluator:
      record={**result,'source_ledger_prefix':report.get('source_prefix'),'semantic_id':semantic}
      record['record_id']=digest(record);write_once(destination,record)
     record=read_json(destination);atomic(path.parent/'outcomes'/cmd/'current.json',{'record_id':record['record_id'],'path':str(destination)})
+    outcome_record_ids.append(record['record_id'])
    evaluation=assessment(plan,results,now)
    if issues:
     evaluation['source_issues']=issues;evaluation['state']='REJECTED' if now>=plan['outcome_end_ms'] else 'PENDING'
@@ -164,6 +166,7 @@ class Evaluator:
    evaluation['nontrade_requests']=sum(plan['input_start_ms']<=x['request']['started_at_ms']<plan['input_end_ms'] and x['request']['position_at_request']==0 and rid not in observed_request_ids for rid,x in requests.items())
    evaluation['financial_candidate_selected']=False;evaluation['canonical_agentd_accepted']=False
    evaluation['current_ledger_prefix']=report.get('source_prefix');evaluation['outcome_set_digest']=digest([{k:v for k,v in x.items() if k!='observed_at_ms'} for x in results])
+   evaluation['outcome_record_ids']=outcome_record_ids
    evaluation['actual_owner_acceptance_required']=True
    signed=sign_record(self.c,'evaluator',evaluation)
    atomic(path.parent/'assessment.json',evaluation);atomic(path.parent/'assessment-signed.json',signed);summaries.append(evaluation)

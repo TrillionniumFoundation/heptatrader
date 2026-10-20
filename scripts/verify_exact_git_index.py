@@ -17,7 +17,7 @@ REGULAR = {"100644", "100755"}
 SYMLINK = "120000"
 GITLINK = "160000"
 CRITICAL_PATHS = (
-    ".github/workflows/ib-paper-qualification.yml",
+    ".github/retired-workflows/ib-paper-qualification.yml",
     ".github/workflows/core-ci.yml",
     "docs/capabilities.json",
     "docs/gap-register.json",

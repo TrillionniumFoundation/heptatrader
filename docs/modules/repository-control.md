@@ -7,9 +7,11 @@ No successful source test, commit or merge grants trading authority.
 ## Ordinary development
 
 Core Runtime CI accepts PRs targeting **any** branch, including stacked PRs and
-Drafts. It checks the exact head without persisted checkout credentials. Native
-`./scripts/dev_core.sh` and Python core/source tests run in independent jobs;
-Torch installation cannot delay native feedback. Main pushes also run CI.
+Drafts. It checks the exact head without persisted checkout credentials.
+`scripts/ci_scope.py` selects native, Python core/source and learning feedback
+for both PRs and main pushes. Unknown/shared changes run every lane; verified
+Python leaves avoid an unrelated native rebuild. The native and Python jobs
+remain independent, so Torch installation cannot delay native feedback.
 No approval polling, reviewer-count requirement or cross-workflow receipt exists.
 The owner may integrate reviewed, tested source directly; a missing hosted run
 is reported as missing, never as PASS and never as a reason to wait indefinitely.

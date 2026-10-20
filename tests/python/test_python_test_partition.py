@@ -102,7 +102,9 @@ class PythonTestPartitionTests(unittest.TestCase):
     def test_learning_listing_includes_nested_cpu_suites_without_imports(self):
         expected={"laya_cell.tests.test_resident_row_worker",
                   "laya_cell.tests.test_resident_price_baselines",
-                  "laya_cell.tests.test_resident_training_v3"}
+                  "laya_cell.tests.test_resident_training_v3",
+                  "laya_cell.tests.test_resident_training_v4",
+                  "laya_cell.tests.test_resident_lineage"}
         for lane in ("learning", "core"):
             with self.subTest(lane=lane), mock.patch.object(runner, "configure_import_paths",
                     side_effect=AssertionError("listing must not import")), \

@@ -61,6 +61,8 @@ NESTED_LEARNING_MODULES = frozenset({
     "laya_cell.tests.test_resident_row_worker",
     "laya_cell.tests.test_resident_price_baselines",
     "laya_cell.tests.test_resident_training_v3",
+    "laya_cell.tests.test_resident_training_v4",
+    "laya_cell.tests.test_resident_lineage",
 })
 
 

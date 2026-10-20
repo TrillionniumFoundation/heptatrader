@@ -40,7 +40,7 @@ TRUSTED_BUILDER_FILES = (
     "scripts/run_ib_paper_campaign.py",
     "scripts/verify_ib_paper_qualification.py",
     "docs/ib-paper-profile-policy-v1.json",
-    ".github/workflows/ib-paper-qualification.yml",
+    ".github/retired-workflows/ib-paper-qualification.yml",
 )
 MANIFEST_KEYS = frozenset(
     {

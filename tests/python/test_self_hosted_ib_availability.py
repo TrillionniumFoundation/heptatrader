@@ -9,12 +9,16 @@ import sys
 import tempfile
 import unittest
 
-from workflow_test_support import ROOT, shell, step, workflow
+import yaml
+
+from workflow_test_support import ROOT, shell, step
 
 
 class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = workflow("self-hosted-ib-availability.yml")
+        self.workflow = yaml.load(
+            (ROOT / ".github/retired-workflows/self-hosted-ib-availability.yml").read_text(),
+            Loader=yaml.BaseLoader)
         self.job = self.workflow["jobs"]["ib-runner-probe"]
 
     def test_dispatch_only_and_checkout_free_custody(self):

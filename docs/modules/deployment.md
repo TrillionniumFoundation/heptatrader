@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`, `scripts/hepta_change_watch.py`, `scripts/hepta_verified_loader.py`, `scripts/hepta_runtime_identity.py`
-Tests: `tests/python/test_documentation_links.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`, `tests/python/test_verified_python_loader.py`, `tests/python/test_runtime_identity.py`, `tests/python/test_attributed_driver_launcher.py`, `tests/python/test_activate_prepared_driver.py`, `tests/python/test_decision_attribution_installer_readonly.py`, `tests/python/test_decision_attribution_prepare_upgrade.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`, `scripts/heptatrader_paper_driver.py`, `systemd/user/heptatrader-paper-driver.service`, `systemd/user/heptatrader-crypto-driver.service`, `scripts/hepta_pnl_accounting.py`, `scripts/hepta_pnl_report.py`, `scripts/hepta_account_pnl.py`, `scripts/hepta_account_observer.py`, `scripts/hepta_account_activity.py`, `scripts/hepta_change_watch.py`, `scripts/hepta_verified_loader.py`, `scripts/hepta_runtime_identity.py`, `scripts/hepta_progress.py`
+Tests: `tests/python/test_documentation_links.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`, `tests/python/test_paper_driver.py`, `tests/python/test_pnl_accounting.py`, `tests/python/test_pnl_cli.py`, `tests/python/test_account_pnl.py`, `tests/python/test_verified_python_loader.py`, `tests/python/test_runtime_identity.py`, `tests/python/test_attributed_driver_launcher.py`, `tests/python/test_activate_prepared_driver.py`, `tests/python/test_decision_attribution_installer_readonly.py`, `tests/python/test_decision_attribution_prepare_upgrade.py`, `tests/python/test_hepta_progress.py`
 
 ## Scope
 
@@ -74,9 +74,11 @@ Units should expose service state, restart count, readiness, socket ownership, c
 
 ## Known limitations
 
-The manual `desktop-ib-builder` and `desktop-ib-paper` workflow profiles describe
-their historical Windows Desktop IB hosts. They are not routine pull request
-prerequisites or evidence that the current Pocket4 release has passed acceptance.
+The former `desktop-ib-builder` and `desktop-ib-paper` Actions entry points are
+retired. Their unchanged templates in `.github/retired-workflows/` describe the
+historical Desktop IB hosts and remain covered by the existing contract tests.
+They are not active dispatch entries, ordinary pull-request prerequisites or
+evidence that the current Pocket4 release has passed acceptance.
 Acceptance of the current trading and training runtime requires Pocket4 evidence;
 use the active unit, release manifest, and observed process identity for that host.
 
@@ -156,3 +158,17 @@ The BTC, cost and attribution adapters share `hepta_verified_loader.py`. The
 loader verifies a target buffer against its required SHA-256 and executes that
 same buffer. New attributed manifests and BTC runtime receipts include the copied
 loader; the CostResearch installation places it beside the cost driver entry point.
+
+## Unified training and Value progress
+
+`heptatrader progress` and `heptatrader progress --format json` inspect current
+unit/process configurations, PRICE updates, calibrated ACTION support, the
+current candidate's forward evaluation, Value inventory growth and trading
+blockers separately. `heptatrader status` includes this view while preserving
+the underlying service-status exit code. An input check, an optimizer step,
+a forward observation and a new Value episode are different events.
+
+A fresh process-bound pause and the persistent kill/maintenance controls explain
+current blocking. Historical errors remain visible as history and do not become
+current faults merely because a previous error string was retained. Missing or
+mismatched evidence is explicit. This read-only view grants no trading authority.

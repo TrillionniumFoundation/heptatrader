@@ -31,7 +31,7 @@ def validate_config(c):
             raise EvidenceError('RUNTIME_CHANGED:'+rel)
     return m
 
-def to_row(reward,item,binding,manifest_sha,period_sha):
+def to_row(reward,item,binding,manifest_sha,period_sha,*,source_index=None):
     from laya_cell.financial_value_data import exact_request
     from paired_net_100k_preflight.core import check_request,feature_text
     if digest({k:v for k,v in reward.items() if k!='reward_id'})!=reward.get('reward_id'):
@@ -44,7 +44,7 @@ def to_row(reward,item,binding,manifest_sha,period_sha):
         or reward['input_attribution']['producer_manifest_sha256']!=manifest_sha):
         raise EvidenceError('REWARD_SCOPE')
     request=check_request(item,manifest_sha,period_sha)
-    if exact_request(reward)!=request or request.get('model_id')!=reward.get('behavior_model_id'):
+    if exact_request(reward,source_index=source_index)!=request or request.get('model_id')!=reward.get('behavior_model_id'):
         raise EvidenceError('ORIGINAL_INPUT_CONFLICT')
     cmd=binding['command'];side=cmd.get('side')
     if (cmd.get('command_id')!=reward.get('open_command_id') or cmd.get('kind')!='OPEN'
