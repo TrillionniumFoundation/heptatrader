@@ -188,8 +188,14 @@ private:
         std::string& reason, std::uint64_t expectedConnectionEpoch = 0);
     bool StopQuoteSubscriptions(std::string* reason = nullptr);
     bool RefreshStaleSecondaryCashQuote(std::string& reason);
-    bool BeginBrokerReconnect(std::string& reason,
-                              bool recoveryAudit = false);
+    enum class BrokerReconnectBeginResult
+    {
+        Scheduled,
+        DeferredPostFill,
+        Failed
+    };
+    BrokerReconnectBeginResult BeginBrokerReconnect(
+        std::string& reason, bool recoveryAudit = false);
     bool DriveBrokerReconnect(std::string& reason);
     bool DriveBrokerReconnectConnected(std::string& reason);
     bool AdvanceReconnectMarketDataGate(

@@ -326,18 +326,17 @@ bool IbPaperExecutionRuntimeComposition::DriveRecoveryAuditReconnect()
         return true;
     }
     std::string reconnectReason;
-    if (!BeginBrokerReconnect(reconnectReason, true))
+    const auto result = BeginBrokerReconnect(reconnectReason, true);
+    if (result == BrokerReconnectBeginResult::DeferredPostFill)
     {
-        // The adapter may publish a fill between the outer observation and
-        // BeginBrokerReconnect's own closed-gate check. Retry that seam via
-        // the same post-fill state machine instead of making it fatal.
-        if (reconnectReason ==
-            "IB_PAPER_BROKER_DISCONNECTED_DURING_POST_FILL_RECONCILIATION")
-        {
-            NotifyTestStage("recovery_audit_reconnect_deferred_post_fill");
-            DrivePostFillRiskRefresh();
-            return !m_fatalRuntimeError.load();
-        }
+        // Only Begin's side-effect-free live-fill check may defer. Cleanup
+        // and disconnect failures below retain their original fatal result.
+        NotifyTestStage("recovery_audit_reconnect_deferred_post_fill");
+        DrivePostFillRiskRefresh();
+        return !m_fatalRuntimeError.load();
+    }
+    if (result != BrokerReconnectBeginResult::Scheduled)
+    {
         MarkFatalRuntimeError(reconnectReason.empty() ?
             "IB_RECOVERY_AUDIT_RECONNECT_FAILED" : reconnectReason);
         return false;
