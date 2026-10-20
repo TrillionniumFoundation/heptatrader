@@ -115,4 +115,27 @@ class ProgressTests(unittest.TestCase):
   result=subprocess.run(['bash',str(target/'heptatrader-user'),'status'],env=env,text=True,capture_output=True,timeout=10)
   self.assertEqual(result.returncode,3);self.assertIn('PROGRESS_SEEN',result.stdout)
 
+ def test_next_value_evaluator_is_visible_in_both_launch_modes(self):
+  root=self.home/'next-value';cfg=self.write(self.home/'next-value.json',{'forward_root':str(root)})
+  status=root/'evaluator-status.json'
+  self.write(status,{'schema':'heptatrader.financial-forward-evaluator-status.v2','at_ms':NOW,
+   'plans':1,'states':{'INSUFFICIENT_EVIDENCE':1},'observed_trades':2,'original_command_count':3,
+   'canonical_agentd_accepted':False,'financial_candidate_selected':False,'actor_updated':False,'broker_orders_sent':0})
+  before=status.read_bytes()
+  name='heptatrader-value-next-evaluator.service'
+  for module,extra in [('laya_cell.current100k_forward_worker',('--mode','evaluate')),('laya_cell.financial_forward_evaluate',())]:
+   with self.subTest(module=module):
+    self.service(name,module,cfg,active='active',extra=extra)
+    out=self.collect();self.assertEqual(out['source_errors'],[]);self.assertEqual(out['value_prediction'],[])
+    self.assertEqual(len(out['value_forward']),1);entry=out['value_forward'][0]
+    self.assertEqual(entry['freshness'],'FRESH');self.assertEqual(entry['plans'],1)
+    self.assertEqual(entry['states'],{'INSUFFICIENT_EVIDENCE':1})
+    self.assertEqual(entry['observed_trades'],2);self.assertEqual(entry['original_command_count'],3)
+    self.assertFalse(entry['financial_candidate_selected']);self.assertEqual(entry['broker_orders_sent'],0)
+    rendered=progress.format_text(out);self.assertIn('VALUE forward ',rendered)
+    self.assertIn('"original_command_count":3',rendered);self.assertEqual(status.read_bytes(),before)
+  self.write(status,{'at_ms':NOW,'state':'WAIT_INPUT_WINDOW','reason':'BEFORE_INPUT_START','plan_id':'p-next'})
+  entry=self.collect()['value_forward'][0]
+  self.assertEqual(entry['state'],'WAIT_INPUT_WINDOW');self.assertEqual(entry['reason'],'BEFORE_INPUT_START')
+
 if __name__=='__main__':unittest.main()

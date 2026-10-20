@@ -369,6 +369,15 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
                     "total_original_trades", "unresolved_or_censored", "evaluation_skipped",
                     "assessment_as_of_ms", "next_evaluation_due_ms", "skip_reason",
                     "canonical_agentd_accepted", "automatic_selection")})
+            elif (module == "laya_cell.financial_forward_evaluate" or
+                  module == "laya_cell.current100k_forward_worker" and argument(argv, "--mode") == "evaluate"):
+                root = Path(config["forward_root"])
+                value, meta = observe(root / "evaluator-status.json", now_ms, max_age_ms)
+                result["value_forward"].append({"unit": name, "service": unit_view(item),
+                    "config_path": config_path, **meta, **pick(value, "state", "reason", "plans",
+                    "states", "observed_trades", "original_command_count", "plan_id",
+                    "input_start_ms", "input_end_ms", "canonical_agentd_accepted",
+                    "financial_candidate_selected", "actor_updated", "broker_orders_sent")})
             elif (module == "laya_cell.financial_forward_predict" or
                   module == "laya_cell.current100k_forward_worker" and argument(argv, "--mode") == "predict"):
                 root = Path(config["forward_root"])
@@ -426,8 +435,9 @@ def format_text(value):
             "input_checked_at_ms", "last_full_evaluation_at_ms", "evaluation_skipped",
             "inventory_is_efficacy")))
     for entry in value["value_forward"]:
-        lines.append("VALUE forward " + show(pick(entry, "unit", "service", "state", "freshness",
-            "observed_trades", "total_original_trades", "assessment_as_of_ms", "evaluation_skipped")))
+        lines.append("VALUE forward " + show(pick(entry, "unit", "service", "state", "reason", "freshness",
+            "plans", "states", "observed_trades", "original_command_count", "total_original_trades",
+            "assessment_as_of_ms", "evaluation_skipped")))
     for entry in value["value_prediction"]:
         lines.append("VALUE prediction " + show(pick(entry, "unit", "service", "state", "freshness",
             "current_issues", "current_prediction_failures", "historical_failed_or_missed_requests", "front_timing")))
