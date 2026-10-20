@@ -682,10 +682,16 @@ void IbPaperExecutionRuntimeComposition::AdapterLoop()
 }
 void IbPaperExecutionRuntimeComposition::Stop()
 {
-    if (m_lifecycleGate)
     {
-        m_lifecycleGate->ready.store(false);
-        m_lifecycleGate->terminalControlOnly.store(false);
+        std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+        if (m_lifecycleGate)
+        {
+            m_lifecycleGate->ready.store(false);
+            m_lifecycleGate->terminalControlOnly.store(false);
+        }
+        m_recoveryAuditOwnsReadyGate = false;
+        m_recoveryAuditReconnectRequested.store(false);
+        m_polling.store(false);
     }
     m_startupBrokerPhase.store(false);
     m_startupWaitingForUpstream.store(false);
@@ -698,8 +704,7 @@ void IbPaperExecutionRuntimeComposition::Stop()
     m_reconnectTransportConnected.store(false);
     m_reconnectUpstreamUnavailable.store(false); m_reconnectUpstreamRestored.store(false);
     m_reconnectRefreshDispatched.store(false); m_reconnectRiskRefreshDispatched.store(false);
-    m_recoveryAuditReconnectRequested.store(false);
-    m_reconnectConnectionEpoch.store(0); m_polling.store(false);
+    m_reconnectConnectionEpoch.store(0);
     m_started = false;
     if (m_server) m_server->Stop();
     if (m_pollThread.joinable()) m_pollThread.join();

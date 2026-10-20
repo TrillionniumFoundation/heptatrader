@@ -415,6 +415,9 @@ private:
     std::atomic<bool> m_reconnectRefreshDispatched{false};
     std::atomic<bool> m_reconnectRiskRefreshDispatched{false};
     std::atomic<bool> m_recoveryAuditReconnectRequested;
+    // Protected by m_lifecycleStateMutex. A deferred owner audit may return
+    // only the readiness it closed; other lifecycle transitions revoke it.
+    bool m_recoveryAuditOwnsReadyGate = false;
     // Latched for this process. Only a new complete startup may clear it;
     // late callbacks cannot silently turn a diagnostic service into a trader.
     std::atomic<bool> m_startupRecoveryReadOnly{false};

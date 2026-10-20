@@ -191,6 +191,83 @@ struct IbPostFillReconciliationFixture {
         need(runtime->m_lifecycleGate->ready.load(),
              "aborted stale audit restores the original service readiness");
     }
+    void deferredAuditAbortRestoresOriginalReady(
+        bool stopBeforeAbort = false, bool originallyReady = true) {
+        // The queued audit is a state-machine input; the separate flat-audit
+        // test covers PolicyRecoveryAuditSnapshot's real enqueue boundary.
+        if (!originallyReady) runtime->m_lifecycleGate->ready.store(false);
+        need(runtime->m_lifecycleGate->ready.load() == originallyReady,
+             "original readiness");
+        const auto startEpoch = runtime->m_adapter->GetConnectionEpoch();
+        runtime->m_recoveryAuditReconnectRequested.store(true);
+        fill(.16509636, "synthetic-deferred-audit-partial");
+        need(runtime->m_postFillRiskRefreshPending.load() &&
+             runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),
+             "original partial fill entered both reconciliation gates");
+        need(runtime->DriveRecoveryAuditReconnect(), "first poll deferred");
+        need(!runtime->m_lifecycleGate->ready.load() &&
+             runtime->m_recoveryAuditReconnectRequested.load() &&
+             !runtime->m_reconnectPending.load(),
+             "deferred poll keeps its request and closes readiness");
+
+        fill(total, "synthetic-deferred-audit-full");
+        nativeFinal(); nativeFinal(); finishRisk(0);
+        const auto older = runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(older.risk.complete && older.risk.coherentRefreshComplete &&
+             older.risk.riskAbsorbedExposureGeneration < older.exposureGeneration,
+             "first original risk cohort predates final exposure");
+        runtime->m_postFillStableSince = Clock::now()-std::chrono::milliseconds(300);
+        runtime->m_postFillNextRetryAt = Clock::now()-std::chrono::milliseconds(1);
+        runtime->DrivePostFillRiskRefresh();
+        std::string reason;
+        need(!runtime->HasFatalRuntimeError(&reason) &&
+             runtime->m_postFillRiskRefreshPending.load(),
+             "older risk evidence waits for a newer original cohort");
+        finishRisk(0); runtime->DrivePostFillRiskRefresh();
+        need(runtime->m_postFillRiskRefreshPending.load(),
+             "original stability interval remains enforced");
+        runtime->m_postFillStableSince = Clock::now()-std::chrono::milliseconds(300);
+        runtime->DrivePostFillRiskRefresh();
+        need(!runtime->HasFatalRuntimeError(&reason) &&
+             !runtime->m_postFillRiskRefreshPending.load() &&
+             !runtime->m_adapter->HasPendingLivePostFillRiskReconciliation(),
+             "original callbacks complete post-fill before audit cancellation");
+
+        auto drift=event(IBEventType::AccountValue);
+        drift.key="CashBalance:EUR"; drift.value="1001"; push(drift);
+        const auto changed=runtime->m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        need(!changed.risk.complete && changed.reasonCode==
+             "IB_FX_CASH_BALANCE_OUT_OF_GENERATION_CHANGE",
+             "original cash callback invalidates queued audit economics");
+
+        const auto stoppedAtSeam=std::make_shared<bool>(false);
+        const auto originalHook=runtime->m_testHooks.onStage;
+        if(stopBeforeAbort) {
+            runtime->m_testHooks.onStage=[this,stoppedAtSeam](const char* stage) {
+                if(!*stoppedAtSeam && std::strcmp(stage,
+                        "before_recovery_audit_reconnect_drain")==0) {
+                    *stoppedAtSeam=true;
+                    runtime->Stop();
+                }
+            };
+        }
+        const bool drove=runtime->DriveRecoveryAuditReconnect();
+        runtime->m_testHooks.onStage=originalHook;
+        need(drove && !runtime->HasFatalRuntimeError(&reason),
+             "second poll cancels without fatal");
+        need(*stoppedAtSeam==stopBeforeAbort, "requested Stop seam executed");
+        need(!runtime->m_recoveryAuditReconnectRequested.load() &&
+             !runtime->m_reconnectPending.load(), "no hidden reconnect after cancel");
+        need(runtime->m_lifecycleGate->ready.load()==
+                 (originallyReady && !stopBeforeAbort),
+             stopBeforeAbort ? "Stop must keep readiness closed" :
+             originallyReady ? "deferred audit must restore original readiness" :
+                               "audit must not open an originally closed gate");
+        need(broker->connected==!stopBeforeAbort &&
+             runtime->m_adapter->GetConnectionEpoch()==startEpoch && broker->places==1,
+             "preserve original epoch and single synthetic send");
+    }
+
     void rejectIncompleteEvidence(int scenario) {
         fill(scenario==2?.16509636:total,"synthetic-incomplete");
         if(scenario!=2)nativeFinal();
@@ -234,22 +311,70 @@ struct IbPostFillReconciliationFixture {
         need(broker->places==1,"no extra synthetic order");
     }
 };
-int main(int argc,char**argv){
-    try{IbPostFillReconciliationFixture f;
-        if(argc>1&&std::string(argv[1])=="--invalidated-flat-audit") {
+int main(int argc, char** argv) {
+    try {
+        IbPostFillReconciliationFixture f;
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-restores-ready") {
+            f.deferredAuditAbortRestoresOriginalReady();
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-stop") {
+            f.deferredAuditAbortRestoresOriginalReady(true);
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--deferred-audit-originally-closed") {
+            f.deferredAuditAbortRestoresOriginalReady(false, false);
+            return 0;
+        }
+        if (argc > 1 &&
+            std::string(argv[1]) == "--invalidated-flat-audit") {
             IbPostFillReconciliationFixture invalidated(false);
             invalidated.flatAuditInvalidatedBeforeDisconnectMustNotReconnect();
-            std::cout<<"PASS invalidated flat audit did not reconnect or mutate Broker\n";
+            std::cout << "PASS invalidated flat audit did not reconnect or mutate Broker\n";
             return 0;
         }
-        if(argc>1&&std::string(argv[1])=="--nonflat-owner-audit") {
+        if (argc > 1 &&
+            std::string(argv[1]) == "--nonflat-owner-audit") {
             IbPostFillReconciliationFixture nonflat(false);
             nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
-            std::cout<<"PASS nonflat rejected owner audit did not enqueue broker reconnect\n";
+            std::cout << "PASS nonflat rejected owner audit did not enqueue broker reconnect\n";
             return 0;
         }
-        f.reproduceAdvancedExposure(!(argc>1&&std::string(argv[1])=="--expect-old-failure"));
-        if(!(argc>1)){for(int k=0;k<3;++k){IbPostFillReconciliationFixture negative;negative.rejectIncompleteEvidence(k);}}
-        std::cout<<"PASS partial/full, duplicate, missing End, position mismatch, missing terminal and fixed timeout; synthetic only\n";return 0;
-    }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}
+        f.reproduceAdvancedExposure(
+            !(argc > 1 && std::string(argv[1]) == "--expect-old-failure"));
+        if (argc == 1) {
+            for (int k = 0; k < 3; ++k) {
+                IbPostFillReconciliationFixture negative;
+                negative.rejectIncompleteEvidence(k);
+            }
+            {
+                IbPostFillReconciliationFixture deferred;
+                deferred.deferredAuditAbortRestoresOriginalReady();
+            }
+            {
+                IbPostFillReconciliationFixture stopped;
+                stopped.deferredAuditAbortRestoresOriginalReady(true);
+            }
+            {
+                IbPostFillReconciliationFixture closed;
+                closed.deferredAuditAbortRestoresOriginalReady(false, false);
+            }
+            {
+                IbPostFillReconciliationFixture invalidated(false);
+                invalidated.flatAuditInvalidatedBeforeDisconnectMustNotReconnect();
+            }
+            {
+                IbPostFillReconciliationFixture nonflat(false);
+                nonflat.nonflatRejectedAuditMustNotScheduleReconnect();
+            }
+        }
+        std::cout << "PASS post-fill, fixed timeout and recovery audit readiness; synthetic only\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
 }

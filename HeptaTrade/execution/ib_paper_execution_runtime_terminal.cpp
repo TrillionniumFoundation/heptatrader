@@ -10,6 +10,7 @@ bool IbPaperExecutionRuntimeComposition::PublishTerminalControlReady(
     std::string& reason)
 {
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+    m_recoveryAuditOwnsReadyGate = false;
     m_polling.store(false);
     m_lifecycleGate->ready.store(false);
     m_lifecycleGate->terminalControlOnly.store(true);
@@ -141,6 +142,7 @@ bool IbPaperExecutionRuntimeComposition::BeginTerminalRecoveryAudit(
 
     {
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+        m_recoveryAuditOwnsReadyGate = false;
         m_lifecycleGate->ready.store(false);
         m_lifecycleGate->terminalControlOnly.store(true);
         m_polling.store(false);
@@ -277,10 +279,10 @@ bool IbPaperExecutionRuntimeComposition::CommitTerminalRecoveryAudit(
 // completes any live post-fill refresh before starting the fresh-epoch audit.
 bool IbPaperExecutionRuntimeComposition::DriveRecoveryAuditReconnect()
 {
-    bool lifecyclePreviouslyReady = false;
     {
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
-        lifecyclePreviouslyReady = m_lifecycleGate->ready.exchange(false);
+        if (m_lifecycleGate->ready.exchange(false))
+            m_recoveryAuditOwnsReadyGate = true;
     }
     NotifyTestStage("before_recovery_audit_reconnect_drain");
     const bool drained = DrainAdapterEvents(0);
@@ -310,11 +312,14 @@ bool IbPaperExecutionRuntimeComposition::DriveRecoveryAuditReconnect()
         m_postFillRiskRefreshPending.load();
     if (latest.barrierComplete || !RecoveryAuditEconomicPreflight(economic))
     {
-        m_recoveryAuditReconnectRequested.store(false);
         {
             std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
-            if (lifecyclePreviouslyReady && !m_fatalRuntimeError.load() &&
-                !m_reconnectPending.load())
+            const bool restoreReady = m_recoveryAuditOwnsReadyGate;
+            m_recoveryAuditOwnsReadyGate = false;
+            m_recoveryAuditReconnectRequested.store(false);
+            if (restoreReady && !m_fatalRuntimeError.load() &&
+                !m_reconnectPending.load() &&
+                !m_lifecycleGate->terminalControlOnly.load())
                 m_lifecycleGate->ready.store(true);
         }
         NotifyTestStage("recovery_audit_reconnect_aborted_economic_changed");

@@ -280,6 +280,7 @@ bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
         // any broker IO. The service identity remains stable, but every RPC
         // other than identity probing observes EXECUTION_SERVICE_NOT_READY.
         std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+        m_recoveryAuditOwnsReadyGate = false;
         m_lifecycleGate->ready.store(false);
     }
     const bool livePostFillPending =
@@ -692,6 +693,7 @@ void IbPaperExecutionRuntimeComposition::MarkFatalRuntimeError(
     // thread that detects a fatal event while Start() is publishing readiness
     // waits for that publication, then irreversibly closes the shared gate.
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleStateMutex);
+    m_recoveryAuditOwnsReadyGate = false;
     {
         std::lock_guard<std::mutex> lock(m_fatalMutex);
         if (m_fatalReason.empty()) m_fatalReason = reason;
