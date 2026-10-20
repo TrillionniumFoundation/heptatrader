@@ -56,8 +56,8 @@ jobs:
         RUN_LEARNING: ${{ steps.scope.outputs.run_learning }}
       run: |
         set -euo pipefail
-        packages=(python3-yaml python3-numpy python3-cryptography)
-        if [[ "$RUN_NATIVE" != false ]]; then packages+=(cmake ninja-build libssl-dev zlib1g-dev); fi
+        packages=(cmake libssl-dev zlib1g-dev python3-yaml python3-numpy python3-cryptography)
+        if [[ "$RUN_NATIVE" != false ]]; then packages+=(ninja-build); fi
         if [[ "$RUN_LEARNING" != false ]]; then packages+=(python3-venv); fi
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends "${packages[@]}"
