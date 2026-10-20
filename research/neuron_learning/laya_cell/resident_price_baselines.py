@@ -249,12 +249,13 @@ def candidate_training_diagnostics(candidate):
    and all(char in '0123456789abcdef' for char in pool_digest))
  full_pool_covered=(pool_count==selected_count and digest(selected_ids)==pool_digest
    if pool_recorded and selected_ids is not None else None)
+ pool_identity_consistent=(pool_recorded and selected_ids is not None
+   and (pool_count>selected_count or full_pool_covered))
  pool_has_act=None
  # Partial-pool membership comes from the same scheduler/job context; this
  # does not independently observe any unselected labels. Contradictory complete
  # pool identities and historical records without that context remain unknown.
- if (selected_counts is not None and pool_recorded and selected_ids is not None
-     and (pool_count>selected_count or full_pool_covered)):
+ if selected_counts is not None and pool_identity_consistent:
   if selected_counts['ACT_correct']>0:pool_has_act=True
   elif full_pool_covered and selected_counts['unknown']==0:pool_has_act=False
  norms=[s['gradient_norm_before_clip'] for s in steps if 'gradient_norm_before_clip' in s]
@@ -285,7 +286,7 @@ def candidate_training_diagnostics(candidate):
    'selected_rows':selected_count,'selected_row_ids_digest':digest(selected_ids) if selected_ids is not None else None,
    'selected_target_counts':selected_counts,'pool_count':pool_count if pool_recorded else None,
    'pool_row_ids_digest':pool_digest if pool_recorded else None,'full_pool_covered':full_pool_covered,
-   'unselected_rows':pool_count-selected_count if pool_recorded else None,
+   'unselected_rows':pool_count-selected_count if pool_identity_consistent else None,
    'unselected_target_counts':None,'pool_has_act':pool_has_act}}
  if 'action_training_profile' in candidate:
   from .resident_action_v2_research import action_support_diagnostic

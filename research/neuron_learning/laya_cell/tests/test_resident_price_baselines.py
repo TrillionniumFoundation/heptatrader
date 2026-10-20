@@ -167,6 +167,9 @@ class TrainingDiagnosticTests(unittest.TestCase):
      self.assertEqual(result['unselected_rows'],480)
      self.assertEqual(result['selected_target_counts'],{'ACT_correct':0,'ESCALATE_wrong':32,'unknown':0})
     if name=='missing_context_positive':self.assertIsNone(result['pool_count'])
+    if name in ('missing_context_positive','different_complete_pool','different_measurement'):
+     self.assertIsNone(result['unselected_rows'])
+    else:self.assertEqual(result['unselected_rows'],pool_count-32)
 
  def test_repeated_epoch_presentations_and_rollbacks_do_not_inflate_selected_rows(self):
   candidate,rows=self.candidate();ids=[row_id(r) for r in rows]
