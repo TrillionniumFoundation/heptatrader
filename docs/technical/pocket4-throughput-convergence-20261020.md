@@ -171,7 +171,7 @@ Evidence: `training-tests.log`, `training-stage-230s-admission-retry.json`,
 ## Next Value: verified front-path reuse and actual OPEN timing
 
 The next runtime uses verified per-turn ingress and registered-plan snapshots,
-shared prefix revalidation, newest fresh request ordering and phase timings.
+shared prefix revalidation, fresh requests before expired work and phase timings.
 Publication deadlines, same-behavior binding and role signatures remain enforced.
 The guard uses the original memory/PSI/shared-heavy-worker lease, without applying
 Value background priority to itself or sweeping training caches. Guard acquisition
