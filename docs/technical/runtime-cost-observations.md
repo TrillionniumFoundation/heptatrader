@@ -246,3 +246,27 @@ The simulator Execution process publishes two additive startup scopes in additio
 The ordinary source lane deliberately separates deterministic cost-shape regressions from target-host SLOs. Its generation lifecycle curve retains 16 generations and 1,024 commands (4,096 logical events), grows the decoded generation index through 4, 8 and 16 distinct owner/session pairs at the sampled checkpoints, and reports cumulative index bytes, generation output bytes and retained/logical storage amplification before a verified rebase. The native terminal fixture independently covers more than the legacy enumeration ceiling with a compact same-owner/session mutation universe. The privileged installed-process lane exercises smaller real-process stages because each order is actually admitted, filled, stopped/sealed and recovered; its current curve is 8, 40 and 168 cumulative admitted orders.
 
 Repository acceptance is behavioral and structural rather than tied to a GitHub-runner millisecond budget: the sequential reader must read exactly the selected index range; every generation point must verify, preserve the declared command/event cardinality and publish non-zero storage evidence; installed stages must expose coordinator recovery, simulator recovery, complete startup-ready timing, VmHWM and a finite p99 place-latency bucket; the oldest command must remain idempotent with no resend; and rebase must collapse the lineage while reducing retained bytes without changing logical history. The source-side reader and generation curves are retained create-only as `core-evidence/generation-index-read-cost.json` and `core-evidence/synthetic-generation-cost-curve.json`; both bind the exact source SHA and are structurally revalidated by `accept_core_release.py`. The installed curve is written create-only as `process-evidence/installed-generation-cost-curve.json`, binds the exact candidate source SHA and package SHA-256, and is revalidated by the same driver before a core acceptance receipt can be issued; the existing Core/main/tag artifact uploads therefore retain selected-range read bytes/calls, seal/verify/storage amplification and real-process recovery/RSS/tail-latency evidence instead of leaving those curves only in test stdout. These are explicit repository regression envelopes, not claims of maximum supported production cardinality. Absolute latency/RSS/disk SLOs and a maintenance cadence remain target-host evidence under HOST-OPERATIONS-003.
+
+## Candidate registration and the current training wait
+
+The resident status reports the latest completed candidate's registration separately
+from its current training state. A verified NO_FORWARD_TRIAL means that the original
+candidate window cannot admit a continuous trial; it is neither a model performance
+rejection nor a candidate still waiting for resource admission. A simultaneous
+HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE describes admission for a new training job.
+
+The latest_candidate_registration field reuses the frozen registration identity and
+receipt validators. It reports zero future observations only when the original
+terminal receipt matches the database and no plan file exists. A database-first
+terminal record awaiting its immutable file is reported as publication pending;
+damaged or ambiguous evidence is reported as unavailable. Reserved and published
+registrations expose plan identity, not qualification or future performance.
+
+Queue summaries retain evaluation_queue_checked_at_ms from the actual reconciliation.
+Resource refusal reuses that queue summary and the storage inspection from the same
+preflight, without a second storage-tree inspection, mature-data collection, or a
+worker lease. The jobs status/candidate index supports this bounded metadata lookup
+as well as the existing status counts.
+
+Runtime identity still comes from actual process entrypoints and pinned configuration.
+Branch names and document snapshots do not prove which version a service loaded.

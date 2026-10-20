@@ -4,6 +4,7 @@ New mature-row fingerprints, durable job admission, bounded child processes and
 immutable candidate outputs survive restart. The bootstrap trainer stays off.
 """
 from __future__ import annotations
+import sqlite3
 import argparse,fcntl,json,os,signal,subprocess,sys,time
 from pathlib import Path
 from .integrity import ContractError,read_json,digest,sha_file,canonical
@@ -71,11 +72,53 @@ class Supervisor:
  def stop_signal(self,*_):
   self.stop=True
   if self.child and self.child.poll() is None:self.child.terminate()
+ def _latest_candidate_registration(self,candidate_id):
+  """Describe the latest completed artifact without collecting data or allocating work."""
+  if not candidate_id or self.c.get('future_plan_admission_profile') is None:return None
+  result={'candidate_id':candidate_id,'registration_is_performance_result':False}
+  try:
+   rows=self.db.execute("SELECT id,payload FROM jobs WHERE status='COMPLETED' AND candidate_id=? LIMIT 2",(candidate_id,)).fetchall()
+   if len(rows)!=1:raise ContractError('LATEST_CANDIDATE_JOB_BINDING')
+   job_id=rows[0]['id'];job=json.loads(rows[0]['payload'])
+   if not isinstance(job,dict):raise ContractError('LATEST_CANDIDATE_JOB_SHAPE')
+   result.update(job_id=job_id,parent_id=job.get('parent_id'),training_state='COMPLETED')
+   from .resident_plan_admission import KEY_PREFIX,_identity,_check_record
+   record=get_meta(self.db,KEY_PREFIX+job_id)
+   folder=Path(self.c['evaluation_directory'])/job_id
+   if record is None:
+    return {**result,'state':'REGISTRATION_RECORD_NOT_AVAILABLE','plan_file_exists':(folder/'plan.json').exists()}
+   candidate=read_json(Path(job['output_directory'])/'candidate.json')
+   if not isinstance(candidate,dict):raise ContractError('LATEST_CANDIDATE_MANIFEST_SHAPE')
+   _check_record(record,_identity(self,job_id,candidate,job))
+   result.update(state=record['state'],reason=record.get('reason'),
+     registration_id=record['registration_id'],checked_at_ms=record['checked_at_ms'],
+     candidate_window=record['candidate_window'],trial_allocated=record['trial_allocated'])
+   if record['state']=='NO_FORWARD_TRIAL':
+    if (folder/'plan.json').exists():raise ContractError('FORWARD_TERMINAL_PLAN_CONFLICT')
+    receipt=folder/'no-forward-trial.json'
+    if not receipt.exists():
+     return {**result,'state':'TERMINAL_RECEIPT_PUBLICATION_PENDING','recorded_state':record['state']}
+    if read_json(receipt)!=record:raise ContractError('FORWARD_TERMINAL_RECEIPT_CHANGED')
+    result.update(receipt_path=str(receipt),receipt_publication_verified=True,
+      future_observations=0,registration_retryable=False,next_action='NEW_CANDIDATE_AFTER_TRAINING_ADMISSION')
+   elif record['trial_allocated']:
+    result.update(plan_id=record['plan']['plan_id'],trial=record['plan']['trial'],
+      plan_start_ms=record['plan']['start_ms'],plan_outcome_end_ms=record['plan']['outcome_end_ms'])
+   calendar=record.get('calendar')
+   if isinstance(calendar,dict):
+    result['calendar']={k:calendar[k] for k in ('reason','earliest_feasible_start_ms','latest_feasible_start_ms','plan_interval_ms') if k in calendar}
+   return result
+  except (ContractError,OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
+   return {'candidate_id':candidate_id,'state':'REGISTRATION_EVIDENCE_UNAVAILABLE',
+     'reason':str(exc),'registration_is_performance_result':False}
+
  def write_status(self,*,storage=None,**extra):
   self.storage=inspect_storage(self.c) if storage is None else storage
   stats={s:self.db.execute('SELECT count(*) FROM jobs WHERE status=?',(s,)).fetchone()[0] for s in ('ADMITTED','RUNNING','COMPLETED','FAILED')}
+  candidate_id=extra.get('last_candidate_id',get_meta(self.db,'last_completed_candidate'))
+  latest_registration=self._latest_candidate_registration(candidate_id)
   state={'schema':'heptatrader.laya-resident-status.v1','at_ms':int(time.time()*1000),'job_counts':stats,
-    'last_candidate_id':get_meta(self.db,'last_completed_candidate'),'historical_confirmed_pnl_rewards':self.db.execute('SELECT count(*) FROM rewards').fetchone()[0],
+    'last_candidate_id':candidate_id,'historical_confirmed_pnl_rewards':self.db.execute('SELECT count(*) FROM rewards').fetchone()[0],
     'active_pnl_reward_count':len(get_meta(self.db,'active_reward_ids',[])),
     'active_execution_reward_count':len(get_meta(self.db,'active_execution_reward_ids',[])),
     'execution_reward_is_not_model_credit':True,
@@ -86,7 +129,8 @@ class Supervisor:
     'consumed_rows_semantics':'RESERVED_NOT_PROOF_OF_GRADIENT','training_lineage':{'mode':'INDEPENDENT_CANDIDATES_FROM_CONFIGURED_PARENT','configured_parent_directory':self.c.get('initial_parent_directory'),'optimizer_reset_each_job':True,'completed_jobs_are_cumulative_updates':False},
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
-    'broker_orders_sent':0,'storage':self.storage,**extra}
+    'broker_orders_sent':0,'storage':self.storage,**getattr(self,'_evaluation_queue_status',{}),**extra}
+  if latest_registration is not None:state['latest_candidate_registration']=latest_registration
   atomic(self.root/'status.json',state);print(json.dumps(state),flush=True);return state
  def candidate_done(self,row):
   job=json.loads(row['payload']);path=Path(job['output_directory'])/'candidate.json'
@@ -320,6 +364,7 @@ class Supervisor:
    return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
   self.sync_rewards()
   queue=self.reconcile_evaluation_queue()
+  self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if queue['deferred_training_candidates']:
    return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
@@ -333,6 +378,7 @@ class Supervisor:
    return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
   rewards=self.sync_rewards(now)
   queue=self.reconcile_evaluation_queue()
+  self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
   if queue['deferred_training_candidates']:return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS

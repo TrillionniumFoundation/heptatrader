@@ -463,6 +463,9 @@ def guarded_trainer_class(base,gate):
             if not gate.acquire({'role':'trainer'}):
                 report=getattr(gate,'last_admission',None)
                 return self.write_status(state='HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE',
+                                         storage=getattr(self,'storage',None),
+                                         waiting_stage='NEW_TRAINING_RESOURCE_PREFLIGHT',
+                                         training_data_refresh_performed=False,worker_lease_acquired=False,
                                          resource_admission=report if report is not None else gate.check())
             try:return super().step()
             finally:gate.release()
