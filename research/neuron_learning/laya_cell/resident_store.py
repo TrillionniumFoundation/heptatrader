@@ -27,6 +27,7 @@ def database(path):
  db=sqlite3.connect(path,timeout=5);db.row_factory=sqlite3.Row
  db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL')
  db.executescript('''CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,fingerprint TEXT UNIQUE NOT NULL,status TEXT NOT NULL,created_ms INTEGER NOT NULL,candidate_id TEXT,payload TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS jobs_status_candidate ON jobs(status,candidate_id);
  CREATE TABLE IF NOT EXISTS consumed_rows(id TEXT PRIMARY KEY,job_id TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS rewards(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS execution_rewards(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
