@@ -2,7 +2,8 @@
 """Run a disjoint Python CI partition, or the complete local suite.
 
 New test files belong to core unless explicitly assigned to source, learning,
-install, isolated process integration, or optional external native integration.
+install, isolated process integration, archived workflow contracts, or optional
+external native integration.
 No test is dropped by a filename glob maintained in a second workflow.
 """
 from __future__ import annotations
@@ -47,6 +48,12 @@ EXTERNAL_TESTS = frozenset({
     "test_train_v2_physical_native_roundtrip.py",
 })
 
+# Retired Desktop qualification fixtures remain runnable when their inputs change.
+LEGACY_TESTS = frozenset({
+    "test_ib_workflow_interfaces.py",
+    "test_qualification_trust_boundary.py",
+})
+
 # These numerical research suites require Torch or safetensors.
 LEARNING_TESTS = frozenset({
     "test_laya_frozen_price_numpy.py",
@@ -68,7 +75,7 @@ NESTED_LEARNING_MODULES = frozenset({
 
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
     discovered = {p.name for p in (root / "tests/python").glob("test_*.py") if p.is_file()}
-    explicit = (SOURCE_TESTS, LEARNING_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS)
+    explicit = (SOURCE_TESTS, LEARNING_TESTS, INSTALL_TESTS, PROCESS_TESTS, EXTERNAL_TESTS, LEGACY_TESTS)
     overlap = set()
     for i, group in enumerate(explicit):
         for other in explicit[i+1:]:
@@ -80,8 +87,8 @@ def partitions(root: Path = ROOT) -> dict[str, set[str]]:
         raise ValueError("no Python test files discovered")
     return {"source": set(SOURCE_TESTS), "install": set(INSTALL_TESTS),
             "process": set(PROCESS_TESTS), "external": set(EXTERNAL_TESTS),
-            "learning": set(LEARNING_TESTS),
-            "core": discovered - SOURCE_TESTS - LEARNING_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS}
+            "learning": set(LEARNING_TESTS), "legacy": set(LEGACY_TESTS),
+            "core": discovered - SOURCE_TESTS - LEARNING_TESTS - INSTALL_TESTS - PROCESS_TESTS - EXTERNAL_TESTS - LEGACY_TESTS}
 
 
 def configure_import_paths() -> None:
@@ -98,7 +105,7 @@ def configure_import_paths() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", choices=("core", "source", "learning", "install", "process", "external", "all"), required=True)
+    parser.add_argument("--lane", choices=("core", "source", "learning", "install", "process", "external", "legacy", "all"), required=True)
     parser.add_argument("--list", action="store_true", help="list selected test files without importing them")
     args = parser.parse_args(argv)
     if not args.list:
