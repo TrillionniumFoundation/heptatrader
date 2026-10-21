@@ -238,9 +238,11 @@ def read_flat_state(path, instrument):
         if type(value.get(name)) is not int or value[name] < 0:
             fail("DRIVER_ACCOUNTING_INVALID:" + name)
     # Old entry correlations can remain populated at zero position. Keep them.
+    # The maintenance pause is a diagnostic refreshed on every driver loop.
     correlation = {
         name: item for name, item in value.items()
-        if name in BUSINESS_FIELDS or name.startswith("entry_")
+        if name != "entry_inference_pause"
+        and (name in BUSINESS_FIELDS or name.startswith("entry_"))
     }
     return raw, correlation
 

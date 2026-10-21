@@ -66,6 +66,72 @@ def _lock_busy(path):
         os.close(fd)
 
 
+class FlatStateCorrelationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hepta-flat-state-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "state.json"
+        self.state = {
+            "instrument": "EUR.USD", "position": 0, "pending": None,
+            "entries": 2, "exits": 2, "net_pnl": -0.50,
+            "entry_decision_id": "decision-before", "entry_order_id": 123,
+        }
+
+    def _read(self, state):
+        _put(self.path, _json_bytes(state))
+        return activation.read_flat_state(self.path, "EUR.USD")[1]
+
+    def test_maintenance_pause_diagnostic_refresh_does_not_change_correlation(self):
+        expected = self._read(self.state)
+        for checked_at_ms in (1, 2):
+            with self.subTest(checked_at_ms=checked_at_ms):
+                state = dict(self.state, entry_inference_pause={
+                    "checked_at_ms": checked_at_ms,
+                    "reason_code": "PERSISTENT_MAINTENANCE_HOLD",
+                    "scope": "ENTRY_INFERENCE_ONLY",
+                })
+                self.assertEqual(self._read(state), expected)
+        self.assertEqual(self._read(self.state), expected)
+
+    def test_accounting_and_entry_correlations_remain_protected(self):
+        examples = (
+            ("entries", 2, 3),
+            ("exits", 2, 3),
+            ("gross_pnl", -0.25, 0.25),
+            ("net_pnl", -0.50, 0.10),
+            ("closed_trades", 2, 3),
+            ("btc_entry_control", {"last_flat_at_ms": 100, "open_reservations": []},
+             {"last_flat_at_ms": 101, "open_reservations": []}),
+            ("entry_decision_id", "decision-before", "decision-after"),
+            ("entry_order_id", 123, 124),
+            ("entry_command_id", "open-command-001", "open-command-002"),
+            ("entry_future_correlation", {"order_id": 123}, {"order_id": 124}),
+        )
+        expected = {name: original for name, original, _ in examples}
+        state = dict(self.state, **expected)
+        self.assertEqual(self._read(state), expected)
+        for name, _, changed in examples:
+            with self.subTest(field=name):
+                updated = dict(state)
+                updated[name] = changed
+                actual = self._read(updated)
+                self.assertNotEqual(actual, expected)
+                self.assertEqual(actual[name], changed)
+
+    def test_pending_or_position_drift_still_fails_flat_validation(self):
+        for changes in ({"pending": {"order_id": 123}}, {"position": 1},
+                        {"position": -1}, {"position": "0"}):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(RuntimeError, "DRIVER_STATE_NOT_EXPLICITLY_FLAT"):
+                    self._read(dict(self.state, **changes))
+
+    def test_invalid_trade_counts_still_fail_accounting_validation(self):
+        for changes in ({"entries": -1}, {"entries": "2"}, {"exits": -1}):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(RuntimeError, "DRIVER_ACCOUNTING_INVALID"):
+                    self._read(dict(self.state, **changes))
+
+
 class MaintenanceUpgradeTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hepta-maintenance-test-")
@@ -599,6 +665,25 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         stopped = self._events("stop")[0]
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
+
+    def test_refreshing_maintenance_pause_during_startup_preserves_business_state(self):
+        original_write = self._write_observation
+
+        def refresh_pause():
+            original_write()
+            state = json.loads(self.state_path.read_bytes())
+            state["entry_inference_pause"] = {
+                "checked_at_ms": self.state_writes,
+                "reason_code": "PERSISTENT_MAINTENANCE_HOLD",
+                "scope": "ENTRY_INFERENCE_ONLY",
+            }
+            _put(self.state_path, _json_bytes(state))
+
+        with mock.patch.object(self, "_write_observation", refresh_pause):
+            result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertGreaterEqual(self.state_writes, 3)
+        self.assertIn("entry_inference_pause", json.loads(self.state_path.read_bytes()))
 
     def test_native_audit_failure_does_not_stop_or_touch_execstart(self):
         self.audit_mode = "reject-first"
