@@ -138,7 +138,50 @@ class TrainingDiagnosticTests(unittest.TestCase):
    'steps':[{'applied':True,'training_row_ids':[row_id(r) for r in rows[i:i+2]],
     'teacher_rows':0,'gradient_norm_before_clip':2. if i==0 else .5}
     for i in range(0,32,2)]}
+  from laya_cell.resident_row_accounting import receipt
+  ids=[row_id(r) for r in rows]
+  candidate['row_accounting']=receipt(ids,candidate['steps'],ids)
+  candidate['data_fingerprint']=digest(ids)
+  candidate['measurement']['action_target_counts']={'0':0,'1':32,'None':0}
   return candidate,rows
+ def test_selected_action_support_does_not_label_unobserved_pool(self):
+  cases=[('partial_zero',512,0,0,None),('full_zero',32,0,0,False),
+         ('partial_positive',512,3,0,True),('full_unknown',32,0,1,None),
+         ('missing_context_positive',512,3,0,None),('missing_counts',32,0,0,None),
+         ('different_complete_pool',32,3,0,None),('different_measurement',32,3,0,None)]
+  for name,pool_count,act,unknown,want in cases:
+   with self.subTest(name=name):
+    candidate,rows=self.candidate();ids=[row_id(r) for r in rows]
+    pool_ids=sorted(ids) if pool_count==32 else sorted(ids+[digest(['unselected',i]) for i in range(480)])
+    candidate['selection_context']={'pool_count':pool_count,'pool_row_ids_digest':digest(pool_ids)}
+    candidate['measurement']['action_target_counts']={'0':act,'1':32-act-unknown,'None':unknown}
+    if name=='missing_context_positive':del candidate['selection_context']
+    elif name=='missing_counts':del candidate['measurement']['action_target_counts']
+    elif name=='different_complete_pool':candidate['selection_context']['pool_row_ids_digest']='a'*64
+    elif name=='different_measurement':candidate['row_accounting']['measurement_row_ids'][0]='b'*64
+    before=copy.deepcopy(candidate)
+    result=b.candidate_training_diagnostics(candidate)['action_selection_diagnostic']
+    self.assertEqual(candidate,before);self.assertIs(result['pool_has_act'],want)
+    self.assertIsNone(result['unselected_target_counts'])
+    if name=='partial_zero':
+     self.assertEqual(result['unselected_rows'],480)
+     self.assertEqual(result['selected_target_counts'],{'ACT_correct':0,'ESCALATE_wrong':32,'unknown':0})
+    if name=='missing_context_positive':self.assertIsNone(result['pool_count'])
+    if name in ('missing_context_positive','different_complete_pool','different_measurement'):
+     self.assertIsNone(result['unselected_rows'])
+    else:self.assertEqual(result['unselected_rows'],pool_count-32)
+
+ def test_repeated_epoch_presentations_and_rollbacks_do_not_inflate_selected_rows(self):
+  candidate,rows=self.candidate();ids=[row_id(r) for r in rows]
+  candidate['selection_context']={'pool_count':32,'pool_row_ids_digest':digest(sorted(ids))}
+  candidate['steps']=copy.deepcopy(candidate['steps']*4)
+  candidate['steps'][-1]['applied']=False
+  report=b.candidate_training_diagnostics(candidate)
+  self.assertEqual(report['training_examples']['attempted'],128)
+  result=report['action_selection_diagnostic']
+  self.assertEqual(result['selected_rows'],32);self.assertTrue(result['full_pool_covered'])
+  self.assertFalse(result['pool_has_act'])
+
  def artifact(self,root):
   candidate,_=self.candidate()
   (root/'adapter.safetensors').write_bytes(b'SYNTHETIC_HASH_FIXTURE_NOT_A_MODEL')

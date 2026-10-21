@@ -5,7 +5,7 @@ from collections import Counter
 from copy import deepcopy
 from .integrity import ContractError,digest,validate_candidate_artifact
 from .dataset import BIN_EDGES_BPS
-from .resident_row_accounting import row_id,MAX_TRAINING_ROWS
+from .resident_row_accounting import row_id,MAX_TRAINING_ROWS,checked_ids
 
 SCHEMA='heptatrader.laya-resident-price-baselines.v1'
 FEATURES=('horizon_over_300s','history_minutes','last_step_return_bps',
@@ -223,6 +223,41 @@ def candidate_training_diagnostics(candidate):
  rows_recorded=isinstance(recorded_steps,list) and all(isinstance(s.get('training_row_ids'),list) for s in steps)
  ids=[key for s in steps for key in s.get('training_row_ids',[])]
  applied_ids=[key for s in steps if s['applied'] for key in s.get('training_row_ids',[])]
+ # Counts describe the selected rows only. Unselected parent correctness was
+ # never evaluated, so a one-class selection does not prove a one-class pool.
+ selected_count=measurement.get('rows');raw_counts=measurement.get('action_target_counts')
+ selected_counts=None
+ if (type(selected_count) is int and selected_count>0 and isinstance(raw_counts,dict)
+     and all(type(raw_counts.get(k)) is int and raw_counts[k]>=0 for k in ('0','1','None'))
+     and sum(raw_counts[k] for k in ('0','1','None'))==selected_count):
+  selected_counts={'ACT_correct':raw_counts['0'],'ESCALATE_wrong':raw_counts['1'],'unknown':raw_counts['None']}
+ accounting=candidate.get('row_accounting');accounting=accounting if isinstance(accounting,dict) else {}
+ selected_ids=None
+ try:
+  measured=checked_ids(accounting.get('measurement_row_ids'))
+  reserved=checked_ids(accounting.get('reserved_row_ids'))
+  if (type(selected_count) is int and selected_count>0 and len(measured)==selected_count
+      and set(measured)==set(reserved) and rows_recorded and set(ids)==set(measured)
+      and candidate.get('data_fingerprint')==digest(reserved)):
+   selected_ids=sorted(measured)
+ except ContractError:pass
+ context=candidate.get('selection_context');context=context if isinstance(context,dict) else {}
+ pool_count=context.get('pool_count');pool_digest=context.get('pool_row_ids_digest')
+ pool_recorded=(type(selected_count) is int and selected_count>0
+   and type(pool_count) is int and pool_count>=selected_count
+   and isinstance(pool_digest,str) and len(pool_digest)==64
+   and all(char in '0123456789abcdef' for char in pool_digest))
+ full_pool_covered=(pool_count==selected_count and digest(selected_ids)==pool_digest
+   if pool_recorded and selected_ids is not None else None)
+ pool_identity_consistent=(pool_recorded and selected_ids is not None
+   and (pool_count>selected_count or full_pool_covered))
+ pool_has_act=None
+ # Partial-pool membership comes from the same scheduler/job context; this
+ # does not independently observe any unselected labels. Contradictory complete
+ # pool identities and historical records without that context remain unknown.
+ if selected_counts is not None and pool_identity_consistent:
+  if selected_counts['ACT_correct']>0:pool_has_act=True
+  elif full_pool_covered and selected_counts['unknown']==0:pool_has_act=False
  norms=[s['gradient_norm_before_clip'] for s in steps if 'gradient_norm_before_clip' in s]
  cap=objective.get('gradient_norm_cap')
  before,after=measurement.get('parent_ce'),measurement.get('candidate_ce')
@@ -245,7 +280,14 @@ def candidate_training_diagnostics(candidate):
     'cap':cap,'steps_exceeding_cap':sum(n>cap for n in norms) if norms and type(cap) in (int,float) else None},
   'training_metrics':{'parent_ce':before,'candidate_ce':after,
     'parent_minus_candidate_ce':improvement,'candidate_brier':measurement.get('candidate_brier')},
-  'same_training_rows_baselines':None}
+  'same_training_rows_baselines':None,
+  'action_selection_diagnostic':{'diagnostic_only':True,
+   'pool_scope':'UNRESERVED_MATURE_ROWS_AT_JOB_SELECTION',
+   'selected_rows':selected_count,'selected_row_ids_digest':digest(selected_ids) if selected_ids is not None else None,
+   'selected_target_counts':selected_counts,'pool_count':pool_count if pool_recorded else None,
+   'pool_row_ids_digest':pool_digest if pool_recorded else None,'full_pool_covered':full_pool_covered,
+   'unselected_rows':pool_count-selected_count if pool_identity_consistent else None,
+   'unselected_target_counts':None,'pool_has_act':pool_has_act}}
  if 'action_training_profile' in candidate:
   from .resident_action_v2_research import action_support_diagnostic
   report['action_support_diagnostic']=action_support_diagnostic(candidate['action_training_profile'])

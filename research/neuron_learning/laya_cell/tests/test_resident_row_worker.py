@@ -64,7 +64,8 @@ class WorkerRowIntegration(unittest.TestCase):
         'dataset':str(data),'dataset_sha256':sha_file(data),'window':{'training_end_ms':cutoff},
         'training_row_ids':ids,'training_row_accounting_schema':v4_profile.ROW_ACCOUNTING_SCHEMA if v4 else SCHEMA,
         'parent_manifest_sha256':sha_file(parent/'candidate.json'),'native_binary':'fixture-only',
-        'native_binary_sha256':'b'*64,'data_fingerprint':digest(ids),'generation':2}
+        'native_binary_sha256':'b'*64,'data_fingerprint':digest(ids),'generation':2,
+        'selection_context':{'pool_count':len(ids),'pool_row_ids_digest':digest(sorted(ids))}}
    replacements={'verify_baseline':lambda p:'d'*64,'verify_source_prefixes':lambda d:None,
                  'rows_for_training':lambda d,w:(rows,{}),'require_pocket4_gpu':lambda:torch.device('cpu'),
                  'load_verified_laya':lambda b,m:(TinyPretrained(),None,'a'*64),
@@ -98,6 +99,8 @@ class WorkerRowIntegration(unittest.TestCase):
     stack.enter_context(patch.object(ResidentDecisionCell,'norm_report',reject))
    candidate=t.run_job(cfg,old_learner_verified=True);verify_candidate(cfg,candidate)
    loaded=json.loads((root/'out/candidate.json').read_text());verify_candidate(cfg,loaded)
+   self.assertEqual(loaded['selection_context'],cfg['selection_context'])
+   self.assertTrue(loaded['training_diagnostics']['action_selection_diagnostic']['full_pool_covered'])
    self.assertEqual(loaded['row_accounting']['gradient_attempted_count'],n)
    self.assertEqual(len(loaded['steps']),(n+1)//2*(4 if v4 else 1))
    self.assertEqual(loaded['row_accounting']['applied_count'],0 if rollback else n)
@@ -120,6 +123,9 @@ class WorkerRowIntegration(unittest.TestCase):
   self.assertEqual(c['objective'],v2_profile.OBJECTIVE)
   self.assertEqual(c['action_training_profile']['labels'],{'ACT_correct':0,'ESCALATE_wrong':32})
   self.assertFalse(c['action_optimizer_admitted'])
+  self.assertEqual(c['training_diagnostics']['action_selection_diagnostic']['selected_target_counts'],
+                   {'ACT_correct':0,'ESCALATE_wrong':32,'unknown':0})
+  self.assertFalse(c['training_diagnostics']['action_selection_diagnostic']['pool_has_act'])
   self.assertEqual(c['action_update_steps'],0)
   self.assertTrue(all(absent))
   self.assertTrue(all(step['action_loss']==0 for step in c['steps']))

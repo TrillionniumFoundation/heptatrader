@@ -10,7 +10,9 @@ from historical_training.resident_resource_guard import guarded_trainer_class
 from laya_cell.promotion import PROTOCOL
 from laya_cell.resident import Supervisor, training_forward_window
 from laya_cell.resident_plan_admission import PROFILE
-from laya_cell.resident_store import database
+from laya_cell.resident_store import database,admit_job
+from laya_cell.integrity import digest
+from laya_cell import resident_training_v4
 
 RULE={'slots':94,'slot_spacing_ms':360000,'input_grace_ms':60000,'horizon_ms':300000}
 
@@ -127,6 +129,29 @@ class TrainingWindowSchedulingTests(unittest.TestCase):
         gate.release.assert_called_once()
         self.assertEqual(service.db.execute('SELECT count(*) FROM jobs').fetchone()[0],0)
         self.assertEqual(service.db.execute('SELECT count(*) FROM consumed_rows').fetchone()[0],0)
+
+    def test_job_records_actual_unreserved_pool_before_original_selection(self):
+        now=at('2026-10-20T08:30:00+00:00')
+        service,gate,collect,_=self.subject(now)
+        parent=service.root/'parent';parent.mkdir()
+        (parent/'candidate.json').write_text('{"candidate_id":"fixed-parent","generation":2}')
+        service.c.update(objective=resident_training_v4.OBJECTIVE,profile={'fixture':True},
+                         initial_parent_directory=str(parent),candidate_directory=str(service.root/'candidates'))
+        rows=[{'sample_id':str(i),'horizon_sec':300,'outcome_receipt_digest':str(i),'anchor_ms':now-1000000+i}
+              for i in range(64)]
+        ids=[digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']]) for r in rows]
+        self.assertTrue(admit_job(service.db,'old','old-fingerprint',now-1800000,{},[ids[0]]))
+        collect.side_effect=None;collect.return_value=({},rows,{'window':window(now)},None)
+        with patch('laya_cell.resident.admit_job',return_value=False) as admission:
+            result=service.step()
+        self.assertEqual(result['state'],'JOB_ALREADY_ADMITTED')
+        job=admission.call_args.args[4]
+        self.assertEqual(job['selection_context'],{'pool_count':63,'pool_row_ids_digest':digest(sorted(ids[1:]))})
+        self.assertEqual(len(job['training_row_ids']),32)
+        self.assertNotIn(ids[0],job['training_row_ids'])
+        self.assertEqual(collect.call_args.kwargs['reserved_row_ids'],{ids[0]})
+        self.assertEqual(service.db.execute('SELECT count(*) FROM consumed_rows').fetchone()[0],1)
+        gate.release.assert_called_once()
 
     def test_unenrolled_legacy_scheduler_does_not_apply_new_window_policy(self):
         service,_,_,_=self.subject(at('2026-10-19T11:25:00+00:00'))
