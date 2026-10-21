@@ -437,7 +437,10 @@ IbPaperKillSwitchObservation IbPaperKillSwitch::ObserveMaintenanceHold() const
         parent.st_uid == static_cast<uid_t>(m_expectedOwnerUid) &&
         parent.st_gid == static_cast<gid_t>(m_expectedGroupGid) &&
         (parent.st_mode & 07777) == kMaintenanceDirectoryMode &&
-        parent.st_nlink == 2;
+        // Private maintenance storage also holds rollout evidence directories.
+        // Child directories do not change the fixed hold filename or its owner,
+        // mode, single-link and anchored-identity checks below.
+        parent.st_nlink >= 2;
 
     IbPaperKillSwitchObservation observed;
     if (!goodParent)

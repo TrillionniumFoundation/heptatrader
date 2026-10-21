@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import json
+import math
 import os
 import pwd
 from pathlib import Path
@@ -17,13 +18,14 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 
 SCHEMA = "heptatrader.operator-maintenance-hold.v1"
 SWITCH = "kill-switch"
 HOLD = "maintenance-hold.json"
 LOCK = "operator-maintenance.lock"
 ACTIONS = {"pause", "paper-on", "maintenance-hold", "maintenance-release",
-           "maintenance-status"}
+           "maintenance-status", "native-startup-hold"}
 
 
 class HoldError(Exception):
@@ -31,13 +33,26 @@ class HoldError(Exception):
 
 
 def _directory(path: Path, mode: int, *, make=False, exact_links=None) -> int:
+    created = False
     if make:
         try:
-            path.mkdir(mode=mode)
+            path.mkdir(mode=0o700)
+            created = True
         except FileExistsError:
             pass
+    if created:
+        created_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            meta = os.fstat(created_fd)
+            if meta.st_uid != os.geteuid() or meta.st_gid != os.getegid():
+                raise HoldError("UNSAFE_CREATED_DIRECTORY:" + path.name)
+            os.fchmod(created_fd, mode)
+            os.fsync(created_fd)
+        finally:
+            os.close(created_fd)
     before = path.lstat()
     if (not stat.S_ISDIR(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_gid != os.getegid()
             or stat.S_IMODE(before.st_mode) != mode or before.st_nlink < 2
             or (exact_links is not None and before.st_nlink != exact_links)):
         raise HoldError("UNSAFE_DIRECTORY:" + path.name)
@@ -50,26 +65,55 @@ def _directory(path: Path, mode: int, *, make=False, exact_links=None) -> int:
     return fd
 
 
-def _file(fd: int, name: str, mode: int) -> bytes | None:
+def _identity(st) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid,
+            st.st_nlink, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+@contextmanager
+def _opened_file(fd: int, name: str, mode: int):
+    """Keep the original object open; startup need not interpret its payload."""
     try:
         st = os.stat(name, dir_fd=fd, follow_symlinks=False)
     except FileNotFoundError:
-        return None
+        yield None
+        return
     if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1
             or st.st_uid != os.geteuid() or st.st_gid != os.getegid()
-            or stat.S_IMODE(st.st_mode) != mode or st.st_size > 4096):
+            or stat.S_IMODE(st.st_mode) != mode or st.st_dev != os.fstat(fd).st_dev):
         raise HoldError("UNSAFE_MARKER:" + name)
-    item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+    item = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                   dir_fd=fd)
     try:
-        actual = os.fstat(item)
-        if (st.st_dev, st.st_ino) != (actual.st_dev, actual.st_ino):
+        if _identity(st) != _identity(os.fstat(item)):
             raise HoldError("MARKER_CHANGED:" + name)
-        data = os.read(item, actual.st_size + 1)
-        if len(data) != actual.st_size:
-            raise HoldError("MARKER_SHORT_READ:" + name)
-        return data
+        yield item
     finally:
         os.close(item)
+
+
+def _file(fd: int, name: str, mode: int) -> bytes | None:
+    with _opened_file(fd, name, mode) as item:
+        if item is None:
+            return None
+        before = os.fstat(item)
+        if before.st_size > 4096:
+            raise HoldError("UNSAFE_MARKER:" + name)
+        data = os.read(item, before.st_size + 1)
+        if len(data) != before.st_size or _identity(before) != _identity(os.fstat(item)):
+            raise HoldError("MARKER_CHANGED_DURING_READ:" + name)
+        return data
+
+
+def _directory_identity(st) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid)
+
+
+def _bound_directory(path: Path, fd: int, expected=None) -> None:
+    expected = _directory_identity(os.fstat(fd)) if expected is None else expected
+    if (_directory_identity(os.fstat(fd)) != expected
+            or _directory_identity(path.lstat()) != expected):
+        raise HoldError("DIRECTORY_CHANGED:" + path.name)
 
 
 def _write_once(fd: int, name: str, data: bytes, mode: int) -> bool:
@@ -132,23 +176,275 @@ def operator_lock(state_root: Path):
             0o600, dir_fd=root_fd)
         meta = os.fstat(lock_fd)
         if (not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1
-                or meta.st_uid != os.geteuid()
+                or meta.st_uid != os.geteuid() or meta.st_gid != os.getegid()
                 or stat.S_IMODE(meta.st_mode) != 0o600):
             raise HoldError("UNSAFE_OPERATOR_LOCK")
+        root_identity = _directory_identity(os.fstat(root_fd))
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        yield
+        def check_binding():
+            _bound_directory(state_root, root_fd, root_identity)
+            actual = os.stat(LOCK, dir_fd=root_fd, follow_symlinks=False)
+            if (_identity(actual) != _identity(meta)
+                    or _identity(os.fstat(lock_fd)) != _identity(meta)):
+                raise HoldError("OPERATOR_LOCK_CHANGED")
+        check_binding()
+        yield check_binding
     finally:
         if lock_fd is not None:
             os.close(lock_fd)
         os.close(root_fd)
 
 
+def _command(argv: list[str]) -> str:
+    try:
+        result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=12)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HoldError("NATIVE_RESUME_READ_FAILED:" + type(exc).__name__) from exc
+    return result.stdout
+
+
+def _service_snapshot() -> dict:
+    """Read the manager's loaded policy; disk drop-ins alone are insufficient."""
+    result = {}
+    for unit in ("heptatrader-execution.service", "heptatrader-gateway.service"):
+        props = ["ActiveState", "SubState", "MainPID", "InvocationID"]
+        if unit == "heptatrader-execution.service":
+            props += ["Type", "KillMode", "ExecStartPre"]
+        raw = _command(["systemctl", "--user", "show", unit, "--no-pager",
+                        "--property=" + ",".join(props)])
+        values = {}
+        for line in raw.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key not in props or key in values:
+                raise HoldError("BAD_SYSTEMD_READBACK:" + unit)
+            values[key] = value
+        if (set(values) != set(props) or values["ActiveState"] != "active"
+                or values["SubState"] != "running" or not values["MainPID"].isdigit()
+                or int(values["MainPID"]) <= 0 or not values["InvocationID"]):
+            raise HoldError("SERVICE_NOT_RUNNING:" + unit)
+        if unit == "heptatrader-execution.service":
+            guard = values["ExecStartPre"]
+            expected = ("{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -B "
+                        + str(Path(__file__).resolve())
+                        + " native-startup-hold ; ignore_errors=no ;")
+            if (values["Type"] != "simple" or values["KillMode"] != "control-group"
+                    or not guard.startswith(expected) or guard.count("{") != 1
+                    or guard.count("}") != 1 or not guard.endswith("}")):
+                raise HoldError("NATIVE_STARTUP_GUARD_NOT_COORDINATED")
+        result[unit] = {key: values[key] for key in ("MainPID", "InvocationID")}
+    return result
+
+
+def _native_payload(control: Path, owner: str, method: str) -> dict:
+    # No token, endpoint, path, or method overrides are exposed to the CLI.
+    home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    raw = _command([
+        str(home / ".local/share/heptatrader/current/bin/heptactl"),
+        "--socket", str(control.parent / "tools.sock"), "--token-file",
+        str(home / (".config/heptatrader/" + owner + ".token")),
+        "--io-timeout-ms", "4000", "--call-id", "hold-resume-" + uuid.uuid4().hex,
+        "call", method])
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise HoldError("BAD_NATIVE_JSON:" + owner + ":" + method) from exc
+    if (not isinstance(value, dict) or value.get("status") != "ok"
+            or value.get("tool") != method or not isinstance(value.get("payload"), dict)):
+        raise HoldError("NATIVE_READ_REFUSED:" + owner + ":" + method)
+    return value["payload"]
+
+
+def _health_identity(value: dict, owner: str) -> tuple:
+    health = value.get("execution_authoritative_health")
+    if not isinstance(health, dict):
+        raise HoldError("NATIVE_HEALTH_MISSING:" + owner)
+    expected_true = ("authoritative", "terminal_download_complete",
+                     "account_broker_sample_connected",
+                     "account_broker_sample_event_stream_authoritative",
+                     "account_broker_sample_coherent", "account_local_drain_observation_present",
+                     "native_new_risk_guard_blocked")
+    expected_false = ("startup_recovery_read_only", "owner_fenced", "owner_recovery_only",
+                      "account_new_entry_fenced", "mutation_blocked",
+                      "risk_mutation_dispatch_in_flight", "mutation_ready")
+    for key in expected_true:
+        if health.get(key) is not True:
+            raise HoldError("NATIVE_RESUME_BLOCKED:" + owner + ":" + key)
+    for key in expected_false:
+        if health.get(key) is not False:
+            raise HoldError("NATIVE_RESUME_BLOCKED:" + owner + ":" + key)
+    for key in ("account_local_uncertain_commands", "account_local_venue_dispatches_in_flight",
+                "account_local_unattributed_owned_orders",
+                "account_local_unattributed_uncertain_commands"):
+        if type(health.get(key)) is not int or health[key] != 0:
+            raise HoldError("NATIVE_RESUME_BLOCKED:" + owner + ":" + key)
+    if (value.get("execution_mode") != "PAPER" or value.get("gateway_ready") is not True
+            or value.get("remote_execution_ready") is not True or health.get("source") != "IB"
+            or type(health.get("authorized_connector_count")) is not int
+            or health["authorized_connector_count"] != 1
+            or health.get("mutation_reason") != "IB_PAPER_KILL_SWITCH_ENGAGED"):
+        raise HoldError("NATIVE_PAPER_HOLD_NOT_SOLE_OBSERVED_BLOCKER:" + owner)
+    epoch = value.get("execution_service_epoch")
+    generation = value.get("execution_service_fencing_generation")
+    if not isinstance(epoch, str) or not epoch or type(generation) is not int or generation <= 0:
+        raise HoldError("NATIVE_IDENTITY_MISSING:" + owner)
+    return epoch, generation
+
+
+def _resume_observation(control: Path) -> dict:
+    before = _service_snapshot()
+    identity = None
+    observations = {}
+    for owner in ("paper", "crypto"):
+        first = _health_identity(_native_payload(control, owner, "system.get_health"), owner)
+        if identity is not None and first != identity:
+            raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+        identity = first
+        orders = _native_payload(control, owner, "orders.list")
+        if (orders.get("source") != "IB"
+                or any(orders.get(key) is not True for key in
+                       ("authoritative", "global_active_orders_complete", "owner_projection_complete"))
+                or not isinstance(orders.get("active_order_ids"), list)
+                or not isinstance(orders.get("owned_active_order_ids"), list)):
+            raise HoldError("NATIVE_ORDERS_NOT_AUTHORITATIVE:" + owner)
+        portfolio = _native_payload(control, owner, "portfolio.list_positions")
+        positions = portfolio.get("positions")
+        if (portfolio.get("source") != "IB" or portfolio.get("authoritative") is not True
+                or not isinstance(positions, list)
+                or any(not isinstance(row, dict) or type(row.get("quantity")) not in (int, float)
+                       or not math.isfinite(row["quantity"]) for row in positions)):
+            raise HoldError("NATIVE_POSITIONS_NOT_AUTHORITATIVE:" + owner)
+        if _health_identity(_native_payload(control, owner, "system.get_health"), owner) != first:
+            raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+        observations[owner] = {"active_orders": len(orders["active_order_ids"]),
+                               "owned_active_orders": len(orders["owned_active_order_ids"]),
+                               "positions": len(positions)}
+    if _service_snapshot() != before:
+        raise HoldError("NATIVE_SERVICE_INSTANCE_CHANGED")
+    return {"execution_service_epoch": identity[0],
+            "execution_service_fencing_generation": identity[1],
+            "services": before, "owners": observations}
+
+
+def _verify_native_release(control: Path, observation: dict) -> dict:
+    """Observe the actual native guard after unlink, under the original lock."""
+    expected = (observation["execution_service_epoch"],
+                observation["execution_service_fencing_generation"])
+    owners = {}
+    for owner in ("paper", "crypto"):
+        value = _native_payload(control, owner, "system.get_health")
+        health = value.get("execution_authoritative_health")
+        if (value.get("execution_mode") != "PAPER" or value.get("gateway_ready") is not True
+                or value.get("remote_execution_ready") is not True
+                or not isinstance(health, dict) or health.get("source") != "IB"
+                or health.get("authoritative") is not True):
+            raise HoldError("NATIVE_RELEASE_NOT_AUTHORITATIVE:" + owner)
+        identity = (value.get("execution_service_epoch"),
+                    value.get("execution_service_fencing_generation"))
+        if type(identity[1]) is not int or identity != expected:
+            raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+        if health.get("native_new_risk_guard_blocked") is not False:
+            raise HoldError("NATIVE_GUARD_NOT_RELEASED:" + owner + ":"
+                            + str(health.get("mutation_reason")))
+        if (type(health.get("mutation_ready")) is not bool
+                or not isinstance(health.get("mutation_reason"), str)):
+            raise HoldError("NATIVE_RELEASE_HEALTH_MISSING:" + owner)
+        # A resident may legitimately start a request as soon as the guard lifts.
+        # Record current readiness; do not confuse in-flight work with a stuck hold.
+        owners[owner] = {key: health[key] for key in
+                         ("native_new_risk_guard_blocked", "mutation_ready", "mutation_reason")}
+    if _service_snapshot() != observation["services"]:
+        raise HoldError("NATIVE_SERVICE_INSTANCE_CHANGED")
+    return owners
+
+
+def _status(action: str, marker: bytes | None, record: dict | None) -> dict:
+    origin = ("ABSENT" if marker is None else
+              "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
+              "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
+              "UNRECOGNIZED_INDEPENDENT_NATIVE")
+    blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
+    if marker is not None:
+        blockers.append(origin)
+    details = None if record is None else {
+        "uid": record["uid"], "created_at_ms": record["created_at_ms"],
+        "age_seconds": max(0, (int(time.time() * 1000) - record["created_at_ms"]) // 1000),
+        "created_by": record.get("created_by"), "reason": record.get("reason"),
+        "task": record.get("task"), "resume_when": record.get("resume_when")}
+    return {"schema": "heptatrader.maintenance-latch-status.v1", "action": action,
+            "persistent_hold": record is not None, "native_kill_switch_engaged": marker is not None,
+            "native_marker_origin": origin, "hold_details": details,
+            "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
+            "may_stop_driver": False, "broker_orders_sent": 0}
+
+
+class ResumeFailure(HoldError):
+    def __init__(self, reason: str, reengaged: bool):
+        super().__init__(reason)
+        self.status = "NATIVE_RESUME_FAILED_REENGAGED" if reengaged else "NATIVE_RESUME_STATE_UNCERTAIN"
+
+
+def _resume_native_hold(control: Path, state_root: Path, parent_fd: int, ctrl_fd: int,
+                        maint_fd: int, check_lock, *, check_only: bool) -> dict:
+    # All normal writers, including ExecStartPre, hold this same lock. Metadata
+    # checks detect replaced objects; stat followed by unlink is not itself CAS.
+    with _opened_file(ctrl_fd, SWITCH, 0o440) as item:
+        if item is None or os.fstat(item).st_size != 0:
+            raise HoldError("RESUME_REQUIRES_INDEPENDENT_EMPTY_NATIVE_HOLD")
+        identity = _identity(os.fstat(item))
+        directories = [(path, fd, _directory_identity(os.fstat(fd))) for path, fd in
+                       ((control.parent, parent_fd), (control, ctrl_fd),
+                        (state_root / "operator-maintenance", maint_fd))]
+        observation = _resume_observation(control)
+        def check_bindings():
+            check_lock()
+            for path, fd, expected in directories:
+                _bound_directory(path, fd, expected)
+            if _file(maint_fd, HOLD, 0o600) is not None:
+                raise HoldError("BLOCKED_BY_PERSISTENT_MAINTENANCE_HOLD")
+        check_bindings()
+        if (_identity(os.fstat(item)) != identity
+                or _identity(os.stat(SWITCH, dir_fd=ctrl_fd, follow_symlinks=False)) != identity):
+            raise HoldError("NATIVE_HOLD_CHANGED_DURING_CHECK")
+        if check_only:
+            return {**_status("paper-on", b"", None),
+                    "native_hold_resume": {"state": "PRECHECK_ONLY_NATIVE_RELEASE_UNVERIFIED", **observation}}
+        try:
+            os.unlink(SWITCH, dir_fd=ctrl_fd)
+            os.fsync(ctrl_fd)
+            check_bindings()
+            if _file(ctrl_fd, SWITCH, 0o440) is not None:
+                raise HoldError("NATIVE_HOLD_REAPPEARED")
+            released = _verify_native_release(control, observation)
+            check_bindings()
+            if _file(ctrl_fd, SWITCH, 0o440) is not None:
+                raise HoldError("NATIVE_HOLD_REAPPEARED")
+        except Exception as exc:
+            # Never overwrite another writer's marker. Report uncertainty if the
+            # original directory cannot be confirmed or durable rearm fails.
+            reengaged = False
+            try:
+                for path, fd, expected in directories[:2]:
+                    _bound_directory(path, fd, expected)
+                _write_once(ctrl_fd, SWITCH, b"", 0o440)
+                with _opened_file(ctrl_fd, SWITCH, 0o440) as restored:
+                    reengaged = restored is not None
+            except (OSError, HoldError):
+                pass
+            raise ResumeFailure(str(exc), reengaged) from exc
+        return {**_status("paper-on", None, None),
+                "native_hold_resume": {"state": "RELEASED_NATIVE_GUARD_VERIFIED",
+                                       **observation, "post_release": released}}
+
+
 def perform(action: str, control: Path, state_root: Path, *,
             reason: str | None = None, task: str | None = None,
-            resume_when: str | None = None) -> dict:
+            resume_when: str | None = None, resume_native_hold: bool = False,
+            check_only: bool = False) -> dict:
     """Testable policy core. CLI main separately pins the real runtime paths."""
     if action not in ACTIONS:
         raise HoldError("UNKNOWN_ACTION")
+    if (resume_native_hold and action != "paper-on") or (check_only and not resume_native_hold):
+        raise HoldError("NATIVE_RESUME_OPTIONS_REQUIRE_PAPER_ON")
     metadata = {"reason": reason, "task": task, "resume_when": resume_when}
     if any(value is not None and (not isinstance(value, str) or len(value) > 512
            or any(ord(char) < 32 for char in value)) for value in metadata.values()):
@@ -157,11 +453,42 @@ def perform(action: str, control: Path, state_root: Path, *,
     if os.geteuid() == 0:
         raise HoldError("ROOT_NOT_ALLOWED")
     # The existing PAPER runtime parent uses 0700, native control uses 0750.
-    parent_fd = _directory(control.parent, 0o700)
+    startup = action == "native-startup-hold"
+    if startup:
+        # /run/user/<uid> is manager-owned; create only its checked private child.
+        runtime_fd = _directory(control.parent.parent, 0o700)
+        try:
+            parent_fd = _directory(control.parent, 0o700, make=True)
+            _bound_directory(control.parent.parent, runtime_fd)
+            os.fsync(runtime_fd)
+        finally:
+            os.close(runtime_fd)
+    else:
+        parent_fd = _directory(control.parent, 0o700)
     try:
-        with operator_lock(state_root):
-            ctrl_fd = _directory(control, 0o750, exact_links=2)
+        with operator_lock(state_root) as check_lock:
+            ctrl_fd = _directory(control, 0o750, make=startup, exact_links=2)
             try:
+                if startup:
+                    # Startup preserves existing native payloads and does not
+                    # parse or change the unrelated durable maintenance record.
+                    with _opened_file(ctrl_fd, SWITCH, 0o440) as item:
+                        created = item is None
+                    if created and not _write_once(ctrl_fd, SWITCH, b"", 0o440):
+                        raise HoldError("RACING_KILLSWITCH_CREATION")
+                    with _opened_file(ctrl_fd, SWITCH, 0o440) as item:
+                        if item is None:
+                            raise HoldError("STARTUP_MARKER_MISSING")
+                        _bound_directory(control.parent, parent_fd)
+                        _bound_directory(control, ctrl_fd)
+                        check_lock()
+                        if _identity(os.fstat(item)) != _identity(
+                                os.stat(SWITCH, dir_fd=ctrl_fd, follow_symlinks=False)):
+                            raise HoldError("STARTUP_MARKER_CHANGED")
+                    os.fsync(parent_fd)
+                    return {"action": action, "state": "ENGAGED", "created_marker": created,
+                            "authorization_effect": "BLOCK_RISK_INCREASE_ONLY",
+                            "may_stop_driver": False, "broker_orders_sent": 0}
                 maint = state_root / "operator-maintenance"
                 maint_fd = _directory(maint, 0o700, make=True)
                 try:
@@ -180,6 +507,12 @@ def perform(action: str, control: Path, state_root: Path, *,
                     if action == "paper-on":
                         if hold:
                             raise HoldError("BLOCKED_BY_PERSISTENT_MAINTENANCE_HOLD")
+                        if resume_native_hold:
+                            if not independent_empty:
+                                raise HoldError("RESUME_REQUIRES_INDEPENDENT_EMPTY_NATIVE_HOLD")
+                            return _resume_native_hold(
+                                control, state_root, parent_fd, ctrl_fd, maint_fd, check_lock,
+                                check_only=check_only)
                         if marker is not None:
                             if independent_empty:
                                 raise HoldError("INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE")
@@ -221,25 +554,7 @@ def perform(action: str, control: Path, state_root: Path, *,
                     # Report the post-action state, without granting service-stop authority.
                     marker = _file(ctrl_fd, SWITCH, 0o440)
                     record = _hold_record(_file(maint_fd, HOLD, 0o600))
-                    origin = ("ABSENT" if marker is None else
-                              "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
-                              "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
-                              "UNRECOGNIZED_INDEPENDENT_NATIVE")
-                    blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
-                    if marker is not None:
-                        blockers.append(origin)
-                    details = None if record is None else {
-                        "uid": record["uid"], "created_at_ms": record["created_at_ms"],
-                        "age_seconds": max(0, (int(time.time() * 1000) - record["created_at_ms"]) // 1000),
-                        "created_by": record.get("created_by"),
-                        "reason": record.get("reason"), "task": record.get("task"),
-                        "resume_when": record.get("resume_when")}
-                    return {"schema": "heptatrader.maintenance-latch-status.v1",
-                            "action": action, "persistent_hold": record is not None,
-                            "native_kill_switch_engaged": marker is not None,
-                            "native_marker_origin": origin, "hold_details": details,
-                            "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
-                            "may_stop_driver": False, "broker_orders_sent": 0}
+                    return _status(action, marker, record)
                 finally:
                     os.close(maint_fd)
             finally:
@@ -255,15 +570,21 @@ def main(argv=None):
     ap.add_argument("--reason", help="optional reason for a newly created maintenance hold")
     ap.add_argument("--task", help="optional task associated with a new hold")
     ap.add_argument("--resume-when", help="optional resume condition; does not auto-release a hold")
+    ap.add_argument("--resume-native-hold", action="store_true",
+                    help="explicitly release an independently engaged empty native PAPER hold")
+    ap.add_argument("--check", action="store_true",
+                    help="read-only precheck; actual native release is verified only after explicit resume")
     args = ap.parse_args(argv)
     uid = os.geteuid()
     expected_control = Path(f"/run/user/{uid}/heptatrader/control")
     expected_state = Path(pwd.getpwuid(uid).pw_dir) / ".local/state/heptatrader"
     try:
         status = perform(args.action, expected_control, expected_state,
-                         reason=args.reason, task=args.task, resume_when=args.resume_when)
+                         reason=args.reason, task=args.task, resume_when=args.resume_when,
+                         resume_native_hold=args.resume_native_hold, check_only=args.check)
     except (HoldError, OSError, ValueError) as exc:
-        print(json.dumps({"status": "HOLD_BLOCKED", "reason": str(exc)[:200],
+        print(json.dumps({"status": exc.status if isinstance(exc, ResumeFailure) else "HOLD_BLOCKED",
+                          "reason": str(exc)[:200],
                           "may_stop_driver": False, "broker_orders_sent": 0}))
         return 75
     print(json.dumps(status, sort_keys=True))
