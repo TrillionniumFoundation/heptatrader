@@ -146,6 +146,43 @@ class PriceCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, 'UNREGISTERED'):
             calibration.verify_prediction({}, prediction)
 
+    def test_future_evaluator_scores_one_real_outcome_for_raw_calibrated_and_baselines(self):
+        from laya_cell.resident_evaluate import measure
+        from laya_cell.resident_training_v2 import ACTION_OUTPUT
+        p = self.fit()
+        state = copy.deepcopy(self.rows[0]['state'])
+        state['anchor_ms'] = self.cutoff+60000
+        anchor = state['anchor_ms']
+        plan = {'candidate_id': 'c', 'parent_id': 'a'*64, 'plan_id': 'p',
+                'rule': {'horizon_ms': 300000},
+                'price_baselines': self.reference, 'price_value_rule': baselines.VALUE_RULE,
+                'price_output_profile': calibration.OUTPUT,
+                'price_calibration_profile_id': p['profile_id'], 'price_calibration': p,
+                'action_output_profile': ACTION_OUTPUT,
+                'action_training_profile_id': None, 'action_optimizer_admitted': False}
+        prediction = {'candidate_id': 'c', 'parent_id': 'a'*64, 'plan_id': 'p', 'slot': 0,
+            'anchor_ms': anchor, 'created_at_ms': anchor+1, 'trained_until_ms': self.cutoff,
+            'horizon_sec': 300, 'input': state, 'input_id': digest(state), 'reference_mid': 1.12,
+            'candidate_raw_probs': self.raw[0], 'candidate_probs': calibration.apply(p, self.raw[0]),
+            'parent_probs': self.raw[0], 'price_output_profile': calibration.OUTPUT,
+            'price_calibration_profile_id': p['profile_id'], 'candidate_act_escalate_probs': None,
+            'bootstrap_point_bps': 0., 'action_output_profile': ACTION_OUTPUT,
+            'action_inference': {'frozen_profile_id': None, 'action_correct_probs': None,
+                                 'model_or_trade_permission': False},
+            'price_baseline_forecast': baselines.forecast(self.reference, state)}
+        quotes = [{'t': anchor+i*10000, 'mid': 1.12, 'receipt': str(i)} for i in range(31)]
+        result = measure(plan, 0, prediction, quotes, anchor+300001)
+        self.assertEqual(result['status'], 'OBSERVED')
+        self.assertEqual(result['target_class'], 3)
+        self.assertEqual(set(result['same_window_price_scores']), set(baselines.MODELS))
+        self.assertEqual(result['raw_child_price_scores'], baselines.probability_metrics(self.raw[0], 3))
+        self.assertEqual(result['same_window_price_scores']['laya_candidate'],
+                         baselines.probability_metrics(prediction['candidate_probs'], 3))
+        self.assertNotEqual(result['raw_child_price_scores'], result['same_window_price_scores']['laya_candidate'])
+        prediction['candidate_raw_probs'] = [.1, .1, .2, .3, .1, .1, .1]
+        with self.assertRaisesRegex(ContractError, 'FORECAST_CHANGED'):
+            measure(plan, 0, prediction, quotes, anchor+300001)
+
 
 class CandidateFitReplayTests(unittest.TestCase):
     def setUp(self):
