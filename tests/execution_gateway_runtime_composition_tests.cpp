@@ -4,6 +4,7 @@
 #include "../HeptaTrade/execution/unix_execution_service_server.h"
 
 #include <cassert>
+#include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
@@ -82,6 +83,7 @@ class FakeAuthority : public ExecutionAuthority,
 {
 public:
     int places = 0;
+    int cancels = 0;
     int previews = 0;
     int fences = 0;
     int reconciles = 0;
@@ -98,6 +100,7 @@ public:
     }
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
     {
+        ++cancels;
         ExecutionCommandResult result;
         result.status = ExecutionCommandStatus::Accepted;
         result.commandId = command.context.toolCallId;
@@ -291,6 +294,236 @@ ExecutionGatewayRuntimeConfig RemoteConfig(const std::string& executionSocket,
     // broadened to accept transport failures.
     config.ioTimeoutMs = 1000;
     return config;
+}
+
+void TestIdentityPreflightBudget(int ioTimeoutMs, bool silentMutation,
+                                 int callerBudgetMs = 0)
+{
+    const std::string prefix = "/tmp/hepta-identity-budget-" +
+        std::to_string(::getpid()) + "-" + std::to_string(ioTimeoutMs) +
+        (silentMutation ? "-mutation" : "-events") +
+        std::to_string(callerBudgetMs);
+    const std::string executionSocket = prefix + ".sock";
+    const std::string eventSocket = prefix + ".events";
+    const auto identity = Identity("identity-budget", 1);
+    const std::set<std::uint32_t> uid{static_cast<std::uint32_t>(::geteuid())};
+    const auto gate = std::make_shared<ExecutionServiceLifecycleGate>();
+    FakeAuthority local, remote;
+    UnixExecutionServiceServer executionServer(remote, &remote);
+    std::string reason;
+    int silentExecutionFd = -1;
+    if (silentMutation) silentExecutionFd = ActivatedSocket(executionSocket);
+    else assert(executionServer.StartFromFd(ActivatedSocket(executionSocket),
+        uid, identity, gate, reason));
+    // A private socket backlog models an unavailable/starting peer without
+    // sending an order or making the test depend on a live service.
+    const int silentEventFd = ActivatedSocket(eventSocket);
+    gate->ready.store(true);
+    ExecutionEventHub localHub(8, "identity-budget-local");
+    auto config = RemoteConfig(executionSocket, eventSocket);
+    config.ioTimeoutMs = ioTimeoutMs;
+    config.responseTimeoutMs = 4000;
+    ExecutionGatewayRuntimeComposition gateway(local, localHub, config);
+    assert(gateway.Start(reason));
+    const auto start = std::chrono::steady_clock::now();
+    ExecutionCommandStatus status;
+    if (callerBudgetMs)
+    {
+        ExecutionControlCommand command;
+        command.context = Owner("budgeted-status");
+        command.targetCommandId = "unavailable-command";
+        command.localDeadline = start + std::chrono::milliseconds(callerBudgetMs);
+        const auto result = gateway.QueryCommandStatus(command);
+        status = result.status;
+        reason = result.reasonCode;
+    }
+    else
+    {
+        IbCancelOrderCommand command;
+        command.context = Owner("budgeted-unsent-cancel");
+        command.orderId = 71;
+        const auto result = gateway.CancelOrder(command);
+        status = result.status;
+        reason = result.reasonCode;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    const int budgetMs = callerBudgetMs ? callerBudgetMs :
+        std::min(ioTimeoutMs, 1000);
+    assert(status == ExecutionCommandStatus::Rejected);
+    assert(reason == (silentMutation ? "response read failed" :
+        "EXECUTION_EVENT_RESPONSE_READ_FAILED"));
+    assert(elapsed >= budgetMs - 50 && elapsed < budgetMs + 400);
+    assert(remote.cancels == 0 && local.cancels == 0);
+    executionServer.Stop();
+    if (silentExecutionFd >= 0) ::close(silentExecutionFd);
+    ::close(silentEventFd);
+    ::unlink(executionSocket.c_str());
+    ::unlink(eventSocket.c_str());
+}
+
+void TestIdentityRefreshSharesAbsoluteBudget()
+{
+    const std::string prefix = "/tmp/hepta-identity-refresh-budget-" +
+        std::to_string(::getpid());
+    const std::string executionSocket = prefix + ".sock";
+    const std::string eventSocket = prefix + ".events";
+    const int executionFd = ActivatedSocket(executionSocket);
+    const int eventFd = ActivatedSocket(eventSocket);
+    const auto mutationIdentity = Identity("identity-before-refresh", 1);
+    const auto eventIdentity = Identity("identity-after-refresh", 2);
+    std::atomic<int> mutationRequests(0), eventRequests(0);
+    std::thread mutationPeer([&]() {
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const int fd = ::accept(executionFd, nullptr, nullptr);
+            assert(fd >= 0);
+            ExecutionServiceRequest request;
+            std::string reason, body;
+            assert(ExecutionServiceProtocol::DecodeRequest(
+                ReadFrameBlocking(fd), request, reason));
+            assert(request.operation == ExecutionServiceOperation::GetServiceIdentity);
+            ++mutationRequests;
+            ExecutionCommandResult result;
+            result.commandId = "__service_identity__";
+            result.status = ExecutionCommandStatus::Accepted;
+            result.serviceEpoch = mutationIdentity.serviceEpoch;
+            result.serviceFencingGeneration = mutationIdentity.serviceFencingGeneration;
+            assert(ExecutionServiceProtocol::EncodeResponse(result, body, reason));
+            WriteFrameBlocking(fd, body);
+            ::close(fd);
+        }
+    });
+    std::thread eventPeer([&]() {
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const int fd = ::accept(eventFd, nullptr, nullptr);
+            assert(fd >= 0);
+            ExecutionEventFeedRequest request;
+            std::string reason, body;
+            assert(ExecutionEventFeedProtocol::DecodeRequest(
+                ReadFrameBlocking(fd), request, reason));
+            assert(request.operation == ExecutionEventFeedOperation::GetServiceIdentity);
+            ++eventRequests;
+            if (attempt == 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                ExecutionEventReadResult result;
+                result.status = ExecutionEventReadStatus::ServiceIdentity;
+                result.reasonCode = "EXECUTION_EVENT_SERVICE_IDENTITY";
+                result.serviceIdentity = eventIdentity;
+                result.streamEpoch = eventIdentity.serviceEpoch;
+                assert(ExecutionEventFeedProtocol::EncodeResponse(result, body, reason));
+                WriteFrameBlocking(fd, body);
+            }
+            else
+            {
+                char ignored;
+                assert(::read(fd, &ignored, 1) == 0); // caller closes at its deadline
+            }
+            ::close(fd);
+        }
+    });
+    FakeAuthority local;
+    ExecutionEventHub localHub(8, "identity-refresh-budget-local");
+    auto config = RemoteConfig(executionSocket, eventSocket);
+    config.ioTimeoutMs = 2500;
+    ExecutionGatewayRuntimeComposition gateway(local, localHub, config);
+    std::string reason;
+    assert(gateway.Start(reason));
+    ExecutionServiceIdentity observed;
+    const auto start = std::chrono::steady_clock::now();
+    assert(!gateway.ProbeRemoteService(observed, reason));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    mutationPeer.join();
+    eventPeer.join();
+    assert(reason == "EXECUTION_EVENT_RESPONSE_READ_FAILED");
+    assert(elapsed >= 900 && elapsed < 1400);
+    assert(mutationRequests == 2 && eventRequests == 2);
+    assert(local.places == 0 && local.cancels == 0);
+    ::close(executionFd);
+    ::close(eventFd);
+    ::unlink(executionSocket.c_str());
+    ::unlink(eventSocket.c_str());
+}
+
+void TestIdentityInvalidationHonorsCacheLockBudget()
+{
+    const std::string path = "/tmp/hepta-identity-cache-budget-" +
+        std::to_string(::getpid());
+    const int listener = ActivatedSocket(path);
+    UnixExecutionServiceClient client(path, 2500, 32768,
+        {static_cast<std::uint32_t>(::geteuid())}, 4000);
+    std::thread pendingIdentity([&]() {
+        ExecutionServiceIdentity ignored;
+        std::string reason;
+        assert(!client.GetServiceIdentity(ignored, reason,
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(500)));
+    });
+    const int fd = ::accept(listener, nullptr, nullptr);
+    assert(fd >= 0);
+    ReadFrameBlocking(fd); // the caller now holds the cache lock during socket I/O
+    const auto start = std::chrono::steady_clock::now();
+    assert(!client.InvalidateServiceIdentity(Identity("cached", 1),
+        start + std::chrono::milliseconds(100)));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    assert(elapsed < 350);
+    pendingIdentity.join();
+    ::close(fd);
+    ::close(listener);
+    ::unlink(path.c_str());
+}
+
+void TestIdentityBudgetDoesNotShortenAuthorityOrEventWait()
+{
+    class SlowAuthority : public FakeAuthority
+    {
+    public:
+        ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+            return FakeAuthority::CancelOrder(command);
+        }
+    } remote;
+    FakeAuthority local;
+    const std::string prefix = "/tmp/hepta-identity-operation-budget-" +
+        std::to_string(::getpid());
+    const std::string executionSocket = prefix + ".sock";
+    const std::string eventSocket = prefix + ".events";
+    const auto identity = Identity("identity-operation-budget", 1);
+    const auto gate = std::make_shared<ExecutionServiceLifecycleGate>();
+    const std::set<std::uint32_t> uid{static_cast<std::uint32_t>(::geteuid())};
+    ExecutionEventHub upstream(8, identity.serviceEpoch), localHub(8, "operation-budget-local");
+    UnixExecutionServiceServer executionServer(remote, &remote);
+    UnixExecutionEventFeedServer eventServer(upstream, identity, gate);
+    std::string reason;
+    assert(executionServer.StartFromFd(ActivatedSocket(executionSocket), uid,
+        identity, gate, reason));
+    assert(eventServer.StartFromFd(ActivatedSocket(eventSocket), uid, reason));
+    gate->ready.store(true);
+    auto config = RemoteConfig(executionSocket, eventSocket);
+    config.ioTimeoutMs = 2500;
+    config.responseTimeoutMs = 4000;
+    ExecutionGatewayRuntimeComposition gateway(local, localHub, config);
+    assert(gateway.Start(reason));
+    IbCancelOrderCommand command;
+    command.context = Owner("slow-authority-budget");
+    command.orderId = 72;
+    const auto start = std::chrono::steady_clock::now();
+    assert(gateway.CancelOrder(command).status == ExecutionCommandStatus::Accepted);
+    assert(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(1200));
+    assert(remote.cancels == 1 && local.cancels == 0);
+    ExecutionEvent ignored;
+    const auto waitStart = std::chrono::steady_clock::now();
+    assert(!gateway.WaitNext(command.context, 0, 1300, ignored, reason));
+    assert(reason == "EVENT_WAIT_TIMEOUT");
+    assert(std::chrono::steady_clock::now() - waitStart >= std::chrono::milliseconds(1200));
+    eventServer.Stop();
+    executionServer.Stop();
+    ::unlink(executionSocket.c_str());
+    ::unlink(eventSocket.c_str());
 }
 
 void TestConfigIsHardOffAndStrict()
@@ -1044,6 +1277,13 @@ void TestSameOwnerWaitIdentityObservationIsSerialized()
 int main()
 {
     TestConfigIsHardOffAndStrict();
+    TestIdentityPreflightBudget(2500, false);
+    TestIdentityPreflightBudget(2500, true);
+    TestIdentityPreflightBudget(200, false);
+    TestIdentityPreflightBudget(2500, false, 100);
+    TestIdentityRefreshSharesAbsoluteBudget();
+    TestIdentityInvalidationHonorsCacheLockBudget();
+    TestIdentityBudgetDoesNotShortenAuthorityOrEventWait();
     TestDisabledDelegatesLocal();
     TestMutationToolsNeverFallBackToLocalAuthority();
     TestActivatedBacklogRejectsOldServiceEpoch();
@@ -1065,6 +1305,10 @@ int main()
               << " owner_wait_identity_serialized=verified"
               << " mutation_tools_remote_only=verified"
               << " resync_control_exact_match=verified"
+              << " identity_phase_absolute_budget=verified"
+              << " short_io_and_caller_budgets_preserved=verified"
+              << " identity_cache_contention_bounded=verified"
+              << " authority_response_and_event_wait_windows_preserved=verified"
               << std::endl;
     std::cout << "execution_gateway_runtime_composition_tests: PASS" << std::endl;
     return 0;

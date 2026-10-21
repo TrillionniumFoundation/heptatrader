@@ -102,8 +102,10 @@ class FrameGate:
                     and f[6] == '' and f[7] in ('0','0.0') and f[8:10] == ['','']
                     and f[10] == ('IDEALPRO' if f[4] == 'EUR' else 'PAXOS')
                     and f[11:15] == ['','USD','',''] and f[15:19] == ['0','','0','0']
-                    and self.counts['1'] < 300 and len(self.active) < 2
-                    and f[4] not in self.active.values())
+                    # Production keeps the active CASH pair while its one
+                    # replacement waits for genuine BID+ASK callbacks.
+                    and self.counts['1'] < 300 and len(self.active) < 3
+                    and list(self.active.values()).count(f[4]) < (2 if f[4] == 'EUR' else 1))
                 if allowed:
                     self.used.add(req); self.active[req] = f[4]
         elif op == '2':

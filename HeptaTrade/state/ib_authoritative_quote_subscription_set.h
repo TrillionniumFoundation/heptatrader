@@ -132,7 +132,15 @@ public:
         std::uint64_t generation, std::uint64_t observedAtMs,
         std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs,
         std::uint64_t freshQuoteMaxAgeMs = 5000);
+    IBAuthoritativeQuoteSubscriptionPlan BeginStaleSecondaryCashRefresh(
+        const std::string& instrument, std::uint64_t connectionEpoch,
+        std::uint64_t generation, std::uint64_t observedAtMs,
+        std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs,
+        std::uint64_t freshQuoteMaxAgeMs,
+        std::uint64_t pendingNativePairTimeoutMs);
     bool RecordDispatchResult(std::uint64_t generation, int requestId, bool accepted);
+    bool RecordDispatchResult(std::uint64_t generation, int requestId, bool accepted,
+                              std::uint64_t observedAtMs);
     bool RecordRetirementResult(std::uint64_t generation, int requestId);
     // A native 354 is terminal only for this exactly owned, sent renewal.
     // It is not a quote or a cancellation acknowledgement.
@@ -165,6 +173,9 @@ private:
         bool nativeRequestRejected = false;
         bool hadCompletePair = false;
         std::uint64_t requestStartedAtMs = 0;
+        // The first-pair grace begins when the SDK return was actually
+        // observed, not when a plan was created before a potentially slow send.
+        std::uint64_t dispatchAcceptedAtMs = 0;
         std::uint64_t freshQuoteMaxAgeMs = 0;
         IBAuthoritativeQuoteSnapshot quote;
     };

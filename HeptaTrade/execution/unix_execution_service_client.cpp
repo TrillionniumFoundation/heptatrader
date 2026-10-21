@@ -365,9 +365,19 @@ bool UnixExecutionServiceClient::GetServiceIdentity(
 void UnixExecutionServiceClient::InvalidateServiceIdentity(
     const ExecutionServiceIdentity& identity)
 {
-    std::lock_guard<std::timed_mutex> lock(m_serviceIdentityMutex);
+    InvalidateServiceIdentity(identity,
+        std::chrono::steady_clock::time_point::max());
+}
+bool UnixExecutionServiceClient::InvalidateServiceIdentity(
+    const ExecutionServiceIdentity& identity,
+    std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock<std::timed_mutex> lock(m_serviceIdentityMutex, std::defer_lock);
+    if (deadline == std::chrono::steady_clock::time_point::max()) lock.lock();
+    else if (!lock.try_lock_until(deadline)) return false;
     if (SameIdentity(m_serviceIdentity, identity))
         m_serviceIdentity = ExecutionServiceIdentity();
+    return true;
 }
 ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& commandId,
                                                         const std::string& requestBody,
