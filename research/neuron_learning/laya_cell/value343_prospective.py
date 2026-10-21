@@ -1,0 +1,859 @@
+"""Pocket4 original-request PRE-DECISION Value343 shadow, with no Broker access.
+
+A fixed historical Value model is used only to seal BOTH potential sides of
+the exact original REQUEST, while no RESPONSE or DECISION exists yet. Scoring
+only happens after separately verified execution + fee finality. No policy,
+order, model promotion, live component, or original journal is modified.
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timezone
+import ctypes
+import errno
+import select
+import struct
+import uuid
+import argparse
+import hashlib
+import json
+import math
+import re
+import os
+from pathlib import Path
+import stat
+import subprocess
+import time
+
+import numpy as np
+from hepta_decision_attribution import digest,read_private,strict
+from . import value343_oos as prior
+from .value343_journal_cache import VerifiedIncrementalJournal
+
+SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v5"
+SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v5"
+STUDY=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-chronological-oos-20261016/study-v4.json")
+STUDY_SHA="dc0e463e6acc2a11a095afcc7623498959327f00d2835b9b2a0bdc8cf659f060"
+SOURCE_CODE_SHA="73354f5d1fdaa0ace5c60211597c9c2d4d2f5f74ecb2f5e9ecef63cb206f246c"
+REGISTRATION=prior.CONFIG
+TRAINING_COHORT=prior.BEHAVIOR
+COHORT=TRAINING_COHORT
+ROLLOVER_CONFIG=None
+ROLLOVER_CONFIG_PATH=None
+ROLLOVER_CONFIG_SHA=None
+OUT=Path("/home/alex/.local/state/heptatrader/operator-evidence/value343-predecision-durable-20261017")
+MAX_SOURCE_FILES=128
+MAX_SOURCE_TOTAL=256*1024*1024
+MAX_SOURCE_FILE=16*1024*1024
+MAX_REQUEST_AGE_MS=90000
+EXPECTED_MODEL="gpt-6-luna"
+NO_AUTHORITY={"broker_orders_sent":0,"automatic_trading":False,
+              "model_promotion":False,"policy_gradient":False}
+
+# Source-cache code is included in the immutable v4 freeze identity;
+# changing the parser must not silently reuse an older prospective trial.
+CACHE_CODE_FILE=Path(__file__).with_name("value343_journal_cache.py")
+FULL_REPLAY_INTERVAL_SECONDS=180
+
+ORIGINAL_REQUEST_ID_RE=re.compile(r"[0-9a-f]{32}\Z")
+
+
+def original_request_id(value):
+    """Original producer uses uuid4.hex; reject unsafe evidence path names."""
+    if type(value) is not str or ORIGINAL_REQUEST_ID_RE.fullmatch(value) is None:
+        raise ValueError("UNSAFE_ORIGINAL_REQUEST_ID")
+    return value
+
+
+
+def read_model():
+    data=read_private(STUDY,limit=65536)
+    if hashlib.sha256(data).hexdigest()!=STUDY_SHA:
+        raise ValueError("FROZEN_HISTORICAL_MODEL_SHA_CHANGED")
+    if hashlib.sha256(Path(prior.__file__).read_bytes()).hexdigest()!=SOURCE_CODE_SHA:
+        raise ValueError("FROZEN_HISTORICAL_FITTER_CODE_CHANGED")
+    j=strict(data)
+    if (j.get("producer_manifest_sha256")!=TRAINING_COHORT
+            or j.get("program_sha256")!=SOURCE_CODE_SHA
+            or j.get("snapshot_rows_total")!=343
+            or j.get("fixed_behavior_rows")!=335
+            or j.get("train_rows")!=217
+            or j.get("historical_holdout_rows")!=67
+            or j.get("model_qualification")!="HISTORICAL_TIME_SPLIT_RESEARCH_ONLY"
+            or j.get("model_promoted") is not False
+            or j.get("economic_promotion_supported") is not False
+            or j["model"].get("actual_optimizer_steps")!=20
+            or tuple(j["model"]["features"])!=prior.FEATURES):
+        raise ValueError("FROZEN_HISTORICAL_MODEL_SCOPE_CHANGED")
+    co=np.array(j["model"]["coefficients"],dtype=np.float64)
+    means=np.array(j["normalizer"]["means"],dtype=np.float64)
+    scales=np.array(j["normalizer"]["scales"],dtype=np.float64)
+    if (co.shape!=(len(prior.FEATURES)+1,)
+            or means.shape!=(len(prior.FEATURES),)
+            or scales.shape!=(len(prior.FEATURES),)
+            or not all(np.isfinite(a).all() for a in (co,means,scales))
+            or np.any(scales<1e-5) or j["normalizer"]["clip_after_train_scaling"]!=5):
+        raise ValueError("MODEL_TRAIN_ONLY_STANDARDIZATION_CHANGED")
+    median=j["train_baseline_constants_usd"]["training_median_usd"]
+    if type(median) not in (float,int) or not math.isfinite(median):
+        raise ValueError("TRAIN_MEDIAN_NOT_NUMERIC")
+    return j,co,means,scales,float(median)
+
+
+
+def configure(path):
+    """Pin a new forward-only trial; historical model identity stays fixed."""
+    global ROLLOVER_CONFIG,ROLLOVER_CONFIG_PATH,ROLLOVER_CONFIG_SHA
+    global COHORT,OUT,SCHEMA,SCORE_SCHEMA
+    path=Path(path)
+    blob=read_private(path,limit=16384)
+    cfg=strict(blob)
+    if cfg.get("schema")!="heptatrader.value343-rollover-config.v1":
+        raise ValueError("ROLLOVER_CONFIG_SCHEMA")
+    for key in ("source_manifest_sha256","source_period_sha256",
+                "previous_freeze_sha256"):
+        value=cfg.get(key)
+        if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}",value) is None:
+            raise ValueError("ROLLOVER_CONFIG_HASH_"+key)
+    for key in ("output_directory","source_manifest_path","previous_freeze_path"):
+        value=cfg.get(key)
+        if type(value) is not str or not Path(value).is_absolute():
+            raise ValueError("ROLLOVER_CONFIG_PATH_"+key)
+    out=Path(cfg["output_directory"])
+    old=Path(cfg["previous_freeze_path"]).parent
+    if out.resolve().is_relative_to(old.resolve()) or old.resolve().is_relative_to(out.resolve()):
+        raise ValueError("ROLLOVER_MUST_PRESERVE_PREVIOUS_STUDY")
+    ROLLOVER_CONFIG=cfg
+    ROLLOVER_CONFIG_PATH=path
+    ROLLOVER_CONFIG_SHA=hashlib.sha256(blob).hexdigest()
+    COHORT=cfg["source_manifest_sha256"]
+    OUT=out
+    SCHEMA="heptatrader.value343-predecision-two-sided-shadow.v6"
+    SCORE_SCHEMA="heptatrader.value343-future-original-net-score.v6"
+
+
+def rollover_identity():
+    """The predecessor is evidence, never a mutable lifecycle prerequisite."""
+    if hashlib.sha256(read_private(ROLLOVER_CONFIG_PATH,limit=16384)).hexdigest()!=ROLLOVER_CONFIG_SHA:
+        raise ValueError("ROLLOVER_CONFIG_CHANGED")
+    cfg=ROLLOVER_CONFIG
+    blob=read_private(cfg["previous_freeze_path"],limit=16384)
+    if hashlib.sha256(blob).hexdigest()!=cfg["previous_freeze_sha256"]:
+        raise ValueError("ROLLOVER_PREVIOUS_FREEZE_CHANGED")
+    old=strict(blob)
+    if (old.get("model_sha256")!=STUDY_SHA or old.get("broker_orders_sent")!=0
+            or type(old.get("activated_at_ms")) is not int):
+        raise ValueError("ROLLOVER_PREVIOUS_FREEZE_SCOPE")
+    return {"registration_config_sha256":ROLLOVER_CONFIG_SHA,
+            "historical_training_behavior_manifest_sha256":TRAINING_COHORT,
+            "prospective_manifest_path":cfg["source_manifest_path"],
+            "predecessor_freeze_path":cfg["previous_freeze_path"],
+            "predecessor_freeze_sha256":cfg["previous_freeze_sha256"],
+            "predecessor_activated_at_ms":old["activated_at_ms"],
+            "analysis_scope":"PROSPECTIVE_COHORT_TRANSFER_WITH_FIXED_HISTORICAL_MODEL",
+            "historical_model_retrained":False}
+
+
+def training_window(report,activated):
+    keys=("train_request_end_ms","train_final_outcome_known_ms")
+    result={key:report.get(key) for key in keys}
+    if (any(type(value) is not int or not 0<value<activated for value in result.values())
+            or result[keys[0]]>result[keys[1]]):
+        raise ValueError("ROLLOVER_TRAINING_NOT_COMPLETE_BEFORE_REGISTRATION")
+    return result
+
+
+def running_producer():
+    """Read-only check of the actual PAPER unit and its manifest argument."""
+    unit="heptatrader-paper-driver.service"
+    result=subprocess.run(["systemctl","--user","show",unit,"--property=MainPID","--value"],
+                          check=True,capture_output=True,text=True,timeout=3)
+    value=result.stdout.strip()
+    if not value.isdigit() or int(value)<=0:
+        raise ValueError("ROLLOVER_PAPER_PRODUCER_NOT_RUNNING")
+    pid=int(value)
+    proc=Path("/proc")/str(pid)
+    if proc.stat().st_uid!=os.geteuid():
+        raise ValueError("ROLLOVER_PAPER_PRODUCER_OWNER")
+    before=(proc/"stat").read_text().rsplit(")",1)[1].split()[19]
+    argv=(proc/"cmdline").read_bytes().decode().rstrip(chr(0)).split(chr(0))
+    after=(proc/"stat").read_text().rsplit(")",1)[1].split()[19]
+    expected=ROLLOVER_CONFIG["source_manifest_path"]
+    actual=[argv[i+1] for i,a in enumerate(argv[:-1]) if a=="--manifest"]
+    actual.extend(a.partition("=")[2] for a in argv if a.startswith("--manifest="))
+    script=str(Path(expected).parent/"heptatrader_attributed_driver.py")
+    if before!=after or actual!=[expected] or script not in argv:
+        raise ValueError("ROLLOVER_PAPER_PRODUCER_MANIFEST_MISMATCH")
+    return {"unit":unit,"pid":pid,"process_start_ticks":int(after),
+            "manifest_path":expected,"manifest_sha256":COHORT,
+            "driver_script_path":script,"observed_at_ms":int(time.time()*1000)}
+
+
+def producer_status():
+    if ROLLOVER_CONFIG is None:return {"status":"LEGACY_PINNED_COHORT"}
+    try:return {"status":"BOUND_PRODUCER_RUNNING",**running_producer()}
+    except (OSError,ValueError,IndexError,UnicodeError,subprocess.SubprocessError) as exc:
+        # Existing predictions still need RESPONSE/fee finality if a producer
+        # is stopped or replaced. Expose drift without blocking that closure.
+        return {"status":"BOUND_PRODUCER_NOT_CURRENT","reason":str(exc)}
+
+
+def registration():
+    if ROLLOVER_CONFIG is not None:
+        period=ROLLOVER_CONFIG["source_period_sha256"]
+        x={"manifest":ROLLOVER_CONFIG["source_manifest_path"]}
+    else:
+        j=strict(read_private(REGISTRATION,limit=2*1024*1024))
+        period=j["period_sha256"]
+        candidates=[x for x in j["decision_attribution_registrations"]["EUR.USD"]
+                    if x.get("sha256")==COHORT]
+        if len(candidates)!=1:raise ValueError("PINNED_BEHAVIOR_MANIFEST_NOT_UNIQUE")
+        x=candidates[0]
+    blob=read_private(x["manifest"],limit=65536)
+    if hashlib.sha256(blob).hexdigest()!=COHORT:
+        raise ValueError("BEHAVIOR_MANIFEST_HASH_CHANGED")
+    manifest=strict(blob)
+    if (manifest.get("schema")!="heptatrader.attribution-producer.v1"
+            or manifest.get("instrument")!="EUR.USD"
+            or manifest.get("period_sha256")!=period
+            or manifest.get("execution_domain")!="PAPER"):
+        raise ValueError("BEHAVIOR_MANIFEST_NOT_PAPER")
+    return manifest
+
+
+def original_events(manifest):
+    """Verify ALL original per-producer record hashes and chain ordering."""
+    directory=Path(manifest["journal_directory"])
+    st=directory.lstat()
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid()
+            or st.st_mode&0o077):
+        raise ValueError("ATTRIBUTION_JOURNAL_ROOT_SCOPE")
+    paths=sorted(directory.glob("*.jsonl"))
+    if len(paths)>MAX_SOURCE_FILES:raise ValueError("TOO_MANY_JOURNAL_FILES")
+    groups=defaultdict(list);total=0
+    for path in paths:
+        blob=read_private(path,limit=MAX_SOURCE_FILE)
+        total+=len(blob)
+        if total>MAX_SOURCE_TOTAL:raise ValueError("ATTRIBUTION_SCAN_CAP")
+        end=blob.rfind(b"\n")
+        if end<0:continue
+        good=blob[:end+1]
+        lines=good.splitlines(keepends=True)
+        first=strict(lines[0])
+        if first.get("kind")!="HEADER":raise ValueError("JOURNAL_HEADER_MISSING")
+        if first["data"].get("manifest_sha256")!=COHORT:continue
+        if (first["data"].get("instrument")!="EUR.USD"
+                or first["data"].get("period_sha256")!=manifest["period_sha256"]
+                or first["data"].get("execution_domain")!="PAPER"):
+            raise ValueError("JOURNAL_HEADER_PERIOD_OR_VENUE")
+        producer=first["producer_id"]
+        running=hashlib.sha256()
+        offset=0
+        for line in lines:
+            if len(line)>262144:raise ValueError("ATTRIBUTION_RECORD_TOO_LARGE")
+            record=strict(line)
+            if (record.get("schema")!="heptatrader.exact-decision-attribution.v1"
+                    or record.get("producer_id")!=producer
+                    or record.get("sha256")!=digest({k:v for k,v in record.items()
+                                                    if k!="sha256"})
+                    or type(record.get("sequence")) is not int):
+                raise ValueError("BROKEN_OR_MIXED_ORIGINAL_RECORD")
+            running.update(line);offset+=len(line)
+            record["_witness"]={"path":str(path),"bytes":offset,
+                                "sha256":running.hexdigest()}
+            groups[producer].append(record)
+    result=[];requests={}
+    for producer,events in sorted(groups.items()):
+        events.sort(key=lambda x:x["sequence"])
+        previous="0"*64
+        for n,event in enumerate(events):
+            if event["sequence"]!=n or event["previous"]!=previous:
+                raise ValueError("ORIGINAL_RECORD_CHAIN_DISCONTINUITY")
+            previous=event["sha256"]
+            if event.get("dropped_total",0):
+                raise ValueError("ATTRIBUTION_PRODUCER_DROPPED_EVENTS")
+            if event["kind"]=="REQUEST":
+                request=event["data"]
+                request_id=request.get("request_id")
+                original_request_id(request_id)
+                if request_id in requests:raise ValueError("DUPLICATE_ORIGINAL_REQUEST")
+                requests[request_id]=event
+            result.append(event)
+    return result,requests
+
+
+def predict_two_sides(request,model):
+    """The future selected side is not an input; both prices are precommitted."""
+    _,co,means,scales,median=model
+    if (request.get("model_id")!=EXPECTED_MODEL
+            or request.get("input_scope")!="EXACT_LOCAL_INFER_CLI_REQUEST_NOT_UNOBSERVED_PROVIDER_INTERNAL_CONTEXT"
+            or request.get("position_at_request")!=0
+            or type(request.get("started_at_ms")) is not int):
+        raise ValueError("REQUEST_NOT_SAME_ORIGINAL_BEHAVIOR")
+    prompt=request.get("prompt");prompt_sha=request.get("prompt_sha256")
+    if (not isinstance(prompt,str) or not isinstance(prompt_sha,str)
+            or hashlib.sha256(prompt.encode()).hexdigest()!=prompt_sha):
+        raise ValueError("ORIGINAL_PROMPT_HASH_CHANGED")
+    forecasts={}
+    for side in ("BUY","SELL"):
+        features=np.asarray(prior.make_features(request,side),dtype=np.float64)
+        normalized=np.clip((features-means)/scales,-5,5)
+        y=float(np.clip(np.r_[1.,normalized]@co*100,-800,800))
+        if not math.isfinite(y):raise ValueError("MODEL_PREDICTION_NONFINITE")
+        forecasts[side]=round(y,12)
+    return forecasts,median
+
+
+def write_once(path,obj):
+    """Create-only complete receipt; SIGTERM must not leave a partial .json."""
+    path=Path(path)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(str(path))
+    data=(json.dumps(obj,sort_keys=True,separators=(",",":"),allow_nan=False)+"\n").encode()
+    temp=path.parent/(".receipt-"+uuid.uuid4().hex+".tmp")
+    fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+    try:
+        with os.fdopen(fd,"wb") as f:
+            f.write(data);f.flush();os.fsync(f.fileno())
+        # link is atomic and fails if a previous complete result exists.
+        os.link(temp,path,follow_symlinks=False)
+        fd_dir=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd_dir)
+        finally:os.close(fd_dir)
+    finally:
+        if temp.exists():temp.unlink()
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_durable_seal(prediction_path, prediction):
+    """Post-fsync commitment time, not the prediction's pre-write clock.
+
+    If the service crashes after the prediction and before this separate
+    SHA-linked receipt, do not reconstruct/retroactively date the proof.
+    """
+    rid=original_request_id(prediction["request_id"])
+    path=OUT/"durable_seals"/(rid+".json")
+    if not path.exists():return None
+    data=read_private(path,limit=16384)
+    receipt=strict(data)
+    data_sha=hashlib.sha256(read_private(prediction_path,limit=16384)).hexdigest()
+    try:ctime_ns=prediction_path.stat().st_ctime_ns
+    except OSError as exc:raise ValueError("DURABLE_PREDICTION_FILE_UNAVAILABLE") from exc
+    if (receipt.get("schema")!=SCHEMA or
+            receipt.get("status")!="PREDICTION_FSYNC_COMPLETE" or
+            receipt.get("request_id")!=rid or
+            receipt.get("prediction_sha256")!=data_sha or
+            receipt.get("source_event_sha256")!=prediction.get("source_event_sha256") or
+            type(receipt.get("durable_fsync_returned_at_ns")) is not int or
+            type(receipt.get("prediction_file_ctime_ns")) is not int or
+            type(prediction.get("sealed_at_ms")) is not int or
+            not prediction["sealed_at_ms"]*1000000<=receipt["prediction_file_ctime_ns"]<=receipt["durable_fsync_returned_at_ns"] or
+            receipt["prediction_file_ctime_ns"]!=ctime_ns or
+            receipt.get("broker_orders_sent")!=0 or
+            receipt.get("model_promotion") is not False):
+        raise ValueError("DURABLE_FSYNC_RECEIPT_IDENTITY_OR_TIME_CHANGED")
+    return receipt,hashlib.sha256(data).hexdigest()
+
+
+def frozen():
+    data=read_private(OUT/"freeze.json",limit=16384)
+    freeze=strict(data)
+    if (freeze.get("schema")!=SCHEMA
+            or freeze.get("model_sha256")!=STUDY_SHA
+            or freeze.get("behavior_manifest_sha256")!=COHORT
+            or type(freeze.get("activated_at_ms")) is not int
+            or freeze.get("activated_at_ms")>int(time.time()*1000)
+            or freeze.get("code_sha256")!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+            or freeze.get("cache_code_sha256")!=hashlib.sha256(CACHE_CODE_FILE.read_bytes()).hexdigest()
+            or freeze.get("broker_orders_sent")!=0):
+        raise ValueError("PRECOMMITTED_MODEL_OR_CODE_CHANGED")
+    if ROLLOVER_CONFIG is not None:
+        expected={**rollover_identity(),**training_window(read_model()[0],freeze["activated_at_ms"])}
+        if any(freeze.get(key)!=value for key,value in expected.items()):
+            raise ValueError("ROLLOVER_FROZEN_SCOPE_CHANGED")
+        producer=freeze.get("producer_at_registration",{})
+        if (producer.get("manifest_path")!=ROLLOVER_CONFIG["source_manifest_path"]
+                or producer.get("manifest_sha256")!=COHORT
+                or freeze["activated_at_ms"]<=expected["predecessor_activated_at_ms"]):
+            raise ValueError("ROLLOVER_FROZEN_PRODUCER_CHANGED")
+    return freeze
+
+
+def initialize():
+    if OUT.exists():raise FileExistsError("SINGLE_FIXED_SHADOW_OWNER_ALREADY_EXISTS")
+    model=read_model()
+    manifest=registration()
+    producer=running_producer() if ROLLOVER_CONFIG is not None else None
+    activated=int(time.time()*1000)
+    extra={}
+    if ROLLOVER_CONFIG is not None:
+        extra={**rollover_identity(),**training_window(model[0],activated),
+               "producer_at_registration":producer}
+        if activated<=extra["predecessor_activated_at_ms"]:
+            raise ValueError("ROLLOVER_REGISTRATION_MUST_FOLLOW_PREDECESSOR")
+    OUT.mkdir(mode=0o700,parents=True)
+    for name in ("predictions","durable_seals","misses","response_proofs","scores","rejects"):
+        (OUT/name).mkdir(mode=0o700)
+    freeze={"schema":SCHEMA,"activated_at_ms":activated,
+            "model_sha256":STUDY_SHA,"model_report_id":model[0]["report_id"],
+            "behavior_manifest_sha256":COHORT,"source_period_sha256":manifest["period_sha256"],
+            "code_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "cache_code_sha256":hashlib.sha256(CACHE_CODE_FILE.read_bytes()).hexdigest(),
+            "feature_names":list(prior.FEATURES),"historical_train_rows":217,
+            "historical_holdout_rows":67,
+            "historical_model_failed_to_beat_trivial_MAE":True,
+            "first_new_request_must_be_after_activation":True,
+            "minimum_predecision_requirement":"REQUEST_CAPTURED_BEFORE_ANY_RESPONSE",
+            "pretrade_predictions":"BOTH_BUY_AND_SELL",
+            **NO_AUTHORITY}
+    freeze.update(extra)
+    sha=write_once(OUT/"freeze.json",freeze)
+    print(json.dumps({"activated_at_ms":freeze["activated_at_ms"],
+                     "freeze_sha256":sha,"model_sha256":STUDY_SHA,
+                     "mode":"SHADOW_ONLY_NO_ORDER"}))
+    return 0
+
+
+def capture(events,requests,freeze,model):
+    after=freeze["activated_at_ms"]
+    have_response={x["data"].get("request_id") for x in events
+                   if x["kind"] in ("RESPONSE","DECISION","COMMAND_BINDING")}
+    now=int(time.time()*1000)
+    summary={"new_valid_predictions":0,"new_missed":0,"old_skipped":0,
+             "already_sealed":0,"eligible_future_requests":0}
+    for rid,ev in sorted(requests.items(),
+                         key=lambda kv:(kv[1]["data"].get("started_at_ms",0),kv[0])):
+        original_request_id(rid)
+        request=ev["data"]
+        start=request.get("started_at_ms")
+        if type(start) is not int or start<=after:
+            summary["old_skipped"]+=1;continue
+        summary["eligible_future_requests"]+=1
+        out=OUT/"predictions"/(rid+".json")
+        miss=OUT/"misses"/(rid+".json")
+        if out.exists() or miss.exists():
+            summary["already_sealed"]+=1;continue
+        reason=None
+        if rid in have_response:reason="RESPONSE_ALREADY_RECORDED"
+        elif now-start>MAX_REQUEST_AGE_MS:reason="REQUEST_PAST_FIXED_PREDECISION_DEADLINE"
+        elif request.get("position_at_request")!=0:
+            reason="NON_FLAT_REQUEST_OUTSIDE_TRAINED_VALUE_SCOPE"
+        elif ev.get("captured_at_ms",0)<start or ev.get("written_at_ms",0)>now:
+            reason="INCONSISTENT_ORIGINAL_REQUEST_CLOCK"
+        if reason:
+            write_once(miss,{"schema":SCHEMA,"request_id":rid,
+                "status":"MISSED_NOT_RETROACTIVE","reason":reason,
+                "observed_at_ms":now,"original_event_sha256":ev["sha256"],
+                "broker_orders_sent":0,"model_promotion":False})
+            summary["new_missed"]+=1
+            continue
+        forecasts,median=predict_two_sides(request,model)
+        sealed_at=int(time.time()*1000)
+        if sealed_at-start>MAX_REQUEST_AGE_MS or sealed_at<ev.get("written_at_ms",0):
+            write_once(miss,{"schema":SCHEMA,"request_id":rid,
+                "status":"MISSED_RESEARCH_LATENCY","observed_at_ms":sealed_at,
+                "original_event_sha256":ev["sha256"],**NO_AUTHORITY})
+            summary["new_missed"]+=1
+            continue
+        receipt={"schema":SCHEMA,"request_id":rid,
+            "request_started_at_ms":start,
+            "original_request_capture_at_ms":ev["captured_at_ms"],
+            "sealed_at_ms":sealed_at,
+            "source_event_sha256":ev["sha256"],
+            "source_prefix":ev["_witness"],
+            "frozen_model_sha256":STUDY_SHA,
+            "model_report_id":freeze["model_report_id"],
+            "source_period_sha256":freeze["source_period_sha256"],
+            "input_request_sha256":digest(request),
+            "prompt_sha256":request["prompt_sha256"],
+            "predictions_after_actual_reported_fees_usd":forecasts,
+            "train_only_median_baseline_usd":median,
+            "selected_side_unknown_before_response":True,
+            "predecision_at_capture":True,
+            "original_response_time_witness_required":True,
+            "response_timing_qualified":False,
+            "prospective_holdout_efficacy_unproven":True,
+            **NO_AUTHORITY}
+        # sealed_at_ms above is the PRE-WRITE clock. It cannot establish
+        # that the prediction was on durable storage before RESPONSE.
+        prediction_sha=write_once(out,receipt)
+        kernel_stat=out.stat()
+        durable_time_ns=time.time_ns()  # AFTER bytes + containing dir fsync
+        if (not stat.S_ISREG(kernel_stat.st_mode) or
+                kernel_stat.st_ctime_ns>durable_time_ns or
+                durable_time_ns<sealed_at*1_000_000):
+            raise ValueError("DURABLE_PREDICTION_KERNEL_TIMESTAMP_CONFLICT")
+        # A process kill before this separate receipt means NO qualifying
+        # durable proof. Never invent one after the real RESPONSE.
+        write_once(OUT/"durable_seals"/(rid+".json"),{
+            "schema":SCHEMA,"status":"PREDICTION_FSYNC_COMPLETE",
+            "request_id":rid,"source_event_sha256":ev["sha256"],
+            "prediction_sha256":prediction_sha,
+            "prediction_file_ctime_ns":kernel_stat.st_ctime_ns,
+            "durable_fsync_returned_at_ns":durable_time_ns,
+            "proof_is_written_after_durable_prediction":True,
+            **NO_AUTHORITY})
+        summary["new_valid_predictions"]+=1
+    return summary
+
+
+def attest_responses(events,requests,freeze):
+    """Later prove each original sealed quote PREDATED RESPONSE availability.
+
+    Source polling alone does not prove this: the model may have responded
+    in the gap between the watcher snapshot and O_EXCL prediction commit.
+    A prediction is only PROVISIONAL until this future original proof.
+    """
+    response_by_request=defaultdict(list)
+    for event in events:
+        if event["kind"]=="RESPONSE":
+            response_by_request[event["data"].get("request_id")].append(event)
+    totals={"verified_new":0,"censored_new":0,"still_no_response":0,
+            "already_attested":0}
+    for path in sorted((OUT/"predictions").glob("*.json")):
+        p=strict(read_private(path,limit=16384))
+        rid=original_request_id(p["request_id"])
+        if path.name!=rid+".json":raise ValueError("PREDICTION_RECEIPT_FILENAME_CHANGED")
+        proof=OUT/"response_proofs"/(rid+".json")
+        bad=OUT/"rejects"/(rid+".json")
+        if proof.exists() or bad.exists():
+            totals["already_attested"]+=1;continue
+        original=requests.get(rid)
+        if original is None:
+            raise ValueError("FUTURE_PREDECISION_ORIGINAL_REQUEST_LOST")
+        orig_request=original["data"]
+        if (p["source_event_sha256"]!=original["sha256"] or
+                p["input_request_sha256"]!=digest(orig_request) or
+                p["source_prefix"]["sha256"]!=original["_witness"]["sha256"] or
+                p["sealed_at_ms"]<original["written_at_ms"]):
+            raise ValueError("PREDECISION_SOURCE_PROVENANCE_CHANGED")
+        responses=response_by_request.get(rid,[])
+        if len(responses)>1:
+            raise ValueError("DUPLICATE_ORIGINAL_MODEL_RESPONSE")
+        if not responses:
+            totals["still_no_response"]+=1;continue
+        completed=read_durable_seal(path,p)
+        if completed is None:
+            write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
+                "status":"CENSORED_MISSING_DURABLE_FSYNC_WITNESS",
+                "score_valid":False,
+                "original_response_receipt_sha256":responses[0]["sha256"],
+                **NO_AUTHORITY})
+            totals["censored_new"]+=1
+            continue
+        seal,seal_sha=completed
+        r=responses[0]
+        at=r["data"].get("available_at_ms")
+        actual_response=(type(at) is int and
+                         r["data"].get("request_sha256")==digest(orig_request) and
+                         type(r.get("captured_at_ms")) is int and
+                         type(r.get("written_at_ms")) is int and
+                         orig_request["started_at_ms"]<=at<=r["captured_at_ms"]<=r["written_at_ms"])
+        # Compare the true POST-fsync time in nanoseconds to original
+        # RESPONSE millis. Truncating nanoseconds to millis would admit
+        # an otherwise-invalid sub-millisecond arrival race.
+        if (not actual_response or
+                not seal["durable_fsync_returned_at_ns"]<(orig_request["started_at_ms"]+MAX_REQUEST_AGE_MS)*1_000_000 or
+                not seal["durable_fsync_returned_at_ns"]<at*1_000_000 or
+                not seal["durable_fsync_returned_at_ns"]<r["captured_at_ms"]*1_000_000):
+            write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
+                "status":"CENSORED_SEAL_NOT_PROVEN_BEFORE_ORIGINAL_RESPONSE",
+                "score_valid":False,
+                "sealed_at_ms":p["sealed_at_ms"],
+                "durable_fsync_returned_at_ns":seal["durable_fsync_returned_at_ns"],
+                "original_response_available_at_ms":at,
+                "original_response_receipt_sha256":r["sha256"],
+                **NO_AUTHORITY})
+            totals["censored_new"]+=1;continue
+        write_once(proof,{"schema":SCHEMA,"request_id":rid,
+            "status":"VERIFIED_PRE_ORIGINAL_RESPONSE",
+            "sealed_at_ms":p["sealed_at_ms"],
+            "durable_fsync_returned_at_ns":seal["durable_fsync_returned_at_ns"],
+            "durable_seal_sha256":seal_sha,
+            "original_response_available_at_ms":at,
+            "original_response_captured_at_ms":r["captured_at_ms"],
+            "original_response_receipt_sha256":r["sha256"],
+            "original_request_sha256":digest(orig_request),
+            "original_prediction_sha256":hashlib.sha256(
+                read_private(path,limit=16384)).hexdigest(),
+            "not_economic_success":True,
+            **NO_AUTHORITY})
+        totals["verified_new"]+=1
+    return totals
+
+
+def score(events,requests,freeze):
+    """Only settle future sealed records; never revise previous predictions."""
+    paths=list((OUT/"predictions").glob("*.json"))
+    if not paths:
+        return {"pending":0,"new_scores":0,"new_rejected":0}
+    rewards=strict(read_private(prior.REWARDS,limit=32*1024*1024))
+    if rewards.get("broker_orders_sent")!=0:raise ValueError("REWARD_OBSERVER_SCOPE_CHANGED")
+    reward_by_input=defaultdict(list)
+    for r in rewards.get("rewards",[]):
+        if r.get("input_attribution",{}).get("producer_manifest_sha256")==COHORT:
+            reward_by_input[r.get("input_id")].append(r)
+    bindings=defaultdict(list);decisions=defaultdict(list);responses=defaultdict(list)
+    for event in events:
+        d=event.get("data",{})
+        if event["kind"]=="COMMAND_BINDING":
+            bindings[d.get("request_id")].append(d)
+        elif event["kind"]=="DECISION":
+            decisions[d.get("request_id")].append(d)
+        elif event["kind"]=="RESPONSE":
+            responses[d.get("request_id")].append(event)
+    matched=[]
+    for path in paths:
+        p=strict(read_private(path,limit=16384))
+        rid=original_request_id(p["request_id"])
+        if path.name!=rid+".json":raise ValueError("PREDICTION_RECEIPT_FILENAME_CHANGED")
+        if (OUT/"rejects"/(rid+".json")).exists():continue
+        if read_durable_seal(path,p) is None:continue
+        proofpath=OUT/"response_proofs"/(rid+".json")
+        if not proofpath.exists():continue  # provisional is not an admissible score
+        proof=strict(read_private(proofpath,limit=16384))
+        rlist=reward_by_input.get(p["input_request_sha256"],[])
+        if rlist:
+            matched.append((p,rlist,bindings.get(rid,[]),
+                            decisions.get(rid,[]),responses.get(rid,[]),proof))
+    if not matched:
+        return {"pending":len(paths),"new_scores":0,"new_rejected":0}
+    distinct={}
+    for p,rlist,bs,ds,rs,proof in matched:
+        if len(rlist)!=1 or len(bs)!=1 or len(ds)!=1 or len(rs)!=1:
+            raise ValueError("FORWARD_FUTURE_ORIGINAL_BINDING_AMBIGUOUS")
+        distinct[rlist[0]["reward_id"]]=rlist[0]
+    events_by_id,_=prior.original_oms_events(list(distinct.values()))
+    changed=0;reject=0
+    for p,rewards_list,bindings_list,decisions_list,response_list,proof in matched:
+        rid=p["request_id"]
+        good=OUT/"scores"/(rid+".json")
+        bad=OUT/"rejects"/(rid+".json")
+        if good.exists() or bad.exists():continue
+        source=requests.get(rid)
+        if source is None:raise ValueError("ORIGINAL_REQUEST_LOST")
+        request=source["data"]
+        reward=rewards_list[0]
+        binding=bindings_list[0]
+        decision=decisions_list[0]
+        response=response_list[0]
+        completed=read_durable_seal(OUT/"predictions"/(rid+".json"),p)
+        if completed is None:raise ValueError("RESEARCH_SCORE_MISSING_DURABLE_PROOF")
+        durable,durable_sha=completed
+        if (proof.get("status")!="VERIFIED_PRE_ORIGINAL_RESPONSE" or
+                proof.get("durable_seal_sha256")!=durable_sha or
+                proof.get("durable_fsync_returned_at_ns")!=durable["durable_fsync_returned_at_ns"] or
+                proof.get("original_request_sha256")!=digest(request) or
+                proof.get("original_response_receipt_sha256")!=response["sha256"] or
+                proof.get("original_prediction_sha256")!=hashlib.sha256(
+                    read_private(OUT/"predictions"/(rid+".json"),limit=16384)).hexdigest() or
+                type(response["data"].get("available_at_ms")) is not int or
+                not durable["durable_fsync_returned_at_ns"]<response["data"]["available_at_ms"]*1_000_000):
+            raise ValueError("ORIGINAL_RESPONSE_ATTESTATION_CHANGED")
+        if (binding.get("request_id")!=rid
+                or binding.get("request_sha256")!=digest(request)
+                or reward["input_id"]!=digest(request)
+                or decision.get("request_sha256")!=digest(request)):
+            raise ValueError("FUTURE_BINDING_SOURCE_MISMATCH")
+        # No retroactive seal: the prediction must PRECEDE the actual
+        # original decision and later outcome first-available time.
+        decision_time=decision["available_at_ms"]
+        known_at=prior.settled_time(reward,events_by_id,request,binding)
+        if (durable["durable_fsync_returned_at_ns"]>=(request["started_at_ms"]+MAX_REQUEST_AGE_MS)*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=response["data"]["available_at_ms"]*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=decision_time*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=binding["command"]["created_at_ms"]*1_000_000
+                or durable["durable_fsync_returned_at_ns"]>=known_at*1_000_000):
+            write_once(bad,{"schema":SCORE_SCHEMA,"request_id":rid,
+                "status":"CENSORED_SEAL_NOT_BEFORE_RESPONSE_DECISION_OR_LABEL",
+                "decision_at_ms":decision_time,"label_known_at_ms":known_at,
+                "score_valid":False,**NO_AUTHORITY})
+            reject+=1;continue
+        econ=prior.verify_100k_reward(reward,request,binding)
+        side=binding["command"]["side"]
+        value=p["predictions_after_actual_reported_fees_usd"][side]
+        median=p["train_only_median_baseline_usd"]
+        net=float(econ["net_usd"])
+        write_once(good,{"schema":SCORE_SCHEMA,"request_id":rid,
+            "status":"ORIGINAL_SETTLED_RESEARCH_ONLY","score_valid":True,
+            "original_reward_id":reward["reward_id"],
+            "prediction_sha256":hashlib.sha256(read_private(
+                OUT/"predictions"/(rid+".json"),limit=16384)).hexdigest(),
+            "original_input_sha256":reward["input_id"],
+            "frozen_model_sha256":STUDY_SHA,
+            "original_side":side,
+            "prediction_write_started_at_ms":p["sealed_at_ms"],
+            "prediction_durable_fsync_returned_at_ns":durable["durable_fsync_returned_at_ns"],
+            "durable_seal_sha256":durable_sha,
+            "original_response_available_at_ms":response["data"]["available_at_ms"],
+            "response_proof_sha256":hashlib.sha256(read_private(
+                 OUT/"response_proofs"/(rid+".json"),limit=16384)).hexdigest(),
+            "decision_first_available_ms":decision_time,
+            "original_execution_and_fees_known_at_ms":known_at,
+            "actual_net_after_reported_fees_usd":net,
+            "model_prediction_net_usd":value,
+            "training_median_prediction_net_usd":median,
+            "model_absolute_error_usd":abs(value-net),
+            "median_absolute_error_usd":abs(median-net),
+            "no_counterfactual_buy_sell_conclusion":True,
+            **NO_AUTHORITY})
+        changed+=1
+    unscored=sum(not (OUT/"scores"/p.name).exists()
+                 and not (OUT/"rejects"/p.name).exists() for p in paths)
+    return {"pending":unscored,"new_scores":changed,"new_rejected":reject}
+
+
+def run_once(cache=None):
+    freeze=frozen()
+    model=read_model()
+    manifest=registration()
+    if manifest["period_sha256"]!=freeze["source_period_sha256"]:
+        raise ValueError("SOURCE_PERIOD_ROTATED_USE_NEW_FROZEN_STUDY")
+    if cache is not None:
+        if (type(cache) is not VerifiedIncrementalJournal or
+                cache.manifest_sha!=COHORT or
+                cache.manifest["journal_directory"]!=manifest["journal_directory"] or
+                cache.manifest["period_sha256"]!=manifest["period_sha256"]):
+            raise ValueError("INCREMENTAL_SOURCE_CACHE_NOT_PINNED")
+        events,requests=cache.update()
+    else:
+        events,requests=original_events(manifest)
+    a=capture(events,requests,freeze,model)
+    response_status=attest_responses(events,requests,freeze)
+    b=score(events,requests,freeze)
+    counts={name:len(list((OUT/name).glob("*.json")))
+            for name in ("predictions","durable_seals","misses","response_proofs","scores","rejects")}
+    print(json.dumps({"schema":SCHEMA,"checked_at_ms":int(time.time()*1000),
+        "counts":counts,"capture":a,"response_attestation":response_status,"score":b,
+        "behavior_manifest_sha256":COHORT,"training_behavior_manifest_sha256":TRAINING_COHORT,
+        "original_source_scan_mode":"HASH_VERIFIED_INCREMENTAL_APPEND" if cache else "FULL_ORIGINAL_REPLAY",
+        "broker_orders_sent":0,"policy_change":False},sort_keys=True))
+    return 0
+
+
+# Linux inotify directory events; journal writers keep *.jsonl FDs open,
+# so CLOSE_WRITE-only watchers would miss the REQUEST. Skip their frequent
+# unrelated *.health.json rewrites to avoid burning CPU while idle.
+IN_MODIFY=0x00000002
+IN_CLOSE_WRITE=0x00000008
+IN_MOVED_TO=0x00000080
+IN_CREATE=0x00000100
+IN_Q_OVERFLOW=0x00004000
+IN_IGNORED=0x00008000
+WATCH_MASK=IN_MODIFY|IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE
+INOTIFY_HEADER=struct.Struct("iIII")
+
+
+def original_journal_events(fd):
+    """Read all available inotify records; journal-data append only.
+
+    A kernel queue overflow forces full rescan and warning. No dropped
+    event is treated as a successfully pre-response-sealed forecast.
+    """
+    need_scan=False;overflows=0
+    while True:
+        try:data=os.read(fd,262144)
+        except BlockingIOError:break
+        if not data:raise OSError("INOTIFY_STREAM_ENDED")
+        position=0
+        while position<len(data):
+            if position+INOTIFY_HEADER.size>len(data):
+                raise ValueError("INOTIFY_TRUNCATED_HEADER")
+            _,mask,_,n=INOTIFY_HEADER.unpack_from(data,position)
+            position+=INOTIFY_HEADER.size
+            if position+n>len(data):raise ValueError("INOTIFY_TRUNCATED_NAME")
+            name=data[position:position+n].rstrip(b"\x00")
+            position+=n
+            if mask&IN_IGNORED:raise OSError("INOTIFY_WATCH_LOST")
+            if mask&IN_Q_OVERFLOW:
+                overflows+=1;need_scan=True
+            elif (mask&WATCH_MASK) and name.endswith(b".jsonl"):
+                need_scan=True
+    return need_scan,overflows
+
+
+def watch_handle(directory):
+    """Watch original private journal APPEND, with no driver modification."""
+    p=Path(directory);st=p.lstat()
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid()
+            or st.st_mode&0o077):
+        raise ValueError("WATCH_ORIGINAL_PRIVATE_DIRECTORY_CHANGED")
+    libc=ctypes.CDLL(None,use_errno=True)
+    openfd=libc.inotify_init1
+    openfd.argtypes=[ctypes.c_int];openfd.restype=ctypes.c_int
+    add=libc.inotify_add_watch
+    add.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_uint32]
+    add.restype=ctypes.c_int
+    fd=openfd(os.O_CLOEXEC|os.O_NONBLOCK)
+    if fd<0:raise OSError(ctypes.get_errno(),"inotify_init1")
+    try:
+        if add(fd,os.fsencode(p),WATCH_MASK)<0:
+            raise OSError(ctypes.get_errno(),"inotify_add_watch")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def watch_loop():
+    """Prompt original REQUEST wakeups plus 20-second score catchup."""
+    freeze=frozen()
+    manifest=registration()
+    if manifest["period_sha256"]!=freeze["source_period_sha256"]:
+        raise ValueError("WATCH_ORIGINAL_PERIOD_CHANGED")
+    # Initial original history is authenticated ONCE; every wake-up uses
+    # the same SHA/sequence-linked parser but reads only newly appended
+    # bytes. Every 180 seconds, independently replay the ENTIRE original
+    # source to detect any cached historical-prefix rewrite.
+    cache=VerifiedIncrementalJournal(manifest,COHORT)
+    fd=watch_handle(manifest["journal_directory"])
+    poller=select.poll();poller.register(fd,select.POLLIN)
+    try:
+        run_once(cache)  # initial registered snapshot prevents activation gap
+        last=time.monotonic()
+        last_full=last
+        while True:
+            events=poller.poll(20000)
+            if any(mask&(select.POLLERR|select.POLLHUP|select.POLLNVAL)
+                   for _,mask in events):
+                raise OSError("INOTIFY_POLL_ERROR")
+            trigger=overflow=0
+            if events:trigger,overflow=original_journal_events(fd)
+            if overflow:print(json.dumps({"inotify_queued_events_lost":overflow,
+                        "must_rescan_original_ledger":True}),flush=True)
+            if trigger or time.monotonic()-last>=20:
+                run_once(cache)
+                last=time.monotonic()
+            if time.monotonic()-last_full>=FULL_REPLAY_INTERVAL_SECONDS:
+                original,requests=original_events(manifest)
+                cache.update() # consume legitimate appends made during full scan
+                checked=cache.assert_full_replay_same(
+                    original,requests,allow_new_incremental_suffix=True)
+                print(json.dumps({"schema":SCHEMA,"full_historical_integrity":checked,
+                                  "cache_verified_total_events":cache.verified_new_records,
+                                  "broker_orders_sent":0},sort_keys=True),flush=True)
+                last_full=time.monotonic()
+    finally:
+        os.close(fd)
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--mode",choices=("init","once","status","watch"),required=True)
+    p.add_argument("--config",type=Path,help="immutable new prospective cohort registration")
+    a=p.parse_args()
+    if a.config is not None:configure(a.config)
+    if a.mode=="init":return initialize()
+    if a.mode=="once":return run_once()
+    if a.mode=="watch":return watch_loop()
+    freeze=frozen()
+    print(json.dumps({"schema":SCHEMA,"activated_at_ms":freeze["activated_at_ms"],
+        "behavior_manifest_sha256":COHORT,"training_behavior_manifest_sha256":TRAINING_COHORT,
+        "source_producer":producer_status(),
+        "receipt_counts":{n:len(list((OUT/n).glob("*.json")))
+                 for n in ("predictions","durable_seals","misses","response_proofs","scores","rejects")},
+        **NO_AUTHORITY},sort_keys=True))
+    return 0
+
+
+if __name__=="__main__":raise SystemExit(main())
