@@ -218,6 +218,8 @@ bool TradingToolHost::RegisterSessionImpl(
         BuildCatalogRegistration(binding);
     if (!m_contractCatalog.Register(registration, reason)) return false;
     m_sessions[binding.token] = binding;
+    m_sessionIncarnations[binding.token] =
+        std::shared_ptr<const char>(new char(0));
     m_rateWindowStartMs[binding.token] = nowMs;
     m_tradeCallsInWindow[binding.token] = 0;
     m_riskReductionWindowStartMs[binding.token] = nowMs;
@@ -375,7 +377,10 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
         return false;
 
     m_sessions.erase(current);
+    m_sessionIncarnations.erase(currentToken);
     m_sessions[replacementToken] = replacement;
+    m_sessionIncarnations[replacementToken] =
+        std::shared_ptr<const char>(new char(0));
     MoveSessionRateBudgetsLocked(currentToken, replacementToken);
     MoveActiveDecisionLeasesLocked(currentToken, replacementToken);
     newGeneration = replacement.leaseGeneration;
