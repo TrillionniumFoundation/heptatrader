@@ -107,6 +107,14 @@ parent directory before reporting readiness. Crash leftovers are not automatic d
 must preserve the active file and the entire `.segments` directory together.
 Older binaries that merely treat HJA3 as legacy text are **not** compatible
 verifiers after segmentation. There is no automatic online rotation or pruning.
+Do not run full `--audit-verify` on the live active journal as a monitoring
+check. Verification holds a shared file lock while traversing retained history;
+active appends require the exclusive lock and same-owner requests can queue
+behind them. Verify after a permitted stopped-state seal or on an immutable
+copy of the active file together with its referenced `.segments` history.
+Use the emitted Gateway capacity and interval metrics for live monitoring.
+Every capacity-shed observation still validates file identity, permissions and
+chain changes; shedding is never a bypass for a failed integrity check.
 Full history verification grows with retained bytes; active append size is bounded,
 not long-horizon startup I/O.
 

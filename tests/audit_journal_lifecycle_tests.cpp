@@ -210,6 +210,73 @@ void TestCapacityAndExitReserve()
     assert(!journal.AppendToolDecision(exit, reason));
     assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
 }
+void TestShedObservationsStillValidateIntegrity()
+{
+    for (int unavailable = 0; unavailable < 2; ++unavailable)
+    {
+        for (int change = 0; change < 3; ++change)
+        {
+            Fixture f; SessionSupervisorAuditJournal journal(16384, 4096);
+            std::string reason;
+            failChangeWatch = unavailable != 0;
+            assert(journal.Init(f.path, reason));
+            failChangeWatch = false;
+            auto read = Record("market.get_quote");
+            for (unsigned n = 0; n < 100; ++n)
+            {
+                assert(journal.AppendToolDecision(read, reason));
+                if (reason == "SUPERVISOR_AUDIT_OBSERVATION_SHED") break;
+            }
+            assert(journal.CapacitySnapshot().observationsShed == 1);
+            if (change == 0)
+                assert(::chmod(f.path.c_str(), 0644) == 0);
+            else if (change == 1)
+            {
+                assert(::rename(f.path.c_str(), (f.path + ".old").c_str()) == 0);
+                const int replacement = ::open(f.path.c_str(),
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+                assert(replacement >= 0); ::close(replacement);
+            }
+            else
+            {
+                assert(::stat(f.path.c_str(), &maskedIdentity) == 0);
+                const int fd = ::open(f.path.c_str(), O_WRONLY | O_CLOEXEC);
+                assert(fd >= 0);
+                assert(::pwrite(fd, "2", 1, 5) == 1);
+                assert(::fsync(fd) == 0); ::close(fd);
+                maskTimes = true;
+            }
+            // Capacity pressure never turns a failed integrity check into a
+            // successful shed, including after a mutation has observed it.
+            assert(!journal.AppendToolDecision(read, reason));
+            assert(!journal.AppendToolDecision(Record("trade.place_order"), reason));
+            assert(!journal.AppendToolDecision(read, reason));
+            maskTimes = false;
+        }
+    }
+}
+void TestLargeShedDoesNotSuppressSmallerObservation()
+{
+    Fixture f; SessionSupervisorAuditJournal journal(16384, 4096);
+    std::string reason;
+    assert(journal.Init(f.path, reason));
+    auto read = Record("market.get_quote");
+    assert(journal.AppendToolDecision(read, reason));
+    const auto before = journal.CapacitySnapshot();
+    auto large = read;
+    large.reasonCode = std::string(8192, 'x');
+    assert(journal.AppendToolDecision(large, reason));
+    assert(reason == "SUPERVISOR_AUDIT_OBSERVATION_SHED");
+    const auto afterLarge = journal.CapacitySnapshot();
+    assert(afterLarge.known && afterLarge.bytes == before.bytes &&
+        afterLarge.observationsShed == 1);
+    assert(journal.AppendToolDecision(read, reason));
+    assert(reason.empty());
+    const auto afterSmall = journal.CapacitySnapshot();
+    assert(afterSmall.known && afterSmall.bytes > before.bytes &&
+        afterSmall.bytes <= 8192 && afterSmall.observationsShed == 1);
+    VerifyCount(f.path, 2);
+}
 void TestSegmentsAndWriterHandoff()
 {
     Fixture f; std::string reason;
@@ -329,6 +396,8 @@ int main()
     TestSupervisorAdmissionPreservesExitReserve();
     TestUnknownSupervisorOperationCannotClaimSafetyCapacity();
     TestCapacityAndExitReserve();
+    TestShedObservationsStillValidateIntegrity();
+    TestLargeShedDoesNotSuppressSmallerObservation();
     TestSegmentsAndWriterHandoff();
     TestLegacyOnlySegmentsAndInitialPublication();
     TestSyncFailuresAndRetry();
