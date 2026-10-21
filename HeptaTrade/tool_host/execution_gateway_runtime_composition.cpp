@@ -1,5 +1,6 @@
 #include "execution_gateway_runtime_composition.h"
 
+#include <algorithm>
 #include <cctype>
 
 namespace
@@ -279,6 +280,13 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
         reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_UNAVAILABLE";
         return false;
     }
+    // Identity discovery happens before any authority request is sent. Bound
+    // the complete pair/refresh phase independently of durable command replies:
+    // two owners must not each spend the full framing timeout while holding
+    // their final dispatch gate. Respect a tighter caller or configured bound.
+    const auto identityDeadline = std::min(deadline,
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(
+            std::min(m_config.ioTimeoutMs, 1000)));
     // Identity is checked before every remote operation. If Execution restarted
     // between Gateway calls, the mutation client may still hold the old cached
     // identity while the event socket already exposes the new one. Refresh that
@@ -287,10 +295,11 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         ExecutionServiceIdentity mutationIdentity;
-        if (!m_executionClient->GetServiceIdentity(mutationIdentity, reason, deadline))
+        if (!m_executionClient->GetServiceIdentity(
+                mutationIdentity, reason, identityDeadline))
             return false;
         const ExecutionEventReadResult eventIdentity =
-            m_eventClient->GetServiceIdentity(deadline);
+            m_eventClient->GetServiceIdentity(identityDeadline);
         if (eventIdentity.status != ExecutionEventReadStatus::ServiceIdentity ||
             !ValidIdentity(eventIdentity.serviceIdentity))
         {
@@ -304,7 +313,12 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
             reason.clear();
             return true;
         }
-        m_executionClient->InvalidateServiceIdentity(mutationIdentity);
+        if (!m_executionClient->InvalidateServiceIdentity(
+                mutationIdentity, identityDeadline))
+        {
+            reason = "EXECUTION_CONTROL_WORK_BUDGET_EXHAUSTED";
+            return false;
+        }
         if (attempt == 0)
         {
             NotifyTestStage("remote_identity_pair_refresh");

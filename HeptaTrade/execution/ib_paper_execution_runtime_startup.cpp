@@ -64,6 +64,8 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     m_startupMarketDataFarmWaiting.store(false);
     m_startupMarketDataFarmRestored.store(false);
     m_startupMarketDataFarmEpoch.store(0);
+    m_secondaryCashFarmReadyEpoch.store(0);
+    m_secondaryCashFarmUnavailableEpoch.store(0);
     if (!m_adapter->Init(adapterConfig)) {
         m_startupBrokerPhase.store(false);
         m_startupWaitingForUpstream.store(false);

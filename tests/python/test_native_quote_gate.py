@@ -74,10 +74,30 @@ class FrameGateTests(unittest.TestCase):
                     quote().replace(b'0.0',b'1.0')):
             with self.subTest(raw=raw),self.assertRaises(gate.Denied):initialized().feed(packet(raw))
 
-    def test_duplicate_same_symbol_and_same_id_denied(self):
-        g=initialized();g.feed(packet(quote()))
-        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100002)))
-        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100001,'BTC')))
+    def test_duplicate_primary_and_reused_identity_denied(self):
+        g=initialized();g.feed(packet(quote(5100001,'BTC')))
+        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100002,'BTC')))
+        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100001)))
+
+    def test_one_secondary_replacement_can_overlap_active_pair(self):
+        g=initialized()
+        g.feed(packet(quote(5100001,'BTC')))
+        g.feed(packet(quote(5100002)))
+        replacement=packet(quote(5100003))
+        self.assertEqual(g.feed(replacement),[replacement])
+        self.assertEqual(g.active,{5100001:'BTC',5100002:'EUR',5100003:'EUR'})
+        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100004)))
+        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100005,'BTC')))
+
+    def test_secondary_retirement_preserves_identity_and_slot_bounds(self):
+        g=initialized()
+        for request in (quote(5100001,'BTC'),quote(5100002),quote(5100003)):
+            g.feed(packet(request))
+        g.feed(packet(fields('2','2','5100003')))
+        with self.assertRaises(gate.Denied):g.feed(packet(quote(5100003)))
+        g.feed(packet(quote(5100004)))
+        self.assertEqual(g.active,{5100001:'BTC',5100002:'EUR',5100004:'EUR'})
+        with self.assertRaises(gate.Denied):g.feed(packet(fields('2','2','5100003')))
 
     def test_invalid_handshake_bounds_and_client_id(self):
         for data in (b'GET ',b'API\0'+packet(b'v100..178 unsafe'),b'API\0'+struct.pack('!I',999999)):

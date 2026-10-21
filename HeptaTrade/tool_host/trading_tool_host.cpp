@@ -66,6 +66,20 @@ bool SameExecutionContext(const TradingToolSession& left,
             right.executionContext.executionDomain;
 }
 
+bool SameEventWaitScope(const TradingToolHostSessionBinding& left,
+                        const TradingToolHostSessionBinding& right)
+{
+    return left.token == right.token && left.peerUid == right.peerUid &&
+        left.executionDomain == right.executionDomain &&
+        left.session.environment == right.session.environment &&
+        left.session.capabilities == right.session.capabilities &&
+        left.session.executionContext.agentId ==
+            right.session.executionContext.agentId &&
+        left.session.executionContext.sessionId ==
+            right.session.executionContext.sessionId &&
+        SameExecutionContext(left.session, right.session);
+}
+
 bool SameMutationPayload(const TradingToolSession& leftSession,
                          const TradingToolCall& left,
                          const TradingToolSession& rightSession,
@@ -479,7 +493,9 @@ TradingToolResult TradingToolHost::DispatchRead(
 	const TradingToolSession& session,
 	const TradingToolCall& call)
 {
-	std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
+    std::unique_lock<std::mutex> dispatchLock(m_mutationDispatchMutex);
+    const bool eventWait = call.name == "events.wait";
+    std::shared_ptr<const char> incarnation;
 	bool recoveryOnly = false;
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -503,13 +519,60 @@ TradingToolResult TradingToolHost::DispatchRead(
 		if (current->second.expiresAtMs <= EpochNowMs())
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SESSION_EXPIRED", "Agent session expired before read dispatch");
+        if (eventWait)
+        {
+            const auto registration = m_sessionIncarnations.find(request.sessionToken);
+            if (registration == m_sessionIncarnations.end() ||
+                !registration->second ||
+                !SameEventWaitScope(current->second, binding) ||
+                current->second.session.capabilities.count("events.read") == 0)
+                return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+                    "SESSION_BINDING_CHANGED",
+                    "Agent session binding changed before event wait dispatch");
+            incarnation = registration->second;
+        }
 		recoveryOnly = current->second.recoveryOnly;
 	}
 	if (recoveryOnly && call.name == "risk.preview_order")
 		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 			"SESSION_RECOVERY_ONLY",
 			"root custodian disabled new entry while command recovery is pending");
-	return m_registry.Invoke(session, call);
+    if (!eventWait) return m_registry.Invoke(session, call);
+
+    // The owner-scoped event poll creates no permit or trading authority. It
+    // may finish after revoke/rotation/fence, but its result must not cross that
+    // boundary. Other reads and every mutation retain whole-call ordering.
+    dispatchLock.unlock();
+    const TradingToolResult result = m_registry.Invoke(session, call);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto current = m_sessions.find(request.sessionToken);
+    if (current == m_sessions.end())
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_REVOKED", "Agent session was revoked during event wait");
+    if (current->second.leaseGeneration != binding.leaseGeneration)
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_LEASE_GENERATION_CHANGED",
+            "Agent session generation changed during event wait");
+    const auto registration = m_sessionIncarnations.find(request.sessionToken);
+    if (registration == m_sessionIncarnations.end() ||
+        registration->second != incarnation ||
+        !SameEventWaitScope(current->second, binding) ||
+        current->second.session.capabilities.count("events.read") == 0)
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_BINDING_CHANGED",
+            "Agent session binding changed during event wait");
+    if (!current->second.enabled ||
+        m_pendingOwnerFences.count(SessionOwnerKey(current->second)) != 0 ||
+        WatchTransactionPendingLocked(current->second))
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_OWNER_FENCE_PENDING",
+            "Agent session owner was disabled during event wait");
+    if (current->second.expiresAtMs <= EpochNowMs())
+        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_EXPIRED", "Agent session expired during event wait");
+    // Revalidate every callback outcome, including errors carrying a partial
+    // payload or exception detail. Reject() above constructs an empty result.
+    return result;
 }
 
 TradingToolResult TradingToolHost::DispatchMutation(
@@ -752,6 +815,7 @@ void TradingToolHost::EraseSessionLocked(const std::string& token)
         m_sessions.find(token);
     if (session != m_sessions.end()) ownerKey = SessionOwnerKey(session->second);
     m_sessions.erase(token);
+    m_sessionIncarnations.erase(token);
     m_rateWindowStartMs.erase(token);
     m_tradeCallsInWindow.erase(token);
     m_riskReductionWindowStartMs.erase(token);
@@ -830,6 +894,8 @@ bool TradingToolHost::RestorePaperFinalizationTombstone(
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_sessions[tombstone.token] = tombstone;
+        m_sessionIncarnations[tombstone.token] =
+            std::shared_ptr<const char>(new char(0));
         m_rateWindowStartMs[tombstone.token] = 0;
         m_tradeCallsInWindow[tombstone.token] = 0;
         m_riskReductionWindowStartMs[tombstone.token] = 0;
