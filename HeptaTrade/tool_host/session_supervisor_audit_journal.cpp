@@ -360,16 +360,13 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     const std::string unsignedLine = std::string(kAuditMagic) + "\t" +
         std::to_string(nextSequence) + "\t" + previousHash + "\t" +
         std::to_string(nowMs) + "\t" + recordType + "\t" + HexEncode(payload);
-    const std::string recordHash = Sha256Hex(unsignedLine);
-    const std::string line = unsignedLine + "\t" + recordHash + "\n";
+    // Check the exact encoded size before hashing an observation that cannot
+    // fit. The 64-byte SHA-256 plus tab/newline always adds 66 bytes. Integrity
+    // and file-identity verification above still applies to every shed call.
+    const std::size_t encodedBytes = unsignedLine.size() + 66;
     if (ok && nextSequence == std::numeric_limits<std::uint64_t>::max())
     { reason = "SUPERVISOR_AUDIT_SEQUENCE_EXHAUSTED"; ok = false; }
-    if (ok && recordHash.empty())
-    {
-        reason = "SUPERVISOR_AUDIT_DIGEST_FAILED";
-        ok = false;
-    }
-    if (ok && line.size() > kMaximumAuditLineBytes)
+    if (ok && encodedBytes > kMaximumAuditLineBytes)
     {
         reason = "SUPERVISOR_AUDIT_RECORD_TOO_LARGE";
         ok = false;
@@ -377,7 +374,7 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     const std::uint64_t reserve = recordClass == RecordClass::Safety ? 0 :
         (recordClass == RecordClass::Admission ? m_safetyReserveBytes : 2 * m_safetyReserveBytes);
     const std::uint64_t limit = m_maximumBytes - reserve;
-    if (ok && (currentState.fileSize > limit || line.size() > limit - currentState.fileSize))
+    if (ok && (currentState.fileSize > limit || encodedBytes > limit - currentState.fileSize))
     {
         ::flock(m_fd, LOCK_UN);
         if (recordClass == RecordClass::Observation)
@@ -392,6 +389,13 @@ bool SessionSupervisorAuditJournal::AppendRecord(
             "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED" : "SUPERVISOR_AUDIT_SIZE_LIMIT";
         return false;
     }
+    const std::string recordHash = ok ? Sha256Hex(unsignedLine) : std::string();
+    if (ok && recordHash.empty())
+    {
+        reason = "SUPERVISOR_AUDIT_DIGEST_FAILED";
+        ok = false;
+    }
+    const std::string line = unsignedLine + "\t" + recordHash + "\n";
     bool writeAttempted = false;
     std::size_t offset = 0;
     while (ok && offset < line.size())

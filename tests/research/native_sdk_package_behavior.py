@@ -65,7 +65,13 @@ def main() -> None:
     config = args.config or cache.get("CMAKE_BUILD_TYPE") or "Release"
     if os.environ.get("DESTDIR"):
         raise RuntimeError("acceptance requires an unset DESTDIR")
-    with tempfile.TemporaryDirectory(prefix="hepta client package ") as temporary:
+    # Keep executable acceptance fixtures on the caller's build filesystem.
+    # Some hardened hosts mount /tmp with noexec; using it here would turn a
+    # valid SDK build into a PermissionError before the consumer can run.
+    # Use a sibling workspace directory so compile_commands.json cannot be
+    # mistaken for a reference to the original source/build/staging prefixes.
+    fixture_parent = build.resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="hepta client package ", dir=str(fixture_parent)) as temporary:
         root = Path(temporary)
         prefix, relocated = root / "original prefix", root / "relocated prefix"
         # Execute the generated subdirectory install script with NO component.

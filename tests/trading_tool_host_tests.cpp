@@ -5,10 +5,13 @@
 
 #include <cassert>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <fcntl.h>
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <thread>
 #include <unistd.h>
 
@@ -1207,6 +1210,310 @@ void TestInFlightWatchReadLinearizesBeforeOwnerFence()
 	std::remove(path.c_str());
 }
 
+// A long poll may retain owner-routed event cache state, but must not hold
+// unrelated owners' dispatch or delay their supervisor's revocation.  These
+// fixtures use only in-process callbacks; no broker or live socket is involved.
+class EventWaitSignal
+{
+public:
+	void Set()
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_set = true;
+		m_condition.notify_all();
+	}
+
+	bool WaitFor(std::chrono::milliseconds timeout)
+	{
+		std::unique_lock<std::mutex> lock(m_mutex);
+		return m_condition.wait_for(lock, timeout, [this]() { return m_set; });
+	}
+
+private:
+	std::mutex m_mutex;
+	std::condition_variable m_condition;
+	bool m_set = false;
+};
+
+class EventWaitTestAuthority : public ExecutionAuthority
+{
+public:
+	ExecutionCommandResult PlaceOrder(const PlaceOrderCommand&) override
+	{
+		assert(false); // The long-poll tests never place an order.
+		return ExecutionCommandResult();
+	}
+
+	ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+	{
+		++cancelCalls;
+		ExecutionCommandResult result;
+		result.status = ExecutionCommandStatus::Accepted;
+		result.commandId = command.context.toolCallId;
+		return result;
+	}
+
+	std::atomic<int> cancelCalls{0};
+};
+
+enum class EventWaitOutcome { Success, Failure, Exception };
+
+class EventWaitTestFixture
+{
+public:
+	explicit EventWaitTestFixture(std::uint64_t ttlMs = 60000,
+		bool recoveryOnly = false,
+		EventWaitOutcome outcome = EventWaitOutcome::Success)
+		: callbackOutcome(outcome),
+		  registry(authority, ReadCallbacks(*this)), host(registry)
+	{
+		owner = Binding("waiting", ttlMs);
+		owner.recoveryOnly = recoveryOnly;
+		otherOwner = Binding("other", 60000);
+		otherOwner.session.environment = "PAPER";
+		otherOwner.session.capabilities.insert("trade.cancel");
+		otherOwner.maxTradeCallsPerMinute = 1;
+		std::string reason;
+		assert(host.RegisterSession(owner, reason));
+		assert(host.RegisterSession(otherOwner, reason));
+	}
+
+	TradingToolHostRequest Request(
+		const TradingToolHostSessionBinding& binding, const std::string& tool)
+	{
+		TradingToolHostRequest request;
+		request.sessionToken = binding.token;
+		request.toolCallId = "long-poll-test-" + tool;
+		request.call.name = tool;
+		if (tool == "events.wait") request.call.waitTimeoutMs = 30000;
+		if (tool == "trade.cancel_order") request.call.orderId = 77;
+		BindSchemaHash(registry, request);
+		return request;
+	}
+
+	// Always release and join before asserting the progress result.  This
+	// also lets the regression fail cleanly against the old global lock.
+	bool RunConcurrent(const std::function<void()>& operation,
+		TradingToolResult& eventResult)
+	{
+		const TradingToolHostRequest wait = Request(owner, "events.wait");
+		std::thread eventThread([&]() {
+			eventResult = host.Invoke(owner.peerUid, wait);
+		});
+		const bool entered = eventEntered.WaitFor(std::chrono::seconds(2));
+		EventWaitSignal operationFinished;
+		std::thread operationThread([&]() {
+			operation();
+			operationFinished.Set();
+		});
+		const bool progressed = operationFinished.WaitFor(std::chrono::seconds(1));
+		releaseEvent.Set();
+		eventThread.join();
+		operationThread.join();
+		assert(entered);
+		return progressed;
+	}
+
+	EventWaitSignal eventEntered;
+	EventWaitSignal releaseEvent;
+	const EventWaitOutcome callbackOutcome;
+	EventWaitTestAuthority authority;
+	TradingToolRegistry registry;
+	TradingToolHost host;
+	TradingToolHostSessionBinding owner;
+	TradingToolHostSessionBinding otherOwner;
+
+private:
+	static TradingToolHostSessionBinding Binding(
+		const std::string& suffix, std::uint64_t ttlMs)
+	{
+		TradingToolHostSessionBinding binding;
+		binding.token = "long-poll-session-token-000001-" + suffix;
+		binding.peerUid = 1001;
+		binding.session.executionContext.agentId = "long-poll-agent-" + suffix;
+		binding.session.executionContext.sessionId = "long-poll-session-" + suffix;
+		binding.session.executionContext.account = "UNIT-TEST-NO-BROKER";
+		binding.session.environment = "WATCH";
+		binding.session.capabilities.insert("events.read");
+		binding.session.capabilities.insert("system.read");
+		binding.executionDomain = "IB-PAPER";
+		binding.expiresAtMs = OmsJournal::NowEpochMs() + ttlMs;
+		return binding;
+	}
+
+	static TradingToolReadCallbacks ReadCallbacks(EventWaitTestFixture& fixture)
+	{
+		TradingToolReadCallbacks reads;
+		reads.eventsWait = [&fixture](const TradingToolSession&,
+			const TradingToolCall& call, std::string& payload, std::string& reason) {
+			assert(call.waitTimeoutMs == 30000);
+			fixture.eventEntered.Set();
+			assert(fixture.releaseEvent.WaitFor(std::chrono::seconds(10)));
+			payload = "{\"event\":\"private-event-payload\"}";
+			if (fixture.callbackOutcome == EventWaitOutcome::Exception)
+				throw std::runtime_error("private-event-payload");
+			if (fixture.callbackOutcome == EventWaitOutcome::Failure)
+			{
+				reason = "private-event-payload";
+				return false;
+			}
+			return true;
+		};
+		reads.systemGetHealth = [](const TradingToolSession&,
+			const TradingToolCall&, std::string& payload, std::string&) {
+			payload = "{\"ready\":true}";
+			return true;
+		};
+		return reads;
+	}
+};
+
+void AssertEventWaitDenied(const TradingToolResult& result,
+	const std::string& reason)
+{
+	assert(result.status == TradingToolCallStatus::PermissionDenied);
+	assert(result.reasonCode == reason);
+	assert(result.payloadJson.empty());
+	assert(result.detail.find("private-event-payload") == std::string::npos);
+	assert(result.orderId == -1);
+}
+
+void TestEventWaitDoesNotBlockOtherOwnerReadOrCancel()
+{
+	EventWaitTestFixture fixture;
+	TradingToolResult eventResult, healthResult, cancelResult;
+	const bool progressed = fixture.RunConcurrent([&]() {
+		healthResult = fixture.host.Invoke(fixture.otherOwner.peerUid,
+			fixture.Request(fixture.otherOwner, "system.get_health"));
+		cancelResult = fixture.host.Invoke(fixture.otherOwner.peerUid,
+			fixture.Request(fixture.otherOwner, "trade.cancel_order"));
+	}, eventResult);
+	assert(progressed);
+	assert(healthResult.status == TradingToolCallStatus::Ok);
+	assert(cancelResult.status == TradingToolCallStatus::Ok);
+	assert(fixture.authority.cancelCalls.load() == 1);
+	assert(eventResult.status == TradingToolCallStatus::Ok);
+	assert(eventResult.payloadJson == "{\"event\":\"private-event-payload\"}");
+}
+
+void TestEventWaitRevocationCompletesAndDiscardsLatePayload()
+{
+	const EventWaitOutcome outcomes[] = {
+		EventWaitOutcome::Success, EventWaitOutcome::Failure,
+		EventWaitOutcome::Exception
+	};
+	for (const EventWaitOutcome outcome : outcomes)
+	{
+		EventWaitTestFixture fixture(60000, false, outcome);
+		TradingToolResult eventResult;
+		bool revoked = false;
+		std::string reason;
+		const bool progressed = fixture.RunConcurrent([&]() {
+			revoked = fixture.host.RevokeSession(fixture.owner.token, 1,
+				"long_poll_revoked", reason);
+		}, eventResult);
+		assert(progressed);
+		assert(revoked && reason.empty());
+		AssertEventWaitDenied(eventResult, "SESSION_REVOKED");
+	}
+}
+
+void TestEventWaitRejectsSameTokenRegistrationAba()
+{
+	// Identical owner and generation must still be a new authorization
+	// incarnation.  A changed owner with the same token is also rejected.
+	for (int changedOwner = 0; changedOwner != 2; ++changedOwner)
+	{
+		EventWaitTestFixture fixture;
+		TradingToolResult eventResult;
+		bool revoked = false, registered = false;
+		std::string reason;
+		const bool progressed = fixture.RunConcurrent([&]() {
+			revoked = fixture.host.RevokeSession(fixture.owner.token, 1,
+				"long_poll_aba", reason);
+			TradingToolHostSessionBinding replacement = fixture.owner;
+			if (changedOwner)
+			{
+				replacement.session.executionContext.agentId = "replacement-agent";
+				replacement.session.executionContext.sessionId = "replacement-session";
+			}
+			registered = fixture.host.RegisterSession(replacement, reason);
+		}, eventResult);
+		assert(progressed);
+		assert(revoked && registered && reason.empty());
+		AssertEventWaitDenied(eventResult, "SESSION_BINDING_CHANGED");
+	}
+}
+
+void TestEventWaitRejectsLeaseRotation()
+{
+	for (int rotateToken = 0; rotateToken != 2; ++rotateToken)
+	{
+		EventWaitTestFixture fixture;
+		TradingToolResult eventResult;
+		bool rotated = false;
+		std::uint64_t generation = 0;
+		std::string reason;
+		const bool progressed = fixture.RunConcurrent([&]() {
+			const std::string replacementToken = rotateToken ?
+				fixture.owner.token + "-rotated" : fixture.owner.token;
+			rotated = fixture.host.UpdateSessionLease(fixture.owner.token,
+				replacementToken, 1, OmsJournal::NowEpochMs() + 120000,
+				generation, reason);
+		}, eventResult);
+		assert(progressed);
+		assert(rotated && generation == 2 && reason.empty());
+		AssertEventWaitDenied(eventResult, rotateToken ?
+			"SESSION_REVOKED" : "SESSION_LEASE_GENERATION_CHANGED");
+	}
+}
+
+void TestEventWaitRejectsFailedOwnerFenceWhileWaiting()
+{
+	EventWaitTestFixture fixture;
+	fixture.host.SetSessionRevokedObserver([](
+		const TradingToolHostSessionBinding&, const std::string&,
+		std::string& reason) {
+		reason = "TEST_REMOTE_FENCE_PENDING";
+		return false;
+	});
+	TradingToolResult eventResult;
+	bool revoked = true;
+	std::string reason;
+	const bool progressed = fixture.RunConcurrent([&]() {
+		revoked = fixture.host.RevokeSession(fixture.owner.token, 1,
+			"long_poll_fence", reason);
+	}, eventResult);
+	assert(progressed);
+	assert(!revoked && reason == "TEST_REMOTE_FENCE_PENDING");
+	AssertEventWaitDenied(eventResult, "SESSION_OWNER_FENCE_PENDING");
+}
+
+void TestEventWaitRejectsExpiredLeaseBeforeReturningPayload()
+{
+	EventWaitTestFixture fixture(2000);
+	TradingToolResult eventResult;
+	const TradingToolHostRequest request = fixture.Request(fixture.owner, "events.wait");
+	std::thread eventThread([&]() {
+		eventResult = fixture.host.Invoke(fixture.owner.peerUid, request);
+	});
+	const bool entered = fixture.eventEntered.WaitFor(std::chrono::seconds(1));
+	std::this_thread::sleep_until(std::chrono::system_clock::time_point(
+		std::chrono::milliseconds(fixture.owner.expiresAtMs + 1)));
+	fixture.releaseEvent.Set();
+	eventThread.join();
+	assert(entered);
+	AssertEventWaitDenied(eventResult, "SESSION_EXPIRED");
+}
+
+void TestEventWaitRemainsAvailableDuringRecoveryOnly()
+{
+	EventWaitTestFixture fixture(60000, true);
+	TradingToolResult eventResult;
+	assert(fixture.RunConcurrent([]() {}, eventResult));
+	assert(eventResult.status == TradingToolCallStatus::Ok);
+}
+
 void TestEntryCancelAndFlattenBudgetsAreIndependent()
 {
 	const std::string path = TempJournalPath();
@@ -1352,6 +1659,13 @@ int main()
 	TestInFlightPreviewLinearizesBeforeOwnerFence();
 	TestRecoveryQueryLinearizesAfterIngressAndClosesEntry();
 	TestInFlightWatchReadLinearizesBeforeOwnerFence();
+	TestEventWaitDoesNotBlockOtherOwnerReadOrCancel();
+	TestEventWaitRevocationCompletesAndDiscardsLatePayload();
+	TestEventWaitRejectsSameTokenRegistrationAba();
+	TestEventWaitRejectsLeaseRotation();
+	TestEventWaitRejectsFailedOwnerFenceWhileWaiting();
+	TestEventWaitRejectsExpiredLeaseBeforeReturningPayload();
+	TestEventWaitRemainsAvailableDuringRecoveryOnly();
 	TestEntryCancelAndFlattenBudgetsAreIndependent();
     std::cout << "trading_tool_host_tests: PASS" << std::endl;
     return 0;

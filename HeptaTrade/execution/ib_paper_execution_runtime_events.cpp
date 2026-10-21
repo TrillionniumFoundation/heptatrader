@@ -396,10 +396,14 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
     const bool currentBrokerEpoch =
         IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch);
     if (brokerControlError && currentBrokerEpoch && cashMarketDataFarm) {
-        if (controlErrorCode == 2103 || controlErrorCode == 2119)
+        if (controlErrorCode == 2103 || controlErrorCode == 2119) {
             m_secondaryCashFarmUnavailableEpoch.store(event.connectionEpoch);
-        else if (controlErrorCode == 2104)
+            m_secondaryCashFarmReadyEpoch.store(0);
+        }
+        else if (controlErrorCode == 2104) {
             m_secondaryCashFarmUnavailableEpoch.store(0);
+            m_secondaryCashFarmReadyEpoch.store(event.connectionEpoch);
+        }
         // This never marks a quote fresh or admits a trade. Keep existing
         // subscriptions during a known outage so real recovery callbacks can
         // resume them without a needless cancel/failed-resubscribe cooldown.
