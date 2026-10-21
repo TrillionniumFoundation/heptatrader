@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <unistd.h>
+#include <sys/stat.h>
 
 namespace { bool failNextCancelAllocation = false; }
 void* operator new(std::size_t size) {
@@ -190,6 +191,126 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+
+class CaptureStderr {
+    int saved;
+    FILE* temporary;
+public:
+    CaptureStderr() : saved(dup(STDERR_FILENO)), temporary(tmpfile()) {
+        assert(saved >= 0 && temporary);
+        fflush(stderr);
+        assert(dup2(fileno(temporary), STDERR_FILENO) >= 0);
+    }
+    ~CaptureStderr() {
+        fflush(stderr);
+        assert(dup2(saved, STDERR_FILENO) >= 0);
+        close(saved);
+        fclose(temporary);
+    }
+    std::string Read() {
+        fflush(stderr);
+        assert(fseek(temporary, 0, SEEK_SET) == 0);
+        std::string out;
+        char buffer[1024];
+        std::size_t count;
+        while ((count = fread(buffer, 1, sizeof(buffer), temporary)) != 0)
+            out.append(buffer, count);
+        assert(fseek(temporary, 0, SEEK_END) == 0);
+        return out;
+    }
+};
+
+void TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory() {
+    char pattern[] = "/tmp/hepta-ib-log-fault-XXXXXX";
+    char* directory = mkdtemp(pattern);
+    assert(directory);
+    const std::string parent = std::string(directory) + "/missing";
+    const std::string path = parent + "/events.jsonl";
+    {
+        CaptureStderr diagnostic;
+        Fixture f(true, false, false, path);
+        // Real open failure must not change the adapter/broker control path.
+        assert(f.adapter.IsConnected() && f.broker->places == 0 && f.broker->cancels == 0);
+        std::string warning = diagnostic.Read();
+        assert(warning.find("\"event\":\"observability.write_failed\"") != std::string::npos);
+        assert(warning.find("\"operation\":\"open\"") != std::string::npos);
+        for (int i = 0; i != 80; ++i) f.adapter.SetRuntimeFlattenOnly(true, "diagnostic");
+        warning = diagnostic.Read();
+        const auto first = warning.find("\"event\":\"observability.write_failed\"");
+        assert(warning.find("\"event\":\"observability.write_failed\"", first + 1) == std::string::npos);
+        assert(mkdir(parent.c_str(), 0700) == 0);
+        { std::ofstream existing(path.c_str()); existing << "retained-history\n"; }
+        f.adapter.SetRuntimeFlattenOnly(true, "recovered");
+        const std::string recovered = diagnostic.Read();
+        assert(recovered.find("\"event\":\"observability.write_recovered\"") != std::string::npos);
+        assert(recovered.find("\"failed_line_count\":") != std::string::npos);
+        assert(recovered.find("DU123") == std::string::npos);
+        std::ifstream log(path.c_str());
+        const std::string text((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+        assert(text.find("retained-history\n") == 0);
+        assert(text.find("recovered") != std::string::npos);
+        assert(text.find("\"process_id\":" + std::to_string(getpid())) != std::string::npos);
+        assert(text.find("\"api_client_id\":73") != std::string::npos);
+    }
+    assert(unlink(path.c_str()) == 0 && rmdir(parent.c_str()) == 0 && rmdir(directory) == 0);
+    {
+        CaptureStderr diagnostic;
+        Fixture f(true, false, false, "/dev/full");
+        // Opening succeeds, but the actual flush fails with ENOSPC.
+        const std::string warning = diagnostic.Read();
+        assert(warning.find("\"event\":\"observability.write_failed\"") != std::string::npos);
+        assert(warning.find("\"operation\":\"write\"") != std::string::npos);
+        assert(f.adapter.IsConnected() && f.broker->places == 0 && f.broker->cancels == 0);
+    }
+    // Successful append clears this process's failure episode for other tests.
+    Fixture recovered;
+}
+
+void TestObservabilityErrorKeepsExactEpochAndRequestProvenance() {
+    char path[] = "/tmp/hepta-ib-error-binding-XXXXXX";
+    const int fd = mkstemp(path); assert(fd >= 0); close(fd);
+    {
+        Fixture f(true, false, false, path);
+        IBContractLite contract; contract.symbol = "EUR"; contract.secType = "CASH";
+        contract.exchange = "IDEALPRO"; contract.currency = "USD";
+        assert(f.adapter.ReqMktData(1000221, contract));
+        IBEvent error; error.type = IBEventType::Error; error.id = 1000221;
+        error.connectionEpoch = f.broker->epoch; error.key = "10197";
+        error.value = "original broker error";
+        f.broker->events.push_back(error);
+        IBEvent received; assert(f.adapter.TryDequeueEvent(received));
+        assert(received.id == error.id && received.key == error.key && received.value == error.value);
+        assert(!received.localMarketDataRequestError && received.requestId == 0);
+        assert(f.adapter.CancelMktData(1000221, f.broker->epoch));
+        f.adapter.Disconnect(); assert(f.adapter.Connect()); f.Bootstrap();
+        // Same numeric ID on a new socket must never relabel an old callback.
+        f.broker->events.push_back(error);
+        assert(!f.adapter.TryDequeueEvent(received));
+        assert(f.adapter.ReqMktData(1000221, contract));
+        error.connectionEpoch = f.broker->epoch;
+        f.broker->events.push_back(error);
+        assert(f.adapter.TryDequeueEvent(received));
+        assert(received.connectionEpoch == 2 && received.key == "10197");
+        std::ifstream log(path);
+        const std::string text((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+        const auto callback = text.find("\"event\":\"callback.error\"");
+        assert(callback != std::string::npos);
+        const auto line = text.substr(callback, text.find('\n', callback) - callback);
+        assert(line.find("\"connection_epoch\":1") != std::string::npos);
+        assert(line.find("\"api_client_id\":73") != std::string::npos);
+        assert(line.find("\"callback_id\":1000221") != std::string::npos);
+        assert(line.find("\"request_binding\":\"unclassified\"") != std::string::npos);
+        const auto nextCallback = text.find("\"event\":\"callback.error\"", callback + 1);
+        assert(nextCallback != std::string::npos);
+        const auto nextLine = text.substr(nextCallback, text.find('\n', nextCallback) - nextCallback);
+        assert(nextLine.find("\"connection_epoch\":2") != std::string::npos);
+        assert(text.find("\"event\":\"callback.error\"", nextCallback + 1) == std::string::npos);
+        assert(text.find("\"event\":\"event.stale_connection_epoch\"") != std::string::npos);
+        assert(text.find("DU123") == std::string::npos);
+        assert(f.broker->places == 0 && f.broker->cancels == 0);
+    }
+    assert(unlink(path) == 0);
+}
 void TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh() {
     // Regression: an already invalid cash generation has no authoritative
     // cash map. Repeating a numeric subscription value used to reset the
@@ -2215,7 +2336,15 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--observability-only") {
+        TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory();
+        TestObservabilityErrorKeepsExactEpochAndRequestProvenance();
+        std::puts("PASS offline observability I/O faults and callback binding; zero order methods");
+        return 0;
+    }
+    TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory();
+    TestObservabilityErrorKeepsExactEpochAndRequestProvenance();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();

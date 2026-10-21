@@ -1249,6 +1249,16 @@ bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
     } else if (outEvent.type == IBEventType::Error) {
         EmitObsEvent("callback.error",
             "\"callback_id\":" + std::to_string(outEvent.id) +
+            ",\"connection_epoch\":" + std::to_string(outEvent.connectionEpoch) +
+            ",\"request_id\":" + std::to_string(outEvent.requestId) +
+            ",\"callback_client_id\":" + std::to_string(outEvent.brokerClientId) +
+            // This is a diagnostic join to same-process/client/epoch request
+            // records, never proof that an arbitrary numeric callback is a
+            // local market-data failure. In particular 10197 gains no local
+            // authority from this log and follows its original fatal path.
+            ",\"request_binding\":\"" +
+                (outEvent.localMarketDataRequestError ?
+                    "corroborated_cash_request" : "unclassified") + "\"" +
             ",\"error_code\":\"" + EscapeJson(outEvent.key) + "\"" +
             ",\"message\":\"" + EscapeJson(outEvent.value) + "\"" +
             ",\"advanced_order_reject_json\":\"" +

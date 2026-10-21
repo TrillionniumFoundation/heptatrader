@@ -18,12 +18,61 @@
 #include <cerrno>
 #include <utility>
 #include <limits>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 namespace {
 std::unique_ptr<IIBApiWrapper> CreateDefaultIBApiWrapper() {
     return std::unique_ptr<IIBApiWrapper>(CreateIBApiWrapper());
 }
 
 std::mutex g_obsLogMutex;
+unsigned long long g_obsFailedLines = 0;
+unsigned long long g_obsFailedEpisodeLines = 0;
+bool g_obsFailureActive = false;
+std::chrono::steady_clock::time_point g_obsNextFailureReport;
+
+long ObsProcessId() {
+#ifdef _WIN32
+    return static_cast<long>(::_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
+
+// This optional diagnostic log is not an OMS authority. Its I/O failure must
+// stay observable without changing any broker/risk decision or flooding the
+// service journal. No account, authentication material or callback body is
+// copied into these fallback notices.
+void ReportObsLogFailure(const char* operation, int errorNumber) {
+    if (g_obsFailedLines != std::numeric_limits<unsigned long long>::max())
+        ++g_obsFailedLines;
+    if (g_obsFailedEpisodeLines != std::numeric_limits<unsigned long long>::max())
+        ++g_obsFailedEpisodeLines;
+    const auto now = std::chrono::steady_clock::now();
+    if (!g_obsFailureActive || now >= g_obsNextFailureReport) {
+        std::fprintf(stderr,
+            "{\"event\":\"observability.write_failed\",\"process_id\":%ld,"
+            "\"operation\":\"%s\",\"os_error\":%d,\"failed_line_count\":%llu,"
+            "\"total_failed_line_count\":%llu}\n",
+            ObsProcessId(), operation, errorNumber,
+            g_obsFailedEpisodeLines, g_obsFailedLines);
+        g_obsNextFailureReport = now + std::chrono::seconds(60);
+    }
+    g_obsFailureActive = true;
+}
+
+void ReportObsLogRecovery() {
+    if (!g_obsFailureActive) return;
+    std::fprintf(stderr,
+        "{\"event\":\"observability.write_recovered\",\"process_id\":%ld,"
+        "\"failed_line_count\":%llu,\"total_failed_line_count\":%llu}\n",
+        ObsProcessId(), g_obsFailedEpisodeLines, g_obsFailedLines);
+    g_obsFailureActive = false;
+    g_obsFailedEpisodeLines = 0;
+}
 std::string EscapeJson(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -156,9 +205,27 @@ bool ShouldEmitObsLatencySample(const char* path, const char* stage) {
 void AppendObsLogLine(const std::string& line, const std::string& explicitPath) {
     std::lock_guard<std::mutex> lk(g_obsLogMutex);
     const std::string path = explicitPath.empty() ? ObsLogPath() : explicitPath;
+    errno = 0;
     std::ofstream ofs(path.c_str(), std::ios::out | std::ios::app);
-    if (!ofs.is_open()) return;
+    if (!ofs.is_open()) {
+        ReportObsLogFailure("open", errno);
+        return;
+    }
+    errno = 0;
     ofs << line << "\n";
+    // ofstream's destructor hides a buffered write/close failure. Observe the
+    // real result explicitly; never truncate or retry an ambiguously written
+    // record, and never claim that the missing prefix was reconstructed.
+    ofs.flush();
+    const bool written = ofs.good();
+    const int writeError = errno;
+    errno = 0;
+    ofs.close();
+    if (!written || ofs.fail()) {
+        ReportObsLogFailure("write", written ? errno : writeError);
+        return;
+    }
+    ReportObsLogRecovery();
 }
 } // namespace
 
@@ -1805,6 +1872,8 @@ void HeptaIBGatewayAdapter::RememberLastOrder(const IBContractLite& c, const IBO
 
 void HeptaIBGatewayAdapter::EmitObsEvent(const char* eventName, const std::string& fieldsJson) const {
     std::string line = "{\"ts\":\"" + UtcNowIso8601Ms() + "\",\"event\":\"" + EscapeJson(eventName ? eventName : "") + "\"";
+    line += ",\"process_id\":" + std::to_string(ObsProcessId()) +
+        ",\"api_client_id\":" + std::to_string(m_cfg.clientId);
     if (!fieldsJson.empty()) line += "," + fieldsJson;
     line += "}";
     AppendObsLogLine(line, m_cfg.observabilityLogPath);
