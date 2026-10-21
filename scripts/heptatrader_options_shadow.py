@@ -239,10 +239,6 @@ def main() -> int:
         parser.error("Absolute observer and state paths are required")
     if not 15 <= args.duration_sec <= 900 or not 8000 <= args.client_id <= 9999:
         parser.error("Duration/client-id outside read-only limits")
-    binary = args.observer.resolve(strict=True)
-    st = binary.stat()
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022 or not os.access(binary, os.X_OK):
-        parser.error("Observer binary ownership/mode is unsafe")
     private_directory(args.state_dir)
     try:
         with single_writer(args.state_dir):
@@ -251,6 +247,16 @@ def main() -> int:
                 atomic_status(args.state_dir / "status.json", blocked)
                 print(json.dumps(blocked), flush=True)
                 return 78  # configuration blocker; systemd must NOT retry IB.
+
+            # Validate the observer only for the source that can actually run
+            # it.  A missing Snowball transport is a deterministic configuration
+            # blocker and must be reported as such even when the supplied
+            # diagnostic path lives on a noexec filesystem.
+            binary = args.observer.resolve(strict=True)
+            st = binary.stat()
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or
+                    st.st_mode & 0o022 or not os.access(binary, os.X_OK)):
+                parser.error("Observer binary ownership/mode is unsafe")
 
             if args.max_state_mib < 64 or args.min_free_mib < 64:
                 raise RuntimeError("OPTIONS_STORAGE_POLICY_TOO_SMALL")

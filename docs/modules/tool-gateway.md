@@ -107,6 +107,14 @@ parent directory before reporting readiness. Crash leftovers are not automatic d
 must preserve the active file and the entire `.segments` directory together.
 Older binaries that merely treat HJA3 as legacy text are **not** compatible
 verifiers after segmentation. There is no automatic online rotation or pruning.
+Do not run full `--audit-verify` on the live active journal as a monitoring
+check. Verification holds a shared file lock while traversing retained history;
+active appends require the exclusive lock and same-owner requests can queue
+behind them. Verify after a permitted stopped-state seal or on an immutable
+copy of the active file together with its referenced `.segments` history.
+Use the emitted Gateway capacity and interval metrics for live monitoring.
+Every capacity-shed observation still validates file identity, permissions and
+chain changes; shedding is never a bypass for a failed integrity check.
 Full history verification grows with retained bytes; active append size is bounded,
 not long-horizon startup I/O.
 
@@ -114,6 +122,22 @@ not long-horizon startup I/O.
 ## Concurrency
 
 The Unix server accepts bounded concurrent clients and delegates work to workers. Shared session, registry, event, and audit state must be synchronized without holding Gateway locks across broker or unbounded external calls. Request cancellation is advisory for in-flight reads; it must not erase a durable mutation whose outcome is uncertain.
+
+`events.wait` releases the Host's global dispatch lock after its final binding
+check so an idle owner poll cannot delay another owner's read, trade or session
+fence. It grants no permit or trading authority. After the callback returns,
+the Host rechecks the token's current registration identity, lease generation,
+peer and owner scope, capabilities, expiry and pending fences/WATCH transaction
+before returning any result. Revocation, replacement or expiry discards even a
+partial error payload. Registration identity is process-local and also rejects
+an identical token/generation/owner re-registered while an old poll is pending.
+All other reads, including health and risk previews, and all mutations retain
+their existing complete-call ordering with session control operations.
+
+This exception does not change per-owner queue limits or worker allocation.
+The default single active request per owner still serializes that owner's
+requests; enough concurrent long polls can still occupy the bounded worker
+pool. Event relay cursor updates remain serialized per owner.
 
 ## Failure semantics
 

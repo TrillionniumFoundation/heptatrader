@@ -107,6 +107,10 @@ public:
                             std::chrono::steady_clock::time_point deadline =
                                 std::chrono::steady_clock::time_point::max());
     void InvalidateServiceIdentity(const ExecutionServiceIdentity& identity);
+    // Pre-dispatch identity refresh must include cache-lock contention in its
+    // local budget. The unbounded overload retains command-result semantics.
+    bool InvalidateServiceIdentity(const ExecutionServiceIdentity& identity,
+        std::chrono::steady_clock::time_point deadline);
 
 private:
     ExecutionControlResult DispatchControlWithIdentity(

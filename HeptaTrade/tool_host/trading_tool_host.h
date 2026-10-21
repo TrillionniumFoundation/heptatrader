@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -315,12 +316,20 @@ private:
     // Linearizes every final dispatch gate with WATCH reservation,
     // session revoke/fence and lease rotation. A call holds this lock from its
     // last binding validation through the registry/authority call; control
-    // operations take it before changing the binding. Therefore a dispatch is
-    // wholly ordered before the control operation, or observes its
-    // disabled/pending binding and never reaches the registered handler.
+    // operations take it before changing the binding. Only events.wait releases
+    // it while polling: event delivery instead requires another current-binding
+    // check, including registration identity, after the callback returns.
+    // Other reads (including previews) and mutations remain wholly ordered
+    // before control operations or observe their disabled/pending binding.
     mutable std::mutex m_mutationDispatchMutex;
     mutable std::mutex m_mutex;
     std::unordered_map<std::string, TradingToolHostSessionBinding> m_sessions;
+    // Process-local registration identity only. A wait retains its object so
+    // revoke/re-register cannot reuse an identical token/generation/owner while
+    // adopting that old wait's result. Erasure releases the map's ownership;
+    // no retired token history or wire/persistent field is added.
+    std::unordered_map<std::string, std::shared_ptr<const char> >
+        m_sessionIncarnations;
     std::unordered_map<std::string, std::uint64_t> m_rateWindowStartMs;
     std::unordered_map<std::string, std::uint32_t> m_tradeCallsInWindow;
     std::unordered_map<std::string, std::uint64_t>

@@ -189,6 +189,19 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
     std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs,
     std::uint64_t freshQuoteMaxAgeMs)
 {
+    return BeginStaleSecondaryCashRefresh(instrument, connectionEpoch,
+        generation, observedAtMs, quoteMaxAgeMs, minRetryMs,
+        freshQuoteMaxAgeMs, 0);
+}
+
+IBAuthoritativeQuoteSubscriptionPlan
+IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
+    const std::string& instrument, std::uint64_t connectionEpoch,
+    std::uint64_t generation, std::uint64_t observedAtMs,
+    std::uint64_t quoteMaxAgeMs, std::uint64_t minRetryMs,
+    std::uint64_t freshQuoteMaxAgeMs,
+    std::uint64_t pendingNativePairTimeoutMs)
+{
     IBAuthoritativeQuoteSubscriptionPlan plan;
     plan.connectionEpoch = connectionEpoch;
     plan.generation = generation;
@@ -225,6 +238,29 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
     if (pending != m_pendingRequestIdByInstrument.end())
     {
         const auto state = m_quotesByRequestId.find(pending->second);
+        if (state != m_quotesByRequestId.end() &&
+            state->second.dispatchResultRecorded && state->second.dispatchAccepted &&
+            !state->second.nativeRequestRejected &&
+            pendingNativePairTimeoutMs >= 60000 &&
+            state->second.dispatchAcceptedAtMs != 0 &&
+            observedAtMs >= state->second.dispatchAcceptedAtMs &&
+            observedAtMs - state->second.dispatchAcceptedAtMs >=
+                pendingNativePairTimeoutMs)
+        {
+            // The caller supplies a current-epoch positive CASH-farm witness.
+            // A slow stream gets at least one minute; it is never reissued on
+            // the normal three-second freshness cadence. Retire only this
+            // positively sent pending ID, keeping the original active stream
+            // and its timestamps. A different ID may be allocated only after
+            // the exact cancellation's SDK outcome has been recorded.
+            const int requestId = pending->second;
+            m_retiringRequestIdByInstrument[instrument] = requestId;
+            m_pendingRequestIdByInstrument.erase(pending);
+            plan.cancelRequestIds.push_back(requestId);
+            plan.accepted = true;
+            plan.reasonCode = "QUOTE_REFRESH_RETIRE_STALLED_PENDING";
+            return plan;
+        }
         if (state == m_quotesByRequestId.end() ||
             !state->second.dispatchResultRecorded || state->second.dispatchAccepted)
         {
@@ -293,9 +329,16 @@ IBAuthoritativeQuoteSubscriptionSet::BeginStaleSecondaryCashRefresh(
 }
 
 bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(
+    std::uint64_t generation, int requestId, bool accepted)
+{
+    return RecordDispatchResult(generation, requestId, accepted, 0);
+}
+
+bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(
     std::uint64_t generation,
     int requestId,
-    bool accepted)
+    bool accepted,
+    std::uint64_t observedAtMs)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (generation == 0 || generation != m_generation) return false;
@@ -304,6 +347,7 @@ bool IBAuthoritativeQuoteSubscriptionSet::RecordDispatchResult(
         found->second.dispatchResultRecorded) return false;
     found->second.dispatchAccepted = accepted;
     found->second.dispatchResultRecorded = true;
+    found->second.dispatchAcceptedAtMs = accepted ? observedAtMs : 0;
     return true;
 }
 

@@ -1410,7 +1410,18 @@ void HeptaIBGatewayAdapter::BindEventIngressFence() {
 }
 
 bool HeptaIBGatewayAdapter::CancelMktData(int reqId) {
+    return CancelMktData(reqId, 0);
+}
+
+bool HeptaIBGatewayAdapter::CancelMktData(int reqId,
+                                       std::uint64_t expectedConnectionEpoch) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    // A pending refresh may retire only the socket epoch that sent its ID.
+    // Check inside the same API lock as the SDK call; an earlier runtime
+    // getter must not let a reconnect redirect cancellation to a new socket.
+    if (expectedConnectionEpoch != 0 &&
+        expectedConnectionEpoch != m_connectionEpoch)
+        return false;
     if (!m_api || m_terminalTransportHalted || !m_api->IsConnected())
         return false;
     EmitObsEvent("market_data.cancel_started",
