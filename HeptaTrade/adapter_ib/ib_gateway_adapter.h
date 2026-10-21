@@ -335,6 +335,7 @@ public:
     bool ReqTerminalCorrelations();
     bool ReqMktData(int reqId, const IBContractLite& c);
     bool CancelMktData(int reqId);
+    bool CancelMktData(int reqId, std::uint64_t expectedConnectionEpoch);
     // Formal quote dispatch must hold this fence while draining ingress and
     // issuing ReqMktData; callback wrappers use the admission state at ingress.
     std::recursive_mutex& EventIngressFence();

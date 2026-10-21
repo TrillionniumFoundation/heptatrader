@@ -399,6 +399,9 @@ private:
     std::atomic<bool> m_startupUpstreamRestored;
     // A known secondary CASH farm outage suppresses renewal; old prices stay stale.
     std::atomic<std::uint64_t> m_secondaryCashFarmUnavailableEpoch{0};
+    // A scoped 2104 from this epoch permits scheduling pending retirement.
+    // This is a scheduling witness, never quote or trading authority.
+    std::atomic<std::uint64_t> m_secondaryCashFarmReadyEpoch{0};
     std::atomic<bool> m_startupMarketDataFarmWaiting;
     std::atomic<bool> m_startupMarketDataFarmRestored;
     // Epoch of the positive CASH-farm 2104 witness.  A readiness bit without

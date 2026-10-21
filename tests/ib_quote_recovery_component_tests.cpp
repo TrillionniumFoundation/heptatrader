@@ -3,6 +3,8 @@
 #include "execution/ib_paper_execution_runtime_composition.h"
 #include "execution/ib_paper_execution_runtime_internal.h"
 #include "adapter_ib/ib_admission_event_policy.h"
+#include <algorithm>
+#include <functional>
 #include <iostream>
 #include <cstdlib>
 #include <cstdio>
@@ -28,6 +30,8 @@ public:
     IBCashFarmAdmissionMarker farm;
     IBMarketDataAdmissionState admission;
     std::set<int> issued;
+    std::function<void()> beforeRequestReturn;
+    std::function<void(int)> beforeCancel;
     std::shared_ptr<Counters> counts;
     explicit SocketFreeApi(std::shared_ptr<Counters> c) : counts(c) {}
     void SetConnectionEpoch(std::uint64_t value) override { epoch=value; farm.Reset(value); }
@@ -51,10 +55,12 @@ public:
         require(issued.insert(id).second, "duplicate market-data ID");
         ++counts->requests;
         require(admission.EndSend(generation, false) && admission.Complete(), "real admission closes");
+        if (beforeRequestReturn) beforeRequestReturn();
         if (outcome==ThrowAfter) throw std::runtime_error("SDK_UNKNOWN_AFTER_SEND");
         return true;
     }
     bool CancelMktData(int id) override {
+        if (beforeCancel) beforeCancel(id);
         if (refuseCancel) return false;
         if (failCancel) throw std::runtime_error("CANCEL_OUTCOME_UNKNOWN");
         require(issued.erase(id)==1, "cancel only actually issued request"); ++counts->cancels; return true;
@@ -209,6 +215,7 @@ struct IbQuoteRecoveryFixture {
     }
     void testSlowAcceptedPairIsNotCancelledEveryThreeSeconds() {
         tick(fxId,"1",1.12);tick(fxId,"2",1.1201);
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
         const auto original=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
         const auto requests=counts->requests;std::string reason;
         clock+=3001;require(refresh(reason),"start one bounded warm stream");
@@ -221,6 +228,127 @@ struct IbQuoteRecoveryFixture {
         require(currentFx()==fxId,"stale pending bid cannot be combined into fresh pair");
         tick(pending,"1",1.12);require(currentFx()==pending,"only two actually fresh pending legs promote");
         require(refresh(reason)&&counts->cancels==1&&counts->requests==requests+1,"promotion retires exactly old stream");
+        noOrders();
+    }
+    void testStalledAcceptedPairRetiresOnlyPendingAndUsesNewId() {
+        tick(fxId,"1",1.12);tick(fxId,"2",1.1201);
+        const auto original=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
+        std::string reason;clock+=3001;require(refresh(reason),"start exactly one pending stream");
+        const int stalled=pendingFx();const auto requests=counts->requests;
+        clock+=59999;require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "accepted pending stream retains its full sixty-second first-pair budget");
+        ++clock;require(refresh(reason),"retire stalled pending after actual farm readiness");
+        require(pendingFx()==0&&currentFx()==fxId&&counts->requests==requests&&counts->cancels==1,
+            "exact pending cancellation finishes before any replacement request");
+        require(api->issued.count(stalled)==0&&api->issued.count(fxId)==1&&api->issued.count(btcId)==1,
+            "only known sent pending CASH ticker is cancelled");
+        require(tick(stalled,"1",1.2).status==IBAuthoritativeQuoteConsumeStatus::Ignored&&
+                tick(stalled,"2",1.21).status==IBAuthoritativeQuoteConsumeStatus::Ignored,
+            "late cancelled pair cannot promote or refresh active quote");
+        const auto unchanged=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        require(unchanged.bidObservedAtMs==original.bidObservedAtMs&&
+                unchanged.askObservedAtMs==original.askObservedAtMs,
+            "pending timeout preserves original stale timestamps");
+        ++clock;require(refresh(reason)&&counts->requests==requests+1,"later poll sends one replacement");
+        const int next=pendingFx();require(next>stalled&&next!=fxId,"replacement receives a unique increasing ID");
+        tick(next,"1",1.12);tick(stalled,"2",1.1201);
+        require(currentFx()==fxId,"late old ask cannot complete replacement bid");
+        tick(next,"2",1.1201);require(currentFx()==next,"only replacement's own fresh pair promotes");
+        require(refresh(reason)&&counts->cancels==2,"real promotion now retires original active ticker");
+        require(runtime->m_quoteSubscriptions->GetHealth().contracts.at("BTC.USD").requestId==btcId,
+            "stalled CASH recovery preserves primary subscription identity");
+        noOrders();
+    }
+    void testStalledPairNeedsCurrentPositiveFarmWitness() {
+        std::string reason;clock+=3001;require(refresh(reason),"start pending before farm witness");
+        const int stalled=pendingFx();const auto requests=counts->requests;
+        require(!runtime->m_adapter->CancelMktData(stalled,api->epoch+1)&&counts->cancels==0,
+            "adapter refuses cancellation on a different socket epoch before SDK entry");
+        clock+=900000;require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "even fifteen-minute wait cannot invent absent positive farm readiness");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm",api->epoch+1));
+        require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "foreign-epoch farm readiness cannot authorize pending cancellation");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:uscrypto"));
+        require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "another instrument's farm is not a CASH witness");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:hfarm"));
+        runtime->HandleAdapterControlEvent(control(2103,"Market data farm:hfarm"));
+        require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "known farm outage preserves pending native stream");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:hfarm"));
+        runtime->HandleAdapterControlEvent(control(2119,"Market data farm:hfarm"));
+        require(refresh(reason)&&pendingFx()==stalled&&counts->cancels==0,
+            "scoped 2119 also revokes timeout cancellation readiness");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:hfarm"));
+        require(refresh(reason)&&pendingFx()==0&&counts->cancels==1&&counts->requests==requests,
+            "fresh current scoped farm recovery permits exact stalled-pending cancellation only");
+        noOrders();
+    }
+    void testSlowDispatchGetsFullAcceptedPairGrace() {
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
+        std::string reason;clock+=3001;
+        api->beforeRequestReturn=[this] { clock+=61000; };
+        require(refresh(reason),"slow native SDK return remains an accepted pending send");
+        api->beforeRequestReturn=nullptr;
+        const int pending=pendingFx();const auto requests=counts->requests;
+        require(refresh(reason)&&pendingFx()==pending&&counts->cancels==0,
+            "sixty-one-second dispatch must not consume first-pair grace before acceptance");
+        clock+=59999;require(refresh(reason)&&pendingFx()==pending&&counts->cancels==0,
+            "slow dispatch gets full sixty seconds after its actual accepted return");
+        ++clock;require(refresh(reason)&&pendingFx()==0&&counts->cancels==1&&counts->requests==requests,
+            "only elapsed post-acceptance grace permits precise cancellation");
+        noOrders();
+    }
+    void testFarmWarningAfterPlanPreservesAuthority(int warningCode) {
+        tick(fxId,"1",1.12);tick(fxId,"2",1.1201);
+        const auto original=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
+        std::string reason;clock+=3001;require(refresh(reason),"start owned pending before warning race");
+        const int stalled=pendingFx();const auto requests=counts->requests;
+        clock+=60000;
+        api->beforeCancel=[&](int id) {
+            require(id==stalled,"snapshot race targets only exact owned pending market-data ID");
+            api->lostFarm();
+            runtime->HandleAdapterControlEvent(control(warningCode,"Market data farm:cashfarm"));
+        };
+        require(refresh(reason)&&!runtime->HasFatalRuntimeError(),
+            "farm warning after plan permits only already scheduled own pending cancellation");
+        api->beforeCancel=nullptr;
+        require(counts->cancels==1&&counts->requests==requests&&pendingFx()==0&&currentFx()==fxId&&
+                api->issued.count(fxId)==1&&api->issued.count(btcId)==1,
+            "overlapping farm warning preserves active and primary native streams");
+        const auto unchanged=runtime->m_quoteSubscriptions->GetQuote("EUR.USD");
+        require(unchanged.bidObservedAtMs==original.bidObservedAtMs&&
+                unchanged.askObservedAtMs==original.askObservedAtMs&&
+                clock-unchanged.CompositeObservedAtMs()>5000,
+            "warning and cancellation cannot lend freshness to original expired pair");
+        ++clock;require(refresh(reason)&&counts->requests==requests&&counts->cancels==1,
+            "next poll observes known outage and emits no replacement request");
+        api->ready();runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
+        require(refresh(reason)&&counts->requests==requests+1,"positive farm recovery permits new native request");
+        const int next=pendingFx();require(next>stalled,"recovery uses a new unique pending identity");
+        tick(next,"1",1.12);tick(stalled,"2",1.1201);
+        require(currentFx()==fxId,"cancelled old pair cannot complete a new request");
+        tick(next,"2",1.1201);require(currentFx()==next,"only new request's real fresh pair restores quote");
+        noOrders();
+    }
+    void testStalledPairCancelFailureNeverReissues(bool throws) {
+        std::string reason;clock+=3001;require(refresh(reason),"start pending before uncertain cancellation");
+        runtime->HandleAdapterControlEvent(control(2104,"Market data farm:cashfarm"));
+        const int stalled=pendingFx();const auto requests=counts->requests;
+        clock+=60000;api->failCancel=throws;api->refuseCancel=!throws;
+        require(!refresh(reason)&&reason=="IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE",
+            "failed or throwing exact pending cancellation remains fatal to refresh");
+        require(counts->requests==requests&&counts->cancels==0&&api->issued.count(stalled)==1,
+            "unknown cancellation outcome never emits replacement");
+        require(tick(stalled,"1",1.12).status==IBAuthoritativeQuoteConsumeStatus::Ignored&&
+                tick(stalled,"2",1.1201).status==IBAuthoritativeQuoteConsumeStatus::Ignored,
+            "cancel-intent ID cannot regain quote authority after failed outcome");
+        const auto sent=runtime->m_quoteSubscriptions->GetHealth().dispatchedRequestIds;
+        require(std::find(sent.begin(),sent.end(),stalled)!=sent.end(),
+            "unconfirmed cancellation keeps exact sent ID in cleanup set");
         noOrders();
     }
     void testStopIncludesPendingAndRetiringStreams(bool promoted) {
@@ -504,6 +632,13 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(true); }
         { IbQuoteRecoveryFixture f;f.testCancelFalseAndAdmissionFault(false); }
         { IbQuoteRecoveryFixture f;f.testSlowAcceptedPairIsNotCancelledEveryThreeSeconds(); }
+        { IbQuoteRecoveryFixture f;f.testStalledAcceptedPairRetiresOnlyPendingAndUsesNewId(); }
+        { IbQuoteRecoveryFixture f;f.testStalledPairNeedsCurrentPositiveFarmWitness(); }
+        { IbQuoteRecoveryFixture f;f.testSlowDispatchGetsFullAcceptedPairGrace(); }
+        { IbQuoteRecoveryFixture f;f.testFarmWarningAfterPlanPreservesAuthority(2103); }
+        { IbQuoteRecoveryFixture f;f.testFarmWarningAfterPlanPreservesAuthority(2119); }
+        { IbQuoteRecoveryFixture f;f.testStalledPairCancelFailureNeverReissues(false); }
+        { IbQuoteRecoveryFixture f;f.testStalledPairCancelFailureNeverReissues(true); }
         { IbQuoteRecoveryFixture f;f.testStopIncludesPendingAndRetiringStreams(false); }
         { IbQuoteRecoveryFixture f;f.testStopIncludesPendingAndRetiringStreams(true); }
         { IbQuoteRecoveryFixture f;f.testActualEntitlementErrorSequenceRemainsFatal(); }
@@ -513,7 +648,7 @@ int main() {
         { IbQuoteRecoveryFixture f;f.testFailureToPersistNativeRefusalCannotRearm(); }
         { IbQuoteRecoveryFixture f;f.testTradeMarkerCannotLocalizeCashRefusal(); }
         { IbQuoteRecoveryFixture f;f.testDifferentCashContractCannotBorrowPendingRequestIdentity(); }
-        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":22}\n";
+        std::cout << "{\"schema\":\"heptatrader.native-quote-component-test.v1\",\"production_refresh_method_executed\":true,\"observation_profile_bypass\":false,\"live_broker_qualification\":false,\"order_method_calls\":0,\"socket_calls\":0,\"scenarios_passed\":29}\n";
         return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }

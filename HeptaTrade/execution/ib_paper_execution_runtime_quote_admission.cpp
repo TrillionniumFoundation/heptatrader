@@ -77,13 +77,19 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
         // arrives. A slow accepted stream is not cancelled/reissued every 3s.
         const std::uint64_t renewAfterMs = m_config.quoteMaxAgeMs > 2000 ?
             m_config.quoteMaxAgeMs - 2000 : m_config.quoteMaxAgeMs;
+        // Avoid known farm outages. A warning arriving after this snapshot
+        // may overlap cancellation of our own unpromoted pending ticker;
+        // the original active ticker stays, and every new request still
+        // passes the wrapper's actual farm-admission boundary.
         const auto plan = m_quoteSubscriptions->BeginStaleSecondaryCashRefresh(
             item.first, epoch, health.generation, nowMs, renewAfterMs, 3000,
-            m_config.quoteMaxAgeMs);
+            m_config.quoteMaxAgeMs,
+            m_secondaryCashFarmReadyEpoch.load() == epoch ? 60000 : 0);
         if (!plan.accepted) continue;
         const bool retirement = plan.subscriptions.empty() &&
             plan.cancelRequestIds.size() == 1 &&
-            plan.reasonCode == "QUOTE_REFRESH_RETIRE_PREVIOUS";
+            (plan.reasonCode == "QUOTE_REFRESH_RETIRE_PREVIOUS" ||
+             plan.reasonCode == "QUOTE_REFRESH_RETIRE_STALLED_PENDING");
         if (!retirement && (!plan.cancelRequestIds.empty() ||
             plan.subscriptions.size() != 1))
         {
@@ -93,7 +99,7 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
         if (retirement)
         {
             bool cancelled = false;
-            try { cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0]); }
+            try { cancelled = m_adapter->CancelMktData(plan.cancelRequestIds[0], epoch); }
             catch (...) {}
             if (!cancelled || !m_quoteSubscriptions->RecordRetirementResult(
                     plan.generation, plan.cancelRequestIds[0]))
@@ -108,7 +114,9 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
                 reason = "IB_PAPER_STALE_CASH_REFRESH_TRANSPORT_UNSAFE";
                 return false;
             }
-            NotifyTestStage("stale_cash_quote_previous_retired");
+            NotifyTestStage(plan.reasonCode == "QUOTE_REFRESH_RETIRE_STALLED_PENDING" ?
+                "stale_cash_quote_pending_retired" :
+                "stale_cash_quote_previous_retired");
             continue;
         }
         const auto& renewed = plan.subscriptions[0];
@@ -129,7 +137,8 @@ bool IbPaperExecutionRuntimeComposition::RefreshStaleSecondaryCashQuote(
             sdkThrew = true;
         }
         const bool recorded = m_quoteSubscriptions->RecordDispatchResult(
-            plan.generation, renewed.requestId, sent);
+            plan.generation, renewed.requestId, sent,
+            m_testHooks.quoteClockMs ? m_testHooks.quoteClockMs() : NowEpochMs());
         if (!cancelled || sdkThrew || !recorded)
         {
             reason = "IB_PAPER_STALE_CASH_REFRESH_OUTCOME_UNSAFE";
@@ -314,7 +323,8 @@ bool IbPaperExecutionRuntimeComposition::DispatchQuoteAdmissionPlan(
                 m_authoritativeQuoteSendMutex);
             stateAccepted = m_quoteSubscriptions &&
                 m_quoteSubscriptions->RecordDispatchResult(
-                    plan.generation, subscription.requestId, dispatched);
+                    plan.generation, subscription.requestId, dispatched,
+                    m_testHooks.quoteClockMs ? m_testHooks.quoteClockMs() : NowEpochMs());
         }
         if (!stateAccepted)
         {
