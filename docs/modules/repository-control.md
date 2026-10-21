@@ -10,8 +10,9 @@ Core Runtime CI accepts PRs targeting **any** branch, including stacked PRs and
 Drafts. It checks the exact head without persisted checkout credentials.
 `scripts/ci_scope.py` selects native, Python core/source and learning feedback
 for both PRs and main pushes. Unknown/shared changes run every lane; verified
-Python leaves avoid an unrelated native rebuild. The native and Python jobs
-remain independent, so Torch installation cannot delay native feedback.
+Python leaves avoid an unrelated native rebuild. One runner executes the selected
+native, Python core/source and learning steps; skipped lanes do not allocate
+separate jobs. Native and core/source feedback precedes Torch installation.
 No approval polling, reviewer-count requirement or cross-workflow receipt exists.
 The owner may integrate reviewed, tested source directly; a missing hosted run
 is reported as missing, never as PASS and never as a reason to wait indefinitely.
@@ -22,6 +23,12 @@ that execute separately built Canonical Rust fixtures. Missing fixtures fail tha
 selected lane rather than becoming a requirement for unrelated core development.
 The pure wire-format tests remain in core. All discovered files have exactly one
 partition; no skipped selected test is reported as complete acceptance.
+
+`--lane legacy` retains the archived Desktop qualification contract fixtures.
+[Archived qualification contracts](../../.github/workflows/legacy-qualification.yml)
+runs that lane when the archived YAML, verifier, test runner or paired tests change.
+Routine research and driver edits do not run these retired workflow fixtures.
+The archived protocol and historical evidence remain available.
 
 Install/process tests still need disposable fixtures, never an active trading
 host. Deep sanitizer and SDK integration remain available manually. Tagged

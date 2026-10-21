@@ -172,6 +172,10 @@ class ComponentScopeTests(unittest.TestCase):
     def test_verified_tools_tests_and_docs_use_full_python_only(self):
         for paths in (
             ["scripts/hepta_nav_assurance.py"],
+            ["scripts/activate_prepared_driver.py"],
+            ["tests/python/test_activate_prepared_driver.py"],
+            ["scripts/hepta_runtime_identity.py"],
+            ["tests/python/test_runtime_identity.py"],
             ["tests/python/test_pnl_cli.py"],
             ["scripts/hepta_maintenance_latch.py", "scripts/hepta_pnl_report.py",
              "tests/python/test_account_observation.py", "docs/technical/change.md"],
@@ -189,6 +193,14 @@ class ComponentScopeTests(unittest.TestCase):
             "tests/python/test_pnl_append_ledger.py",
             "tests/python/test_pnl_bounded_view.py",
             "tests/python/test_pnl_journal_cache.py",
+            "research/neuron_learning/laya_cell/resident.py",
+            "research/neuron_learning/laya_cell/resident_store.py",
+            "research/historical_training/resident_resource_guard.py",
+            "research/historical_training/tests/test_resident_resource_guard.py",
+            "tests/python/test_laya_training_window.py",
+            "research/historical_training/value_successor_evaluator.py",
+            "research/historical_training/value_ledger_stream.py",
+            "tests/python/test_value_successor_evaluator.py",
             "research/neuron_learning/laya_cell/source_readiness.py",
             "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
             "research/neuron_learning/laya_cell/readiness_heartbeat.py",
@@ -206,6 +218,11 @@ class ComponentScopeTests(unittest.TestCase):
     def test_mixed_verified_components_preserve_learning_feedback(self):
         for paths in (
             [
+                "research/neuron_learning/laya_cell/resident.py",
+                "research/historical_training/value_successor_evaluator.py",
+                "docs/technical/runtime-cost-observations.md",
+            ],
+            [
                 "scripts/hepta_pnl_watch.py",
                 "research/neuron_learning/laya_cell/resident_price_baselines.py",
                 "docs/technical/account-pnl.md",
@@ -221,6 +238,9 @@ class ComponentScopeTests(unittest.TestCase):
 
     def test_learning_component_missing_or_symlinked_test_restores_full(self):
         for implementation, test_name in (
+            ("research/neuron_learning/laya_cell/resident.py", "tests/python/test_laya_training_window.py"),
+            ("research/historical_training/value_successor_evaluator.py",
+             "research/historical_training/value_ledger_stream.py"),
             ("scripts/hepta_pnl_watch.py", "tests/python/test_pnl_append_ledger.py"),
             ("research/neuron_learning/laya_cell/source_readiness.py",
              "tests/python/test_verified_sealed_readiness_cache.py"),
