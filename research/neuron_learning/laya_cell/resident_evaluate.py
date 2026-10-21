@@ -14,6 +14,7 @@ from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess,validate_plan_rule
 from . import resident_training_v2 as training_v2
 from . import resident_price_baselines as price_refs
+from . import resident_price_calibration as price_calibration
 
 
 def suppress_new_work_for_frozen_failure(plan, results):
@@ -39,6 +40,7 @@ def measure(plan,slot,prediction,quotes,now_ms):
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
  if prediction.get('input_id')!=digest(prediction.get('input')):raise ContractError('PREDICTION_INPUT_HASH')
+ calibrated=price_calibration.verify_prediction(plan,prediction)
  anchor=prediction['anchor_ms'];due=anchor+RULE['horizon_ms'];times=[q['t'] for q in quotes]
  a=bisect_left(times,anchor);b=bisect_left(times,due)
  if b==len(times) and now_ms<=due+15000:return None
@@ -68,6 +70,9 @@ def measure(plan,slot,prediction,quotes,now_ms):
   action_brier=training_v2.action_observation(plan,prediction,parent_correct=parent_correct)['action_brier']
  else:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
  comparison={}
+ if calibrated is not None:
+  comparison.update(price_calibration_profile_id=calibrated['profile_id'],
+   raw_child_price_scores=price_refs.probability_metrics(prediction['candidate_raw_probs'],target))
  if plan.get('price_value_rule') is not None:
   price_refs.validate_value_rule(plan)
   if prediction.get('horizon_sec')!=300 or prediction.get('input',{}).get('horizon_sec')!=300:raise ContractError('PRICE_VALUE_PRIMARY_HORIZON')

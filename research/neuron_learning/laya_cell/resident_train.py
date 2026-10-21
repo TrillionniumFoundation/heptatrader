@@ -19,6 +19,9 @@ from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,row_id,batc
 from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
 from . import resident_training_v4 as training_v4
+from . import resident_training_v5 as training_v5
+from . import resident_closed_action_training as closed_action
+from . import resident_price_calibration as price_calibration
 from . import resident_price_baselines as price_refs
 
 OBJECTIVE={'schema':'heptatrader.laya-resident-objective.v1','primary':'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
@@ -43,12 +46,64 @@ def immutable(path,value):
  with path.open('xb') as f:f.write(canonical(value)+b'\n');f.flush();os.fsync(f.fileno())
  path.chmod(0o400)
 
+
+def run_closed_action_phase(cell, source, profile, encoded, device):
+ """Use a separate ACT-only optimizer; PRICE momentum cannot move its head."""
+ original={n:p.requires_grad for n,p in cell.named_parameters()}
+ price_before={n:p.detach().clone() for n,p in cell.named_parameters()
+               if p.requires_grad and '.act_head.' not in n}
+ action_parameters=[p for n,p in cell.named_parameters()
+                    if p.requires_grad and '.act_head.' in n]
+ if not action_parameters:raise ContractError('CLOSED_ACTION_ADAPTER_PARAMETERS_REQUIRED')
+ pairs=closed_action.batches(source);steps=[]
+ try:
+  for name,param in cell.named_parameters():
+   param.grad=None
+   if original[name]:param.requires_grad_('.act_head.' in name)
+  optimizer=torch.optim.AdamW(action_parameters,lr=.0001,weight_decay=0.)
+  cell.train(True)
+  for epoch in range(1,training_v5.ACTION_PHASE['epochs']+1):
+   for index,selected in enumerate(pairs,1):
+    batch={k:v.to(device) for k,v in encoded(selected).items()}
+    correct=torch.tensor([r['parent_correct'] for r in selected],dtype=torch.bool,device=device)
+    saved=cell.trainable_state();opt=copy.deepcopy(optimizer.state_dict())
+    optimizer.zero_grad(set_to_none=True)
+    _,action_logits=cell(**batch)
+    loss=closed_action.auxiliary_action_loss(action_logits,correct,profile)
+    loss.backward()
+    if any(p.grad is not None for n,p in cell.named_parameters() if '.act_head.' not in n):
+     raise ContractError('CLOSED_ACTION_TOUCHED_PRICE_OR_ENCODER_GRADIENT')
+    norm_before=torch.nn.utils.clip_grad_norm_(action_parameters,1.,error_if_nonfinite=True)
+    gradient=digest({n:tensor_hash(p.grad) for n,p in cell.named_parameters()
+                     if p.requires_grad and p.grad is not None})
+    optimizer.step();norm=cell.norm_report();applied=norm['within_profile']
+    if not applied:cell.restore_trainable(saved);optimizer.load_state_dict(opt)
+    if any(not torch.equal(p.detach(),price_before[n]) for n,p in cell.named_parameters()
+           if n in price_before):
+     raise ContractError('CLOSED_ACTION_PRICE_PARAMETERS_CHANGED')
+    step={'epoch':epoch,'batch_in_epoch':index,
+     'closed_action_row_ids':[r['row_id'] for r in selected],
+     'applied':applied,'action_loss':float(loss.detach()),
+     'gradient_digest':gradient,'gradient_norm_before_clip':float(norm_before.detach()),'norm':norm}
+    steps.append(step)
+    print(json.dumps({'closed_action_step':len(steps),'epoch':epoch,'applied':applied,
+                      'action_loss':step['action_loss']}),flush=True)
+ finally:
+  for name,param in cell.named_parameters():
+   param.requires_grad_(original[name]);param.grad=None
+ cell.assert_frozen()
+ receipt=training_v5.action_receipt(source,steps,profile,
+  price_parameters_unchanged=True,encoder_parameters_unchanged=True)
+ return receipt
+
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  if not old_learner_verified:verify_old_learner_inactive()
- if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
- episode=training_v4.enabled(c['objective'])
- training_policy=training_v4 if episode else training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
+ if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE,training_v5.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ v5=training_v5.enabled(c['objective'])
+ episode=training_v4.enabled(c['objective']) or v5
+ episode_policy=training_v5 if v5 else training_v4
+ training_policy=training_v5 if v5 else training_v4 if episode else training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
  v2=c['objective']!=OBJECTIVE
  base=Path(c['base_directory']);out=Path(c['output_directory'])
  if out.exists():raise ContractError('NEW_CANDIDATE_OUTPUT_REQUIRED')
@@ -63,11 +118,12 @@ def run_job(c,*,old_learner_verified=False):
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
  if v2:rows=training_policy.timed_rows(rows,dataset)
- if training_policy in (training_v3,training_v4):rows=training_v3.primary_rows(rows)
+ if training_policy in (training_v3,training_v4,training_v5):rows=training_v3.primary_rows(rows)
  eligible_rows=list(rows)
  expected_accounting=training_v4.ROW_ACCOUNTING_SCHEMA if episode else ROW_ACCOUNTING_SCHEMA
  if c.get('training_row_accounting_schema')!=expected_accounting:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
- if episode:training_v4.check_job(c)
+ if episode:episode_policy.check_job(c)
+ closed_source=training_v5.source_for_job(c) if v5 else None
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
  if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')
  training_batches=batches(rows)
@@ -82,17 +138,19 @@ def run_job(c,*,old_learner_verified=False):
  parent_cutoff=parent.get('trained_until_ms',parent['window']['training_end_ms'])
  # Only the new episode reuses tokenization. Values remain CPU tensors and
  # model activations are recomputed after every optimizer update.
- encoding_cache={};encoding_calls=0
+ encoding_cache={};encoding_calls=0;last_price_raw_probabilities=[]
  def encoded(selected):
   nonlocal encoding_calls
   if not episode:return encode_rows(tok,selected)
-  key=tuple(row_id(r) for r in selected)
+  key=tuple(('CLOSED_ACT:'+r['row_id']) if v5 and 'row_id' in r else row_id(r) for r in selected)
   if key not in encoding_cache:
    encoding_cache[key]={k:v.detach().cpu() for k,v in encode_rows(tok,selected).items()}
    encoding_calls+=1
   return encoding_cache[key]
  def measure_training_rows():
+  nonlocal last_price_raw_probabilities
   scores=[];briers=[]
+  raw_probabilities=[]
   cell.eval()
   with torch.no_grad():
    for row in rows:
@@ -100,6 +158,8 @@ def run_job(c,*,old_learner_verified=False):
     p,_=cell(**batch);truth=torch.tensor([row['target_class']],device=device)
     scores.append(float(F.cross_entropy(p,truth)))
     briers.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
+    if v5:raw_probabilities.append(p.softmax(-1)[0].detach().cpu().tolist())
+  if v5:last_price_raw_probabilities=raw_probabilities
   return scores,briers
  loaded_at=time.monotonic()
  # Derive targets once from the frozen predecessor, never from the improving student.
@@ -113,10 +173,20 @@ def run_job(c,*,old_learner_verified=False):
    if episode:parent_brier.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
    if v2:parent_action_logits[key]=a[0].detach().cpu()
  action_training_profile=None
- if v2:action_training_profile,training_batches=training_policy.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
- frozen_episode=(training_v4.freeze(c,training_batches,targets,action_training_profile,frozen_price_baselines) if episode else None)
- schedule=(training_v4.schedule(training_batches) if episode else [(1,i+1,selected) for i,selected in enumerate(training_batches)])
- curve_points=([training_v4.point(0,parent_scores,parent_brier,[],time.monotonic()-loaded_at)] if episode else [])
+ if v5:
+  logits=[]
+  with torch.no_grad():
+   for row in closed_action.calibration_rows(closed_source):
+    batch={k:v.to(device) for k,v in encoded([row]).items()}
+    logits.append(cell(**batch)[1][0].detach().cpu())
+  action_training_profile=closed_action.prepare_profile(closed_source,torch.stack(logits))
+ elif v2:action_training_profile,training_batches=training_policy.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
+ frozen_episode=(episode_policy.freeze(c,training_batches,targets,action_training_profile,frozen_price_baselines) if episode else None)
+ schedule=(episode_policy.schedule(training_batches) if episode else [(1,i+1,selected) for i,selected in enumerate(training_batches)])
+ curve_points=([episode_policy.point(0,parent_scores,parent_brier,[],time.monotonic()-loaded_at)] if episode else [])
+ if v5:
+  for name,param in cell.named_parameters():
+   if param.requires_grad and '.act_head.' in name:param.requires_grad_(False)
  optimizer=torch.optim.AdamW([p for p in cell.parameters() if p.requires_grad],lr=.0001,weight_decay=0.)
  steps=[];cell.train(True);seen_action=set();applied_action=0
  # Each epoch covers the same disjoint two-row batches; one optimizer survives
@@ -132,7 +202,10 @@ def run_job(c,*,old_learner_verified=False):
   saved=cell.trainable_state();opt=copy.deepcopy(optimizer.state_dict());optimizer.zero_grad(set_to_none=True)
   p,a=cell(**batch);price_loss=supervised_loss(p,truth,teacher,tm)
   action_step_eligible=bool(am.any())
-  if v2:
+  if v5:
+   am=torch.zeros_like(am);action_step_eligible=False
+   act_loss=p.sum()*0;loss=price_loss
+  elif v2:
    from .resident_action_v2_research import balanced_action_loss
    action_step_eligible=bool(action_training_profile and action_training_profile['action_optimizer_admitted'] and len(set(v for v in action_values if v is not None))==2)
    act_loss=(balanced_action_loss(a[am],ay[am]==0,price_loss,action_training_profile)
@@ -152,7 +225,7 @@ def run_job(c,*,old_learner_verified=False):
   optimizer.step();norm=cell.norm_report();applied=norm['within_profile']
   if not applied:cell.restore_trainable(saved);optimizer.load_state_dict(opt)
   elif action_step_eligible:applied_action+=1
-  seen_action.update(digest([r['sample_id'],r['horizon_sec']]) for r,v in zip(selected,action_values) if v is not None)
+  if not v5:seen_action.update(digest([r['sample_id'],r['horizon_sec']]) for r,v in zip(selected,action_values) if v is not None)
   step={'applied':applied,'training_row_ids':[row_id(r) for r in selected],
    'training_examples':len(selected),'teacher_rows':sum(r['teacher_probs'] is not None for r in selected),
    'action_optimizer_update':bool(applied and action_step_eligible),
@@ -161,11 +234,17 @@ def run_job(c,*,old_learner_verified=False):
    'action_loss':float(act_loss.detach()),'action_labels':int(am.sum()),'gradient_digest':gradient,'norm':norm}
   if episode:step.update(epoch=epoch,batch_in_epoch=batch_index)
   steps.append(step);print(json.dumps({'step':len(steps),**{k:step[k] for k in ('applied','training_examples','teacher_rows','gradient_norm_before_clip','price_loss','action_loss','action_labels','action_optimizer_update')}}),flush=True)
-  if episode and batch_index==len(training_batches) and epoch in training_v4.EPISODE['checkpoint_epochs']:
+  if episode and batch_index==len(training_batches) and epoch in episode_policy.EPISODE['checkpoint_epochs']:
    after_scores,brier=measure_training_rows()
-   curve_points.append(training_v4.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
+   curve_points.append(episode_policy.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
    print(json.dumps({'training_curve_checkpoint':curve_points[-1],'training_only':True}),flush=True)
    cell.train(True)
+ action_phase=None
+ if v5:
+  for name,param in cell.named_parameters():
+   if '.act_head.' in name and name.endswith(('.A','.B')):param.requires_grad_(True)
+  action_phase=run_closed_action_phase(cell,closed_source,action_training_profile,encoded,device)
+  applied_action=action_phase['applied_steps'];seen_action=set(action_phase['unique_row_ids'])
  cell.eval();cell.assert_frozen()
  # The final fixed-budget checkpoint is already the final measurement.
  if not episode:after_scores,brier=measure_training_rows()
@@ -173,8 +252,17 @@ def run_job(c,*,old_learner_verified=False):
  measurement={'training_only':True,'rows':len(rows),'unique_action_labels':len(seen_action),
   'parent_ce':sum(parent_scores)/len(rows),'candidate_ce':sum(after_scores)/len(rows),
   'candidate_brier':sum(brier)/len(rows),'action_target_counts':{str(k):list(targets.values()).count(k) for k in (0,1,None)}}
+ if v5:
+  measurement['price_parent_target_counts']=measurement['action_target_counts']
+  action_rows=closed_action.calibration_rows(closed_source)
+  measurement['action_target_counts']={'0':sum(r['parent_correct'] for r in action_rows),
+   '1':sum(not r['parent_correct'] for r in action_rows),'None':0}
+ gradient_receipt=([s['gradient_digest'] for s in steps] if not v5 else
+  {'price':[s['gradient_digest'] for s in steps],
+   'closed_action':[s['gradient_digest'] for s in action_phase['steps']],
+   'closed_action_source_id':closed_source['source_id']})
  proposal=native.propose(cell,parent['candidate_id'],digest(dataset),utility['receipt_digest'],measurement,
-    digest([s['gradient_digest'] for s in steps]),int(c['generation']))
+    digest(gradient_receipt),int(c['generation']))
  out.mkdir(mode=0o700,parents=True)
  tensors={n:t.cpu().contiguous() for n,t in cell.trainable_state().items()}
  save_file(tensors,str(out/'adapter.safetensors'));(out/'adapter.safetensors').chmod(0o400)
@@ -210,17 +298,35 @@ def run_job(c,*,old_learner_verified=False):
   record['training_lineage'].update(mode='BOUNDED_CONTINUOUS_EPISODE_FROM_CONFIGURED_PARENT',
    optimizer_reset_between_epochs=False,completed_jobs_are_cumulative_updates=False)
   record['training_episode']=frozen_episode
-  record['learning_curve']=training_v4.curve(frozen_episode,curve_points,
+  record['learning_curve']=episode_policy.curve(frozen_episode,curve_points,
    record['training_diagnostics']['same_training_rows_baselines'])
   record['training_diagnostics']['continuous_episode']={
-   'episode_id':frozen_episode['episode_id'],'epochs':training_v4.EPISODE['epochs'],
-   'unique_training_rows':len(rows),'gradient_presentations':len(rows)*training_v4.EPISODE['epochs'],
+   'episode_id':frozen_episode['episode_id'],'epochs':episode_policy.EPISODE['epochs'],
+   'unique_training_rows':len(rows),'gradient_presentations':len(rows)*episode_policy.EPISODE['epochs'],
    'optimizer_reset_between_epochs':False,'tokenization_batches':encoding_calls,
    'load_and_validation_seconds':loaded_at-started,
    'training_and_measurement_seconds':time.monotonic()-loaded_at,
-   'checkpoint_epochs':training_v4.EPISODE['checkpoint_epochs'],
+   'checkpoint_epochs':episode_policy.EPISODE['checkpoint_epochs'],
    'future_value_proven':False}
-  training_v4.verify_candidate(c,record)
+  if v5:
+   if len(last_price_raw_probabilities)!=len(rows):raise ContractError('FINAL_CHILD_PRICE_FORWARD_RECEIPTS_REQUIRED')
+   price_profile=price_calibration.fit(rows,last_price_raw_probabilities,
+    cutoff_ms=c['window']['training_end_ms'],parent_id=parent['candidate_id'],
+    adapter_sha256=record['adapter_sha256'],price_baselines=frozen_price_baselines)
+   record.update(closed_action_source_id=closed_source['source_id'],
+    closed_action_source_sha256=c['closed_action_source_sha256'],action_phase=action_phase,
+    price_output_profile=price_calibration.OUTPUT,price_calibration=price_profile,
+    price_calibration_training_measurement=price_calibration.training_measurement(
+     price_profile,last_price_raw_probabilities,rows),
+    final_price_raw_forward_receipts=[{'training_row_id':row_id(row),'raw_probs':probs,
+     'target_class':row['target_class'],'anchor_ms':row['anchor_ms'],
+     'outcome_available_at_ms':row['outcome_available_at_ms']}
+     for row,probs in zip(rows,last_price_raw_probabilities)],
+    action_phase_diagnostics={'optimizer_scope':'ACT_ONLY_SEPARATE_FROM_PRICE',
+     'price_optimizer_steps':len(steps),'action_optimizer_steps':len(action_phase['steps']),
+     'price_unique_rows':len(rows),'action_unique_rows':action_phase['unique_rows'],
+     'price_logits_cache_precedes_act_only_phase':True,'price_parameters_unchanged_during_act':True})
+  episode_policy.verify_candidate(c,record)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)
