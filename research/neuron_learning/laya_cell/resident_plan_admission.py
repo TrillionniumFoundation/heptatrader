@@ -251,6 +251,20 @@ def _identity(service, job_id, candidate, job):
                 break
         else:
             raise ContractError('FROZEN_REGISTRATION_POLICY_CONFIG_REQUIRED')
+    from . import resident_training_v5 as training_v5
+    if training_v5.enabled(candidate.get("objective")):
+        from .resident_price_calibration import validate
+        calibration = validate(candidate.get("price_calibration"))
+        if (candidate.get("price_output_profile") != training_v5.PRICE_OUTPUT or
+                candidate.get("closed_action_source_id") != job.get("closed_action_source_id") or
+                calibration["parent_id"] != job["parent_id"] or
+                calibration["adapter_sha256"] != candidate["adapter_sha256"]):
+            raise ContractError("FORWARD_V5_CANDIDATE_BINDING")
+        identity.update(price_output_profile=training_v5.PRICE_OUTPUT,
+                        price_calibration_profile_id=calibration["profile_id"],
+                        price_calibration=calibration,
+                        closed_action_source_id=candidate["closed_action_source_id"],
+                        action_distribution_scope=candidate["action_training_profile"]["action_distribution_scope"])
     return identity
 
 
@@ -279,6 +293,9 @@ def _check_record(record, identity):
                 or plan.get("candidate_id") != identity["candidate_id"]
                 or plan.get("candidate_manifest_sha256") != identity["candidate_manifest_sha256"]):
             raise ContractError("FORWARD_RESERVED_PLAN_BINDING")
+        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope"):
+            if name in identity and plan.get(name) != identity[name]:
+                raise ContractError("FORWARD_V5_RESERVED_PROFILE_CHANGED")
 
 
 def _unreserved_history(service):

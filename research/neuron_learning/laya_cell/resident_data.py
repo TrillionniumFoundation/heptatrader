@@ -100,9 +100,11 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  from data import make_sample,label
  from . import resident_training_v3 as v3
  from . import resident_training_v4 as v4
+ from . import resident_training_v5 as v5
  from .resident_row_accounting import row_id
- use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective'))
+ use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective')) or v5.enabled(config.get('objective'))
  if v4.enabled(config.get('objective')):v4.check_objective(config['objective'])
+ if v5.enabled(config.get('objective')):v5.check_objective(config['objective'])
  reserved=set(reserved_row_ids)
  if any(not isinstance(key,str) or len(key)!=64 or any(c not in '0123456789abcdef' for c in key) for key in reserved):
   raise ContractError('TRAINING_RESERVED_ROW_IDENTITY')

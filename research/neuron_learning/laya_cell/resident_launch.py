@@ -29,6 +29,11 @@ def main():
  if a.target=='train':readonly.extend([c['dataset'],c['parent_directory']])
  else:
   plan=read_json(a.plan);readonly.extend([str(a.plan),plan['candidate_directory'],plan['parent_directory']])
+ from . import resident_training_v5 as training_v5
+ if a.target=='train' and training_v5.enabled(c.get('objective')):
+  # Original closed evidence is read-only. Broker sockets/network and every
+  # write path retain the same confinement as previous worker versions.
+  readonly.extend([c['closed_action_source'],c['evaluation_directory']])
  sandbox_config={'output_dir':str(output),'period_path':c['period_path'],'legacy_capture':str(Path.home()/'.local/state/heptatrader/paper-driver/cost-observations.jsonl'),
   'oms_path':c['oms_path'],'export_dir':c['export_directory'],'read_only_paths':readonly}
  from sandbox import enter
