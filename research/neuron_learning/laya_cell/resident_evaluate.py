@@ -173,7 +173,9 @@ class Evaluator:
    # against replacement source bytes or re-registered as a new experiment.
    if (path.parent/'qualification.json').exists():
     q=read_json(path.parent/'qualification.json')
-    if q.get('candidate_id')!=plan['candidate_id'] or q.get('plan_id')!=plan['plan_id']:
+    if (not isinstance(q,dict) or q.get('candidate_id')!=plan['candidate_id']
+        or q.get('plan_id')!=plan['plan_id']
+        or q.get('state') not in ('REJECTED','QUALIFIED_AWAITING_CANONICAL_OWNER')):
      raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
     counts[q['state']]=counts.get(q['state'],0)+1
     observed+=q.get('observed',0);censored+=q.get('censored',0)
@@ -196,8 +198,6 @@ class Evaluator:
       'canonical_owner_admitted':False,'automatic_execution_selection':False}
     if not (path.parent/'qualification.json').exists():write_once(path.parent/'qualification.json',decision)
     counts['REJECTED']=counts.get('REJECTED',0)+1;continue
-   if (path.parent/'qualification.json').exists():
-    q=read_json(path.parent/'qualification.json');counts[q['state']]=counts.get(q['state'],0)+1;continue
    recorded=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
    futile=suppress_new_work_for_frozen_failure(plan,recorded)
    if futile:futile_pending+=1
