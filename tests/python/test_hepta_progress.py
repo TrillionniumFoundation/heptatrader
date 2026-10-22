@@ -107,6 +107,41 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(self.collect()['learning'],[])
   self.write(self.state/'operator-maintenance/training-episode-rollout/status.json',{'state':'WAIT_FROZEN_TRIAL_43','trainer_paused':True,'at_ms':NOW})
   out=self.collect();self.assertEqual(len(out['learning']),1);self.assertTrue(out['training_rollout']['trainer_paused'])
+ def test_stopped_supervisor_does_not_report_fresh_error_as_current_failure(self):
+  root,cfgpath=self.fixture_learning()
+  guard=self.home/'guard'
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard)})
+  name='heptatrader-laya-trainer.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,enabled='enabled',extra=('--role','trainer'))
+  self.write(guard/'trainer-admission.json',{'at_ms':NOW,'admit_new_worker':False,'reasons':['OLD_HOLD']})
+  self.write(guard/'trainer-error.json',{'at_ms':NOW,'active':True,'error':'OLD_FAILURE'})
+  out=self.collect();entry=out['learning'][0]
+  self.assertFalse(entry['activity']['supervisor_running'])
+  self.assertTrue(entry['activity']['status_is_historical'])
+  self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+  self.assertFalse(entry['guard_error']['current_failure'])
+  rendered=progress.format_text(out)
+  self.assertIn('ADMISSION historical ',rendered);self.assertNotIn('GUARD current ',rendered)
+ def test_live_evaluator_retains_futile_work_diagnostics_and_stale_admission(self):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard'
+  self.units.pop('heptatrader-laya-trainer.service')
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard)})
+  name='heptatrader-laya-evaluator.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,active='active',extra=('--role','evaluator'))
+  self.units[name]['MainPID']='9'
+  self.write(root/'evaluation/status.json',{'at_ms':NOW,'active_prediction_workers':0,
+   'futile_pending_plans':1,'new_prediction_launches_suppressed':4,'source_scan_performed':False})
+  self.write(guard/'evaluator-admission.json',{'at_ms':NOW-300001,'admit_new_worker':False,'reasons':['OLD_HOLD']})
+  self.write(self.state/'operator-maintenance/training-episode-rollout/status.json',{'at_ms':NOW-300001,'state':'COMMITTED'})
+  out=self.collect();entry=out['learning'][0]
+  self.assertTrue(entry['activity']['supervisor_running']);self.assertFalse(entry['activity']['status_is_historical'])
+  self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+  self.assertEqual(entry['status']['futile_pending_plans'],1)
+  self.assertEqual(entry['status']['new_prediction_launches_suppressed'],4)
+  self.assertFalse(entry['status']['source_scan_performed'])
+  rendered=progress.format_text(out)
+  self.assertIn('"active_prediction_workers":0',rendered);self.assertIn('"source_scan_performed":false',rendered)
+  self.assertIn('"freshness":"STALE"',rendered.splitlines()[1])
  def test_status_still_displays_progress_when_service_check_fails(self):
   target=self.home/'cli';target.mkdir();shutil.copyfile(ROOT/'scripts/heptatrader-user',target/'heptatrader-user')
   (target/'hepta_progress.py').write_text('print("PROGRESS_SEEN")\n')

@@ -208,12 +208,19 @@ def candidate_progress(config, status, now_ms, max_age_ms):
 def learning_progress(name, item, config, original_path, wrapper, role, now_ms, max_age_ms):
     directory = config["control_directory" if role == "trainer" else "evaluation_directory"]
     status, meta = observe(Path(directory) / "status.json", now_ms, max_age_ms)
+    running = (item.get("ActiveState") in ("active", "reloading")
+               and str(item.get("MainPID", "0")).isdigit()
+               and int(item.get("MainPID", "0")) > 0)
     result = {"unit": name, "role": role, "config_path": str(original_path),
               "objective": config.get("objective"), "runtime_directory": config.get("runtime_directory"),
               "service": unit_view(item),
+              "activity": {"supervisor_running": running,
+                           "status_is_fresh": meta["freshness"] == "FRESH",
+                           "status_is_historical": not running or meta["freshness"] != "FRESH"},
               "status": {**meta, **pick(status, "state", "reason", "job_counts", "active_job",
                   "last_candidate_id", "training_lineage", "counts", "plans", "observed", "censored",
                   "counts_include_closed_plans", "active_prediction_workers",
+                  "futile_pending_plans", "new_prediction_launches_suppressed", "source_scan_performed",
                   "worker_failure_details", "automatic_trading", "canonical_owner_connected")}}
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
@@ -221,10 +228,11 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
         root = Path(wrapper["state_root"])
         admission, info = observe(root / (role + "-admission.json"), now_ms, max_age_ms)
         result["resource_admission"] = {**info, **pick(admission, "admit_new_worker", "reasons",
-            "resource_role", "minimum_available_bytes", "memory_bytes", "full_memory_psi")}
+            "resource_role", "minimum_available_bytes", "memory_bytes", "full_memory_psi"),
+            "snapshot_is_historical": not running or info["freshness"] != "FRESH"}
         error, info = observe(root / (role + "-error.json"), now_ms, max_age_ms)
         result["guard_error"] = {**info, **pick(error, "error", "active", "resolved_at_ms"),
-            "current_failure": error.get("active") is True and info["freshness"] == "FRESH"}
+            "current_failure": running and error.get("active") is True and info["freshness"] == "FRESH"}
     return result
 
 
@@ -403,13 +411,17 @@ def format_text(value):
     rollout = value.get("training_rollout", {})
     if rollout.get("available"):
         lines.append("TRAINING rollout " + show(pick(rollout, "state", "reason", "waiting_for_plan_id",
-            "target_objective", "target_runtime", "expected_outcome_end_ms", "trainer_paused", "committed_at_ms")))
+            "target_objective", "target_runtime", "expected_outcome_end_ms", "trainer_paused", "committed_at_ms",
+            "freshness", "age_ms")))
     for entry in value["learning"]:
         status = entry["status"]
         lines.append("LEARNING " + entry["role"] + " " + show(pick(status,
-            "state", "reason", "freshness", "age_ms", "job_counts", "counts", "observed", "censored")))
+            "state", "reason", "freshness", "age_ms", "job_counts", "counts", "observed", "censored",
+            "active_prediction_workers", "futile_pending_plans", "new_prediction_launches_suppressed",
+            "source_scan_performed")))
         lines.append("RUNTIME " + show({"unit": entry["unit"],
             "objective_schema": (entry.get("objective") or {}).get("schema"),
+            "activity": entry["activity"],
             **pick(entry["service"], "ActiveState", "SubState", "Result", "config_source",
                    "configured_config_path", "running_config_path", "configuration_matches_process")}))
         if "price" in entry:
@@ -424,7 +436,8 @@ def format_text(value):
             lines.append("FORWARD " + show(entry["latest_forward"]))
         admission = entry.get("resource_admission", {})
         if admission.get("admit_new_worker") is False:
-            lines.append("ADMISSION " + show(pick(admission, "freshness", "age_ms", "reasons")))
+            label = "ADMISSION historical" if admission["snapshot_is_historical"] else "ADMISSION"
+            lines.append(label + " " + show(pick(admission, "freshness", "age_ms", "reasons")))
         guard_error = entry.get("guard_error", {})
         if guard_error.get("error") and guard_error.get("available"):
             label = "GUARD current" if guard_error.get("current_failure") else "GUARD historical_or_unconfirmed"
