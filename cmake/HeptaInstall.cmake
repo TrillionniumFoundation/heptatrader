@@ -68,6 +68,7 @@ install(FILES
 set(_hepta_runtime_helpers
     scripts/heptatrader-user
     scripts/hepta_maintenance_latch.py
+    scripts/hepta_laya_pause.py
   scripts/hepta_progress.py
     scripts/heptatrader_paper_driver.py
     scripts/hepta_pnl_accounting.py

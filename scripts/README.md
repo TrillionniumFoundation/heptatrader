@@ -26,6 +26,7 @@ The package digest is the identity carried into later qualification and deployme
 - `hepta_agent_mcp_launcher.py` launches the MCP bridge under the expected identity.
 - `hepta_agent_trust_domain.py` validates the Agent trust-domain configuration.
 - `hepta_broker_egress_policy.py` applies the fixed UID/port Broker boundary.
+- `heptatrader training-pause` uses `hepta_laya_pause.py` to disable both trainer boot activation and the readmission timer persistently, then request a natural supervisor drain. It never stops the trainer service or signals its worker; `trainer_paused=false` means completion is still pending.
 - `hepta_oms_report.py` validates one service's observations and optionally publishes atomic metrics; `hepta_telemetry_collect.py` collects bounded service-manager messages. They have no trading authority. See [collection and deployment limits](../docs/technical/telemetry-collection.md).
 
 The old `validate_sim_data.py` depended on a fixed personal Windows XML path
