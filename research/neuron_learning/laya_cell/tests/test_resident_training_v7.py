@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 from pathlib import Path
+import sys
 import types
 import unittest
 from unittest.mock import patch
@@ -75,18 +76,36 @@ class CompactInputContractTests(unittest.TestCase):
             inputs.model_state({**row['state'], 'target_class': 6}, inputs.COMPACT)
 
     def test_legacy_default_raw_encoding_is_exact_and_compact_is_opt_in(self):
-        import laya.common
         seen = []
         def build(_tok, state, _question, **kwargs):
             seen.append(copy.deepcopy(state))
             return [1]*15, list(range(7)), {'options_distinct': 7}, {'truncated': False}
-        with patch.object(laya.common, 'build_sequence', side_effect=build):
+        def collate(items, pad_id):
+            self.assertEqual(pad_id, 0)
+            self.assertEqual(len(items), 1)
+            item, = items[0]
+            ids = torch.tensor([item['ids']])
+            markers = torch.tensor([item['markers']])
+            return {'input_ids': ids, 'attention_mask': torch.ones_like(ids),
+                    'marker_pos': markers, 'marker_mask': torch.ones_like(markers, dtype=torch.bool),
+                    'qtype': torch.tensor([item['qtype']])}
+        # This contract tests our state routing, without the full upstream Laya
+        # package, tokenizer or model dependencies in the CPU-only CI lane.
+        package = types.ModuleType('laya')
+        common = types.ModuleType('laya.common')
+        package.common = common
+        common.build_sequence = build
+        common.collate_items = collate
+        with patch.dict(sys.modules, {'laya': package, 'laya.common': common}):
             tokenizer = types.SimpleNamespace(pad_token_id=0)
             default = encode_rows(tokenizer, [self.row()])
             explicit = encode_rows(tokenizer, [self.row()], price_input_profile=inputs.RAW)
             encode_rows(tokenizer, [self.row()], price_input_profile=inputs.COMPACT)
         self.assertEqual(seen[0], seen[1])
         self.assertEqual(set(seen[2]['features']), set(FEATURES))
+        self.assertEqual({key: tuple(value.shape) for key, value in default.items()},
+                         {'input_ids': (1, 15), 'attention_mask': (1, 15),
+                          'marker_pos': (1, 7), 'marker_mask': (1, 7), 'qtype': (1,)})
         self.assertTrue(all(torch.equal(default[k], explicit[k]) for k in default))
 
     def test_profiles_are_explicit_and_legacy_parent_defaults_to_own_raw(self):
