@@ -14,7 +14,10 @@ def require_pocket4_gpu()->torch.device:
  return torch.device('cuda:0')
 def tensor_hash(tensor):
  t=tensor.detach().cpu().contiguous()
- return hashlib.sha256(canonical({'shape':list(t.shape),'dtype':str(t.dtype)})+t.view(torch.uint8).numpy().tobytes()).hexdigest()
+ h=hashlib.sha256(canonical({'shape':list(t.shape),'dtype':str(t.dtype)}))
+ # Hash the same byte stream without two full-size temporary bytes copies.
+ h.update(memoryview(t.view(torch.uint8).numpy()))
+ return h.hexdigest()
 class RowLoRALinear(nn.Module):
  def __init__(self,base:nn.Linear,rows:list[int],rank:int,seed:int):
   super().__init__()
