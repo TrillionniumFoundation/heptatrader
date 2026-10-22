@@ -55,7 +55,7 @@ def run_closed_action_phase(cell, source, profile, encoded, device):
  action_parameters=[p for n,p in cell.named_parameters()
                     if p.requires_grad and '.act_head.' in n]
  if not action_parameters:raise ContractError('CLOSED_ACTION_ADAPTER_PARAMETERS_REQUIRED')
- pairs=closed_action.batches(source);steps=[]
+ pairs=closed_action.batches(source);steps=[];action_inputs={}
  try:
   for name,param in cell.named_parameters():
    param.grad=None
@@ -64,11 +64,23 @@ def run_closed_action_phase(cell, source, profile, encoded, device):
   cell.train(True)
   for epoch in range(1,training_v5.ACTION_PHASE['epochs']+1):
    for index,selected in enumerate(pairs,1):
-    batch={k:v.to(device) for k,v in encoded(selected).items()}
     correct=torch.tensor([r['parent_correct'] for r in selected],dtype=torch.bool,device=device)
     saved=cell.trainable_state();opt=copy.deepcopy(optimizer.state_dict())
     optimizer.zero_grad(set_to_none=True)
-    _,action_logits=cell(**batch)
+    if index not in action_inputs:
+     batch={k:v.to(device) for k,v in encoded(selected).items()}
+     # PRICE and every upstream module are now frozen/eval. Capture the real
+     # ordered pair input in its first ordinary forward, preserving grad-mode
+     # dispatch and dtype/layout. Logits still depend on the changing ACT head.
+     captured=[]
+     hook=cell.model.act_head.register_forward_pre_hook(
+      lambda _module,args:captured.append(args[0].detach().clone()))
+     try:_,action_logits=cell(**batch)
+     finally:hook.remove()
+     if len(captured)!=1:raise ContractError('CLOSED_ACTION_HEAD_INPUT_REQUIRED')
+     action_inputs[index]=captured[0]
+    else:
+     action_logits=cell.model.act_head(action_inputs[index])
     loss=closed_action.auxiliary_action_loss(action_logits,correct,profile)
     loss.backward()
     if any(p.grad is not None for n,p in cell.named_parameters() if '.act_head.' not in n):

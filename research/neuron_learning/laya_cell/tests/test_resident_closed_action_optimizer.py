@@ -14,6 +14,59 @@ from torch import nn
 from laya_cell import resident_closed_action_training as closed
 from laya_cell import resident_train
 from laya_cell.integrity import ContractError, digest
+from laya_cell.model import tensor_hash
+
+
+def uncached_action_phase(cell, source, profile, encoded, device):
+    """Pre-cache algorithm retained as an independent numerical reference."""
+    original = {n:p.requires_grad for n,p in cell.named_parameters()}
+    price_before = {n:p.detach().clone() for n,p in cell.named_parameters()
+                    if p.requires_grad and '.act_head.' not in n}
+    parameters = [p for n,p in cell.named_parameters()
+                  if p.requires_grad and '.act_head.' in n]
+    steps = []
+    try:
+        for name, parameter in cell.named_parameters():
+            parameter.grad = None
+            if original[name]:
+                parameter.requires_grad_('.act_head.' in name)
+        optimizer = torch.optim.AdamW(parameters, lr=.0001, weight_decay=0.)
+        cell.train(True)
+        for epoch in range(1, resident_train.training_v5.ACTION_PHASE['epochs']+1):
+            for index, rows in enumerate(closed.batches(source), 1):
+                batch = {k:v.to(device) for k,v in encoded(rows).items()}
+                correct = torch.tensor([r['parent_correct'] for r in rows], dtype=torch.bool, device=device)
+                saved = cell.trainable_state()
+                state = copy.deepcopy(optimizer.state_dict())
+                optimizer.zero_grad(set_to_none=True)
+                logits = cell(**batch)[1]
+                loss = closed.auxiliary_action_loss(logits, correct, profile)
+                loss.backward()
+                if any(p.grad is not None for n,p in cell.named_parameters() if '.act_head.' not in n):
+                    raise AssertionError('Reference touched PRICE or encoder')
+                norm_before = torch.nn.utils.clip_grad_norm_(parameters, 1., error_if_nonfinite=True)
+                gradient = digest({n:tensor_hash(p.grad) for n,p in cell.named_parameters()
+                                   if p.requires_grad and p.grad is not None})
+                optimizer.step()
+                norm = cell.norm_report()
+                if not norm['within_profile']:
+                    cell.restore_trainable(saved)
+                    optimizer.load_state_dict(state)
+                if any(not torch.equal(p.detach(), price_before[n])
+                       for n,p in cell.named_parameters() if n in price_before):
+                    raise AssertionError('Reference changed PRICE')
+                steps.append({'epoch':epoch, 'batch_in_epoch':index,
+                    'closed_action_row_ids':[r['row_id'] for r in rows],
+                    'applied':norm['within_profile'], 'action_loss':float(loss.detach()),
+                    'gradient_digest':gradient, 'gradient_norm_before_clip':float(norm_before.detach()),
+                    'norm':norm})
+    finally:
+        for name, parameter in cell.named_parameters():
+            parameter.requires_grad_(original[name])
+            parameter.grad = None
+    cell.assert_frozen()
+    return resident_train.training_v5.action_receipt(source, steps, profile,
+        price_parameters_unchanged=True, encoder_parameters_unchanged=True)
 
 
 class TinyCell(nn.Module):
@@ -73,7 +126,7 @@ class ClosedActionOptimizerTests(unittest.TestCase):
     def encoded(selected):
         return {'x': torch.tensor([r['fixture_features'] for r in selected])}
 
-    def phase(self, cell):
+    def phase(self, cell, implementation=resident_train.run_closed_action_phase, device='cpu', encoded=None):
         def receipt(source, steps, profile, **flags):
             self.assertTrue(flags['price_parameters_unchanged'])
             self.assertTrue(flags['encoder_parameters_unchanged'])
@@ -81,8 +134,7 @@ class ClosedActionOptimizerTests(unittest.TestCase):
         with patch.object(closed, 'batches', return_value=self.pairs), \
                 patch.object(resident_train.training_v5, 'action_receipt', side_effect=receipt), \
                 contextlib.redirect_stdout(io.StringIO()):
-            return resident_train.run_closed_action_phase(
-                cell, self.source, self.profile, self.encoded, 'cpu')
+            return implementation(cell, self.source, self.profile, encoded or self.encoded, device)
 
     def test_act_updates_without_moving_price_parameters_with_existing_momentum(self):
         cell = TinyCell()
@@ -123,6 +175,124 @@ class ClosedActionOptimizerTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractError, 'TEST_FAILURE'):
                 self.phase(cell)
         self.assertEqual({n: p.requires_grad for n, p in cell.named_parameters()}, flags)
+
+    def test_failed_upstream_forward_removes_hook_and_restores_trainable_scope(self):
+        cell = TinyCell()
+        flags = {n:p.requires_grad for n,p in cell.named_parameters()}
+        with patch.object(cell, 'forward', side_effect=RuntimeError('UPSTREAM_FAILURE')):
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_FAILURE'):
+                self.phase(cell)
+        self.assertEqual(len(cell.model.act_head._forward_pre_hooks), 0)
+        self.assertEqual({n:p.requires_grad for n,p in cell.named_parameters()}, flags)
+
+    def assert_tensor_tree_equal(self, left, right):
+        if torch.is_tensor(left):
+            self.assertTrue(torch.equal(left, right))
+        elif isinstance(left, dict):
+            self.assertEqual(left.keys(), right.keys())
+            for key in left:
+                self.assert_tensor_tree_equal(left[key], right[key])
+        elif isinstance(left, (list, tuple)):
+            self.assertEqual(len(left), len(right))
+            for a,b in zip(left, right):
+                self.assert_tensor_tree_equal(a, b)
+        else:
+            self.assertEqual(left, right)
+
+    def compare_cached_and_uncached(self, device='cpu'):
+        from laya_cell.resident_model import ResidentDecisionCell
+
+        class PinnedShapeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = nn.Sequential(nn.Linear(8, 8), nn.Dropout(.5))
+                self.scorer = nn.Sequential(nn.LayerNorm(8), nn.Linear(8, 8), nn.GELU(), nn.Linear(8, 1))
+                self.act_head = nn.Sequential(nn.Linear(12, 256), nn.GELU(), nn.Linear(256, 2))
+                self.encoder_calls = 0
+
+            def forward(self, x):
+                self.encoder_calls += 1
+                h = self.encoder(x)
+                price = self.scorer(h).squeeze(-1)
+                p = price.detach().softmax(-1)
+                top2 = p.topk(2, -1).values
+                k = torch.full_like(top2[:,0], 7.)
+                entropy = -(p*p.clamp_min(1e-9).log()).sum(-1)/k.log()
+                features = torch.stack([top2[:,0], top2[:,0]-top2[:,1], entropy, k/255.], -1)
+                return price, self.act_head(torch.cat([h[:,0].float(), features], -1))
+
+        self.rows = [{'row_id':digest({'cache_fixture':i}), 'anchor_ms':1000+i*100,
+                      'future_outcome_available_ms':1010+i*100, 'parent_correct':i<20,
+                      'fixture_features':[1., i/40]} for i in range(40)]
+        self.pairs = [[self.rows[i],self.rows[20+i]] for i in range(20)]
+        with patch.object(closed, 'calibration_rows', return_value=self.rows):
+            self.profile = closed.prepare_profile(self.source, torch.tensor(
+                [[.2,-.1] if i<20 else [-.1,.2] for i in range(40)]))
+
+        def encode(rows):
+            return {'x':torch.tensor([[[1.,option/7,r['fixture_features'][1],-.2,.1,.05,.3,.2]
+                                       for option in range(7)] for r in rows])}
+
+        def run(cell, implementation):
+            history = []
+            encoding_calls = [0]
+            real_optimizer = torch.optim.AdamW
+
+            def observed_encode(rows):
+                encoding_calls[0] += 1
+                return encode(rows)
+
+            class ObservedAdamW(real_optimizer):
+                def step(self, *args, **kwargs):
+                    result = super().step(*args, **kwargs)
+                    history.append(('step', copy.deepcopy(self.state_dict())))
+                    return result
+
+                def load_state_dict(self, state):
+                    result = super().load_state_dict(state)
+                    history.append(('rollback', copy.deepcopy(self.state_dict())))
+                    return result
+
+            with patch.object(torch.optim, 'AdamW', ObservedAdamW):
+                receipt = self.phase(cell, implementation, device, observed_encode)
+            return receipt, history, encoding_calls[0]
+
+        for reject_steps in (set(), {2,5,17,39,80}):
+            with self.subTest(device=str(device), reject_steps=sorted(reject_steps)):
+                baseline = ResidentDecisionCell(PinnedShapeModel().to(device), 'c'*64)
+                cached = copy.deepcopy(baseline)
+                for cell in (baseline, cached):
+                    original_norm = cell.norm_report
+                    calls = [0]
+
+                    def reject_selected(original_norm=original_norm, calls=calls):
+                        calls[0] += 1
+                        result = original_norm()
+                        if calls[0] in reject_steps:
+                            result['within_profile'] = False
+                        return result
+
+                    cell.norm_report = reject_selected
+                expected, old_states, old_encoding = run(baseline, uncached_action_phase)
+                actual, new_states, new_encoding = run(cached, resident_train.run_closed_action_phase)
+                # Every step includes loss, clipped gradient digest, pre-clip
+                # norm and full effective-weight norm/rollback decision.
+                self.assertEqual(actual, expected)
+                self.assert_tensor_tree_equal(new_states, old_states)
+                self.assertEqual(len(actual['steps']), 80)
+                self.assertEqual(sum(kind=='rollback' for kind,_ in new_states), len(reject_steps))
+                self.assertEqual(cached.model.encoder_calls, 20)
+                self.assertEqual(baseline.model.encoder_calls, 80)
+                self.assertEqual((old_encoding,new_encoding), (80,20))
+                self.assertEqual(len(cached.model.act_head._forward_pre_hooks), 0)
+                self.assertEqual({n:tensor_hash(p) for n,p in cached.named_parameters()},
+                                 {n:tensor_hash(p) for n,p in baseline.named_parameters()})
+                self.assertEqual({n:p.requires_grad for n,p in cached.named_parameters()},
+                                 {n:p.requires_grad for n,p in baseline.named_parameters()})
+                self.assertTrue(all(p.grad is None for p in cached.parameters()))
+
+    def test_cached_head_inputs_match_all_80_original_steps_and_rollbacks_exactly(self):
+        self.compare_cached_and_uncached()
 
 
 class CompleteV5TrainingIntegrationTests(unittest.TestCase):
