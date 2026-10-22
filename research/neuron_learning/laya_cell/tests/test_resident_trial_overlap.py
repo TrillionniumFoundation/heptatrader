@@ -119,10 +119,10 @@ class TrialOverlapTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, 'RETAINED_REGISTRATION_CONFIG_CHANGED'):
             self.register()
 
-    def test_old_deferred_receipt_cannot_claim_new_code_is_old_runtime(self):
+    def test_old_deferred_receipt_requires_an_executable_original_runtime(self):
         self.old_trial(); self.assertEqual(self.register()['state'], 'DEFERRED')
         self.retain_then_change_runtime()
-        with self.assertRaisesRegex(ContractError, 'REGISTRATION_RECEIPT_BINDING'):
+        with self.assertRaisesRegex(ContractError, 'RETAINED_REGISTRATION_PYTHON'):
             self.register()
         self.assertEqual(get_meta(self.service.db, 'evaluation_trial'), 1)
 

@@ -22,7 +22,7 @@ from . import resident_training_v4 as training_v4
 from . import resident_training_v5 as training_v5
 from . import resident_price_baselines as price_refs
 from .resident_queue import (inspect as inspect_evaluation_queue,
- check_overlap_config, registration_policy)
+ check_overlap_config, registration_policy, overlap_enrolled)
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
@@ -294,11 +294,13 @@ class Supervisor:
  def _finish_impossible_forward_registration(self,row):
   """Finish an impossible unallocated calendar window without starting a trial."""
   from .resident_plan_admission import (
-    KEY_PREFIX,_identity,_check_record,_unreserved_history,_sealed,_publish)
+    KEY_PREFIX,_identity,_check_record,_unreserved_history,_sealed,_publish,resume_retained_deferred)
   from .resident_plan_calendar import calendar_admission
   job=json.loads(row['payload']);key=KEY_PREFIX+row['id']
   candidate=read_json(Path(job['output_directory'])/'candidate.json')
   folder=Path(self.c['evaluation_directory'])/row['id']
+  retained=resume_retained_deferred(self,row['id'],candidate,job,'calendar')
+  if retained is not None:return retained['state']=='NO_FORWARD_TRIAL'
   if self.db.in_transaction:raise ContractError('FORWARD_CALENDAR_TRANSACTION_SCOPE')
   record=None
   self.db.execute('BEGIN IMMEDIATE')
@@ -333,12 +335,13 @@ class Supervisor:
   return True
  def _closed_registration_unchanged(self,row):
   """Negative-only wait: recheck today's calendar, preserve the old policy receipt."""
-  from .resident_plan_admission import KEY_PREFIX,_identity,_check_record,_unreserved_history
+  from .resident_plan_admission import KEY_PREFIX,_identity,_check_record,_unreserved_history,original_policy_required
   from .resident_plan_calendar import calendar_admission
   record=get_meta(self.db,KEY_PREFIX+row['id'])
   if not isinstance(record,dict) or record.get('state')!='DEFERRED' or record.get('reason')!='MARKET_SESSION_CLOSED':return False
   job=json.loads(row['payload']);candidate=read_json(Path(job['output_directory'])/'candidate.json')
   _check_record(record,_identity(self,row['id'],candidate,job))
+  if original_policy_required(self.c,record):return False
   checked=int(time.time()*1000)
   if checked<max(record['checked_at_ms'],self.c['future_plan_admission_effective_at_ms']):
    raise ContractError('FORWARD_CALENDAR_CLOCK_REGRESSION')
@@ -360,20 +363,29 @@ class Supervisor:
   queue=inspect_evaluation_queue(self.c)
   waiting,registration=self._waiting_evaluations()
   if (self.c.get('future_plan_admission_profile') is not None and waiting
-      and queue['pending_original_trials']
+      and (queue['pending_original_trials'] or registration.get('retained_deferred_training_candidates',0))
       and self._finish_impossible_forward_registration(waiting[0])):
    waiting,registration=self._waiting_evaluations()
-  blocking=(registration_policy(queue,self.c,json.loads(waiting[0]['payload']),waiting[0]['created_ms'])['blocking_trials']
-            if waiting else 0)
-  if (waiting and blocking==0
-      and not (self.c.get('future_plan_admission_profile') is not None and self._closed_registration_unchanged(waiting[0]))):
-   if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
+  ordered=sorted(waiting,key=lambda row:not overlap_enrolled(
+   self.c,json.loads(row['payload']),row['created_ms']))
+  ready=next((row for row in ordered if registration_policy(
+   queue,self.c,json.loads(row['payload']),row['created_ms'])['blocking_trials']==0),None)
+  if (ready is not None
+      and not (self.c.get('future_plan_admission_profile') is not None and self._closed_registration_unchanged(ready))):
+   if not self.candidate_done(ready):raise ContractError('COMMITTED_CANDIDATE_MISSING')
    queue=inspect_evaluation_queue(self.c)
    waiting,registration=self._waiting_evaluations()
   queue.update(registration)
   queue['deferred_training_candidates']=len(waiting)
+  prospective=overlap_enrolled(self.c,self.c,int(time.time()*1000))
+  queue['blocking_deferred_training_candidates']=(len(waiting)-registration.get(
+   'retained_deferred_training_candidates',0) if prospective else len(waiting))
+  queue['retained_registration_wait_reasons']=sorted(set(getattr(
+   self,'_retained_registration_wait_reasons',{}).values()))
+  next_waiting=min(waiting,key=lambda row:not overlap_enrolled(
+   self.c,json.loads(row['payload']),row['created_ms'])) if waiting else None
   queue['forward_registration_blocking_trials']=(registration_policy(
-   queue,self.c,json.loads(waiting[0]['payload']),waiting[0]['created_ms'])['blocking_trials'] if waiting else 0)
+   queue,self.c,json.loads(next_waiting['payload']),next_waiting['created_ms'])['blocking_trials'] if next_waiting is not None else 0)
   return queue
  def sync_rewards(self,now=None):
   """Bookkeeping under the scheduler lock, never the heavy-worker lease.
@@ -456,7 +468,7 @@ class Supervisor:
   queue=self.reconcile_evaluation_queue()
   self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
-  if queue['deferred_training_candidates']:
+  if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):
    return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
    return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
@@ -469,7 +481,7 @@ class Supervisor:
   rewards=self.sync_rewards(now)
   queue=self.reconcile_evaluation_queue()
   self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
-  if queue['deferred_training_candidates']:return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
+  if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)

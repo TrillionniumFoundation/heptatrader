@@ -225,6 +225,15 @@ required to replace any of the three already-owned service units; previous units
 are backed up, and old runtime releases are not overwritten. No other unit is
 stopped or altered. Each service has CPU, memory, task and low-priority limits.
 
+`retained_registration_configs` binds an older DEFERRED receipt to its original
+config and runtime. The isolated reader executes only its original negative
+calendar and serial queue check; an unchanged wait is not rewritten. A possible
+positive registration reports `ORIGINAL_FORWARD_RESOURCE_GUARD_REQUIRED` until
+its original guarded registrar can act. The original calendar can still close an
+expired unallocated candidate. Such retained waits remain visible and release
+only the explicitly opted-in future candidate slot; they do not release viable
+trials, restore alpha, move deadlines or bypass resource admission.
+
 The guard release pins its common, live-source, priority and wrapper modules.
 The optional `TERMINAL_TASK_COMGR_ONLY_V1` profile also pins
 `resident_comgr_cache.py`; trainer and evaluator can use the same reviewed

@@ -29,6 +29,59 @@ RUNTIME_PIN = ("learn/laya_cell/resident_plan_admission.py",
                "learn/laya_cell/resident_plan_calendar.py",
                "learn/laya_cell/market_session.py")
 MAX_RECEIPT_SEARCH_BYTES = 64 * 1024 * 1024
+POLICY_KEYS = ('profile', 'policy_effective_at_ms', 'policy_runtime_sha256')
+
+
+def policy_identity(config):
+    return {'profile': config.get('future_plan_admission_profile'),
+            'policy_effective_at_ms': config.get('future_plan_admission_effective_at_ms'),
+            'policy_runtime_sha256': {n: config['runtime_sha256'][n] for n in RUNTIME_PIN}}
+
+
+def retained_config(service, record):
+    """Resolve the original policy; this grants no new decision authority."""
+    for entry in service.c.get('retained_registration_configs', []):
+        path = Path(entry['path'])
+        if sha_file(path) != entry['sha256']:
+            raise ContractError('RETAINED_REGISTRATION_CONFIG_CHANGED')
+        old = read_json(path)
+        check_config(old)
+        if any(old.get(k) != service.c.get(k) for k in
+               ('period_sha256', 'evaluation_directory', 'control_directory')):
+            raise ContractError('RETAINED_REGISTRATION_SCOPE_CHANGED')
+        if all(record.get(k) == policy_identity(old)[k] for k in POLICY_KEYS):
+            return entry, old
+    raise ContractError('FROZEN_REGISTRATION_POLICY_CONFIG_REQUIRED')
+
+
+def original_policy_required(config, record):
+    return any(record.get(k) != policy_identity(config)[k] for k in POLICY_KEYS)
+
+
+def resume_retained_deferred(service, job_id, candidate, job, operation):
+    """New decisions for old DEFERRED jobs execute only their pinned code."""
+    previous = get_meta(service.db, KEY_PREFIX + job_id)
+    if (not isinstance(previous, dict) or previous.get('state') != 'DEFERRED'
+            or not original_policy_required(service.c, previous)):
+        return None
+    if service.db.in_transaction:
+        raise ContractError('RETAINED_REGISTRATION_TRANSACTION_SCOPE')
+    _check_record(previous, _identity(service, job_id, candidate, job))
+    entry, _ = retained_config(service, previous)
+    from .resident_retained_registration import run_original
+    result = run_original(service.c, entry, job_id, previous['registration_id'], operation)
+    waits = getattr(service, '_retained_registration_wait_reasons', None)
+    if waits is None:
+        service._retained_registration_wait_reasons = waits = {}
+    if result['state'] == 'ORIGINAL_FORWARD_RESOURCE_GUARD_REQUIRED':
+        waits[job_id] = result['state']
+    elif operation == 'register':
+        waits.pop(job_id, None)
+    record = get_meta(service.db, KEY_PREFIX + job_id)
+    _check_record(record, _identity(service, job_id, candidate, job))
+    if record['state'] != 'DEFERRED':
+        waits.pop(job_id, None)
+    return record
 
 
 def check_config(config):
@@ -225,32 +278,15 @@ def _identity(service, job_id, candidate, job):
         "training_state": "COMPLETED", "performance_assessment": False,
         "broker_orders_sent": 0,
     }
-    # Replaying an already allocated plan or immutable terminal receipt uses
-    # its original policy identity. No new decision is made under old pins.
-    # An old DEFERRED receipt still needs a new decision: complete it under
-    # its original runtime before migration rather than impersonating old code.
+    # Reading an old receipt preserves its policy identity. A DEFERRED record
+    # can receive a new decision only through resume_retained_deferred, which
+    # executes the actual original runtime instead of impersonating its pins.
     previous = get_meta(service.db, KEY_PREFIX + job_id)
-    keys = ('profile', 'policy_effective_at_ms', 'policy_runtime_sha256')
     if (isinstance(previous, dict)
-            and previous.get('state') in ('RESERVED', 'PUBLISHED', 'NO_FORWARD_TRIAL')
-            and any(previous.get(k) != identity[k] for k in keys)):
-        for entry in service.c.get('retained_registration_configs', []):
-            path = Path(entry['path'])
-            if sha_file(path) != entry['sha256']:
-                raise ContractError('RETAINED_REGISTRATION_CONFIG_CHANGED')
-            old = read_json(path)
-            check_config(old)
-            if (old.get('period_sha256') != service.c['period_sha256']
-                    or old.get('evaluation_directory') != service.c['evaluation_directory']):
-                raise ContractError('RETAINED_REGISTRATION_SCOPE_CHANGED')
-            policy = {'profile': old.get('future_plan_admission_profile'),
-                      'policy_effective_at_ms': old.get('future_plan_admission_effective_at_ms'),
-                      'policy_runtime_sha256': {n: old['runtime_sha256'][n] for n in RUNTIME_PIN}}
-            if all(previous.get(k) == policy[k] for k in keys):
-                identity.update(policy)
-                break
-        else:
-            raise ContractError('FROZEN_REGISTRATION_POLICY_CONFIG_REQUIRED')
+            and previous.get('state') in ('DEFERRED', 'RESERVED', 'PUBLISHED', 'NO_FORWARD_TRIAL')
+            and original_policy_required(service.c, previous)):
+        _, old = retained_config(service, previous)
+        identity.update(policy_identity(old))
     from . import resident_training_v5 as training_v5
     if training_v5.enabled(candidate.get("objective")):
         from .resident_price_calibration import validate
@@ -356,6 +392,10 @@ def register(service, job_id, candidate, job, *, clock=None):
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = folder / "plan.json"
     key = KEY_PREFIX + job_id
+    retained = resume_retained_deferred(service, job_id, candidate, job, 'register')
+    if retained is not None:
+        return (retained if retained['state'] == 'DEFERRED'
+                else _publish(service, key, retained, candidate, job, folder))
     if service.db.in_transaction:
         raise ContractError("FORWARD_REGISTRATION_TRANSACTION_SCOPE")
     service.db.execute("BEGIN IMMEDIATE")
@@ -482,6 +522,7 @@ def waiting_candidates(service, rows):
     """Only a fully written, bound terminal receipt releases a trained artifact."""
     waiting = []
     terminal = 0
+    retained_waiting = 0
     reasons = []
     for row in rows:
         folder = Path(service.c["evaluation_directory"]) / row["id"]
@@ -496,6 +537,12 @@ def waiting_candidates(service, rows):
         candidate = read_json(Path(job["output_directory"]) / "candidate.json")
         identity = _identity(service, row["id"], candidate, job)
         _check_record(record, identity)
+        if record['state'] == 'DEFERRED' and original_policy_required(service.c, record):
+            # Keep visible and serial under its original runtime. It is not a
+            # newly trained candidate occupying the prospective overlap slot.
+            from .resident_queue import overlap_enrolled
+            if not overlap_enrolled(service.c, job, row['created_ms']):
+                retained_waiting += 1
         if record["state"] == "NO_FORWARD_TRIAL":
             receipt_path = folder / "no-forward-trial.json"
             if receipt_path.exists():
@@ -510,6 +557,7 @@ def waiting_candidates(service, rows):
         waiting.append(row)
     return waiting, {
         "completed_candidates_without_forward_trial": terminal,
+        "retained_deferred_training_candidates": retained_waiting,
         "forward_registration_wait_reasons": sorted(set(reasons)),
         "forward_plan_admission_profile": PROFILE,
         "no_forward_trial_is_not_performance_rejection": True,
