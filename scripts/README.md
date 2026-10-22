@@ -26,7 +26,13 @@ The package digest is the identity carried into later qualification and deployme
 - `hepta_agent_mcp_launcher.py` launches the MCP bridge under the expected identity.
 - `hepta_agent_trust_domain.py` validates the Agent trust-domain configuration.
 - `hepta_broker_egress_policy.py` applies the fixed UID/port Broker boundary.
-- `heptatrader training-pause` uses `hepta_laya_pause.py` to disable both trainer boot activation and the readmission timer persistently, then request a natural supervisor drain. It never stops the trainer service or signals its worker; `trainer_paused=false` means completion is still pending.
+- `heptatrader training-pause` uses `hepta_laya_pause.py` to disable both trainer boot activation and the readmission timer persistently, then request a natural supervisor drain. For an active trainer it first writes the fixed user runtime drop-in `systemd/user/heptatrader-laya-trainer.service.d/90-heptatrader-training-pause.conf` containing `[Service]` and `Restart=no`, reloads units and verifies the effective policy. This prevents a failed supervisor from restarting during drain. It never stops the trainer service or signals its worker; `trainer_paused=false` means completion is still pending. An idle pause needs no drop-in.
+
+The restart override lasts for this boot. Before an explicitly authorized same-boot
+training restart, remove only that owned drop-in from
+`${XDG_RUNTIME_DIR:-/run/user/$(id -u)}` after checking its exact contents, then run
+`systemctl --user daemon-reload`. Preserve other drop-ins. A reboot clears the
+runtime override while the disabled service and timer remain disabled.
 - `hepta_oms_report.py` validates one service's observations and optionally publishes atomic metrics; `hepta_telemetry_collect.py` collects bounded service-manager messages. They have no trading authority. See [collection and deployment limits](../docs/technical/telemetry-collection.md).
 
 The old `validate_sim_data.py` depended on a fixed personal Windows XML path
