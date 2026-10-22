@@ -119,8 +119,12 @@ def verify_candidate(job, candidate):
     calibration.verify_candidate_fit(job, candidate)
     parent = validate_candidate_artifact(Path(job['parent_directory']))
     expected = price_input.bindings(parent)
+    _verify_input_effect(job, candidate, expected, price_input.COMPACT)
+
+
+def _verify_input_effect(job, candidate, expected, child_input_profile, *, version='V7'):
     if price_input.check_bindings(candidate) != expected:
-        raise ContractError('V7_PARENT_INPUT_PROFILE_CHANGED')
+        raise ContractError(version + '_PARENT_INPUT_PROFILE_CHANGED')
     from .dataset import rows_for_training
     data = read_json(Path(job['dataset']), 64*1024**2)
     rows, _ = rows_for_training(data, job['window'])
@@ -128,34 +132,34 @@ def verify_candidate(job, candidate):
     reports = []
     for key, input_profile in (
             ('parent_price_forward_receipts', expected['parent_price_input_profile']),
-            ('initial_child_price_forward_receipts', price_input.COMPACT),
-            ('final_price_raw_forward_receipts', price_input.COMPACT)):
+            ('initial_child_price_forward_receipts', child_input_profile),
+            ('final_price_raw_forward_receipts', child_input_profile)):
         values = candidate.get(key)
         if not isinstance(values, list) or len(values) != len(rows):
-            raise ContractError('V7_PRICE_INPUT_FORWARD_RECEIPTS')
+            raise ContractError(version + '_PRICE_INPUT_FORWARD_RECEIPTS')
         scores = []
         for row, value in zip(rows, values):
             if (value.get('training_row_id') != row_id(row)
                     or value.get('price_input_profile') != input_profile
                     or value.get('price_input_id') != digest(price_input.model_state(row['state'], input_profile))):
-                raise ContractError('V7_PRICE_INPUT_FORWARD_RECEIPTS')
+                raise ContractError(version + '_PRICE_INPUT_FORWARD_RECEIPTS')
             scores.append(refs.probability_metrics(value['raw_probs'], row['target_class']))
         reports.append({'ce': sum(s['nll'] for s in scores)/len(scores),
                         'brier': sum(s['brier'] for s in scores)/len(scores)})
     initial = candidate.get('initial_child_price_measurement', {})
     curve_report = candidate.get('learning_curve', {})
     if (initial.get('training_only') is not True
-            or initial.get('price_input_profile') != price_input.COMPACT
+            or initial.get('price_input_profile') != child_input_profile
             or curve_report.get('epoch0_scope') != 'FROZEN_PARENT_OWN_INPUT_BASELINE'
             or curve_report.get('input_change_separately_measured') is not True):
-        raise ContractError('V7_INITIAL_INPUT_EFFECT_REQUIRED')
+        raise ContractError(version + '_INITIAL_INPUT_EFFECT_REQUIRED')
     measurements = [candidate['measurement'], initial, candidate['measurement']]
     for report, measured, prefix in zip(reports, measurements, ('parent_', '', 'candidate_')):
         for metric in ('ce', 'brier'):
             key = prefix + metric
             value = measured.get(key)
             if type(value) not in (int, float) or not math.isclose(value, report[metric], abs_tol=1e-5):
-                raise ContractError('V7_INPUT_EFFECT_MEASUREMENT_CHANGED')
+                raise ContractError(version + '_INPUT_EFFECT_MEASUREMENT_CHANGED')
 
 
 def configuration_for_release(config, runtime_directory, *, closed_action_source,

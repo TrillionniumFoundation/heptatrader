@@ -56,6 +56,9 @@ def verify_candidate(job,candidate):
   from . import resident_training_v5 as v5
   from . import resident_training_v6 as v6
   from . import resident_training_v7 as v7
+  from . import resident_training_v8 as v8
+  if v8.enabled(job.get('objective')):
+   v8.verify_candidate(job,candidate);return
   if v7.enabled(job.get('objective')):
    v7.verify_candidate(job,candidate);return
   if v6.enabled(job.get('objective')):

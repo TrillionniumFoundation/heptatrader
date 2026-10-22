@@ -290,7 +290,8 @@ def _identity(service, job_id, candidate, job):
     from . import resident_training_v5 as training_v5
     from . import resident_training_v6 as training_v6
     from . import resident_training_v7 as training_v7
-    policy = training_v7 if training_v7.enabled(candidate.get("objective")) else training_v6 if training_v6.enabled(candidate.get("objective")) else training_v5
+    from . import resident_training_v8 as training_v8
+    policy = training_v8 if training_v8.enabled(candidate.get("objective")) else training_v7 if training_v7.enabled(candidate.get("objective")) else training_v6 if training_v6.enabled(candidate.get("objective")) else training_v5
     if policy.enabled(candidate.get("objective")):
         from .resident_price_calibration import validate
         calibration = validate(candidate.get("price_calibration"))
@@ -305,10 +306,10 @@ def _identity(service, job_id, candidate, job):
                         price_calibration=calibration,
                         closed_action_source_id=candidate["closed_action_source_id"],
                         action_distribution_scope=candidate["action_training_profile"]["action_distribution_scope"])
-    if training_v7.enabled(candidate.get('objective')):
+    if training_v7.enabled(candidate.get('objective')) or training_v8.enabled(candidate.get('objective')):
         from .resident_price_input import check_bindings, bindings
         from .integrity import validate_candidate_artifact
-        if check_bindings(candidate) != bindings(validate_candidate_artifact(Path(job['parent_directory']))):
+        if check_bindings(candidate) != bindings(validate_candidate_artifact(Path(job['parent_directory'])),objective_schema=policy.SCHEMA):
             raise ContractError('V7_REGISTRATION_PARENT_INPUT_PROFILE')
         identity.update(check_bindings(candidate))
     return identity
@@ -399,11 +400,15 @@ def _exact_required_prior(candidate):
     """A prospective exact tie cannot meet an unchanged strict value floor."""
     from . import resident_training_v6 as v6
     from . import resident_training_v7 as v7
-    policy = v7 if v7.enabled(candidate.get('objective')) else v6
+    from . import resident_training_v8 as v8
+    policy = v8 if v8.enabled(candidate.get('objective')) else v7 if v7.enabled(candidate.get('objective')) else v6
     if not policy.enabled(candidate.get('objective')):
         return False
     policy.check_objective(candidate['objective'])
-    from . import resident_price_calibration_v2 as calibration
+    if policy is v8:
+        from . import resident_price_calibration_v3 as calibration
+    else:
+        from . import resident_price_calibration_v2 as calibration
     from . import resident_price_baselines as baselines
     profile = calibration.validate(candidate.get('price_calibration'))
     reference = baselines.validate(candidate.get('price_baselines'))

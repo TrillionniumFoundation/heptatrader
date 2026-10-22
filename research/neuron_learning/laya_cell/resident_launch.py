@@ -32,7 +32,8 @@ def main():
  from . import resident_training_v5 as training_v5
  from . import resident_training_v6 as training_v6
  from . import resident_training_v7 as training_v7
- if a.target=='train' and (training_v5.enabled(c.get('objective')) or training_v6.enabled(c.get('objective')) or training_v7.enabled(c.get('objective'))):
+ from . import resident_training_v8 as training_v8
+ if a.target=='train' and (training_v5.enabled(c.get('objective')) or training_v6.enabled(c.get('objective')) or training_v7.enabled(c.get('objective')) or training_v8.enabled(c.get('objective'))):
   # Original closed evidence is read-only. Broker sockets/network and every
   # write path retain the same confinement as previous worker versions.
   readonly.extend([c['closed_action_source'],c['evaluation_directory']])

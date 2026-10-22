@@ -91,7 +91,7 @@ class _CPUTransfer:
 
 
 class ProspectiveV6IntegrationTests(unittest.TestCase):
-    def fixture(self, target_class):
+    def fixture(self, target_class, *, prepare_dataset=None):
         original = source_fixture.ClosedOriginalParentSourceTests()
         original.setUp()
         self.addCleanup(original.doCleanups)
@@ -111,11 +111,14 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
             outcome['observed_at_ms'] += shift
             outcome['available_at_ms'] += shift
             outcome['target_scaled'] = target
+        if prepare_dataset is not None:
+            prepare_dataset(dataset)
         window = {'training_end_ms': cutoff, 'validation_start_ms': cutoff + 1,
                   'validation_end_ms': cutoff + 86400000}
         rows, _ = rows_for_training(dataset, window)
         rows = policy.timed_rows(rows, dataset)
-        self.assertEqual({row['target_class'] for row in rows}, {target_class})
+        if prepare_dataset is None:
+            self.assertEqual({row['target_class'] for row in rows}, {target_class})
         dataset_path = root / 'dataset.json'
         dataset_path.write_text(json.dumps(dataset))
         base = root / 'base'

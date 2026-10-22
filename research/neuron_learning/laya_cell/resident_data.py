@@ -52,8 +52,9 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
  from . import resident_training_v3 as v3
  from . import resident_training_v6 as v6
  from . import resident_training_v7 as v7
+ from . import resident_training_v8 as v8
  recent=objective is not None
- if recent:(v7 if v7.enabled(objective) else v6).check_objective(objective)
+ if recent:(v8 if v8.enabled(objective) else v7 if v7.enabled(objective) else v6).check_objective(objective)
  times=[q['t'] for q in ordered]
  gap_prefix=[0]
  for a,b in zip(ordered,ordered[1:]):
@@ -110,12 +111,14 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  from . import resident_training_v5 as v5
  from . import resident_training_v6 as v6
  from . import resident_training_v7 as v7
+ from . import resident_training_v8 as v8
  from .resident_row_accounting import row_id
- use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective')) or v5.enabled(config.get('objective')) or v6.enabled(config.get('objective')) or v7.enabled(config.get('objective'))
+ use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective')) or v5.enabled(config.get('objective')) or v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
  if v4.enabled(config.get('objective')):v4.check_objective(config['objective'])
  if v5.enabled(config.get('objective')):v5.check_objective(config['objective'])
  if v6.enabled(config.get('objective')):v6.check_objective(config['objective'])
  if v7.enabled(config.get('objective')):v7.check_objective(config['objective'])
+ if v8.enabled(config.get('objective')):v8.check_objective(config['objective'])
  reserved=set(reserved_row_ids)
  if any(not isinstance(key,str) or len(key)!=64 or any(c not in '0123456789abcdef' for c in key) for key in reserved):
   raise ContractError('TRAINING_RESERVED_ROW_IDENTITY')
@@ -127,7 +130,7 @@ def collect(config,now_ms,*,reserved_row_ids=()):
   if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
  pool=None
  if use_v3:
-  options={'objective':config['objective']} if (v6.enabled(config.get('objective')) or v7.enabled(config.get('objective'))) else {}
+  options={'objective':config['objective']} if (v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))) else {}
   selected,pool=mature_anchor_indices(ordered,sampled,now_ms,scope,reserved,**options)
   indices=list(selected)
  else:
@@ -163,7 +166,7 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  window={'training_end_ms':now_ms,'validation_start_ms':now_ms+1,'validation_end_ms':now_ms+86400000}
  if use_v3:
   eligible,_=rows_for_training(dataset,window)
-  recent=v6.enabled(config.get('objective')) or v7.enabled(config.get('objective'))
+  recent=v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
   allowed={r['sample_id'] for r in eligible if r['horizon_sec']==300 and row_id(r) not in reserved
            and (not recent or r['anchor_ms']>=now_ms-v6.MAX_ROW_AGE_MS)}
   supported=[s for s in all_samples if s['sample_id'] in allowed]

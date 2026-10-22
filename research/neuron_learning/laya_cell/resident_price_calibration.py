@@ -127,6 +127,9 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
 
 
 def validate(profile):
+    if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v3':
+        from . import resident_price_calibration_v3 as v3
+        return v3.validate(profile)
     if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v2':
         from . import resident_price_calibration_v2 as v2
         return v2.validate(profile)
@@ -163,6 +166,9 @@ def validate(profile):
 
 
 def apply(profile, raw_probabilities):
+    if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v3':
+        from . import resident_price_calibration_v3 as v3
+        return v3.apply(profile, raw_probabilities)
     if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v2':
         from . import resident_price_calibration_v2 as v2
         return v2.apply(profile, raw_probabilities)
@@ -180,7 +186,11 @@ def verify_prediction(plan, prediction):
               'UNREGISTERED_PRICE_CALIBRATION')
         return None
     from . import resident_price_calibration_v2 as v2
-    _need(declared in (OUTPUT, v2.OUTPUT), 'UNKNOWN_PRICE_OUTPUT_PROFILE')
+    from . import resident_price_calibration_v3 as v3
+    _need(declared in (OUTPUT, v2.OUTPUT, v3.OUTPUT), 'UNKNOWN_PRICE_OUTPUT_PROFILE')
+    if declared == v3.OUTPUT:
+        _need(plan.get('price_input_objective') == 'heptatrader.laya-resident-objective.v8',
+              'PRICE_CALIBRATION_V3_OBJECTIVE_REQUIRED')
     p = validate(plan.get('price_calibration'))
     baseline = price_refs.validate(plan.get('price_baselines'))
     _need(plan.get('price_calibration_profile_id') == p['profile_id']
@@ -250,16 +260,27 @@ def verify_candidate_fit(job, candidate):
               and all(value.get(k) == row[k] for k in
                       ('target_class', 'anchor_ms', 'outcome_available_at_ms')),
               'PRICE_CALIBRATION_FORWARD_ROW_CHANGED')
-    if job.get('objective', {}).get('schema') == 'heptatrader.laya-resident-objective.v7':
+    objective_schema = job.get('objective', {}).get('schema')
+    if objective_schema in ('heptatrader.laya-resident-objective.v7', 'heptatrader.laya-resident-objective.v8'):
         from . import resident_price_input as price_input
         price_input.check_bindings(candidate)
+        expected_input = price_input.RAW if objective_schema.endswith('.v8') else price_input.COMPACT
         for row, value in zip(rows, receipts):
-            _need(value.get('price_input_profile') == price_input.COMPACT
+            _need(value.get('price_input_profile') == expected_input
                   and value.get('price_input_id') == digest(
-                      price_input.model_state(row['state'], price_input.COMPACT)),
+                      price_input.model_state(row['state'], expected_input)),
+                  'PRICE_CALIBRATION_V8_INPUT_RECEIPT_CHANGED' if objective_schema.endswith('.v8') else
                   'PRICE_CALIBRATION_V7_INPUT_RECEIPT_CHANGED')
     raw = [value['raw_probs'] for value in receipts]
     fit_function, measure_function = fit, training_measurement
+    if isinstance(candidate.get('price_calibration'),dict) and candidate['price_calibration'].get('schema') == 'heptatrader.laya-price-calibration.v3':
+        from . import resident_price_calibration_v3 as policy
+        _need(objective_schema == 'heptatrader.laya-resident-objective.v8',
+              'PRICE_CALIBRATION_V3_OBJECTIVE_REQUIRED')
+        _need(candidate.get('price_output_profile') == policy.OUTPUT, 'UNKNOWN_PRICE_OUTPUT_PROFILE')
+        fit_function, measure_function = policy.fit, policy.training_measurement
+        from .resident_training_v6 import check_training_rows
+        check_training_rows(rows, cutoff_ms=job['window']['training_end_ms'])
     if isinstance(candidate.get('price_calibration'),dict) and candidate['price_calibration'].get('schema') == 'heptatrader.laya-price-calibration.v2':
         from . import resident_price_calibration_v2 as policy
         _need(candidate.get('price_output_profile') == policy.OUTPUT, 'UNKNOWN_PRICE_OUTPUT_PROFILE')

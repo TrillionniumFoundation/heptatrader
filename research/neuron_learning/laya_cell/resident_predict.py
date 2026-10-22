@@ -23,6 +23,7 @@ from . import resident_training_v4 as training_v4
 from . import resident_training_v5 as training_v5
 from . import resident_training_v6 as training_v6
 from . import resident_training_v7 as training_v7
+from . import resident_training_v8 as training_v8
 from . import resident_price_input as price_input
 from . import resident_price_calibration as price_calibration
 from . import resident_price_baselines as price_refs
@@ -33,9 +34,12 @@ def _prediction_batches(tokenizer,row,input_binding):
  raw={k:v.to('cuda') for k,v in encode_rows(tokenizer,[row]).items()}
  if input_binding is None:return raw,raw,raw
  price_input.check_bindings(input_binding)
+ if (input_binding['price_input_profile']==price_input.RAW and
+     input_binding['parent_price_input_profile']==price_input.RAW):return raw,raw,raw
  compact={k:v.to('cuda') for k,v in encode_rows(tokenizer,[row],price_input_profile=price_input.COMPACT).items()}
  parent=compact if input_binding['parent_price_input_profile']==price_input.COMPACT else raw
- return raw,parent,compact
+ child=compact if input_binding['price_input_profile']==price_input.COMPACT else raw
+ return raw,parent,child
 
 
 def predict(config,plan_path,slot):
@@ -53,14 +57,15 @@ def predict(config,plan_path,slot):
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
  objective=candidate.get('objective')
  if (not isinstance(objective,dict) or objective.get('schema') not in
-     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA,training_v7.SCHEMA)):
+     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA,training_v7.SCHEMA,training_v8.SCHEMA)):
   raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
  if training_v4.enabled(objective):training_v4.check_objective(objective)
- v7=training_v7.enabled(objective)
+ v8=training_v8.enabled(objective)
+ v7=training_v7.enabled(objective) or v8
  v6=training_v6.enabled(objective) or v7
  v5=training_v5.enabled(objective) or v6
- if v5:(training_v7 if v7 else training_v6 if v6 else training_v5).check_objective(objective)
- training_policy=training_v7 if v7 else training_v6 if v6 else training_v5 if v5 else training_v4 if training_v4.enabled(objective) else training_v3 if training_v3.enabled(objective) else training_v2
+ if v5:(training_v8 if v8 else training_v7 if v7 else training_v6 if v6 else training_v5).check_objective(objective)
+ training_policy=training_v8 if v8 else training_v7 if v7 else training_v6 if v6 else training_v5 if v5 else training_v4 if training_v4.enabled(objective) else training_v3 if training_v3.enabled(objective) else training_v2
  v2=training_policy.enabled(candidate.get('objective'))
  calibration=candidate.get('action_training_profile') if v2 else None
  price_reference_profile=price_refs.validate(candidate.get('price_baselines')) if v2 else None
@@ -70,7 +75,7 @@ def predict(config,plan_path,slot):
  if v2 and (candidate.get('objective')!=training_policy.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
   raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
  if v2 and (type(plan.get('action_optimizer_admitted')) is not bool or plan['action_optimizer_admitted']!=bool(calibration and calibration['action_optimizer_admitted'])):raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
- if training_policy in (training_v3,training_v4,training_v5,training_v6,training_v7):
+ if training_policy in (training_v3,training_v4,training_v5,training_v6,training_v7,training_v8):
   if plan.get('price_value_rule')!=price_refs.VALUE_RULE:raise ContractError('PRICE_VALUE_RULE_REQUIRED_FOR_V3')
   price_refs.validate_value_rule(plan)
   if calibration is not None and calibration.get('batch_balance_strategy')!=training_v3.ACTION_BALANCE:raise ContractError('ACTION_BATCH_BALANCE_PROFILE_CHANGED')
@@ -92,7 +97,7 @@ def predict(config,plan_path,slot):
  input_binding=None
  if v7:
   input_binding=price_input.check_bindings(candidate)
-  if (input_binding!=price_input.bindings(parent) or price_input.check_bindings(plan)!=input_binding):
+  if (input_binding!=price_input.bindings(parent,objective_schema=training_policy.SCHEMA) or price_input.check_bindings(plan)!=input_binding):
    raise ContractError('V7_PREDICT_INPUT_PROFILE_CHANGED')
  if not 0<=slot<plan['rule']['slots']:raise ContractError('SLOT_BOUND')
  due_start=plan['start_ms']+slot*plan['rule']['slot_spacing_ms'];late=due_start+plan['rule']['input_grace_ms']
@@ -147,7 +152,7 @@ def predict(config,plan_path,slot):
  with torch.no_grad():
   cell.restore_trainable(parent_tensors);parent_probs=cell(**parent_batch)[0].softmax(-1)[0].cpu().tolist()
   cell.restore_trainable(candidate_tensors);p,a=cell(**price_batch)
-  if v7:
+  if v7 and price_batch is not batch:
    # The ACT adapter was calibrated/trained on original raw quote inputs.
    # A separate ordinary raw-input forward preserves that exact contract.
    a=cell(**batch)[1]

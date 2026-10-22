@@ -46,7 +46,10 @@ def admit_job(db,job_id,fingerprint,created_ms,job,rows):
    from . import resident_training_v5 as v5
    from . import resident_training_v6 as v6
    from . import resident_training_v7 as v7
-   if v7.enabled(job.get('objective')):v7.check_job(job)
+   from . import resident_training_v8 as v8
+   if v8.enabled(job.get('objective')):
+    v8.check_job(job)
+   elif v7.enabled(job.get('objective')):v7.check_job(job)
    elif v6.enabled(job.get('objective')):v6.check_job(job)
    elif v5.enabled(job.get('objective')):v5.check_job(job)
    else:
