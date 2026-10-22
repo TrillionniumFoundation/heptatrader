@@ -221,3 +221,28 @@ increased from three to five and nonoverlapping intervals from one to eight.
 The available population itself covered only about 40 minutes. This verifies
 sampling behavior, not a forward model advantage. Representation caching and
 GPU batching remain deferred until a model route earns forward evidence.
+
+The prospective v6 resident policy retains the four-epoch PRICE budget (at
+most 32 unique rows and 64 steps) and the separate ACT budget. It filters mature,
+unreserved 300-second rows to the last 24 hours **before** applying collection
+caps, then selects 16–32 rows across that recent time range without consulting
+labels or scores. Time coverage avoids concentrating a job in a few minutes of
+heavily overlapping 300-second labels.
+Older rows cannot fill a shortfall. Row availability and age are checked again
+against the frozen training cutoff by the worker and artifact replay.
+
+Its price calibration fits one coefficient in the convex mixture of the raw
+child probabilities and the same-row Laplace prior. A bounded closed-form
+quadratic minimum directly optimizes multiclass Brier. This replaces v5's
+fixed-step, smoothed cross-entropy fit only for newly opted-in v6 jobs. The
+calibration still reuses model-training rows; it is not held-out validation.
+The original parent and same-window uniform, prior and linear value floors
+remain required. An exact zero model coefficient produces the required prior
+for every input, so the existing registration protocol records
+`NO_FORWARD_TRIAL` without spending alpha on a mathematically impossible strict
+gain. A nonzero coefficient requires the unchanged independent future trial.
+
+The ACT input cache reuses only frozen encoder inputs to the trainable action
+head across repeated epochs. All action-head forward passes, gradients,
+optimizer steps and rollback checks still run. Historical v1–v5 artifacts and
+their pinned evaluation runtimes retain their original policies.

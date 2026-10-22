@@ -288,15 +288,18 @@ def _identity(service, job_id, candidate, job):
         _, old = retained_config(service, previous)
         identity.update(policy_identity(old))
     from . import resident_training_v5 as training_v5
-    if training_v5.enabled(candidate.get("objective")):
+    from . import resident_training_v6 as training_v6
+    policy = training_v6 if training_v6.enabled(candidate.get("objective")) else training_v5
+    if policy.enabled(candidate.get("objective")):
         from .resident_price_calibration import validate
         calibration = validate(candidate.get("price_calibration"))
-        if (candidate.get("price_output_profile") != training_v5.PRICE_OUTPUT or
+        if (calibration["output_profile"] != policy.PRICE_OUTPUT or
+                candidate.get("price_output_profile") != policy.PRICE_OUTPUT or
                 candidate.get("closed_action_source_id") != job.get("closed_action_source_id") or
                 calibration["parent_id"] != job["parent_id"] or
                 calibration["adapter_sha256"] != candidate["adapter_sha256"]):
             raise ContractError("FORWARD_V5_CANDIDATE_BINDING")
-        identity.update(price_output_profile=training_v5.PRICE_OUTPUT,
+        identity.update(price_output_profile=policy.PRICE_OUTPUT,
                         price_calibration_profile_id=calibration["profile_id"],
                         price_calibration=calibration,
                         closed_action_source_id=candidate["closed_action_source_id"],
@@ -385,6 +388,23 @@ def _publish(service, key, record, candidate, job, folder):
     return record
 
 
+def _exact_required_prior(candidate):
+    """A prospective exact tie cannot meet an unchanged strict value floor."""
+    from . import resident_training_v6 as v6
+    if not v6.enabled(candidate.get('objective')):
+        return False
+    v6.check_objective(candidate['objective'])
+    from . import resident_price_calibration_v2 as calibration
+    from . import resident_price_baselines as baselines
+    profile = calibration.validate(candidate.get('price_calibration'))
+    reference = baselines.validate(candidate.get('price_baselines'))
+    return (profile['model_weight'] == 0
+            and profile['price_baseline_profile_id'] == reference['profile_id']
+            and profile['train_prior_probs'] == reference['train_prior_by_horizon']['300']['probs']
+            and 'train_prior' in baselines.VALUE_RULE['comparators']
+            and baselines.VALUE_RULE['minimum_mean_improvement'] > 0)
+
+
 def register(service, job_id, candidate, job, *, clock=None):
     """Allocate once; replay a reserved original plan even after its time passes."""
     now = (lambda: int(time.time() * 1000)) if clock is None else clock
@@ -430,7 +450,10 @@ def register(service, job_id, candidate, job, *, clock=None):
             queue = inspect_queue(service.c)
             created = service.db.execute('SELECT created_ms FROM jobs WHERE id=?', (job_id,)).fetchone()[0]
             admission_queue = registration_policy(queue, service.c, job, created)
-            if admission_queue['blocking_trials']:
+            if _exact_required_prior(candidate):
+                record = _sealed(identity, "NO_FORWARD_TRIAL", checked,
+                                 reason="EXACT_REQUIRED_PRIOR_NO_POSSIBLE_STRICT_GAIN")
+            elif admission_queue['blocking_trials']:
                 record = _sealed(identity, "DEFERRED", checked,
                                  reason="PRIOR_ORIGINAL_TRIAL_PENDING")
             else:

@@ -54,9 +54,8 @@ def _softmax(value):
     return exp/exp.sum(axis=-1, keepdims=True)
 
 
-def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
-        price_baselines):
-    """No extra inference: probabilities are from the final child checkpoint."""
+def _fit_population(rows, raw_probabilities, *, cutoff_ms, parent_id,
+                    adapter_sha256, price_baselines, probability_reader=_probabilities):
     import numpy as np
     baseline = price_refs.validate(price_baselines)
     n = len(rows)
@@ -77,8 +76,18 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
               and type(row.get('outcome_available_at_ms')) is int
               and row['anchor_ms'] < row['outcome_available_at_ms'] <= cutoff_ms,
               'PRICE_CALIBRATION_NONCAUSAL_TRAINING_ROW')
-    raw = np.asarray([_probabilities(v) for v in raw_probabilities], dtype=np.float64)
+    raw = np.asarray([probability_reader(v) for v in raw_probabilities], dtype=np.float64)
     target = np.asarray([row['target_class'] for row in rows], dtype=np.int64)
+    return n, ids, raw, target, baseline
+
+
+def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
+        price_baselines):
+    """No extra inference: probabilities are from the final child checkpoint."""
+    import numpy as np
+    n, ids, raw, target, baseline = _fit_population(rows, raw_probabilities,
+        cutoff_ms=cutoff_ms, parent_id=parent_id, adapter_sha256=adapter_sha256,
+        price_baselines=price_baselines)
     counts = np.bincount(target, minlength=7)
     prior = (counts+1)/(n+7)
     logp = np.log(raw)
@@ -118,6 +127,9 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
 
 
 def validate(profile):
+    if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v2':
+        from . import resident_price_calibration_v2 as v2
+        return v2.validate(profile)
     _need(isinstance(profile, dict) and profile.get('schema') == SCHEMA
           and profile.get('output_profile') == OUTPUT and profile.get('fit_spec') == SPEC
           and profile.get('profile_id') == digest({k: v for k, v in profile.items()
@@ -151,6 +163,9 @@ def validate(profile):
 
 
 def apply(profile, raw_probabilities):
+    if isinstance(profile, dict) and profile.get('schema') == 'heptatrader.laya-price-calibration.v2':
+        from . import resident_price_calibration_v2 as v2
+        return v2.apply(profile, raw_probabilities)
     import numpy as np
     p = validate(profile)
     raw = np.asarray(_probabilities(raw_probabilities), dtype=np.float64)
@@ -164,12 +179,14 @@ def verify_prediction(plan, prediction):
         _need(prediction.get('price_output_profile') is None,
               'UNREGISTERED_PRICE_CALIBRATION')
         return None
-    _need(declared == OUTPUT, 'UNKNOWN_PRICE_OUTPUT_PROFILE')
+    from . import resident_price_calibration_v2 as v2
+    _need(declared in (OUTPUT, v2.OUTPUT), 'UNKNOWN_PRICE_OUTPUT_PROFILE')
     p = validate(plan.get('price_calibration'))
     baseline = price_refs.validate(plan.get('price_baselines'))
     _need(plan.get('price_calibration_profile_id') == p['profile_id']
           and prediction.get('price_calibration_profile_id') == p['profile_id']
-          and prediction.get('price_output_profile') == OUTPUT
+          and p['output_profile'] == declared
+          and prediction.get('price_output_profile') == declared
           and plan.get('parent_id') == prediction.get('parent_id') == p['parent_id']
           and prediction.get('trained_until_ms') == p['training_cutoff_ms']
           and baseline['profile_id'] == p['price_baseline_profile_id']
@@ -234,11 +251,18 @@ def verify_candidate_fit(job, candidate):
                       ('target_class', 'anchor_ms', 'outcome_available_at_ms')),
               'PRICE_CALIBRATION_FORWARD_ROW_CHANGED')
     raw = [value['raw_probs'] for value in receipts]
-    rebuilt = fit(rows, raw, cutoff_ms=job['window']['training_end_ms'],
+    fit_function, measure_function = fit, training_measurement
+    if isinstance(candidate.get('price_calibration'),dict) and candidate['price_calibration'].get('schema') == 'heptatrader.laya-price-calibration.v2':
+        from . import resident_price_calibration_v2 as policy
+        _need(candidate.get('price_output_profile') == policy.OUTPUT, 'UNKNOWN_PRICE_OUTPUT_PROFILE')
+        fit_function, measure_function = policy.fit, policy.training_measurement
+        from .resident_training_v6 import check_training_rows
+        check_training_rows(rows, cutoff_ms=job['window']['training_end_ms'])
+    rebuilt = fit_function(rows, raw, cutoff_ms=job['window']['training_end_ms'],
                   parent_id=job['parent_id'], adapter_sha256=candidate['adapter_sha256'],
                   price_baselines=candidate['price_baselines'])
     _need(rebuilt == candidate.get('price_calibration'), 'PRICE_CALIBRATION_FIT_REPLAY_CHANGED')
-    _need(training_measurement(rebuilt, raw, rows) ==
+    _need(measure_function(rebuilt, raw, rows) ==
           candidate.get('price_calibration_training_measurement'),
           'PRICE_CALIBRATION_TRAIN_MEASUREMENT_CHANGED')
     return rebuilt

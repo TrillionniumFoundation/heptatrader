@@ -21,6 +21,7 @@ from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
 from . import resident_training_v4 as training_v4
 from . import resident_training_v5 as training_v5
+from . import resident_training_v6 as training_v6
 from . import resident_price_calibration as price_calibration
 from . import resident_price_baselines as price_refs
 
@@ -40,12 +41,13 @@ def predict(config,plan_path,slot):
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
  objective=candidate.get('objective')
  if (not isinstance(objective,dict) or objective.get('schema') not in
-     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA)):
+     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA)):
   raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
  if training_v4.enabled(objective):training_v4.check_objective(objective)
- v5=training_v5.enabled(objective)
- if v5:training_v5.check_objective(objective)
- training_policy=training_v5 if v5 else training_v4 if training_v4.enabled(objective) else training_v3 if training_v3.enabled(objective) else training_v2
+ v6=training_v6.enabled(objective)
+ v5=training_v5.enabled(objective) or v6
+ if v5:(training_v6 if v6 else training_v5).check_objective(objective)
+ training_policy=training_v6 if v6 else training_v5 if v5 else training_v4 if training_v4.enabled(objective) else training_v3 if training_v3.enabled(objective) else training_v2
  v2=training_policy.enabled(candidate.get('objective'))
  calibration=candidate.get('action_training_profile') if v2 else None
  price_reference_profile=price_refs.validate(candidate.get('price_baselines')) if v2 else None
@@ -55,7 +57,7 @@ def predict(config,plan_path,slot):
  if v2 and (candidate.get('objective')!=training_policy.OBJECTIVE or candidate.get('action_output_profile')!=expected_output or plan.get('action_training_profile_id')!=(calibration['profile_id'] if calibration else None)):
   raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
  if v2 and (type(plan.get('action_optimizer_admitted')) is not bool or plan['action_optimizer_admitted']!=bool(calibration and calibration['action_optimizer_admitted'])):raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
- if training_policy in (training_v3,training_v4,training_v5):
+ if training_policy in (training_v3,training_v4,training_v5,training_v6):
   if plan.get('price_value_rule')!=price_refs.VALUE_RULE:raise ContractError('PRICE_VALUE_RULE_REQUIRED_FOR_V3')
   price_refs.validate_value_rule(plan)
   if calibration is not None and calibration.get('batch_balance_strategy')!=training_v3.ACTION_BALANCE:raise ContractError('ACTION_BATCH_BALANCE_PROFILE_CHANGED')
@@ -63,8 +65,9 @@ def predict(config,plan_path,slot):
   price_profile=price_calibration.validate(candidate.get('price_calibration'))
   if plan.get('action_distribution_scope')!=calibration.get('action_distribution_scope'):
    raise ContractError('PREDICT_ACTION_DISTRIBUTION_SCOPE_CHANGED')
-  if (candidate.get('price_output_profile')!=price_calibration.OUTPUT or
-      plan.get('price_output_profile')!=price_calibration.OUTPUT or
+  if (price_profile['output_profile']!=training_policy.PRICE_OUTPUT or
+      candidate.get('price_output_profile')!=training_policy.PRICE_OUTPUT or
+      plan.get('price_output_profile')!=training_policy.PRICE_OUTPUT or
       plan.get('price_calibration')!=price_profile or
       plan.get('price_calibration_profile_id')!=price_profile['profile_id'] or
       price_profile['parent_id']!=parent['candidate_id'] or
@@ -152,7 +155,7 @@ def predict(config,plan_path,slot):
  if v2:result['action_output_profile']=training_v2.ACTION_OUTPUT;result['action_inference']=action_report
  if v2:result['price_baseline_forecast']=price_reference_forecast
  if v5:
-  result.update(candidate_raw_probs=raw_price_probs,price_output_profile=price_calibration.OUTPUT,
+  result.update(candidate_raw_probs=raw_price_probs,price_output_profile=training_policy.PRICE_OUTPUT,
    price_calibration_profile_id=price_profile['profile_id'])
   price_calibration.verify_prediction(plan,result)
  result['input_receipt_sha256']=sha_file(input_path)

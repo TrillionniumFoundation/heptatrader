@@ -226,8 +226,8 @@ def candidate_training_diagnostics(candidate):
  # Counts describe the selected rows only. Unselected parent correctness was
  # never evaluated, so a one-class selection does not prove a one-class pool.
  selected_count=measurement.get('rows')
- raw_counts=measurement.get('price_parent_target_counts' if objective.get('schema')==
-   'heptatrader.laya-resident-objective.v5' else 'action_target_counts')
+ raw_counts=measurement.get('price_parent_target_counts' if objective.get('schema') in
+   ('heptatrader.laya-resident-objective.v5','heptatrader.laya-resident-objective.v6') else 'action_target_counts')
  selected_counts=None
  if (type(selected_count) is int and selected_count>0 and isinstance(raw_counts,dict)
      and all(type(raw_counts.get(k)) is int and raw_counts[k]>=0 for k in ('0','1','None'))

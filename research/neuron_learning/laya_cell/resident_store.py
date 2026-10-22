@@ -44,7 +44,9 @@ def admit_job(db,job_id,fingerprint,created_ms,job,rows):
  if job.get('training_row_accounting_schema') is not None:
   if job['training_row_accounting_schema']=='heptatrader.laya-gradient-row-accounting.v2':
    from . import resident_training_v5 as v5
-   if v5.enabled(job.get('objective')):v5.check_job(job)
+   from . import resident_training_v6 as v6
+   if v6.enabled(job.get('objective')):v6.check_job(job)
+   elif v5.enabled(job.get('objective')):v5.check_job(job)
    else:
     from .resident_training_v4 import check_job
     check_job(job)

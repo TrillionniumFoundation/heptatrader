@@ -260,11 +260,9 @@ def verify_action_update(job, candidate):
             "future_value_proven": False, "model_or_trading_authority": False}
 
 
-def verify_candidate(job, candidate):
-    check_job(job)
+def _verify_training(job, candidate, source):
     if candidate.get("objective") != job["objective"]:
         raise ContractError("V5_CANDIDATE_OBJECTIVE_CHANGED")
-    source = source_for_job(job)
     profile = candidate.get("action_training_profile")
     if (candidate.get("closed_action_source_id") != source["source_id"] or
             candidate.get("closed_action_source_sha256") != job["closed_action_source_sha256"]):
@@ -290,6 +288,11 @@ def verify_candidate(job, candidate):
     frozen["episode_id"] = digest({k: v for k, v in frozen.items() if k != "episode_id"})
     legacy["learning_curve"]["episode_id"] = frozen["episode_id"]
     previous.verify_candidate(_price_job(job), legacy)
+
+
+def verify_candidate(job, candidate):
+    check_job(job)
+    _verify_training(job, candidate, source_for_job(job))
     from .resident_price_calibration import validate, verify_candidate_fit
     calibration = validate(candidate.get("price_calibration"))
     if (candidate.get("price_output_profile") != PRICE_OUTPUT or

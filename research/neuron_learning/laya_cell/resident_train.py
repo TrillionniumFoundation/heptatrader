@@ -20,6 +20,7 @@ from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
 from . import resident_training_v4 as training_v4
 from . import resident_training_v5 as training_v5
+from . import resident_training_v6 as training_v6
 from . import resident_closed_action_training as closed_action
 from . import resident_price_calibration as price_calibration
 from . import resident_price_baselines as price_refs
@@ -111,11 +112,12 @@ def run_closed_action_phase(cell, source, profile, encoded, device):
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  if not old_learner_verified:verify_old_learner_inactive()
- if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE,training_v5.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
- v5=training_v5.enabled(c['objective'])
+ if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE,training_v5.OBJECTIVE,training_v6.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
+ v6=training_v6.enabled(c['objective'])
+ v5=training_v5.enabled(c['objective']) or v6
  episode=training_v4.enabled(c['objective']) or v5
- episode_policy=training_v5 if v5 else training_v4
- training_policy=training_v5 if v5 else training_v4 if episode else training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
+ episode_policy=training_v6 if v6 else training_v5 if v5 else training_v4
+ training_policy=training_v6 if v6 else training_v5 if v5 else training_v4 if episode else training_v3 if c['objective']==training_v3.OBJECTIVE else training_v2
  v2=c['objective']!=OBJECTIVE
  base=Path(c['base_directory']);out=Path(c['output_directory'])
  if out.exists():raise ContractError('NEW_CANDIDATE_OUTPUT_REQUIRED')
@@ -130,14 +132,15 @@ def run_job(c,*,old_learner_verified=False):
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
  if v2:rows=training_policy.timed_rows(rows,dataset)
- if training_policy in (training_v3,training_v4,training_v5):rows=training_v3.primary_rows(rows)
+ if training_policy in (training_v3,training_v4,training_v5,training_v6):rows=training_v3.primary_rows(rows)
  eligible_rows=list(rows)
  expected_accounting=training_v4.ROW_ACCOUNTING_SCHEMA if episode else ROW_ACCOUNTING_SCHEMA
  if c.get('training_row_accounting_schema')!=expected_accounting:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
  if episode:episode_policy.check_job(c)
- closed_source=training_v5.source_for_job(c) if v5 else None
+ closed_source=training_policy.source_for_job(c) if v5 else None
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
  if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')
+ if v6:training_v6.check_training_rows(rows,cutoff_ms=c['window']['training_end_ms'])
  training_batches=batches(rows)
  frozen_price_baselines=price_refs.freeze(rows,c['window']['training_end_ms']) if v2 else None
  device=require_pocket4_gpu();torch.cuda.reset_peak_memory_stats()
@@ -322,13 +325,16 @@ def run_job(c,*,old_learner_verified=False):
    'future_value_proven':False}
   if v5:
    if len(last_price_raw_probabilities)!=len(rows):raise ContractError('FINAL_CHILD_PRICE_FORWARD_RECEIPTS_REQUIRED')
-   price_profile=price_calibration.fit(rows,last_price_raw_probabilities,
+   calibration_policy=price_calibration
+   if v6:
+    from . import resident_price_calibration_v2 as calibration_policy
+   price_profile=calibration_policy.fit(rows,last_price_raw_probabilities,
     cutoff_ms=c['window']['training_end_ms'],parent_id=parent['candidate_id'],
     adapter_sha256=record['adapter_sha256'],price_baselines=frozen_price_baselines)
    record.update(closed_action_source_id=closed_source['source_id'],
     closed_action_source_sha256=c['closed_action_source_sha256'],action_phase=action_phase,
-    price_output_profile=price_calibration.OUTPUT,price_calibration=price_profile,
-    price_calibration_training_measurement=price_calibration.training_measurement(
+    price_output_profile=calibration_policy.OUTPUT,price_calibration=price_profile,
+    price_calibration_training_measurement=calibration_policy.training_measurement(
      price_profile,last_price_raw_probabilities,rows),
     final_price_raw_forward_receipts=[{'training_row_id':row_id(row),'raw_probs':probs,
      'target_class':row['target_class'],'anchor_ms':row['anchor_ms'],

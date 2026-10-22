@@ -54,6 +54,9 @@ def verify_candidate(job,candidate):
  if version is None:return
  if version=='heptatrader.laya-gradient-row-accounting.v2':
   from . import resident_training_v5 as v5
+  from . import resident_training_v6 as v6
+  if v6.enabled(job.get('objective')):
+   v6.verify_candidate(job,candidate);return
   if v5.enabled(job.get('objective')):
    v5.verify_candidate(job,candidate);return
   from .resident_training_v4 import verify_candidate as verify_episode
