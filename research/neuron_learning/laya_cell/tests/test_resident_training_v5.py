@@ -1,5 +1,10 @@
 """Separate causal ACT budget and unchanged original PRICE accounting."""
 from copy import deepcopy
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,7 +16,7 @@ from laya_cell import resident_price_calibration as calibration
 from laya_cell import resident_row_accounting as accounting
 from laya_cell import resident_training_v4 as v4
 from laya_cell import resident_training_v5 as v5
-from laya_cell.integrity import ContractError, digest
+from laya_cell.integrity import ContractError, digest, sha_file
 from laya_cell.resident import Supervisor
 from laya_cell import resident_plan_admission as admission
 from laya_cell.resident_store import database, admit_job, complete_job
@@ -28,6 +33,13 @@ class ClosedActionEpisodeTests(unittest.TestCase):
         self.path = self.original.root / 'closed-action-source.json'
         self.sha = closed.write_source(self.path, self.source)
         self.profile = closed.prepare_profile(self.source, torch.zeros(16, 2))
+        # These fixtures isolate policy/row accounting, not saved model math.
+        # Numeric replay is exercised with real safetensors below and by the
+        # separate complete CPU run_job integration fixture.
+        replay = patch.object(v5, 'verify_action_update',
+                              side_effect=lambda job, candidate: candidate['action_adapter_validation'])
+        replay.start()
+        self.addCleanup(replay.stop)
 
     def steps(self):
         return [{'epoch': epoch, 'batch_in_epoch': index+1,
@@ -114,6 +126,7 @@ class ClosedActionEpisodeTests(unittest.TestCase):
                          closed_action_source_sha256=self.sha, action_phase=self.phase(),
                          action_update_steps=16, adapter_sha256='b'*64,
                          price_output_profile=calibration.OUTPUT)
+        candidate['action_adapter_validation'] = {'scope': 'ISOLATED_POLICY_FIXTURE_NUMERIC_REPLAY_TESTED_SEPARATELY'}
         candidate['price_calibration'] = calibration.fit(price_rows, raw,
             cutoff_ms=original.CUTOFF, parent_id=original.PARENT,
             adapter_sha256='b'*64, price_baselines=refs)
@@ -221,6 +234,164 @@ class ClosedActionEpisodeTests(unittest.TestCase):
         self.assertEqual(db.execute('SELECT count(*) FROM consumed_rows').fetchone()[0], 32)
         self.assertFalse(admit_job(db, 'other', job['data_fingerprint'], original.CUTOFF+1,
                                    job, job['training_row_ids']))
+
+
+class SavedActionAdapterChangeTests(unittest.TestCase):
+    """Real tiny CPU safetensors; these fixtures are not GPU training proof."""
+    KEYS = ('model.act_head.2.A', 'model.act_head.2.B')
+
+    def setUp(self):
+        import numpy as np
+        self.np = np
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.parent_dir, self.final_dir = self.root/'parent', self.root/'final'
+        self.parent_dir.mkdir()
+        self.final_dir.mkdir()
+
+    def fixture(self, *, parent_action=True, parent_tensors=None, final_tensors=None):
+        from safetensors.numpy import save_file
+        np = self.np
+        a = np.ones((1, 64), dtype=np.float32)
+        b = np.array([[.125], [.25]], dtype=np.float32)
+        previous = ({self.KEYS[0]: a.copy(), self.KEYS[1]: b.copy()} if parent_action
+                    else {'model.scorer.2.B': np.zeros((1, 1), dtype=np.float32)})
+        if parent_tensors is not None:
+            previous = parent_tensors
+        final = {self.KEYS[0]: a.copy(), self.KEYS[1]: b+np.float32(.015625)}
+        if final_tensors is not None:
+            final = final_tensors
+        save_file(previous, str(self.parent_dir/'adapter.safetensors'))
+        parent = {'scope': 'CPU_SAFETENSORS_FIXTURE_NOT_GPU_PROOF',
+                  'adapter_sha256': sha_file(self.parent_dir/'adapter.safetensors')}
+        parent['candidate_id'] = digest(parent)
+        (self.parent_dir/'candidate.json').write_text(json.dumps(parent))
+        save_file(final, str(self.final_dir/'adapter.safetensors'))
+        job = {'parent_directory': str(self.parent_dir),
+               'parent_manifest_sha256': sha_file(self.parent_dir/'candidate.json'),
+               'parent_id': parent['candidate_id'], 'output_directory': str(self.final_dir)}
+        changes = {name: int(np.count_nonzero(value != previous[name]))
+                   if name in previous and value.shape == previous[name].shape
+                   else int(np.count_nonzero(value))
+                   for name, value in final.items()}
+        candidate = {'parent_id': parent['candidate_id'],
+                     'adapter_sha256': sha_file(self.final_dir/'adapter.safetensors'),
+                     'tensor_mask': sorted(final), 'action_head_trained': True,
+                     'action_phase': {'applied_steps': 1}, 'action_update_steps': 1,
+                     'changed_by_tensor': changes}
+        return job, candidate
+
+    def test_reads_pinned_real_factors_and_replays_effective_delta(self):
+        job, candidate = self.fixture()
+        result = v5.verify_action_update(job, candidate)
+        self.assertTrue(result['parent_action_adapter_present'])
+        self.assertEqual(result['actual_factor_changed_counts'], dict(zip(self.KEYS, (0, 2))))
+        self.assertEqual(result['effective_changed_coordinates'], 128)
+        self.assertGreater(result['effective_max_absolute_change'], 0)
+        self.assertFalse(result['gpu_inference_replayed'])
+        self.assertFalse(result['future_value_proven'])
+
+    def test_replay_never_imports_torch_or_loads_a_base(self):
+        job, candidate = self.fixture()
+        inputs = self.root/'numeric-replay-input.json'
+        inputs.write_text(json.dumps({'job': job, 'candidate': candidate}))
+        code = '''import builtins, json, sys
+original_import = builtins.__import__
+def limited_import(name, *args, **kwargs):
+    if name == 'torch' or name.startswith('torch.'):
+        raise AssertionError('NUMERIC_REPLAY_MUST_NOT_IMPORT_TORCH')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = limited_import
+from laya_cell.resident_training_v5 import verify_action_update
+with open(sys.argv[1]) as stream:
+    inputs = json.load(stream)
+result = verify_action_update(inputs['job'], inputs['candidate'])
+assert result['effective_changed_coordinates'] > 0
+assert 'torch' not in sys.modules
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(inputs)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_scorer_only_parent_has_zero_effect_and_unknown_initial_A(self):
+        job, candidate = self.fixture(parent_action=False)
+        # The old random A is not stored in this scorer-only parent. No exact
+        # count against that absent initial A can be asserted or replayed.
+        candidate['changed_by_tensor'][self.KEYS[0]] = 0
+        result = v5.verify_action_update(job, candidate)
+        self.assertFalse(result['parent_action_adapter_present'])
+        self.assertEqual(result['missing_parent_action_effect'], 'ZERO_B_INITIALIZATION')
+        self.assertIsNone(result['actual_factor_changed_counts'][self.KEYS[0]])
+        self.assertFalse(result['missing_parent_A_changed_count_claimed'])
+        self.assertEqual(result['actual_factor_changed_counts'][self.KEYS[1]], 2)
+
+    def test_zero_or_all_rolled_back_or_untrained_cannot_be_admitted(self):
+        job, candidate = self.fixture()
+        for changes in ({'action_phase': {'applied_steps': 0}, 'action_update_steps': 0},
+                        {'action_head_trained': False}, {'action_update_steps': 2},
+                        {'action_update_steps': True}):
+            changed = dict(candidate, **changes)
+            with self.subTest(changes=changes), self.assertRaisesRegex(ContractError, 'NO_APPLIED_NUMERIC_UPDATE'):
+                v5.verify_action_update(job, changed)
+        candidate['changed_by_tensor'] = dict.fromkeys(self.KEYS, 0)
+        with self.assertRaisesRegex(ContractError, 'CHANGED_STATISTICS_REQUIRED'):
+            v5.verify_action_update(job, candidate)
+
+    def test_tampered_counts_and_invalid_count_types_fail(self):
+        job, candidate = self.fixture()
+        for counts, error in (({self.KEYS[0]: 1, self.KEYS[1]: 2}, 'STATISTICS_MISMATCH'),
+                              ({self.KEYS[0]: 65, self.KEYS[1]: 2}, 'STATISTICS_REQUIRED'),
+                              ({self.KEYS[0]: 0, self.KEYS[1]: True}, 'STATISTICS_REQUIRED')):
+            with self.subTest(counts=counts), self.assertRaisesRegex(ContractError, error):
+                v5.verify_action_update(job, dict(candidate, changed_by_tensor=counts))
+
+    def test_same_effective_reparameterization_is_rejected(self):
+        np = self.np
+        # Both factor tensors change, while B@A stays exactly equal.
+        job, candidate = self.fixture(final_tensors={
+            self.KEYS[0]: np.full((1, 64), 2, dtype=np.float32),
+            self.KEYS[1]: np.array([[.0625], [.125]], dtype=np.float32)})
+        with self.assertRaisesRegex(ContractError, 'EFFECT_UNCHANGED'):
+            v5.verify_action_update(job, candidate)
+
+    def test_missing_parent_A_is_not_invented_to_validate_A_only_change(self):
+        np = self.np
+        job, candidate = self.fixture(parent_action=False, final_tensors={
+            self.KEYS[0]: np.full((1, 64), 2, dtype=np.float32),
+            self.KEYS[1]: np.zeros((2, 1), dtype=np.float32)})
+        with self.assertRaisesRegex(ContractError, 'EFFECT_UNCHANGED'):
+            v5.verify_action_update(job, candidate)
+
+    def test_parent_and_final_pins_and_declared_mask_are_required(self):
+        job, candidate = self.fixture()
+        for target, key, value, error in ((job, 'parent_manifest_sha256', 'f'*64, 'PARENT_MANIFEST_CHANGED'),
+              (candidate, 'adapter_sha256', 'f'*64, 'FINAL_ADAPTER_CHANGED'),
+              (candidate, 'parent_id', 'f'*64, 'PARENT_ID_CHANGED'),
+              (candidate, 'tensor_mask', [], 'ADAPTER_TENSOR_MASK')):
+            saved = target[key]
+            target[key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ContractError, error):
+                v5.verify_action_update(job, candidate)
+            target[key] = saved
+        (self.final_dir/'adapter.safetensors').unlink()
+        with self.assertRaises(FileNotFoundError):
+            v5.verify_action_update(job, candidate)
+
+    def test_partial_parent_or_wrong_final_dtype_or_shape_or_nonfinite_fail(self):
+        np = self.np
+        cases = [({'parent_tensors': {self.KEYS[0]: np.ones((1, 64), dtype=np.float32)}}, 'TENSOR_MASK'),
+                 ({'final_tensors': {self.KEYS[0]: np.ones((1, 64), dtype=np.float64),
+                                     self.KEYS[1]: np.ones((2, 1), dtype=np.float32)}}, 'SHAPE_DTYPE'),
+                 ({'final_tensors': {self.KEYS[0]: np.ones((2, 32), dtype=np.float32),
+                                     self.KEYS[1]: np.ones((2, 1), dtype=np.float32)}}, 'SHAPE_DTYPE'),
+                 ({'final_tensors': {self.KEYS[0]: np.full((1, 64), np.nan, dtype=np.float32),
+                                     self.KEYS[1]: np.ones((2, 1), dtype=np.float32)}}, 'SHAPE_DTYPE')]
+        for arguments, error in cases:
+            with self.subTest(arguments=list(arguments)):
+                job, candidate = self.fixture(**arguments)
+                with self.assertRaisesRegex(ContractError, error):
+                    v5.verify_action_update(job, candidate)
 
 
 if __name__ == '__main__':

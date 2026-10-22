@@ -15,6 +15,7 @@ from . import resident_closed_action_training as closed_action
 
 SCHEMA = "heptatrader.laya-resident-objective.v5"
 ACTION_PHASE_SCHEMA = "heptatrader.laya-closed-action-phase.v1"
+ACTION_NUMERIC_SCHEMA = "heptatrader.v5-act-adapter-change.v1"
 PRICE_OUTPUT = "FROZEN_SAME_PRICE_TRAIN_ROWS_CALIBRATION_V1"
 ACTION_PHASE = {
     "epochs": 4, "max_pairs": 20, "max_unique_rows": 40,
@@ -173,6 +174,92 @@ def action_receipt(source, steps, profile, *, price_parameters_unchanged,
             "repeated_presentations_are_new_independent_rows": False}
 
 
+def verify_action_update(job, candidate):
+    """Read small pinned adapters, never torch/base or a claimed step alone.
+
+    An original scorer-only parent has zero ACT effective update because its
+    newly initialized B is zero. Its random A is not invented or reconstructed.
+    This proves a numeric adapter change, not future correctness or trade value.
+    """
+    import numpy as np
+    from safetensors import safe_open
+    from .integrity import validate_candidate_artifact
+    applied = candidate.get("action_phase", {}).get("applied_steps")
+    if (type(applied) is not int or applied <= 0 or
+            type(candidate.get("action_update_steps")) is not int or
+            candidate.get("action_update_steps") != applied or
+            candidate.get("action_head_trained") is not True):
+        raise ContractError("V5_ACT_NO_APPLIED_NUMERIC_UPDATE")
+    parent_dir = Path(job["parent_directory"])
+    parent_manifest = parent_dir/"candidate.json"
+    if sha_file(parent_manifest) != job["parent_manifest_sha256"]:
+        raise ContractError("V5_ACT_PARENT_MANIFEST_CHANGED")
+    parent = validate_candidate_artifact(parent_dir)
+    if parent["candidate_id"] != job["parent_id"] or candidate.get("parent_id") != job["parent_id"]:
+        raise ContractError("V5_ACT_PARENT_ID_CHANGED")
+    final_path = Path(job["output_directory"])/"adapter.safetensors"
+    if sha_file(final_path) != candidate.get("adapter_sha256"):
+        raise ContractError("V5_ACT_FINAL_ADAPTER_CHANGED")
+    keys = ("model.act_head.2.A", "model.act_head.2.B")
+    with safe_open(str(parent_dir/"adapter.safetensors"), framework="np") as parent_file, \
+            safe_open(str(final_path), framework="np") as final_file:
+        parent_keys, final_keys = set(parent_file.keys()), set(final_file.keys())
+        if (sorted(final_keys) != candidate.get("tensor_mask") or
+                {name for name in final_keys if ".act_head." in name} != set(keys) or
+                {name for name in parent_keys if ".act_head." in name} not in (set(), set(keys))):
+            raise ContractError("V5_ACT_ADAPTER_TENSOR_MASK")
+        # Read just the two tiny ACT factors. Header inspection does not load
+        # scorer tensors, a pretrained base, torch or any GPU state.
+        previous = {name: parent_file.get_tensor(name) for name in keys if name in parent_keys}
+        final = {name: final_file.get_tensor(name) for name in keys}
+    for name, shape in zip(keys, ((1, 64), (2, 1))):
+        for tensors in (final, previous):
+            if name not in tensors:
+                continue
+            value = tensors[name]
+            if value.dtype != np.float32 or value.shape != shape or not np.isfinite(value).all():
+                raise ContractError("V5_ACT_ADAPTER_SHAPE_DTYPE_OR_NUMBER")
+    statistics = candidate.get("changed_by_tensor")
+    if (not isinstance(statistics, dict) or
+            any(type(statistics.get(name)) is not int or
+                not 0 <= statistics[name] <= final[name].size for name in keys) or
+            sum(statistics[name] for name in keys) <= 0):
+        raise ContractError("V5_ACT_CHANGED_STATISTICS_REQUIRED")
+    has_parent_action = all(name in previous for name in keys)
+    changes = {name: (int(np.count_nonzero(final[name] != previous[name]))
+                      if has_parent_action else
+                      int(np.count_nonzero(final[name])) if name.endswith(".B") else None)
+               for name in keys}
+    if any(changes[name] is not None and changes[name] != statistics[name] for name in keys):
+        raise ContractError("V5_ACT_CHANGED_STATISTICS_MISMATCH")
+    with np.errstate(over="ignore", invalid="ignore"):
+        effect = final[keys[1]] @ final[keys[0]]
+        prior_effect = (previous[keys[1]] @ previous[keys[0]] if has_parent_action
+                        else np.zeros((2, 64), dtype=np.float32))
+    if not np.isfinite(effect).all() or not np.isfinite(prior_effect).all():
+        raise ContractError("V5_ACT_EFFECT_NONFINITE")
+    if np.array_equal(effect, prior_effect):
+        raise ContractError("V5_ACT_EFFECT_UNCHANGED")
+    if (sha_file(parent_manifest) != job["parent_manifest_sha256"] or
+            sha_file(parent_dir/"adapter.safetensors") != parent["adapter_sha256"] or
+            sha_file(final_path) != candidate["adapter_sha256"]):
+        raise ContractError("V5_ACT_ADAPTER_CHANGED_DURING_REPLAY")
+    delta = effect.astype(np.float64)-prior_effect.astype(np.float64)
+    return {"schema": ACTION_NUMERIC_SCHEMA,
+            "parent_manifest_sha256": job["parent_manifest_sha256"],
+            "parent_adapter_sha256": parent["adapter_sha256"],
+            "final_adapter_sha256": candidate["adapter_sha256"],
+            "parent_action_adapter_present": has_parent_action,
+            "missing_parent_action_effect": None if has_parent_action else "ZERO_B_INITIALIZATION",
+            "actual_factor_changed_counts": changes,
+            "missing_parent_A_changed_count_claimed": False,
+            "effective_changed_coordinates": int(np.count_nonzero(delta)),
+            "effective_max_absolute_change": float(np.abs(delta).max()),
+            "effective_delta_digest": digest(delta.tolist()),
+            "applied_steps": applied, "gpu_inference_replayed": False,
+            "future_value_proven": False, "model_or_trading_authority": False}
+
+
 def verify_candidate(job, candidate):
     check_job(job)
     if candidate.get("objective") != job["objective"]:
@@ -188,6 +275,8 @@ def verify_candidate(job, candidate):
         encoder_parameters_unchanged=phase.get("encoder_parameters_unchanged"))
     if phase != rebuilt or candidate.get("action_update_steps") != rebuilt["applied_steps"]:
         raise ContractError("V5_CANDIDATE_ACTION_RECEIPT_CHANGED")
+    if candidate.get("action_adapter_validation") != verify_action_update(job, candidate):
+        raise ContractError("V5_ACT_NUMERIC_RECEIPT_CHANGED")
     legacy = deepcopy(candidate)
     legacy["objective"] = deepcopy(previous.OBJECTIVE)
     frozen = legacy["training_episode"]

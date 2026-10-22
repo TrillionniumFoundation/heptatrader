@@ -326,6 +326,7 @@ def run_job(c,*,old_learner_verified=False):
      'price_optimizer_steps':len(steps),'action_optimizer_steps':len(action_phase['steps']),
      'price_unique_rows':len(rows),'action_unique_rows':action_phase['unique_rows'],
      'price_logits_cache_precedes_act_only_phase':True,'price_parameters_unchanged_during_act':True})
+   record['action_adapter_validation']=training_v5.verify_action_update(c,record)
   episode_policy.verify_candidate(c,record)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)

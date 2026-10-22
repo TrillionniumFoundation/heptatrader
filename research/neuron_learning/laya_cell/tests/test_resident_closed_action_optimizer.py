@@ -171,9 +171,6 @@ class CompleteV5TrainingIntegrationTests(unittest.TestCase):
         fixture = source_fixture.ClosedOriginalParentSourceTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        source = closed.freeze_source(fixture.root, source_fixture.PARENT, source_fixture.CUTOFF)
-        source_path = fixture.root/'source.json'
-        source_sha = closed.write_source(source_path, source)
         dataset, window, rows = real_dataset_population()
         window = {key: source_fixture.CUTOFF+(0 if key == 'training_end_ms' else
                   1000000 if key == 'validation_start_ms' else 2000000) for key in window}
@@ -184,28 +181,40 @@ class CompleteV5TrainingIntegrationTests(unittest.TestCase):
         (base/'base-manifest.json').write_text('{}')
         parent_dir = fixture.root/'parent'
         parent_dir.mkdir()
-        (parent_dir/'candidate.json').write_text('{}')
         raw = RawDecisionModel()
         initial_cell = ResidentDecisionCell(copy.deepcopy(raw), 'c'*64)
         save_file(initial_cell.trainable_state(), str(parent_dir/'adapter.safetensors'))
-        parent = {'candidate_id': source_fixture.PARENT, 'base_id': 'c'*64,
+        parent = {'base_id': 'c'*64,
+                  'adapter_sha256': sha_file(parent_dir/'adapter.safetensors'),
                   'base_revision': 'fixture', 'trained_until_ms': 0,
                   'window': {'training_end_ms': 0}}
+        parent['candidate_id'] = digest(parent)
+        (parent_dir/'candidate.json').write_text(json.dumps(parent))
+        for path in fixture.dir.glob('prediction-*.json'):
+            prediction = json.loads(path.read_text())
+            prediction['parent_id'] = parent['candidate_id']
+            path.write_text(json.dumps(prediction))
+            outcome_path = fixture.dir/path.name.replace('prediction-', 'outcome-')
+            outcome = json.loads(outcome_path.read_text())
+            outcome['prediction_file_sha256'] = sha_file(path)
+            outcome_path.write_text(json.dumps(outcome))
+        source = closed.freeze_source(fixture.root, parent['candidate_id'], source_fixture.CUTOFF)
+        source_path = fixture.root/'source.json'
+        source_sha = closed.write_source(source_path, source)
         row_ids = [resident_train.row_id(r) for r in rows]
         job = {'objective': copy.deepcopy(v5.OBJECTIVE), 'profile': resident_train.PROFILE,
             'base_directory': str(base), 'baseline_directory': str(base),
             'output_directory': str(fixture.root/'candidate'), 'parent_directory': str(parent_dir),
-            'parent_id': source_fixture.PARENT, 'parent_manifest_sha256': sha_file(parent_dir/'candidate.json'),
+            'parent_id': parent['candidate_id'], 'parent_manifest_sha256': sha_file(parent_dir/'candidate.json'),
             'dataset': str(dataset_path), 'dataset_sha256': sha_file(dataset_path), 'window': window,
             'training_row_ids': row_ids, 'training_row_accounting_schema': v5.ROW_ACCOUNTING_SCHEMA,
             'data_fingerprint': digest(row_ids), 'evaluation_directory': str(fixture.root),
             'closed_action_source': str(source_path), 'closed_action_source_sha256': source_sha,
-            'closed_action_source_id': source['source_id'], 'closed_action_parent_id': source_fixture.PARENT,
+            'closed_action_source_id': source['source_id'], 'closed_action_parent_id': parent['candidate_id'],
             'closed_action_training_cutoff_ms': source_fixture.CUTOFF,
             'generation': 0, 'native_binary': '/fixture/native', 'native_binary_sha256': 'f'*64}
         torch.set_num_threads(2)
         with patch.object(resident_train, 'verify_baseline', return_value='d'*64), \
-                patch.object(resident_train, 'validate_parent', return_value=parent), \
                 patch.object(resident_train, 'verify_source_prefixes'), \
                 patch.object(resident_train, 'require_pocket4_gpu', return_value=torch.device('cpu')), \
                 patch.object(resident_train, 'load_verified_laya', return_value=(raw, object(), 'c'*64)), \
@@ -224,10 +233,17 @@ class CompleteV5TrainingIntegrationTests(unittest.TestCase):
         self.assertEqual(candidate['action_phase']['attempted_steps'], 16)
         self.assertGreater(candidate['action_update_steps'], 0)
         self.assertTrue(candidate['action_head_trained'])
+        self.assertGreater(candidate['action_adapter_validation']['effective_changed_coordinates'], 0)
+        self.assertTrue(candidate['action_adapter_validation']['parent_action_adapter_present'])
+        self.assertFalse(candidate['action_adapter_validation']['gpu_inference_replayed'])
         self.assertTrue(candidate['action_phase']['price_parameters_unchanged'])
         self.assertEqual(len(candidate['final_price_raw_forward_receipts']), 32)
         calibration.verify_candidate_fit(job, candidate)
         v5.verify_candidate(job, candidate)
+        tampered = copy.deepcopy(candidate)
+        tampered['action_adapter_validation']['effective_changed_coordinates'] += 1
+        with self.assertRaisesRegex(ContractError, 'V5_ACT_NUMERIC_RECEIPT_CHANGED'):
+            v5.verify_candidate(job, tampered)
         persisted = json.loads((Path(job['output_directory'])/'candidate.json').read_text())
         self.assertEqual(persisted, candidate)
         self.assertEqual(candidate['candidate_id'], digest({k: v for k, v in candidate.items()
