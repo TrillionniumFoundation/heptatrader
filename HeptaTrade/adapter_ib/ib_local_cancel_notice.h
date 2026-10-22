@@ -1,5 +1,6 @@
 #pragma once
 #include "ib_api_wrapper.h"
+#include "ib_callback_quantity.h"
 #include <chrono>
 #include <cmath>
 #include <climits>
@@ -39,8 +40,8 @@ public:
         const auto& e=it->second;
         if(!std::isfinite(event.number2)||!std::isfinite(event.number3)||
             event.number2<0||event.number3<0||!std::isfinite(event.number2+event.number3)||
-            (e.cash==0&&(event.number2>e.quantity||event.number3>e.quantity||
-                       event.number2+event.number3>e.quantity))||
+            (e.cash==0&&!IbCallbackQuantitySumWithinTotal(
+                event.number2,event.number3,e.quantity))||
             (event.number2>0&&(!std::isfinite(event.number)||event.number<=0)))return;
         if(event.key=="Cancelled"||event.key=="ApiCancelled") {
             it->second.cancelled=true;it->second.observed=Clock::now();

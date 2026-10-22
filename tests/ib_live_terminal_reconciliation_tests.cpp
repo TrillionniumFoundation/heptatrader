@@ -971,6 +971,52 @@ void TestCancelledAndPartialCancelled() {
     assert(terminal.terminalStatusesByCorrelation.begin()->second=="Cancelled"&&terminal.executionOrderIds.count(id)==1);
     assert(terminal.generation>partial.generation);
 }
+void TestDecimalPartialCancellationConservesQuantityWithinOneUlp() {
+    const double quantity=0.09796555, filled=0.00385464, remaining=0.09411091;
+    assert(filled+remaining>quantity);
+    assert(filled+remaining==std::nextafter(quantity,std::numeric_limits<double>::infinity()));
+    const std::vector<std::function<void(IBEvent&)>> invalid={
+        [](IBEvent& e){++e.brokerClientId;},[](IBEvent& e){e.brokerClientId=-1;},
+        [](IBEvent& e){e.account="DU_OTHER";},[](IBEvent& e){++e.connectionEpoch;},
+        [](IBEvent& e){e.number2=-0.001;},[](IBEvent& e){e.number3=-0.001;},
+        [](IBEvent& e){e.number2=std::numeric_limits<double>::quiet_NaN();},
+        [](IBEvent& e){e.number3=std::numeric_limits<double>::infinity();},
+        [quantity](IBEvent& e){e.number2=std::nextafter(quantity,std::numeric_limits<double>::infinity());e.number3=0;},
+        [remaining](IBEvent& e){e.number3=std::nextafter(remaining,std::numeric_limits<double>::infinity());},
+        [](IBEvent& e){e.key="Filled";}};
+    for(std::size_t scenario=0;scenario<=invalid.size();++scenario) {
+        Fixture f;IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
+        contract.exchange="IDEALPRO";contract.currency="USD";
+        IBOrderLite order;order.action="BUY";order.orderType="LMT";order.lmtPrice=1.18;
+        order.totalQuantity=quantity;long id=-1;
+        assert(f.adapter.PlaceOrderCorrelated(contract,order,"hepta-v1-sha256:"+std::string(64,'a'),&id));
+        auto execution=f.Execution(filled);execution.number3=quantity-filled;
+        assert(f.Push(execution)==1);
+        auto status=f.Status("Cancelled",filled);status.number3=remaining;
+        if(scenario<invalid.size()) {
+            invalid[scenario](status);assert(f.Push(status)==0);
+            assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+        } else {
+            assert(f.Push(status)==1);
+            const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+            assert(terminal.terminalStatusesByCorrelation.begin()->second=="Cancelled");
+            assert(terminal.executionOrderIds.count(id)==1);
+        }
+    }
+    // The wrapper quantity tracker must retire the same independently rounded
+    // native cancellation, so a later execution cannot synthesize another status.
+    IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
+    contract.exchange="IDEALPRO";contract.currency="USD";
+    IBOrderLite order;order.action="BUY";order.totalQuantity=quantity;std::string reason;
+    assert(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'a'),order.orderRef,reason));
+    IBSubmittedOrderQuantityTracker tracker;tracker.Reset(1,73,"DU123");tracker.Record(919,contract,order);
+    tracker.ObserveOrderStatus(73,919,"Cancelled",filled,remaining,1.18);
+    IBEvent execution;execution.type=IBEventType::ExecutionDetails;execution.id=919;
+    execution.connectionEpoch=1;execution.brokerClientId=73;execution.requestId=-1;
+    execution.account="DU123";execution.key="late-original-exec";execution.value="BOT";
+    execution.number=1.18;execution.number2=filled;execution.contract=contract;execution.order.orderRef=order.orderRef;
+    assert(tracker.ObserveExecution(execution)==0);
+}
 void TestBoundContractExtensionsAndBrokerEnrichment() {
     IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
     contract.exchange="IDEALPRO";contract.currency="USD";
@@ -2191,6 +2237,7 @@ int main() {
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
+    TestDecimalPartialCancellationConservesQuantityWithinOneUlp();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();

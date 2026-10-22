@@ -13,7 +13,35 @@ struct Fixture {
  IBEvent notice()const{IBEvent e;e.type=IBEventType::Error;e.id=370;e.connectionEpoch=3;e.key="202";e.value="localized cancellation text is not authority";return e;}
  void callback(const IBEvent&e){witness.ObserveNativeStatus(e);if(IbAdmissionBlockingEvent(e))state.ObserveBlockingCallback(!witness.Corroborates(e));}
 };
+static void TestRoundedPartialQuantity() {
+ const double q=.09796555,filled=.00385464,remaining=.09411091;
+ const double infinity=std::numeric_limits<double>::infinity();
+ need(filled+remaining==std::nextafter(q,infinity),"real decimal pair crosses one binary64 step");
+ need(IbCallbackQuantitySumWithinTotal(filled,remaining,q),"single rounded sum accepted");
+ need(!IbCallbackQuantitySumWithinTotal(filled,std::nextafter(remaining,infinity),q),"two-step surplus rejected");
+ need(!IbCallbackQuantitySumWithinTotal(std::nextafter(q,infinity),0,q),"oversized individual fill rejected");
+ need(!IbCallbackQuantitySumWithinTotal(0,std::nextafter(q,infinity),q),"oversized individual remainder rejected");
+ need(!IbCallbackQuantitySumWithinTotal(-filled,remaining,q),"negative fill rejected");
+ need(!IbCallbackQuantitySumWithinTotal(filled,-remaining,q),"negative remainder rejected");
+ need(!IbCallbackQuantitySumWithinTotal(filled,remaining,infinity),"infinite total rejected");
+ need(!IbCallbackQuantitySumWithinTotal(infinity,0,q),"infinite fill rejected");
+ need(!IbCallbackQuantitySumWithinTotal(filled,std::numeric_limits<double>::quiet_NaN(),q),"NaN remainder rejected");
+ const double largest=std::numeric_limits<double>::max();
+ need(!IbCallbackQuantitySumWithinTotal(largest,largest,largest),"overflow sum rejected despite nextafter max being infinity");
+ need(IbCallbackQuantitySumWithinTotal(largest,0,largest),"finite maximal sum accepted");
+ const double tiny=std::numeric_limits<double>::denorm_min();
+ need(!IbCallbackQuantitySumWithinTotal(tiny,tiny,tiny),"subnormal one-step material surplus rejected");
+ need(IbCallbackQuantitySumWithinTotal(0,0,0),"exact zero sum accepted");
+ for(bool reserved:{false,true}) {
+  Fixture f;f.order.totalQuantity=q;f.witness.Record(370,f.order);
+  auto status=f.nativeStatus();status.number2=filled;status.number3=remaining;f.callback(status);
+  need(f.witness.Corroborates(f.notice()),"one-ULP native cancellation corroborates exact local order");
+  if(reserved) {std::uint64_t generation=0;need(f.state.Begin(generation),"begin rounded fixture admission");need(f.state.TryReserve(generation),"reserve rounded fixture admission");}
+  f.callback(f.notice());need(f.state.IsFailed()==reserved,"rounded witness cannot relax reserved quote safety");
+ }
+}
 int main(){try{
+ TestRoundedPartialQuantity();
  {Fixture f;f.callback(f.notice());need(f.state.IsFailed(),"uncorroborated 202 still faults idle");}
  {Fixture f;f.callback(f.nativeStatus());auto e=f.notice();need(IbAdmissionBlockingEvent(e),"generic 202 classification remains blocking");need(f.witness.Corroborates(e),"exact native cancellation corroborated");f.callback(e);need(!f.state.IsFailed(),"known local cancellation not global idle quote fault");std::uint64_t g=0;need(f.state.Begin(g),"subsequent quote admission possible");}
  for(bool reserved:{false,true}) {Fixture f;f.callback(f.nativeStatus());std::uint64_t g=0;need(f.state.Begin(g),"begin quote");if(reserved)need(f.state.TryReserve(g),"reserve quote");f.callback(f.notice());need(f.state.IsFailed(),"even known cancellation still blocks OPEN/RESERVED admission");}

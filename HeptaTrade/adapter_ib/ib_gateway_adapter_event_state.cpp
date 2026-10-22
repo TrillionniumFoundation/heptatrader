@@ -4,6 +4,7 @@
 #include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
 #include "ib_order_parse_rejection.h"
+#include "ib_callback_quantity.h"
 #include "../state/ib_contract_identity.h"
 
 #include <algorithm>
@@ -1890,8 +1891,8 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) c
         std::isfinite(event.number3) && event.number3 >= 0.0 &&
         std::isfinite(event.number2 + event.number3) &&
         (binding.cashQuantity > 0.0 ||
-         (event.number2 <= binding.quantity && event.number3 <= binding.quantity &&
-          event.number2 + event.number3 <= binding.quantity)) &&
+         IbCallbackQuantitySumWithinTotal(
+             event.number2, event.number3, binding.quantity)) &&
         (event.number2 == 0.0 || HasEconomicFillEvidence(event)) &&
         (event.key != "Filled" ||
          (event.number3 == 0.0 && (binding.cashQuantity > 0.0 ?
