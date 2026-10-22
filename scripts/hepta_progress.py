@@ -138,6 +138,9 @@ def unit_view(item):
 
 
 def selected_unit(name, item, units):
+    if (name in ("heptatrader-laya-trainer.service", "heptatrader-laya-evaluator.service")
+            and item.get("LoadState") == "loaded"):
+        return True
     if item.get("ActiveState") in ("active", "activating", "reloading"):
         return True
     timer = units.get(name.removesuffix(".service") + ".timer", {})
@@ -338,12 +341,10 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
     result["training_rollout"] = {**rollout_meta, **pick(rollout, "state", "reason",
         "waiting_for_plan_id", "target_objective", "target_runtime", "expected_outcome_end_ms",
         "trainer_paused", "committed_at_ms")}
-    awaiting_rollout = rollout.get("state") == "WAIT_FROZEN_TRIAL_43"
     timing_paths = {str(Path(path)) for path in timing_reports}
     for name, item in sorted(units.items()):
         selected = selected_unit(name, item, units)
-        if not name.endswith(".service") or not (selected or (
-                awaiting_rollout and name == "heptatrader-laya-trainer.service")):
+        if not name.endswith(".service") or not selected:
             continue
         argv = item.get("_argv", [])
         module = argument(argv, "-m") or ""
