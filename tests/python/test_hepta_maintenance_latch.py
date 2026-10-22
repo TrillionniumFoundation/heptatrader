@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 import json
+import shutil
 from unittest.mock import patch
 import hepta_maintenance_latch as latch
 
@@ -423,6 +424,56 @@ class NativeHoldResumeTests(unittest.TestCase):
             result = self.resume(check_only=True)
         self.assertEqual(latch._identity(self.kill_path.stat()), before)
         self.assertEqual(result["native_hold_resume"]["state"], "PRECHECK_ONLY_NATIVE_RELEASE_UNVERIFIED")
+
+    def _apply_user_tmpfiles(self):
+        source = Path(__file__).resolve().parents[2] / "tmpfiles.d/heptatrader-user.conf"
+        text = source.read_text()
+        entries = [line.split() for line in text.splitlines()
+                   if line.strip() and not line.lstrip().startswith("#")]
+        # Expand only the user-runtime prefix into this isolated fixture. No
+        # real /run/user path or unrelated system tmpfiles source is evaluated.
+        self.assertTrue(all(entry[1].startswith("%t/heptatrader") for entry in entries))
+        config = Path(self.temporary.name) / "user-tmpfiles.conf"
+        config.write_text(text.replace("%t/heptatrader", str(self.parent)))
+        result = subprocess.run([shutil.which("systemd-tmpfiles"), "--user", "--create",
+                                 "--prefix=" + str(self.parent), str(config)],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("systemd-tmpfiles"), "requires systemd-tmpfiles")
+    def test_real_user_tmpfiles_creates_independent_empty_hold(self):
+        self.control.rmdir(); self.parent.rmdir()
+        self._apply_user_tmpfiles()
+        self.assertEqual(self.kill_path.read_bytes(), b"")
+        self.assertEqual(stat.S_IMODE(self.kill_path.stat().st_mode), 0o440)
+        before = latch._identity(self.kill_path.stat())
+        startup = self.run_action("native-startup-hold")
+        self.assertFalse(startup["created_marker"])
+        self.assertEqual(latch._identity(self.kill_path.stat()), before)
+        with self.assertRaisesRegex(HoldError, "INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE"):
+            self.run_action("paper-on")
+        with patch.object(latch, "_command", side_effect=self.command):
+            checked = self.resume(check_only=True)
+        self.assertEqual(checked["native_hold_resume"]["state"],
+                         "PRECHECK_ONLY_NATIVE_RELEASE_UNVERIFIED")
+        self.assertEqual(latch._identity(self.kill_path.stat()), before)
+
+    @unittest.skipUnless(shutil.which("systemd-tmpfiles"), "requires systemd-tmpfiles")
+    def test_real_user_tmpfiles_reinstall_preserves_existing_unknown_payload(self):
+        self.kill_path.write_bytes(b"engaged")  # Historical tmpfiles payload has no newline.
+        self.kill_path.chmod(0o440)
+        inode = self.kill_path.stat().st_ino
+        self._apply_user_tmpfiles()
+        self.assertEqual(self.kill_path.read_bytes(), b"engaged")
+        self.assertEqual(self.kill_path.stat().st_ino, inode)
+        self.assertFalse(self.run_action("native-startup-hold")["created_marker"])
+        for check_only in (False, True):
+            with self.subTest(check_only=check_only), self.assertRaisesRegex(
+                    HoldError, "UNKNOWN_EXISTING_NATIVE_KILLSWITCH"):
+                perform("paper-on", self.control, self.state,
+                        resume_native_hold=check_only, check_only=check_only)
+        self.assertEqual(self.kill_path.read_bytes(), b"engaged")
+        self.assertEqual(self.kill_path.stat().st_ino, inode)
 
     def test_explicit_flag_is_scoped_and_never_clears_persistent_hold(self):
         for action in ("pause", "maintenance-release", "native-startup-hold"):

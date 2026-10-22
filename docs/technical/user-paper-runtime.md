@@ -160,6 +160,14 @@ record. Migrating an old uncoordinated startup hook requires manager reload and
 verification of unchanged running service identities; it does not require
 restarting native Execution. A subsequent restart engages the hold again.
 Neither command changes the system profile.
+
+The user tmpfiles configuration likewise creates an empty `0440` independent
+startup hold on a fresh runtime. Ordinary `paper-on` cannot remove it, and an
+explicit `--resume-native-hold --check` preserves it. Updating or reinstalling
+this configuration does not rewrite an existing marker, including an old
+unrecognized payload; neither tmpfiles nor startup silently converts or releases
+that protection.
+
 The runtime-directory preparation unit has no default dependency on basic.target;
 it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
 
