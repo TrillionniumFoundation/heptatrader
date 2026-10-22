@@ -20,7 +20,8 @@ from . import resident_training_v2 as training_v2
 from . import resident_training_v3 as training_v3
 from . import resident_training_v4 as training_v4
 from . import resident_price_baselines as price_refs
-from .resident_queue import inspect as inspect_evaluation_queue
+from .resident_queue import (inspect as inspect_evaluation_queue,
+ check_overlap_config, registration_policy)
 
 # No torch import in the resident scheduler; GPU memory belongs to bounded children.
 MIN_CADENCE_MS=900000
@@ -98,6 +99,7 @@ def config_check(config):
  if config.get('future_plan_admission_profile') is not None:
   from .resident_plan_admission import check_config as check_forward_plan_config
   check_forward_plan_config(config)
+ check_overlap_config(config)
  return config
 
 
@@ -198,6 +200,11 @@ class Supervisor:
    'trial':trial,'rule':rule,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
    'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/promotion_power.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json')}
+  # Older releases do not contain this optional route. A missing pin must not
+  # become a null plan hash that later rejects every new evaluation.
+  retained_pin=self.c.get('runtime_sha256',{}).get('learn/laya_cell/resident_retained_closeout.py')
+  if retained_pin is not None:
+   plan['evaluation_runtime_sha256']['learn/laya_cell/resident_retained_closeout.py']=retained_pin
   if self.c.get('future_source_read_profile') is not None:
    from .resident_source_policy import RECENT,RUNTIME_PIN
    if self.c['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
@@ -340,13 +347,17 @@ class Supervisor:
       and queue['pending_original_trials']
       and self._finish_impossible_forward_registration(waiting[0])):
    waiting,registration=self._waiting_evaluations()
-  if (waiting and queue['pending_original_trials']==0
+  blocking=(registration_policy(queue,self.c,json.loads(waiting[0]['payload']),waiting[0]['created_ms'])['blocking_trials']
+            if waiting else 0)
+  if (waiting and blocking==0
       and not (self.c.get('future_plan_admission_profile') is not None and self._closed_registration_unchanged(waiting[0]))):
    if not self.candidate_done(waiting[0]):raise ContractError('COMMITTED_CANDIDATE_MISSING')
    queue=inspect_evaluation_queue(self.c)
    waiting,registration=self._waiting_evaluations()
   queue.update(registration)
   queue['deferred_training_candidates']=len(waiting)
+  queue['forward_registration_blocking_trials']=(registration_policy(
+   queue,self.c,json.loads(waiting[0]['payload']),waiting[0]['created_ms'])['blocking_trials'] if waiting else 0)
   return queue
  def sync_rewards(self,now=None):
   """Bookkeeping under the scheduler lock, never the heavy-worker lease.

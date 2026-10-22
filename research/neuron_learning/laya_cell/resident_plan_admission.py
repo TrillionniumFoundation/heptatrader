@@ -16,7 +16,7 @@ import uuid
 
 from .integrity import ContractError, canonical, digest, read_json, sha_file
 from .resident_store import get_meta, put_meta, atomic
-from .resident_queue import inspect as inspect_queue
+from .resident_queue import inspect as inspect_queue, registration_policy, OVERLAP_PROFILE
 from .resident_plan_calendar import calendar_admission
 from .resident_source_policy import read_for_future_plan
 from .resident_data import forecast_input
@@ -40,6 +40,13 @@ def check_config(config):
     effective = config.get("future_plan_admission_effective_at_ms")
     if type(effective) is not int or effective <= 0:
         raise ContractError("FORWARD_PLAN_POLICY_EFFECTIVE_TIME_REQUIRED")
+    retained = config.get('retained_registration_configs', [])
+    if (type(retained) is not list or len(retained) > 32
+            or any(type(e) is not dict or set(e) != {'path', 'sha256'}
+                   or type(e['path']) is not str or not Path(e['path']).is_absolute()
+                   or type(e['sha256']) is not str or len(e['sha256']) != 64
+                   for e in retained)):
+        raise ContractError('RETAINED_REGISTRATION_CONFIG_LIST')
     pins = config.get("runtime_sha256", {})
     if any(not isinstance(pins.get(name), str) or len(pins[name]) != 64
            for name in RUNTIME_PIN):
@@ -207,7 +214,7 @@ def _identity(service, job_id, candidate, job):
     if (read_json(manifest) != candidate or candidate.get("candidate_id") != digest(
             {k: v for k, v in candidate.items() if k != "candidate_id"})):
         raise ContractError("FORWARD_CANDIDATE_CHANGED_DURING_REGISTRATION")
-    return {
+    identity = {
         "schema": SCHEMA, "job_id": job_id,
         "candidate_id": candidate["candidate_id"],
         "candidate_manifest_sha256": sha_file(manifest),
@@ -218,6 +225,33 @@ def _identity(service, job_id, candidate, job):
         "training_state": "COMPLETED", "performance_assessment": False,
         "broker_orders_sent": 0,
     }
+    # Replaying an already allocated plan or immutable terminal receipt uses
+    # its original policy identity. No new decision is made under old pins.
+    # An old DEFERRED receipt still needs a new decision: complete it under
+    # its original runtime before migration rather than impersonating old code.
+    previous = get_meta(service.db, KEY_PREFIX + job_id)
+    keys = ('profile', 'policy_effective_at_ms', 'policy_runtime_sha256')
+    if (isinstance(previous, dict)
+            and previous.get('state') in ('RESERVED', 'PUBLISHED', 'NO_FORWARD_TRIAL')
+            and any(previous.get(k) != identity[k] for k in keys)):
+        for entry in service.c.get('retained_registration_configs', []):
+            path = Path(entry['path'])
+            if sha_file(path) != entry['sha256']:
+                raise ContractError('RETAINED_REGISTRATION_CONFIG_CHANGED')
+            old = read_json(path)
+            check_config(old)
+            if (old.get('period_sha256') != service.c['period_sha256']
+                    or old.get('evaluation_directory') != service.c['evaluation_directory']):
+                raise ContractError('RETAINED_REGISTRATION_SCOPE_CHANGED')
+            policy = {'profile': old.get('future_plan_admission_profile'),
+                      'policy_effective_at_ms': old.get('future_plan_admission_effective_at_ms'),
+                      'policy_runtime_sha256': {n: old['runtime_sha256'][n] for n in RUNTIME_PIN}}
+            if all(previous.get(k) == policy[k] for k in keys):
+                identity.update(policy)
+                break
+        else:
+            raise ContractError('FROZEN_REGISTRATION_POLICY_CONFIG_REQUIRED')
+    return identity
 
 
 def _sealed(identity, state, now_ms, **extra):
@@ -336,7 +370,10 @@ def register(service, job_id, candidate, job, *, clock=None):
             if type(checked) is not int or checked < identity["policy_effective_at_ms"]:
                 raise ContractError("FORWARD_PLAN_POLICY_CLOCK_REGRESSION")
             current = _unreserved_history(service)
-            if inspect_queue(service.c)["pending_original_trials"]:
+            queue = inspect_queue(service.c)
+            created = service.db.execute('SELECT created_ms FROM jobs WHERE id=?', (job_id,)).fetchone()[0]
+            admission_queue = registration_policy(queue, service.c, job, created)
+            if admission_queue['blocking_trials']:
                 record = _sealed(identity, "DEFERRED", checked,
                                  reason="PRIOR_ORIGINAL_TRIAL_PENDING")
             else:
@@ -383,6 +420,8 @@ def register(service, job_id, candidate, job, *, clock=None):
                         "candidate_window_bound_is_new_admission_rule": True,
                         "future_data_availability_proven": False,
                     }
+                    if admission_queue['profile'] == OVERLAP_PROFILE:
+                        proposal['registration_admission']['trial_queue'] = admission_queue
                     proposal["plan_id"] = digest(proposal)
                     record = _sealed(identity, "RESERVED", checked, plan=proposal)
                     put_meta(service.db, "evaluation_trial", current + 1)

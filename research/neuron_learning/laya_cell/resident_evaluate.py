@@ -86,7 +86,7 @@ class Evaluator:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=read_json(self.path);self.root=Path(self.c['evaluation_directory'])
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
-  self.stop=False;self.tasks={};self.last_log_ms=0
+  self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
  def signal(self,*_):
   self.stop=True
   for p,stream,started in self.tasks.values():
@@ -149,6 +149,7 @@ class Evaluator:
    write_once(path.parent/f'failure-{slot:03}.json',failure)
  def step(self):
   self.reap();now=int(time.time()*1000)
+  if not hasattr(self,'_retained_closeout_cache'):self._retained_closeout_cache={}
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('EVAL_PERIOD_CHANGED')
   # A source scan is only needed for a genuinely mature prediction.
   # Never spend a full archive decode while every active trial is already lost.
@@ -156,7 +157,7 @@ class Evaluator:
   _outcome_source_snapshots={}
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[]
   for path in plans:
    plan=read_json(path)
    if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
@@ -171,6 +172,16 @@ class Evaluator:
      raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
     counts[q['state']]=counts.get(q['state'],0)+1
     observed+=q.get('observed',0);censored+=q.get('censored',0)
+    continue
+   from .resident_retained_closeout import run_retained
+   retained=run_retained(self.c,path,plan,self._retained_closeout_cache,now)
+   if retained is not None:
+    for state,count in retained['counts'].items():counts[state]=counts.get(state,0)+count
+    observed+=retained['observed'];censored+=retained['censored']
+    futile_pending+=retained.get('futile_pending_plans',0)
+    launches_suppressed+=retained.get('new_prediction_launches_suppressed',0)
+    retained_plans.append({'plan_id':plan['plan_id'],'original_runtime_executed':True,
+     'new_heavy_workers_allowed':False,'last_closeout_at_ms':retained['at_ms']})
     continue
    pins=plan.get('evaluation_runtime_sha256');runtime=Path(self.c.get('runtime_directory',''))
    source_ok=isinstance(pins,dict) and bool(pins) and all(v and sha_file(runtime/k)==v for k,v in pins.items())
@@ -279,6 +290,7 @@ class Evaluator:
    'latest_quote_ms':quotes[-1]['t'] if quotes else None,
    'latest_quote_scope':'OUTCOME_SOURCE_SNAPSHOT_NOT_GLOBAL_SOURCE_HEALTH',
    'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
+   'retained_futile_plan_closeouts':retained_plans,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
    'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}
