@@ -918,17 +918,10 @@ bool HeptaIBGatewayAdapter::AcknowledgePostFillRiskReconciled(long orderId) {
         return false;
     m_postFillExposureGenerationByOrderId.erase(orderId);
     m_orderRiskBaselines.erase(orderId);
-    if (m_correlationSnapshot.complete) {
-        m_correlationSnapshot.activeOrderIds.erase(orderId);
-        for (std::map<std::string, long>::iterator it =
-                 m_correlationSnapshot.activeOrderIdsByCorrelation.begin();
-             it != m_correlationSnapshot.activeOrderIdsByCorrelation.end();) {
-            if (it->second == orderId)
-                it = m_correlationSnapshot.activeOrderIdsByCorrelation.erase(it);
-            else
-                ++it;
-        }
-    }
+    // The terminal callback can defer retirement until this acknowledgement.
+    // Retire the complete owner identity, including permId/protective metadata,
+    // through the same foreign-client guard as ordinary terminal callbacks.
+    RetireTerminalActiveOrder(orderId, false);
     return true;
 }
 

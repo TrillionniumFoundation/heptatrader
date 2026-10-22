@@ -1195,6 +1195,60 @@ void TestValidatedSyntheticFillWithoutNativeStatus() {
     assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.empty());
     assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
 }
+void TestPostFillAcknowledgementRetiresAllActiveIdentityMetadata() {
+    for (bool nativeTerminal : {false, true}) {
+        for (bool foreignActive : {false, true}) {
+            Fixture f; const long id=f.Place();
+            auto echo=f.Event(IBEventType::OpenOrder);
+            echo.id=id;echo.brokerPermId=990023;echo.value="Submitted";
+            echo.order=f.broker->submitted;echo.order.orderType="STP";
+            echo.order.auxPrice=97.0;f.Push(echo);
+            if (foreignActive) {
+                auto foreign=echo;foreign.id=777;foreign.brokerClientId=999;
+                foreign.brokerPermId=990777;foreign.order.orderRef.clear();
+                f.Push(foreign);
+            }
+            const auto active=f.adapter.GetAuthoritativeCorrelationSnapshot();
+            assert(active.complete && active.activeOrderIds.count(id)==1);
+            assert(active.activeOrderClientIdsByOrderId.at(id)==73);
+            assert(active.activeOrderByPermanentId.count(990023)==1);
+            assert(active.visibleProtectiveCandidatesByPermId.count(990023)==1);
+
+            f.Push(f.Execution());
+            if (nativeTerminal) f.Push(f.Status());
+            // A terminal callback cannot retire the identity before the
+            // economic fill has been absorbed by the coherent risk view.
+            assert(!f.adapter.AcknowledgePostFillRiskReconciled(id));
+            assert(f.adapter.GetAuthoritativeCorrelationSnapshot().
+                   activeOrderClientIdsByOrderId.count(id)==1);
+            f.AbsorbFill(id);
+
+            const auto retired=f.adapter.GetAuthoritativeCorrelationSnapshot();
+            assert(retired.complete && retired.activeOrderIds.count(id)==0);
+            assert(retired.activeOrderClientIdsByOrderId.count(id)==0);
+            assert(retired.activeOrderByPermanentId.count(990023)==0);
+            assert(retired.visibleProtectiveCandidatesByPermId.count(990023)==0);
+            assert(retired.activeOrderIdsByCorrelation.empty());
+            assert(retired.activeOrderIds.size()==
+                   retired.activeOrderClientIdsByOrderId.size());
+            assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
+            assert(!f.adapter.AcknowledgePostFillRiskReconciled(id));
+            if (foreignActive) {
+                assert(retired.activeOrderIds.count(777)==1);
+                assert(retired.activeOrderClientIdsByOrderId.at(777)==999);
+                assert(retired.activeOrderByPermanentId.count(990777)==1);
+                assert(retired.visibleProtectiveCandidatesByPermId.count(990777)==1);
+            }
+            assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+            const auto evidence=InspectIbPaperAccountBrokerEvidence(
+                f.adapter.GetAuthoritativeRecoveryAuditSnapshot(),73);
+            assert(evidence.snapshotCoherent);
+            assert(evidence.globalActiveOrders==(foreignActive?1U:0U));
+            assert(evidence.foreignActiveOrders==(foreignActive?1U:0U));
+            assert(f.broker->places==1 && f.broker->cancels==0);
+        }
+    }
+}
 void TestExactNativeTerminalStatusReplayPreservesRecoveryAudit() {
     // Original callbacks from the fake broker; no socket, account or live send.
     for (int scenario=0; scenario<3; ++scenario) {
@@ -2369,6 +2423,7 @@ int main(int argc, char** argv) {
     TestDecimalPartialCancellationConservesQuantityWithinOneUlp();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
+    TestPostFillAcknowledgementRetiresAllActiveIdentityMetadata();
     TestQuarantineInvalidatesRecoveryBarrier();
     TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerTouchedConditionalOrdersStayInGlobalCensus();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
