@@ -25,13 +25,17 @@ action/abstention head remain frozen. Zero delta must reproduce the complete
 pretrained forward output. The action head is neither trained nor connected to
 orders.
 
-Actual target environment: Python 3.14; PyTorch 2.11.0+rocm7.13.0 from AMD's gfx1150
-index; Laya 0.3.28; Transformers 5.3.0. The pretrained tokenizer's list-valued
-extra-special-token format is incompatible with the tested Transformers 4.57.6
-loader. Use the compatible implementation, not an edited tokenizer_config.json.
-`requirements.lock.txt` records the installed environment; install ROCm torch from
-its explicit AMD index before the remaining packages. The training entry point
-requires actual `gfx1150` HIP execution; no CPU training fallback exists.
+Current resident environment (2026-10-22): Linux x86_64, Python 3.14,
+PyTorch 2.13.0+rocm7.14.0 from AMD's multi-architecture index, Laya 0.3.28 and
+Transformers 5.20.2. `requirements.lock.txt` matches the 47 runtime packages plus
+the pip bootstrap in the GPU-tested resident environment. Runtime artifacts use explicit public URLs
+and SHA-256 fragments; pip is pinned by version as the environment bootstrap.
+This includes AMD's gfx1150 device packages, rather than relying on PyPI to select
+a GPU build. Historical trial runtimes retain their own original environment
+manifests. The pretrained tokenizer's list-valued extra-special-token format was
+incompatible with Transformers 4.57.6; keep the original tokenizer configuration.
+The training entry point requires actual `gfx1150` HIP execution; no CPU training
+fallback exists.
 
 ## Bootstrap preservation
 
@@ -120,10 +124,8 @@ Use a dedicated user-owned environment and private model/output paths. No root,
 GPU firmware update, system-Python modification or CPU fallback is necessary.
 
 ```sh
-python3 -m venv "$VENV"
-"$VENV/bin/python" -m pip install --index-url https://repo.amd.com/rocm/whl/gfx1150/ \
-  'torch==2.11.0+rocm7.13.0'
-"$VENV/bin/python" -m pip install 'laya==0.3.28' 'transformers==5.3.0' 'numpy==2.4.1' protobuf
+python3.14 -m venv "$VENV"
+"$VENV/bin/python" -m pip install -r research/neuron_learning/laya_cell/requirements.lock.txt
 export PYTHONPATH=research/neuron_learning
 "$VENV/bin/python" -m laya_cell.integrate_native \
   --original research/neuron_learning/native/main.rs --destination "$NEW_NATIVE_SOURCE"
