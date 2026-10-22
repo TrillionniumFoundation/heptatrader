@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import selectors
 import stat
 import subprocess
 import sys
@@ -115,13 +116,80 @@ def write_snapshot(path: Path, value: dict, exclusive: bool = False) -> None:
 
 
 class NativeReader:
-    def __init__(self, prefix: Path, config: Path, socket: Path):
+    def __init__(self, prefix: Path, config: Path, socket: Path, *, persistent: bool = False):
         self.prefix, self.config, self.socket = prefix, config, socket
+        self.persistent = persistent
+        self._processes = {}
+
+    def _close_process(self, instrument):
+        process = self._processes.pop(instrument, None)
+        if process is None:
+            return
+        # Only the owned read-only CLI is terminated, never a trading service.
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=0.5)
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+
+    def close(self):
+        for instrument in list(self._processes):
+            self._close_process(instrument)
+
+    def _stream_read(self, instrument, tool, token):
+        process = self._processes.get(instrument)
+        if process is None:
+            args = [str(self.prefix / "bin/heptactl"), "--socket", str(self.socket),
+                    "--token-file", str(token), "--io-timeout-ms", "2000", "pnl-read-stream"]
+            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, bufsize=0)
+            self._processes[instrument] = process
+        request = tool + (" " + instrument if tool == "market.get_quote" else "") + "\n"
+        try:
+            if process.poll() is not None:
+                raise EvidenceError("PNL_READ_STREAM_CLOSED")
+            process.stdin.write(request.encode("ascii"))
+            deadline = time.monotonic() + 4.0
+            data = bytearray()
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise EvidenceError("PNL_READ_STREAM_TIMEOUT")
+                    chunk = os.read(process.stdout.fileno(), min(65536, 1048578 - len(data)))
+                    if not chunk:
+                        raise EvidenceError("PNL_READ_STREAM_CLOSED")
+                    data.extend(chunk)
+                    if len(data) > 1048577:
+                        raise EvidenceError("PNL_READ_STREAM_RESPONSE_TOO_LARGE")
+                    if b"\n" in data:
+                        line, extra = bytes(data).split(b"\n", 1)
+                        if extra:
+                            raise EvidenceError("PNL_READ_STREAM_UNEXPECTED_RESPONSE")
+                        value = strict_json(line.decode("utf-8"))
+                        if value.get("tool") != tool:
+                            raise EvidenceError("PNL_READ_STREAM_TOOL_MISMATCH")
+                        if value.get("status") != "ok" or not isinstance(value.get("payload"), dict):
+                            raise EvidenceError(str(value.get("reason_code") or "NATIVE_READ_FAILED"))
+                        return value["payload"]
+        except (OSError, ValueError):
+            # The failed read is never retried. A later read may start a new
+            # reader and obtain a newly verified discovery catalog.
+            self._close_process(instrument)
+            raise
 
     def __call__(self, instrument: str, tool: str) -> dict:
         if instrument not in INSTRUMENTS or tool not in READ_TOOLS:
             raise EvidenceError("PNL_READ_ONLY_TOOL_ALLOWLIST")
         token = self.config / ("crypto.token" if instrument == "BTC.USD" else "paper.token")
+        if self.persistent:
+            return self._stream_read(instrument, tool, token)
         # Never read/log the token's contents; pass the existing private path.
         args = [str(self.prefix / "bin/heptactl"), "--socket", str(self.socket),
                 "--token-file", str(token), "--io-timeout-ms", "2000", "call", tool]
@@ -701,14 +769,18 @@ def main(argv=None) -> int:
     parser.add_argument("--socket", type=Path, default=Path(f"/run/user/{os.geteuid()}/heptatrader/tools.sock"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--interval-sec", type=float, default=5.0)
+    parser.add_argument("--persistent-native-reader", action="store_true",
+                        help="reuse the matching heptactl pnl-read-stream client during --watch")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
     if not 1 <= args.interval_sec <= 3600:
         parser.error("interval must be between 1 and 3600 seconds")
+    if args.persistent_native_reader and not args.watch:
+        parser.error("--persistent-native-reader requires --watch and a matching heptactl")
     if os.geteuid() == 0:
         parser.error("run as the unprivileged PAPER account owner")
     output = args.output or args.state_root / "pnl/snapshot.json"
-    reader = NativeReader(args.prefix, args.config, args.socket)
+    reader = NativeReader(args.prefix, args.config, args.socket, persistent=args.persistent_native_reader)
     os.umask(0o077)
     if args.import_flex:
         if not args.statement_timezone:
@@ -742,39 +814,42 @@ def main(argv=None) -> int:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         signal.signal(signal.SIGTERM, stopping)
         signal.signal(signal.SIGINT, stopping)
-    while not stop:
-        start = time.monotonic()
-        report = None
-        for _ in range(3 if not args.cached else 1):
-            try:
-                report = cached(output, args.period, args.state_root) if args.cached else collect(reader, args.period, args.state_root, journal_parser)
-                break
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                report = unavailable(str(error) if isinstance(error, EvidenceError) else type(error).__name__)
-                if not isinstance(error, EvidenceError) or "CHANGED" not in str(error):
+    try:
+        while not stop:
+            start = time.monotonic()
+            report = None
+            for _ in range(3 if not args.cached else 1):
+                try:
+                    report = cached(output, args.period, args.state_root) if args.cached else collect(reader, args.period, args.state_root, journal_parser)
                     break
-        try:
-            report = attach_account(report, args.period, args.state_root, args.config)
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            report["account"] = {"nav": None, "nav_complete": False, "complete": False,
-                "observed_nav": None, "observation_complete": False, "observation_observed_at_ms": None,
-                "mutation_authorized": False, "reason_codes": [str(error) if isinstance(error, EvidenceError) else "ACCOUNT_REPORT_UNAVAILABLE"]}
-            report["account_nav"] = None
-            report["account_complete"] = False
-            report["account_observed_nav"] = None
-            report["account_observation_complete"] = False
-            report["all_in_account_net_pnl"] = None
-        if args.watch or (args.output and not args.cached):
-            write_snapshot(output, report)
-        if not args.watch:
-            view = report.get("account", {}) if args.account else report
-            print(json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) if args.format == "json" else (render_account(view) if args.account else render(report)))
-            return 0 if (view.get("observation_complete") if args.account else report.get("complete")) else 2
-        deadline = start + args.interval_sec
-        while not stop and time.monotonic() < deadline:
-            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
-    if journal_parser is not None:
-        journal_parser.close()
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                    report = unavailable(str(error) if isinstance(error, EvidenceError) else type(error).__name__)
+                    if not isinstance(error, EvidenceError) or "CHANGED" not in str(error):
+                        break
+            try:
+                report = attach_account(report, args.period, args.state_root, args.config)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                report["account"] = {"nav": None, "nav_complete": False, "complete": False,
+                    "observed_nav": None, "observation_complete": False, "observation_observed_at_ms": None,
+                    "mutation_authorized": False, "reason_codes": [str(error) if isinstance(error, EvidenceError) else "ACCOUNT_REPORT_UNAVAILABLE"]}
+                report["account_nav"] = None
+                report["account_complete"] = False
+                report["account_observed_nav"] = None
+                report["account_observation_complete"] = False
+                report["all_in_account_net_pnl"] = None
+            if args.watch or (args.output and not args.cached):
+                write_snapshot(output, report)
+            if not args.watch:
+                view = report.get("account", {}) if args.account else report
+                print(json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) if args.format == "json" else (render_account(view) if args.account else render(report)))
+                return 0 if (view.get("observation_complete") if args.account else report.get("complete")) else 2
+            deadline = start + args.interval_sec
+            while not stop and time.monotonic() < deadline:
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+    finally:
+        reader.close()
+        if journal_parser is not None:
+            journal_parser.close()
     return 0
 
 

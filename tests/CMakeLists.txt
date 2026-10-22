@@ -76,6 +76,13 @@ target_link_libraries(hepta_native_tool_client_tests
     hepta_native_tool_client)
 hepta_register_core_test(hepta_native_tool_client_tests)
 
+add_executable(hepta_pnl_read_stream_tests
+    heptactl_pnl_stream_tests.cpp
+    ../HeptaTrade/cli/heptactl_pnl_stream.cpp
+    ../HeptaTrade/cli/heptactl_exit_codes.cpp)
+target_link_libraries(hepta_pnl_read_stream_tests PRIVATE hepta_native_tool_client)
+hepta_register_core_test(hepta_pnl_read_stream_tests)
+
 add_executable(hepta_execution_coordinator_tests
     execution_coordinator_tests.cpp
     execution_coordinator_test_support.cpp

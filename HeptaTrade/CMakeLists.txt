@@ -353,6 +353,7 @@ set_target_properties(hepta_ib_profile PROPERTIES OUTPUT_NAME "hepta-ib-profile"
 add_executable(heptactl
     cli/heptactl.cpp
     cli/heptactl_command.cpp
+    cli/heptactl_pnl_stream.cpp
     cli/heptactl_exit_codes.cpp)
 target_include_directories(heptactl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
