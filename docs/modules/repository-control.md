@@ -19,10 +19,14 @@ is reported as missing, never as PASS and never as a reason to wait indefinitely
 
 `python3 scripts/run_python_tests.py --lane core` runs portable behavior tests;
 `--lane source` runs source/build contracts. `--lane external` retains the tests
-that execute separately built Canonical Rust fixtures. Missing fixtures fail that
+that execute separately built Canonical Rust and Laya native fixtures. Missing fixtures fail that
 selected lane rather than becoming a requirement for unrelated core development.
 The pure wire-format tests remain in core. All discovered files have exactly one
 partition; no skipped selected test is reported as complete acceptance.
+`--lane learning` also discovers every in-package Laya fixture automatically.
+Native conformance classes and the native verifier method are explicitly routed
+to external; their CPU siblings, including registration recovery and calendar
+admission, run in learning without a separately maintained module allowlist.
 
 `--lane legacy` retains the archived Desktop qualification contract fixtures.
 [Archived qualification contracts](../../.github/workflows/legacy-qualification.yml)

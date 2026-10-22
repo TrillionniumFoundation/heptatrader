@@ -11,7 +11,7 @@ from laya_cell.resident_recent_source import (
 from laya_cell.resident_data import read_quotes,forecast_input
 from laya_cell.integrity import ContractError, digest
 from laya_cell.source_archive import inventory
-import test_source_archive as archive_fixture
+from laya_cell.tests import test_source_archive as archive_fixture
 
 
 class RecentSourceStrictParityTests(unittest.TestCase):

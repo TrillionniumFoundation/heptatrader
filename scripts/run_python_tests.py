@@ -63,14 +63,35 @@ LEARNING_TESTS = frozenset({
 })
 
 
-# In-package CPU fixture suites share the same learning execution and result.
-NESTED_LEARNING_MODULES = frozenset({
-    "laya_cell.tests.test_resident_row_worker",
-    "laya_cell.tests.test_resident_price_baselines",
-    "laya_cell.tests.test_resident_training_v3",
-    "laya_cell.tests.test_resident_training_v4",
-    "laya_cell.tests.test_resident_lineage",
+# Discover in-package fixtures as well: a second allowlist hid calendar,
+# registration recovery, source and financial learner regressions from CI.
+NESTED_LEARNING_MODULES = frozenset(
+    "laya_cell.tests." + path.stem
+    for path in (ROOT / "research/neuron_learning/laya_cell/tests").glob("test_*.py")
+    if path.is_file()
+)
+# These classes/methods invoke separately built native fixtures. Ordinary
+# learning runs import their modules but never execute these external tests.
+NESTED_EXTERNAL_TESTS = frozenset({
+    "laya_cell.tests.test_contracts.NativeConformance",
+    "laya_cell.tests.test_resident.NativeResidentTests",
+    "laya_cell.tests.test_financial_forward_trust.SelectorGateTests.test_native_accepted_boolean_cannot_substitute_certificates",
 })
+
+
+def external_nested_case(case: unittest.TestCase) -> bool:
+    name = case.id()
+    return any(name == external or name.startswith(external + ".")
+               for external in NESTED_EXTERNAL_TESTS)
+
+
+def learning_cases(suite: unittest.TestSuite):
+    """Retain import failures and CPU cases, excluding explicit native fixtures."""
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from learning_cases(item)
+        elif not external_nested_case(item):
+            yield item
 
 
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
@@ -125,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
     selected = set.union(*groups.values()) if args.lane == "all" else groups[args.lane]
-    nested = NESTED_LEARNING_MODULES if args.lane in ("learning", "all") else frozenset()
+    nested = (NESTED_LEARNING_MODULES if args.lane in ("learning", "all") else
+              NESTED_EXTERNAL_TESTS if args.lane == "external" else frozenset())
     if args.list:
         print("\n".join(sorted(selected | nested)))
         return 0
@@ -133,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     loader = unittest.TestLoader()
     modules = {Path(name).stem for name in selected} | nested
     suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in sorted(modules))
+    if args.lane == "learning":
+        suite = unittest.TestSuite(learning_cases(suite))
     # Import failures are represented by unittest._FailedTest instances.
     # Run them with the valid modules so a broken import cannot hide the rest
     # of the lane, while the aggregate result still fails.
