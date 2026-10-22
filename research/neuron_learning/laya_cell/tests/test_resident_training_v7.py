@@ -32,6 +32,7 @@ _legacy_encode = fixture._encode
 
 def _encode(tokenizer, rows, *, price_input_profile=None):
     values = _legacy_encode(tokenizer, rows)
+    values['marker_mask'] = torch.ones((len(rows), 7), dtype=torch.bool)
     if price_input_profile == inputs.COMPACT:
         # Deliberately distinguish the two input paths without label access.
         values['x'][:, 6, 6] *= .5
@@ -39,6 +40,14 @@ def _encode(tokenizer, rows, *, price_input_profile=None):
     elif price_input_profile not in (None, inputs.RAW):
         raise AssertionError('unknown fixture input profile')
     return values
+
+
+class _MaskedRawDecisionModel(fixture._RawDecisionModel):
+    def forward(self, x, marker_mask=None):
+        price, act = super().forward(x)
+        if marker_mask is not None:
+            price = price.masked_fill(~marker_mask, -1e4)
+        return price, act
 
 
 class CompactInputContractTests(unittest.TestCase):
@@ -119,8 +128,28 @@ class CompactInputContractTests(unittest.TestCase):
 class ProspectiveV7IntegrationTests(unittest.TestCase):
     def fixture(self, target):
         torch.set_num_threads(2)
-        with patch.object(fixture, 'policy', v7), patch.object(fixture, '_encode', _encode):
+        with patch.object(fixture, 'policy', v7), patch.object(fixture, '_encode', _encode), \
+                patch.object(fixture, '_RawDecisionModel', _MaskedRawDecisionModel), \
+                patch.object(torch.accelerator, 'current_accelerator', return_value=None):
             return fixture.ProspectiveV6IntegrationTests.fixture(self, target)
+
+    def test_worker_cache_receives_real_marker_masks_and_distinct_full_batches(self):
+        original = worker._frozen_price_logits
+        misses = []
+        def observed(cell, encoded, device, profile):
+            self.assertEqual(profile, inputs.COMPACT)
+            def capture(selected):
+                batch = encoded(selected)
+                self.assertEqual(batch['marker_mask'].dtype, torch.bool)
+                self.assertEqual(tuple(batch['marker_mask'].shape), (len(selected), 7))
+                misses.append(len(selected))
+                return batch
+            return original(cell, capture, device, profile)
+        with patch.object(worker, '_frozen_price_logits', side_effect=observed):
+            _, _, candidate, _, _ = self.fixture(6)
+        self.assertEqual((misses.count(1), misses.count(2)), (32, 16))
+        self.assertEqual(candidate['action_phase_diagnostics']['measured_execution']['encoder_forward_calls'],
+                         candidate['action_phase']['unique_rows']//2)
 
     def test_zero_weight_keeps_same_no_forward_and_no_alpha_allocation(self):
         service, job, candidate, _, _ = self.fixture(3)

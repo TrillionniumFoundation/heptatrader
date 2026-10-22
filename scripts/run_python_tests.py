@@ -70,12 +70,14 @@ NESTED_LEARNING_MODULES = frozenset(
     for path in (ROOT / "research/neuron_learning/laya_cell/tests").glob("test_*.py")
     if path.is_file()
 )
-# These classes/methods invoke separately built native fixtures. Ordinary
+# These classes/methods need separately built native fixtures or an explicitly
+# reserved GPU window. Ordinary
 # learning runs import their modules but never execute these external tests.
 NESTED_EXTERNAL_TESTS = frozenset({
     "laya_cell.tests.test_contracts.NativeConformance",
     "laya_cell.tests.test_resident.NativeResidentTests",
     "laya_cell.tests.test_financial_forward_trust.SelectorGateTests.test_native_accepted_boolean_cannot_substitute_certificates",
+    "laya_cell.tests.test_resident_price_cache.PriceInputCacheTests.test_hip_every_step_optimizer_rollback_and_final_raw_probabilities_exact",
 })
 
 
@@ -86,7 +88,7 @@ def external_nested_case(case: unittest.TestCase) -> bool:
 
 
 def learning_cases(suite: unittest.TestSuite):
-    """Retain import failures and CPU cases, excluding explicit native fixtures."""
+    """Retain import failures and CPU cases, excluding explicit native/GPU fixtures."""
     for item in suite:
         if isinstance(item, unittest.TestSuite):
             yield from learning_cases(item)

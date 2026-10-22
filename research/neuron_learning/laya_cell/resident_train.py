@@ -50,6 +50,28 @@ def immutable(path,value):
  path.chmod(0o400)
 
 
+def _frozen_price_logits(cell, encoded, device, input_profile):
+ """Cache only frozen features for one PRICE phase and exact input batches."""
+ inputs={}
+ def forward(selected):
+  key=(input_profile,tuple(row_id(row) for row in selected),torch.is_grad_enabled())
+  if key not in inputs:
+   batch={name:value.to(device) for name,value in encoded(selected).items()}
+   captured=[]
+   def capture(_module,args):
+    if args[0].requires_grad:raise ContractError('PRICE_CACHE_REQUIRES_FROZEN_FEATURES')
+    captured.append(args[0].detach().clone())
+   hook=cell.model.scorer.register_forward_pre_hook(capture)
+   try:logits,_=cell(**batch)
+   finally:hook.remove()
+   if len(captured)!=1:raise ContractError('PRICE_CACHE_SCORER_INPUT_COUNT')
+   inputs[key]=(captured[0],batch['marker_mask'].detach().clone())
+   return logits
+  features,mask=inputs[key]
+  return cell.model.scorer(features).squeeze(-1).float().masked_fill(~mask,-1e4)
+ return forward
+
+
 def run_closed_action_phase(cell, source, profile, encoded, device):
  """Use a separate ACT-only optimizer; PRICE momentum cannot move its head."""
  original={n:p.requires_grad for n,p in cell.named_parameters()}
@@ -155,8 +177,8 @@ def run_job(c,*,old_learner_verified=False):
  initial=cell.trainable_state();native=ResidentNative(Path(c['native_binary']),c['native_binary_sha256'])
  native.objective=c['objective']
  parent_cutoff=parent.get('trained_until_ms',parent['window']['training_end_ms'])
- # Only the new episode reuses tokenization. Values remain CPU tensors and
- # model activations are recomputed after every optimizer update.
+ # Tokenized batches remain on CPU. The new v7 PRICE phase also reuses frozen
+ # scorer inputs; all trainable scorer activations are recomputed every step.
  encoding_cache={};encoding_calls=0;last_price_raw_probabilities=[]
  def encoded(selected,*,parent_input=False):
   nonlocal encoding_calls
@@ -171,6 +193,7 @@ def run_job(c,*,old_learner_verified=False):
    encoding_cache[key]={k:v.detach().cpu() for k,v in values.items()}
    encoding_calls+=1
   return encoding_cache[key]
+ price_logits=(_frozen_price_logits(cell,encoded,device,price_input.COMPACT) if v7 else None)
  def measure_training_rows():
   nonlocal last_price_raw_probabilities
   scores=[];briers=[]
@@ -178,8 +201,11 @@ def run_job(c,*,old_learner_verified=False):
   cell.eval()
   with torch.no_grad():
    for row in rows:
-    batch={k:v.to(device) for k,v in encoded([row]).items()}
-    p,_=cell(**batch);truth=torch.tensor([row['target_class']],device=device)
+    if v7:p=price_logits([row])
+    else:
+     batch={k:v.to(device) for k,v in encoded([row]).items()}
+     p,_=cell(**batch)
+    truth=torch.tensor([row['target_class']],device=device)
     scores.append(float(F.cross_entropy(p,truth)))
     briers.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
     if v5:raw_probabilities.append(p.softmax(-1)[0].detach().cpu().tolist())
@@ -227,7 +253,7 @@ def run_job(c,*,old_learner_verified=False):
  # Each epoch covers the same disjoint two-row batches; one optimizer survives
  # all passes. Unique examples and repeated presentations have separate receipts.
  for epoch,batch_index,selected in schedule:
-  batch={k:v.to(device) for k,v in encoded(selected).items()}
+  if not v7:batch={k:v.to(device) for k,v in encoded(selected).items()}
   truth=torch.tensor([r['target_class'] for r in selected],device=device)
   tm=torch.tensor([r['teacher_probs'] is not None for r in selected],device=device)
   teacher=torch.tensor([r['teacher_probs'] or [0.]*7 for r in selected],device=device)
@@ -235,7 +261,8 @@ def run_job(c,*,old_learner_verified=False):
   am=torch.tensor([v is not None for v in action_values],device=device)
   ay=torch.tensor([v if v is not None else 0 for v in action_values],device=device)
   saved=cell.trainable_state();opt=copy.deepcopy(optimizer.state_dict());optimizer.zero_grad(set_to_none=True)
-  p,a=cell(**batch);price_loss=supervised_loss(p,truth,teacher,tm)
+  p,a=(price_logits(selected),None) if v7 else cell(**batch)
+  price_loss=supervised_loss(p,truth,teacher,tm)
   action_step_eligible=bool(am.any())
   if v5:
    am=torch.zeros_like(am);action_step_eligible=False
@@ -274,6 +301,9 @@ def run_job(c,*,old_learner_verified=False):
    curve_points.append(episode_policy.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
    print(json.dumps({'training_curve_checkpoint':curve_points[-1],'training_only':True}),flush=True)
    cell.train(True)
+ # The cache has no use outside this job's PRICE phase. ACT retains its own
+ # full-cell inputs, which depend on the final updated PRICE probabilities.
+ price_logits=None
  action_phase=None;action_phase_timing=None
  if v5:
   for name,param in cell.named_parameters():
