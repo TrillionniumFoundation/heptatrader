@@ -289,7 +289,8 @@ def _identity(service, job_id, candidate, job):
         identity.update(policy_identity(old))
     from . import resident_training_v5 as training_v5
     from . import resident_training_v6 as training_v6
-    policy = training_v6 if training_v6.enabled(candidate.get("objective")) else training_v5
+    from . import resident_training_v7 as training_v7
+    policy = training_v7 if training_v7.enabled(candidate.get("objective")) else training_v6 if training_v6.enabled(candidate.get("objective")) else training_v5
     if policy.enabled(candidate.get("objective")):
         from .resident_price_calibration import validate
         calibration = validate(candidate.get("price_calibration"))
@@ -304,6 +305,12 @@ def _identity(service, job_id, candidate, job):
                         price_calibration=calibration,
                         closed_action_source_id=candidate["closed_action_source_id"],
                         action_distribution_scope=candidate["action_training_profile"]["action_distribution_scope"])
+    if training_v7.enabled(candidate.get('objective')):
+        from .resident_price_input import check_bindings, bindings
+        from .integrity import validate_candidate_artifact
+        if check_bindings(candidate) != bindings(validate_candidate_artifact(Path(job['parent_directory']))):
+            raise ContractError('V7_REGISTRATION_PARENT_INPUT_PROFILE')
+        identity.update(check_bindings(candidate))
     return identity
 
 
@@ -332,7 +339,7 @@ def _check_record(record, identity):
                 or plan.get("candidate_id") != identity["candidate_id"]
                 or plan.get("candidate_manifest_sha256") != identity["candidate_manifest_sha256"]):
             raise ContractError("FORWARD_RESERVED_PLAN_BINDING")
-        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope"):
+        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec"):
             if name in identity and plan.get(name) != identity[name]:
                 raise ContractError("FORWARD_V5_RESERVED_PROFILE_CHANGED")
 
@@ -391,9 +398,11 @@ def _publish(service, key, record, candidate, job, folder):
 def _exact_required_prior(candidate):
     """A prospective exact tie cannot meet an unchanged strict value floor."""
     from . import resident_training_v6 as v6
-    if not v6.enabled(candidate.get('objective')):
+    from . import resident_training_v7 as v7
+    policy = v7 if v7.enabled(candidate.get('objective')) else v6
+    if not policy.enabled(candidate.get('objective')):
         return False
-    v6.check_objective(candidate['objective'])
+    policy.check_objective(candidate['objective'])
     from . import resident_price_calibration_v2 as calibration
     from . import resident_price_baselines as baselines
     profile = calibration.validate(candidate.get('price_calibration'))

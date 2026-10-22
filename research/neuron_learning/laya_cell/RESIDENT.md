@@ -269,3 +269,17 @@ This does not take the GPU lease, collect new training quotes, reserve training
 rows, overlap frozen evaluations, change promotion rules, or send orders. Existing
 storage bounds remain effective. Observed execution rewards remain distinct from
 input-bound model credit; negative and unbound outcomes are not discarded.
+
+## Prospective v7 PRICE input
+
+The opt-in v7 objective renders the existing ten causal quote-state features
+as compact PRICE input, with fixed six-place rounding and no fitted statistics
+or labels. Original raw quote receipts remain immutable. ACT inference still
+uses a separate raw-input forward, matching its closed-source training profile.
+The child uses compact input; the paired predecessor uses its own artifact input
+profile (legacy artifacts default to raw quotes). The comparator remains
+`FROZEN_PARENT_RAW_PRICE_SOFTMAX`: predecessor calibration is not applied.
+Comparing calibrated predecessor outputs would require a separate prospective
+protocol. Zero-step compact child receipts separate input effects from gradient
+updates. v6 recency, 64 PRICE steps, native masks/norm limits, Brier calibration,
+exact-prior no-trial rule and all original future gates remain unchanged.

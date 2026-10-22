@@ -250,6 +250,14 @@ def verify_candidate_fit(job, candidate):
               and all(value.get(k) == row[k] for k in
                       ('target_class', 'anchor_ms', 'outcome_available_at_ms')),
               'PRICE_CALIBRATION_FORWARD_ROW_CHANGED')
+    if job.get('objective', {}).get('schema') == 'heptatrader.laya-resident-objective.v7':
+        from . import resident_price_input as price_input
+        price_input.check_bindings(candidate)
+        for row, value in zip(rows, receipts):
+            _need(value.get('price_input_profile') == price_input.COMPACT
+                  and value.get('price_input_id') == digest(
+                      price_input.model_state(row['state'], price_input.COMPACT)),
+                  'PRICE_CALIBRATION_V7_INPUT_RECEIPT_CHANGED')
     raw = [value['raw_probs'] for value in receipts]
     fit_function, measure_function = fit, training_measurement
     if isinstance(candidate.get('price_calibration'),dict) and candidate['price_calibration'].get('schema') == 'heptatrader.laya-price-calibration.v2':

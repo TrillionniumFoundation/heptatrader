@@ -21,6 +21,7 @@ from . import resident_training_v3 as training_v3
 from . import resident_training_v4 as training_v4
 from . import resident_training_v5 as training_v5
 from . import resident_training_v6 as training_v6
+from . import resident_training_v7 as training_v7
 from . import resident_price_baselines as price_refs
 from .resident_queue import (inspect as inspect_evaluation_queue,
  check_overlap_config, registration_policy, overlap_enrolled)
@@ -85,7 +86,7 @@ def config_check(config):
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v3.RUNTIME_PINS):
    raise ContractError('RESIDENT_V3_RUNTIME_PINS_REQUIRED')
  if (not isinstance(config.get('objective'),dict) or config['objective'].get('schema') not in
-     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA)):
+     ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA,training_v7.SCHEMA)):
   raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
  if training_v4.enabled(config.get('objective')):
   training_v4.check_objective(config['objective'])
@@ -99,6 +100,10 @@ def config_check(config):
   training_v6.check_config(config)
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v6.RUNTIME_PINS):
    raise ContractError('RESIDENT_V6_RUNTIME_PINS_REQUIRED')
+ if training_v7.enabled(config.get('objective')):
+  training_v7.check_config(config)
+  if any(not config.get('runtime_sha256',{}).get(p) for p in training_v7.RUNTIME_PINS):
+   raise ContractError('RESIDENT_V7_RUNTIME_PINS_REQUIRED')
  from .resident_trial_stop import check_config as check_trial_stop_config
  check_trial_stop_config(config)
  budget_policy(config)
@@ -188,10 +193,10 @@ class Supervisor:
     'training_cadence_seconds':900,'old_mlp_training_enabled':False,'automatic_trading':False,
     'canonical_agentd_owner_connected':False,'automatic_promotion':'EVALUATION_AND_HANDOFF_ONLY_UNTIL_CANONICAL_OWNER',
     'broker_orders_sent':0,'storage':self.storage,**getattr(self,'_evaluation_queue_status',{}),**extra}
-  if training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')):
+  if training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')):
    state['training_lineage'].update(mode='BOUNDED_CONTINUOUS_EPISODE_FROM_CONFIGURED_PARENT',
     optimizer_reset_between_epochs=False,episode_profile=training_v4.EPISODE)
-  if training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')):
+  if training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')):
    state['training_lineage'].update(closed_action_source_id=self.c['closed_action_source_id'],
     auxiliary_action_phase=training_v5.ACTION_PHASE,price_steps_exclude_auxiliary_action_steps=True)
   if latest_registration is not None:state['latest_candidate_registration']=latest_registration
@@ -229,8 +234,8 @@ class Supervisor:
     pinned=self.c.get('runtime_sha256',{}).get(name)
     if pinned is None:raise ContractError('FUTURE_SOURCE_RELEASE_HASHES_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=pinned
-  training_policy=training_v6 if training_v6.enabled(candidate.get('objective')) else training_v5 if training_v5.enabled(candidate.get('objective')) else training_v4 if training_v4.enabled(candidate.get('objective')) else training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
-  if training_policy in (training_v4,training_v5,training_v6):training_policy.check_objective(candidate['objective'])
+  training_policy=training_v7 if training_v7.enabled(candidate.get('objective')) else training_v6 if training_v6.enabled(candidate.get('objective')) else training_v5 if training_v5.enabled(candidate.get('objective')) else training_v4 if training_v4.enabled(candidate.get('objective')) else training_v3 if training_v3.enabled(candidate.get('objective')) else training_v2
+  if training_policy in (training_v4,training_v5,training_v6,training_v7):training_policy.check_objective(candidate['objective'])
   if training_policy.enabled(candidate.get('objective')):
    plan['price_baselines']=price_refs.validate(candidate.get('price_baselines'))
    plan['action_output_profile']=training_v2.ACTION_OUTPUT
@@ -241,9 +246,9 @@ class Supervisor:
     expected=self.c.get('runtime_sha256',{}).get(name)
     if not expected:raise ContractError('RESIDENT_V2_RUNTIME_PINS_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=expected
-  if training_v3.enabled(candidate.get('objective')) or training_v4.enabled(candidate.get('objective')) or training_v5.enabled(candidate.get('objective')) or training_v6.enabled(candidate.get('objective')):
+  if training_v3.enabled(candidate.get('objective')) or training_v4.enabled(candidate.get('objective')) or training_v5.enabled(candidate.get('objective')) or training_v6.enabled(candidate.get('objective')) or training_v7.enabled(candidate.get('objective')):
    plan['price_value_rule']={**price_refs.VALUE_RULE,'comparators':list(price_refs.VALUE_RULE['comparators'])}
-  if training_policy in (training_v5,training_v6):
+  if training_policy in (training_v5,training_v6,training_v7):
    from .resident_price_calibration import validate as validate_price_calibration
    price_calibration=validate_price_calibration(candidate.get('price_calibration'))
    if price_calibration['output_profile']!=training_policy.PRICE_OUTPUT:raise ContractError('PRICE_CALIBRATION_OUTPUT_PROFILE_CHANGED')
@@ -252,6 +257,9 @@ class Supervisor:
     price_calibration=price_calibration,
     closed_action_source_id=candidate['closed_action_source_id'],
     action_distribution_scope=candidate['action_training_profile']['action_distribution_scope'])
+  if training_policy is training_v7:
+   from .resident_price_input import check_bindings
+   plan.update(check_bindings(candidate))
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -260,6 +268,9 @@ class Supervisor:
    'parent_id':candidate['parent_id'],'native_proposal_digest':candidate['plasticity']['proposal_digest'],
    'required_owners':['learning.ledger','learning.operator','learning.artifacts','qualification','runtime.agentd'],
    'state':'UNADMITTED_CANONICAL_OWNER_NOT_ENROLLED','canonical_fact':False,'effect_authority':False}
+  if training_v7.enabled(candidate.get('objective')):
+   from .resident_price_input import check_bindings
+   request.update(check_bindings(candidate))
   writer(self.root/'owner-outbox'/(candidate['candidate_id']+'.json'),request)
  def register_evaluation(self,job_id,candidate,job):
   folder=Path(self.c['evaluation_directory'])/job_id;folder.mkdir(parents=True,mode=0o700,exist_ok=True)
@@ -501,11 +512,11 @@ class Supervisor:
   if _input_wait is None:
    _input_wait=InputWait(input_signature)
    self._training_input_wait=_input_wait
-  _input_before=_input_wait.begin(self.c,reserved,now) if (training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective'))) else None
-  if training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')):
+  _input_before=_input_wait.begin(self.c,reserved,now) if (training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective'))) else None
+  if training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')):
    dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved)
   else:dataset,rows,quality,_=collect(self.c,now)
-  if training_v6.enabled(self.c.get('objective')):rows=training_v6.timed_rows(rows,dataset)
+  if training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')):rows=training_v6.timed_rows(rows,dataset)
   new=[]
   for r in rows:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
@@ -517,8 +528,8 @@ class Supervisor:
   held=self._training_window_wait(int(time.time()*1000),queue,window=quality['window'])
   if held is not None:return held
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
-  training_policy=training_v6 if training_v6.enabled(self.c.get('objective')) else training_v5 if training_v5.enabled(self.c.get('objective')) else training_v4 if training_v4.enabled(self.c.get('objective')) else training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
-  if training_policy is training_v6:
+  training_policy=training_v7 if training_v7.enabled(self.c.get('objective')) else training_v6 if training_v6.enabled(self.c.get('objective')) else training_v5 if training_v5.enabled(self.c.get('objective')) else training_v4 if training_v4.enabled(self.c.get('objective')) else training_v3 if training_v3.enabled(self.c.get('objective')) else training_v2
+  if training_policy in (training_v6,training_v7):
    chosen=training_policy.select_covered_rows(new,cutoff_ms=quality['window']['training_end_ms'])
    if len(chosen)<16:
     return self.write_status(state='WAITING_FOR_RECENT_MATURE_LABELS',recent_mature_rows=len(chosen),maximum_label_age_ms=training_v6.MAX_ROW_AGE_MS,**state)
@@ -530,7 +541,7 @@ class Supervisor:
   data_id=digest(dataset);dataset_path=self.root/'datasets'/(data_id+'.json');write_once(dataset_path,dataset)
   job_id=digest({'fingerprint':fingerprint,'parent':parent_id,'profile':self.c['profile'],'objective':self.c['objective']})
   job={**self.c,'schema':'heptatrader.laya-resident-job.v1','dataset':str(dataset_path),'dataset_sha256':sha_file(dataset_path),
-    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':(training_v4.ROW_ACCOUNTING_SCHEMA if training_policy in (training_v4,training_v5,training_v6) else ROW_ACCOUNTING_SCHEMA),
+    'data_fingerprint':fingerprint,'training_row_ids':row_ids,'training_row_accounting_schema':(training_v4.ROW_ACCOUNTING_SCHEMA if training_policy in (training_v4,training_v5,training_v6,training_v7) else ROW_ACCOUNTING_SCHEMA),
     'selection_context':{'pool_count':len(new),'pool_row_ids_digest':digest(sorted(key for key,_ in new))},
     'parent_directory':self.c['initial_parent_directory'],'parent_manifest_sha256':sha_file(Path(self.c['initial_parent_directory'])/'candidate.json'),
     'parent_id':parent_id,'generation':generation,'window':quality['window'],

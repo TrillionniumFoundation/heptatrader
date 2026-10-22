@@ -36,10 +36,16 @@ def suppress_new_work_for_frozen_failure(plan, results):
  return censored>rule['max_censored'] or rule['slots']-censored<rule['min_observed']
 
 
-def measure(plan,slot,prediction,quotes,now_ms):
+def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None):
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
  if prediction.get('input_id')!=digest(prediction.get('input')):raise ContractError('PREDICTION_INPUT_HASH')
+ from .resident_price_input import verify_prediction as verify_price_input
+ verify_price_input(plan,prediction)
+ if plan.get('price_input_objective') is not None:
+  from .resident_price_input import verify_committed_input
+  if committed_input is None:raise ContractError('V7_COMMITTED_PRICE_INPUT_REQUIRED')
+  verify_committed_input(plan,committed_input,prediction)
  calibrated=price_calibration.verify_prediction(plan,prediction)
  anchor=prediction['anchor_ms'];due=anchor+RULE['horizon_ms'];times=[q['t'] for q in quotes]
  a=bisect_left(times,anchor);b=bisect_left(times,due)
@@ -284,7 +290,12 @@ class Evaluator:
       quotes,prefixes,_actual_source_profile=read_for_pending_outcomes(self.c,plan,quote_clock,_pending_predictions)
      _outcome_source_snapshots[_source_key]=(quotes,prefixes,quote_clock,_pending_anchors)
     quotes,prefixes,quote_clock,_cached_pending_anchors=_outcome_source_snapshots[_source_key]
-    result=measure(plan,slot,pred,quotes,quote_clock)
+    if plan.get('price_input_objective') is not None:
+     committed_path=path.parent/f'input-{slot:03}.json'
+     if (not committed_path.exists() or sha_file(committed_path)!=pred.get('input_receipt_sha256')):
+      raise ContractError('V7_COMMITTED_PRICE_INPUT_RECEIPT_HASH')
+     result=measure(plan,slot,pred,quotes,quote_clock,committed_input=read_json(committed_path))
+    else:result=measure(plan,slot,pred,quotes,quote_clock)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
      write_once(output,result)
