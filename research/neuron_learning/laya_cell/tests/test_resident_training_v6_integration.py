@@ -198,6 +198,11 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
         self.assertEqual(candidate['row_accounting']['gradient_attempted_count'], 32)
         self.assertEqual(candidate['row_accounting']['gradient_attempted_presentations'], 128)
         self.assertGreater(candidate['action_update_steps'], 0)
+        measured = candidate['action_phase_diagnostics']['measured_execution']
+        self.assertEqual(measured['encoder_forward_calls'], len(source['pair_row_ids']))
+        self.assertEqual(measured['action_head_forward_calls'], len(candidate['action_phase']['steps']))
+        self.assertGreater(measured['wall_seconds'], 0.)
+        self.assertFalse(measured['gpu_synchronized'])
         self.assertEqual(candidate['price_output_profile'], calibration.OUTPUT)
         calibration.verify_candidate_fit(job, candidate)
         policy.verify_candidate(job, candidate)

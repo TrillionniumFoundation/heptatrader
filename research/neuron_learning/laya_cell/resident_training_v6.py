@@ -42,7 +42,8 @@ OBJECTIVE = {
 }
 RUNTIME_PINS = tuple(dict.fromkeys(previous.RUNTIME_PINS + (
     'learn/laya_cell/resident_training_v6.py',
-    'learn/laya_cell/resident_price_calibration_v2.py')))
+    'learn/laya_cell/resident_price_calibration_v2.py',
+    'learn/laya_cell/resident_trial_stop.py')))
 
 primary_rows = previous.primary_rows
 timed_rows = previous.timed_rows

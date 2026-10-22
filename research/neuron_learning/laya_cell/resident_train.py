@@ -254,11 +254,26 @@ def run_job(c,*,old_learner_verified=False):
    curve_points.append(episode_policy.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
    print(json.dumps({'training_curve_checkpoint':curve_points[-1],'training_only':True}),flush=True)
    cell.train(True)
- action_phase=None
+ action_phase=None;action_phase_timing=None
  if v5:
   for name,param in cell.named_parameters():
    if '.act_head.' in name and name.endswith(('.A','.B')):param.requires_grad_(True)
-  action_phase=run_closed_action_phase(cell,closed_source,action_training_profile,encoded,device)
+  forward_calls={'encoder':0,'action_head':0}
+  def count_forward(name):
+   def counted(*_):forward_calls[name]+=1
+   return counted
+  hooks=[cell.model.encoder.register_forward_hook(count_forward('encoder')),
+         cell.model.act_head.register_forward_hook(count_forward('action_head'))]
+  gpu_timing=torch.device(device).type=='cuda'
+  if gpu_timing:torch.cuda.synchronize()
+  action_started=time.monotonic()
+  try:action_phase=run_closed_action_phase(cell,closed_source,action_training_profile,encoded,device)
+  finally:
+   for hook in hooks:hook.remove()
+  if gpu_timing:torch.cuda.synchronize()
+  action_phase_timing={'wall_seconds':time.monotonic()-action_started,
+   'gpu_synchronized':gpu_timing,'encoder_forward_calls':forward_calls['encoder'],
+   'action_head_forward_calls':forward_calls['action_head']}
   applied_action=action_phase['applied_steps'];seen_action=set(action_phase['unique_row_ids'])
  cell.eval();cell.assert_frozen()
  # The final fixed-budget checkpoint is already the final measurement.
@@ -343,7 +358,8 @@ def run_job(c,*,old_learner_verified=False):
     action_phase_diagnostics={'optimizer_scope':'ACT_ONLY_SEPARATE_FROM_PRICE',
      'price_optimizer_steps':len(steps),'action_optimizer_steps':len(action_phase['steps']),
      'price_unique_rows':len(rows),'action_unique_rows':action_phase['unique_rows'],
-     'price_logits_cache_precedes_act_only_phase':True,'price_parameters_unchanged_during_act':True})
+     'price_logits_cache_precedes_act_only_phase':True,'price_parameters_unchanged_during_act':True,
+     'measured_execution':action_phase_timing})
    record['action_adapter_validation']=training_v5.verify_action_update(c,record)
   episode_policy.verify_candidate(c,record)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)

@@ -99,6 +99,8 @@ def config_check(config):
   training_v6.check_config(config)
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v6.RUNTIME_PINS):
    raise ContractError('RESIDENT_V6_RUNTIME_PINS_REQUIRED')
+ from .resident_trial_stop import check_config as check_trial_stop_config
+ check_trial_stop_config(config)
  budget_policy(config)
  if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
  if config.get('future_source_read_profile') is not None:

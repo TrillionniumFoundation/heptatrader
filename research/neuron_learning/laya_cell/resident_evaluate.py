@@ -92,6 +92,9 @@ class Evaluator:
   self.path=Path(config_path);self.c=read_json(self.path);self.root=Path(self.c['evaluation_directory'])
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
   self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
+ def operator_stop_binding(self,path,plan,now):
+  from .resident_trial_stop import read_stop
+  return read_stop(self.c,path,plan,now_ms=now)
  def signal(self,*_):
   self.stop=True
   for p,stream,started in self.tasks.values():
@@ -162,7 +165,7 @@ class Evaluator:
   _outcome_source_snapshots={}
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[]
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[]
   for path in plans:
    plan=read_json(path)
    if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
@@ -179,9 +182,15 @@ class Evaluator:
      raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
     counts[q['state']]=counts.get(q['state'],0)+1
     observed+=q.get('observed',0);censored+=q.get('censored',0)
+    stopped=self.operator_stop_binding(path,plan,now)
+    if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
+     'performance_assessment':False,'new_heavy_workers_allowed':False})
     continue
+   stopped=self.operator_stop_binding(path,plan,now)
+   if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
+    'performance_assessment':False,'new_heavy_workers_allowed':False})
    from .resident_retained_closeout import run_retained
-   retained=run_retained(self.c,path,plan,self._retained_closeout_cache,now)
+   retained=run_retained(self.c,path,plan,self._retained_closeout_cache,now,operator_stop=stopped)
    if retained is not None:
     for state,count in retained['counts'].items():counts[state]=counts.get(state,0)+count
     observed+=retained['observed'];censored+=retained['censored']
@@ -296,6 +305,7 @@ class Evaluator:
    'latest_quote_scope':'OUTCOME_SOURCE_SNAPSHOT_NOT_GLOBAL_SOURCE_HEALTH',
    'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
    'retained_futile_plan_closeouts':retained_plans,
+   'operator_stopped_trials':len(operator_stops),'operator_stopped_plans':operator_stops,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
    'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}

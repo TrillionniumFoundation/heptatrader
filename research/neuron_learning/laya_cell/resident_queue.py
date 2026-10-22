@@ -19,6 +19,7 @@ def inspect(config):
     pending = 0
     viable = 0
     futile = []
+    stopped = []
     for path in plans:
         plan = read_json(path)
         if plan.get('plan_id') != digest({k:v for k,v in plan.items() if k != 'plan_id'}):
@@ -34,6 +35,11 @@ def inspect(config):
                 raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
             continue
         pending += 1
+        from .resident_trial_stop import read_stop
+        stop = read_stop(config, path, plan)
+        if stop is not None:
+            stopped.append(plan['plan_id'])
+            continue
         records = [read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
         if suppress_new_work_for_frozen_failure(plan, records):
             futile.append(plan['plan_id'])
@@ -41,6 +47,7 @@ def inspect(config):
             viable += 1
     return {'pending_evaluations': pending, 'viable_pending_evaluations': viable, 'pending_original_trials': pending,
             'futile_pending_trials': len(futile), 'futile_plan_ids': futile,
+            'operator_stopped_trials': len(stopped), 'operator_stopped_plan_ids': stopped,
             'queue_policy': 'ONE_PRETRAINED_CANDIDATE_WITH_ORIGINAL_TRIAL_BOUND_RETAINED',
             'original_trial_assessments_changed': False}
 
@@ -78,13 +85,18 @@ def registration_policy(queue, config, job, created_ms):
                 'bypassed_futile_plan_ids': [], 'original_trial_assessments_changed': False}
     viable = queue['viable_pending_evaluations']
     futile = queue['futile_plan_ids']
+    stopped = queue.get('operator_stopped_plan_ids', [])
     if (type(viable) is not int or viable < 0 or type(futile) is not list
-            or len(set(futile)) != len(futile) or pending != viable + len(futile)):
+            or type(stopped) is not list or len(set(stopped)) != len(stopped)
+            or set(stopped) & set(futile)
+            or len(set(futile)) != len(futile) or pending != viable + len(futile) + len(stopped)):
         raise ContractError('TRIAL_OVERLAP_QUEUE_IDENTITY')
-    return {'profile': OVERLAP_PROFILE, 'policy_effective_at_ms': config[OVERLAP_EFFECTIVE],
+    result = {'profile': OVERLAP_PROFILE, 'policy_effective_at_ms': config[OVERLAP_EFFECTIVE],
             'blocking_trials': viable, 'bypassed_futile_plan_ids': list(futile),
             'original_trial_assessments_changed': False, 'alpha_debits_refunded': False,
             'observation_windows_claimed_independent': False}
+    if stopped:result['bypassed_operator_stopped_plan_ids'] = list(stopped)
+    return result
 
 
 def overlap_enrolled(config, job, created_ms):

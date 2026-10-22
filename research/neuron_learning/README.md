@@ -246,3 +246,16 @@ The ACT input cache reuses only frozen encoder inputs to the trainable action
 head across repeated epochs. All action-head forward passes, gradients,
 optimizer steps and rollback checks still run. Historical v1–v5 artifacts and
 their pinned evaluation runtimes retain their original policies.
+
+An explicit operator request can stop new work on a frozen trial during a
+version replacement. Its separately pinned receipt binds the original plan,
+candidate and replacement source. It neither refunds alpha nor assesses model
+performance. The existing retained evaluator runs the original source on CPU
+to score already committed predictions and close missing slots at their original
+times; it cannot launch further predictions. Prospective jobs may proceed while
+that stopped trial's original deadline and bookkeeping remain intact. Ordinary
+viable trials without that receipt keep the existing serial admission rule.
+
+Saved training diagnostics measure the ACT phase with GPU synchronization and
+count actual encoder and action-head forwards. These measurements distinguish
+cache execution from a controlled comparison of its elapsed time.

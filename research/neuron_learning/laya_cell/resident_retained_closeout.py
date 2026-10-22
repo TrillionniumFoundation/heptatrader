@@ -49,7 +49,7 @@ def _original(entry, current, plan_path):
     return old, plan
 
 
-def run_retained(config, path, plan, cache, now_ms):
+def run_retained(config, path, plan, cache, now_ms, *, operator_stop=None):
     entries = config.get('retained_futile_plan_closeouts', [])
     if (type(entries) is not list or len(entries) > 32
             or any(type(e) is not dict or type(e.get('plan_id')) is not str for e in entries)
@@ -57,30 +57,51 @@ def run_retained(config, path, plan, cache, now_ms):
         raise ValueError('RETAINED_CLOSEOUT_ROUTES')
     matched = [e for e in entries if e['plan_id'] == plan['plan_id']]
     if not matched:
+        if operator_stop is not None:
+            raise ValueError('OPERATOR_STOP_ORIGINAL_ROUTE_REQUIRED')
         return None
     entry = matched[0]
     old, _ = _original(entry, config, path)
-    previous = cache.get(plan['plan_id'])
+    key = plan['plan_id']
+    extra = []
+    if operator_stop is not None:
+        from .resident_trial_stop import read_stop
+        if read_stop(config, path, plan, now_ms=now_ms) != operator_stop:
+            raise ValueError('OPERATOR_STOP_RECEIPT_CHANGED')
+        key = (key, operator_stop['sha256'])
+        extra = ['--operator-stop-path', operator_stop['path'],
+            '--operator-stop-sha256', operator_stop['sha256'],
+            '--operator-stop-validator-sha256', operator_stop['validator_sha256'],
+            '--replacement-source-sha', operator_stop['replacement_source_sha']]
+    previous = cache.get(key)
     if previous and 0 <= now_ms - previous[0] < 30000:
         return previous[1]
     state = Path(config['evaluation_directory']) / '.retained-futile' / plan['plan_id']
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     env = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1',
-               CUDA_VISIBLE_DEVICES='', HIP_VISIBLE_DEVICES='',
+               CUDA_VISIBLE_DEVICES='', HIP_VISIBLE_DEVICES='', ROCR_VISIBLE_DEVICES='',
                PYTHONPATH=os.pathsep.join(str(Path(old['runtime_directory']) / name)
                                          for name in ('learn', 'scripts')))
     completed = subprocess.run([old['python'], '-B', str(Path(__file__).resolve()),
         '--config', entry['config_path'], '--config-sha256', entry['config_sha256'],
-        '--plan', str(path), '--state', str(state)], env=env,
+        '--plan', str(path), '--state', str(state), *extra], env=env,
         capture_output=True, text=True, timeout=15)
     if completed.returncode:
         raise ValueError('RETAINED_CLOSEOUT_FAILED:' + completed.stderr[-400:])
     result = _read(state / 'status.json')
+    if operator_stop is not None:
+        if (read_stop(config, path, plan) != operator_stop
+                or result.get('operator_stop_receipt_sha256') != operator_stop['sha256']
+                or result.get('operator_stopped_trials') != 1
+                or result.get('operator_stop_torch_imported') is not False
+                or result.get('operator_stop_non_performance_assessment') is not True
+                or result.get('new_heavy_workers_allowed') is not False):
+            raise ValueError('OPERATOR_STOP_CLOSEOUT_BINDING')
     if (result.get('plans') != 1 or result.get('active_prediction_workers') != 0
             or result.get('broker_orders_sent') != 0
             or sum(result.get('counts', {}).values()) != 1):
         raise ValueError('RETAINED_CLOSEOUT_STATUS')
-    cache[plan['plan_id']] = (now_ms, result)
+    cache[key] = (now_ms, result)
     return result
 
 
@@ -100,7 +121,9 @@ class _SinglePlanView:
         return self.state / name
 
 
-def close_original(config_path, config_sha256, plan_path, state):
+def close_original(config_path, config_sha256, plan_path, state, *,
+                   operator_stop_path=None, operator_stop_sha256=None,
+                   operator_stop_validator_sha256=None, replacement_source_sha=None):
     # Keep imports below verification: imported package code must be original.
     if _sha(config_path) != config_sha256:
         raise ValueError('RETAINED_CLOSEOUT_CONFIG_CHANGED')
@@ -109,6 +132,24 @@ def close_original(config_path, config_sha256, plan_path, state):
     entry = {'config_path': str(config_path), 'config_sha256': config_sha256,
              'plan_id': plan['plan_id']}
     _original(entry, old, plan_path)
+    stop_args = (operator_stop_path, operator_stop_sha256,
+                 operator_stop_validator_sha256, replacement_source_sha)
+    stopped = any(value is not None for value in stop_args)
+    stop = None
+    if stopped:
+        if not all(value is not None for value in stop_args):
+            raise ValueError('OPERATOR_STOP_ARGUMENT_BINDING')
+        validator_path = Path(__file__).resolve().with_name('resident_trial_stop.py')
+        if _sha(validator_path) != operator_stop_validator_sha256:
+            raise ValueError('OPERATOR_STOP_RUNTIME_PIN')
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_hepta_retained_stop_validator', validator_path)
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        stop = validator.validate_receipt_file(operator_stop_path, plan_path,
+            expected_period_sha256=old['period_sha256'],
+            expected_replacement_source_sha=replacement_source_sha,
+            expected_sha256=operator_stop_sha256)
     runtime = Path(old['runtime_directory'])
     pins = old.get('runtime_sha256')
     if not isinstance(pins, dict) or not pins:
@@ -126,20 +167,45 @@ def close_original(config_path, config_sha256, plan_path, state):
     if Path(sys.modules[Evaluator.__module__].__file__).resolve() != (runtime / 'learn/laya_cell/resident_evaluate.py').resolve():
         raise ValueError('RETAINED_CLOSEOUT_IMPORT_ORIGIN')
     records = [_read(p) for p in sorted(plan_path.parent.glob('outcome-*.json'))]
-    if not suppress_new_work_for_frozen_failure(plan, records):
+    if not stopped and not suppress_new_work_for_frozen_failure(plan, records):
         raise ValueError('RETAINED_CLOSEOUT_REQUIRES_IRREVERSIBLE_FUTILITY')
-    for prediction in plan_path.parent.glob('prediction-*.json'):
+    for prediction in ([] if stopped else plan_path.parent.glob('prediction-*.json')):
         if not (prediction.parent / prediction.name.replace('prediction-', 'outcome-', 1)).exists():
             raise ValueError('RETAINED_CLOSEOUT_UNSCORED_PREDICTION')
 
     class OriginalCloseout(Evaluator):
+        operator_stop_launches_suppressed = 0
+
+        def operator_stop_binding(self, path, plan, now):
+            # Authorization is verified outside the original package. Do not
+            # recursively redispatch if that frozen version also knows stops.
+            return None
+
         def launch(self, path, slot):
+            if stopped:
+                self.operator_stop_launches_suppressed += 1
+                return
             raise ValueError('RETAINED_CLOSEOUT_CANNOT_LAUNCH_PREDICTIONS')
 
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     service = OriginalCloseout(config_path)
     service.root = _SinglePlanView(plan_path, state)
-    return service.step()
+    result = service.step()
+    if stopped:
+        if 'torch' in sys.modules:
+            raise ValueError('OPERATOR_STOP_CPU_ONLY_IMPORT_BOUNDARY')
+        validator.validate_receipt_file(operator_stop_path, plan_path,
+            expected_period_sha256=old['period_sha256'],
+            expected_replacement_source_sha=replacement_source_sha,
+            expected_sha256=operator_stop_sha256)
+        result.update(operator_stop_receipt_sha256=stop['sha256'],
+            operator_stopped_trials=1, operator_stop_non_performance_assessment=True,
+            operator_stop_torch_imported=False,
+            new_heavy_workers_allowed=False,
+            operator_stop_launches_suppressed=service.operator_stop_launches_suppressed)
+        from laya_cell.resident_store import atomic
+        atomic(state / 'status.json', result)
+    return result
 
 
 def main():
@@ -148,9 +214,17 @@ def main():
     parser.add_argument('--config-sha256', required=True)
     parser.add_argument('--plan', type=Path, required=True)
     parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--operator-stop-path', type=Path)
+    parser.add_argument('--operator-stop-sha256')
+    parser.add_argument('--operator-stop-validator-sha256')
+    parser.add_argument('--replacement-source-sha')
     args = parser.parse_args()
     os.umask(0o077)
-    close_original(args.config, args.config_sha256, args.plan, args.state)
+    close_original(args.config, args.config_sha256, args.plan, args.state,
+        operator_stop_path=args.operator_stop_path,
+        operator_stop_sha256=args.operator_stop_sha256,
+        operator_stop_validator_sha256=args.operator_stop_validator_sha256,
+        replacement_source_sha=args.replacement_source_sha)
 
 
 if __name__ == '__main__':
