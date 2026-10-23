@@ -325,6 +325,9 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.assertTrue(torch.equal(expected.view(torch.int32), actual.view(torch.int32)))
 
     def test_real_16mib_stage_reused_for_large_tail_and_small_parameter(self):
+        previous_threads = torch.get_num_threads()
+        self.addCleanup(torch.set_num_threads, previous_threads)
+        torch.set_num_threads(2)
         limit = 16 * 1024 * 1024
         self.assertEqual(model._PRETRAINED_FP32_STAGING_BYTES, limit)
         count = limit // 4 + 3
@@ -342,7 +345,15 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.assertIs(result, value)
         self.assertTrue(torch.equal(before, torch.get_rng_state()))
         self.assertTrue(torch.equal(source.view(torch.int16), original_bits))
-        self.assertTrue(torch.equal(result.large.view(torch.int32), expected.view(torch.int32)))
+        # SIMD/scalar boundaries may quiet NaNs with different payload bits
+        # for whole-tensor versus chunked widening. Keep every non-NaN bit
+        # exact, including infinities and signed zero, and preserve NaN sites.
+        actual_nan = torch.isnan(result.large)
+        expected_nan = torch.isnan(expected)
+        self.assertTrue(torch.equal(actual_nan, expected_nan))
+        non_nan = ~expected_nan
+        self.assertTrue(torch.equal(result.large.view(torch.int32)[non_nan],
+                                    expected.view(torch.int32)[non_nan]))
         self.assertTrue(torch.equal(result.small.view(torch.int32),
                                     torch.tensor([1., -0.], dtype=torch.float32).view(torch.int32)))
         self.assertTrue(result.large.requires_grad)

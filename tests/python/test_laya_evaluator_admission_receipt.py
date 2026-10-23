@@ -124,6 +124,7 @@ class AdmissionReceiptTests(unittest.TestCase):
                    ['VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST'])
   self.assertEqual(out['first_admission_denial_sha256'],sha_file(self.record()))
   self.assertTrue(out['not_proof_of_every_denial_attempt'])
+  self.assertEqual(out['no_prediction_disposition'],'ADMISSION_DENIAL_OBSERVED')
   self.assertFalse(result['promotion_performed'])
   self.assertEqual(result['counts'],{'PENDING':1})
   self.assertFalse((self.folder/'prediction-000.json').exists())

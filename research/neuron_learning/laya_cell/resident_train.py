@@ -10,7 +10,7 @@ import torch
 from torch.nn import functional as F
 from .integrity import ContractError,read_json,digest,sha_file,canonical
 from .integrity import validate_candidate_artifact as validate_parent
-from .model import load_verified_laya,require_pocket4_gpu,tensor_hash
+from .model import load_verified_laya,require_pocket4_gpu,tensor_hash,worker_resource_usage
 from .resident_model import ResidentDecisionCell,PROFILE,answer_targets,action_loss
 from .dataset import rows_for_training,verify_source_prefixes,encode_rows
 from .native import NativePorts
@@ -423,6 +423,7 @@ def run_job(c,*,old_learner_verified=False):
      'measured_execution':action_phase_timing})
    record['action_adapter_validation']=training_v5.verify_action_update(c,record)
   episode_policy.verify_candidate(c,record)
+ record['resource_usage']=worker_resource_usage()
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

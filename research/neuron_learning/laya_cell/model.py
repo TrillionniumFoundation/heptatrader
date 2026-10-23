@@ -29,6 +29,22 @@ def tensor_hash(tensor):
   # next synchronous GPU-to-CPU allocation, rather than keeping two chunks.
   del chunk
  return h.hexdigest()
+def worker_resource_usage():
+ """Read natural process peaks on Pocket4/Linux without starting GPU work.
+
+ RSS is this process's peak through receipt creation. Allocator peaks retain
+ the worker's existing reset boundary. Shared host/GPU bytes are not additive.
+ """
+ import resource
+ initialized=torch.cuda.is_initialized()
+ return {'scope':'THIS_WORKER_PROCESS_THROUGH_RECEIPT_CREATION',
+  'max_process_rss_bytes':int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024,
+  'max_gpu_allocated_bytes':int(torch.cuda.max_memory_allocated()) if initialized else None,
+  'max_gpu_reserved_bytes':int(torch.cuda.max_memory_reserved()) if initialized else None,
+  'gpu_peak_scope':'CURRENT_PROCESS_PYTORCH_ALLOCATOR_STATS',
+  'rss_and_gpu_bytes_are_not_additive':True}
+
+
 class RowLoRALinear(nn.Module):
  def __init__(self,base:nn.Linear,rows:list[int],rank:int,seed:int):
   super().__init__()
@@ -111,7 +127,7 @@ def _to_pretrained_gpu_fp32(model,device):
    return result
   # Preserve the original conversion for buffers and unusual tensor layouts or
   # view flags; their conversion materials are outside the 16MiB bound.
-  return t.to(device=device,dtype=torch.float32 if t.is_floating_point() or t.is_complex() else None,non_blocking=False)
+  return t.to(device=device,dtype=torch.float32 if t.is_floating_point() else None,non_blocking=False)
  try:return model._apply(convert)
  finally:staging=None
 

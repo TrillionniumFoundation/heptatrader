@@ -64,6 +64,7 @@ class RetainedCloseoutTests(unittest.TestCase):
     def test_dispatch_runs_original_version_and_scopes_out_new_plan(self):
         newroot = Path(self.current['runtime_directory']); newroot.mkdir()
         pinned = newroot / 'pinned.py'; pinned.write_text('# new runtime')
+        self.current['runtime_sha256'] = {'pinned.py': sha_file(pinned)}
         new = dict(self.plan, candidate_id='new-candidate', job_id='new',
                    start_ms=self.now + 3600000, outcome_end_ms=self.now + 86400000,
                    evaluation_runtime_sha256={'pinned.py': sha_file(pinned)})

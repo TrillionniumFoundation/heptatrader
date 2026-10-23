@@ -32,6 +32,7 @@ class FrozenFutilityTests(unittest.TestCase):
                 "slot": slot,
                 "status": "CENSORED",
                 "reason": "PREDICTION_PROCESS_FAILED",
+                "evaluated_at_ms": int(time.time() * 1000) - 1,
             }
             for slot in range(count)
         ]

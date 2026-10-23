@@ -75,6 +75,11 @@ class RawCenteredIntegrationTests(unittest.TestCase):
 
     def test_positive_raw_train_save_replay_predict_and_score(self):
         service, job, candidate, rows, raw = self.fixture(True)
+        usage = candidate['resource_usage']
+        self.assertGreater(usage['max_process_rss_bytes'], 0)
+        self.assertEqual(usage['scope'], 'THIS_WORKER_PROCESS_THROUGH_RECEIPT_CREATION')
+        self.assertIs(usage['rss_and_gpu_bytes_are_not_additive'], True)
+        self.assertEqual(candidate['candidate_id'], digest({k:v for k,v in candidate.items() if k != 'candidate_id'}))
         profile = candidate['price_calibration']
         self.assertGreater(profile['model_weight'], 0.)
         self.assertEqual(candidate['price_input_profile'], inputs.RAW)
@@ -128,6 +133,11 @@ class RawCenteredIntegrationTests(unittest.TestCase):
             prediction = predictor.predict(service.c, path, 0)
         self.assertEqual(prediction['candidate_probs'], calibration.apply(profile, prediction['candidate_raw_probs']))
         self.assertEqual(prediction['price_input_profile'], inputs.RAW)
+        usage = prediction['resource_usage']
+        self.assertGreater(usage['max_process_rss_bytes'], 0)
+        self.assertEqual(usage['scope'], 'THIS_WORKER_PROCESS_THROUGH_RECEIPT_CREATION')
+        self.assertIs(usage['rss_and_gpu_bytes_are_not_additive'], True)
+        self.assertEqual(read_json(path.parent/'prediction-000.json')['resource_usage'], usage)
         committed = read_json(path.parent/'input-000.json')
         inputs.verify_committed_input(plan, committed, prediction)
         quotes = [{'t': anchor+i*10000, 'mid': 1.12, 'receipt': str(i)} for i in range(31)]

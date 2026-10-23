@@ -13,7 +13,7 @@ from .resident_store import write_once,atomic
 from .resident_data import forecast_input
 from .resident_source_policy import declared_profile,read_for_future_plan
 from .dataset import encode_rows
-from .model import load_verified_laya
+from .model import load_verified_laya,worker_resource_usage
 from .resident_model import ResidentDecisionCell
 from .native import NativePorts
 from .integrity import validate_candidate_artifact as validate_parent
@@ -195,6 +195,7 @@ def predict(config,plan_path,slot):
  result['input_receipt_sha256']=sha_file(input_path)
  timing.update(prediction_committed_at_ms=available,phase='COMPLETE')
  result['timing']=timing
+ result['resource_usage']=worker_resource_usage()
  destination=plan_path.parent/f'prediction-{slot:03}.json';write_once(destination,result)
  atomic(stage,timing)
  print(json.dumps({'prediction':str(destination),'candidate_id':candidate['candidate_id'],'slot':slot,'anchor_ms':anchor,'broker_orders_sent':0}),flush=True)
