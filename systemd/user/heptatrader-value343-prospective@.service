@@ -1,0 +1,35 @@
+[Unit]
+Description=HeptaTrader Value343 prospective observer (%i); no broker authority
+After=default.target heptatrader-paper-driver.service
+ConditionPathExists=%h/.local/state/heptatrader/operator-evidence/%i/freeze.json
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/heptatrader/value343-prospective/releases/%i
+ExecStart=%h/.local/share/heptatrader/laya-runtime/venv/bin/python -B -m laya_cell.value343_prospective --config %h/.local/share/heptatrader/value343-prospective/releases/%i/registration.json --mode watch
+Environment=PYTHONPATH=%h/.local/share/heptatrader/value343-prospective/releases/%i/learn:%h/.local/share/heptatrader/value343-prospective/releases/%i/scripts
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+UMask=0077
+Nice=10
+CPUQuota=40%
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/heptatrader/operator-evidence/%i
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+[Install]
+WantedBy=default.target
