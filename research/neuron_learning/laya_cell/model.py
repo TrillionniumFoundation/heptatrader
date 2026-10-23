@@ -8,15 +8,25 @@ from torch import nn
 from torch.nn import functional as F
 from .integrity import ContractError,CODE_BLOBS,LAYA_VERSION,canonical,digest,git_blob,read_json,verify_snapshot
 PROFILE={'schema':'heptatrader.laya-cell-profile.v1','max_len':1024,'dtype':'float32','precision_policy':'EXPLICIT_FP32_RUNTIME_PROFILE','organ_adapter':'FROZEN_IDENTITY','targets':{'scorer.1':{'rows':[0,1,2,3],'rank':2},'scorer.3':{'rows':[0],'rank':1}},'action_head_trainable':False,'native_max_effective_deltas':4096,'per_layer_relative_limit':.005,'global_relative_limit':.0025}
+_TENSOR_HASH_CHUNK_BYTES=16*1024*1024
 def require_pocket4_gpu()->torch.device:
  if not torch.version.hip or not torch.cuda.is_available():raise ContractError('POCKET4_ROCM_GPU_REQUIRED_NO_CPU_TRAINING_FALLBACK')
  if not str(getattr(torch.cuda.get_device_properties(0),'gcnArchName','')).startswith('gfx1150'):raise ContractError('POCKET4_GFX1150_REQUIRED')
  return torch.device('cuda:0')
 def tensor_hash(tensor):
- t=tensor.detach().cpu().contiguous()
+ t=tensor.detach()
+ # Keep legacy normalization outside ordinary contiguous GPU parameters,
+ # including empty/unusual-stride and unresolved conjugate/negative views.
+ if (t.device.type!='cuda' or not t.is_contiguous() or t.is_conj() or t.is_neg()
+     or not t.numel() or not t.dim() or t.stride(-1)!=1):t=t.cpu().contiguous()
  h=hashlib.sha256(canonical({'shape':list(t.shape),'dtype':str(t.dtype)}))
- # Hash the same byte stream without two full-size temporary bytes copies.
- h.update(memoryview(t.view(torch.uint8).numpy()))
+ data=t.view(torch.uint8).reshape(-1)
+ for start in range(0,data.numel(),_TENSOR_HASH_CHUNK_BYTES):
+  chunk=data.narrow(0,start,min(_TENSOR_HASH_CHUNK_BYTES,data.numel()-start)).cpu()
+  h.update(memoryview(chunk.numpy()))
+  # Release the host tensor and its temporary NumPy/buffer views before the
+  # next synchronous GPU-to-CPU allocation, rather than keeping two chunks.
+  del chunk
  return h.hexdigest()
 class RowLoRALinear(nn.Module):
  def __init__(self,base:nn.Linear,rows:list[int],rank:int,seed:int):
