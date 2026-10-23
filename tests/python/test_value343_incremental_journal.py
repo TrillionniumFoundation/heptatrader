@@ -13,7 +13,7 @@ import unittest
 from hepta_decision_attribution import canonical,digest
 from laya_cell import value343_prospective as watcher
 from laya_cell.value343_journal_cache import VerifiedIncrementalJournal
-from tests.python.test_value343_realcode_isolated_e2e import OriginalSyntheticFixture
+from test_value343_realcode_isolated_e2e import OriginalSyntheticFixture
 
 
 def cache_for(world):

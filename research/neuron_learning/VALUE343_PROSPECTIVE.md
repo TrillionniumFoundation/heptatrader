@@ -48,10 +48,14 @@ is writable. It has no IP address family and retains the existing 40% CPU and
 
 ## Focused validation
 
-Run the synthetic test_value343_producer_rollover,
-test_value343_realcode_isolated_e2e, test_value343_post_fsync_durable_seal,
-test_value343_incremental_journal and test_value343_chronological_oos unittest
-modules with PYTHONPATH=research/neuron_learning:scripts:.
+Run the five synthetic Value343 suites using the checkout import paths:
+
+```sh
+PYTHONPATH=research/neuron_learning:scripts python3 -B -m unittest discover -s tests/python -p 'test_value343_*.py'
+```
+
+The test directory is added by unittest discovery, matching the CI runner's
+fixture imports without relying on the repository root being on PYTHONPATH.
 They exercise cohort separation, immutable registration, no retrospective
 prediction, response races, fsync durability, hash-chain reuse and actual fee
 recomputation. Live archives and hardcoded historical row counts are not CI

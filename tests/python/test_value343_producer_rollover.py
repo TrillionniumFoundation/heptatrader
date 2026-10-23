@@ -11,7 +11,7 @@ import time
 import unittest
 from hepta_decision_attribution import canonical,digest
 from laya_cell import value343_prospective as s
-from tests.python.test_value343_realcode_isolated_e2e import OriginalSyntheticFixture
+from test_value343_realcode_isolated_e2e import OriginalSyntheticFixture
 
 def private_json(path,value):
     path.write_text(canonical(value))
