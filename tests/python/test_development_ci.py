@@ -234,6 +234,87 @@ class DevelopmentCiTests(unittest.TestCase):
             self.assertNotEqual(check_range("f" * 40, fixed).returncode, 0)
 
 
+    def test_hosted_apt_transport_preserves_fallbacks_and_fails_closed(self):
+        import os
+        import subprocess
+        import tempfile
+
+        _, _, step = self.step(workflow("core-ci.yml"), "apt-get install")
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-apt-") as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            log = root / "apt.log"
+            script = step["run"].replace("/etc/apt/apt-mirrors.txt", str(mirrors))
+            self.assertNotIn("/etc/apt/", script)
+            subprocess.run(["bash", "-n"], input=script, text=True, check=True,
+                           capture_output=True, timeout=10)
+            embedded = re.search(r"<<'PY'\n(.*?)\nPY\n", script, re.S)
+            self.assertIsNotNone(embedded)
+            compile(embedded[1], "hosted APT setup", "exec")
+            (root / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+            (root / "apt-get").write_text(
+                '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_LOG"\n'
+                'if [ "$1" = "${APT_FAIL_COMMAND:-}" ]; then exit 23; fi\n'
+                'exit 0\n')
+            for name in ("sudo", "apt-get"):
+                (root / name).chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                   "APT_LOG": str(log)}
+            original = (
+                "# Keep the configured mirrors and metadata.\n"
+                "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1 arch:amd64\n"
+                "http://archive.ubuntu.com/ubuntu/\tpriority:9 suite:noble\n"
+                "https://example.invalid/ubuntu/\tpriority:8\n")
+            expected = (
+                "# Keep the configured mirrors and metadata.\n"
+                "http://azure.archive.ubuntu.com/ubuntu/\tpriority:2 arch:amd64\n"
+                "https://archive.ubuntu.com/ubuntu/\tpriority:1 suite:noble\n"
+                "https://example.invalid/ubuntu/\tpriority:8\n")
+
+            def run(native="false", learning="false", failure=""):
+                log.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=10,
+                    env={**env, "RUN_NATIVE": native, "RUN_LEARNING": learning,
+                         "APT_FAIL_COMMAND": failure})
+                calls = [line.split() for line in log.read_text().splitlines()] if log.exists() else []
+                return result, calls
+
+            for initial, wanted in ((original, expected), (expected, expected),
+                                    (None, None),
+                                    ("https://example.invalid/ubuntu/\n", "https://example.invalid/ubuntu/\n")):
+                for native, learning in (("false", "false"), ("true", "false"),
+                                         ("false", "true"), ("true", "true")):
+                    with self.subTest(mirrors=initial, native=native, learning=learning):
+                        if initial is None:
+                            mirrors.unlink(missing_ok=True)
+                        else:
+                            mirrors.write_text(initial)
+                        result, calls = run(native, learning)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(mirrors.read_text() if mirrors.exists() else None, wanted)
+                        self.assertEqual([call[0] for call in calls], ["update", "install"])
+                        for call in calls:
+                            options = {call[i + 1].split("=", 1)[0]: call[i + 1].split("=", 1)[1]
+                                       for i, arg in enumerate(call) if arg == "-o"}
+                            self.assertEqual(set(options), {"Acquire::http::Timeout", "Acquire::https::Timeout", "Acquire::Retries"})
+                            for transport in ("http", "https"):
+                                self.assertGreater(int(options[f"Acquire::{transport}::Timeout"]), 0)
+                                self.assertLessEqual(int(options[f"Acquire::{transport}::Timeout"]), 30)
+                            self.assertEqual(int(options["Acquire::Retries"]), 1)
+                        packages = ["cmake", "libssl-dev", "zlib1g-dev", "python3-yaml", "python3-numpy", "python3-cryptography"]
+                        if native == "true":
+                            packages.append("ninja-build")
+                        if learning == "true":
+                            packages.append("python3-venv")
+                        install = [arg for arg in calls[1][1:] if arg != "-o" and not arg.startswith("Acquire::")]
+                        self.assertEqual(install, ["--yes", "--no-install-recommends", *packages])
+            for failure, commands in (("update", ["update"]), ("install", ["update", "install"])):
+                with self.subTest(failure=failure):
+                    result, calls = run(failure=failure)
+                    self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
+                    self.assertEqual([call[0] for call in calls], commands)
+
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")
         _, job, tests = self.step(ci, "scripts/run_python_tests.py --lane learning")

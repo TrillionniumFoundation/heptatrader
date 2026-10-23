@@ -59,8 +59,34 @@ jobs:
         packages=(cmake libssl-dev zlib1g-dev python3-yaml python3-numpy python3-cryptography)
         if [[ "$RUN_NATIVE" != false ]]; then packages+=(ninja-build); fi
         if [[ "$RUN_LEARNING" != false ]]; then packages+=(python3-venv); fi
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+        # Prefer upstream HTTPS over the hosted Azure mirror, retaining fallbacks.
+        sudo python3 - <<'PY'
+        from pathlib import Path
+        path = Path("/etc/apt/apt-mirrors.txt")
+        if path.is_file():
+            original = path.read_text()
+            lines = []
+            for line in original.splitlines():
+                fields = line.split()
+                if fields:
+                    url, *metadata = fields
+                    upstream = url.rstrip("/") in (
+                        "http://archive.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu")
+                    azure = url.rstrip("/") in (
+                        "http://azure.archive.ubuntu.com/ubuntu", "https://azure.archive.ubuntu.com/ubuntu")
+                    if upstream or azure:
+                        if upstream:
+                            url = url.replace("http://", "https://", 1)
+                        metadata = [item for item in metadata if not item.startswith("priority:")]
+                        line = url + "\t" + " ".join(["priority:" + ("1" if upstream else "2"), *metadata])
+                lines.append(line)
+            updated = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
+            if updated != original:
+                path.write_text(updated)
+        PY
+        apt_options=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1)
+        sudo apt-get update "${apt_options[@]}"
+        sudo apt-get install "${apt_options[@]}" --yes --no-install-recommends "${packages[@]}"
     - name: Native build and behavior tests
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
       env:
