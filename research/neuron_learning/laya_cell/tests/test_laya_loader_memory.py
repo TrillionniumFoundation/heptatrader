@@ -36,7 +36,7 @@ class TinyPinnedModel(torch.nn.Module):
         if tied:
             self.scorer_alias = self.scorer
         self.original_parameters = [weakref.ref(p) for p in self.parameters()]
-        self.load_calls, self.to_calls = [], []
+        self.load_calls, self.to_calls, self.apply_calls = [], [], []
         self.float_calls = 0
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
@@ -53,12 +53,12 @@ class TinyPinnedModel(torch.nn.Module):
                               'non_blocking': kwargs.get('non_blocking'),
                               'parameter_dtypes': [p.dtype for p in self.parameters()],
                               'old_parameters_alive': [ref() is not None for ref in self.original_parameters]})
-        if device is not None and torch.device(device).type == 'cuda':
-            # Exercise the real loader's GPU branch using CPU casts only.
-            # Actual H2D conversion order and GPU byte parity require a real probe.
-            return super().to(device='cpu', dtype=kwargs['dtype'],
-                              non_blocking=kwargs['non_blocking'])
         return super().to(*args, **kwargs)
+
+    def _apply(self, fn, recurse=True):
+        self.apply_calls.append({'parameter_dtypes': [p.dtype for p in self.parameters()],
+                                 'old_parameters_alive': [ref() is not None for ref in self.original_parameters]})
+        return super()._apply(fn, recurse=recurse)
 
 
 class TinyTokenizer:
@@ -71,6 +71,68 @@ def mixed_checkpoint(module):
             if value.is_floating_point() and name != 'temperature'
             else value.detach().clone()
             for name, value in module.state_dict().items()}
+
+
+class CpuTransferObserver:
+    """CPU-backed destinations test scheduling and bytes, never real H2D/HIP."""
+    def __init__(self, case):
+        self.case = case
+        self.staging_refs, self.target_refs = [], []
+        self.fills, self.copies, self.fallbacks = [], [], []
+        self.fail_copy = False
+        empty, empty_like = torch.empty, torch.empty_like
+        copy_, to = torch.Tensor.copy_, torch.Tensor.to
+
+        def observed_empty(*args, **kwargs):
+            value = empty(*args, **kwargs)
+            if (value.device.type == 'cpu' and value.dtype == torch.float32
+                    and value.numel() * value.element_size() == model._PRETRAINED_FP32_STAGING_BYTES):
+                self.staging_refs.append(weakref.ref(value))
+            return value
+
+        def observed_empty_like(source, *args, **kwargs):
+            if torch.device(kwargs.get('device', source.device)).type == 'cuda':
+                case.assertEqual(kwargs['dtype'], torch.float32)
+                value = empty_like(source, *args, **dict(kwargs, device='cpu'))
+                self.target_refs.append((value.untyped_storage().data_ptr(), weakref.ref(value)))
+                return value
+            return empty_like(source, *args, **kwargs)
+
+        def observed_copy(destination, source, *args, **kwargs):
+            pointer = destination.untyped_storage().data_ptr()
+            staging = next((ref() for ref in self.staging_refs if ref() is not None), None)
+            if staging is not None and pointer == staging.untyped_storage().data_ptr():
+                case.assertEqual(source.dtype, torch.float16)
+                case.assertEqual(source.device.type, 'cpu')
+                self.fills.append(destination.numel() * destination.element_size())
+            if any(pointer == ptr and ref() is not None for ptr, ref in self.target_refs):
+                case.assertFalse(args)
+                case.assertEqual(kwargs, {'non_blocking': False})
+                case.assertEqual(source.dtype, torch.float32)
+                case.assertIsNotNone(staging)
+                case.assertEqual(source.untyped_storage().data_ptr(), staging.untyped_storage().data_ptr())
+                self.copies.append({'bytes': source.numel() * source.element_size(),
+                                    'staging_pointer': source.untyped_storage().data_ptr()})
+                if self.fail_copy:
+                    raise RuntimeError('SYNTHETIC_BLOCKING_TRANSFER_FAILURE')
+            return copy_(destination, source, *args, **kwargs)
+
+        def observed_to(source, *args, **kwargs):
+            device = kwargs.get('device', args[0] if args and isinstance(args[0], (str, torch.device)) else None)
+            if device is not None and torch.device(device).type == 'cuda':
+                case.assertFalse(args)
+                case.assertIs(kwargs['non_blocking'], False)
+                self.fallbacks.append({'dtype': source.dtype, 'shape': tuple(source.shape),
+                                       'parameter': isinstance(source, torch.nn.Parameter),
+                                       'contiguous': source.is_contiguous(), 'neg': source.is_neg()})
+                return to(source, **dict(kwargs, device='cpu'))
+            return to(source, *args, **kwargs)
+
+        for owner, name, value in ((torch, 'empty', observed_empty),
+                                   (torch, 'empty_like', observed_empty_like),
+                                   (torch.Tensor, 'copy_', observed_copy),
+                                   (torch.Tensor, 'to', observed_to)):
+            case.start_patch(patch.object(owner, name, value))
 
 
 class LayaLoaderMemoryTests(unittest.TestCase):
@@ -141,6 +203,7 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.verify = self.start_patch(patch.object(model, 'verify_snapshot', return_value='a' * 64))
         self.require_gpu = self.start_patch(patch.object(model, 'require_pocket4_gpu',
                                                         return_value=torch.device('cuda:0')))
+        self.transfer = CpuTransferObserver(self)
         self.manifest = {'tiny_stub_manifest': True}
 
     def tearDown(self):
@@ -179,7 +242,7 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         value.load_state_dict(self.checkpoint, strict=True)
         return value.float().to(torch.device('cpu')).eval()
 
-    def test_gpu_assignment_then_one_blocking_conversion_matches_old_state_and_rng(self):
+    def test_gpu_assignment_then_one_staging_buffer_matches_old_state_and_rng(self):
         before = torch.get_rng_state().clone()
         expected = self.reference()
         expected_rng = torch.get_rng_state().clone()
@@ -192,13 +255,16 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.assertFalse(actual.training)
         self.assertEqual(actual.load_calls, [{'strict': True, 'assign': True}])
         self.assertEqual(actual.float_calls, 0)
-        self.assertEqual(len(actual.to_calls), 1)
-        transfer = actual.to_calls[0]
-        self.assertEqual(transfer['device'], 'cuda:0')
-        self.assertEqual(transfer['dtype'], torch.float32)
-        self.assertIs(transfer['non_blocking'], False)
-        self.assertEqual(set(transfer['parameter_dtypes']), {torch.float16})
-        self.assertFalse(any(transfer['old_parameters_alive']))
+        self.assertEqual(actual.to_calls, [])
+        self.assertEqual(len(actual.apply_calls), 1)
+        self.assertEqual(set(actual.apply_calls[0]['parameter_dtypes']), {torch.float16})
+        self.assertFalse(any(actual.apply_calls[0]['old_parameters_alive']))
+        self.assertEqual(len(self.transfer.staging_refs), 1)
+        self.assertIsNone(self.transfer.staging_refs[0]())
+        self.assertEqual(len(self.transfer.copies), len(list(actual.parameters())))
+        self.assertEqual(len({row['staging_pointer'] for row in self.transfer.copies}), 1)
+        self.assertFalse(any(row['parameter'] and row['dtype'] == torch.float16
+                             for row in self.transfer.fallbacks))
 
     def test_cpu_fallback_keeps_original_copy_float_to_path(self):
         expected = self.reference()
@@ -225,6 +291,8 @@ class LayaLoaderMemoryTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         self.load(gpu=gpu)
                     self.assertEqual(self.created[-1].to_calls, [])
+                    self.assertEqual(self.created[-1].apply_calls, [])
+                    self.assertEqual(self.transfer.staging_refs, [])
 
     def test_tied_parameters_fail_closed_only_on_gpu_assignment_path(self):
         self.tied = True
@@ -233,6 +301,7 @@ class LayaLoaderMemoryTests(unittest.TestCase):
             self.load(gpu=True)
         self.assertEqual(self.created[-1].load_calls, [])
         self.assertEqual(self.created[-1].to_calls, [])
+        self.assertEqual(self.created[-1].apply_calls, [])
         actual, _, _ = self.load(gpu=False)
         self.assertIs(actual.scorer.weight, actual.scorer_alias.weight)
         self.assertIs(actual.scorer.bias, actual.scorer_alias.bias)
@@ -254,6 +323,82 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         expected.copy_(source)
         actual = source.to(dtype=torch.float32)
         self.assertTrue(torch.equal(expected.view(torch.int32), actual.view(torch.int32)))
+
+    def test_real_16mib_stage_reused_for_large_tail_and_small_parameter(self):
+        limit = 16 * 1024 * 1024
+        self.assertEqual(model._PRETRAINED_FP32_STAGING_BYTES, limit)
+        count = limit // 4 + 3
+        patterns = torch.arange(65536, dtype=torch.int32, device='cpu').to(torch.int16).view(torch.float16)
+        patterns = patterns.roll(-0x7c01)  # The three-element tail contains NaN payloads.
+        source = patterns.repeat((count + 65535) // 65536)[:count]
+        original_bits = source.view(torch.int16).clone()
+        expected = source.to(torch.float32)
+        value = torch.nn.Module()
+        value.register_parameter('large', torch.nn.Parameter(source))
+        value.register_parameter('small', torch.nn.Parameter(torch.tensor([1., -0.], dtype=torch.float16),
+                                                              requires_grad=False))
+        before = torch.get_rng_state().clone()
+        result = model._to_pretrained_gpu_fp32(value, torch.device('cuda:0'))
+        self.assertIs(result, value)
+        self.assertTrue(torch.equal(before, torch.get_rng_state()))
+        self.assertTrue(torch.equal(source.view(torch.int16), original_bits))
+        self.assertTrue(torch.equal(result.large.view(torch.int32), expected.view(torch.int32)))
+        self.assertTrue(torch.equal(result.small.view(torch.int32),
+                                    torch.tensor([1., -0.], dtype=torch.float32).view(torch.int32)))
+        self.assertTrue(result.large.requires_grad)
+        self.assertFalse(result.small.requires_grad)
+        self.assertEqual(self.transfer.fills, [limit, 12, 8])
+        self.assertEqual([row['bytes'] for row in self.transfer.copies], self.transfer.fills)
+        self.assertEqual(len(self.transfer.staging_refs), 1)
+        self.assertIsNone(self.transfer.staging_refs[0]())
+        self.assertEqual(len({row['staging_pointer'] for row in self.transfer.copies}), 1)
+        self.assertEqual(self.transfer.fallbacks, [])
+
+    def test_empty_scalar_and_buffers_keep_shapes_dtypes_and_values(self):
+        value = torch.nn.Module()
+        value.register_parameter('empty', torch.nn.Parameter(torch.empty((0, 3), dtype=torch.float16)))
+        value.register_parameter('scalar', torch.nn.Parameter(torch.tensor(-0., dtype=torch.float16)))
+        value.register_buffer('rope', torch.tensor([1., -0.], dtype=torch.float32), persistent=False)
+        value.register_buffer('indices', torch.tensor([2, 0], dtype=torch.int64))
+        result = model._to_pretrained_gpu_fp32(value, torch.device('cuda:0'))
+        self.assertEqual(result.empty.shape, torch.Size([0, 3]))
+        self.assertEqual(result.empty.dtype, torch.float32)
+        self.assertEqual(result.scalar.shape, torch.Size([]))
+        self.assertEqual(int(result.scalar.view(torch.int32)), -2147483648)
+        self.assertEqual(result.rope.dtype, torch.float32)
+        self.assertEqual(result.indices.dtype, torch.int64)
+        self.assertEqual(result.indices.tolist(), [2, 0])
+        self.assertNotIn('rope', result.state_dict())
+        self.assertEqual(self.transfer.fills, [4])
+        self.assertEqual(len(self.transfer.staging_refs), 1)
+        self.assertIsNone(self.transfer.staging_refs[0]())
+        self.assertEqual({row['dtype'] for row in self.transfer.fallbacks}, {torch.float32, torch.int64})
+
+    def test_noncontiguous_parameter_and_half_buffer_use_original_to_fallback(self):
+        value = torch.nn.Module()
+        original = torch.arange(6, dtype=torch.float16).reshape(2, 3).transpose(0, 1)
+        self.assertFalse(original.is_contiguous())
+        value.register_parameter('special', torch.nn.Parameter(original))
+        value.register_buffer('half_buffer', torch.tensor([3., -0.], dtype=torch.float16))
+        result = model._to_pretrained_gpu_fp32(value, torch.device('cuda:0'))
+        self.assertTrue(torch.equal(result.special, original.to(torch.float32)))
+        self.assertEqual(result.special.stride(), original.to(torch.float32).stride())
+        self.assertTrue(torch.equal(result.half_buffer.view(torch.int32),
+                                    torch.tensor([3., -0.], dtype=torch.float32).view(torch.int32)))
+        self.assertEqual(self.transfer.staging_refs, [])
+        self.assertEqual(self.transfer.copies, [])
+        self.assertEqual(len(self.transfer.fallbacks), 2)
+        self.assertTrue(any(row['parameter'] and not row['contiguous'] for row in self.transfer.fallbacks))
+
+    def test_staging_is_released_when_blocking_copy_raises(self):
+        value = torch.nn.Module()
+        value.register_parameter('weight', torch.nn.Parameter(torch.ones(3, dtype=torch.float16)))
+        self.transfer.fail_copy = True
+        with self.assertRaisesRegex(RuntimeError, 'SYNTHETIC_BLOCKING_TRANSFER_FAILURE'):
+            model._to_pretrained_gpu_fp32(value, torch.device('cuda:0'))
+        self.assertEqual(value.weight.dtype, torch.float16)
+        self.assertEqual(len(self.transfer.staging_refs), 1)
+        self.assertIsNone(self.transfer.staging_refs[0]())
 
 
 if __name__ == '__main__':

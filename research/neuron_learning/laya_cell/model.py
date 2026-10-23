@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from .integrity import ContractError,CODE_BLOBS,LAYA_VERSION,canonical,digest,git_blob,read_json,verify_snapshot
 PROFILE={'schema':'heptatrader.laya-cell-profile.v1','max_len':1024,'dtype':'float32','precision_policy':'EXPLICIT_FP32_RUNTIME_PROFILE','organ_adapter':'FROZEN_IDENTITY','targets':{'scorer.1':{'rows':[0,1,2,3],'rank':2},'scorer.3':{'rows':[0],'rank':1}},'action_head_trainable':False,'native_max_effective_deltas':4096,'per_layer_relative_limit':.005,'global_relative_limit':.0025}
 _TENSOR_HASH_CHUNK_BYTES=16*1024*1024
+_PRETRAINED_FP32_STAGING_BYTES=16*1024*1024
 def require_pocket4_gpu()->torch.device:
  if not torch.version.hip or not torch.cuda.is_available():raise ContractError('POCKET4_ROCM_GPU_REQUIRED_NO_CPU_TRAINING_FALLBACK')
  if not str(getattr(torch.cuda.get_device_properties(0),'gcnArchName','')).startswith('gfx1150'):raise ContractError('POCKET4_GFX1150_REQUIRED')
@@ -88,6 +89,32 @@ class TradingDecisionCell(nn.Module):
   if sum(len(x['deltas']) for x in layers)>4096:raise ContractError('NATIVE_DELTA_COUNT_EXCEEDED')
   return layers
 
+def _to_pretrained_gpu_fp32(model,device):
+ # Reuse one ordinary CPU widening buffer for the pinned dense F16 parameters.
+ # Full GPU tensors and checkpoint mappings remain; this is not an RSS bound.
+ staging=None
+ def convert(t):
+  nonlocal staging
+  if (isinstance(t,nn.Parameter) and t.device.type=='cpu' and t.dtype==torch.float16
+      and t.layout==torch.strided and t.is_contiguous() and not t.is_conj() and not t.is_neg()):
+   result=torch.empty_like(t,device=device,dtype=torch.float32)
+   source=t.detach().view(-1);destination=result.view(-1)
+   if source.numel() and staging is None:
+    staging=torch.empty(_PRETRAINED_FP32_STAGING_BYTES//4,dtype=torch.float32,device='cpu')
+   for start in range(0,source.numel(),_PRETRAINED_FP32_STAGING_BYTES//4):
+    count=min(_PRETRAINED_FP32_STAGING_BYTES//4,source.numel()-start)
+    chunk=staging.narrow(0,0,count)
+    try:
+     chunk.copy_(source.narrow(0,start,count))
+     destination.narrow(0,start,count).copy_(chunk,non_blocking=False)
+    finally:del chunk
+   return result
+  # Preserve the original conversion for buffers and unusual tensor layouts or
+  # view flags; their conversion materials are outside the 16MiB bound.
+  return t.to(device=device,dtype=torch.float32 if t.is_floating_point() or t.is_complex() else None,non_blocking=False)
+ try:return model._apply(convert)
+ finally:staging=None
+
 def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
  base_id=verify_snapshot(directory,manifest);device=require_pocket4_gpu() if enforce_gpu else torch.device('cpu')
  os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',USE_TF='0',TOKENIZERS_PARALLELISM='false')
@@ -116,9 +143,7 @@ def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
  embedding_rows=model.encoder.get_input_embeddings().num_embeddings
  if len(tokenizer)>embedding_rows or max(tokenizer.get_vocab().values())>=embedding_rows:raise ContractError('TOKENIZER_EMBEDDING_MISMATCH')
  if gpu_load:
-  # Blocking mixed-dtype transfer widens one CPU tensor immediately before H2D.
-  # The largest pinned tensor needs a 750MiB temporary, not a whole-model FP32
-  # CPU copy. This bounds that temporary, not total process RSS or driver memory.
-  model=model.to(device=device,dtype=torch.float32,non_blocking=False).eval()
+  # More blocking copies change timing, not FP32 arithmetic or the native backend.
+  model=_to_pretrained_gpu_fp32(model,device).eval()
  else:model=model.float().to(device).eval()
  return model,tokenizer,base_id
