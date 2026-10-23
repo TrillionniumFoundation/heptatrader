@@ -104,9 +104,21 @@ def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
  model=build_model(cfg,encoder_dir=str(directory/'encoder'),pretrained=False)
  checkpoint=load_file(str(directory/'model.safetensors'),device='cpu')
  if not any(k.startswith('encoder.') for k in checkpoint) or not any(k.startswith('scorer.') for k in checkpoint):raise ContractError('PRETRAINED_DECISION_HEAD_MISSING')
- model.load_state_dict(checkpoint,strict=True);del checkpoint
+ gpu_load=device.type=='cuda'
+ if gpu_load:
+  # Assignment can split tied Parameter objects; this pinned backbone is untied.
+  parameter_ids=[id(p) for _,p in model.named_parameters(remove_duplicate=False)]
+  if len(parameter_ids)!=len(set(parameter_ids)):raise ContractError('UNSUPPORTED_TIED_PRETRAINED_PARAMETERS')
+  model.load_state_dict(checkpoint,strict=True,assign=True)
+ else:model.load_state_dict(checkpoint,strict=True)
+ del checkpoint
  tokenizer=AutoTokenizer.from_pretrained(str(directory/'tokenizer'),local_files_only=True,trust_remote_code=False,use_fast=True)
  embedding_rows=model.encoder.get_input_embeddings().num_embeddings
  if len(tokenizer)>embedding_rows or max(tokenizer.get_vocab().values())>=embedding_rows:raise ContractError('TOKENIZER_EMBEDDING_MISMATCH')
- model=model.float().to(device).eval()
+ if gpu_load:
+  # Blocking mixed-dtype transfer widens one CPU tensor immediately before H2D.
+  # The largest pinned tensor needs a 750MiB temporary, not a whole-model FP32
+  # CPU copy. This bounds that temporary, not total process RSS or driver memory.
+  model=model.to(device=device,dtype=torch.float32,non_blocking=False).eval()
+ else:model=model.float().to(device).eval()
  return model,tokenizer,base_id
