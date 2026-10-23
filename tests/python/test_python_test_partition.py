@@ -26,13 +26,16 @@ class PythonTestPartitionTests(unittest.TestCase):
                     "test_research_contract_smoke.py"}
         self.assertTrue(required <= groups["learning"])
         self.assertFalse(groups["learning"] & groups["core"])
+        self.assertEqual(groups["legacy"], {
+            "test_ib_workflow_interfaces.py", "test_qualification_trust_boundary.py"})
+        self.assertFalse(groups["legacy"] & groups["core"])
 
     def test_future_test_defaults_to_core_and_install_is_not_duplicated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tests = root / "tests/python"
             tests.mkdir(parents=True)
-            for name in runner.SOURCE_TESTS | runner.LEARNING_TESTS | runner.INSTALL_TESTS | runner.PROCESS_TESTS | runner.EXTERNAL_TESTS | {"test_new_behavior.py"}:
+            for name in runner.SOURCE_TESTS | runner.LEARNING_TESTS | runner.INSTALL_TESTS | runner.PROCESS_TESTS | runner.EXTERNAL_TESTS | runner.LEGACY_TESTS | {"test_new_behavior.py"}:
                 (tests / name).touch()
             groups = runner.partitions(root)
             self.assertIn("test_new_behavior.py", groups["core"])

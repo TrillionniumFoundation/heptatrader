@@ -1,0 +1,55 @@
+name: Archived qualification contracts
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+    - .github/retired-workflows/**
+    - .github/workflows/legacy-qualification.yml
+    - scripts/check_qualification_trust_boundary.py
+    - scripts/run_python_tests.py
+    - tests/python/test_ib_workflow_interfaces.py
+    - tests/python/test_qualification_trust_boundary.py
+    - tests/python/test_python_test_partition.py
+    - tests/python/test_development_ci.py
+  push:
+    branches: [main]
+    paths:
+    - .github/retired-workflows/**
+    - .github/workflows/legacy-qualification.yml
+    - scripts/check_qualification_trust_boundary.py
+    - scripts/run_python_tests.py
+    - tests/python/test_ib_workflow_interfaces.py
+    - tests/python/test_qualification_trust_boundary.py
+    - tests/python/test_python_test_partition.py
+    - tests/python/test_development_ci.py
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: heptatrader-legacy-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+jobs:
+  legacy:
+    name: archived-qualification-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - name: Use bounded Git HTTP transport
+      run: git config --global http.version HTTP/1.1
+    - name: Checkout exact event subject without credentials
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Assert exact source identity
+      env:
+        EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+    - name: Install YAML parser
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends python3-yaml
+    - name: Run archived contracts against disposable fixtures
+      run: python3 scripts/run_python_tests.py --lane legacy

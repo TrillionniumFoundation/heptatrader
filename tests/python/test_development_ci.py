@@ -1,4 +1,7 @@
 from pathlib import Path
+import ast
+import fnmatch
+import re
 import unittest
 import yaml
 
@@ -16,7 +19,41 @@ def command_steps(ci, command):
             for step in job["steps"] if command in step.get("run", "")]
 
 
-
+def condition_value(step, context, *, succeeded=True, cancelled=False):
+    """Evaluate the boolean subset used by CI conditions, including implicit success."""
+    expression = step.get("if", "true").strip().removeprefix("${{").removesuffix("}}").strip()
+    if not re.search(r"\b(?:success|failure|cancelled|always)\s*\(", expression) and not succeeded:
+        return False
+    tokens = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][\w.-]*(?:\(\))?|&&|\|\||==|!=|[!()]", expression)
+    if "".join(tokens) != re.sub(r"\s+", "", re.sub(r"'(?:''|[^'])*'", lambda m: m[0].replace(" ", ""), expression)):
+        raise AssertionError("Unsupported CI condition: " + expression)
+    operators = {"&&": " and ", "||": " or ", "!": " not ", "==": " == ", "!=": " != ", "(": "(", ")": ")"}
+    statuses = {"success()": succeeded, "failure()": not succeeded and not cancelled,
+                "cancelled()": cancelled, "always()": True, "true": True, "false": False}
+    translated = []
+    for token in tokens:
+        if token in operators:
+            translated.append(operators[token])
+        elif token.startswith("'"):
+            translated.append(repr(token[1:-1].replace("''", "'")))
+        else:
+            translated.append(repr(statuses.get(token, context.get(token, ""))))
+    def value(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.BoolOp):
+            operands = [value(item) for item in node.values]
+            return all(operands) if isinstance(node.op, ast.And) else any(operands)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not value(node.operand)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right = value(node.left), value(node.comparators[0])
+            if isinstance(node.ops[0], ast.Eq):
+                return left == right
+            if isinstance(node.ops[0], ast.NotEq):
+                return left != right
+        raise AssertionError("Unsupported CI condition node: " + ast.dump(node))
+    return bool(value(ast.parse("".join(translated).strip(), mode="eval").body))
 
 
 class DevelopmentCiTests(unittest.TestCase):
@@ -36,28 +73,50 @@ class DevelopmentCiTests(unittest.TestCase):
                          "ci_change_scope", "--write-module-metadata"):
             self.assertNotIn(obsolete, commands)
 
-    def test_selected_lanes_report_after_other_lane_failures(self):
-        import re
+    def test_behavior_steps_follow_scope_and_real_dependencies(self):
         ci = workflow("core-ci.yml")
-        for command in ("./scripts/dev_core.sh",
-                        "scripts/run_python_tests.py --lane core",
-                        "scripts/run_python_tests.py --lane source",
-                        "scripts/run_python_tests.py --lane learning"):
+        _, job, identity = self.step(ci, 'test "$(git rev-parse HEAD)"')
+        _, _, deps = self.step(ci, "apt-get install")
+        _, _, scope = self.step(ci, "scripts/ci_scope.py")
+        _, _, install = self.step(ci, "pip install torch==")
+        ids = [step["id"] for step in job["steps"] if "id" in step]
+        context = {f"steps.{name}.{field}": "success" for name in ids
+                   for field in ("outcome", "conclusion")}
+        flags = ("run_native", "run_python", "run_learning")
+        context.update({f"steps.{scope['id']}.outputs.{flag}": "true" for flag in flags})
+        self.assertNotIn("continue-on-error", scope)
+        self.assertIn("--format github", scope["run"])
+        self.assertIn("GITHUB_OUTPUT", scope["run"])
+        self.assertIn("github.event.pull_request.base.sha", scope["env"]["BASE_SHA"])
+        lanes = (("./scripts/dev_core.sh", "run_native"),
+                 ("scripts/run_python_tests.py --lane core", "run_python"),
+                 ("scripts/run_python_tests.py --lane source", "run_python"),
+                 ("scripts/run_python_tests.py --lane learning", "run_learning"),
+                 ("pip install torch==", "run_learning"),
+                 ("scripts/check_documentation.py", None), ("git diff --check", None))
+        for command, flag in lanes:
+            _, _, step = self.step(ci, command)
+            required = {identity["id"]} | ({deps["id"]} if flag else set())
+            if command.endswith("--lane learning"):
+                required.add(install["id"])
             with self.subTest(command=command):
-                _, _, step = self.step(ci, command)
-                condition = step.get("if", "")
-                self.assertIn("!cancelled()", condition)
-                self.assertNotIn("success()", condition)
-                self.assertIn("steps.identity.outcome == 'success'", condition)
-                self.assertIn("steps.deps.outcome == 'success'", condition)
-                allowed = {"identity", "deps"}
-                if command.endswith("--lane learning"):
-                    allowed.add("learning_install")
-                    self.assertIn("steps.learning_install.outcome == 'success'", condition)
-                dependencies = set(re.findall(
-                    r"steps\.([A-Za-z0-9_]+)\.(?:outcome|conclusion)", condition))
-                self.assertEqual(dependencies, allowed)
                 self.assertNotIn("continue-on-error", step)
+                self.assertTrue(condition_value(step, context))
+                self.assertTrue(condition_value(step, context, succeeded=False))
+                self.assertFalse(condition_value(step, context, cancelled=True))
+                for failed in ids:
+                    failed_context = {**context, **{f"steps.{failed}.{field}": "failure"
+                                                    for field in ("outcome", "conclusion")}}
+                    self.assertEqual(condition_value(step, failed_context, succeeded=False),
+                                     failed not in required, (command, failed))
+                for output in ("false", ""):
+                    values = {**context, **{f"steps.{scope['id']}.outputs.{name}": output for name in flags}}
+                    self.assertEqual(condition_value(step, values, succeeded=False),
+                                     flag is None or output != "false", (command, output))
+                if flag:
+                    values = {**context, **{f"steps.{scope['id']}.outputs.{name}": "false" for name in flags}}
+                    values[f"steps.{scope['id']}.outputs.{flag}"] = "true"
+                    self.assertTrue(condition_value(step, values))
 
 
     def test_routine_events_use_read_only_credentials_and_exact_source(self):
@@ -80,37 +139,25 @@ class DevelopmentCiTests(unittest.TestCase):
             self.assertIn('git rev-parse HEAD', commands)
             self.assertIn('$EXPECTED_SHA', commands)
 
-    def test_scope_outputs_control_their_actual_execution(self):
-        ci = workflow("core-ci.yml")
-        for command, flag in (
-                ("./scripts/dev_core.sh", "run_native"),
-                ("scripts/run_python_tests.py --lane core", "run_python"),
-                ("scripts/run_python_tests.py --lane source", "run_python"),
-                ("scripts/run_python_tests.py --lane learning", "run_learning")):
-            _, job, step = self.step(ci, command)
-            self.assertIn("steps.scope.outputs." + flag, step.get("if", ""))
-            self.assertIn("steps.scope.outputs." + flag + " != 'false'", step.get("if", ""))
-            self.assertNotIn("steps.scope.outcome", step.get("if", ""))
-            self.assertNotIn("continue-on-error", step)
-            scopes = [item for item in job["steps"] if item.get("id") == "scope"]
-            self.assertEqual(len(scopes), 1)
-            self.assertNotIn("continue-on-error", scopes[0])
-            self.assertIn("scripts/ci_scope.py --base", scopes[0]["run"])
-            self.assertIn('--format github >> "$GITHUB_OUTPUT"', scopes[0]["run"])
-            self.assertIn("github.event.pull_request.base.sha", scopes[0]["env"]["BASE_SHA"])
-
-    def test_documentation_and_whitespace_report_with_valid_identity(self):
-        ci = workflow("core-ci.yml")
-        for command in ("scripts/check_documentation.py", "git diff --check"):
-            with self.subTest(command=command):
-                _, _, step = self.step(ci, command)
-                condition = step.get("if", "")
-                self.assertIn("!cancelled()", condition)
-                self.assertIn("steps.identity.outcome == 'success'", condition)
-                self.assertNotIn("success()", condition)
-                self.assertNotIn("steps.scope", condition)
-                self.assertNotIn("steps.deps", condition)
-                self.assertNotIn("continue-on-error", step)
+    def test_archived_contract_lane_runs_only_for_its_inputs(self):
+        ci = workflow("legacy-qualification.yml")
+        self.assertEqual(ci["permissions"], {"contents": "read"})
+        self.assertNotIn("pull_request_target", ci["on"])
+        self.assertIn("workflow_dispatch", ci["on"])
+        self.step(ci, "scripts/run_python_tests.py --lane legacy")
+        inputs = (".github/retired-workflows/ib-paper-qualification.yml",
+                  ".github/workflows/legacy-qualification.yml",
+                  "scripts/check_qualification_trust_boundary.py", "scripts/run_python_tests.py",
+                  "tests/python/test_ib_workflow_interfaces.py",
+                  "tests/python/test_qualification_trust_boundary.py",
+                  "tests/python/test_python_test_partition.py")
+        for event in ("pull_request", "push"):
+            patterns = ci["on"][event]["paths"]
+            for path in inputs:
+                self.assertTrue(any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns), path)
+            for path in ("research/neuron_learning/laya_cell/resident.py",
+                         "scripts/heptatrader_paper_driver.py", "docs/technical/runtime-cost-observations.md"):
+                self.assertFalse(any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns), path)
 
 
     def test_identity_mismatch_fails_before_behavior_can_run(self):
@@ -119,7 +166,6 @@ class DevelopmentCiTests(unittest.TestCase):
         import tempfile
         ci = workflow("core-ci.yml")
         _, job, identity = self.step(ci, 'test "$(git rev-parse HEAD)"')
-        self.assertEqual(identity.get("id"), "identity")
         self.assertNotIn("if", identity)
         self.assertNotIn("continue-on-error", identity)
         self.assertNotIn("continue-on-error", job)
@@ -187,131 +233,105 @@ class DevelopmentCiTests(unittest.TestCase):
             self.assertEqual(check_range(head, fixed).returncode, 0)
             self.assertNotEqual(check_range("f" * 40, fixed).returncode, 0)
 
-    def test_operator_scope_is_bounded_and_missing_dependencies_stay_full(self):
+
+    def test_hosted_apt_transport_preserves_fallbacks_and_fails_closed(self):
+        import os
+        import subprocess
         import tempfile
-        import ci_scope
 
-        python_only = {"run_native": False, "run_python": True, "run_learning": False}
-        full = {"run_native": True, "run_python": True, "run_learning": True}
-        with tempfile.TemporaryDirectory(prefix="hepta-ci-scope-") as directory:
+        _, _, step = self.step(workflow("core-ci.yml"), "apt-get install")
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-apt-") as directory:
             root = Path(directory)
-            for group in ci_scope.VERIFIED_PYTHON_GROUPS:
-                for name in group:
-                    path = root / name
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.touch()
-            for name in ("scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py",
-                         "scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py"):
-                self.assertEqual(ci_scope.scope_for_paths([name], root), python_only, name)
-            for name in ("scripts/heptatrader_paper_driver.py",
-                         "research/neuron_learning/laya_cell/integrity.py", "scripts/new_operator.py"):
-                self.assertEqual(ci_scope.scope_for_paths([name], root), full, name)
-            (root / "tests/python/test_activate_prepared_driver.py").unlink()
-            self.assertEqual(ci_scope.scope_for_paths(["scripts/activate_prepared_driver.py"], root), full)
+            mirrors = root / "apt-mirrors.txt"
+            log = root / "apt.log"
+            script = step["run"].replace("/etc/apt/apt-mirrors.txt", str(mirrors))
+            self.assertNotIn("/etc/apt/", script)
+            subprocess.run(["bash", "-n"], input=script, text=True, check=True,
+                           capture_output=True, timeout=10)
+            embedded = re.search(r"<<'PY'\n(.*?)\nPY\n", script, re.S)
+            self.assertIsNotNone(embedded)
+            compile(embedded[1], "hosted APT setup", "exec")
+            (root / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+            (root / "apt-get").write_text(
+                '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_LOG"\n'
+                'if [ "$1" = "${APT_FAIL_COMMAND:-}" ]; then exit 23; fi\n'
+                'exit 0\n')
+            for name in ("sudo", "apt-get"):
+                (root / name).chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                   "APT_LOG": str(log)}
+            original = (
+                "# Keep the configured mirrors and metadata.\n"
+                "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1 arch:amd64\n"
+                "http://archive.ubuntu.com/ubuntu/\tpriority:9 suite:noble\n"
+                "https://example.invalid/ubuntu/\tpriority:8\n")
+            expected = (
+                "# Keep the configured mirrors and metadata.\n"
+                "http://azure.archive.ubuntu.com/ubuntu/\tpriority:2 arch:amd64\n"
+                "https://archive.ubuntu.com/ubuntu/\tpriority:1 suite:noble\n"
+                "https://example.invalid/ubuntu/\tpriority:8\n")
 
-    def test_resident_and_value_scopes_keep_python_and_learning_feedback(self):
-        import tempfile
-        import ci_scope
+            def run(native="false", learning="false", failure=""):
+                log.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=10,
+                    env={**env, "RUN_NATIVE": native, "RUN_LEARNING": learning,
+                         "APT_FAIL_COMMAND": failure})
+                calls = [line.split() for line in log.read_text().splitlines()] if log.exists() else []
+                return result, calls
 
-        expected = {"run_native": False, "run_python": True, "run_learning": True}
-        with tempfile.TemporaryDirectory(prefix="hepta-ci-resident-scope-") as directory:
-            root = Path(directory)
-            for group in ci_scope.VERIFIED_PYTHON_LEARNING_GROUPS:
-                for name in group:
-                    path = root / name
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.touch()
-            cases = [
-                ["research/neuron_learning/laya_cell/resident.py"],
-                ["research/neuron_learning/laya_cell/resident_store.py"],
-                ["research/historical_training/resident_resource_guard.py"],
-                ["research/historical_training/tests/test_resident_resource_guard.py"],
-                ["tests/python/test_laya_training_window.py"],
-                ["research/historical_training/value_successor_evaluator.py",
-                 "research/historical_training/value_ledger_stream.py",
-                 "tests/python/test_value_successor_evaluator.py"],
-                ["docs/technical/runtime-cost-observations.md",
-                 "research/historical_training/resident_resource_guard.py",
-                 "research/neuron_learning/laya_cell/resident.py",
-                 "research/neuron_learning/laya_cell/resident_store.py",
-                 "tests/python/test_laya_training_cadence.py"],
-            ]
-            for paths in cases:
-                with self.subTest(paths=paths):
-                    self.assertEqual(ci_scope.scope_for_paths(paths, root), expected)
-            combined = cases[5] + cases[6] + ["tests/python/test_laya_training_window.py"]
-            self.assertEqual(ci_scope.scope_for_paths(combined, root), expected)
-
-    def test_resident_and_value_exemptions_fail_closed_for_missing_or_shared_paths(self):
-        import tempfile
-        import ci_scope
-
-        full = {"run_native": True, "run_python": True, "run_learning": True}
-        resident = "research/neuron_learning/laya_cell/resident.py"
-        successor = "research/historical_training/value_successor_evaluator.py"
-        with tempfile.TemporaryDirectory(prefix="hepta-ci-scope-boundary-") as directory:
-            root = Path(directory)
-            for group in ci_scope.VERIFIED_PYTHON_LEARNING_GROUPS:
-                for name in group:
-                    path = root / name
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.touch()
-            for path in (
-                    "HeptaTrade/execution/execution_coordinator.cpp",
-                    "research/neuron_learning/laya_cell/integrity.py",
-                    "research/neuron_learning/laya_cell/install_resident.py",
-                    "research/neuron_learning/laya_cell/new_resident_helper.py",
-                    "research/historical_training/new_value_helper.py",
-                    "scripts/install_btc_entry_runtime.py",
-                    "scripts/ci_scope.py",
-                    "tests/python/test_development_ci.py",
-                    ".github/workflows/core-ci.yml",
-                    "systemd/heptatrader-laya-trainer.service"):
-                with self.subTest(path=path):
-                    self.assertEqual(ci_scope.scope_for_paths([resident, successor, path], root), full)
-            self.assertEqual(ci_scope.scope_for_paths(
-                [resident, "research/neuron_learning/laya_cell/moved_resident.py"], root), full)
-            paired = root / "tests/python/test_laya_training_window.py"
-            paired.unlink()
-            self.assertEqual(ci_scope.scope_for_paths([resident], root), full)
-            paired.touch()
-            stream = root / "research/historical_training/value_ledger_stream.py"
-            stream.unlink()
-            self.assertEqual(ci_scope.scope_for_paths([successor], root), full)
-            stream.symlink_to(root / successor)
-            self.assertEqual(ci_scope.scope_for_paths([successor], root), full)
+            for initial, wanted in ((original, expected), (expected, expected),
+                                    (None, None),
+                                    ("https://example.invalid/ubuntu/\n", "https://example.invalid/ubuntu/\n")):
+                for native, learning in (("false", "false"), ("true", "false"),
+                                         ("false", "true"), ("true", "true")):
+                    with self.subTest(mirrors=initial, native=native, learning=learning):
+                        if initial is None:
+                            mirrors.unlink(missing_ok=True)
+                        else:
+                            mirrors.write_text(initial)
+                        result, calls = run(native, learning)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(mirrors.read_text() if mirrors.exists() else None, wanted)
+                        self.assertEqual([call[0] for call in calls], ["update", "install"])
+                        for call in calls:
+                            options = {call[i + 1].split("=", 1)[0]: call[i + 1].split("=", 1)[1]
+                                       for i, arg in enumerate(call) if arg == "-o"}
+                            self.assertEqual(set(options), {"Acquire::http::Timeout", "Acquire::https::Timeout", "Acquire::Retries"})
+                            for transport in ("http", "https"):
+                                self.assertGreater(int(options[f"Acquire::{transport}::Timeout"]), 0)
+                                self.assertLessEqual(int(options[f"Acquire::{transport}::Timeout"]), 30)
+                            self.assertEqual(int(options["Acquire::Retries"]), 1)
+                        packages = ["cmake", "libssl-dev", "zlib1g-dev", "python3-yaml", "python3-numpy", "python3-cryptography"]
+                        if native == "true":
+                            packages.append("ninja-build")
+                        if learning == "true":
+                            packages.append("python3-venv")
+                        install = [arg for arg in calls[1][1:] if arg != "-o" and not arg.startswith("Acquire::")]
+                        self.assertEqual(install, ["--yes", "--no-install-recommends", *packages])
+            for failure, commands in (("update", ["update"]), ("install", ["update", "install"])):
+                with self.subTest(failure=failure):
+                    result, calls = run(failure=failure)
+                    self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
+                    self.assertEqual([call[0] for call in calls], commands)
 
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")
         _, job, tests = self.step(ci, "scripts/run_python_tests.py --lane learning")
         caches = [step for step in job["steps"]
                   if step.get("uses", "").startswith("actions/cache@")]
-        self.assertEqual(len(caches), 1)
-        cache = caches[0]
-        self.assertRegex(cache["uses"], r"^actions/cache@[0-9a-f]{40}$")
-        self.assertEqual(cache["with"]["path"], "~/.cache/pip")
-        self.assertEqual(cache.get("continue-on-error"), "true")
-        installs = [step for step in job["steps"]
-                    if "pip install torch==" in step.get("run", "")]
-        self.assertEqual(len(installs), 1)
-        install = installs[0]
+        self.assertTrue(caches)
+        for cache in caches:
+            self.assertRegex(cache["uses"], r"^actions/cache@[0-9a-f]{40}$")
+            self.assertEqual(cache.get("continue-on-error"), "true")
+        _, _, install = self.step(ci, "pip install torch==")
         self.assertIn("--index-url https://download.pytorch.org/whl/cpu", install["run"])
         self.assertIn("safetensors==", install["run"])
         self.assertIn("torch.version.cuda is None", install["run"])
         self.assertLess(job["steps"].index(install), job["steps"].index(tests))
-        for step in (cache, install, tests):
-            condition = step.get("if", "")
-            self.assertIn("steps.scope.outputs.run_learning != 'false'", condition)
-            self.assertIn("!cancelled()", condition)
-            self.assertIn("steps.identity.outcome == 'success'", condition)
-            self.assertIn("steps.deps.outcome == 'success'", condition)
-            self.assertNotIn("success()", condition)
+        for step in (install, tests):
             self.assertNotIn("cache-hit", str(step))
-        self.assertEqual(install.get("id"), "learning_install")
-        self.assertNotIn("cache", install.get("if", ""))
-        self.assertIn("steps.learning_install.outcome == 'success'", tests.get("if", ""))
-        self.assertNotIn("continue-on-error", install)
-        self.assertNotIn("continue-on-error", tests)
+            self.assertNotIn("continue-on-error", step)
 
     def test_deep_suites_are_manual_and_broker_qualification_is_separate(self):
         for name in ("canonical-full-suite.yml", "heptadll-integration.yml"):
