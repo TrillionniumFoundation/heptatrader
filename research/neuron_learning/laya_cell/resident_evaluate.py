@@ -155,11 +155,19 @@ class Evaluator:
    if (path.parent/f'prediction-{slot:03}.json').exists():continue
    phase_path=path.parent/f'phase-{slot:03}.json'
    phase=read_json(phase_path) if phase_path.exists() else {'phase':'STARTUP'}
-   log=(path.parent/f'prediction-{slot:03}.log').read_text()[-1500:].strip().splitlines()
+   with (path.parent/f'prediction-{slot:03}.log').open('rb') as diagnostic_stream:
+    diagnostic_stream.seek(0,os.SEEK_END)
+    diagnostic_stream.seek(max(0,diagnostic_stream.tell()-1500))
+    stderr_tail=diagnostic_stream.read(1500).decode('utf-8',errors='replace')
+   log=stderr_tail.strip().splitlines()
    reason=log[-1][:240] if log else 'NO_PROCESS_DIAGNOSTIC'
    if expired:reason='WORKER_BUDGET_EXCEEDED'
+   elif rc<0:
+    try:signal_name=signal.Signals(-rc).name
+    except ValueError:signal_name=str(-rc)
+    reason='WORKER_SIGNAL_'+signal_name
    failure={'schema':'heptatrader.laya-worker-failure.v1','slot':slot,'at_ms':int(time.time()*1000),
-    'exit_code':rc,'reason':reason,'phase':phase,'predicted':False}
+    'exit_code':rc,'reason':reason,'phase':phase,'predicted':False,'stderr_tail':stderr_tail}
    write_once(path.parent/f'failure-{slot:03}.json',failure)
  def step(self):
   self.reap();now=int(time.time()*1000)
