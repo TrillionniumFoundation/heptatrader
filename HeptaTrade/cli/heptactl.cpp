@@ -1,5 +1,6 @@
 #include "heptactl_command.h"
 #include "heptactl_exit_codes.h"
+#include "heptactl_pnl_stream.h"
 #include "../client/native_tool_client.h"
 
 #include <iostream>
@@ -80,6 +81,8 @@ int main(int argc, char** argv)
     config.timeoutMs = command.ioTimeoutMs;
     NativeToolClient client(config);
     NativeToolClientResult result;
+    if (command.pnlReadStream)
+        return RunPnlReadStream(command, client, std::cin, std::cout, std::cerr);
     if (command.watchSnapshot)
         return RunWatchSnapshot(command, client);
     if (command.request.call.name == "system.tools.describe")

@@ -10,6 +10,8 @@ from laya_cell import resident_plan_admission as admission
 from laya_cell import resident as resident_module
 from laya_cell.resident import Supervisor
 from laya_cell.resident_store import get_meta
+from laya_cell.integrity import canonical
+from laya_cell.resident_queue import OVERLAP_PROFILE, OVERLAP_FIELD, OVERLAP_EFFECTIVE
 from laya_cell.tests import test_resident_plan_admission as fixtures
 
 
@@ -18,12 +20,14 @@ class RegistrationGate:
         self.owner = owner
         self.decisions = iter(decisions)
         self.calls = []
+        self.prediction_readiness = []
         self.acquire = Mock(side_effect=AssertionError("NO_GPU_LEASE_FOR_REGISTRATION"))
         self.release = Mock(side_effect=AssertionError("NO_LEASE_TO_RELEASE"))
 
-    def check(self, *, forward_registration):
+    def check(self, *, forward_registration, prediction_ready=False):
         self.owner.assertTrue(self.service.db.in_transaction)
         self.calls.append(dict(forward_registration))
+        self.prediction_readiness.append(prediction_ready)
         decision = next(self.decisions)
         if isinstance(decision, BaseException):
             raise decision
@@ -159,6 +163,22 @@ class ForwardRegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "FORWARD_PREFLIGHT_CONTEXT_CHANGED"):
             self.service._evaluation_plan("job", self.candidate, self.job, 1, fixtures.NOW)
         self.assertEqual(gate.calls, [])
+
+    def test_new_overlap_job_checks_first_prediction_resources_without_gpu_lease(self):
+        policy = {OVERLAP_FIELD: OVERLAP_PROFILE, OVERLAP_EFFECTIVE: fixtures.NOW - 3000}
+        self.service.c.update(policy)
+        self.service.c['runtime_sha256']['learn/laya_cell/resident_queue.py'] = 'e' * 64
+        self.job.update(policy)
+        with self.service.db:
+            self.service.db.execute('UPDATE jobs SET payload=? WHERE id=?',
+                                   (canonical(self.job).decode(), 'job'))
+        self.inspect.return_value = {'pending_original_trials': 0,
+                                     'viable_pending_evaluations': 0, 'futile_plan_ids': []}
+        gate = self.wrap([True, True])
+        self.assertEqual(self.register()['state'], 'PUBLISHED')
+        self.assertEqual(gate.prediction_readiness, [True, True])
+        gate.acquire.assert_not_called()
+        gate.release.assert_not_called()
 
     def test_unexpected_error_rolls_back_and_restores_outer_context(self):
         self.wrap([RuntimeError("synthetic preflight failure")])

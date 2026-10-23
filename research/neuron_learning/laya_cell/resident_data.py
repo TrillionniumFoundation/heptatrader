@@ -46,16 +46,23 @@ def read_quotes(config,now_ms,*,read_hints=None):
     return ordered,prefixes
 
 
-def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids):
+def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,objective=None):
  """Choose before feature construction; every selected row is checked again below."""
  from data import sample_identity,observed_receipt,MAX_GAP_MS,TTL_MS
  from . import resident_training_v3 as v3
+ from . import resident_training_v6 as v6
+ from . import resident_training_v7 as v7
+ from . import resident_training_v8 as v8
+ recent=objective is not None
+ if recent:(v8 if v8.enabled(objective) else v7 if v7.enabled(objective) else v6).check_objective(objective)
  times=[q['t'] for q in ordered]
  gap_prefix=[0]
  for a,b in zip(ordered,ordered[1:]):
   gap_prefix.append(gap_prefix[-1]+int(b['t']-a['t']>MAX_GAP_MS))
  rejected=Counter();candidates=[];mature=0
  for i,anchor in enumerate(sampled):
+  if recent and anchor['t']<now_ms-v6.MAX_ROW_AGE_MS:
+   rejected['ANCHOR_OLDER_THAN_RECENCY_PROFILE']+=1;continue
   # Match data.label before the anchor cap; late inputs cannot become labels.
   if anchor['known_at_ms']>anchor['t']+60000:
    rejected['INPUT_AVAILABLE_TOO_LATE']+=1;continue
@@ -93,6 +100,7 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids):
   'last_selected_anchor_ms':selected[-1][1] if selected else None,
   'reserved_row_ids_digest':digest(sorted(reserved_row_ids)),
   'exclusion_counts':dict(sorted(rejected.items()))}
+ if recent:stats.update(policy=v6.SELECTION,maximum_anchor_age_ms=v6.MAX_ROW_AGE_MS)
  return {i:key for i,_,key in selected},stats
 
 
@@ -100,9 +108,17 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  from data import make_sample,label
  from . import resident_training_v3 as v3
  from . import resident_training_v4 as v4
+ from . import resident_training_v5 as v5
+ from . import resident_training_v6 as v6
+ from . import resident_training_v7 as v7
+ from . import resident_training_v8 as v8
  from .resident_row_accounting import row_id
- use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective'))
+ use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective')) or v5.enabled(config.get('objective')) or v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
  if v4.enabled(config.get('objective')):v4.check_objective(config['objective'])
+ if v5.enabled(config.get('objective')):v5.check_objective(config['objective'])
+ if v6.enabled(config.get('objective')):v6.check_objective(config['objective'])
+ if v7.enabled(config.get('objective')):v7.check_objective(config['objective'])
+ if v8.enabled(config.get('objective')):v8.check_objective(config['objective'])
  reserved=set(reserved_row_ids)
  if any(not isinstance(key,str) or len(key)!=64 or any(c not in '0123456789abcdef' for c in key) for key in reserved):
   raise ContractError('TRAINING_RESERVED_ROW_IDENTITY')
@@ -114,7 +130,8 @@ def collect(config,now_ms,*,reserved_row_ids=()):
   if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
  pool=None
  if use_v3:
-  selected,pool=mature_anchor_indices(ordered,sampled,now_ms,scope,reserved)
+  options={'objective':config['objective']} if (v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))) else {}
+  selected,pool=mature_anchor_indices(ordered,sampled,now_ms,scope,reserved,**options)
   indices=list(selected)
  else:
   indices=range(max(5,len(sampled)-512),len(sampled))
@@ -149,8 +166,11 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  window={'training_end_ms':now_ms,'validation_start_ms':now_ms+1,'validation_end_ms':now_ms+86400000}
  if use_v3:
   eligible,_=rows_for_training(dataset,window)
-  allowed={r['sample_id'] for r in eligible if r['horizon_sec']==300 and row_id(r) not in reserved}
-  dataset['samples']=v3.cover_time_buckets([s for s in all_samples if s['sample_id'] in allowed],768,lambda s:s['anchor_ms'])
+  recent=v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
+  allowed={r['sample_id'] for r in eligible if r['horizon_sec']==300 and row_id(r) not in reserved
+           and (not recent or r['anchor_ms']>=now_ms-v6.MAX_ROW_AGE_MS)}
+  supported=[s for s in all_samples if s['sample_id'] in allowed]
+  dataset['samples']=v3.cover_time_buckets(supported,768,lambda s:s['anchor_ms'])
   dataset['training_pool']=pool
  else:
   dataset['samples']=all_samples[-768:]

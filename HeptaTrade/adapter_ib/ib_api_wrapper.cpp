@@ -1,5 +1,6 @@
 ﻿#include "ib_admission_event_policy.h"
 #include "ib_callback_economics.h"
+#include "ib_callback_quantity.h"
 #include "ib_local_cancel_notice.h"
 #include "ib_local_market_data_request.h"
 #include "ib_api_wrapper.h"
@@ -70,9 +71,7 @@ void IBSubmittedOrderQuantityTracker::ObserveOrderStatus(
     const auto found = m_orders.find(orderId);
     if (clientId < 0 || clientId != m_clientId || found == m_orders.end()) return;
     const double quantity = found->second.order.totalQuantity;
-    if (!std::isfinite(filled) || filled < 0.0 || filled > quantity ||
-        !std::isfinite(remaining) || remaining < 0.0 || remaining > quantity ||
-        filled + remaining > quantity ||
+    if (!IbCallbackQuantitySumWithinTotal(filled, remaining, quantity) ||
         (filled > 0.0 && (!std::isfinite(averagePrice) || averagePrice <= 0.0)))
         return;
     if ((status == "Filled" && filled == quantity && remaining == 0.0) ||

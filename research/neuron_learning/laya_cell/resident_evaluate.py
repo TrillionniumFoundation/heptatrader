@@ -14,6 +14,7 @@ from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess,validate_plan_rule
 from . import resident_training_v2 as training_v2
 from . import resident_price_baselines as price_refs
+from . import resident_price_calibration as price_calibration
 
 
 def suppress_new_work_for_frozen_failure(plan, results):
@@ -35,10 +36,83 @@ def suppress_new_work_for_frozen_failure(plan, results):
  return censored>rule['max_censored'] or rule['slots']-censored<rule['min_observed']
 
 
-def measure(plan,slot,prediction,quotes,now_ms):
+def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
+ """Bind a real in-window suppression to already immutable futile outcomes.
+
+ Read mode never invents a missing event. An earlier real admission denial
+ remains separate evidence: no admission was attempted at this suppression.
+ """
+ path=Path(path);rule=validate_plan_rule(plan)
+ if (plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'})
+     or type(slot) is not int or not 0<=slot<rule['slots']):
+  raise ContractError('FUTILITY_SUPPRESSION_IDENTITY')
+ receipt=path.parent/f'futility-suppression-{slot:03}.json'
+ create=not receipt.exists()
+ if create and at_ms is None:return None
+ if create:
+  files=sorted(path.parent.glob('outcome-*.json'))
+  records=[read_json(p) for p in files]
+  if not suppress_new_work_for_frozen_failure(plan,records):
+   raise ContractError('FUTILITY_SUPPRESSION_NOT_IRREVERSIBLE')
+  basis=[]
+  needed_censors=min(rule['max_censored']+1,rule['slots']-rule['min_observed']+1)
+  for source,record in zip(files,records):
+   if source.name!=f"outcome-{record['slot']:03}.json":
+    raise ContractError('FUTILITY_SUPPRESSION_BASIS_PATH')
+   if (record['status']=='CENSORED' and len(basis)<needed_censors
+       and record.get('no_prediction_disposition')!='FUTILITY_SUPPRESSED'):
+    basis.append({'slot':record['slot'],'sha256':sha_file(source)})
+  value={'schema':'heptatrader.laya-futility-suppression.v1',
+   'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],'slot':slot,
+   'at_ms':at_ms,'basis_outcomes':basis,
+   'resource_admission_attempted_at_suppression':False}
+  value['receipt_id']=digest(value)
+ else:value=read_json(receipt)
+ start=plan['start_ms']+slot*rule['slot_spacing_ms']
+ if (not isinstance(value,dict)
+     or value.get('schema')!='heptatrader.laya-futility-suppression.v1'
+     or value.get('plan_id')!=plan['plan_id'] or value.get('candidate_id')!=plan['candidate_id']
+     or value.get('slot')!=slot or type(value.get('slot')) is not int
+     or type(value.get('at_ms')) is not int
+     or not start-90000<=value['at_ms']<=start+rule['input_grace_ms']
+     or value.get('resource_admission_attempted_at_suppression') is not False
+     or value.get('receipt_id')!=digest({k:v for k,v in value.items() if k!='receipt_id'})):
+  raise ContractError('FUTILITY_SUPPRESSION_RECEIPT_CHANGED')
+ basis=value.get('basis_outcomes')
+ if not isinstance(basis,list) or not 0<len(basis)<=rule['slots']:
+  raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
+ records=[]
+ for entry in basis:
+  if (not isinstance(entry,dict) or set(entry)!={'slot','sha256'}
+      or type(entry['slot']) is not int or not 0<=entry['slot']<slot):
+   raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
+  source=path.parent/f"outcome-{entry['slot']:03}.json"
+  if not source.exists() or sha_file(source)!=entry['sha256']:
+   raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
+  record=read_json(source)
+  if (record.get('slot')!=entry['slot'] or record.get('status')!='CENSORED'
+      or record.get('no_prediction_disposition')=='FUTILITY_SUPPRESSED'
+      or type(record.get('evaluated_at_ms')) is not int
+      or record['evaluated_at_ms']>value['at_ms']):
+   raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
+  records.append(record)
+ if not suppress_new_work_for_frozen_failure(plan,records):
+  raise ContractError('FUTILITY_SUPPRESSION_NOT_IRREVERSIBLE')
+ if create:write_once(receipt,value)
+ return {'sha256':sha_file(receipt),'at_ms':value['at_ms']}
+
+
+def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None):
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
  if prediction.get('input_id')!=digest(prediction.get('input')):raise ContractError('PREDICTION_INPUT_HASH')
+ from .resident_price_input import verify_prediction as verify_price_input
+ verify_price_input(plan,prediction)
+ if plan.get('price_input_objective') is not None:
+  from .resident_price_input import verify_committed_input
+  if committed_input is None:raise ContractError('V7_COMMITTED_PRICE_INPUT_REQUIRED')
+  verify_committed_input(plan,committed_input,prediction)
+ calibrated=price_calibration.verify_prediction(plan,prediction)
  anchor=prediction['anchor_ms'];due=anchor+RULE['horizon_ms'];times=[q['t'] for q in quotes]
  a=bisect_left(times,anchor);b=bisect_left(times,due)
  if b==len(times) and now_ms<=due+15000:return None
@@ -68,6 +142,9 @@ def measure(plan,slot,prediction,quotes,now_ms):
   action_brier=training_v2.action_observation(plan,prediction,parent_correct=parent_correct)['action_brier']
  else:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
  comparison={}
+ if calibrated is not None:
+  comparison.update(price_calibration_profile_id=calibrated['profile_id'],
+   raw_child_price_scores=price_refs.probability_metrics(prediction['candidate_raw_probs'],target))
  if plan.get('price_value_rule') is not None:
   price_refs.validate_value_rule(plan)
   if prediction.get('horizon_sec')!=300 or prediction.get('input',{}).get('horizon_sec')!=300:raise ContractError('PRICE_VALUE_PRIMARY_HORIZON')
@@ -86,7 +163,10 @@ class Evaluator:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=read_json(self.path);self.root=Path(self.c['evaluation_directory'])
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
-  self.stop=False;self.tasks={};self.last_log_ms=0
+  self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
+ def operator_stop_binding(self,path,plan,now):
+  from .resident_trial_stop import read_stop
+  return read_stop(self.c,path,plan,now_ms=now)
  def signal(self,*_):
   self.stop=True
   for p,stream,started in self.tasks.values():
@@ -141,14 +221,23 @@ class Evaluator:
    if (path.parent/f'prediction-{slot:03}.json').exists():continue
    phase_path=path.parent/f'phase-{slot:03}.json'
    phase=read_json(phase_path) if phase_path.exists() else {'phase':'STARTUP'}
-   log=(path.parent/f'prediction-{slot:03}.log').read_text()[-1500:].strip().splitlines()
+   with (path.parent/f'prediction-{slot:03}.log').open('rb') as diagnostic_stream:
+    diagnostic_stream.seek(0,os.SEEK_END)
+    diagnostic_stream.seek(max(0,diagnostic_stream.tell()-1500))
+    stderr_tail=diagnostic_stream.read(1500).decode('utf-8',errors='replace')
+   log=stderr_tail.strip().splitlines()
    reason=log[-1][:240] if log else 'NO_PROCESS_DIAGNOSTIC'
    if expired:reason='WORKER_BUDGET_EXCEEDED'
+   elif rc<0:
+    try:signal_name=signal.Signals(-rc).name
+    except ValueError:signal_name=str(-rc)
+    reason='WORKER_SIGNAL_'+signal_name
    failure={'schema':'heptatrader.laya-worker-failure.v1','slot':slot,'at_ms':int(time.time()*1000),
-    'exit_code':rc,'reason':reason,'phase':phase,'predicted':False}
+    'exit_code':rc,'reason':reason,'phase':phase,'predicted':False,'stderr_tail':stderr_tail}
    write_once(path.parent/f'failure-{slot:03}.json',failure)
  def step(self):
   self.reap();now=int(time.time()*1000)
+  if not hasattr(self,'_retained_closeout_cache'):self._retained_closeout_cache={}
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('EVAL_PERIOD_CHANGED')
   # A source scan is only needed for a genuinely mature prediction.
   # Never spend a full archive decode while every active trial is already lost.
@@ -156,7 +245,7 @@ class Evaluator:
   _outcome_source_snapshots={}
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[]
   for path in plans:
    plan=read_json(path)
    if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
@@ -167,12 +256,45 @@ class Evaluator:
    # against replacement source bytes or re-registered as a new experiment.
    if (path.parent/'qualification.json').exists():
     q=read_json(path.parent/'qualification.json')
-    if q.get('candidate_id')!=plan['candidate_id'] or q.get('plan_id')!=plan['plan_id']:
+    if (not isinstance(q,dict) or q.get('candidate_id')!=plan['candidate_id']
+        or q.get('plan_id')!=plan['plan_id']
+        or q.get('state') not in ('REJECTED','QUALIFIED_AWAITING_CANONICAL_OWNER')):
      raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
     counts[q['state']]=counts.get(q['state'],0)+1
     observed+=q.get('observed',0);censored+=q.get('censored',0)
+    stopped=self.operator_stop_binding(path,plan,now)
+    if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
+     'performance_assessment':False,'new_heavy_workers_allowed':False})
+    continue
+   stopped=self.operator_stop_binding(path,plan,now)
+   if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
+    'performance_assessment':False,'new_heavy_workers_allowed':False})
+   from .resident_retained_closeout import run_retained
+   retained=run_retained(self.c,path,plan,self._retained_closeout_cache,now,operator_stop=stopped)
+   if retained is not None:
+    for state,count in retained['counts'].items():counts[state]=counts.get(state,0)+count
+    observed+=retained['observed'];censored+=retained['censored']
+    futile_pending+=retained.get('futile_pending_plans',0)
+    launches_suppressed+=retained.get('new_prediction_launches_suppressed',0)
+    retained_plans.append({'plan_id':plan['plan_id'],'original_runtime_executed':True,
+     'new_heavy_workers_allowed':False,'last_closeout_at_ms':retained['at_ms']})
     continue
    pins=plan.get('evaluation_runtime_sha256');runtime=Path(self.c.get('runtime_directory',''))
+   declared=self.c.get('runtime_sha256')
+   if (self.c.get('retained_futile_plan_closeouts') and isinstance(pins,dict) and pins
+       and isinstance(declared,dict) and declared
+       and all(isinstance(k,str) and isinstance(v,str) and len(v)==64 for k,v in pins.items())
+       and any(declared.get(k)!=v for k,v in pins.items())):
+    # An omitted old-version route must not turn an upgrade into rejection.
+    # Keep other current plans schedulable while retaining the original ledger.
+    records=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+    if suppress_new_work_for_frozen_failure(plan,records):futile_pending+=1
+    observed+=sum(r['status']=='OBSERVED' for r in records)
+    censored+=sum(r['status']=='CENSORED' for r in records)
+    counts['PENDING']=counts.get('PENDING',0)+1
+    source_route_holds.append({'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],
+     'reason':'UNROUTED_RETAINED_EVALUATOR_SOURCE'})
+    continue
    source_ok=isinstance(pins,dict) and bool(pins) and all(v and sha_file(runtime/k)==v for k,v in pins.items())
    if not source_ok:
     decision={'state':'REJECTED','candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],
@@ -180,8 +302,6 @@ class Evaluator:
       'canonical_owner_admitted':False,'automatic_execution_selection':False}
     if not (path.parent/'qualification.json').exists():write_once(path.parent/'qualification.json',decision)
     counts['REJECTED']=counts.get('REJECTED',0)+1;continue
-   if (path.parent/'qualification.json').exists():
-    q=read_json(path.parent/'qualification.json');counts[q['state']]=counts.get(q['state'],0)+1;continue
    recorded=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
    futile=suppress_new_work_for_frozen_failure(plan,recorded)
    if futile:futile_pending+=1
@@ -210,6 +330,14 @@ class Evaluator:
        provenance={'first_admission_denial_sha256':sha_file(first),
         'first_admission_denial_reasons':denial['reason_codes'],
         'not_proof_of_every_denial_attempt':True}
+      suppression=_futility_suppression_receipt(path,plan,slot)
+      if suppression is not None:
+       provenance.update(no_prediction_disposition='FUTILITY_SUPPRESSED',
+        futility_suppression_sha256=suppression['sha256'],
+        futility_suppressed_at_ms=suppression['at_ms'])
+      else:
+       provenance['no_prediction_disposition']=('ADMISSION_DENIAL_OBSERVED' if first.exists()
+        else 'NO_LOCAL_ADMISSION_OR_FUTILITY_RECEIPT')
       write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance});continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
@@ -221,7 +349,10 @@ class Evaluator:
       futile=suppress_new_work_for_frozen_failure(plan,current)
       if futile:futile_pending+=1
      if futile:
-      launches_suppressed+=1
+      suppressed_at_ms=int(time.time()*1000)
+      if start-90000<=suppressed_at_ms<=end:
+       _futility_suppression_receipt(path,plan,slot,at_ms=suppressed_at_ms)
+       launches_suppressed+=1
       continue
      self.launch(path,slot);continue
     pred=read_json(prediction)
@@ -259,7 +390,12 @@ class Evaluator:
       quotes,prefixes,_actual_source_profile=read_for_pending_outcomes(self.c,plan,quote_clock,_pending_predictions)
      _outcome_source_snapshots[_source_key]=(quotes,prefixes,quote_clock,_pending_anchors)
     quotes,prefixes,quote_clock,_cached_pending_anchors=_outcome_source_snapshots[_source_key]
-    result=measure(plan,slot,pred,quotes,quote_clock)
+    if plan.get('price_input_objective') is not None:
+     committed_path=path.parent/f'input-{slot:03}.json'
+     if (not committed_path.exists() or sha_file(committed_path)!=pred.get('input_receipt_sha256')):
+      raise ContractError('V7_COMMITTED_PRICE_INPUT_RECEIPT_HASH')
+     result=measure(plan,slot,pred,quotes,quote_clock,committed_input=read_json(committed_path))
+    else:result=measure(plan,slot,pred,quotes,quote_clock)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
      write_once(output,result)
@@ -279,6 +415,9 @@ class Evaluator:
    'latest_quote_ms':quotes[-1]['t'] if quotes else None,
    'latest_quote_scope':'OUTCOME_SOURCE_SNAPSHOT_NOT_GLOBAL_SOURCE_HEALTH',
    'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
+   'retained_futile_plan_closeouts':retained_plans,
+   'unrouted_retained_plan_holds':source_route_holds,
+   'operator_stopped_trials':len(operator_stops),'operator_stopped_plans':operator_stops,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
    'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}

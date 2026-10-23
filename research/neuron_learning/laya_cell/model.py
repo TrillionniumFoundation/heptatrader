@@ -8,13 +8,43 @@ from torch import nn
 from torch.nn import functional as F
 from .integrity import ContractError,CODE_BLOBS,LAYA_VERSION,canonical,digest,git_blob,read_json,verify_snapshot
 PROFILE={'schema':'heptatrader.laya-cell-profile.v1','max_len':1024,'dtype':'float32','precision_policy':'EXPLICIT_FP32_RUNTIME_PROFILE','organ_adapter':'FROZEN_IDENTITY','targets':{'scorer.1':{'rows':[0,1,2,3],'rank':2},'scorer.3':{'rows':[0],'rank':1}},'action_head_trainable':False,'native_max_effective_deltas':4096,'per_layer_relative_limit':.005,'global_relative_limit':.0025}
+_TENSOR_HASH_CHUNK_BYTES=16*1024*1024
+_PRETRAINED_FP32_STAGING_BYTES=16*1024*1024
 def require_pocket4_gpu()->torch.device:
  if not torch.version.hip or not torch.cuda.is_available():raise ContractError('POCKET4_ROCM_GPU_REQUIRED_NO_CPU_TRAINING_FALLBACK')
  if not str(getattr(torch.cuda.get_device_properties(0),'gcnArchName','')).startswith('gfx1150'):raise ContractError('POCKET4_GFX1150_REQUIRED')
  return torch.device('cuda:0')
 def tensor_hash(tensor):
- t=tensor.detach().cpu().contiguous()
- return hashlib.sha256(canonical({'shape':list(t.shape),'dtype':str(t.dtype)})+t.view(torch.uint8).numpy().tobytes()).hexdigest()
+ t=tensor.detach()
+ # Keep legacy normalization outside ordinary contiguous GPU parameters,
+ # including empty/unusual-stride and unresolved conjugate/negative views.
+ if (t.device.type!='cuda' or not t.is_contiguous() or t.is_conj() or t.is_neg()
+     or not t.numel() or not t.dim() or t.stride(-1)!=1):t=t.cpu().contiguous()
+ h=hashlib.sha256(canonical({'shape':list(t.shape),'dtype':str(t.dtype)}))
+ data=t.view(torch.uint8).reshape(-1)
+ for start in range(0,data.numel(),_TENSOR_HASH_CHUNK_BYTES):
+  chunk=data.narrow(0,start,min(_TENSOR_HASH_CHUNK_BYTES,data.numel()-start)).cpu()
+  h.update(memoryview(chunk.numpy()))
+  # Release the host tensor and its temporary NumPy/buffer views before the
+  # next synchronous GPU-to-CPU allocation, rather than keeping two chunks.
+  del chunk
+ return h.hexdigest()
+def worker_resource_usage():
+ """Read natural process peaks on Pocket4/Linux without starting GPU work.
+
+ RSS is this process's peak through receipt creation. Allocator peaks retain
+ the worker's existing reset boundary. Shared host/GPU bytes are not additive.
+ """
+ import resource
+ initialized=torch.cuda.is_initialized()
+ return {'scope':'THIS_WORKER_PROCESS_THROUGH_RECEIPT_CREATION',
+  'max_process_rss_bytes':int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024,
+  'max_gpu_allocated_bytes':int(torch.cuda.max_memory_allocated()) if initialized else None,
+  'max_gpu_reserved_bytes':int(torch.cuda.max_memory_reserved()) if initialized else None,
+  'gpu_peak_scope':'CURRENT_PROCESS_PYTORCH_ALLOCATOR_STATS',
+  'rss_and_gpu_bytes_are_not_additive':True}
+
+
 class RowLoRALinear(nn.Module):
  def __init__(self,base:nn.Linear,rows:list[int],rank:int,seed:int):
   super().__init__()
@@ -75,6 +105,32 @@ class TradingDecisionCell(nn.Module):
   if sum(len(x['deltas']) for x in layers)>4096:raise ContractError('NATIVE_DELTA_COUNT_EXCEEDED')
   return layers
 
+def _to_pretrained_gpu_fp32(model,device):
+ # Reuse one ordinary CPU widening buffer for the pinned dense F16 parameters.
+ # Full GPU tensors and checkpoint mappings remain; this is not an RSS bound.
+ staging=None
+ def convert(t):
+  nonlocal staging
+  if (isinstance(t,nn.Parameter) and t.device.type=='cpu' and t.dtype==torch.float16
+      and t.layout==torch.strided and t.is_contiguous() and not t.is_conj() and not t.is_neg()):
+   result=torch.empty_like(t,device=device,dtype=torch.float32)
+   source=t.detach().view(-1);destination=result.view(-1)
+   if source.numel() and staging is None:
+    staging=torch.empty(_PRETRAINED_FP32_STAGING_BYTES//4,dtype=torch.float32,device='cpu')
+   for start in range(0,source.numel(),_PRETRAINED_FP32_STAGING_BYTES//4):
+    count=min(_PRETRAINED_FP32_STAGING_BYTES//4,source.numel()-start)
+    chunk=staging.narrow(0,0,count)
+    try:
+     chunk.copy_(source.narrow(0,start,count))
+     destination.narrow(0,start,count).copy_(chunk,non_blocking=False)
+    finally:del chunk
+   return result
+  # Preserve the original conversion for buffers and unusual tensor layouts or
+  # view flags; their conversion materials are outside the 16MiB bound.
+  return t.to(device=device,dtype=torch.float32 if t.is_floating_point() else None,non_blocking=False)
+ try:return model._apply(convert)
+ finally:staging=None
+
 def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
  base_id=verify_snapshot(directory,manifest);device=require_pocket4_gpu() if enforce_gpu else torch.device('cpu')
  os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',USE_TF='0',TOKENIZERS_PARALLELISM='false')
@@ -91,9 +147,19 @@ def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
  model=build_model(cfg,encoder_dir=str(directory/'encoder'),pretrained=False)
  checkpoint=load_file(str(directory/'model.safetensors'),device='cpu')
  if not any(k.startswith('encoder.') for k in checkpoint) or not any(k.startswith('scorer.') for k in checkpoint):raise ContractError('PRETRAINED_DECISION_HEAD_MISSING')
- model.load_state_dict(checkpoint,strict=True);del checkpoint
+ gpu_load=device.type=='cuda'
+ if gpu_load:
+  # Assignment can split tied Parameter objects; this pinned backbone is untied.
+  parameter_ids=[id(p) for _,p in model.named_parameters(remove_duplicate=False)]
+  if len(parameter_ids)!=len(set(parameter_ids)):raise ContractError('UNSUPPORTED_TIED_PRETRAINED_PARAMETERS')
+  model.load_state_dict(checkpoint,strict=True,assign=True)
+ else:model.load_state_dict(checkpoint,strict=True)
+ del checkpoint
  tokenizer=AutoTokenizer.from_pretrained(str(directory/'tokenizer'),local_files_only=True,trust_remote_code=False,use_fast=True)
  embedding_rows=model.encoder.get_input_embeddings().num_embeddings
  if len(tokenizer)>embedding_rows or max(tokenizer.get_vocab().values())>=embedding_rows:raise ContractError('TOKENIZER_EMBEDDING_MISMATCH')
- model=model.float().to(device).eval()
+ if gpu_load:
+  # More blocking copies change timing, not FP32 arithmetic or the native backend.
+  model=_to_pretrained_gpu_fp32(model,device).eval()
+ else:model=model.float().to(device).eval()
  return model,tokenizer,base_id

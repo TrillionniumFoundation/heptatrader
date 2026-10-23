@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
-    "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
+    "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_laya_pause.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
@@ -137,7 +137,7 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:
-            for name in ("hepta_progress.py", "hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_pnl_watch.py", "hepta_change_watch.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
+            for name in ("hepta_progress.py", "hepta_laya_pause.py", "hepta_pnl_accounting.py", "hepta_pnl_report.py", "hepta_pnl_watch.py", "hepta_change_watch.py", "hepta_account_pnl.py", "hepta_account_activity.py", "hepta_account_observer.py", "hepta_nav_assurance.py"):
                 p=prefix/"libexec/heptatrader"/name
                 self.assertTrue(p.is_file())
                 self.assertTrue(os.access(p,os.X_OK))

@@ -160,6 +160,14 @@ record. Migrating an old uncoordinated startup hook requires manager reload and
 verification of unchanged running service identities; it does not require
 restarting native Execution. A subsequent restart engages the hold again.
 Neither command changes the system profile.
+
+The user tmpfiles configuration likewise creates an empty `0440` independent
+startup hold on a fresh runtime. Ordinary `paper-on` cannot remove it, and an
+explicit `--resume-native-hold --check` preserves it. Updating or reinstalling
+this configuration does not rewrite an existing marker, including an old
+unrecognized payload; neither tmpfiles nor startup silently converts or releases
+that protection.
+
 The runtime-directory preparation unit has no default dependency on basic.target;
 it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
 
@@ -452,6 +460,17 @@ accounting in `scripts/hepta_pnl_accounting.py`. The optional user unit
 write the trading ledger/driver files, uses only AF_UNIX, and has no Wants or
 Requires dependencies capable of starting trading services. Installing the unit
 does not enable it. Both scripts are ordinary runtime package helpers.
+
+With a matching newly built `heptactl` under `--prefix`, the reporter's
+`--watch --persistent-native-reader` option keeps one read-only CLI process per
+owner. Its existing NativeToolClient reuses verified schema discovery while
+each read still opens its normal bounded socket request and passes native
+authorization and schema checks. The local `heptactl pnl-read-stream` mode accepts
+only health, orders, positions, and EURUSD/BTC quote reads; it cannot submit a
+mutation. All seven reads per instrument and the before/after snapshot checks
+remain in place. A failed response or timeout discards that owned reader without
+retrying the read. The option is explicit so updating the Python helper alone
+continues to work with older installed CLIs.
 
 Attach this reporter to an **already completed, user-authorized reset**, once:
 

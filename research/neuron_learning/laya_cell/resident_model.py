@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .integrity import ContractError,digest
-from .model import TradingDecisionCell,PROFILE as SCORER_PROFILE,tensor_hash
+from .model import TradingDecisionCell,PROFILE as SCORER_PROFILE
 
 PROFILE={**SCORER_PROFILE,'schema':'heptatrader.laya-resident-profile.v1',
  'action_head_trainable':True,'action_target':'FROZEN_PARENT_ANSWER_CORRECTNESS_ACT_VS_ESCALATE',
@@ -35,11 +35,16 @@ class MaskedActionLinear(nn.Module):
 class ResidentDecisionCell(TradingDecisionCell):
  def __init__(self,pretrained,base_id):
   super().__init__(pretrained,base_id)
+  # The action wrapper keeps the exact frozen Parameter objects. Retain strong
+  # references while their names change, so identities cannot be recycled.
+  frozen={id(p):(p,self._frozen[name]) for name,p in self.model.named_parameters() if not p.requires_grad}
   adapter=MaskedActionLinear(self.model.get_submodule('act_head.2'))
   self.model.act_head[2]=adapter;self.adapters['act_head.2']=adapter
   self.profile=copy.deepcopy(PROFILE)
   self.parent_effective={name:a.full_effective_weight().detach().clone() for name,a in self.adapters.items()}
-  self._frozen={name:tensor_hash(p) for name,p in self.model.named_parameters() if not p.requires_grad}
+  current={name:p for name,p in self.model.named_parameters() if not p.requires_grad}
+  if {id(p) for p in current.values()}!=set(frozen):raise ContractError('RESIDENT_FROZEN_PARAMETER_IDENTITY_CHANGED')
+  self._frozen={name:frozen[id(p)][1] for name,p in current.items()}
   self.train(False)
  def restore_parent(self,state,allow_scorer_only=False):
   current=self.trainable_state()

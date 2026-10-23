@@ -182,6 +182,27 @@ class TrainingDiagnosticTests(unittest.TestCase):
   self.assertEqual(result['selected_rows'],32);self.assertTrue(result['full_pool_covered'])
   self.assertFalse(result['pool_has_act'])
 
+ def test_closed_action_auxiliary_population_does_not_supply_price_selection_labels(self):
+  for auxiliary_rows in (32,40):
+   with self.subTest(auxiliary_rows=auxiliary_rows):
+    candidate,rows=self.candidate();ids=[row_id(r) for r in rows]
+    candidate['objective']['schema']='heptatrader.laya-resident-objective.v5'
+    candidate['selection_context']={'pool_count':32,'pool_row_ids_digest':digest(sorted(ids))}
+    candidate['measurement']['action_target_counts']={'0':auxiliary_rows//2,'1':auxiliary_rows//2,'None':0}
+    candidate['measurement']['price_parent_target_counts']={'0':0,'1':32,'None':0}
+    result=b.candidate_training_diagnostics(candidate)['action_selection_diagnostic']
+    self.assertEqual(result['selected_target_counts'],{'ACT_correct':0,'ESCALATE_wrong':32,'unknown':0})
+    self.assertFalse(result['pool_has_act'])
+
+ def test_v5_missing_price_counts_never_falls_back_to_matching_closed_action_population(self):
+  candidate,rows=self.candidate();ids=[row_id(r) for r in rows]
+  candidate['objective']['schema']='heptatrader.laya-resident-objective.v5'
+  candidate['selection_context']={'pool_count':32,'pool_row_ids_digest':digest(sorted(ids))}
+  candidate['measurement']['action_target_counts']={'0':16,'1':16,'None':0}
+  result=b.candidate_training_diagnostics(candidate)['action_selection_diagnostic']
+  self.assertIsNone(result['selected_target_counts'])
+  self.assertIsNone(result['pool_has_act'])
+
  def artifact(self,root):
   candidate,_=self.candidate()
   (root/'adapter.safetensors').write_bytes(b'SYNTHETIC_HASH_FIXTURE_NOT_A_MODEL')

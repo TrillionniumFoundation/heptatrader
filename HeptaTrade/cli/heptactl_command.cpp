@@ -88,7 +88,7 @@ const char* HeptaCtlCommandParser::Usage()
            "[--protocol-min N] [--protocol-max N] [--schema-hash SHA256] [--io-timeout-ms N] "
            "tools list|tools describe TOOL|call TOOL [key=value ...]|"
            "wait [after_sequence=N] [timeout_ms=N]|cancel TOOL_CALL_ID|"
-           "watch snapshot EUR.USD";
+           "watch snapshot EUR.USD|pnl-read-stream";
 }
 
 bool HeptaCtlCommandParser::Parse(int argc, char** argv, HeptaCtlCommand& command, std::string& reason)
@@ -142,6 +142,7 @@ bool HeptaCtlCommandParser::Parse(int argc, char** argv, HeptaCtlCommand& comman
         else { reason = "INVALID_TOOLS_SUBCOMMAND"; return false; }
     }
     else if (verb == "call" && index < argc) command.request.call.name = argv[index++];
+    else if (verb == "pnl-read-stream") command.pnlReadStream = true;
     else if (verb == "wait") command.request.call.name = "events.wait";
     else if (verb == "cancel" && index < argc)
     {
@@ -162,7 +163,7 @@ bool HeptaCtlCommandParser::Parse(int argc, char** argv, HeptaCtlCommand& comman
     }
     else { reason = "INVALID_COMMAND"; return false; }
 
-    while (!command.watchSnapshot && index < argc)
+    while (!command.watchSnapshot && !command.pnlReadStream && index < argc)
         if (!ApplyField(argv[index++], command, reason)) return false;
     if (index != argc) { reason = "UNEXPECTED_ARGUMENT"; return false; }
 

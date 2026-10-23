@@ -4,6 +4,7 @@
 #include "ib_gateway_adapter.h"
 #include "ib_venue_correlation.h"
 #include "ib_order_parse_rejection.h"
+#include "ib_callback_quantity.h"
 #include "../state/ib_contract_identity.h"
 
 #include <algorithm>
@@ -1248,6 +1249,16 @@ bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
     } else if (outEvent.type == IBEventType::Error) {
         EmitObsEvent("callback.error",
             "\"callback_id\":" + std::to_string(outEvent.id) +
+            ",\"connection_epoch\":" + std::to_string(outEvent.connectionEpoch) +
+            ",\"request_id\":" + std::to_string(outEvent.requestId) +
+            ",\"callback_client_id\":" + std::to_string(outEvent.brokerClientId) +
+            // This is a diagnostic join to same-process/client/epoch request
+            // records, never proof that an arbitrary numeric callback is a
+            // local market-data failure. In particular 10197 gains no local
+            // authority from this log and follows its original fatal path.
+            ",\"request_binding\":\"" +
+                (outEvent.localMarketDataRequestError ?
+                    "corroborated_cash_request" : "unclassified") + "\"" +
             ",\"error_code\":\"" + EscapeJson(outEvent.key) + "\"" +
             ",\"message\":\"" + EscapeJson(outEvent.value) + "\"" +
             ",\"advanced_order_reject_json\":\"" +
@@ -1890,8 +1901,8 @@ bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) c
         std::isfinite(event.number3) && event.number3 >= 0.0 &&
         std::isfinite(event.number2 + event.number3) &&
         (binding.cashQuantity > 0.0 ||
-         (event.number2 <= binding.quantity && event.number3 <= binding.quantity &&
-          event.number2 + event.number3 <= binding.quantity)) &&
+         IbCallbackQuantitySumWithinTotal(
+             event.number2, event.number3, binding.quantity)) &&
         (event.number2 == 0.0 || HasEconomicFillEvidence(event)) &&
         (event.key != "Filled" ||
          (event.number3 == 0.0 && (binding.cashQuantity > 0.0 ?

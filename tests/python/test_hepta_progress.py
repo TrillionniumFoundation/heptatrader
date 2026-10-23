@@ -27,7 +27,7 @@ class ProgressTests(unittest.TestCase):
  def collect(self,**kwargs):
   return progress.collect(self.home,self.runtime,self.units,NOW,**kwargs)
  def service(self,name,module,cfg,active='inactive',enabled='disabled',extra=()):
-  self.units[name]={'Id':name,'ActiveState':active,'SubState':'dead','MainPID':'0','UnitFileState':enabled,
+  self.units[name]={'Id':name,'LoadState':'loaded','ActiveState':active,'SubState':'dead','MainPID':'0','UnitFileState':enabled,
    '_argv':['python','-m',module,'--config',str(cfg),*extra]}
  def test_history_never_becomes_current_fault_and_reads_do_not_write(self):
   paths=list(self.state.glob('*-driver/state.json'));before={p:p.read_bytes() for p in paths}
@@ -102,11 +102,65 @@ class ProgressTests(unittest.TestCase):
   argv=progress.exec_argv(r'{ argv[]=/usr/bin/python3 --config /path\x20with\x20space/config.json ; ignore_errors=no ; }')
   self.assertEqual(argv[-1],'/path with space/config.json')
   self.assertEqual(progress.freshness(NOW+1,NOW,300000)['freshness'],'FUTURE')
- def test_waiting_rollout_keeps_paused_training_evidence(self):
-  _,_=self.fixture_learning();self.units['heptatrader-laya-trainer.service'].update(ActiveState='inactive',UnitFileState='disabled')
+ def test_paused_canonical_trainer_keeps_historical_completed_jobs_without_rollout(self):
+  root,_=self.fixture_learning()
+  path=root/'control/status.json';status=json.loads(path.read_text())
+  status['job_counts']['COMPLETED']=61;self.write(path,status)
+  name='heptatrader-laya-trainer.service'
+  self.units[name].update(ActiveState='inactive',UnitFileState='disabled')
+  self.service('heptatrader-laya-retired.service','laya_cell.resident',self.home/'missing.json')
+  out=self.collect();self.assertEqual(out['source_errors'],[])
+  self.assertEqual(len(out['learning']),1);entry=out['learning'][0]
+  self.assertEqual(entry['status']['job_counts']['COMPLETED'],61)
+  self.assertEqual(entry['service']['ActiveState'],'inactive')
+  self.assertEqual(entry['service']['UnitFileState'],'disabled')
+  self.assertFalse(entry['activity']['supervisor_running'])
+  self.assertTrue(entry['activity']['status_is_historical'])
+ def test_stale_rollout_does_not_select_unloaded_trainer_or_override_activity(self):
+  _,_=self.fixture_learning();name='heptatrader-laya-trainer.service'
+  self.write(self.state/'operator-maintenance/training-episode-rollout/status.json',
+   {'state':'WAIT_FROZEN_TRIAL_43','trainer_paused':True,'at_ms':NOW-300001})
+  self.units[name].update(ActiveState='inactive',UnitFileState='disabled',LoadState='not-found')
   self.assertEqual(self.collect()['learning'],[])
-  self.write(self.state/'operator-maintenance/training-episode-rollout/status.json',{'state':'WAIT_FROZEN_TRIAL_43','trainer_paused':True,'at_ms':NOW})
-  out=self.collect();self.assertEqual(len(out['learning']),1);self.assertTrue(out['training_rollout']['trainer_paused'])
+  self.units[name].update(ActiveState='active',MainPID='9',LoadState='loaded')
+  out=self.collect();self.assertEqual(out['training_rollout']['freshness'],'STALE')
+  self.assertTrue(out['learning'][0]['activity']['supervisor_running'])
+  self.assertFalse(out['learning'][0]['activity']['status_is_historical'])
+ def test_stopped_supervisor_does_not_report_fresh_error_as_current_failure(self):
+  root,cfgpath=self.fixture_learning()
+  guard=self.home/'guard'
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard)})
+  name='heptatrader-laya-trainer.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,enabled='enabled',extra=('--role','trainer'))
+  self.write(guard/'trainer-admission.json',{'at_ms':NOW,'admit_new_worker':False,'reasons':['OLD_HOLD']})
+  self.write(guard/'trainer-error.json',{'at_ms':NOW,'active':True,'error':'OLD_FAILURE'})
+  out=self.collect();entry=out['learning'][0]
+  self.assertFalse(entry['activity']['supervisor_running'])
+  self.assertTrue(entry['activity']['status_is_historical'])
+  self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+  self.assertFalse(entry['guard_error']['current_failure'])
+  rendered=progress.format_text(out)
+  self.assertIn('ADMISSION historical ',rendered);self.assertNotIn('GUARD current ',rendered)
+ def test_live_evaluator_retains_futile_work_diagnostics_and_stale_admission(self):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard'
+  self.units.pop('heptatrader-laya-trainer.service')
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard)})
+  name='heptatrader-laya-evaluator.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,active='active',extra=('--role','evaluator'))
+  self.units[name]['MainPID']='9'
+  self.write(root/'evaluation/status.json',{'at_ms':NOW,'active_prediction_workers':0,
+   'futile_pending_plans':1,'new_prediction_launches_suppressed':4,'source_scan_performed':False})
+  self.write(guard/'evaluator-admission.json',{'at_ms':NOW-300001,'admit_new_worker':False,'reasons':['OLD_HOLD']})
+  self.write(self.state/'operator-maintenance/training-episode-rollout/status.json',{'at_ms':NOW-300001,'state':'COMMITTED'})
+  out=self.collect();entry=out['learning'][0]
+  self.assertTrue(entry['activity']['supervisor_running']);self.assertFalse(entry['activity']['status_is_historical'])
+  self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+  self.assertEqual(entry['status']['futile_pending_plans'],1)
+  self.assertEqual(entry['status']['new_prediction_launches_suppressed'],4)
+  self.assertFalse(entry['status']['source_scan_performed'])
+  rendered=progress.format_text(out)
+  self.assertIn('"active_prediction_workers":0',rendered);self.assertIn('"source_scan_performed":false',rendered)
+  self.assertIn('"freshness":"STALE"',rendered.splitlines()[1])
  def test_status_still_displays_progress_when_service_check_fails(self):
   target=self.home/'cli';target.mkdir();shutil.copyfile(ROOT/'scripts/heptatrader-user',target/'heptatrader-user')
   (target/'hepta_progress.py').write_text('print("PROGRESS_SEEN")\n')

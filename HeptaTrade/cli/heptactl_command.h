@@ -11,6 +11,7 @@ struct HeptaCtlCommand
     std::string sessionToken;
     int ioTimeoutMs = 5000;
     bool watchSnapshot = false;
+    bool pnlReadStream = false;
     std::string watchInstrument;
     TradingToolHostRequest request;
 };

@@ -195,9 +195,11 @@ class Gate:
         self.last_admission=report
         atomic(self.root/(self.role+'-admission.json'),report)
         return report
-    def check(self, *, forward_registration=None):
+    def check(self, *, forward_registration=None, prediction_ready=False):
         # Registration checks the same prospective source requirements as the
         # evaluator, without acquiring a worker lease or allocating a trial.
+        if type(prediction_ready) is not bool or (prediction_ready and forward_registration is None):
+            raise EvidenceError('PREDICTION_READINESS_REQUIRES_FORWARD_REGISTRATION')
         if forward_registration is not None:
             if (self.role!='trainer' or type(forward_registration) is not dict
                 or set(forward_registration)!={'job_id','candidate_id'}
@@ -211,7 +213,8 @@ class Gate:
             current=int(time.time()*1000)
             memory=parse_meminfo(Path('/proc/meminfo').read_text())
             pressure=parse_full_psi(Path('/proc/pressure/memory').read_text())
-            resource_role='forward_registration' if forward_registration is not None else self.role
+            resource_role=('evaluator' if prediction_ready else
+                'forward_registration' if forward_registration is not None else self.role)
             resources=assess_resources(memory,pressure,current,
                 os.path.lexists(self.c['manual_hold_path']),role=resource_role)
             if self.role=='trainer' and forward_registration is None:
@@ -280,7 +283,9 @@ class Gate:
             report.update(admission_scope='FORWARD_REGISTRATION_PREFLIGHT',
                           subject=dict(forward_registration),trial_allocated=False,
                           worker_launched=False,worker_launch_authority=False,
-                          actual_launch_guard_still_required=True)
+                          actual_launch_guard_still_required=True,
+                           first_prediction_resource_readiness_checked=prediction_ready,
+                           future_resource_capacity_reserved=False)
             name=self.role+'-forward-admission.json'
         atomic(self.root/name,report)
         return report
@@ -455,8 +460,13 @@ def guarded_trainer_class(base,gate):
             # proposal/time below is what the frozen calendar will assess next.
             from laya_cell.resident_plan_calendar import calendar_admission
             if calendar_admission(candidate,proposal,now)['ready']:
+                options={}
+                if self.c.get('future_trial_overlap_profile') is not None:
+                    from laya_cell.resident_queue import overlap_enrolled
+                    created=self.db.execute('SELECT created_ms FROM jobs WHERE id=?',(job_id,)).fetchone()[0]
+                    if overlap_enrolled(self.c,job,created):options['prediction_ready']=True
                 report=gate.check(forward_registration={
-                    'job_id':job_id,'candidate_id':candidate['candidate_id']})
+                    'job_id':job_id,'candidate_id':candidate['candidate_id']},**options)
                 if report.get('admit_new_worker') is not True:
                     raise _ForwardRegistrationHold(report)
             return proposal
@@ -465,7 +475,7 @@ def guarded_trainer_class(base,gate):
             preflight=getattr(self,'_forward_registration_preflight',None)
             if preflight is not None:
                 extra['forward_registration_preflight']=preflight
-                if extra.get('pending_original_trials')==0 and extra.get('deferred_training_candidates',0)>0:
+                if extra.get('forward_registration_blocking_trials',extra.get('pending_original_trials'))==0 and extra.get('deferred_training_candidates',0)>0:
                     extra['forward_registration_wait_reasons']=list(preflight.get('reasons',[]))
                     extra['forward_registration_wait_checked_at_ms']=preflight.get('at_ms')
             return super().write_status(**extra)

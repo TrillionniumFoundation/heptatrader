@@ -124,6 +124,7 @@ class AdmissionReceiptTests(unittest.TestCase):
                    ['VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST'])
   self.assertEqual(out['first_admission_denial_sha256'],sha_file(self.record()))
   self.assertTrue(out['not_proof_of_every_denial_attempt'])
+  self.assertEqual(out['no_prediction_disposition'],'ADMISSION_DENIAL_OBSERVED')
   self.assertFalse(result['promotion_performed'])
   self.assertEqual(result['counts'],{'PENDING':1})
   self.assertFalse((self.folder/'prediction-000.json').exists())
@@ -147,19 +148,50 @@ class AdmissionReceiptTests(unittest.TestCase):
 
  def test_closed_qualification_preserves_bytes_and_skips_source_work(self):
      evaluator = self.active_evaluator()
-     terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'REJECTED', 'observed': 0, 'censored': 1}
+     self.pinned.write_text('# replacement runtime bytes')
      stale_progress = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'PENDING', 'observed': 0, 'censored': 0}
-     (self.folder / 'qualification.json').write_text(json.dumps(terminal, indent=2) + '\n', encoding='utf-8')
-     (self.folder / 'progress.json').write_text(json.dumps(stale_progress, separators=(',', ':')) + '\n', encoding='utf-8')
-
      def contents():
          return {str(path.relative_to(self.folder)): path.read_bytes() for path in self.folder.rglob('*') if path.is_file()}
-     before = contents()
-     with patch('laya_cell.resident_evaluate.assess', side_effect=AssertionError('closed plan must not be reassessed')) as assess, patch('laya_cell.resident_evaluate.read_quotes', side_effect=AssertionError('closed plan must not read quotes')) as read_quotes, patch('laya_cell.resident_source_policy.read_for_pending_outcomes', side_effect=AssertionError('closed plan must not read bounded sources')) as read_pending:
-         evaluator.step()
-     assess.assert_not_called()
-     read_quotes.assert_not_called()
-     read_pending.assert_not_called()
-     self.assertEqual(contents(), before)
+     for state in ('REJECTED', 'QUALIFIED_AWAITING_CANONICAL_OWNER'):
+         with self.subTest(state=state):
+             terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': state, 'observed': 4, 'censored': 1}
+             (self.folder / 'qualification.json').write_text(json.dumps(terminal, indent=2) + '\n', encoding='utf-8')
+             (self.folder / 'progress.json').write_text(json.dumps(stale_progress, separators=(',', ':')) + '\n', encoding='utf-8')
+             before = contents()
+             with patch('laya_cell.resident_evaluate.assess', side_effect=AssertionError('closed plan must not be reassessed')), patch('laya_cell.resident_evaluate.read_quotes', side_effect=AssertionError('closed plan must not read quotes')), patch('laya_cell.resident_source_policy.read_for_pending_outcomes', side_effect=AssertionError('closed plan must not read bounded sources')), patch('laya_cell.resident_retained_closeout.run_retained', side_effect=AssertionError('closed plan needs no retained runtime')):
+                 result = evaluator.step()
+             self.assertEqual(result['counts'], {state: 1})
+             self.assertEqual((result['observed'], result['censored']), (4, 1))
+             self.assertEqual(contents(), before)
+
+ def test_active_plan_still_rejects_changed_runtime(self):
+     evaluator = self.active_evaluator()
+     self.pinned.write_text('# replacement runtime bytes')
+     before = self.path.read_bytes()
+     with patch('laya_cell.resident_evaluate.assess', side_effect=AssertionError('changed runtime must not assess')), patch.object(evaluator, 'launch', side_effect=AssertionError('changed runtime must not launch')):
+         result = evaluator.step()
+     self.assertEqual(result['counts'], {'REJECTED': 1})
+     qualification = json.loads((self.folder / 'qualification.json').read_text())
+     self.assertEqual(qualification['reasons'], ['EVALUATOR_SOURCE_UNPINNED_OR_CHANGED'])
+     self.assertEqual(qualification['plan_id'], self.plan['plan_id'])
+     self.assertEqual(self.path.read_bytes(), before)
+     self.assertFalse(list(self.folder.glob('outcome-*.json')))
+
+ def test_malformed_or_nonterminal_qualification_cannot_bypass_evaluation(self):
+     evaluator = self.active_evaluator()
+     terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'REJECTED'}
+     invalid = [[], {**terminal, 'candidate_id': 'other'}, {**terminal, 'plan_id': 'other'},
+                {**terminal, 'state': 'PENDING'}, {**terminal, 'state': 'QUALIFIED'},
+                {key: value for key, value in terminal.items() if key != 'state'}]
+     qualification = self.folder / 'qualification.json'
+     for value in invalid:
+         with self.subTest(qualification=value):
+             qualification.write_text(json.dumps(value))
+             before = qualification.read_bytes()
+             with self.assertRaisesRegex(ContractError, 'CLOSED_QUALIFICATION_IDENTITY'):
+                 evaluator.step()
+             self.assertEqual(qualification.read_bytes(), before)
+             self.assertFalse((self.folder / 'progress.json').exists())
+             self.assertFalse(list(self.folder.glob('outcome-*.json')))
 
 if __name__=='__main__':unittest.main()

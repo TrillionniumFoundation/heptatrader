@@ -103,11 +103,10 @@ class PythonTestPartitionTests(unittest.TestCase):
             self.assertEqual(runner.main(["--lane", "core"]), 1)
 
     def test_learning_listing_includes_nested_cpu_suites_without_imports(self):
-        expected={"laya_cell.tests.test_resident_row_worker",
-                  "laya_cell.tests.test_resident_price_baselines",
-                  "laya_cell.tests.test_resident_training_v3",
-                  "laya_cell.tests.test_resident_training_v4",
-                  "laya_cell.tests.test_resident_lineage"}
+        expected={"laya_cell.tests." + path.stem for path in
+                  (ROOT / "research/neuron_learning/laya_cell/tests").glob("test_*.py")}
+        self.assertIn("laya_cell.tests.test_resident_plan_admission", expected)
+        self.assertIn("laya_cell.tests.test_resident_plan_calendar", expected)
         for lane in ("learning", "core"):
             with self.subTest(lane=lane), mock.patch.object(runner, "configure_import_paths",
                     side_effect=AssertionError("listing must not import")), \
@@ -115,6 +114,78 @@ class PythonTestPartitionTests(unittest.TestCase):
                 self.assertEqual(runner.main(["--lane", lane, "--list"]), 0)
                 listed=set(stdout.getvalue().splitlines())
                 self.assertEqual(expected & listed, expected if lane=="learning" else set())
+
+    def test_native_nested_selectors_exist_and_are_only_listed_as_external(self):
+        import ast
+        for selector in runner.NESTED_EXTERNAL_TESTS:
+            parts = selector.split(".")
+            path = ROOT / "research/neuron_learning" / Path(*parts[:3]).with_suffix(".py")
+            node = ast.parse(path.read_text())
+            for name in parts[3:]:
+                matches = [item for item in node.body
+                           if isinstance(item, (ast.ClassDef, ast.FunctionDef)) and item.name == name]
+                self.assertEqual(len(matches), 1, selector)
+                node = matches[0]
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(runner.main(["--lane", "external", "--list"]), 0)
+        self.assertTrue(runner.NESTED_EXTERNAL_TESTS <= set(stdout.getvalue().splitlines()))
+
+    def test_new_nested_fixture_defaults_to_learning_without_a_second_allowlist(self):
+        import shutil
+        with tempfile.TemporaryDirectory(prefix="hepta-nested-discovery-") as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            script = root / "scripts/run_python_tests.py"
+            shutil.copyfile(ROOT / "scripts/run_python_tests.py", script)
+            tests = root / "tests/python"
+            tests.mkdir(parents=True)
+            for name in set.union(*(set(group) for group in runner.partitions().values())):
+                (tests / name).touch()
+            nested = root / "research/neuron_learning/laya_cell/tests/test_new_fixture.py"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("raise AssertionError('listing must not import fixtures')\n")
+            for lane in ("learning", "core"):
+                result = subprocess.run([sys.executable, str(script), "--lane", lane, "--list"],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("laya_cell.tests.test_new_fixture" in result.stdout.splitlines(),
+                                 lane == "learning")
+
+    def test_learning_executes_cpu_fixture_without_running_any_native_fixture(self):
+        seen = []
+        class Fixture(unittest.TestCase):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+            def id(self):
+                return self.name
+            def runTest(self):
+                seen.append(self.name)
+        cpu = "laya_cell.tests.fixture.CpuTests.test_runs"
+        external = [name + ".test_requires_native" if name.endswith(("NativeConformance", "NativeResidentTests"))
+                    else name for name in runner.NESTED_EXTERNAL_TESTS]
+        suite = unittest.TestSuite([Fixture(cpu),
+                                  unittest.TestSuite(Fixture(name) for name in external)])
+        with mock.patch.object(runner, "partitions", return_value={"learning": set()}), \
+             mock.patch.object(runner, "NESTED_LEARNING_MODULES", frozenset({"fixture"})), \
+             mock.patch.object(unittest.TestLoader, "loadTestsFromName", return_value=suite), \
+             contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(["--lane", "learning"]), 0)
+        self.assertEqual(seen, [cpu])
+
+    def test_external_lane_executes_native_selectors_without_cpu_module_discovery(self):
+        loaded = []
+        class Fixture(unittest.TestCase):
+            def runTest(self):
+                pass
+        def load(name):
+            loaded.append(name)
+            return unittest.TestSuite([Fixture()])
+        with mock.patch.object(runner, "partitions", return_value={"external": set()}), \
+             mock.patch.object(unittest.TestLoader, "loadTestsFromName", side_effect=load), \
+             contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(["--lane", "external"]), 0)
+        self.assertEqual(set(loaded), runner.NESTED_EXTERNAL_TESTS)
 
     def test_import_failure_does_not_suppress_valid_modules_in_the_lane(self):
         with tempfile.TemporaryDirectory(prefix="hepta-import-lane-") as directory:

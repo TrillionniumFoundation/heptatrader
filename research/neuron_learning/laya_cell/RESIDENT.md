@@ -225,6 +225,15 @@ required to replace any of the three already-owned service units; previous units
 are backed up, and old runtime releases are not overwritten. No other unit is
 stopped or altered. Each service has CPU, memory, task and low-priority limits.
 
+`retained_registration_configs` binds an older DEFERRED receipt to its original
+config and runtime. The isolated reader executes only its original negative
+calendar and serial queue check; an unchanged wait is not rewritten. A possible
+positive registration reports `ORIGINAL_FORWARD_RESOURCE_GUARD_REQUIRED` until
+its original guarded registrar can act. The original calendar can still close an
+expired unallocated candidate. Such retained waits remain visible and release
+only the explicitly opted-in future candidate slot; they do not release viable
+trials, restore alpha, move deadlines or bypass resource admission.
+
 The guard release pins its common, live-source, priority and wrapper modules.
 The optional `TERMINAL_TASK_COMGR_ONLY_V1` profile also pins
 `resident_comgr_cache.py`; trainer and evaluator can use the same reviewed
@@ -260,3 +269,37 @@ This does not take the GPU lease, collect new training quotes, reserve training
 rows, overlap frozen evaluations, change promotion rules, or send orders. Existing
 storage bounds remain effective. Observed execution rewards remain distinct from
 input-bound model credit; negative and unbound outcomes are not discarded.
+
+## Prospective v7 PRICE input
+
+The opt-in v7 objective renders the existing ten causal quote-state features
+as compact PRICE input, with fixed six-place rounding and no fitted statistics
+or labels. Original raw quote receipts remain immutable. ACT inference still
+uses a separate raw-input forward, matching its closed-source training profile.
+The child uses compact input; the paired predecessor uses its own artifact input
+profile (legacy artifacts default to raw quotes). The comparator remains
+`FROZEN_PARENT_RAW_PRICE_SOFTMAX`: predecessor calibration is not applied.
+Comparing calibrated predecessor outputs would require a separate prospective
+protocol. Zero-step compact child receipts separate input effects from gradient
+updates. v6 recency, 64 PRICE steps, native masks/norm limits, Brier calibration,
+exact-prior no-trial rule and all original future gates remain unchanged.
+
+## Prospective v8 raw PRICE and centered calibration
+
+v8 restores the original raw quote PRICE input and retains the job-local frozen
+scorer-input cache. ACT keeps raw input. The predecessor still uses its own
+artifact input profile; when that profile is raw, zero-step child and predecessor
+probabilities must match exactly. Published v7 artifacts and plans retain their
+original compact-input and calibration semantics.
+
+Calibration v3 uses the same training rows: `q = prior + alpha * (p - mean_p)`.
+Its Brier-optimal coefficient is bounded by
+`0 <= alpha <= min(1, min_j prior_j / mean_p_j)` for positive `mean_p_j`, so every
+future probability vector remains in the simplex. The fitted mean is the prior;
+a constant output cannot gain merely by sharpening class frequencies. Constant
+probabilities or labels have exactly zero covariance. Zero alpha retains the
+existing no-forward-trial rule and allocates no alpha budget.
+
+These are training-only measurements, not held-out or future quality evidence.
+The same 32-row/24-hour selection, 64 PRICE steps, native masks/norm limits,
+resource admission and all original future observation and baseline gates apply.

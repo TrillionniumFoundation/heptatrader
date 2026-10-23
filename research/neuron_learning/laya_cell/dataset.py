@@ -99,7 +99,7 @@ def rows_for_training(dataset,window):
   key=(row['anchor_ms'],row['horizon_sec'],digest(row['state']))
   if key not in chosen or row['teacher_probs'] is not None:chosen[key]=row
  return sorted(chosen.values(),key=lambda r:(r['anchor_ms'],r['horizon_sec'])),exclusions
-def encode_rows(tokenizer,rows,max_len=1024):
+def encode_rows(tokenizer,rows,max_len=1024,*,price_input_profile=None):
  from laya.common import build_sequence,collate_items
  items=[]
  for row in rows:
@@ -108,6 +108,9 @@ def encode_rows(tokenizer,rows,max_len=1024):
   state=row['state']
   if not isinstance(state,dict) or set(state)!=set(CAUSAL_STATE_FIELDS):raise ContractError('PRICE_MODEL_STATE_FIELDS_CHANGED')
   state={name:state[name] for name in CAUSAL_STATE_FIELDS}
+  if price_input_profile is not None:
+   from .resident_price_input import model_state
+   state=model_state(state,price_input_profile)
   ids,markers,stats,truncation=build_sequence(tokenizer,state,row['question'],max_len=max_len,head_max_len=256,return_stats=True,return_truncation_stats=True)
   if len(markers)!=7 or stats['options_distinct']!=7 or truncation['truncated']:raise ContractError('SILENT_INPUT_OR_OPTIONS_TRUNCATION_FORBIDDEN')
   items.append([{'ids':ids,'markers':markers,'qtype':0}])

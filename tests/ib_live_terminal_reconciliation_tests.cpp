@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <unistd.h>
+#include <sys/stat.h>
 
 namespace { bool failNextCancelAllocation = false; }
 void* operator new(std::size_t size) {
@@ -190,6 +191,126 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+
+class CaptureStderr {
+    int saved;
+    FILE* temporary;
+public:
+    CaptureStderr() : saved(dup(STDERR_FILENO)), temporary(tmpfile()) {
+        assert(saved >= 0 && temporary);
+        fflush(stderr);
+        assert(dup2(fileno(temporary), STDERR_FILENO) >= 0);
+    }
+    ~CaptureStderr() {
+        fflush(stderr);
+        assert(dup2(saved, STDERR_FILENO) >= 0);
+        close(saved);
+        fclose(temporary);
+    }
+    std::string Read() {
+        fflush(stderr);
+        assert(fseek(temporary, 0, SEEK_SET) == 0);
+        std::string out;
+        char buffer[1024];
+        std::size_t count;
+        while ((count = fread(buffer, 1, sizeof(buffer), temporary)) != 0)
+            out.append(buffer, count);
+        assert(fseek(temporary, 0, SEEK_END) == 0);
+        return out;
+    }
+};
+
+void TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory() {
+    char pattern[] = "/tmp/hepta-ib-log-fault-XXXXXX";
+    char* directory = mkdtemp(pattern);
+    assert(directory);
+    const std::string parent = std::string(directory) + "/missing";
+    const std::string path = parent + "/events.jsonl";
+    {
+        CaptureStderr diagnostic;
+        Fixture f(true, false, false, path);
+        // Real open failure must not change the adapter/broker control path.
+        assert(f.adapter.IsConnected() && f.broker->places == 0 && f.broker->cancels == 0);
+        std::string warning = diagnostic.Read();
+        assert(warning.find("\"event\":\"observability.write_failed\"") != std::string::npos);
+        assert(warning.find("\"operation\":\"open\"") != std::string::npos);
+        for (int i = 0; i != 80; ++i) f.adapter.SetRuntimeFlattenOnly(true, "diagnostic");
+        warning = diagnostic.Read();
+        const auto first = warning.find("\"event\":\"observability.write_failed\"");
+        assert(warning.find("\"event\":\"observability.write_failed\"", first + 1) == std::string::npos);
+        assert(mkdir(parent.c_str(), 0700) == 0);
+        { std::ofstream existing(path.c_str()); existing << "retained-history\n"; }
+        f.adapter.SetRuntimeFlattenOnly(true, "recovered");
+        const std::string recovered = diagnostic.Read();
+        assert(recovered.find("\"event\":\"observability.write_recovered\"") != std::string::npos);
+        assert(recovered.find("\"failed_line_count\":") != std::string::npos);
+        assert(recovered.find("DU123") == std::string::npos);
+        std::ifstream log(path.c_str());
+        const std::string text((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+        assert(text.find("retained-history\n") == 0);
+        assert(text.find("recovered") != std::string::npos);
+        assert(text.find("\"process_id\":" + std::to_string(getpid())) != std::string::npos);
+        assert(text.find("\"api_client_id\":73") != std::string::npos);
+    }
+    assert(unlink(path.c_str()) == 0 && rmdir(parent.c_str()) == 0 && rmdir(directory) == 0);
+    {
+        CaptureStderr diagnostic;
+        Fixture f(true, false, false, "/dev/full");
+        // Opening succeeds, but the actual flush fails with ENOSPC.
+        const std::string warning = diagnostic.Read();
+        assert(warning.find("\"event\":\"observability.write_failed\"") != std::string::npos);
+        assert(warning.find("\"operation\":\"write\"") != std::string::npos);
+        assert(f.adapter.IsConnected() && f.broker->places == 0 && f.broker->cancels == 0);
+    }
+    // Successful append clears this process's failure episode for other tests.
+    Fixture recovered;
+}
+
+void TestObservabilityErrorKeepsExactEpochAndRequestProvenance() {
+    char path[] = "/tmp/hepta-ib-error-binding-XXXXXX";
+    const int fd = mkstemp(path); assert(fd >= 0); close(fd);
+    {
+        Fixture f(true, false, false, path);
+        IBContractLite contract; contract.symbol = "EUR"; contract.secType = "CASH";
+        contract.exchange = "IDEALPRO"; contract.currency = "USD";
+        assert(f.adapter.ReqMktData(1000221, contract));
+        IBEvent error; error.type = IBEventType::Error; error.id = 1000221;
+        error.connectionEpoch = f.broker->epoch; error.key = "10197";
+        error.value = "original broker error";
+        f.broker->events.push_back(error);
+        IBEvent received; assert(f.adapter.TryDequeueEvent(received));
+        assert(received.id == error.id && received.key == error.key && received.value == error.value);
+        assert(!received.localMarketDataRequestError && received.requestId == 0);
+        assert(f.adapter.CancelMktData(1000221, f.broker->epoch));
+        f.adapter.Disconnect(); assert(f.adapter.Connect()); f.Bootstrap();
+        // Same numeric ID on a new socket must never relabel an old callback.
+        f.broker->events.push_back(error);
+        assert(!f.adapter.TryDequeueEvent(received));
+        assert(f.adapter.ReqMktData(1000221, contract));
+        error.connectionEpoch = f.broker->epoch;
+        f.broker->events.push_back(error);
+        assert(f.adapter.TryDequeueEvent(received));
+        assert(received.connectionEpoch == 2 && received.key == "10197");
+        std::ifstream log(path);
+        const std::string text((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+        const auto callback = text.find("\"event\":\"callback.error\"");
+        assert(callback != std::string::npos);
+        const auto line = text.substr(callback, text.find('\n', callback) - callback);
+        assert(line.find("\"connection_epoch\":1") != std::string::npos);
+        assert(line.find("\"api_client_id\":73") != std::string::npos);
+        assert(line.find("\"callback_id\":1000221") != std::string::npos);
+        assert(line.find("\"request_binding\":\"unclassified\"") != std::string::npos);
+        const auto nextCallback = text.find("\"event\":\"callback.error\"", callback + 1);
+        assert(nextCallback != std::string::npos);
+        const auto nextLine = text.substr(nextCallback, text.find('\n', nextCallback) - nextCallback);
+        assert(nextLine.find("\"connection_epoch\":2") != std::string::npos);
+        assert(text.find("\"event\":\"callback.error\"", nextCallback + 1) == std::string::npos);
+        assert(text.find("\"event\":\"event.stale_connection_epoch\"") != std::string::npos);
+        assert(text.find("DU123") == std::string::npos);
+        assert(f.broker->places == 0 && f.broker->cancels == 0);
+    }
+    assert(unlink(path) == 0);
+}
 void TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh() {
     // Regression: an already invalid cash generation has no authoritative
     // cash map. Repeating a numeric subscription value used to reset the
@@ -971,6 +1092,52 @@ void TestCancelledAndPartialCancelled() {
     assert(terminal.terminalStatusesByCorrelation.begin()->second=="Cancelled"&&terminal.executionOrderIds.count(id)==1);
     assert(terminal.generation>partial.generation);
 }
+void TestDecimalPartialCancellationConservesQuantityWithinOneUlp() {
+    const double quantity=0.09796555, filled=0.00385464, remaining=0.09411091;
+    assert(filled+remaining>quantity);
+    assert(filled+remaining==std::nextafter(quantity,std::numeric_limits<double>::infinity()));
+    const std::vector<std::function<void(IBEvent&)>> invalid={
+        [](IBEvent& e){++e.brokerClientId;},[](IBEvent& e){e.brokerClientId=-1;},
+        [](IBEvent& e){e.account="DU_OTHER";},[](IBEvent& e){++e.connectionEpoch;},
+        [](IBEvent& e){e.number2=-0.001;},[](IBEvent& e){e.number3=-0.001;},
+        [](IBEvent& e){e.number2=std::numeric_limits<double>::quiet_NaN();},
+        [](IBEvent& e){e.number3=std::numeric_limits<double>::infinity();},
+        [quantity](IBEvent& e){e.number2=std::nextafter(quantity,std::numeric_limits<double>::infinity());e.number3=0;},
+        [remaining](IBEvent& e){e.number3=std::nextafter(remaining,std::numeric_limits<double>::infinity());},
+        [](IBEvent& e){e.key="Filled";}};
+    for(std::size_t scenario=0;scenario<=invalid.size();++scenario) {
+        Fixture f;IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
+        contract.exchange="IDEALPRO";contract.currency="USD";
+        IBOrderLite order;order.action="BUY";order.orderType="LMT";order.lmtPrice=1.18;
+        order.totalQuantity=quantity;long id=-1;
+        assert(f.adapter.PlaceOrderCorrelated(contract,order,"hepta-v1-sha256:"+std::string(64,'a'),&id));
+        auto execution=f.Execution(filled);execution.number3=quantity-filled;
+        assert(f.Push(execution)==1);
+        auto status=f.Status("Cancelled",filled);status.number3=remaining;
+        if(scenario<invalid.size()) {
+            invalid[scenario](status);assert(f.Push(status)==0);
+            assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
+        } else {
+            assert(f.Push(status)==1);
+            const auto terminal=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+            assert(terminal.terminalStatusesByCorrelation.begin()->second=="Cancelled");
+            assert(terminal.executionOrderIds.count(id)==1);
+        }
+    }
+    // The wrapper quantity tracker must retire the same independently rounded
+    // native cancellation, so a later execution cannot synthesize another status.
+    IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
+    contract.exchange="IDEALPRO";contract.currency="USD";
+    IBOrderLite order;order.action="BUY";order.totalQuantity=quantity;std::string reason;
+    assert(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'a'),order.orderRef,reason));
+    IBSubmittedOrderQuantityTracker tracker;tracker.Reset(1,73,"DU123");tracker.Record(919,contract,order);
+    tracker.ObserveOrderStatus(73,919,"Cancelled",filled,remaining,1.18);
+    IBEvent execution;execution.type=IBEventType::ExecutionDetails;execution.id=919;
+    execution.connectionEpoch=1;execution.brokerClientId=73;execution.requestId=-1;
+    execution.account="DU123";execution.key="late-original-exec";execution.value="BOT";
+    execution.number=1.18;execution.number2=filled;execution.contract=contract;execution.order.orderRef=order.orderRef;
+    assert(tracker.ObserveExecution(execution)==0);
+}
 void TestBoundContractExtensionsAndBrokerEnrichment() {
     IBContractLite contract;contract.symbol="EUR";contract.secType="CASH";
     contract.exchange="IDEALPRO";contract.currency="USD";
@@ -1027,6 +1194,60 @@ void TestValidatedSyntheticFillWithoutNativeStatus() {
     f.AbsorbFill(id);
     assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.empty());
     assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
+}
+void TestPostFillAcknowledgementRetiresAllActiveIdentityMetadata() {
+    for (bool nativeTerminal : {false, true}) {
+        for (bool foreignActive : {false, true}) {
+            Fixture f; const long id=f.Place();
+            auto echo=f.Event(IBEventType::OpenOrder);
+            echo.id=id;echo.brokerPermId=990023;echo.value="Submitted";
+            echo.order=f.broker->submitted;echo.order.orderType="STP";
+            echo.order.auxPrice=97.0;f.Push(echo);
+            if (foreignActive) {
+                auto foreign=echo;foreign.id=777;foreign.brokerClientId=999;
+                foreign.brokerPermId=990777;foreign.order.orderRef.clear();
+                f.Push(foreign);
+            }
+            const auto active=f.adapter.GetAuthoritativeCorrelationSnapshot();
+            assert(active.complete && active.activeOrderIds.count(id)==1);
+            assert(active.activeOrderClientIdsByOrderId.at(id)==73);
+            assert(active.activeOrderByPermanentId.count(990023)==1);
+            assert(active.visibleProtectiveCandidatesByPermId.count(990023)==1);
+
+            f.Push(f.Execution());
+            if (nativeTerminal) f.Push(f.Status());
+            // A terminal callback cannot retire the identity before the
+            // economic fill has been absorbed by the coherent risk view.
+            assert(!f.adapter.AcknowledgePostFillRiskReconciled(id));
+            assert(f.adapter.GetAuthoritativeCorrelationSnapshot().
+                   activeOrderClientIdsByOrderId.count(id)==1);
+            f.AbsorbFill(id);
+
+            const auto retired=f.adapter.GetAuthoritativeCorrelationSnapshot();
+            assert(retired.complete && retired.activeOrderIds.count(id)==0);
+            assert(retired.activeOrderClientIdsByOrderId.count(id)==0);
+            assert(retired.activeOrderByPermanentId.count(990023)==0);
+            assert(retired.visibleProtectiveCandidatesByPermId.count(990023)==0);
+            assert(retired.activeOrderIdsByCorrelation.empty());
+            assert(retired.activeOrderIds.size()==
+                   retired.activeOrderClientIdsByOrderId.size());
+            assert(!f.adapter.HasPendingLivePostFillRiskReconciliation());
+            assert(!f.adapter.AcknowledgePostFillRiskReconciled(id));
+            if (foreignActive) {
+                assert(retired.activeOrderIds.count(777)==1);
+                assert(retired.activeOrderClientIdsByOrderId.at(777)==999);
+                assert(retired.activeOrderByPermanentId.count(990777)==1);
+                assert(retired.visibleProtectiveCandidatesByPermId.count(990777)==1);
+            }
+            assert(f.adapter.ReqRecoveryAuditRiskRefresh());f.FinishRiskRefresh();
+            const auto evidence=InspectIbPaperAccountBrokerEvidence(
+                f.adapter.GetAuthoritativeRecoveryAuditSnapshot(),73);
+            assert(evidence.snapshotCoherent);
+            assert(evidence.globalActiveOrders==(foreignActive?1U:0U));
+            assert(evidence.foreignActiveOrders==(foreignActive?1U:0U));
+            assert(f.broker->places==1 && f.broker->cancels==0);
+        }
+    }
 }
 void TestExactNativeTerminalStatusReplayPreservesRecoveryAudit() {
     // Original callbacks from the fake broker; no socket, account or live send.
@@ -2169,7 +2390,15 @@ void TestReconnectAndIncompleteBootstrap() {
     assert(completed.terminalStatusesByCorrelation.begin()->second=="Filled");
 }
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--observability-only") {
+        TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory();
+        TestObservabilityErrorKeepsExactEpochAndRequestProvenance();
+        std::puts("PASS offline observability I/O faults and callback binding; zero order methods");
+        return 0;
+    }
+    TestObservabilityIoFailureIsVisibleAndRecoveryPreservesHistory();
+    TestObservabilityErrorKeepsExactEpochAndRequestProvenance();
     TestExactNativeTerminalStatusReplayPreservesRecoveryAudit();
     TestChangedTerminalStatusStillInvalidatesRecoveryAudit();
     TestInvalidCashMonitorRepetitionCannotAbortIndependentPositionsRefresh();
@@ -2191,8 +2420,10 @@ int main() {
     TestCashMarketTerminalNeedsActualExecutionAndNativeFinalStatus();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
+    TestDecimalPartialCancellationConservesQuantityWithinOneUlp();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
+    TestPostFillAcknowledgementRetiresAllActiveIdentityMetadata();
     TestQuarantineInvalidatesRecoveryBarrier();
     TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshBindsUnknownCompletedOrderIdFromExactExecutionCorrelation();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestOriginalPostFenceReadSequencesNewAllOpenEndBeforeRisk();TestPostFenceReadRejectsForeignOrdersAndIncompleteRefresh();TestAccountPostFenceProbeCannotSurviveOwnerRevocationOrNewSend();TestMultipleUnboundManualTwsOrdersRetainDistinctBrokerPermanentIds();TestManualPermIdMissingCollisionAndWrongClientFailClosed();TestManualPermIdBlocksPostFenceBrokerZeroAndUnknownAccountFailsClosed();TestAccountPostFenceFreshTerminalEpochRequiresExistingRecoveryOwnerAudit();TestAccountPostFenceFreshTerminalEpochCannotMaskReconnectOrMutation();TestUnseenUnboundManualOrderStatusInvalidatesAccountCensus();TestCrossClientOrderStatusPositivePermanentIdentityConflictQuarantined();TestForeignPermIdEconomicStatusConflictPoisonsRiskWithoutLifecycle();TestProtectivePendingCancelInvalidatesOldCandidateWithoutCancelSend();TestBrokerGlobalProtectiveSingleNativeAndLiteCannotContradict();TestBrokerTouchedConditionalOrdersStayInGlobalCensus();TestBrokerProtectiveMetadataIsOnlyVisibleCandidateNotProtection();TestIncrementalProtectiveMetadataIsCoherentWithNativeActiveState();TestForeignNumeric201202CannotCreateOwnTerminal();TestActualAdapterLockIncludesConnectionAndStreamInBrokerAudit();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
