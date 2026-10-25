@@ -187,13 +187,18 @@ class IncrementalOriginalEvidenceTests(unittest.TestCase):
                 (root/n).mkdir(mode=0o700)
             manifest={**world.manifest,"instrument":"EUR.USD","execution_domain":"PAPER"}
             cache=VerifiedIncrementalJournal(manifest,watcher.COHORT)
-            original_model=watcher.read_model()
+            original_model=world.fake_model()
+            rewards=Path(td)/"synthetic-empty-rewards.json"
+            rewards.write_text(canonical({"broker_orders_sent":0,"rewards":[]}))
+            rewards.chmod(0o600)
             freeze={"activated_at_ms":int(time.time()*1000)-15000,
                     "model_report_id":original_model[0]["report_id"],
                     "source_period_sha256":world.period}
             r=world.request("c"*32)
             req_id=r["request_id"]
             with patch.object(watcher,"OUT",root),\
+                 patch.object(watcher,"read_model",return_value=original_model),\
+                 patch.object(watcher.prior,"REWARDS",rewards),\
                  patch.object(watcher,"registration",return_value=manifest),\
                  patch.object(watcher,"frozen",return_value=freeze):
                 watcher.run_once(cache)
