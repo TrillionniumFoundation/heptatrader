@@ -74,7 +74,7 @@ def main():
           'last_flat_at_ms':last.get('reconciled_at_ms',0)}
  validate_control(control,now)
  release=h/'.local/share/heptatrader/btc-entry-runtime/releases'/head;release.mkdir(mode=0o700,parents=True,exist_ok=False)
- names=('hepta_btc_entry_policy.py','heptatrader_btc_economics_driver.py','heptatrader_paper_driver.py','hepta_verified_loader.py');files={}
+ names=('hepta_btc_entry_policy.py','heptatrader_btc_economics_driver.py','heptatrader_paper_driver.py','hepta_verified_loader.py','hepta_native_reader.py');files={}
  for name in names:
   dst=release/name;dst.write_bytes((src/name).read_bytes());dst.chmod(0o400);files[name]=sha(dst)
  config={'schema':'heptatrader.btc-entry-runtime.v1','source_sha':head,'profile':PROFILE,'period_sha256':hashlib.sha256(period_raw).hexdigest(),

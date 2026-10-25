@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import selectors
 import stat
 import subprocess
 import sys
@@ -27,8 +26,8 @@ from typing import Callable
 from hepta_pnl_accounting import (EvidenceError, INSTRUMENTS, amount, build_report,
                                   number, positive_int, validate_period, ledger_noop, replay as replay_ledger)
 from hepta_pnl_watch import StableJournalBytes
+from hepta_native_reader import NativeReader as _NativeReader, READ_TOOLS
 
-READ_TOOLS = frozenset({"system.get_health", "orders.list", "portfolio.list_positions", "market.get_quote"})
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
 MAX_JOURNAL_RECORDS = 65536
 
@@ -115,94 +114,11 @@ def write_snapshot(path: Path, value: dict, exclusive: bool = False) -> None:
             pass
 
 
-class NativeReader:
+class NativeReader(_NativeReader):
+    """Keep the PnL observer's public constructor and evidence-error contract."""
     def __init__(self, prefix: Path, config: Path, socket: Path, *, persistent: bool = False):
-        self.prefix, self.config, self.socket = prefix, config, socket
-        self.persistent = persistent
-        self._processes = {}
-
-    def _close_process(self, instrument):
-        process = self._processes.pop(instrument, None)
-        if process is None:
-            return
-        # Only the owned read-only CLI is terminated, never a trading service.
-        if process.poll() is None:
-            process.terminate()
-        try:
-            process.wait(timeout=0.5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=0.5)
-        finally:
-            process.stdin.close()
-            process.stdout.close()
-
-    def close(self):
-        for instrument in list(self._processes):
-            self._close_process(instrument)
-
-    def _stream_read(self, instrument, tool, token):
-        process = self._processes.get(instrument)
-        if process is None:
-            args = [str(self.prefix / "bin/heptactl"), "--socket", str(self.socket),
-                    "--token-file", str(token), "--io-timeout-ms", "2000", "pnl-read-stream"]
-            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, bufsize=0)
-            self._processes[instrument] = process
-        request = tool + (" " + instrument if tool == "market.get_quote" else "") + "\n"
-        try:
-            if process.poll() is not None:
-                raise EvidenceError("PNL_READ_STREAM_CLOSED")
-            process.stdin.write(request.encode("ascii"))
-            deadline = time.monotonic() + 4.0
-            data = bytearray()
-            with selectors.DefaultSelector() as selector:
-                selector.register(process.stdout, selectors.EVENT_READ)
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not selector.select(remaining):
-                        raise EvidenceError("PNL_READ_STREAM_TIMEOUT")
-                    chunk = os.read(process.stdout.fileno(), min(65536, 1048578 - len(data)))
-                    if not chunk:
-                        raise EvidenceError("PNL_READ_STREAM_CLOSED")
-                    data.extend(chunk)
-                    if len(data) > 1048577:
-                        raise EvidenceError("PNL_READ_STREAM_RESPONSE_TOO_LARGE")
-                    if b"\n" in data:
-                        line, extra = bytes(data).split(b"\n", 1)
-                        if extra:
-                            raise EvidenceError("PNL_READ_STREAM_UNEXPECTED_RESPONSE")
-                        value = strict_json(line.decode("utf-8"))
-                        if value.get("tool") != tool:
-                            raise EvidenceError("PNL_READ_STREAM_TOOL_MISMATCH")
-                        if value.get("status") != "ok" or not isinstance(value.get("payload"), dict):
-                            raise EvidenceError(str(value.get("reason_code") or "NATIVE_READ_FAILED"))
-                        return value["payload"]
-        except (OSError, ValueError):
-            # The failed read is never retried. A later read may start a new
-            # reader and obtain a newly verified discovery catalog.
-            self._close_process(instrument)
-            raise
-
-    def __call__(self, instrument: str, tool: str) -> dict:
-        if instrument not in INSTRUMENTS or tool not in READ_TOOLS:
-            raise EvidenceError("PNL_READ_ONLY_TOOL_ALLOWLIST")
-        token = self.config / ("crypto.token" if instrument == "BTC.USD" else "paper.token")
-        if self.persistent:
-            return self._stream_read(instrument, tool, token)
-        # Never read/log the token's contents; pass the existing private path.
-        args = [str(self.prefix / "bin/heptactl"), "--socket", str(self.socket),
-                "--token-file", str(token), "--io-timeout-ms", "2000", "call", tool]
-        if tool == "market.get_quote":
-            args.append("instrument=" + instrument)
-        result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=4)
-        try:
-            value = strict_json(result.stdout)
-        except (ValueError, UnicodeError):
-            raise EvidenceError("NATIVE_READ_TRANSPORT_FAILED") from None
-        if result.returncode or value.get("status") != "ok" or not isinstance(value.get("payload"), dict):
-            raise EvidenceError(str(value.get("reason_code") or "NATIVE_READ_FAILED"))
-        return value["payload"]
+        super().__init__(prefix, config, socket, persistent=persistent,
+                         parse_json=strict_json, error_type=EvidenceError)
 
 
 def health_identity(health: dict) -> tuple:

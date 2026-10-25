@@ -570,5 +570,48 @@ switch pauses entry inference. Quote observations, lease handling and pending
 command reconciliation continue; open-position safety exits and exit decisions
 retain their existing path. The driver records the current pause reason in
 `entry_inference_pause`. An answer already running when a hold appears is
-discarded, and no second worker starts before it finishes. Marker absence grants
-no permission: the existing `paper-on` and native checks still govern every entry.
+cancelled and discarded. The driver retains the original worker until its local
+inference process is reaped; a second worker cannot overlap that cleanup. Marker
+absence grants no permission: the existing `paper-on` and native checks still
+govern every entry.
+
+The inference budget is the remaining lifetime of its original market input,
+with the existing 60-second result TTL unchanged. Queueing and process startup
+consume that same budget; a monotonic deadline prevents a wall-clock rollback
+from extending it. Expiry, a hold, a changed authoritative position or driver
+shutdown cancels only the process group created for that inference. A bounded
+TERM/KILL cleanup never signals an existing service or unrelated process. This
+proves local client cleanup; it is not independent evidence that a remote model
+provider has cancelled work already accepted by that provider.
+
+### Optional resident native read transport
+
+After qualifying `current/bin/heptactl` for `pnl-read-stream`, a resident driver
+may use `--native-read-stream`. The default remains the existing one-shot CLI
+transport for compatibility with older native installations. An attributed
+release records the selection in its immutable manifest; prepare it with
+`install_decision_attribution.py --instrument EUR.USD --prepare-upgrade
+--native-read-stream` and use the existing audited activation procedure. Preparing
+the release does not modify a service or grant trading authority. The manifest
+pins the helper's source bytes, which the wrapper verifies and executes from
+the same buffer as the other pinned runtime modules.
+
+If `current/bin/heptactl` is older, preparation may additionally bind
+`--native-read-binary /absolute/qualified/bin/heptactl
+--native-read-binary-sha256 SHA256`. The immutable `native_read_binary` manifest
+field records both values. Preparation and activation verify that binding, and
+every new reader process verifies its owner, permissions, regular-file identity
+and content hash. The Linux launcher executes the verified open file descriptor
+so a replaced path cannot substitute a different binary between verification
+and launch. This binary is available only to the read stream; trade commands,
+risk previews and all other native endpoints continue using their original
+installed executable. Omitting the binding retains the normal current binary.
+
+The shared driver/PnL reader keeps one read-only CLI per instrument, reusing only
+the native client's credential-bound discovery catalog. Health, orders,
+positions and quotes remain fresh business calls with the existing token,
+owner, schema and freshness checks. Risk previews, permits, mutations and
+reconciliation keep their original paths. A failed stream read is not retried
+or silently replaced; its CLI is closed and a later read may create a new
+reader. This removes repeated CLI startup/discovery without caching a trading
+permission or changing the Gateway's global dispatch lock.

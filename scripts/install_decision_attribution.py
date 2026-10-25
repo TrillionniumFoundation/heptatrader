@@ -11,6 +11,7 @@ import argparse,ast,errno,fcntl,hashlib,json,os,re,shutil,subprocess,tempfile,ti
 from pathlib import Path
 from hepta_verified_loader import load_verified_module
 from hepta_decision_attribution import canonical,digest,read_private,strict
+from hepta_native_reader import validate_binary_binding,verified_binary
 
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -30,7 +31,7 @@ def runtime_filenames(instrument,*,legacy=False):
         'heptatrader_paper_driver.py'}
  if instrument=='BTC.USD':
   names.update({'heptatrader_btc_economics_driver.py','hepta_btc_entry_policy.py'})
- if not legacy:names.add('hepta_verified_loader.py')
+ if not legacy:names.update({'hepta_verified_loader.py','hepta_native_reader.py'})
  return names
 
 
@@ -65,9 +66,17 @@ def inspect_resident(command,instrument):
   raise RuntimeError('ATTRIBUTION_INSTALLED_PERIOD_CHANGED')
  hashes=m.get('runtime_sha256')
  loader=m.get('runtime_loader')
+ stream=m.get('native_read_stream',False)
+ if 'native_read_binary' in m:
+  try:
+   validate_binary_binding(m['native_read_binary'])
+   if stream is not True:raise ValueError('NATIVE_READ_BINARY_REQUIRES_STREAM')
+  except ValueError as exc:raise RuntimeError(str(exc)) from exc
  allowed=[runtime_filenames(instrument)]
- if loader is None:allowed.append(runtime_filenames(instrument,legacy=True))
- if (loader not in (None,'verified-bytes.v1') or not isinstance(hashes,dict)
+ if stream is False:
+  allowed.append(runtime_filenames(instrument)-{'hepta_native_reader.py'})
+  if loader is None:allowed.append(runtime_filenames(instrument,legacy=True))
+ if (type(stream) is not bool or loader not in (None,'verified-bytes.v1') or not isinstance(hashes,dict)
      or set(hashes) not in allowed):
   raise RuntimeError('ATTRIBUTION_INSTALLED_RUNTIME_INCOMPLETE')
  for name,expected in hashes.items():
@@ -79,6 +88,8 @@ def inspect_resident(command,instrument):
  return {'schema':'heptatrader.attribution-inspection.v1','status':'INSTALLED_VERIFIED',
          'instrument':instrument,'manifest_sha256':hashlib.sha256(raw).hexdigest(),
          'source_sha':m.get('source_sha'),'release':str(root),
+         'native_read_stream':stream,
+         'native_read_binary':m.get('native_read_binary'),
          'runtime_sha256':hashes,'trade_authority':False,'service_changed':False}
 
 
@@ -136,7 +147,7 @@ def _verify_prepared(release,expected,files):
    raise RuntimeError('ATTRIBUTION_PREPARED_RUNTIME_CHANGED:'+name)
  return hashlib.sha256(raw).hexdigest()
 
-def prepare_upgrade(instrument):
+def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None):
  """Stage exact candidate bytes; never read broker/state or change a unit."""
  if os.geteuid()==0:raise RuntimeError('USER_SERVICE_ONLY')
  h=Path.home();repo=Path(__file__).resolve().parents[1];source=repo/'scripts'
@@ -149,6 +160,12 @@ def prepare_upgrade(instrument):
  if hashlib.sha256(installed_raw).hexdigest()!=observed['manifest_sha256']:
   raise RuntimeError('ATTRIBUTION_INSTALLED_MANIFEST_CHANGED')
  installed=strict(installed_raw)
+ if native_read_stream is None:native_read_stream=installed.get('native_read_stream',False)
+ if type(native_read_stream) is not bool:raise RuntimeError('NATIVE_READER_MODE_INVALID')
+ if native_read_binary is None:native_read_binary=installed.get('native_read_binary')
+ if native_read_binary is not None:
+  if native_read_stream is not True:raise RuntimeError('NATIVE_READ_BINARY_REQUIRES_STREAM')
+  with verified_binary(native_read_binary):pass
  files={name:(source/name).read_bytes() for name in sorted(runtime_filenames(instrument))}
  for name,raw in files.items():
   if len(raw)>1048576:raise RuntimeError('ATTRIBUTION_SOURCE_TOO_LARGE:'+name)
@@ -174,11 +191,15 @@ def prepare_upgrade(instrument):
  manifest=dict(installed)
  manifest.pop('created_at_ms',None)
  runtime_bytes_changed=hashes!=installed['runtime_sha256']
+ read_transport_changed=(native_read_stream!=installed.get('native_read_stream',False)
+                         or native_read_binary!=installed.get('native_read_binary'))
  manifest.update(source_sha=source_sha,runtime_sha256=hashes,runtime_loader='verified-bytes.v1',
+                 native_read_stream=native_read_stream,
                  prepared_from_manifest_sha256=observed['manifest_sha256'],
                  runtime_bytes_changed=runtime_bytes_changed,
-                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed),
+                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed or read_transport_changed),
                  behavior_equivalence_assessed=False)
+ if native_read_binary is not None:manifest['native_read_binary']=dict(native_read_binary)
  identity=digest(manifest)
  release=h/'.local/share/heptatrader/decision-attribution/releases'/(source_sha+'-prepared-'+identity)/instrument
  release.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -315,14 +336,23 @@ def install(instrument,evidence):
 def main():
  p=argparse.ArgumentParser();p.add_argument('--instrument',choices=['EUR.USD','BTC.USD'],required=True)
  p.add_argument('--evidence-directory',type=Path)
+ p.add_argument('--native-read-stream',action='store_true',default=None,help='prepare a stream-enabled candidate after native CLI qualification')
+ p.add_argument('--native-read-binary',type=Path,help='qualified absolute heptactl path used only by the read stream')
+ p.add_argument('--native-read-binary-sha256')
  mode=p.add_mutually_exclusive_group()
  mode.add_argument('--inspect-only',action='store_true')
  mode.add_argument('--prepare-upgrade',action='store_true')
  a=p.parse_args();os.umask(0o077)
+ if (a.native_read_stream is not None or a.native_read_binary is not None or a.native_read_binary_sha256 is not None) and not a.prepare_upgrade:p.error('native reader options require --prepare-upgrade')
+ if bool(a.native_read_binary)!=bool(a.native_read_binary_sha256):p.error('--native-read-binary and --native-read-binary-sha256 must be supplied together')
+ read_binary=None if a.native_read_binary is None else {'path':str(a.native_read_binary),'sha256':a.native_read_binary_sha256}
  if a.inspect_only:
   print(json.dumps(inspect_running_runtime(unit_for(a.instrument),a.instrument),sort_keys=True),flush=True)
  elif a.prepare_upgrade:
-  prepare_upgrade(a.instrument)
+  options={}
+  if a.native_read_stream is not None:options['native_read_stream']=a.native_read_stream
+  if read_binary is not None:options['native_read_binary']=read_binary
+  prepare_upgrade(a.instrument,**options)
  else:
   if a.evidence_directory is None:p.error('--evidence-directory required for installation')
   install(a.instrument,a.evidence_directory)

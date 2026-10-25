@@ -71,6 +71,7 @@ set(_hepta_runtime_helpers
     scripts/hepta_laya_pause.py
   scripts/hepta_progress.py
     scripts/heptatrader_paper_driver.py
+    scripts/hepta_native_reader.py
     scripts/hepta_pnl_accounting.py
     scripts/hepta_pnl_report.py
     scripts/hepta_pnl_watch.py

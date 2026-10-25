@@ -193,6 +193,29 @@ class InstalledAttributionInspectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "RUNTIME_INCOMPLETE"):
             installer.inspect_resident(self.command, "EUR.USD")
 
+    def test_pre_stream_verified_layout_is_retained_but_cannot_enable_missing_reader(self):
+        self.manifest['runtime_loader'] = 'verified-bytes.v1'
+        self.manifest['runtime_sha256'] = dict(self.hashes)
+        del self.manifest['runtime_sha256']['hepta_native_reader.py']
+        self._manifest()
+        result = installer.inspect_resident(self.command, 'EUR.USD')
+        self.assertEqual(result['status'], 'INSTALLED_VERIFIED')
+        self.assertIs(result['native_read_stream'], False)
+        self.manifest['native_read_stream'] = True
+        self._manifest()
+        with self.assertRaisesRegex(RuntimeError, 'RUNTIME_INCOMPLETE'):
+            installer.inspect_resident(self.command, 'EUR.USD')
+
+    def test_enabled_reader_is_pinned_and_tamper_is_refused(self):
+        self.manifest['native_read_stream'] = True
+        self._manifest()
+        result = installer.inspect_resident(self.command, 'EUR.USD')
+        self.assertIs(result['native_read_stream'], True)
+        reader = self.release / 'hepta_native_reader.py'
+        self._put(reader, reader.read_bytes() + b'\n# changed reader\n')
+        with self.assertRaisesRegex(RuntimeError, 'RUNTIME_CHANGED:hepta_native_reader'):
+            installer.inspect_resident(self.command, 'EUR.USD')
+
     def test_configured_and_running_revisions_are_independent(self):
         import activate_prepared_driver as activation
         actual = self._legacy_release()

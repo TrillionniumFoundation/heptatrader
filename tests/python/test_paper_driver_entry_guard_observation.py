@@ -48,6 +48,8 @@ class EntryGuardObservabilityTests(unittest.TestCase):
                     self.position=position;self.observed_at_ms=now
                     self.decision={"action":next(action_iter,"HOLD"),"confidence":1.}
                 def done(self):return True
+                def cancel(self,reason):pass
+                def close(self):pass
                 def result(self):return dict(self.decision)
             patch(driver,"ModelWorker",Worker)
             timeline=[];writes=[];atomic=driver.atomic_json

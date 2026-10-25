@@ -315,8 +315,9 @@ class DriverPolicyTests(unittest.TestCase):
             def slow(_codex,_state_dir,_history,_position):
                 gate.wait(1); return {"action":"HOLD","confidence":0.9,"rationale":"test"}
             d.model_decision=slow
-            worker=d.ModelWorker("c",Path("/unused"),[{"observed_at_ms":123,"bid":1,"ask":2,"mid":1.5}],25000)
-            self.assertFalse(worker.done()); self.assertEqual(worker.position,25000); self.assertEqual(worker.observed_at_ms,123)
+            observed=d.now_ms()
+            worker=d.ModelWorker("c",Path("/unused"),[{"observed_at_ms":observed,"bid":1,"ask":2,"mid":1.5}],25000)
+            self.assertFalse(worker.done()); self.assertEqual(worker.position,25000); self.assertEqual(worker.observed_at_ms,observed)
             gate.set(); self.assertTrue(worker._done.wait(1)); self.assertEqual(worker.result()["action"],"HOLD")
         finally: d.model_decision=old
 

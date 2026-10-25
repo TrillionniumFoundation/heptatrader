@@ -9,7 +9,7 @@ import argparse,copy,hashlib,json,os,stat,sys
 from pathlib import Path
 from hepta_verified_loader import SourceHashMismatch,load_verified_module
 from hepta_btc_entry_policy import PROFILE,HORIZONS,PolicyError,canonical,digest,number,validate_forecast,validate_control,reserve,evaluate
-BASE_SHA256='73cfe8f036acf80dde8b42bd235c40f2cd79f2a92fc896b6d068216a60187d42'
+BASE_SHA256='6f349f23b19deecbac6d20938b98955e8653bab60a50621a40907088585d2c86'
 SCHEMA={'type':'object','required':['action','confidence','rationale','expected_move_bps','horizon_sec'],
  'additionalProperties':False,'properties':{'action':{'enum':['BUY','SELL','HOLD']},
  'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string','minLength':1,'maxLength':2000},
@@ -72,7 +72,7 @@ def attach(driver,config,*,period_check=None):
     'at the stated horizon. Do not infer move size or win probability from confidence. Do not inflate a forecast to cause a trade. '
     'Do not call tools. When there is no coherent directional evidence, prefer HOLD. Input='+canonical(compact))
   response=driver.run([openclaw,'infer','model','run','--local','--model',driver.openclaw_model_ref(driver.MODEL),
-                       '--thinking','low','--prompt',prompt,'--json'],150)
+                       '--thinking','low','--prompt',prompt,'--json'],driver.MODEL_SIGNAL_TTL_MS/1000)
   if response.returncode:raise driver.DriverError('BTC_MODEL_UNAVAILABLE')
   try:
    envelope=driver.strict_json(response.stdout);outputs=envelope.get('outputs')

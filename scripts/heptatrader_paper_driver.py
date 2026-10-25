@@ -8,9 +8,14 @@ FX_TARGET_NOTIONAL_USD=100000.0
 FX_MAX_QUANTITY=100000.0
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
 NATIVE_ENDPOINT=None
+NATIVE_READER=None
+NATIVE_READER_CLASS=None  # An attributed release supplies its exact verified helper.
+NATIVE_READ_BINARY=None  # Optional path/hash binding applies only to read streams.
 CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
 RESIDENT_LOOP_PROGRESS_SCHEMA="heptatrader.driver-loop-progress.v1"
 QUANTITY_TOLERANCE=1e-9
+MODEL_SIGNAL_TTL_MS=60000
+_MODEL_RUN_CONTEXT=threading.local()
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
 def cid(p): return p+"-"+uuid.uuid4().hex
@@ -28,7 +33,11 @@ def strict_json(text):
     return v
 
 def run(argv,timeout=20):
-    return subprocess.run([str(x) for x in argv],stdin=subprocess.DEVNULL,
+    argv=[str(x) for x in argv]
+    worker=getattr(_MODEL_RUN_CONTEXT,"worker",None)
+    if worker is not None:
+        return worker.run_process(argv,timeout)
+    return subprocess.run(argv,stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
 
 def maintenance_entry_hold_reason(home,uid):
@@ -74,7 +83,7 @@ def model_inference_hold_reason(state,snap,home,uid):
 
 
 def sync_model_inference(state,worker,discarded,reason):
-    """Own an invalidated in-flight call until completion; never consume its old answer."""
+    """Cancel an unusable original call and retain it until local cleanup finishes."""
     if reason is None:
         state.pop("model_inference_pause",None)
     else:
@@ -82,6 +91,7 @@ def sync_model_inference(state,worker,discarded,reason):
             "scope":"MODEL_INFERENCE_ONLY"}
         if worker is not None:
             discarded=True
+            worker.cancel(reason)
             if worker.done(): worker=None
     return worker,discarded
 
@@ -171,6 +181,10 @@ def load_state(path):
     return v
 
 def native(cli,tool,*fields):
+    if NATIVE_READER is not None and tool in NATIVE_READER.read_tools:
+        expected=("instrument="+INSTRUMENT,) if tool=="market.get_quote" else ()
+        if fields!=expected:raise DriverError("native stream read fields do not match the current instrument")
+        return NATIVE_READER(INSTRUMENT,tool)
     endpoint=NATIVE_ENDPOINT if NATIVE_ENDPOINT is not None else [cli,"native"]
     p=run([*endpoint,"--io-timeout-ms","4000","--call-id",cid("driver-read"),"call",tool,*fields],15)
     if not p.stdout: raise DriverError("native transport failed: "+p.stderr[:160])
@@ -793,16 +807,100 @@ class ModelWorker:
     def __init__(self,openclaw,state_dir,history,position):
         self.position=float(position); self.observed_at_ms=int(history[-1]["observed_at_ms"])
         self._decision=None; self._error=None; self._done=threading.Event()
+        self._cancelled=threading.Event();self.cancel_reason=None
+        self.cancel_requested_at_ms=None;self.process_pid=None;self._process=None
+        # Queueing, process startup and inference share the original quote's
+        # lifetime. A wall-clock rollback cannot extend this monotonic budget.
+        age=now_ms()-self.observed_at_ms
+        self._deadline=time.monotonic()+max(0,MODEL_SIGNAL_TTL_MS-max(0,age))/1000
+        if age<0 or age>MODEL_SIGNAL_TTL_MS:self.cancel("MARKET_SNAPSHOT_EXPIRED")
         snapshot=[dict(x) for x in history]
         def target():
-            try: self._decision=model_decision(openclaw,state_dir,snapshot,self.position)
+            _MODEL_RUN_CONTEXT.worker=self
+            try:
+                self._check_usable()
+                decision=model_decision(openclaw,state_dir,snapshot,self.position)
+                self._check_usable()
+                self._decision=decision
             except BaseException as error: self._error=error
-            finally: self._done.set()
+            finally:
+                del _MODEL_RUN_CONTEXT.worker
+                self._done.set()
         self._thread=threading.Thread(target=target,name="heptatrader-paper-model",daemon=True)
         self._thread.start()
-    def done(self): return self._done.is_set()
+
+    def cancel(self,reason):
+        if not self._cancelled.is_set():
+            self.cancel_reason=str(reason);self.cancel_requested_at_ms=now_ms()
+            self._cancelled.set()
+
+    def _check_usable(self):
+        age=now_ms()-self.observed_at_ms
+        if age<0 or age>MODEL_SIGNAL_TTL_MS or time.monotonic()>=self._deadline:
+            self.cancel("MARKET_SNAPSHOT_EXPIRED")
+        if self._cancelled.is_set():
+            raise DriverError("model decision cancelled: "+self.cancel_reason)
+
+    def _stop_process(self,process):
+        # This group was created by this worker with start_new_session. Never
+        # signal an existing model service, driver, broker or unrelated child.
+        if process.poll() is None:
+            try:os.killpg(process.pid,signal.SIGTERM)
+            except ProcessLookupError:pass
+        try:
+            process.communicate(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            try:process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                # Retain the process handle. done() cannot admit another worker
+                # while the original child or its output pipes remain live.
+                return False
+        self._process=None
+        return True
+
+    def run_process(self,argv,timeout):
+        self._check_usable()
+        deadline=min(self._deadline,time.monotonic()+float(timeout))
+        process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,text=True,start_new_session=True)
+        self._process=process;self.process_pid=process.pid
+        completed=False
+        try:
+            while True:
+                self._check_usable()
+                remaining=deadline-time.monotonic()
+                if remaining<=0:
+                    self.cancel("MODEL_CALL_DEADLINE")
+                    self._check_usable()
+                try:
+                    stdout,stderr=process.communicate(timeout=min(0.1,remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                completed=True
+                self._check_usable()
+                return subprocess.CompletedProcess(argv,process.returncode,stdout,stderr)
+        finally:
+            if completed:self._process=None
+            else:self._stop_process(process)
+
+    def done(self):
+        if not self._done.is_set():return False
+        if self._process is not None:
+            try:self._process.communicate(timeout=0.01)
+            except subprocess.TimeoutExpired:return False
+            self._process=None
+        return True
+
+    def close(self):
+        self.cancel("DRIVER_STOPPING")
+        self._thread.join(timeout=3)
+        if not self.done():raise DriverError("original model process cleanup remains pending")
+
     def result(self):
         if not self.done(): raise DriverError("model result requested before completion")
+        self._check_usable()
         if self._error is not None: raise self._error
         return self._decision
 
@@ -820,7 +918,7 @@ def model_decision(openclaw,state_dir,history,position):
         "Prefer HOLD unless direction is coherent. BUY means bullish and SELL bearish. "
         f"Existing position={position:.17g}. Recent authoritative quotes="+json.dumps(compact,separators=(",",":")))
     p=run([openclaw,"infer","model","run","--local","--model",openclaw_model_ref(MODEL),
-        "--thinking","low","--prompt",prompt,"--json"],150)
+        "--thinking","low","--prompt",prompt,"--json"],MODEL_SIGNAL_TTL_MS/1000)
     if p.returncode!=0: raise DriverError("model decision failed: "+p.stderr[-200:])
     try:
         envelope=strict_json(p.stdout)
@@ -1101,14 +1199,25 @@ def canary_roundtrip(state,path,cli,binary,socket,token,outbox):
     return 0
 
 def main():
-    global INSTRUMENT,QTY,NATIVE_ENDPOINT,QUANTITY_TOLERANCE,CLOSE_RECEIPT_ROOT
+    global INSTRUMENT,QTY,NATIVE_ENDPOINT,NATIVE_READER,QUANTITY_TOLERANCE,CLOSE_RECEIPT_ROOT
     ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true")
     ap.add_argument("--reconcile-only",action="store_true")
     ap.add_argument("--recover-owner",action="store_true")
     ap.add_argument("--instrument",choices=("EUR.USD","BTC.USD"),default="EUR.USD")
     ap.add_argument("--canary-roundtrip",action="store_true")
     ap.add_argument("--rearm-session-generation",type=int,default=0)
+    ap.add_argument("--native-read-stream",action="store_true",
+        help="reuse the qualified heptactl read-only stream; requires pnl-read-stream support")
+    ap.add_argument("--native-read-binary")
+    ap.add_argument("--native-read-binary-sha256")
     args=ap.parse_args()
+    if bool(args.native_read_binary)!=bool(args.native_read_binary_sha256):
+        ap.error("--native-read-binary and --native-read-binary-sha256 must be supplied together")
+    read_binary=NATIVE_READ_BINARY
+    if args.native_read_binary:
+        read_binary={"path":args.native_read_binary,"sha256":args.native_read_binary_sha256}
+    if read_binary is not None and not args.native_read_stream:
+        ap.error("a selected native read binary requires --native-read-stream")
     if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation,args.recover_owner,args.canary_roundtrip))>1:
         raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
@@ -1183,142 +1292,163 @@ def main():
     if crypto and not crypto_roundtrip_qualified(state):
         raise DriverError("crypto resident driver requires a correlation-bound completed round trip")
     process_identity=resident_process_identity();loop_iteration=0
-    while not stop:
-        started=time.monotonic();loop_iteration+=1
-        state["resident_loop_progress"]={"schema":RESIDENT_LOOP_PROGRESS_SCHEMA,**process_identity,
-            "iteration":loop_iteration,"at_ms":now_ms()}
-        try:
-            pending_mode=state.get("pending") is not None
-            snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
-            if not pending_mode and state.get("active_lease_continuation_supported"):
-                maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),pos,len(snap["active"]),None)
-            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
-            model_worker,model_worker_discarded=sync_model_inference(
-                state,model_worker,model_worker_discarded,inference_reason)
-            if pending_mode:
-                inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
-                continue
-            if state.get("owner_fence_recovery_required"):
-                state["position"]=pos; state["halt_new_entries"]=True
-                if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
-                        exit_reason="OWNER_RECOVERY_REDUCE_ONLY")
-                elif not snap["active"] and recovery_position_flat(snap):
-                    recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
-                atomic_json(state_path,state)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
-                continue
-            if INSTRUMENT=="BTC.USD" and abs(pos-float(state.get("position",0)))>QUANTITY_TOLERANCE:
-                state["halt_new_entries"]=True;state["risk_halt_reason"]="EXTERNAL_CRYPTO_POSITION_CHANGE"
-                raise DriverError("crypto position changed outside the original pending command")
-            state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
-                pos,len(snap["active"]),state.get("pending"))
-            if state.get("owner_fence_recovery_required"):
+    try:
+        if args.native_read_stream:
+            reader_class=NATIVE_READER_CLASS
+            if reader_class is None:
+                from hepta_native_reader import NativeReader
+                reader_class=NativeReader
+            NATIVE_READER=reader_class(home/".local/share/heptatrader/current",
+                home/".config/heptatrader",Path(socket),persistent=True,
+                parse_json=strict_json,error_type=DriverError,timeout_seconds=15,io_timeout_ms=4000,
+                binary_binding=read_binary)
+        while not stop:
+            started=time.monotonic();loop_iteration+=1
+            state["resident_loop_progress"]={"schema":RESIDENT_LOOP_PROGRESS_SCHEMA,**process_identity,
+                "iteration":loop_iteration,"at_ms":now_ms()}
+            try:
+                pending_mode=state.get("pending") is not None
+                snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
+                if model_worker is not None and abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
+                    model_worker.cancel("AUTHORITATIVE_POSITION_CHANGED")
+                if not pending_mode and state.get("active_lease_continuation_supported"):
+                    maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),pos,len(snap["active"]),None)
+                inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
                 model_worker,model_worker_discarded=sync_model_inference(
-                    state,model_worker,model_worker_discarded,"OWNER_CONTROL_RECOVERY")
-                atomic_json(state_path,state)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
-            if pause_reason:
-                state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
-                    "scope":"ENTRY_INFERENCE_ONLY"}
-                model_worker,model_worker_discarded=sync_model_inference(
-                    state,model_worker,model_worker_discarded,pause_reason)
-                atomic_json(state_path,state)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            state.pop("entry_inference_pause",None)
-            if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
-                raise DriverError("authoritative mutation state is not ready")
-            # Risk halts use the existing native CLOSE path before any quote
-            # request. Native execution still validates the exact reduce-only order.
-            if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE and state.get("halt_new_entries"):
-                why="HALT_REDUCE_ONLY"
-                state["last_exit_reason"]=why; atomic_json(state_path,state)
-                prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",exit_reason=why)
-                atomic_json(state_path,state)
-                if args.once: break
-                time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            # Price-based exits and new entries still require a fresh IB quote.
-            snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
-            q=snap["quote"]
-            if q.get("authoritative") is not True or q.get("source")!="IB" or q.get("stale") is not False:
-                raise DriverError("authoritative instrument quote unavailable")
-            mid=(float(q["bid"])+float(q["ask"]))/2
-            if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
-                state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
-                state["history"]=state["history"][-MAX_HISTORY:]
-            decision=None
-            # Safety exits are evaluated on every sample and never wait for the model.
-            if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
-                close,why=should_close(state,pos,q,None)
-                if close:
-                    state["last_exit_reason"]=why; atomic_json(state_path,state)
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
-                        q,exit_reason=why)
+                    state,model_worker,model_worker_discarded,inference_reason)
+                if pending_mode:
+                    inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                    continue
+                if state.get("owner_fence_recovery_required"):
+                    state["position"]=pos; state["halt_new_entries"]=True
+                    if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
+                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                            exit_reason="OWNER_RECOVERY_REDUCE_ONLY")
+                    elif not snap["active"] and recovery_position_flat(snap):
+                        recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
+                    atomic_json(state_path,state)
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                    continue
+                if INSTRUMENT=="BTC.USD" and abs(pos-float(state.get("position",0)))>QUANTITY_TOLERANCE:
+                    state["halt_new_entries"]=True;state["risk_halt_reason"]="EXTERNAL_CRYPTO_POSITION_CHANGE"
+                    raise DriverError("crypto position changed outside the original pending command")
+                state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
+                    pos,len(snap["active"]),state.get("pending"))
+                if state.get("owner_fence_recovery_required"):
+                    model_worker,model_worker_discarded=sync_model_inference(
+                        state,model_worker,model_worker_discarded,"OWNER_CONTROL_RECOVERY")
                     atomic_json(state_path,state)
                     if args.once: break
                     time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
-            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
-            model_worker,model_worker_discarded=sync_model_inference(
-                state,model_worker,model_worker_discarded,inference_reason)
-            if model_worker is not None and model_worker.done():
-                try:
-                    if model_worker_discarded:
-                        raise DriverError("model decision discarded after inference hold")
-                    candidate=model_worker.result()
-                    age=now_ms()-model_worker.observed_at_ms
-                    if abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
-                        raise DriverError("model decision discarded after authoritative position change")
-                    if age<0 or age>60000:
-                        raise DriverError("model decision discarded after market snapshot expiry")
-                    decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
-                    state["last_decision_ms"]=now_ms(); state["last_error"]=""
-                except Exception as error:
-                    state["last_error"]=("model HOLD: "+str(error))[:500]
-                model_worker=None; model_worker_discarded=False
-            if snap["active"]:
-                state["last_error"]="active broker order present; observing only"
-            elif abs(pos)>QUANTITY_TOLERANCE and decision is not None:
-                close,why=should_close(state,pos,q,decision)
-                if close:
+                pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
+                if pause_reason:
+                    state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
+                        "scope":"ENTRY_INFERENCE_ONLY"}
+                    model_worker,model_worker_discarded=sync_model_inference(
+                        state,model_worker,model_worker_discarded,pause_reason)
+                    atomic_json(state_path,state)
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                state.pop("entry_inference_pause",None)
+                if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
+                    raise DriverError("authoritative mutation state is not ready")
+                # Risk halts use the existing native CLOSE path before any quote
+                # request. Native execution still validates the exact reduce-only order.
+                if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE and state.get("halt_new_entries"):
+                    why="HALT_REDUCE_ONLY"
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
-                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
-                        q,exit_reason=why)
-            elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and entry_candidate_allowed(decision):
-                try:
-                    guard=run([cli,"paper-on"],10)
-                except Exception as error:
-                    record_entry_guard(state,state_path,None,decision["action"],failure=error)
-                    raise
-                observation=record_entry_guard(state,state_path,guard,decision["action"])
-                if guard.returncode!=0:
-                    raise DriverError("paper guard release failed: "+observation["reason"])
-                prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
-            # A command prepared in this same iteration also blocks the next worker.
-            inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
-            model_worker,model_worker_discarded=sync_model_inference(
-                state,model_worker,model_worker_discarded,inference_reason)
-            due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
-            if inference_reason is None and model_worker is None and due and len(state["history"])>=6:
-                if not Path(openclaw).exists():
-                    raise DriverError("model runtime missing: "+openclaw)
-                state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
-                model_worker_discarded=False
-                model_worker=ModelWorker(openclaw,state_dir,state["history"],pos)
-            atomic_json(state_path,state)
-        except Exception as e:
-            if state.get("owner_fence_recovery_required"):
-                state["last_transient_error"]=str(e)[:500]
-                state["last_error"]="owner fence recovery required: "+state.get("owner_fence_block_reason","SESSION_OWNER_FENCED")
-            else:
-                state["last_error"]=str(e)[:500]
-            atomic_json(state_path,state)
-        if args.once: break
-        time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
-    os.close(lock); return 0
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",exit_reason=why)
+                    atomic_json(state_path,state)
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                # Price-based exits and new entries still require a fresh IB quote.
+                snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
+                q=snap["quote"]
+                if q.get("authoritative") is not True or q.get("source")!="IB" or q.get("stale") is not False:
+                    raise DriverError("authoritative instrument quote unavailable")
+                mid=(float(q["bid"])+float(q["ask"]))/2
+                if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
+                    state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
+                    state["history"]=state["history"][-MAX_HISTORY:]
+                decision=None
+                # Safety exits are evaluated on every sample and never wait for the model.
+                if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
+                    close,why=should_close(state,pos,q,None)
+                    if close:
+                        state["last_exit_reason"]=why; atomic_json(state_path,state)
+                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                            q,exit_reason=why)
+                        atomic_json(state_path,state)
+                        if args.once: break
+                        time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
+                model_worker,model_worker_discarded=sync_model_inference(
+                    state,model_worker,model_worker_discarded,inference_reason)
+                if model_worker is not None and model_worker.done():
+                    try:
+                        if model_worker_discarded:
+                            raise DriverError("model decision discarded after inference hold")
+                        candidate=model_worker.result()
+                        age=now_ms()-model_worker.observed_at_ms
+                        if abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
+                            raise DriverError("model decision discarded after authoritative position change")
+                        if age<0 or age>MODEL_SIGNAL_TTL_MS:
+                            raise DriverError("model decision discarded after market snapshot expiry")
+                        decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
+                        state["last_decision_ms"]=now_ms(); state["last_error"]=""
+                    except Exception as error:
+                        state["last_error"]=("model HOLD: "+str(error))[:500]
+                    model_worker=None; model_worker_discarded=False
+                if snap["active"]:
+                    state["last_error"]="active broker order present; observing only"
+                elif abs(pos)>QUANTITY_TOLERANCE and decision is not None:
+                    close,why=should_close(state,pos,q,decision)
+                    if close:
+                        state["last_exit_reason"]=why; atomic_json(state_path,state)
+                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
+                            q,exit_reason=why)
+                elif abs(pos)<=QUANTITY_TOLERANCE and not state.get("halt_new_entries") and entry_candidate_allowed(decision):
+                    try:
+                        guard=run([cli,"paper-on"],10)
+                    except Exception as error:
+                        record_entry_guard(state,state_path,None,decision["action"],failure=error)
+                        raise
+                    observation=record_entry_guard(state,state_path,guard,decision["action"])
+                    if guard.returncode!=0:
+                        raise DriverError("paper guard release failed: "+observation["reason"])
+                    prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
+                # A command prepared in this same iteration also blocks the next worker.
+                inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
+                model_worker,model_worker_discarded=sync_model_inference(
+                    state,model_worker,model_worker_discarded,inference_reason)
+                due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
+                if inference_reason is None and model_worker is None and due and len(state["history"])>=6:
+                    if not Path(openclaw).exists():
+                        raise DriverError("model runtime missing: "+openclaw)
+                    state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
+                    model_worker_discarded=False
+                    model_worker=ModelWorker(openclaw,state_dir,state["history"],pos)
+                atomic_json(state_path,state)
+            except Exception as e:
+                if state.get("owner_fence_recovery_required"):
+                    state["last_transient_error"]=str(e)[:500]
+                    state["last_error"]="owner fence recovery required: "+state.get("owner_fence_block_reason","SESSION_OWNER_FENCED")
+                else:
+                    state["last_error"]=str(e)[:500]
+                atomic_json(state_path,state)
+            if args.once: break
+            time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+    finally:
+        try:
+            if model_worker is not None:model_worker.close()
+        finally:
+            try:
+                if NATIVE_READER is not None:NATIVE_READER.close()
+            finally:
+                NATIVE_READER=None
+                os.close(lock)
+    return 0
 if __name__=="__main__": raise SystemExit(main())

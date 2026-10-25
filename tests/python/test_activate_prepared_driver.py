@@ -669,6 +669,19 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
 
+    def test_prepared_stream_manifest_preserves_the_existing_activation_boundary(self):
+        record = json.loads(self.candidate.read_bytes())
+        record["native_read_stream"] = True
+        self.candidate.chmod(0o600)
+        _put(self.candidate, _json_bytes(record), 0o400)
+        self.candidate_sha = _sha(self.candidate.read_bytes())
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual([event["kind"] for event in self.events
+                          if event["kind"] in ("audit", "stop", "start")],
+                         ["audit", "stop", "start"])
+        self.assertTrue(json.loads(self.current_manifest.read_bytes())["native_read_stream"])
+
 
     def test_pid_bound_loop_progress_finishes_without_three_state_versions(self):
         def progress(record):

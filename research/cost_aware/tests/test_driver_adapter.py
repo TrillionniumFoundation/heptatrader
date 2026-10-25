@@ -16,6 +16,7 @@ class FakeCapture:
 class Host:
     def __init__(self):
         self.INSTRUMENT='BTC.USD';self.QTY=1.;self.QUANTITY_TOLERANCE=1e-10;self.MAX_ADVERSE=.002;self.MODEL='gpt-6-luna'
+        self.MODEL_SIGNAL_TTL_MS=60000
         self.now=NOW;self.q=quote();self.calls=[];self.writes=[];self.change_after_prepare=None;self.submit_result='ok'
         self.snap={'active':[],'position':0.,'owner_health':{'mutation_ready':True}}
         self.DriverError=type('DriverError',(RuntimeError,),{})
@@ -63,6 +64,7 @@ class Host:
     def openclaw_model_ref(self,m):return 'openai/gpt-5.6-luna'
     def run(self,args,timeout):
         self.model_args=args
+        self.model_timeout=timeout
         f=forecast();raw={k:f[k] for k in adapter.CANDIDATE_SCHEMA['required']}
         return SimpleNamespace(returncode=0,stdout=json.dumps({'ok':True,'outputs':[{'text':json.dumps(raw)}]}))
 
@@ -121,6 +123,7 @@ class AdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             history=[{'observed_at_ms':NOW,'bid':100,'ask':100,'mid':100}]
             f=self.host.model_decision('model',Path(td),history,987654321)
+            self.assertEqual(self.host.model_timeout,60)
             prompt=self.host.model_args[self.host.model_args.index('--prompt')+1]
             self.assertNotIn('987654321',prompt);self.assertTrue(f['position_neutral']);self.assertEqual(f['model_id'],MODEL_ID)
             self.assertTrue(any(e[0]=='CANDIDATE' for e in self.capture.events))

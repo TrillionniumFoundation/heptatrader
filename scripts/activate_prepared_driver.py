@@ -421,6 +421,10 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
                             new["source_sha"]) is None):
         fail("CANDIDATE_SOURCE_IDENTITY_INVALID")
     changed = new["runtime_sha256"] != old["runtime_sha256"]
+    read_transport_changed = (
+        new.get("native_read_stream", False) != old.get("native_read_stream", False)
+        or new.get("native_read_binary") != old.get("native_read_binary")
+    )
     expected = dict(old)
     expected.pop("created_at_ms", None)
     expected.update(
@@ -428,7 +432,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         prepared_from_manifest_sha256=installed["manifest_sha256"],
         runtime_bytes_changed=changed,
         trading_behavior_changed=(
-            old.get("trading_behavior_changed") is not False or changed
+            old.get("trading_behavior_changed") is not False or changed or read_transport_changed
         ),
         behavior_equivalence_assessed=False,
     )
@@ -438,6 +442,12 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("runtime_loader", None)
     if "runtime_loader" in new:
         expected["runtime_loader"] = new["runtime_loader"]
+    expected.pop("native_read_stream", None)
+    if "native_read_stream" in new:
+        expected["native_read_stream"] = new["native_read_stream"]
+    expected.pop("native_read_binary", None)
+    if "native_read_binary" in new:
+        expected["native_read_binary"] = new["native_read_binary"]
     names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}
@@ -447,6 +457,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     verified = attribution._verify_prepared(candidate.parent, expected, files)
     if verified != candidate_sha:
         fail("CANDIDATE_MANIFEST_CHANGED")
+    if "native_read_binary" in new:
+        with attribution.verified_binary(new["native_read_binary"]):
+            pass
     return target
 
 
