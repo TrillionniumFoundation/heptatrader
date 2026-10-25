@@ -18,8 +18,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TESTS = frozenset({
     "test_protocol_reference.py",
-    "test_heptadll_migration_state.py",
-    "test_heptadll_source_disposition.py",
     "test_source_workflow_commands.py",
     "test_source_json.py",
     "test_development_ci.py",
@@ -48,10 +46,13 @@ EXTERNAL_TESTS = frozenset({
     "test_train_v2_physical_native_roundtrip.py",
 })
 
-# Retired Desktop qualification fixtures remain runnable when their inputs change.
+# Retired qualification fixtures and fixed historical migration inventories run
+# when their inputs change; current ABI/recovery behavior stays in its own lanes.
 LEGACY_TESTS = frozenset({
     "test_ib_workflow_interfaces.py",
     "test_qualification_trust_boundary.py",
+    "test_heptadll_migration_state.py",
+    "test_heptadll_source_disposition.py",
 })
 
 # These numerical research suites require Torch or safetensors.

@@ -43,10 +43,12 @@ class RewardSyncTests(unittest.TestCase):
   self.assertEqual(self.s.queue_preflight()['state'],'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END')
   self.assertEqual(self.counts(),(1,1,0,0))
  def test_guarded_queue_hold_never_acquires_heavy_lease(self):
-  gate=MagicMock();self.s.__class__=guarded_trainer_class(m.Supervisor,gate)
+  gate=MagicMock();gate.status_diagnostics=None
+  self.s.__class__=guarded_trainer_class(m.Supervisor,gate)
   self.s.step();self.assertEqual(self.counts(),(1,1,0,0));gate.acquire.assert_not_called()
  def test_resource_denial_does_not_stop_reward_sync(self):
   self.queue.return_value=EMPTY;gate=MagicMock();gate.acquire.return_value=False
+  gate.status_diagnostics=None
   gate.last_admission={'reasons':['OTHER_RESEARCH_WORKER_ACTIVE']}
   self.s.__class__=guarded_trainer_class(m.Supervisor,gate)
   # Exercise resource rejection after cadence is due; bookkeeping still runs first.

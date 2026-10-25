@@ -15,6 +15,40 @@ from .promotion import RULE,assess,validate_plan_rule
 from . import resident_training_v2 as training_v2
 from . import resident_price_baselines as price_refs
 from . import resident_price_calibration as price_calibration
+from . import resident_parent_calibration as parent_calibration
+
+PREDICTION_PREWARM_MS=90000
+PUBLICATION_PROFILE='FIXED_SLOT_DURABLE_PUBLICATION_V1'
+
+
+def _slot_order(path,plan,rule,now_ms):
+ """Account known misses, dispatch due work, then read mature source archives."""
+ def priority(slot):
+  folder=path.parent
+  if (folder/f'outcome-{slot:03}.json').exists():return (4,slot)
+  if (folder/f'prediction-{slot:03}.json').exists():return (2,slot)
+  start=plan['start_ms']+slot*rule['slot_spacing_ms'];end=start+rule['input_grace_ms']
+  if (folder/f'failure-{slot:03}.json').exists() or now_ms>end:return (0,slot)
+  return (1 if start-PREDICTION_PREWARM_MS<=now_ms<=end else 3,slot)
+ return sorted(range(rule['slots']),key=priority)
+
+
+def _plan_dispatch_priority(path,plan,rule,now_ms,declared,cycle_records):
+ """Priority is a read-only hint; ordinary validation and admission still run."""
+ pins=plan.get('evaluation_runtime_sha256')
+ if ((path.parent/'qualification.json').exists()
+     or (declared and isinstance(pins,dict) and any(declared.get(k)!=v for k,v in pins.items()))):
+  return (1,0,str(path))
+ for slot in _slot_order(path,plan,rule,now_ms):
+  start=plan['start_ms']+slot*rule['slot_spacing_ms'];end=start+rule['input_grace_ms']
+  if (start-PREDICTION_PREWARM_MS<=now_ms<=end
+      and not any((path.parent/f'{kind}-{slot:03}.json').exists()
+                  for kind in ('outcome','prediction','failure'))):
+   records=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+   cycle_records[path]=records
+   if suppress_new_work_for_frozen_failure(plan,records):return (1,0,str(path))
+   return (0,end,str(path))
+ return (1,0,str(path))
 
 
 def suppress_new_work_for_frozen_failure(plan, results):
@@ -102,7 +136,7 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
  return {'sha256':sha_file(receipt),'at_ms':value['at_ms']}
 
 
-def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None):
+def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publication_record=None):
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
  if prediction.get('input_id')!=digest(prediction.get('input')):raise ContractError('PREDICTION_INPUT_HASH')
@@ -113,17 +147,38 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None):
   if committed_input is None:raise ContractError('V7_COMMITTED_PRICE_INPUT_REQUIRED')
   verify_committed_input(plan,committed_input,prediction)
  calibrated=price_calibration.verify_prediction(plan,prediction)
+ parent_calibration.verify_prediction(plan,prediction)
  anchor=prediction['anchor_ms'];due=anchor+RULE['horizon_ms'];times=[q['t'] for q in quotes]
+ available=prediction['created_at_ms'];publication_missing=False
+ if plan.get('prediction_publication_profile') is not None:
+  if (plan['prediction_publication_profile']!=PUBLICATION_PROFILE
+      or prediction.get('prediction_publication_profile')!=PUBLICATION_PROFILE):
+   raise ContractError('PREDICTION_PUBLICATION_PROFILE_CHANGED')
+  slot_start=plan['start_ms']+slot*plan['rule']['slot_spacing_ms']
+  if not slot_start<=anchor<=slot_start+plan['rule']['input_grace_ms']:
+   raise ContractError('PREDICTION_FIXED_INPUT_WINDOW_CHANGED')
+  if publication_record is None:
+   if now_ms<=due+15000:return None
+   publication_missing=True
+  else:
+   if (not isinstance(publication_record,dict) or publication_record.get('profile')!=PUBLICATION_PROFILE
+       or publication_record.get('plan_id')!=plan['plan_id'] or publication_record.get('slot')!=slot
+       or publication_record.get('prediction_digest')!=digest(prediction)
+       or type(publication_record.get('durably_published_at_ms')) is not int
+       or publication_record['durably_published_at_ms']<available):
+    raise ContractError('PREDICTION_PUBLICATION_RECEIPT_CHANGED')
+   available=publication_record['durably_published_at_ms']
  a=bisect_left(times,anchor);b=bisect_left(times,due)
  if b==len(times) and now_ms<=due+15000:return None
  reason=None
- if prediction['created_at_ms']>=due or prediction['trained_until_ms']>anchor:reason='LOOKAHEAD'
+ if publication_missing:reason='PREDICTION_PUBLICATION_TIME_UNAVAILABLE'
+ elif available>=due or prediction['trained_until_ms']>anchor:reason='LOOKAHEAD'
  elif a>=len(times) or times[a]!=anchor or quotes[a]['mid']!=prediction['reference_mid']:reason='ANCHOR_MISSING_OR_CHANGED'
  elif b>=len(times):reason='OUTCOME_MISSING'
  elif times[b]>due+5000:reason='ENDPOINT_GAP'
  elif any(y-x>30000 for x,y in zip(times[a:b],times[a+1:b+1])):reason='PATH_GAP'
  base={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'anchor_ms':anchor,
-       'prediction_available_ms':prediction['created_at_ms'],'trained_until_ms':prediction['trained_until_ms'],
+       'prediction_available_ms':available,'trained_until_ms':prediction['trained_until_ms'],
        'evaluated_at_ms':now_ms,'broker_orders_sent':0,'metric_scope':'PREDICTION_NOT_EXECUTION_PNL'}
  if reason:return {**base,'status':'CENSORED','reason':reason}
  value=(quotes[b]['mid']/quotes[a]['mid']-1)*10000;target=bisect_right(BIN_EDGES_BPS,value)
@@ -141,7 +196,7 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None):
  elif action_profile==training_v2.ACTION_OUTPUT:
   action_brier=training_v2.action_observation(plan,prediction,parent_correct=parent_correct)['action_brier']
  else:raise ContractError('ACTION_OUTPUT_PROFILE_CHANGED')
- comparison={}
+ comparison=parent_calibration.measure(plan,prediction,target)
  if calibrated is not None:
   comparison.update(price_calibration_profile_id=calibrated['profile_id'],
    raw_child_price_scores=price_refs.probability_metrics(prediction['candidate_raw_probs'],target))
@@ -170,7 +225,16 @@ class Evaluator:
  def signal(self,*_):
   self.stop=True
   for p,stream,started in self.tasks.values():
-   if p.poll() is None:p.terminate()
+   if p.poll() is None:
+    try:p.terminate()
+    except ProcessLookupError:pass
+ def stop_workers(self):
+  from .resident import terminate_worker
+  self.stop=True
+  for p,stream,started in list(self.tasks.values()):
+   terminate_worker(p)
+  self.reap()
+  return not self.tasks
  def record_admission_deferral(self,path,slot,reasons):
   """Preserve first actual admission refusal, NOT a terminal prediction failure.
 
@@ -205,17 +269,36 @@ class Evaluator:
    'not_proof_of_every_failed_attempt':True,
    'automatic_trading':False,'broker_orders_sent':0,'model_promoted':False})
  def launch(self,path,slot):
+  from .resident import inherited_worker_locks
+  plan=read_json(path);rule=validate_plan_rule(plan)
+  if plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'}):
+   raise ContractError('REGISTERED_PLAN_CHANGED')
+  if type(slot) is not int or not 0<=slot<rule['slots']:raise ContractError('SLOT_BOUND')
+  start=plan['start_ms']+slot*rule['slot_spacing_ms'];now=int(time.time()*1000)
+  if now<start-PREDICTION_PREWARM_MS:return False
+  if now>start+rule['input_grace_ms']:
+   self.record_admission_deferral(path,slot,['INPUT_SLOT_EXPIRED_BEFORE_WORKER_DISPATCH'])
+   return False
   key=(str(path),slot)
   stream=(path.parent/f'prediction-{slot:03}.log').open('a')
-  p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot)],stdout=stream,stderr=stream)
+  inherited=inherited_worker_locks(self)
+  lock_args=[part for fd in inherited for part in ('--held-lock-fd',str(fd))]
+  try:p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited)
+  except BaseException:stream.close();raise
   self.tasks[key]=(p,stream,time.monotonic())
+  return True
  def reap(self):
   for key,(p,stream,started) in list(self.tasks.items()):
    expired=time.monotonic()-started>240
    if p.poll() is None and not expired:continue
-   if p.poll() is None:p.terminate()
+   if p.poll() is None:
+    try:p.terminate()
+    except ProcessLookupError:pass
    try:rc=p.wait(timeout=5)
-   except subprocess.TimeoutExpired:p.kill();rc=p.wait(timeout=5)
+   except subprocess.TimeoutExpired:
+    try:p.kill()
+    except ProcessLookupError:pass
+    rc=p.wait(timeout=5)
    stream.close();del self.tasks[key]
    path=Path(key[0]);slot=key[1]
    if (path.parent/f'prediction-{slot:03}.json').exists():continue
@@ -245,13 +328,17 @@ class Evaluator:
   _outcome_source_snapshots={}
   plans=sorted(self.root.glob('*/plan.json'))
   if len(plans)>512:raise ContractError('EVALUATION_CAPACITY_NO_PRUNING')
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[]
+  prepared=[];cycle_records={}
   for path in plans:
    plan=read_json(path)
-   if plan['plan_id']!=digest({k:v for k,v in plan.items() if k!='plan_id'}) :
+   if plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'}):
     raise ContractError('REGISTERED_PLAN_CHANGED')
    rule=validate_plan_rule(plan)
    if plan.get('scope')!=self.c['period_sha256']:raise ContractError('EVALUATION_PERIOD_SCOPE')
+   prepared.append((path,plan,rule))
+  prepared.sort(key=lambda entry:_plan_dispatch_priority(*entry,now,self.c.get('runtime_sha256'),cycle_records))
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[]
+  for path,plan,rule in prepared:
    # A closed v1 plan remains bound to its original result, never re-evaluated
    # against replacement source bytes or re-registered as a new experiment.
    if (path.parent/'qualification.json').exists():
@@ -302,10 +389,11 @@ class Evaluator:
       'canonical_owner_admitted':False,'automatic_execution_selection':False}
     if not (path.parent/'qualification.json').exists():write_once(path.parent/'qualification.json',decision)
     counts['REJECTED']=counts.get('REJECTED',0)+1;continue
-   recorded=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+   recorded=cycle_records.get(path)
+   if recorded is None:recorded=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
    futile=suppress_new_work_for_frozen_failure(plan,recorded)
    if futile:futile_pending+=1
-   for slot in range(rule['slots']):
+   for slot in _slot_order(path,plan,rule,now):
     output=path.parent/f'outcome-{slot:03}.json';prediction=path.parent/f'prediction-{slot:03}.json'
     if output.exists():continue
     start=plan['start_ms']+slot*rule['slot_spacing_ms'];end=start+rule['input_grace_ms']
@@ -314,8 +402,9 @@ class Evaluator:
      if key in self.tasks:continue
      if failure.exists():
       failed=read_json(failure);reason=failed['reason'];worker_errors[reason]=worker_errors.get(reason,0)+1
-      write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
-       'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now});continue
+      record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
+       'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now}
+      write_once(output,record);recorded.append(record);continue
      if now>end:
       first=path.parent/f'admission-denial-{slot:03}.json'
       provenance={}
@@ -338,23 +427,25 @@ class Evaluator:
       else:
        provenance['no_prediction_disposition']=('ADMISSION_DENIAL_OBSERVED' if first.exists()
         else 'NO_LOCAL_ADMISSION_OR_FUTILITY_RECEIPT')
-      write_once(output,{'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
-       'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance});continue
+      record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
+       'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance}
+      write_once(output,record);recorded.append(record);continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
-     if now<start-90000 or len(self.tasks)>=2:continue
+     if now<start-PREDICTION_PREWARM_MS or len(self.tasks)>=2:continue
      # An expired or failed earlier slot can become irrevocably censored
      # during THIS step. Recompute immediately before GPU admission.
      if not futile:
-      current=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
-      futile=suppress_new_work_for_frozen_failure(plan,current)
+      futile=suppress_new_work_for_frozen_failure(plan,recorded)
       if futile:futile_pending+=1
      if futile:
       suppressed_at_ms=int(time.time()*1000)
-      if start-90000<=suppressed_at_ms<=end:
+      if start-PREDICTION_PREWARM_MS<=suppressed_at_ms<=end:
        _futility_suppression_receipt(path,plan,slot,at_ms=suppressed_at_ms)
        launches_suppressed+=1
       continue
-     self.launch(path,slot);continue
+     dispatch_now=int(time.time()*1000)
+     if start-PREDICTION_PREWARM_MS<=dispatch_now<=end:self.launch(path,slot)
+     continue
     pred=read_json(prediction)
     if now<pred['anchor_ms']+rule['horizon_ms']:continue
     # A snapshot collected before a long GPU call must never decide maturity.
@@ -390,18 +481,27 @@ class Evaluator:
       quotes,prefixes,_actual_source_profile=read_for_pending_outcomes(self.c,plan,quote_clock,_pending_predictions)
      _outcome_source_snapshots[_source_key]=(quotes,prefixes,quote_clock,_pending_anchors)
     quotes,prefixes,quote_clock,_cached_pending_anchors=_outcome_source_snapshots[_source_key]
+    measurement_options={}
+    if plan.get('prediction_publication_profile') is not None:
+     phase_path=path.parent/f'phase-{slot:03}.json'
+     phase=read_json(phase_path) if phase_path.exists() else {}
+     measurement_options['publication_record']=phase.get('publication')
     if plan.get('price_input_objective') is not None:
      committed_path=path.parent/f'input-{slot:03}.json'
      if (not committed_path.exists() or sha_file(committed_path)!=pred.get('input_receipt_sha256')):
       raise ContractError('V7_COMMITTED_PRICE_INPUT_RECEIPT_HASH')
-     result=measure(plan,slot,pred,quotes,quote_clock,committed_input=read_json(committed_path))
-    else:result=measure(plan,slot,pred,quotes,quote_clock)
+     measurement_options['committed_input']=read_json(committed_path)
+    result=measure(plan,slot,pred,quotes,quote_clock,**measurement_options)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
-     write_once(output,result)
-   results=[read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))]
+     write_once(output,result);recorded.append(result)
+   assessed_at=int(time.time()*1000)
+   # The controller is the sole outcome writer. Reuse its same-round records
+   # for pending progress, but reread at the terminal qualification boundary.
+   results=(sorted(recorded,key=lambda r:r['slot']) if assessed_at<plan['outcome_end_ms'] else
+     [read_json(p) for p in sorted(path.parent.glob('outcome-*.json'))])
    observed+=sum(r['status']=='OBSERVED' for r in results);censored+=sum(r['status']=='CENSORED' for r in results)
-   assessment=assess(plan,results,int(time.time()*1000))
+   assessment=assess(plan,results,assessed_at)
    if plan.get('price_baselines') is not None:assessment['same_window_price_baselines']=price_refs.summarize(results)
    if assessment['state'] != 'PENDING':
     write_once(path.parent / 'qualification.json', assessment)
@@ -411,7 +511,7 @@ class Evaluator:
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
-   'prediction_prewarm_ms':90000,'worker_failure_details':worker_errors,
+   'prediction_prewarm_ms':PREDICTION_PREWARM_MS,'worker_failure_details':worker_errors,
    'latest_quote_ms':quotes[-1]['t'] if quotes else None,
    'latest_quote_scope':'OUTCOME_SOURCE_SNAPSHOT_NOT_GLOBAL_SOURCE_HEALTH',
    'source_scan_performed':quotes is not None,'futile_pending_plans':futile_pending,
@@ -428,13 +528,17 @@ class Evaluator:
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--once',action='store_true');a=p.parse_args();os.umask(0o077)
  service=Evaluator(a.config);lock=os.open(service.root/'evaluator.lock',os.O_WRONLY|os.O_CREAT|os.O_CLOEXEC,0o600);fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+ service._controller_lock_fd=lock
  signal.signal(signal.SIGTERM,service.signal);signal.signal(signal.SIGINT,service.signal)
- while not service.stop:
-  try:service.step()
-  except Exception as exc:atomic(service.root/'status.json',{'state':'INDEPENDENT_EVALUATION_UNAVAILABLE','reason':str(exc),'promotion_performed':False});print(type(exc).__name__,str(exc),flush=True)
-  if a.once:break
-  for _ in range(2):
-   if service.stop:break
-   time.sleep(1)
- os.close(lock)
+ try:
+  while not service.stop:
+   try:service.step()
+   except Exception as exc:atomic(service.root/'status.json',{'state':'INDEPENDENT_EVALUATION_UNAVAILABLE','reason':str(exc),'promotion_performed':False});print(type(exc).__name__,str(exc),flush=True)
+   if a.once:break
+   for _ in range(2):
+    if service.stop:break
+    time.sleep(1)
+ finally:
+  try:service.stop_workers()
+  finally:os.close(lock)
 if __name__=='__main__':main()

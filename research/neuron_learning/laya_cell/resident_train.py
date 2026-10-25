@@ -73,7 +73,7 @@ def _frozen_price_logits(cell, encoded, device, input_profile):
  return forward
 
 
-def run_closed_action_phase(cell, source, profile, encoded, device):
+def run_closed_action_phase(cell, source, profile, encoded, device, *, verify_frozen=True):
  """Use a separate ACT-only optimizer; PRICE momentum cannot move its head."""
  original={n:p.requires_grad for n,p in cell.named_parameters()}
  price_before={n:p.detach().clone() for n,p in cell.named_parameters()
@@ -129,13 +129,15 @@ def run_closed_action_phase(cell, source, profile, encoded, device):
  finally:
   for name,param in cell.named_parameters():
    param.requires_grad_(original[name]);param.grad=None
- cell.assert_frozen()
+ if verify_frozen:cell.assert_frozen()
  receipt=training_v5.action_receipt(source,steps,profile,
   price_parameters_unchanged=True,encoder_parameters_unchanged=True)
  return receipt
 
 def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
+ from . import resident_parent_calibration as parent_calibration
+ parent_calibration.check_config(c)
  if not old_learner_verified:verify_old_learner_inactive()
  if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE,training_v5.OBJECTIVE,training_v6.OBJECTIVE,training_v7.OBJECTIVE,training_v8.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
  v8=training_v8.enabled(c['objective'])
@@ -320,7 +322,9 @@ def run_job(c,*,old_learner_verified=False):
   gpu_timing=torch.device(device).type=='cuda'
   if gpu_timing:torch.cuda.synchronize()
   action_started=time.monotonic()
-  try:action_phase=run_closed_action_phase(cell,closed_source,action_training_profile,encoded,device)
+  # The final job boundary below checks all frozen tensors. No parameter update
+  # occurs after this phase, so avoid a duplicate full-model GPU readback here.
+  try:action_phase=run_closed_action_phase(cell,closed_source,action_training_profile,encoded,device,verify_frozen=False)
   finally:
    for hook in hooks:hook.remove()
   if gpu_timing:torch.cuda.synchronize()
@@ -422,6 +426,9 @@ def run_job(c,*,old_learner_verified=False):
      'price_logits_cache_precedes_act_only_phase':True,'price_parameters_unchanged_during_act':True,
      'measured_execution':action_phase_timing})
    record['action_adapter_validation']=training_v5.verify_action_update(c,record)
+  if parent_calibration.enabled(c):
+   record.update({parent_calibration.FIELD:parent_calibration.PROFILE,
+    parent_calibration.RECORD:parent_calibration.freeze(c,rows,parent_price_receipts,parent,frozen_price_baselines)})
   episode_policy.verify_candidate(c,record)
  record['resource_usage']=worker_resource_usage()
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)

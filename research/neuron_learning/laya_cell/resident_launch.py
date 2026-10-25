@@ -11,9 +11,20 @@ from .resident import config_check,bootstrap_still_off
 from .resident_store import atomic
 
 
+def retain_worker_locks(descriptors):
+ """Hold inherited flocks here, but never leak them into native exec helpers."""
+ if len(descriptors)>2 or len(set(descriptors))!=len(descriptors):
+  raise ContractError('WORKER_LOCK_DESCRIPTOR_SET')
+ for fd in descriptors:
+  if type(fd) is not int or fd<3:raise ContractError('WORKER_LOCK_DESCRIPTOR')
+  os.set_inheritable(fd,False)
+
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('target',choices=['train','predict']);p.add_argument('--config',type=Path,required=True)
- p.add_argument('--plan',type=Path);p.add_argument('--slot',type=int);a=p.parse_args();os.umask(0o077)
+ p.add_argument('--plan',type=Path);p.add_argument('--slot',type=int)
+ p.add_argument('--held-lock-fd',type=int,action='append',default=[])
+ a=p.parse_args();os.umask(0o077);retain_worker_locks(a.held_lock_fd)
  c=read_json(a.config);base=dict(c);base['schema']='heptatrader.laya-resident-config.v1';config_check(base);bootstrap_still_off()
  if c.get('require_worker_sandbox') is not True:raise ContractError('SANDBOX_REQUIRED')
  if a.target=='train':

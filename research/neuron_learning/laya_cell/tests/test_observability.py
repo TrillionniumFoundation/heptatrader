@@ -93,6 +93,21 @@ class EndpointTests(unittest.TestCase):
   self.assertEqual(measure(p,0,r,q,T+320000)['reason'],'PATH_GAP')
  def test_current_clock_does_not_mature_future_early(self):
   p,r,q=self.fixture();self.assertIsNone(measure(p,0,r,q[:20],T+250000))
+ def test_new_plan_requires_actual_durable_publication_before_outcome(self):
+  from laya_cell.resident_evaluate import PUBLICATION_PROFILE
+  p,r,q=self.fixture();p.update(prediction_publication_profile=PUBLICATION_PROFILE,start_ms=T,rule=RULE)
+  r['prediction_publication_profile']=PUBLICATION_PROFILE
+  publication={'profile':PUBLICATION_PROFILE,'plan_id':'p','slot':0,
+   'prediction_digest':digest(r),'durably_published_at_ms':T+250000}
+  result=measure(p,0,r,q,T+320000,publication_record=publication)
+  self.assertEqual(result['status'],'OBSERVED');self.assertEqual(result['prediction_available_ms'],T+250000)
+  publication['durably_published_at_ms']=T+300000
+  self.assertEqual(measure(p,0,r,q,T+320000,publication_record=publication)['reason'],'LOOKAHEAD')
+  self.assertEqual(measure(p,0,r,q,T+320000)['reason'],'PREDICTION_PUBLICATION_TIME_UNAVAILABLE')
+  self.assertIsNone(measure(p,0,r,q,T+300001))
+  publication['prediction_digest']='wrong'
+  with self.assertRaisesRegex(ContractError,'PUBLICATION_RECEIPT_CHANGED'):
+   measure(p,0,r,q,T+320000,publication_record=publication)
 
 class AsyncSchedulingTests(unittest.TestCase):
  def setup_case(self,start):
@@ -151,5 +166,87 @@ class AsyncSchedulingTests(unittest.TestCase):
   out=json.loads((path.parent/'outcome-000.json').read_bytes())
   self.assertEqual(out['reason'],'PREDICTION_PROCESS_FAILED');self.assertEqual(out['phase']['phase'],'STARTUP')
   self.assertEqual(out['detail'],'NO_PROCESS_DIAGNOSTIC')
+ def test_due_prewarm_precedes_slow_mature_outcome_scan_in_same_plan(self):
+  from laya_cell.integrity import canonical
+  engine,plan,path,proc=self.setup_case(T)
+  _,pred,qs=EndpointTests().fixture();pred['plan_id']=plan['plan_id']
+  (path.parent/'prediction-000.json').write_bytes(canonical(pred))
+  clock=[T+310000];events=[]
+  def launch(*args,**kwargs):events.append(('launch',clock[0]));return proc
+  def slow_source(*_):
+   events.append(('source',clock[0]));clock[0]=T+480000
+   return qs,[]
+  with patch('laya_cell.resident_evaluate.time.time',side_effect=lambda:clock[0]/1000), \
+       patch('laya_cell.resident_evaluate.read_quotes',side_effect=slow_source), \
+       patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
+   engine.step()
+  self.assertEqual(events,[('launch',T+310000),('source',T+310000)])
+  self.assertIn((str(path),1),engine.tasks)
+  self.assertEqual(json.loads((path.parent/'outcome-000.json').read_bytes())['status'],'OBSERVED')
+  self.assertEqual(json.loads(path.read_bytes()),plan)
+ def test_due_plan_is_dispatched_before_older_plan_cpu_closeout(self):
+  from laya_cell.integrity import canonical
+  engine,plan,path,proc=self.setup_case(T-3600000)
+  _,pred,qs=EndpointTests().fixture();pred['plan_id']=plan['plan_id']
+  for key in ('anchor_ms','created_at_ms','trained_until_ms'):pred[key]-=3600000
+  for quote in qs:quote['t']-=3600000;quote['known_at_ms']-=3600000
+  # All other historical slots are already immutable; this old source read
+  # must not consume the new plan's fixed input budget.
+  for slot in range(1,RULE['slots']):
+   (path.parent/f'outcome-{slot:03}.json').write_bytes(canonical({'candidate_id':'c',
+    'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED'}))
+  (path.parent/'prediction-000.json').write_bytes(canonical(pred))
+  current=copy.deepcopy(plan);current.update(candidate_id='new',start_ms=T+370000)
+  current.pop('plan_id');current['plan_id']=digest(current)
+  folder=path.parent.parent/'z-current';folder.mkdir();current_path=folder/'plan.json'
+  current_path.write_bytes(canonical(current))
+  clock=[T+310000];events=[]
+  def launch(*args,**kwargs):events.append(('launch',clock[0],args[0]));return proc
+  def slow_source(*_):events.append(('source',clock[0],None));clock[0]=T+480000;return qs,[]
+  with patch('laya_cell.resident_evaluate.time.time',side_effect=lambda:clock[0]/1000), \
+       patch('laya_cell.resident_evaluate.read_quotes',side_effect=slow_source), \
+       patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
+   engine.step()
+  self.assertEqual([event[0] for event in events],['launch','source'])
+  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],T+310000)
+  self.assertIn((str(current_path),0),engine.tasks)
+ def test_actual_dispatch_after_expensive_preflight_cannot_launch_expired_slot(self):
+  engine,plan,path,proc=self.setup_case(T)
+  with patch('laya_cell.resident_evaluate.time.time',return_value=(T+RULE['input_grace_ms']+1)/1000), \
+       patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=AssertionError('expired slot')):
+   self.assertFalse(engine.launch(path,0))
+  self.assertFalse(engine.tasks)
+  denial=json.loads((path.parent/'admission-denial-000.json').read_bytes())
+  self.assertEqual(denial['reason_codes'],['INPUT_SLOT_EXPIRED_BEFORE_WORKER_DISPATCH'])
+  self.assertGreater(denial['at_ms'],T+RULE['input_grace_ms'])
+ def test_futile_same_runtime_plan_cannot_block_viable_dispatch_with_source_scan(self):
+  from laya_cell.integrity import canonical
+  engine,plan,path,proc=self.setup_case(T-4*RULE['slot_spacing_ms'])
+  _,pred,qs=EndpointTests().fixture();pred['plan_id']=plan['plan_id']
+  shift=4*RULE['slot_spacing_ms']
+  for key in ('anchor_ms','created_at_ms','trained_until_ms'):pred[key]-=shift
+  for quote in qs:quote['t']-=shift;quote['known_at_ms']-=shift
+  (path.parent/'prediction-000.json').write_bytes(canonical(pred))
+  originals={}
+  for slot in (1,2,3):
+   target=path.parent/f'outcome-{slot:03}.json'
+   target.write_bytes(canonical({'candidate_id':'c','plan_id':plan['plan_id'],
+    'slot':slot,'status':'CENSORED','evaluated_at_ms':T-100000}))
+   originals[target]=target.read_bytes()
+  current=copy.deepcopy(plan);current.update(candidate_id='viable',start_ms=T+10000)
+  current.pop('plan_id');current['plan_id']=digest(current)
+  folder=path.parent.parent/'z-viable';folder.mkdir();current_path=folder/'plan.json'
+  current_path.write_bytes(canonical(current))
+  clock=[T-60000];events=[]
+  def launch(*args,**kwargs):events.append(('launch',clock[0],args[0]));return proc
+  def slow_source(*_):events.append(('source',clock[0],None));clock[0]+=300000;return qs,[]
+  with patch('laya_cell.resident_evaluate.time.time',side_effect=lambda:clock[0]/1000), \
+       patch('laya_cell.resident_evaluate.read_quotes',side_effect=slow_source), \
+       patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
+   engine.step()
+  self.assertEqual([event[0] for event in events],['launch','source'])
+  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],T-60000)
+  self.assertNotIn((str(path),4),engine.tasks)
+  for target,raw in originals.items():self.assertEqual(target.read_bytes(),raw)
 
 if __name__=='__main__':unittest.main(verbosity=2)

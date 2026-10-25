@@ -9,6 +9,7 @@ admission fence, NOT a native owner fence or maintenance-stop permit.
 from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -357,7 +358,7 @@ def _verify_native_release(control: Path, observation: dict) -> dict:
     return owners
 
 
-def _status(action: str, marker: bytes | None, record: dict | None) -> dict:
+def _status(action: str, marker: bytes | None, record: dict | None, hold_raw: bytes | None = None) -> dict:
     origin = ("ABSENT" if marker is None else
               "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
               "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
@@ -373,6 +374,7 @@ def _status(action: str, marker: bytes | None, record: dict | None) -> dict:
     return {"schema": "heptatrader.maintenance-latch-status.v1", "action": action,
             "persistent_hold": record is not None, "native_kill_switch_engaged": marker is not None,
             "native_marker_origin": origin, "hold_details": details,
+            "hold_sha256": None if hold_raw is None else hashlib.sha256(hold_raw).hexdigest(),
             "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
             "may_stop_driver": False, "broker_orders_sent": 0}
 
@@ -439,12 +441,18 @@ def _resume_native_hold(control: Path, state_root: Path, parent_fd: int, ctrl_fd
 def perform(action: str, control: Path, state_root: Path, *,
             reason: str | None = None, task: str | None = None,
             resume_when: str | None = None, resume_native_hold: bool = False,
-            check_only: bool = False) -> dict:
+            check_only: bool = False, expected_hold_sha256: str | None = None) -> dict:
     """Testable policy core. CLI main separately pins the real runtime paths."""
     if action not in ACTIONS:
         raise HoldError("UNKNOWN_ACTION")
     if (resume_native_hold and action != "paper-on") or (check_only and not resume_native_hold):
         raise HoldError("NATIVE_RESUME_OPTIONS_REQUIRE_PAPER_ON")
+    if expected_hold_sha256 is not None:
+        if action != "maintenance-release":
+            raise HoldError("EXPECTED_HOLD_HASH_REQUIRES_MAINTENANCE_RELEASE")
+        if (not isinstance(expected_hold_sha256, str) or len(expected_hold_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in expected_hold_sha256)):
+            raise HoldError("INVALID_EXPECTED_HOLD_SHA256")
     metadata = {"reason": reason, "task": task, "resume_when": resume_when}
     if any(value is not None and (not isinstance(value, str) or len(value) > 512
            or any(ord(char) < 32 for char in value)) for value in metadata.values()):
@@ -537,6 +545,11 @@ def perform(action: str, control: Path, state_root: Path, *,
                     elif action == "maintenance-release":
                         if not hold or marker is None:
                             raise HoldError("RELEASE_REQUIRES_BOTH_VALID_MARKERS")
+                        # Match the caller's original hold under the same lock
+                        # used to read and unlink it; --task is descriptive only.
+                        if (expected_hold_sha256 is not None
+                                and hashlib.sha256(hold_raw).hexdigest() != expected_hold_sha256):
+                            raise HoldError("MAINTENANCE_HOLD_IDENTITY_MISMATCH")
                         # Under the same exclusive lock. Keep native entry block
                         # installed until the explicit persistent latch is retired.
                         _unlink(maint_fd, HOLD, 0o600)
@@ -553,8 +566,9 @@ def perform(action: str, control: Path, state_root: Path, *,
                             raise
                     # Report the post-action state, without granting service-stop authority.
                     marker = _file(ctrl_fd, SWITCH, 0o440)
-                    record = _hold_record(_file(maint_fd, HOLD, 0o600))
-                    return _status(action, marker, record)
+                    hold_raw = _file(maint_fd, HOLD, 0o600)
+                    record = _hold_record(hold_raw)
+                    return _status(action, marker, record, hold_raw)
                 finally:
                     os.close(maint_fd)
             finally:
@@ -570,6 +584,7 @@ def main(argv=None):
     ap.add_argument("--reason", help="optional reason for a newly created maintenance hold")
     ap.add_argument("--task", help="optional task associated with a new hold")
     ap.add_argument("--resume-when", help="optional resume condition; does not auto-release a hold")
+    ap.add_argument("--expected-hold-sha256", help="release only the exact original maintenance hold bytes")
     ap.add_argument("--resume-native-hold", action="store_true",
                     help="explicitly release an independently engaged empty native PAPER hold")
     ap.add_argument("--check", action="store_true",
@@ -581,7 +596,8 @@ def main(argv=None):
     try:
         status = perform(args.action, expected_control, expected_state,
                          reason=args.reason, task=args.task, resume_when=args.resume_when,
-                         resume_native_hold=args.resume_native_hold, check_only=args.check)
+                         resume_native_hold=args.resume_native_hold, check_only=args.check,
+                         expected_hold_sha256=args.expected_hold_sha256)
     except (HoldError, OSError, ValueError) as exc:
         print(json.dumps({"status": exc.status if isinstance(exc, ResumeFailure) else "HOLD_BLOCKED",
                           "reason": str(exc)[:200],

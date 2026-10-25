@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import hepta_pnl_report as report
+import hepta_native_reader as transport
 import test_pnl_accounting as fixtures
 
 
@@ -121,7 +122,7 @@ for line in sys.stdin:
         self.reader('EUR.USD','system.get_health')
         original=self.reader._processes['EUR.USD']
         self.mode('delay')
-        with mock.patch.object(report.selectors,'DefaultSelector') as factory:
+        with mock.patch.object(transport.selectors,'DefaultSelector') as factory:
             factory.return_value.__enter__.return_value.select.return_value=[]
             with self.assertRaisesRegex(report.EvidenceError,'TIMEOUT'):
                 self.reader('EUR.USD','system.get_health')

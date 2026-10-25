@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import pwd
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from decimal import Decimal, InvalidOperation
@@ -28,6 +30,11 @@ from hepta_decision_attribution import read_private, strict
 GUARD_YES = fence.GUARD_TEXT.encode()
 GUARD_NO = b"[Unit]\nRefuseManualStop=no\n"
 EXEC_DROPIN = "70-exact-attribution.conf"
+DRIVER_UNITS = frozenset({"heptatrader-paper-driver.service", "heptatrader-crypto-driver.service"})
+PROC_ROOT = Path("/proc")
+BROKER_UNIT = "ibgateway.service"
+EXECUTION_UNIT = "heptatrader-execution.service"
+STOP_EDGES = ("ConsistsOf", "BoundBy", "RequiredBy", "RequisiteOf", "PropagatesStopTo")
 AUDIT_ENV = frozenset({
     "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_EXECUTION_REMOTE_MODE",
     "HEPTA_EXECUTION_SOCKET", "HEPTA_EXECUTION_EVENT_SOCKET",
@@ -63,6 +70,44 @@ def ctl(*args):
         ["systemctl", "--user", *args],
         check=True, timeout=45, capture_output=True, text=True,
     )
+
+
+def unit_properties(unit, properties, reason):
+    raw = subprocess.check_output(
+        ["systemctl", "--user", "show", unit, "--no-pager", "--all",
+         *[flag for name in properties for flag in ("-p", name)]], text=True, timeout=15,
+    )
+    values = {}
+    for line in raw.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name not in properties or name in values:
+            fail("INVALID_" + reason + "_READBACK:" + unit)
+        values[name] = value
+    if set(values) != set(properties):
+        fail("INCOMPLETE_" + reason + "_READBACK:" + unit)
+    return values
+
+
+def frozen_driver_snapshot(unit):
+    """Read exact loaded policy for a disabled peer; never start that lane."""
+    if unit not in DRIVER_UNITS:
+        fail("INVALID_FROZEN_DRIVER_SCOPE")
+    return unit_properties(unit, (*fence.SHOW_PROPS, "UnitFileState", "ExecStart"),
+                           "FROZEN_DRIVER")
+
+
+def frozen_inactive_peers(before, selected):
+    frozen = {}
+    for name in DRIVER_UNITS - {selected}:
+        if before[name]["ActiveState"] != "inactive":
+            continue
+        value = frozen_driver_snapshot(name)
+        if ({key: value[key] for key in fence.SHOW_PROPS} != before[name]
+                or value["LoadState"] != "loaded" or value["MainPID"] != "0"
+                or value["UnitFileState"] != "disabled" or value["RefuseManualStop"] != "yes"):
+            fail("INACTIVE_DRIVER_PEER_NOT_FROZEN_DISABLED:" + name)
+        frozen[name] = value
+    return frozen
 
 
 def replace_exact(path, expected, replacement):
@@ -138,7 +183,7 @@ def marker_identity(home):
 
 
 def proc_bytes(pid, name, limit=65536):
-    path = Path("/proc") / str(pid) / name
+    path = PROC_ROOT / str(pid) / name
     if path.stat().st_uid != os.geteuid():
         fail("PROCESS_OWNER_CHANGED")
     with path.open("rb") as stream:
@@ -157,6 +202,189 @@ def pid_key(pid):
     if len(fields) <= 19:
         fail("PROCESS_IDENTITY_INVALID")
     return str(pid), fields[19]
+
+
+def interactive_process(pid):
+    """Bind a same-owner live process, including its actual executable inode."""
+    if type(pid) is not int or pid <= 0:
+        fail("INTERACTIVE_BROKER_PID_INVALID")
+    key = pid_key(pid)
+    fields = {}
+    for line in proc_bytes(pid, "status").decode().splitlines():
+        name, separator, value = line.partition(":")
+        if name in ("Uid", "State") and separator:
+            if name in fields:
+                fail("INTERACTIVE_PROCESS_STATUS_INVALID")
+            fields[name] = value.split()
+    if (key is None or fields.get("Uid") != [str(os.geteuid())] * 4
+            or not fields.get("State") or fields["State"][0] in ("Z", "X", "x")):
+        fail("INTERACTIVE_PROCESS_OWNER_OR_LIFETIME")
+    directory = PROC_ROOT / str(pid)
+    executable = directory / "exe"
+    target = os.readlink(executable)
+    if not Path(target).is_absolute() or target.endswith(" (deleted)"):
+        fail("INTERACTIVE_PROCESS_EXE_INVALID")
+    with executable.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111
+                or before.st_mode & 0o022):
+            fail("INTERACTIVE_PROCESS_EXE_INVALID")
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1048576), b""):
+            digest.update(block)
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_uid, item.st_mode,
+                                 item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+        if identity(os.fstat(stream.fileno())) != identity(before):
+            fail("INTERACTIVE_PROCESS_EXE_CHANGED")
+    namespace = (directory / "ns/net").stat()
+    cgroups = proc_bytes(pid, "cgroup").decode().splitlines()
+    if len(cgroups) != 1 or not cgroups[0].startswith("0::/"):
+        fail("INTERACTIVE_PROCESS_CGROUP_INVALID")
+    result = {"pid_key": key, "uid": os.geteuid(), "exe": target,
+              "exe_identity": identity(before), "exe_sha256": digest.hexdigest(),
+              "netns": (namespace.st_dev, namespace.st_ino),
+              "cgroup": cgroups[0][3:], "cmdline_sha256": sha_bytes(proc_bytes(pid, "cmdline"))}
+    if (pid_key(pid) != key or os.readlink(executable) != target
+            or identity(executable.stat()) != identity(before)):
+        fail("INTERACTIVE_PROCESS_CHANGED_DURING_INSPECTION")
+    return result
+
+
+def process_socket_fds(pid):
+    result = {}
+    for path in (PROC_ROOT / str(pid) / "fd").iterdir():
+        try:
+            link = os.readlink(path)
+        except FileNotFoundError:
+            continue  # An unrelated descriptor may close during a read.
+        match = re.fullmatch(r"socket:\[(\d+)\]", link)
+        if match:
+            result.setdefault(int(match[1]), []).append(int(path.name))
+    return {inode: sorted(fds) for inode, fds in result.items()}
+
+
+def process_tcp_sockets(pid):
+    """Read kernel TCP identities; counters/queues are deliberately not frozen."""
+    result = []
+    for family, width in (("tcp", 8), ("tcp6", 32)):
+        path = PROC_ROOT / str(pid) / "net" / family
+        with path.open("rb") as stream:
+            raw = stream.read(2097153)
+        if len(raw) > 2097152:
+            fail("INTERACTIVE_SOCKET_TABLE_TOO_LARGE")
+        lines = raw.decode("ascii").splitlines()
+        if not lines or "local_address" not in lines[0] or "inode" not in lines[0]:
+            fail("INTERACTIVE_SOCKET_TABLE_INVALID")
+        def endpoint(value):
+            address, separator, port = value.partition(":")
+            if not separator or not re.fullmatch(r"[0-9A-Fa-f]{%d}" % width, address) or not re.fullmatch(r"[0-9A-Fa-f]{4}", port):
+                fail("INTERACTIVE_SOCKET_ENDPOINT_INVALID")
+            packed = b"".join(int(address[i:i + 8], 16).to_bytes(4, sys.byteorder)
+                              for i in range(0, width, 8))
+            parsed = ipaddress.ip_address(packed)
+            return str(getattr(parsed, "ipv4_mapped", None) or parsed), int(port, 16)
+        for line in lines[1:]:
+            fields = line.split()
+            if len(fields) < 10:
+                fail("INTERACTIVE_SOCKET_TABLE_INVALID")
+            result.append({"family": family, "local": endpoint(fields[1]),
+                           "remote": endpoint(fields[2]), "state": fields[3],
+                           "uid": int(fields[7]), "inode": int(fields[9])})
+    return result
+
+
+def interactive_broker_snapshot(broker_pid, selected, current):
+    """Prove the existing GNOME Broker path without claiming a stop shield.
+
+    This optional path never starts/protects the GUI process. Its identity and
+    sockets must survive every original maintenance boundary unchanged; a fresh
+    authoritative owner audit is still the only authorization for driver stop.
+    """
+    unused = unit_properties(BROKER_UNIT, (*fence.SHOW_PROPS, "UnitFileState", "ExecStart", "ControlGroup"), "INTERACTIVE_BROKER_UNIT")
+    if ({key: unused[key] for key in fence.SHOW_PROPS} != current[BROKER_UNIT]
+            or unused["LoadState"] != "loaded" or unused["ActiveState"] != "inactive"
+            or unused["MainPID"] != "0" or unused["RefuseManualStop"] != "yes"):
+        fail("INTERACTIVE_BROKER_UNUSED_UNIT_REQUIRED")
+    execution_unit = unit_properties(EXECUTION_UNIT, (*fence.SHOW_PROPS, "ExecStart", "ControlGroup"), "INTERACTIVE_EXECUTION_UNIT")
+    if ({key: execution_unit[key] for key in fence.SHOW_PROPS} != current[EXECUTION_UNIT]
+            or execution_unit["LoadState"] != "loaded" or execution_unit["ActiveState"] != "active"
+            or not execution_unit["MainPID"].isdigit() or int(execution_unit["MainPID"]) <= 0):
+        fail("INTERACTIVE_EXECUTION_NOT_ACTIVE")
+    execution_pid = int(execution_unit["MainPID"])
+    execution = interactive_process(execution_pid)
+    broker = interactive_process(broker_pid)
+    uid = os.geteuid()
+    scope_match = re.fullmatch(re.escape("/user.slice/user-%d.slice/user@%d.service/app.slice/" % (uid, uid))
+                              + r"(app-gnome-ibgateway-[0-9]+\.scope)", broker["cgroup"])
+    if (execution_pid == broker_pid or execution["netns"] != broker["netns"]
+            or execution["cgroup"] != execution_unit["ControlGroup"]
+            or not scope_match or Path(broker["exe"]).name != "java"
+            or broker["cgroup"] == unused["ControlGroup"]):
+        fail("INTERACTIVE_BROKER_TOPOLOGY_INVALID")
+    scope = unit_properties(scope_match[1], ("Id", "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup", "PartOf", "RefuseManualStop", "UnitFileState"), "INTERACTIVE_BROKER_SCOPE")
+    if (scope["Id"] != scope_match[1] or scope["LoadState"] != "loaded"
+            or scope["ActiveState"] != "active" or scope["SubState"] != "running"
+            or not scope["InvocationID"] or scope["ControlGroup"] != broker["cgroup"]
+            or scope["UnitFileState"] != "transient"):
+        fail("INTERACTIVE_BROKER_SCOPE_NOT_ACTIVE")
+    edges = unit_properties(selected, (*STOP_EDGES, "Conflicts", "ConflictedBy"), "INTERACTIVE_SELECTED_EDGES")
+    if any(edges[name] for name in STOP_EDGES):
+        fail("INTERACTIVE_BROKER_DRIVER_STOP_PROPAGATION")
+    conflicts = set((edges["Conflicts"] + " " + edges["ConflictedBy"]).split())
+    if conflicts - {"shutdown.target"}:
+        fail("INTERACTIVE_BROKER_DRIVER_START_CONFLICT")
+    shutdown = None
+    if conflicts:
+        shutdown = unit_properties("shutdown.target", ("LoadState", "ActiveState"), "INTERACTIVE_SHUTDOWN_TARGET")
+        if shutdown != {"LoadState": "loaded", "ActiveState": "inactive"}:
+            fail("INTERACTIVE_BROKER_SHUTDOWN_ACTIVE")
+    environment = {}
+    for entry in proc_bytes(execution_pid, "environ", 262144).split(b"\0"):
+        key, separator, value = entry.partition(b"=")
+        if key in (b"HEPTA_IB_EXECUTION_MODE", b"HEPTA_IB_PAPER_USER_SCOPE", b"HEPTA_IB_PAPER_HOST", b"HEPTA_IB_PAPER_PORT"):
+            if not separator or key.decode() in environment:
+                fail("INTERACTIVE_BROKER_EXECUTION_PROFILE_INVALID")
+            environment[key.decode()] = value.decode()
+    host = environment.get("HEPTA_IB_PAPER_HOST")
+    if (host not in ("127.0.0.1", "::1") or environment != {
+            "HEPTA_IB_EXECUTION_MODE": "PAPER", "HEPTA_IB_PAPER_USER_SCOPE": "1",
+            "HEPTA_IB_PAPER_HOST": host, "HEPTA_IB_PAPER_PORT": "4002"}):
+        fail("INTERACTIVE_BROKER_EXECUTION_PROFILE_INVALID")
+    tables = process_tcp_sockets(execution_pid)
+    execution_fds = process_socket_fds(execution_pid)
+    broker_fds = process_socket_fds(broker_pid)
+    def one(values, reason):
+        if len(values) != 1:
+            fail("INTERACTIVE_BROKER_" + reason)
+        return values[0]
+    connection = one([row for row in tables if row["inode"] in execution_fds
+                      and row["state"] == "01" and row["remote"] == (host, 4002)
+                      and row["local"][0] == host and row["uid"] == uid], "EXECUTION_SOCKET_REQUIRED")
+    accepted = one([row for row in tables if row["inode"] in broker_fds
+                    and row["state"] == "01" and row["local"] == connection["remote"]
+                    and row["remote"] == connection["local"] and row["uid"] == uid], "ACCEPTED_SOCKET_REQUIRED")
+    listener = one([row for row in tables if row["inode"] in broker_fds
+                    and row["state"] == "0A" and row["local"][1] == 4002
+                    and row["local"][0] in (host, "0.0.0.0", "::") and row["uid"] == uid], "LISTENER_REQUIRED")
+    sockets = {"execution": {**connection, "fds": execution_fds[connection["inode"]]},
+               "accepted": {**accepted, "fds": broker_fds[accepted["inode"]]},
+               "listener": {**listener, "fds": broker_fds[listener["inode"]]}}
+    # Re-read both descriptor ownership and the kernel tuples: a reconnect or
+    # FD reuse during inspection must not produce a synthetic mixed snapshot.
+    final_tables = process_tcp_sockets(execution_pid)
+    for pid, names in ((execution_pid, ("execution",)), (broker_pid, ("accepted", "listener"))):
+        final_fds = process_socket_fds(pid)
+        for name in names:
+            row = sockets[name]
+            if (final_fds.get(row["inode"]) != row["fds"]
+                    or {key: value for key, value in row.items() if key != "fds"} not in final_tables):
+                fail("INTERACTIVE_BROKER_SOCKET_CHANGED_DURING_INSPECTION")
+    if interactive_process(execution_pid) != execution or interactive_process(broker_pid) != broker:
+        fail("INTERACTIVE_BROKER_PROCESS_CHANGED_DURING_INSPECTION")
+    return {"unused_unit": unused, "execution_unit": execution_unit,
+            "execution_process": execution, "broker_process": broker, "scope": scope,
+            "selected_edges": edges, "shutdown_target": shutdown, "profile": environment,
+            "sockets": sockets, "broker_manual_stop_shield_claimed": False}
 
 
 def argv_for(manifest):
@@ -421,6 +649,10 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
                             new["source_sha"]) is None):
         fail("CANDIDATE_SOURCE_IDENTITY_INVALID")
     changed = new["runtime_sha256"] != old["runtime_sha256"]
+    read_transport_changed = (
+        new.get("native_read_stream", False) != old.get("native_read_stream", False)
+        or new.get("native_read_binary") != old.get("native_read_binary")
+    )
     expected = dict(old)
     expected.pop("created_at_ms", None)
     expected.update(
@@ -428,7 +660,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         prepared_from_manifest_sha256=installed["manifest_sha256"],
         runtime_bytes_changed=changed,
         trading_behavior_changed=(
-            old.get("trading_behavior_changed") is not False or changed
+            old.get("trading_behavior_changed") is not False or changed or read_transport_changed
         ),
         behavior_equivalence_assessed=False,
     )
@@ -438,6 +670,12 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("runtime_loader", None)
     if "runtime_loader" in new:
         expected["runtime_loader"] = new["runtime_loader"]
+    expected.pop("native_read_stream", None)
+    if "native_read_stream" in new:
+        expected["native_read_stream"] = new["native_read_stream"]
+    expected.pop("native_read_binary", None)
+    if "native_read_binary" in new:
+        expected["native_read_binary"] = new["native_read_binary"]
     names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}
@@ -447,6 +685,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     verified = attribution._verify_prepared(candidate.parent, expected, files)
     if verified != candidate_sha:
         fail("CANDIDATE_MANIFEST_CHANGED")
+    if "native_read_binary" in new:
+        with attribution.verified_binary(new["native_read_binary"]):
+            pass
     return target
 
 
@@ -505,7 +746,7 @@ def wait_for_native_recovery(reply, completed_at_ms, deadline):
 
 def maintenance_upgrade(
     instrument, candidate, candidate_sha, sessionctl, sessionctl_sha, *,
-    readiness_hook=None, home=None,
+    readiness_hook=None, home=None, interactive_broker_pid=None,
 ):
     """Activate one lane; each stop consumes a fresh audit under the same hold.
 
@@ -551,10 +792,18 @@ def maintenance_upgrade(
         verify_prepared(candidate, candidate_sha, instrument, original)
         markers = marker_identity(home)
         before = {name: fence.show_unit(name) for name in fence.RISK_UNITS}
-        fence.check_state(before, before, required=True)
+        frozen_peers = frozen_inactive_peers(before, unit)
+        interactive = (interactive_broker_snapshot(interactive_broker_pid, unit, before)
+                       if interactive_broker_pid is not None else None)
+        required_before = {name: state for name, state in before.items()
+                           if name not in frozen_peers and not (interactive is not None and name == BROKER_UNIT)}
+        fence.check_state(required_before, before, required=True)
+        receipt["frozen_inactive_peers"] = frozen_peers
+        if interactive is not None:
+            receipt["interactive_broker"] = interactive
         same_driver(original, running_driver(unit, instrument))
         peer_before = {
-            name: status for name, status in before.items() if name != unit
+            name: status for name, status in required_before.items() if name != unit
         }
         guard_paths = {
             name: unit_root / (name + ".d") / fence.GUARD_NAME
@@ -590,6 +839,14 @@ def maintenance_upgrade(
                 fail("MAINTENANCE_MARKERS_CHANGED")
             current = {name: fence.show_unit(name) for name in fence.RISK_UNITS}
             fence.check_state(peer_before, current, required=True)
+            if (interactive is not None
+                    and interactive_broker_snapshot(interactive_broker_pid, unit, current) != interactive):
+                fail("INTERACTIVE_BROKER_CHANGED")
+            for name, expected in frozen_peers.items():
+                actual = frozen_driver_snapshot(name)
+                if (actual != expected
+                        or {key: actual[key] for key in fence.SHOW_PROPS} != current[name]):
+                    fail("FROZEN_DRIVER_PEER_CHANGED:" + name)
             for name, path in guard_paths.items():
                 expected = guard if name == unit else GUARD_YES
                 if read_private(path, 65536) != expected:
@@ -868,12 +1125,15 @@ def main():
     parser.add_argument("--candidate-sha256", required=True)
     parser.add_argument("--sessionctl", type=Path, required=True)
     parser.add_argument("--sessionctl-sha256", required=True)
+    parser.add_argument("--interactive-broker-pid", type=int,
+                        help="verify and freeze this existing GNOME IB Gateway process instead of requiring its unused unit active")
     args = parser.parse_args()
     try:
         result = maintenance_upgrade(
             args.instrument, args.candidate_manifest, args.candidate_sha256,
             args.sessionctl, args.sessionctl_sha256,
             readiness_hook=wait_for_native_recovery,
+            interactive_broker_pid=args.interactive_broker_pid,
         )
     except BaseException as error:
         result = {

@@ -248,9 +248,10 @@ class ProspectiveV7IntegrationTests(unittest.TestCase):
         inputs.verify_prediction(plan, prediction)
         quotes = [{'t': anchor+i*10000, 'mid': 1.12, 'receipt': str(i)} for i in range(31)]
         committed = read_json(path.parent/'input-000.json')
+        publication=read_json(path.parent/'phase-000.json')['publication']
         inputs.verify_committed_input(plan, committed, prediction)
         self.assertEqual(measure(plan, 0, prediction, quotes, anchor+300001,
-                                 committed_input=committed)['status'], 'OBSERVED')
+                                 committed_input=committed,publication_record=publication)['status'], 'OBSERVED')
         changed_input = copy.deepcopy(committed)
         changed_input['candidate_price_input_id'] = '0'*64
         with self.assertRaisesRegex(ContractError, 'COMMITTED_PRICE_INPUT_CHANGED'):

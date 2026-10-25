@@ -1,14 +1,20 @@
-"""Pure stdlib worker-exit fixtures; never launch a process or import Torch."""
+"""Stdlib worker-exit fixtures; only bounded synthetic children, never Torch."""
 import io
+import fcntl
 import json
 import os
 from pathlib import Path
 import signal
+import select
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from laya_cell import resident_evaluate
+from laya_cell import resident_evaluate, resident
+from laya_cell.integrity import digest
+from laya_cell.promotion import RULE
 
 
 class FakeProcess:
@@ -28,6 +34,89 @@ class FakeProcess:
     def wait(self, timeout):
         self.wait_timeouts.append(timeout)
         return self.returncode
+
+
+class TrainerWorkerTerminationTests(unittest.TestCase):
+    def test_worker_retains_both_locks_but_native_exec_helpers_do_not(self):
+        with tempfile.TemporaryDirectory() as td:
+            paths=[Path(td)/name for name in ('heavy.lock','scheduler.lock')]
+            held=[os.open(path,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600) for path in paths]
+            probes=[os.open(path,os.O_RDWR|os.O_CLOEXEC) for path in paths]
+            worker=None
+            try:
+                for fd in held:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                service=object.__new__(resident.Supervisor)
+                service._worker_lease_fd,service._controller_lock_fd=held
+                inherited=resident.inherited_worker_locks(service)
+                self.assertEqual(inherited,tuple(held))
+                source=('import json,os,subprocess,sys,time\n'
+                    'from laya_cell.resident_launch import retain_worker_locks\n'
+                    'fds=[int(x) for x in sys.argv[1:]]\n'
+                    'retain_worker_locks(fds)\n'
+                    'probe="import os,sys; " + "; ".join("os.fstat(%s)"%fd for fd in fds)\n'
+                    'result=subprocess.run([sys.executable,"-c",probe],close_fds=False,capture_output=True)\n'
+                    'print(json.dumps({"cloexec":all(not os.get_inheritable(fd) for fd in fds),'
+                    '"exec_inherited":result.returncode==0}),flush=True)\n'
+                    'time.sleep(30)\n')
+                worker=subprocess.Popen([sys.executable,'-c',source,*map(str,inherited)],
+                    pass_fds=inherited,stdout=subprocess.PIPE,text=True)
+                self.assertTrue(select.select([worker.stdout],[],[],5)[0],'worker lock handshake timed out')
+                self.assertEqual(json.loads(worker.stdout.readline()),{'cloexec':True,'exec_inherited':False})
+                for fd in held:os.close(fd)
+                held=[]
+                for fd in probes:
+                    with self.assertRaises(BlockingIOError):fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                worker.terminate();worker.wait(timeout=5)
+                for fd in probes:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            finally:
+                if worker is not None:
+                    if worker.poll() is None:worker.kill();worker.wait(timeout=5)
+                    worker.stdout.close()
+                for fd in held+probes:os.close(fd)
+
+    def test_ignored_sigterm_escalates_to_kill_and_is_reaped(self):
+        process=subprocess.Popen([sys.executable,'-c',
+            'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print("ready",flush=True); time.sleep(30)'],
+            stdout=subprocess.PIPE,text=True)
+        try:
+            self.assertEqual(process.stdout.readline().strip(),'ready')
+            with patch.object(resident,'WORKER_TERMINATE_GRACE_SECONDS',0.02), \
+                    patch.object(resident,'WORKER_KILL_GRACE_SECONDS',2):
+                code=resident.terminate_worker(process)
+            self.assertEqual(code,-signal.SIGKILL)
+            self.assertEqual(process.poll(),code)
+        finally:
+            if process.poll() is None:process.kill();process.wait(timeout=5)
+            process.stdout.close()
+
+    def test_unreapable_child_retains_identity_until_later_exact_completion(self):
+        class DelayedChild:
+            pid=123
+            code=None
+            terminated=False
+            killed=False
+            def poll(self):return self.code
+            def terminate(self):self.terminated=True
+            def kill(self):self.killed=True
+            def wait(self,timeout):
+                if self.code is None:raise subprocess.TimeoutExpired('fixture',timeout)
+                return self.code
+        child=DelayedChild()
+        self.assertIsNone(resident.terminate_worker(child))
+        self.assertTrue(child.terminated);self.assertTrue(child.killed)
+        engine=object.__new__(resident.Supervisor);engine.child=child
+        engine._pending_worker_completion={'job_id':'original-job','state':{'mature_rows':32},
+                                          'failure':{'reason':'WORKER_BUDGET_EXCEEDED'}}
+        engine.write_status=lambda **value:value
+        completed=[]
+        engine._complete_worker=lambda *args,**kw:completed.append((args,kw)) or {'state':'FAILED'}
+        self.assertEqual(engine.reap_pending_worker()['state'],'WORKER_TERMINATION_PENDING')
+        self.assertIs(engine.child,child);self.assertFalse(completed)
+        child.code=-signal.SIGKILL
+        self.assertEqual(engine.reap_pending_worker()['state'],'FAILED')
+        self.assertEqual(completed[0][0],('original-job',-signal.SIGKILL,{'mature_rows':32}))
+        self.assertIsNone(engine.child);self.assertIsNone(engine._pending_worker_completion)
+        self.assertIsNone(engine.reap_pending_worker());self.assertEqual(len(completed),1)
 
 
 class WorkerFailureDiagnosticTests(unittest.TestCase):
@@ -117,6 +206,24 @@ class WorkerFailureDiagnosticTests(unittest.TestCase):
         self.assertFalse(process.terminated)
         self.assertFalse(stream.closed)
         self.assertTrue(engine.tasks)
+
+    def test_predictor_launch_inherits_resource_and_recovery_locks(self):
+        engine=object.__new__(resident_evaluate.Evaluator)
+        engine.c={'python':sys.executable};engine.path=self.root/'config.json';engine.tasks={}
+        engine._worker_lease_fd=40;engine._controller_lock_fd=41
+        process=FakeProcess(0)
+        plan={'rule':RULE,'start_ms':1000000}
+        plan['plan_id']=digest(plan);self.plan.write_text(json.dumps(plan))
+        with patch.object(resident_evaluate.subprocess,'Popen',return_value=process) as launch, \
+                patch.object(resident_evaluate.time,'time',return_value=1000.):
+            engine.launch(self.plan,0)
+        try:
+            args,kw=launch.call_args
+            self.assertEqual(kw['pass_fds'],(40,41))
+            self.assertEqual(args[0][-4:],['--held-lock-fd','40','--held-lock-fd','41'])
+            self.assertEqual(len(engine.tasks),1)
+        finally:
+            for _,stream,_ in engine.tasks.values():stream.close()
 
     def test_only_last1500_bytes_are_read_and_invalid_utf8_is_replaced(self):
         tail = b'\xff'+b'z'*1498+b'\n'

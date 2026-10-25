@@ -122,13 +122,14 @@ def verify_candidate(job, candidate):
     _verify_input_effect(job, candidate, expected, price_input.COMPACT)
 
 
-def _verify_input_effect(job, candidate, expected, child_input_profile, *, version='V7'):
+def _verify_input_effect(job, candidate, expected, child_input_profile, *, version='V7', rows=None):
     if price_input.check_bindings(candidate) != expected:
         raise ContractError(version + '_PARENT_INPUT_PROFILE_CHANGED')
-    from .dataset import rows_for_training
-    data = read_json(Path(job['dataset']), 64*1024**2)
-    rows, _ = rows_for_training(data, job['window'])
-    rows = [r for r in rows if row_id(r) in set(job['training_row_ids'])]
+    if rows is None:
+        from .dataset import rows_for_training
+        data = read_json(Path(job['dataset']), 64*1024**2)
+        rows, _ = rows_for_training(data, job['window'])
+        rows = [r for r in rows if row_id(r) in set(job['training_row_ids'])]
     reports = []
     for key, input_profile in (
             ('parent_price_forward_receipts', expected['parent_price_input_profile']),

@@ -14,6 +14,8 @@ def load_manifest(path):
  # The optional FX opening limiter has been retired. Reject old manifests
  # rather than silently running a legacy restricted or mismatched profile.
  if m.get('fx_churn_profile_sha256'):raise ValueError('FX_CHURN_RETIRED')
+ if type(m.get('native_read_stream',False)) is not bool:raise ValueError('NATIVE_READER_MODE_INVALID')
+ if 'native_read_binary' in m and m.get('native_read_stream') is not True:raise ValueError('NATIVE_READ_BINARY_REQUIRES_STREAM')
  period=read_private(m['period_path'],65536)
  if hashlib.sha256(period).hexdigest()!=m['period_sha256'] or strict(period).get('execution_domain')!='PAPER':
   raise ValueError('PERIOD_CHANGED_NO_LAUNCH')
@@ -26,9 +28,18 @@ def load_manifest(path):
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,required=True)
- p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');p.add_argument('--recover-owner',action='store_true');a=p.parse_args();os.umask(0o077)
+ p.add_argument('--once',action='store_true');p.add_argument('--reconcile-only',action='store_true');p.add_argument('--recover-owner',action='store_true')
+ p.add_argument('--native-read-stream',action='store_true');a=p.parse_args();os.umask(0o077)
  m,manifest_sha=load_manifest(a.manifest);root=Path(__file__).resolve().parent;base=root/'heptatrader_paper_driver.py'
+ stream=a.native_read_stream or m.get('native_read_stream') is True
+ if stream and 'hepta_native_reader.py' not in m['runtime_sha256']:raise ValueError('NATIVE_READER_RUNTIME_NOT_PINNED')
  driver=load_verified_module('hepta_attributed_pinned_base',base,m['runtime_sha256']['heptatrader_paper_driver.py'])
+ if stream:
+  reader=load_verified_module('hepta_attributed_pinned_reader',root/'hepta_native_reader.py',m['runtime_sha256']['hepta_native_reader.py'])
+  driver.NATIVE_READER_CLASS=reader.NativeReader
+  if 'native_read_binary' in m:
+   reader.validate_binary_binding(m['native_read_binary'])
+   driver.NATIVE_READ_BINARY=dict(m['native_read_binary'])
  driver.INSTRUMENT=m['instrument'];close_economics=None
  if m['instrument']=='BTC.USD' and not (a.reconcile_only or a.recover_owner):
   import heptatrader_btc_economics_driver as btc
@@ -45,7 +56,7 @@ def main():
    journal=Journal(m['journal_directory'],m,manifest_sha)
    observer=Capture(journal,driver,m).install()
   except Exception as exc:print('DECISION_ATTRIBUTION_UNAVAILABLE:'+type(exc).__name__,file=sys.stderr,flush=True)
-  sys.argv=[str(base),'--instrument',m['instrument']]+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])+(['--recover-owner'] if a.recover_owner else [])
+  sys.argv=[str(base),'--instrument',m['instrument']]+(['--once'] if a.once else [])+(['--reconcile-only'] if a.reconcile_only else [])+(['--recover-owner'] if a.recover_owner else [])+(['--native-read-stream'] if stream else [])
   return driver.main()
  finally:
   if observer is not None:observer()

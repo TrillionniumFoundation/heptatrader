@@ -114,6 +114,53 @@ class PrepareUpgradeTests(unittest.TestCase):
  def _unchanged(self):
   for path,raw in self.protected.items():self.assertEqual(path.read_bytes(),raw)
 
+ def test_explicit_stream_preparation_pins_reader_and_records_behavior_change(self):
+  service,old,resident=self._resident('EUR.USD','stream-opt-in')
+  before={p.name:p.read_bytes() for p in resident.iterdir()}
+  with self._offline(service):
+   result=installer.prepare_upgrade('EUR.USD',native_read_stream=True)
+  manifest=json.loads(Path(result['manifest']).read_bytes())
+  self.assertIs(manifest['native_read_stream'],True)
+  self.assertIn('hepta_native_reader.py',manifest['runtime_sha256'])
+  self.assertIs(manifest['runtime_bytes_changed'],False)
+  self.assertIs(manifest['trading_behavior_changed'],True)
+  self.assertIs(manifest['behavior_equivalence_assessed'],False)
+  self.assertFalse(result['activated']);self.assertFalse(result['trade_authority'])
+  self.assertEqual({p.name:p.read_bytes() for p in resident.iterdir()},before)
+  self._unchanged()
+
+ def test_ordinary_upgrade_preserves_an_existing_stream_choice(self):
+  service,old,resident=self._resident('EUR.USD','stream-retained')
+  old['native_read_stream']=True
+  binary=self.root/'existing-qualified/bin/heptactl'
+  self._put(binary,b'existing read-only CLI fixture\n');binary.chmod(0o500)
+  old['native_read_binary']={'path':str(binary),'sha256':installer.sha(binary)}
+  self._put(resident/'manifest.json',(installer.canonical(old)+'\n').encode())
+  result=self._prepare('EUR.USD',service)
+  prepared=json.loads(Path(result['manifest']).read_bytes())
+  self.assertIs(prepared['native_read_stream'],True)
+  self.assertEqual(prepared['native_read_binary'],old['native_read_binary'])
+  self._unchanged()
+
+ def test_qualified_read_binary_is_preserved_and_reverified_before_activation(self):
+  service,old,resident=self._resident('EUR.USD','qualified-reader')
+  binary=self.root/'qualified/bin/heptactl'
+  self._put(binary,b'qualified read-only CLI fixture\n');binary.chmod(0o500)
+  binding={'path':str(binary),'sha256':installer.sha(binary)}
+  with self._offline(service):
+   result=installer.prepare_upgrade('EUR.USD',native_read_stream=True,native_read_binary=binding)
+  candidate=Path(result['manifest'])
+  manifest=json.loads(candidate.read_bytes())
+  self.assertEqual(manifest['native_read_binary'],binding)
+  installed={'manifest':str(resident/'manifest.json'),
+             'manifest_sha256':installer.sha(resident/'manifest.json')}
+  inspected=activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
+  self.assertEqual(inspected['native_read_binary'],binding)
+  self._put(binary,b'changed after preparation\n');binary.chmod(0o500)
+  with self.assertRaisesRegex(ValueError,'NATIVE_READ_BINARY_CHANGED'):
+   activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
+  self._unchanged()
+
  def test_complete_candidate_preserves_bindings_while_flat_held_or_pending(self):
   states={
    'flat':{'position':0,'pending':None,'halt_new_entries':False},
@@ -253,6 +300,7 @@ class PrepareUpgradeTests(unittest.TestCase):
   service,old,resident=self._resident(instrument,label)
   (resident/'hepta_verified_loader.py').unlink()
   old['runtime_sha256'].pop('hepta_verified_loader.py')
+  old['runtime_sha256'].pop('hepta_native_reader.py')
   old.pop('runtime_loader',None)
   self._put(resident/'manifest.json',(installer.canonical(old)+'\n').encode())
   return service,old,resident
@@ -308,6 +356,18 @@ class PrepareUpgradeTests(unittest.TestCase):
        mock.patch.object(installer,'install',side_effect=AssertionError('installation called')):
    installer.main()
   prepare.assert_called_once_with('EUR.USD')
+
+ def test_prepare_cli_forwards_only_the_explicit_read_binary_binding(self):
+  arguments=['install_decision_attribution.py','--instrument','EUR.USD','--prepare-upgrade',
+             '--native-read-stream','--native-read-binary','/qualified/bin/heptactl',
+             '--native-read-binary-sha256','a'*64]
+  with mock.patch.object(sys,'argv',arguments), \
+       mock.patch.object(installer,'os',self.os_proxy), \
+       mock.patch.object(installer,'prepare_upgrade',return_value={}) as prepare, \
+       mock.patch.object(installer,'install',side_effect=AssertionError('installation called')):
+   installer.main()
+  prepare.assert_called_once_with('EUR.USD',native_read_stream=True,
+   native_read_binary={'path':'/qualified/bin/heptactl','sha256':'a'*64})
 
 
 if __name__=='__main__':unittest.main()

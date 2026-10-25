@@ -146,6 +146,45 @@ class Gate:
         if self.c.get('value_priority') is not None and role in ('trainer','evaluator'):
             from .value_priority_admission import verify_policy
             verify_policy(self.c['value_priority'])
+    def status_diagnostics(self):
+        """Cheap current blockers even when a prior calendar/queue gate returned.
+
+        This does not refresh sources, take a lease or grant worker admission.
+        A persistent hold's age never makes its current presence historical.
+        """
+        now=int(time.time()*1000);manual=self.c.get('manual_hold_path')
+        present=manual is not None and os.path.lexists(manual)
+        hold={'source':manual,'checked_at_ms':now,'present':present,
+              'scope':'NEW_HEAVY_GPU_WORK_ONLY','has_expiration':False}
+        if present:
+            try:
+                # A symlink or malformed marker still holds; do not follow it
+                # merely to display a reason from an arbitrary target.
+                fd=os.open(manual,os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC|os.O_NOFOLLOW)
+                with os.fdopen(fd,'rb') as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise ValueError('HOLD_NOT_REGULAR')
+                    raw=stream.read(16385)
+                if len(raw)>16384:raise ValueError('HOLD_TOO_LARGE')
+                value=json.loads(raw)
+                if not isinstance(value,dict):raise ValueError('HOLD_NOT_OBJECT')
+                hold.update({key:value[key] for key in ('reason','created_at_ms','created_ms','resume_when') if key in value})
+            except (OSError,ValueError,TypeError) as exc:
+                hold['reason_unavailable']=type(exc).__name__
+        try:
+            resources=assess_resources(parse_meminfo(Path('/proc/meminfo').read_text()),
+                parse_full_psi(Path('/proc/pressure/memory').read_text()),now,present,role=self.role)
+            resources.pop('admit_new_worker',None)
+        except (OSError,ValueError,TypeError,KeyError) as exc:
+            resources={'at_ms':now,'reasons':['RESOURCE_DIAGNOSTICS_UNAVAILABLE'],
+                       'error_class':type(exc).__name__}
+            if present:resources['reasons'].append('OPERATOR_RESOURCE_HOLD')
+        reasons=list(resources['reasons'])
+        if self.draining:reasons.append('SUPERVISOR_DRAIN_REQUESTED')
+        return {'checked_at_ms':now,'manual_hold':hold,'resource_diagnostics':resources,
+                'current_resource_blockers':list(dict.fromkeys(reasons)),
+                'diagnostic_only':True,'worker_launch_authority':False,
+                'source_check':'NOT_PERFORMED_FOR_STATUS','historical_cpu_closeout_blocked':False}
     def _priority_negative_preflight(self):
         # Read the SHA256-pinned original Value producer BEFORE an expensive
         # source-health refresh, but use this shortcut ONLY to refuse new
@@ -409,7 +448,10 @@ def guarded_evaluator_class(base,gate):
                     'reason_codes':list(reasons)} if retry is not None else None)
                 return
             self._launch_retry=None
-            try:super().launch(path,slot)
+            self._worker_lease_fd=getattr(getattr(gate,'lease',None),'fd',None)
+            try:
+                super().launch(path,slot)
+                if not self.tasks:gate.release();self._worker_lease_fd=None
             except Exception:gate.release();raise
         def reap(self):
             super().reap()
@@ -478,9 +520,31 @@ def guarded_trainer_class(base,gate):
                 if extra.get('forward_registration_blocking_trials',extra.get('pending_original_trials'))==0 and extra.get('deferred_training_candidates',0)>0:
                     extra['forward_registration_wait_reasons']=list(preflight.get('reasons',[]))
                     extra['forward_registration_wait_checked_at_ms']=preflight.get('at_ms')
+            diagnostics=getattr(gate,'status_diagnostics',None)
+            if callable(diagnostics):
+                current=diagnostics();reasons=list(current['current_resource_blockers'])
+                state=extra.get('state','')
+                if (isinstance(state,str) and state.startswith(('HOLD_','WAITING_','CANDIDATE_READY_AWAITING_','EVALUATING_'))
+                        or state=='WORKER_TERMINATION_PENDING'):
+                    reasons.append(extra.get('reason') or state)
+                extra.update(current_blockers=list(dict.fromkeys(reasons)),
+                    current_blockers_checked_at_ms=current['checked_at_ms'],
+                    resource_diagnostics=current,
+                    next_calendar_eligible_at_ms=extra.get('next_training_at_ms'),
+                    automatic_resume_expected=False if ('OPERATOR_RESOURCE_HOLD' in reasons
+                        or state=='WORKER_TERMINATION_PENDING') else None,
+                    resume_conditions_to_recheck=list(dict.fromkeys(reasons)),
+                    calendar_time_is_not_worker_admission=True)
             return super().write_status(**extra)
 
         def step(self):
+            self._reuse_queue_preflight_once=None
+            reap=getattr(self,'reap_pending_worker',None)
+            held=reap() if callable(reap) else None
+            if held is not None:
+                child=getattr(self,'child',None)
+                if child is None or child.poll() is not None:gate.release()
+                return held
             preflight=getattr(self,'queue_preflight',None)
             held=preflight() if preflight is not None else None
             if held is not None:return held
@@ -491,8 +555,15 @@ def guarded_trainer_class(base,gate):
                                          waiting_stage='NEW_TRAINING_RESOURCE_PREFLIGHT',
                                          training_data_refresh_performed=False,worker_lease_acquired=False,
                                          resource_admission=report if report is not None else gate.check())
+            lease=getattr(gate,'lease',None)
+            self._worker_lease_fd=getattr(lease,'fd',None)
+            self._reuse_queue_preflight_once=getattr(self,'_queue_preflight_snapshot',None)
             try:return super().step()
-            finally:gate.release()
+            finally:
+                self._reuse_queue_preflight_once=None;self._queue_preflight_snapshot=None
+                child=getattr(self,'child',None)
+                if child is None or child.poll() is not None:
+                    gate.release();self._worker_lease_fd=None
     return GuardedTrainer
 
 
@@ -545,6 +616,9 @@ def main():
     fd=os.open(directory/lockname,os.O_WRONLY|os.O_CREAT|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
     fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
     service=base(Path(c['original_config']))
+    # A surviving worker must also prevent a new controller from recovering
+    # its still-running job as interrupted or launching the same forward slot.
+    service._controller_lock_fd=fd
     signal.signal(signal.SIGTERM,service.stop_signal if a.role=='trainer' else service.signal)
     signal.signal(signal.SIGINT,service.stop_signal if a.role=='trainer' else service.signal)
     def request_drain(*_):gate.draining=True
@@ -573,7 +647,20 @@ def main():
                 if service.stop:break
                 time.sleep(1)
     finally:
-        gate.release()
-        if a.role=='trainer':service.db.close()
-        os.close(fd)
+        try:
+            if a.role=='trainer':
+                child=getattr(service,'child',None)
+                if child is not None:
+                    from laya_cell.resident import terminate_worker
+                    terminate_worker(child)
+                reaped=child is None or child.poll() is not None
+            else:
+                stop_workers=getattr(service,'stop_workers',None)
+                if callable(stop_workers):stop_workers()
+                reaped=not any(p.poll() is None for p,_,_ in service.tasks.values())
+            # Close only; LOCK_UN would unlock the child's shared description.
+            if reaped:gate.release()
+        finally:
+            if a.role=='trainer':service.db.close()
+            os.close(fd)
 if __name__=='__main__':main()

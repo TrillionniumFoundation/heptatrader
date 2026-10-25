@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -236,6 +238,7 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.observations = 0
         self.die_after_observations = None
         self.audit_counter = 0
+        self.frozen_policies = {}
         self.audit_credit = None
         self.audit_mode = None
         self.fail_stop = False
@@ -254,6 +257,7 @@ class MaintenanceUpgradeTests(unittest.TestCase):
             "proc_bytes": self._unexpected_proc_read,
             "marker_identity": self._marker_identity,
             "audit_environment": self._audit_environment,
+            "frozen_driver_snapshot": self._frozen_driver_snapshot,
             "fence": _ModuleProxy(activation.fence, show_unit=self._show_unit),
             "subprocess": _ModuleProxy(subprocess, run=self._audit_run),
             "time": _ModuleProxy(time, monotonic=lambda: self.clock, sleep=self._sleep),
@@ -391,6 +395,28 @@ class MaintenanceUpgradeTests(unittest.TestCase):
     def _show_unit(self, name):
         self._require(name in self.statuses, "unexpected unit: " + name)
         return dict(self.statuses[name])
+
+    def _frozen_driver_snapshot(self, name):
+        self._boundary()
+        self._require(name in self.frozen_policies, "unexpected frozen driver read: " + name)
+        return {**self._show_unit(name), **self.frozen_policies[name]}
+
+    def _freeze_crypto_peer(self):
+        name = "heptatrader-crypto-driver.service"
+        self.statuses[name].update(ActiveState="inactive", SubState="dead", MainPID="0", InvocationID="")
+        self.peer_statuses[name] = dict(self.statuses[name])
+        self.frozen_policies[name] = {"UnitFileState": "disabled", "ExecStart": "fixture original BTC entry"}
+        return name
+
+    def _freeze_interactive_broker(self):
+        name = activation.BROKER_UNIT
+        self.statuses[name].update(ActiveState="inactive", SubState="dead", MainPID="0", InvocationID="")
+        self.peer_statuses[name] = dict(self.statuses[name])
+        return {"broker_process": {"pid_key": ("1481499", "8029516")},
+                "sockets": {"execution": {"inode": 111}},
+                "scope": {"InvocationID": "existing-gnome-scope"},
+                "unused_unit": dict(self.statuses[name]), "selected_edges": {},
+                "broker_manual_stop_shield_claimed": False}
 
     def _running_driver(self, unit, instrument):
         self._boundary()
@@ -669,6 +695,145 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
 
+    def test_disabled_inactive_crypto_peer_stays_frozen_during_fx_activation(self):
+        peer = self._freeze_crypto_peer()
+        before = {**self.statuses[peer], **self.frozen_policies[peer]}
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual(result["frozen_inactive_peers"], {peer: before})
+        self.assertEqual({**self.statuses[peer], **self.frozen_policies[peer]}, before)
+        self.assertTrue(result["other_risk_units_preserved"])
+
+    def test_inactive_peer_exception_requires_loaded_disabled_zero_pid_and_guard(self):
+        peer = self._freeze_crypto_peer()
+        original = dict(self.statuses[peer])
+        policy = dict(self.frozen_policies[peer])
+        for field, value in (("LoadState", "not-found"), ("MainPID", "41000"),
+                             ("RefuseManualStop", "no"), ("UnitFileState", "enabled"),
+                             ("ActiveState", "failed")):
+            with self.subTest(field=field):
+                if field in policy:
+                    self.frozen_policies[peer][field] = value
+                else:
+                    self.statuses[peer][field] = value
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "INACTIVE_DRIVER_PEER|RISK_PATH_NOT_ACTIVE"):
+                        self._upgrade()
+                    self.assertEqual(self.events, [])
+                finally:
+                    self.statuses[peer] = dict(original)
+                    self.frozen_policies[peer] = dict(policy)
+
+    def test_frozen_peer_policy_or_identity_drift_prevents_any_selected_stop(self):
+        self._freeze_crypto_peer()
+        for field in ("ExecStart", "UnitFileState", "MainPID", "InvocationID", "PartOf",
+                      "ActiveState", "SubState", "LoadState", "RefuseManualStop"):
+            with self.subTest(field=field):
+                self.audit_counter = 0; self.audit_credit = None; self.events.clear()
+                def changed(name):
+                    value = self._frozen_driver_snapshot(name)
+                    if self.audit_counter:
+                        value[field] = "changed-after-audit"
+                    return value
+                with mock.patch.object(activation, "frozen_driver_snapshot", side_effect=changed):
+                    result = self._upgrade()
+                self.assertEqual(result["status"], "FAILED", result)
+                self.assertIn("FROZEN_DRIVER_PEER_CHANGED", result["error"])
+                self.assertEqual(self._events("stop"), [])
+                self.assertEqual(self._events("start"), [])
+                self.assertEqual(self.exec_path.read_bytes(), self.old_exec)
+
+    def test_selected_driver_and_non_driver_risk_units_still_require_active(self):
+        self._freeze_crypto_peer()
+        for name in (self.unit, "heptatrader-execution.service"):
+            with self.subTest(unit=name):
+                original = dict(self.statuses[name])
+                self.statuses[name].update(ActiveState="inactive", MainPID="0")
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "DRIVER_NOT_ACTIVE|RISK_PATH_NOT_ACTIVE"):
+                        self._upgrade()
+                    self.assertEqual(self.events, [])
+                finally:
+                    self.statuses[name] = original
+
+    def test_inactive_broker_unit_still_blocks_without_explicit_pid(self):
+        self._freeze_interactive_broker()
+        with mock.patch.object(activation, "interactive_broker_snapshot") as inspect:
+            with self.assertRaisesRegex(RuntimeError, "RISK_PATH_NOT_ACTIVE:ibgateway.service"):
+                self._upgrade()
+            inspect.assert_not_called()
+        self.assertEqual(self.events, [])
+
+    def test_explicit_interactive_broker_keeps_audit_and_only_switches_selected_driver(self):
+        proof = self._freeze_interactive_broker()
+        self._freeze_crypto_peer()
+        with mock.patch.object(activation, "interactive_broker_snapshot", return_value=proof) as inspect:
+            result = self._upgrade(interactive_broker_pid=1481499)
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual(result["interactive_broker"], proof)
+        self.assertFalse(result["interactive_broker"]["broker_manual_stop_shield_claimed"])
+        self.assertGreater(inspect.call_count, 5)
+        for call in inspect.call_args_list:
+            self.assertEqual(call.args[:2], (1481499, self.unit))
+        self.assertEqual([e["kind"] for e in self.events if e["kind"] in ("audit", "stop", "start")],
+                         ["audit", "stop", "start"])
+
+    def test_interactive_broker_identity_drift_after_audit_never_authorizes_stop(self):
+        proof = self._freeze_interactive_broker()
+        for field in ("broker_process", "sockets", "scope", "unused_unit", "selected_edges"):
+            with self.subTest(field=field):
+                self.audit_counter = 0; self.audit_credit = None; self.events.clear()
+                def inspect(*_):
+                    value = copy.deepcopy(proof)
+                    if self.audit_counter:
+                        value[field]["changed-after-audit"] = True
+                    return value
+                with mock.patch.object(activation, "interactive_broker_snapshot", side_effect=inspect):
+                    result = self._upgrade(interactive_broker_pid=1481499)
+                self.assertEqual(result["status"], "FAILED", result)
+                self.assertIn("INTERACTIVE_BROKER_CHANGED", result["error"])
+                self.assertEqual(self._events("stop"), [])
+                self.assertEqual(self._events("start"), [])
+                self.assertEqual(self.exec_path.read_bytes(), self.old_exec)
+
+    def test_interactive_broker_loss_after_stop_keeps_hold_and_does_not_restart(self):
+        proof = self._freeze_interactive_broker()
+        def inspect(*_):
+            if self.statuses[self.unit]["ActiveState"] == "inactive":
+                raise RuntimeError("INTERACTIVE_BROKER_ACCEPTED_SOCKET_REQUIRED")
+            return proof
+        with mock.patch.object(activation, "interactive_broker_snapshot", side_effect=inspect):
+            result = self._upgrade(interactive_broker_pid=1481499)
+        self.assertEqual(result["rollback"], "INCOMPLETE_HELD", result)
+        self.assertEqual(len(self._events("stop")), 1)
+        self.assertEqual(self._events("start"), [])
+        self.assertTrue(result["selected_stop_guard_restored"])
+        self.assertTrue(result["maintenance_markers_preserved"])
+        self.assertEqual(self.exec_path.read_bytes(), self.old_exec)
+
+    def test_interactive_broker_proof_does_not_replace_authoritative_audit(self):
+        proof = self._freeze_interactive_broker()
+        self.audit_mode = "incomplete"
+        with mock.patch.object(activation, "interactive_broker_snapshot", return_value=proof):
+            result = self._upgrade(interactive_broker_pid=1481499)
+        self.assertEqual(result["status"], "FAILED", result)
+        self.assertIn("OWNER_AUDIT_INCOMPLETE", result["error"])
+        self.assertEqual(self._events("stop"), [])
+        self.assertEqual(self.exec_path.read_bytes(), self.old_exec)
+
+    def test_prepared_stream_manifest_preserves_the_existing_activation_boundary(self):
+        record = json.loads(self.candidate.read_bytes())
+        record["native_read_stream"] = True
+        self.candidate.chmod(0o600)
+        _put(self.candidate, _json_bytes(record), 0o400)
+        self.candidate_sha = _sha(self.candidate.read_bytes())
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual([event["kind"] for event in self.events
+                          if event["kind"] in ("audit", "stop", "start")],
+                         ["audit", "stop", "start"])
+        self.assertTrue(json.loads(self.current_manifest.read_bytes())["native_read_stream"])
+
 
     def test_pid_bound_loop_progress_finishes_without_three_state_versions(self):
         def progress(record):
@@ -909,6 +1074,262 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(self._current_key(), self.original_key)
         self.assertEqual(self.state_path.read_bytes(), self.initial_state_raw)
 
+
+
+class FrozenDriverReadbackTests(unittest.TestCase):
+    def test_loaded_peer_readback_binds_enablement_and_full_execstart(self):
+        peer = "heptatrader-crypto-driver.service"
+        values = {name: "fixture" for name in activation.fence.SHOW_PROPS}
+        values.update(UnitFileState="disabled", ExecStart="{ argv[]=/fixture/driver --manifest=/fixture/m.json ; }")
+        raw = "".join(name + "=" + value + "\n" for name, value in values.items())
+        with mock.patch.object(activation.subprocess, "check_output", return_value=raw) as read:
+            self.assertEqual(activation.frozen_driver_snapshot(peer), values)
+            self.assertEqual(read.call_args.args[0][:4], ["systemctl", "--user", "show", peer])
+            self.assertIn("UnitFileState", read.call_args.args[0])
+            self.assertIn("ExecStart", read.call_args.args[0])
+            self.assertIn("--all", read.call_args.args[0])
+        for invalid in (raw + "ExecStart=changed\n", raw.replace("UnitFileState=disabled\n", "")):
+            with self.subTest(raw=invalid), mock.patch.object(
+                    activation.subprocess, "check_output", return_value=invalid):
+                with self.assertRaisesRegex(RuntimeError, "FROZEN_DRIVER_READBACK"):
+                    activation.frozen_driver_snapshot(peer)
+        with mock.patch.object(activation.subprocess, "check_output") as read:
+            with self.assertRaisesRegex(RuntimeError, "INVALID_FROZEN_DRIVER_SCOPE"):
+                activation.frozen_driver_snapshot("heptatrader-execution.service")
+            read.assert_not_called()
+
+
+class InteractiveBrokerSnapshotTests(unittest.TestCase):
+    """Exercise kernel-table parsing and topology checks, not prebuilt proofs."""
+    HEADER = "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hepta-interactive-broker-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.proc = self.root / "proc"
+        self.uid = os.geteuid()
+        self.execution_pid, self.broker_pid = 1403827, 1481499
+        self.selected = "heptatrader-paper-driver.service"
+        self.scope_name = "app-gnome-ibgateway-14659.scope"
+        self.scope_group = f"/user.slice/user-{self.uid}.slice/user@{self.uid}.service/app.slice/{self.scope_name}"
+        self.execution_group = f"/user.slice/user-{self.uid}.slice/user@{self.uid}.service/app.slice/heptatrader-execution.service"
+        namespace = _put(self.root / "netns", b"fixture namespace identity")
+        self._process(self.execution_pid, "7709970", "hepta-ib-executiond", self.execution_group, namespace)
+        self._process(self.broker_pid, "8029516", "java", self.scope_group, namespace)
+        self._fd(self.execution_pid, 9, 111)
+        self._fd(self.broker_pid, 92, 222)
+        self._fd(self.broker_pid, 87, 333)
+        self.environment = (b"HEPTA_IB_EXECUTION_MODE=PAPER\0HEPTA_IB_PAPER_USER_SCOPE=1\0"
+                            b"HEPTA_IB_PAPER_HOST=127.0.0.1\0HEPTA_IB_PAPER_PORT=4002\0"
+                            b"UNRELATED_PRIVATE_VALUE=must-not-appear-in-proof\0")
+        _put(self.proc / str(self.execution_pid) / "environ", self.environment)
+        self.tcp = self.HEADER + self._row("0100007F:B6CA", "0100007F:0FA2", "01", 111)
+        self.tcp6 = (self.HEADER
+            + self._row("0000000000000000FFFF00000100007F:0FA2", "0000000000000000FFFF00000100007F:B6CA", "01", 222)
+            + self._row("00000000000000000000000000000000:0FA2", "00000000000000000000000000000000:0000", "0A", 333))
+        self._tables()
+        base = {"LoadState": "loaded", "ActiveState": "active", "SubState": "running",
+                "MainPID": str(self.execution_pid), "InvocationID": "execution-invocation",
+                "RefuseManualStop": "yes", "PartOf": "heptatrader.target"}
+        unused = dict(base, ActiveState="inactive", SubState="dead", MainPID="0", InvocationID="")
+        self.current = {activation.EXECUTION_UNIT: dict(base), activation.BROKER_UNIT: dict(unused)}
+        self.units = {
+            activation.EXECUTION_UNIT: dict(base, ExecStart="original exact execution", ControlGroup=self.execution_group),
+            activation.BROKER_UNIT: dict(unused, UnitFileState="static", ExecStart="unused original launcher", ControlGroup=""),
+            self.scope_name: {"Id": self.scope_name, "LoadState": "loaded", "ActiveState": "active",
+                "SubState": "running", "InvocationID": "gnome-scope-invocation", "ControlGroup": self.scope_group,
+                "PartOf": "graphical-session.target", "RefuseManualStop": "no", "UnitFileState": "transient"},
+            self.selected: {**{name: "" for name in activation.STOP_EDGES},
+                            "Conflicts": "shutdown.target", "ConflictedBy": ""},
+            "shutdown.target": {"LoadState": "loaded", "ActiveState": "inactive"},
+        }
+        self.patches = contextlib.ExitStack()
+        self.addCleanup(self.patches.close)
+        self.patches.enter_context(mock.patch.object(activation, "PROC_ROOT", self.proc))
+        self.patches.enter_context(mock.patch.object(activation.subprocess, "check_output", side_effect=self._show))
+
+    def _process(self, pid, ticks, executable, cgroup, namespace):
+        base = self.proc / str(pid)
+        _put(base / "stat", (f"{pid} (fixture process) S " + " ".join(["0"] * 18 + [ticks] + ["0"] * 30) + "\n").encode())
+        _put(base / "status", (f"Name:\tfixture\nState:\tS (sleeping)\nUid:\t{self.uid}\t{self.uid}\t{self.uid}\t{self.uid}\n").encode())
+        _put(base / "cmdline", executable.encode() + b"\0existing-argument\0")
+        _put(base / "cgroup", ("0::" + cgroup + "\n").encode())
+        binary = _put(self.root / "bin" / executable, b"fixture original executable\n", 0o500)
+        (base / "exe").symlink_to(binary)
+        (base / "ns").mkdir()
+        (base / "ns/net").symlink_to(namespace)
+        (base / "fd").mkdir()
+
+    def _fd(self, pid, fd, inode):
+        path = self.proc / str(pid) / "fd" / str(fd)
+        path.unlink(missing_ok=True)
+        path.symlink_to(f"socket:[{inode}]")
+
+    def _row(self, local, remote, state, inode):
+        return f" 0: {local} {remote} {state} 00000000:00000000 00:00000000 00000000 {self.uid} 0 {inode} 1 0000000000000000\n"
+
+    def _tables(self):
+        _put(self.proc / str(self.execution_pid) / "net/tcp", self.tcp.encode())
+        _put(self.proc / str(self.execution_pid) / "net/tcp6", self.tcp6.encode())
+
+    def _show(self, command, **_):
+        self.assertEqual(command[:3], ["systemctl", "--user", "show"])
+        self.assertIn("--all", command)
+        unit = command[3]
+        properties = [command[i + 1] for i, value in enumerate(command) if value == "-p"]
+        return "".join(name + "=" + self.units[unit][name] + "\n" for name in properties)
+
+    def _snapshot(self):
+        return activation.interactive_broker_snapshot(self.broker_pid, self.selected, self.current)
+
+    def test_ipv4_execution_and_mapped_ipv6_broker_bind_original_fds_and_scope(self):
+        proof = self._snapshot()
+        self.assertEqual(proof, self._snapshot())
+        self.assertEqual(proof["execution_process"]["pid_key"], (str(self.execution_pid), "7709970"))
+        self.assertEqual(proof["broker_process"]["pid_key"], (str(self.broker_pid), "8029516"))
+        self.assertEqual(proof["sockets"]["execution"]["fds"], [9])
+        self.assertEqual(proof["sockets"]["accepted"]["fds"], [92])
+        self.assertEqual(proof["sockets"]["accepted"]["remote"], ("127.0.0.1", 46794))
+        self.assertEqual(proof["sockets"]["accepted"]["family"], "tcp6")
+        self.assertEqual(proof["sockets"]["listener"]["local"], ("::", 4002))
+        self.assertEqual(proof["scope"]["RefuseManualStop"], "no")
+        self.assertFalse(proof["broker_manual_stop_shield_claimed"])
+        self.assertNotIn("must-not-appear", json.dumps(proof))
+
+    def test_default_shutdown_conflict_is_allowed_only_while_inactive(self):
+        self.units["shutdown.target"]["ActiveState"] = "active"
+        with self.assertRaisesRegex(RuntimeError, "INTERACTIVE_BROKER_SHUTDOWN_ACTIVE"):
+            self._snapshot()
+
+    def test_every_outgoing_stop_edge_and_nondefault_start_conflict_refuses(self):
+        for name in (*activation.STOP_EDGES, "Conflicts", "ConflictedBy"):
+            with self.subTest(property=name):
+                original = self.units[self.selected][name]
+                self.units[self.selected][name] = self.scope_name
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "DRIVER_STOP_PROPAGATION|DRIVER_START_CONFLICT"):
+                        self._snapshot()
+                finally:
+                    self.units[self.selected][name] = original
+
+    def test_unused_unit_requires_exact_loaded_inactive_zero_pid_and_guard(self):
+        for name, changed in (("LoadState", "not-found"), ("ActiveState", "active"),
+                              ("MainPID", "123"), ("RefuseManualStop", "no")):
+            with self.subTest(property=name):
+                old = self.units[activation.BROKER_UNIT][name]
+                self.units[activation.BROKER_UNIT][name] = changed
+                self.current[activation.BROKER_UNIT][name] = changed
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "UNUSED_UNIT_REQUIRED"):
+                        self._snapshot()
+                finally:
+                    self.units[activation.BROKER_UNIT][name] = old
+                    self.current[activation.BROKER_UNIT][name] = old
+
+    def test_scope_must_be_running_and_exactly_own_the_broker_cgroup(self):
+        for name, changed in (("ActiveState", "inactive"), ("SubState", "dead"), ("UnitFileState", "static"),
+                              ("InvocationID", ""), ("ControlGroup", "/other.scope")):
+            with self.subTest(property=name):
+                old = self.units[self.scope_name][name]
+                self.units[self.scope_name][name] = changed
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "SCOPE_NOT_ACTIVE"):
+                        self._snapshot()
+                finally:
+                    self.units[self.scope_name][name] = old
+
+    def test_paper_profile_must_come_from_execution_process_without_overrides(self):
+        for old, new in ((b"=PAPER", b"=LIVE"), (b"127.0.0.1", b"192.0.2.1"),
+                         (b"=4002", b"=4001"), (b"USER_SCOPE=1", b"USER_SCOPE=0"),
+                         (b"UNRELATED_PRIVATE_VALUE", b"HEPTA_IB_PAPER_HOST")):
+            with self.subTest(replacement=new):
+                _put(self.proc / str(self.execution_pid) / "environ", self.environment.replace(old, new))
+                with self.assertRaisesRegex(RuntimeError, "EXECUTION_PROFILE_INVALID"):
+                    self._snapshot()
+
+    def test_listener_and_reverse_accepted_socket_must_both_belong_to_given_pid(self):
+        for pid, fd, inode, reason in ((self.execution_pid, 9, 111, "EXECUTION_SOCKET_REQUIRED"),
+            (self.broker_pid, 92, 222, "ACCEPTED_SOCKET_REQUIRED"),
+            (self.broker_pid, 87, 333, "LISTENER_REQUIRED")):
+            with self.subTest(fd=fd):
+                self._fd(pid, fd, 9999)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, reason):
+                        self._snapshot()
+                finally:
+                    self._fd(pid, fd, inode)
+
+    def test_wrong_reverse_tuple_and_non_established_execution_are_rejected(self):
+        old6, old4 = self.tcp6, self.tcp
+        self.tcp6 = old6.replace("7F:B6CA", "7F:B6CB")
+        self._tables()
+        with self.assertRaisesRegex(RuntimeError, "ACCEPTED_SOCKET_REQUIRED"):
+            self._snapshot()
+        self.tcp6 = old6
+        self.tcp = old4.replace(" 01 ", " 08 ")
+        self._tables()
+        with self.assertRaisesRegex(RuntimeError, "EXECUTION_SOCKET_REQUIRED"):
+            self._snapshot()
+
+    def test_ambiguous_execution_connection_is_not_guessed(self):
+        self.tcp += self._row("0100007F:B6CB", "0100007F:0FA2", "01", 444)
+        self._fd(self.execution_pid, 10, 444)
+        self._tables()
+        with self.assertRaisesRegex(RuntimeError, "EXECUTION_SOCKET_REQUIRED"):
+            self._snapshot()
+
+    def test_unrelated_socket_churn_does_not_change_the_bound_connection(self):
+        expected = self._snapshot()
+        self.tcp += self._row("0100007F:1234", "0100007F:5678", "01", 999)
+        self._fd(self.execution_pid, 10, 999)
+        self._tables()
+        self.assertEqual(self._snapshot(), expected)
+
+    def test_fd_reuse_mid_inspection_is_rejected(self):
+        original = activation.process_socket_fds
+        calls = 0
+        def changed(pid):
+            nonlocal calls
+            calls += 1
+            value = original(pid)
+            if calls > 2 and pid == self.execution_pid:
+                value.pop(111)
+            return value
+        with mock.patch.object(activation, "process_socket_fds", side_effect=changed):
+            with self.assertRaisesRegex(RuntimeError, "SOCKET_CHANGED_DURING_INSPECTION"):
+                self._snapshot()
+
+    def test_broker_uid_namespace_and_gnome_scope_are_required(self):
+        base = self.proc / str(self.broker_pid)
+        status = (base / "status").read_bytes()
+        _put(base / "status", status.replace(f"Uid:\t{self.uid}".encode(), f"Uid:\t{self.uid + 1}".encode()))
+        with self.assertRaisesRegex(RuntimeError, "PROCESS_OWNER_OR_LIFETIME"):
+            self._snapshot()
+        _put(base / "status", status)
+        namespace = _put(self.root / "other-netns", b"other namespace")
+        (base / "ns/net").unlink()
+        (base / "ns/net").symlink_to(namespace)
+        with self.assertRaisesRegex(RuntimeError, "TOPOLOGY_INVALID"):
+            self._snapshot()
+        (base / "ns/net").unlink()
+        (base / "ns/net").symlink_to(self.root / "netns")
+        _put(base / "cgroup", b"0::/unrelated-ibgateway.scope\n")
+        with self.assertRaisesRegex(RuntimeError, "TOPOLOGY_INVALID"):
+            self._snapshot()
+
+
+class InteractiveBrokerCliTests(unittest.TestCase):
+    def test_pid_is_optional_and_forwarded_only_when_explicit(self):
+        command = ["activate_prepared_driver.py", "--instrument", "EUR.USD",
+                   "--candidate-manifest", "/fixture/manifest.json", "--candidate-sha256", "a" * 64,
+                   "--sessionctl", "/fixture/hepta-sessionctl", "--sessionctl-sha256", "b" * 64]
+        for extra, expected in (([], None), (["--interactive-broker-pid", "1481499"], 1481499)):
+            with self.subTest(expected=expected), mock.patch.object(sys, "argv", command + extra), \
+                 mock.patch.object(activation, "maintenance_upgrade", return_value={"status": "ACTIVATED"}) as upgrade, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(activation.main(), 0)
+                self.assertEqual(upgrade.call_args.kwargs["interactive_broker_pid"], expected)
 
 
 class ResidentLoopProgressTests(unittest.TestCase):

@@ -184,6 +184,7 @@ def candidate_progress(config, status, now_ms, max_age_ms):
         "training_episode": candidate.get("training_episode"),
         "learning_curve": candidate.get("learning_curve"),
         "continuous_episode": diagnostics.get("continuous_episode"),
+        "parent_calibration_comparator": candidate.get("parent_calibration_comparator"),
         "training_only": True, "future_value_proven": False,
     }
     result["action"] = {
@@ -204,7 +205,7 @@ def candidate_progress(config, status, now_ms, max_age_ms):
     else:
         result["latest_forward"] = {**evidence, **pick(forward, "state", "reason", "results",
             "observed", "censored", "same_window_price_baselines", "promotion_performed",
-            "canonical_owner_admitted", "future_value_proven")}
+            "canonical_owner_admitted", "future_value_proven", "same_budget_calibrated_parent")}
     return result
 
 
@@ -224,7 +225,10 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
                   "last_candidate_id", "training_lineage", "counts", "plans", "observed", "censored",
                   "counts_include_closed_plans", "active_prediction_workers",
                   "futile_pending_plans", "new_prediction_launches_suppressed", "source_scan_performed",
-                  "worker_failure_details", "automatic_trading", "canonical_owner_connected")}}
+                  "worker_failure_details", "automatic_trading", "canonical_owner_connected",
+                  "current_blockers", "current_blockers_checked_at_ms", "resource_diagnostics",
+                  "next_training_at_ms", "next_calendar_eligible_at_ms", "waiting_stage",
+                  "automatic_resume_expected", "calendar_time_is_not_worker_admission")}}
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
     if wrapper.get("state_root"):
@@ -236,6 +240,50 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
         error, info = observe(root / (role + "-error.json"), now_ms, max_age_ms)
         result["guard_error"] = {**info, **pick(error, "error", "active", "resolved_at_ms"),
             "current_failure": running and error.get("active") is True and info["freshness"] == "FRESH"}
+    # Calendar/queue waits run before resource admission. Read persistent control
+    # markers independently; an old creation timestamp does not expire a hold.
+    blockers=[]
+    if running and meta["freshness"] == "FRESH":
+        codes=status.get("current_blockers",[])
+        if isinstance(codes,list):
+            blockers.extend({"reason":code,"source":meta["source"]} for code in codes if isinstance(code,str))
+        state=status.get("state","")
+        if (isinstance(state,str) and state.startswith(("HOLD_","WAITING_","CANDIDATE_READY_AWAITING_","EVALUATING_"))
+                or state=="WORKER_TERMINATION_PENDING"):
+            code=status.get("reason") or state
+            if not any(row["reason"]==code for row in blockers):
+                blockers.append({"reason":code,"source":meta["source"]})
+    manual=wrapper.get("manual_hold_path")
+    if manual:
+        hold_present=presence(manual)
+        hold={"source":str(manual),"present":hold_present,"checked_at_ms":now_ms,
+              "scope":"NEW_HEAVY_GPU_WORK_ONLY","has_expiration":False}
+        if hold_present:
+            value,observed=observe(manual,now_ms,max_age_ms,timestamps=("created_at_ms","created_ms"))
+            hold.update(creation_record=observed,**pick(value,"reason","created_at_ms","created_ms","resume_when"))
+            blockers=[row for row in blockers if row["reason"]!="OPERATOR_RESOURCE_HOLD"]
+            blockers.append({"reason":"OPERATOR_RESOURCE_HOLD","source":str(manual),
+                             "description":value.get("reason"),"persistent":True})
+        elif hold_present is None:
+            blockers.append({"reason":"OPERATOR_RESOURCE_HOLD_UNREADABLE","source":str(manual)})
+        else:
+            # A fresh source check outranks a prior diagnostic snapshot.
+            blockers=[row for row in blockers if row["reason"]!="OPERATOR_RESOURCE_HOLD"]
+        result["manual_hold"]=hold
+    admission=result.get("resource_admission",{})
+    if admission.get("admit_new_worker") is False and not admission.get("snapshot_is_historical",True):
+        for code in admission.get("reasons",[]):
+            if code=="OPERATOR_RESOURCE_HOLD" and manual:continue
+            if isinstance(code,str) and not any(row["reason"]==code for row in blockers):
+                blockers.append({"reason":code,"source":admission["source"],"checked_at_ms":admission.get("at_ms")})
+    result["current_blockers"]=blockers
+    persistent=any(row["reason"] in ("OPERATOR_RESOURCE_HOLD","OPERATOR_RESOURCE_HOLD_UNREADABLE",
+        "TRAINING_WORKER_NOT_REAPED","WORKER_TERMINATION_PENDING") for row in blockers)
+    result["resume"]={"automatic_resume_expected":False if persistent or not running else None,
+        "conditions_to_recheck":list(dict.fromkeys(row["reason"] for row in blockers)),
+        "next_calendar_eligible_at_ms":status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms")),
+        "calendar_time_is_not_worker_admission":True,"worker_launch_authority":False,
+        "resource_admission_snapshot_is_historical":admission.get("snapshot_is_historical",True)}
     return result
 
 
@@ -425,6 +473,8 @@ def format_text(value):
             "activity": entry["activity"],
             **pick(entry["service"], "ActiveState", "SubState", "Result", "config_source",
                    "configured_config_path", "running_config_path", "configuration_matches_process")}))
+        lines.append("BLOCKERS current " + show({"blockers":entry.get("current_blockers",[]),
+            "resume":entry.get("resume",{}),"manual_hold":entry.get("manual_hold")}))
         if "price" in entry:
             price = entry["price"]
             lines.append("PRICE " + show(pick(price, "candidate_id", "optimizer_steps",

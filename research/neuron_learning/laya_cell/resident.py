@@ -32,6 +32,8 @@ MIN_CADENCE_MS=900000
 MAX_PENDING_EVALUATIONS=2
 REWARD_SYNC_INTERVAL_SECONDS=60
 TRAINING_TIMEOUT_SECONDS=600
+WORKER_TERMINATE_GRACE_SECONDS=15
+WORKER_KILL_GRACE_SECONDS=15
 TRAINING_DISPATCH_MARGIN_MS=60000
 FORWARD_LEAD_MS=120000
 
@@ -109,6 +111,8 @@ def config_check(config):
   training_v8.check_config(config)
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v8.RUNTIME_PINS):
    raise ContractError('RESIDENT_V8_RUNTIME_PINS_REQUIRED')
+ from .resident_parent_calibration import check_config as check_parent_calibration
+ check_parent_calibration(config)
  from .resident_trial_stop import check_config as check_trial_stop_config
  check_trial_stop_config(config)
  budget_policy(config)
@@ -132,14 +136,58 @@ def bootstrap_still_off():
   raise ContractError('BOOTSTRAP_NOT_FROZEN')
 
 
+def terminate_worker(child):
+ """Return a reaped exit code, or None while the original child still exists.
+
+ A failed TERM wait must not release the heavy-worker lease. The caller retains
+ the process identity and finishes this exact job after a later successful reap.
+ """
+ if child.poll() is not None:return child.wait(timeout=0)
+ try:child.terminate()
+ except ProcessLookupError:pass
+ try:return child.wait(timeout=WORKER_TERMINATE_GRACE_SECONDS)
+ except subprocess.TimeoutExpired:pass
+ try:child.kill()
+ except ProcessLookupError:pass
+ try:return child.wait(timeout=WORKER_KILL_GRACE_SECONDS)
+ except subprocess.TimeoutExpired:return None
+
+
+def inherited_worker_locks(service):
+ """Keep both resource admission and controller recovery exclusive until exit."""
+ return tuple(dict.fromkeys(fd for name in ('_worker_lease_fd','_controller_lock_fd')
+   if type(fd:=getattr(service,name,None)) is int and fd>=3))
+
+
 class Supervisor:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=config_check(read_json(self.path));self.root=Path(self.c['control_directory'])
   self.root.mkdir(parents=True,mode=0o700,exist_ok=True);self.db=database(self.root/'scheduler.sqlite')
-  self.stop=False;self.child=None;self.storage=None
+  self.stop=False;self.child=None;self.storage=None;self._pending_worker_completion=None
+  self._worker_lease_fd=None
  def stop_signal(self,*_):
   self.stop=True
-  if self.child and self.child.poll() is None:self.child.terminate()
+  if self.child and self.child.poll() is None:
+   try:self.child.terminate()
+   except ProcessLookupError:pass
+ def _complete_worker(self,job_id,rc,state,*,failure=None):
+  row=self.db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
+  if not self.candidate_done(row):
+   with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('FAILED',job_id))
+   record={'reason':'CHILD_FAILED_NO_COMMITTED_CANDIDATE','exit_code':rc,'job_id':job_id}
+   if failure is not None:record['worker_failure']=failure
+   write_once(self.root/'failures'/(job_id+'.json'),record)
+   return self.write_status(state='TRAINING_FAILED_EVIDENCE_RETAINED',active_job=job_id,**state)
+  return self.write_status(state='CANDIDATE_TRAINED_AWAITING_FUTURE_EVALUATION',active_job=job_id,**state)
+ def reap_pending_worker(self):
+  pending=getattr(self,'_pending_worker_completion',None)
+  if pending is None:return None
+  if self.child is None:raise ContractError('PENDING_WORKER_IDENTITY_LOST')
+  if self.child.poll() is None:
+   return self.write_status(state='WORKER_TERMINATION_PENDING',reason='TRAINING_WORKER_NOT_REAPED',
+     active_job=pending['job_id'],worker_pid=self.child.pid,new_worker_allowed=False)
+  rc=self.child.wait(timeout=0);self.child=None;self._pending_worker_completion=None
+  return self._complete_worker(pending['job_id'],rc,pending['state'],failure=pending['failure'])
  def _latest_candidate_registration(self,candidate_id):
   """Describe the latest completed artifact without collecting data or allocating work."""
   if not candidate_id or self.c.get('future_plan_admission_profile') is None:return None
@@ -218,11 +266,13 @@ class Supervisor:
   self.register_evaluation(row['id'],candidate,job)
   return True
  def _evaluation_plan(self,job_id,candidate,job,trial,now):
+  from .resident_evaluate import PUBLICATION_PROFILE
   rule=rule_for_trial(trial,self.c.get('promotion_protocol'));start=now+FORWARD_LEAD_MS
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
    'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000,
    'trial':trial,'rule':rule,'scope':self.c['period_sha256'],'no_refit':True,'broker_orders_sent':0,
+   'prediction_publication_profile':PUBLICATION_PROFILE,
    'evaluation_runtime_sha256':{n:self.c.get('runtime_sha256',{}).get(n) for n in ('learn/laya_cell/resident_evaluate.py','learn/laya_cell/resident_predict.py','learn/laya_cell/promotion.py','learn/laya_cell/promotion_power.py','learn/laya_cell/resident_data.py','learn/laya_cell/shadow_source.py')},
    'candidate_manifest_sha256':sha_file(Path(job['output_directory'])/'candidate.json')}
   # Older releases do not contain this optional route. A missing pin must not
@@ -265,6 +315,14 @@ class Supervisor:
   if training_policy in (training_v7,training_v8):
    from .resident_price_input import check_bindings
    plan.update(check_bindings(candidate))
+  from . import resident_parent_calibration as parent_calibration
+  comparison=parent_calibration.plan_binding(job,candidate)
+  if comparison:
+   for name in parent_calibration.RUNTIME_PINS:
+    expected=self.c.get('runtime_sha256',{}).get(name)
+    if not expected:raise ContractError('PARENT_CALIBRATION_RUNTIME_PINS_REQUIRED')
+    plan['evaluation_runtime_sha256'][name]=expected
+   plan.update(comparison)
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -480,15 +538,16 @@ class Supervisor:
   held=waiting.lookup(self.c,reserved,now)
   if held is None:return None
   payload={**queue,**held,'state':'WAITING_FOR_NEW_MATURE_LABELS','reason_codes':['UNCHANGED_TRAINING_INPUTS']}
-  return self.write_status(**payload)
+  return self.write_status(storage=self.storage,**payload)
  def queue_preflight(self):
   # Negative-only admission optimization; completing an already-trained
   # artifact's deferred registration never takes GPU or training authority.
-  config_check(self.c)
+  self._queue_preflight_snapshot=None
+  config_identity=digest(self.c);config_check(self.c)
   self.storage=inspect_storage(self.c)
   if not self.storage['admission_ready']:
    return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
-  self.sync_rewards()
+  rewards=self.sync_rewards()
   queue=self.reconcile_evaluation_queue()
   self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
   limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
@@ -496,19 +555,33 @@ class Supervisor:
    return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
    return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
-  return self._training_wait_preflight(int(time.time()*1000),queue)
+  held=self._training_wait_preflight(int(time.time()*1000),queue)
+  if held is None:
+   self._queue_preflight_snapshot={'config_digest':config_identity,'queue':dict(queue),
+    'rewards':rewards,'checked_at_ms':self._evaluation_queue_status['evaluation_queue_checked_at_ms']}
+  return held
  def step(self):
-  now=int(time.time()*1000);config_check(self.c);bootstrap_still_off()
+  pending=self.reap_pending_worker()
+  if pending is not None:return pending
+  preflight=getattr(self,'_reuse_queue_preflight_once',None);self._reuse_queue_preflight_once=None
+  if preflight is not None and preflight['config_digest']!=digest(self.c):preflight=None
+  now=int(time.time()*1000)
+  if preflight is None:config_check(self.c)
+  bootstrap_still_off()
+  # Actual launch admission still rereads storage after the resource gate.
+  # Only configuration/queue work from this one locked controller call is reused;
+  # independent workers and subsequent steps keep their original validation.
   self.storage=inspect_storage(self.c)
   if not self.storage['admission_ready']:
-   return self.write_status(state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
-  rewards=self.sync_rewards(now)
-  queue=self.reconcile_evaluation_queue()
-  self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
-  if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):return self.write_status(state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
+   return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_STORAGE',reason=self.storage['blocked_reason'])
+  rewards=self.sync_rewards(now) if preflight is None else preflight['rewards']
+  queue=self.reconcile_evaluation_queue() if preflight is None else preflight['queue']
+  self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000) if preflight is None else preflight['checked_at_ms'],
+    'same_round_preflight_reused':preflight is not None}
+  if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   pending=queue['viable_pending_evaluations']
   pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
-  if pending>=pending_limit:return self.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
+  if pending>=pending_limit:return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
   held=self._training_wait_preflight(now,queue)
   if held is not None:return held
   from .resident_input_wait import InputWait,input_signature
@@ -529,7 +602,7 @@ class Supervisor:
   state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,**queue,'reward_reason':rewards['reason']}
   if len(new)<16:
    _input_wait.remember(self.c,reserved,now,_input_before,quality=quality,mature_rows=len(rows),new_mature_rows=len(new),clock_complete=quality.get('training_input_clock_complete') is True,next_input_ms=quality.get('next_training_input_ms'))
-   return self.write_status(state='WAITING_FOR_NEW_MATURE_LABELS',**state)
+   return self.write_status(storage=self.storage,state='WAITING_FOR_NEW_MATURE_LABELS',**state)
   held=self._training_window_wait(int(time.time()*1000),queue,window=quality['window'])
   if held is not None:return held
   rule_for_trial(get_meta(self.db,'evaluation_trial',0)+1,self.c.get('promotion_protocol'))
@@ -537,10 +610,10 @@ class Supervisor:
   if training_policy in (training_v6,training_v7,training_v8):
    chosen=training_policy.select_covered_rows(new,cutoff_ms=quality['window']['training_end_ms'])
    if len(chosen)<16:
-    return self.write_status(state='WAITING_FOR_RECENT_MATURE_LABELS',recent_mature_rows=len(chosen),maximum_label_age_ms=training_v6.MAX_ROW_AGE_MS,**state)
+    return self.write_status(storage=self.storage,state='WAITING_FOR_RECENT_MATURE_LABELS',recent_mature_rows=len(chosen),maximum_label_age_ms=training_v6.MAX_ROW_AGE_MS,**state)
   else:chosen=(training_policy.select_covered_rows(new) if training_policy.enabled(self.c.get('objective')) else select_rows(new))
   row_ids=[k for k,_ in chosen];fingerprint=digest(row_ids)
-  if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(state='EXACT_DATASET_ALREADY_PROCESSED',**state)
+  if self.db.execute('SELECT 1 FROM jobs WHERE fingerprint=?',(fingerprint,)).fetchone():return self.write_status(storage=self.storage,state='EXACT_DATASET_ALREADY_PROCESSED',**state)
   parent=read_json(Path(self.c['initial_parent_directory'])/'candidate.json')
   parent_id=parent['candidate_id'];generation=int(parent.get('generation',2))
   data_id=digest(dataset);dataset_path=self.root/'datasets'/(data_id+'.json');write_once(dataset_path,dataset)
@@ -552,36 +625,48 @@ class Supervisor:
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}
   job_path=self.root/'jobs'/(job_id+'.json');write_once(job_path,job)
-  if not admit_job(self.db,job_id,fingerprint,now,job,row_ids):return self.write_status(state='JOB_ALREADY_ADMITTED',**state)
+  if not admit_job(self.db,job_id,fingerprint,now,job,row_ids):return self.write_status(storage=self.storage,state='JOB_ALREADY_ADMITTED',**state)
   self.write_status(state='TRAINING_ON_GFX1150',active_job=job_id,**state)
   with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('RUNNING',job_id))
   log=self.root/'logs'/(job_id+'.log');log.parent.mkdir(mode=0o700,exist_ok=True)
+  failure=None
   try:
    with log.open('x') as stream:
-    self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','train','--config',str(job_path)],stdout=stream,stderr=stream)
+    # The inherited descriptor refers to the same flock open-file-description.
+    # Closing the controller cannot free this lease while its worker survives.
+    inherited=inherited_worker_locks(self)
+    lock_args=[part for fd in inherited for part in ('--held-lock-fd',str(fd))]
+    self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','train','--config',str(job_path),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited)
     rc=self.child.wait(timeout=TRAINING_TIMEOUT_SECONDS)
-   self.child=None
-  except (subprocess.TimeoutExpired,Exception) as exc:
-   if self.child and self.child.poll() is None:self.child.terminate();self.child.wait(timeout=15)
-   self.child=None;rc=-1
-  row=self.db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
-  if not self.candidate_done(row):
-   with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('FAILED',job_id))
-   write_once(self.root/'failures'/(job_id+'.json'),{'reason':'CHILD_FAILED_NO_COMMITTED_CANDIDATE','exit_code':rc,'job_id':job_id})
-   return self.write_status(state='TRAINING_FAILED_EVIDENCE_RETAINED',active_job=job_id,**state)
-  return self.write_status(state='CANDIDATE_TRAINED_AWAITING_FUTURE_EVALUATION',active_job=job_id,**state)
+  except Exception as exc:
+   failure={'reason':'WORKER_BUDGET_EXCEEDED' if isinstance(exc,subprocess.TimeoutExpired) else 'WORKER_SUPERVISION_FAILED',
+     'error_class':type(exc).__name__}
+   if self.child is not None:
+    # Retain this identity even if terminate/kill itself fails unexpectedly.
+    self._pending_worker_completion={'job_id':job_id,'state':state,'failure':failure}
+    rc=terminate_worker(self.child)
+    if rc is None:return self.reap_pending_worker()
+   else:rc=-1
+  self.child=None;self._pending_worker_completion=None
+  return self._complete_worker(job_id,rc,state,failure=failure)
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--once',action='store_true');a=p.parse_args();os.umask(0o077)
  config=read_json(a.config);root=Path(config['control_directory']);root.mkdir(mode=0o700,parents=True,exist_ok=True)
  lock=os.open(root/'scheduler.lock',os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600);fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
- service=Supervisor(a.config);signal.signal(signal.SIGTERM,service.stop_signal);signal.signal(signal.SIGINT,service.stop_signal);service.recover()
- while not service.stop:
-  try:service.step()
-  except Exception as exc:service.write_status(state='LEARNING_UNAVAILABLE_NO_TRADE_EFFECT',reason=str(exc))
-  if a.once:break
-  for _ in range(30):
-   if service.stop:break
-   time.sleep(1)
- service.db.close();os.close(lock)
+ service=Supervisor(a.config);service._controller_lock_fd=lock
+ signal.signal(signal.SIGTERM,service.stop_signal);signal.signal(signal.SIGINT,service.stop_signal)
+ try:
+  service.recover()
+  while not service.stop:
+   try:service.step()
+   except Exception as exc:service.write_status(state='LEARNING_UNAVAILABLE_NO_TRADE_EFFECT',reason=str(exc))
+   if a.once:break
+   for _ in range(30):
+    if service.stop:break
+    time.sleep(1)
+ finally:
+  try:
+   if service.child is not None:terminate_worker(service.child)
+  finally:service.db.close();os.close(lock)
 if __name__=='__main__':main()

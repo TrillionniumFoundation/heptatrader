@@ -61,8 +61,9 @@ ctest --test-dir build/core -R '^hepta_pre_trade_risk_engine_tests$' --output-on
 ```
 
 The canonical `dev_core.sh` remains final candidate acceptance. Historical
-HeptaDLL JSON validation runs once in `run_python_tests.py --lane source`, while
-native old-record/client/privilege tests remain in core. The lease-store and
+HeptaDLL JSON validation uses `run_python_tests.py --lane legacy` when its
+archived inputs or validators change; native old-record/client/privilege tests
+remain in core. The lease-store and
 Supervisor test fixtures accept standard absolute `TMPDIR` for owned temporary
 state. Their defaults remain `/tmp`; record filesystem context for measurements.
 The existing coordinator `--generation-growth N` diagnostic likewise accepts
@@ -98,8 +99,9 @@ launchers forward `--recover-owner` to the base driver's existing recovery check
 
 The Python job gives documentation, core behavior and source contracts their own
 steps in one environment. A failed documentation or core step does not suppress
-the remaining diagnostics; failures still fail the job. Learning retains its
-independent job. Within a Python lane, an import failure runs as a failing unittest
+the remaining diagnostics; failures still fail the job. Learning runs in a later
+step of the same job after its pinned CPU dependencies are installed.
+Within a Python lane, an import failure runs as a failing unittest
 alongside valid modules instead of preventing every test in that lane from running.
 
 `ci_scope.py` keeps a bounded list of verified Python operator groups and requires
@@ -132,6 +134,11 @@ cohort report. `heptatrader status` includes the same progress view.
 
 Verified consumer, resident training-episode, Value prediction/reconciliation
 and compiler-cache changes select Python core/source and learning feedback.
+Resident v5-v8 objectives, closed-ACTION training, PRICE calibration and compact
+input transforms use this scope with their numerical and integration fixtures;
+they do not need an unrelated native rebuild. Native interfaces, shared integrity,
+installation and build changes still restore all lanes. Missing or symlinked
+paired source/test files likewise restore all lanes.
 The progress observer is stdlib-only and selects core/source feedback. Missing
 paired tests, new external imports in the observer, shared CLI/install changes
 and unknown paths restore full validation.

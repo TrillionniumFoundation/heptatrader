@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_laya_pause.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
+    "scripts/hepta_native_reader.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
     "scripts/hepta_nav_assurance.py",
@@ -63,6 +64,7 @@ def installed_fixture(*, readme: bool = False):
                 "adapters/mcp/hepta_mcp_server.py",
                 "scripts/hepta_pnl_accounting.py",
                 "scripts/hepta_pnl_report.py",
+                "scripts/hepta_native_reader.py",
                 "scripts/hepta_progress.py",
                 "scripts/hepta_pnl_watch.py",
                 "scripts/hepta_change_watch.py",

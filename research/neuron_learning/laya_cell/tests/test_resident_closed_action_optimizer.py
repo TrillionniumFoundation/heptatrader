@@ -168,6 +168,20 @@ class ClosedActionOptimizerTests(unittest.TestCase):
             self.assertTrue(torch.equal(p.detach(), before[n]), n)
             self.assertEqual(p.requires_grad, flags[n])
 
+    def test_deferred_full_hash_keeps_final_boundary_validation(self):
+        cell=TinyCell()
+        def deferred(*args,**kwargs):
+            return resident_train.run_closed_action_phase(*args,**kwargs,verify_frozen=False)
+        with patch.object(cell,'assert_frozen',wraps=cell.assert_frozen) as verify:
+            self.phase(cell,implementation=deferred)
+            verify.assert_not_called()
+            # The full job's final boundary remains responsible for this check.
+            cell.assert_frozen();verify.assert_called_once()
+        with torch.no_grad():
+            next(cell.model.encoder.parameters()).add_(1.)
+        with self.assertRaisesRegex(AssertionError,'Frozen encoder changed'):
+            cell.assert_frozen()
+
     def test_failed_loss_restores_original_trainable_scope(self):
         cell = TinyCell()
         flags = {n: p.requires_grad for n, p in cell.named_parameters()}
