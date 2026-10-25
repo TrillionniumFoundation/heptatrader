@@ -300,6 +300,7 @@ class ComponentScopeTests(unittest.TestCase):
             "research/neuron_learning/laya_cell/resident_price_calibration.py",
             "research/neuron_learning/laya_cell/resident_price_calibration_v2.py",
             "research/neuron_learning/laya_cell/resident_price_calibration_v3.py",
+            "research/neuron_learning/laya_cell/resident_parent_calibration.py",
             "research/neuron_learning/laya_cell/resident_price_input.py",
             "research/neuron_learning/laya_cell/tests/test_resident_training_v6_integration.py",
             "research/neuron_learning/laya_cell/tests/test_resident_price_input_v8.py",

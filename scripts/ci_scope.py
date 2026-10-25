@@ -171,6 +171,7 @@ VERIFIED_PYTHON_LEARNING_GROUPS = (
         "research/neuron_learning/laya_cell/resident_price_calibration.py",
         "research/neuron_learning/laya_cell/resident_price_calibration_v2.py",
         "research/neuron_learning/laya_cell/resident_price_calibration_v3.py",
+        "research/neuron_learning/laya_cell/resident_parent_calibration.py",
         "research/neuron_learning/laya_cell/resident_price_input.py",
         "research/neuron_learning/laya_cell/resident_train.py",
         "research/neuron_learning/laya_cell/resident.py",

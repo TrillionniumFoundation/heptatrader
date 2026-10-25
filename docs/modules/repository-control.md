@@ -28,9 +28,11 @@ Native conformance classes and the native verifier method are explicitly routed
 to external; their CPU siblings, including registration recovery and calendar
 admission, run in learning without a separately maintained module allowlist.
 
-`--lane legacy` retains the archived Desktop qualification contract fixtures.
+`--lane legacy` retains the archived Desktop qualification contract fixtures
+and fixed HeptaDLL migration/source-disposition inventories.
 [Archived qualification contracts](../../.github/workflows/legacy-qualification.yml)
-runs that lane when the archived YAML, verifier, test runner or paired tests change.
+runs that lane when the archived YAML, verifier, test runner, paired tests or
+historical inventory JSON changes.
 Routine research and driver edits do not run these retired workflow fixtures.
 The archived protocol and historical evidence remain available.
 
@@ -84,6 +86,44 @@ checking remains; prose length, generated navigation and status repetition are n
 development gates. The module catalog supports actual Git/CMake reachability.
 Journal-before-send, original-command recovery, identity, current quotes, risk
 limits, kill-switch and authoritative reduce-only behavior remain mandatory.
+
+## Draft inventory reviewed on 2026-10-25
+
+The 28 remaining open Draft heads were checked against main
+`9bfd56f3c15a46666b2e45ccf09da58daeb0d6b4` (including #454), using commit
+ancestry, patch equivalence and each PR's own base-to-head diff.
+None was an ancestor of main, and every head retained unmatched patches. No PR
+in this inventory is therefore classified as fully absorbed by main.
+
+| Entries | Retained work and next disposition |
+|---|---|
+| #421; older #337, #360 | #421 is the documented H1 STOP/OCA integration entry. Neither older head was its ancestor; complete source absorption still needs proof. Broker protection qualification remains separate. |
+| #365 | Durable WhatIf one-shot locking and the original account-isolation result; this is already the consolidated preview entry. |
+| #172, #174, #180, #184 | Strict NAV provenance, secondary FX renewal and stale-quote/recovery diagnostics. Retain until nested source absorption is proven. |
+| #371, #340 | Read-only PnL/history and frozen-admission auditors whose PR bodies still lack Pocket4 verification; preserve that explicit unfinished status. |
+| #425, #388, #383, #381, #378, #374 | Action saturation, original-parent replay failures, confidence baseline, loss correction and temporal-label research. Preserve the distinct experiments and negative results. |
+| #376, #328, #232, #213 | Original execution-cost attribution, temporal net-value negative control and the price-movement cost ceiling. Preserve original losses and attribution limits. |
+| #294, #286, #276, #223, #218, #217, #215 | Independent source/price audits, the cache SLA failure, finite Ridge outcomes and the zero-alpha control. Keep the original receipts and censored outcomes. |
+| #181 | Frozen multiwindow and matched-comparison research, including failed runs and their evidence. |
+
+Nested ancestry did establish that #360 head
+`a9b7f6f4888b927dcbf43f7ad070c65bb1139018` is retained by #365 head
+`20572a48b17e46e9e58b18ca0a49a3a0561688b9`. #365 is the WhatIf entry, so
+that relationship alone does not establish #421 as the complete retaining H1
+entry.
+
+Pocket4 also checked the complete base-to-head changes of #337 head
+`5f33a55401f4584e9e5a1ecba470d7b81137f579` and #360 against #421 head
+`8ea5c5214fbdadce7a60d10648112cd8fbf43b31`, using a temporary index and
+`git apply --cached --reverse --check`. Both checks failed on native and
+documentation files. Complete absorption remains unproven, so these entries
+stay open. No additional duplicate closure was performed.
+
+Any subsequent duplicate closure keeps the original branch and evidence, and
+identifies the exact retaining head. Old body statements about account state,
+running experiments or CI availability describe their recorded dates; they are
+not current runtime observations. Integrate useful independent deltas with
+affected tests rather than reopening an entire historical stacked chain.
 
 ## Convergence performed on 2026-10-14
 
