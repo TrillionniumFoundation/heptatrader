@@ -28,6 +28,7 @@ from hepta_decision_attribution import read_private, strict
 GUARD_YES = fence.GUARD_TEXT.encode()
 GUARD_NO = b"[Unit]\nRefuseManualStop=no\n"
 EXEC_DROPIN = "70-exact-attribution.conf"
+DRIVER_UNITS = frozenset({"heptatrader-paper-driver.service", "heptatrader-crypto-driver.service"})
 AUDIT_ENV = frozenset({
     "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_EXECUTION_REMOTE_MODE",
     "HEPTA_EXECUTION_SOCKET", "HEPTA_EXECUTION_EVENT_SOCKET",
@@ -63,6 +64,40 @@ def ctl(*args):
         ["systemctl", "--user", *args],
         check=True, timeout=45, capture_output=True, text=True,
     )
+
+
+def frozen_driver_snapshot(unit):
+    """Read exact loaded policy for a disabled peer; never start that lane."""
+    if unit not in DRIVER_UNITS:
+        fail("INVALID_FROZEN_DRIVER_SCOPE")
+    properties = (*fence.SHOW_PROPS, "UnitFileState", "ExecStart")
+    raw = subprocess.check_output(
+        ["systemctl", "--user", "show", unit, "--no-pager",
+         *[flag for name in properties for flag in ("-p", name)]], text=True, timeout=15,
+    )
+    values = {}
+    for line in raw.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name not in properties or name in values:
+            fail("INVALID_FROZEN_DRIVER_READBACK:" + unit)
+        values[name] = value
+    if set(values) != set(properties):
+        fail("INCOMPLETE_FROZEN_DRIVER_READBACK:" + unit)
+    return values
+
+
+def frozen_inactive_peers(before, selected):
+    frozen = {}
+    for name in DRIVER_UNITS - {selected}:
+        if before[name]["ActiveState"] != "inactive":
+            continue
+        value = frozen_driver_snapshot(name)
+        if ({key: value[key] for key in fence.SHOW_PROPS} != before[name]
+                or value["LoadState"] != "loaded" or value["MainPID"] != "0"
+                or value["UnitFileState"] != "disabled" or value["RefuseManualStop"] != "yes"):
+            fail("INACTIVE_DRIVER_PEER_NOT_FROZEN_DISABLED:" + name)
+        frozen[name] = value
+    return frozen
 
 
 def replace_exact(path, expected, replacement):
@@ -564,10 +599,13 @@ def maintenance_upgrade(
         verify_prepared(candidate, candidate_sha, instrument, original)
         markers = marker_identity(home)
         before = {name: fence.show_unit(name) for name in fence.RISK_UNITS}
-        fence.check_state(before, before, required=True)
+        frozen_peers = frozen_inactive_peers(before, unit)
+        required_before = {name: state for name, state in before.items() if name not in frozen_peers}
+        fence.check_state(required_before, before, required=True)
+        receipt["frozen_inactive_peers"] = frozen_peers
         same_driver(original, running_driver(unit, instrument))
         peer_before = {
-            name: status for name, status in before.items() if name != unit
+            name: status for name, status in required_before.items() if name != unit
         }
         guard_paths = {
             name: unit_root / (name + ".d") / fence.GUARD_NAME
@@ -603,6 +641,11 @@ def maintenance_upgrade(
                 fail("MAINTENANCE_MARKERS_CHANGED")
             current = {name: fence.show_unit(name) for name in fence.RISK_UNITS}
             fence.check_state(peer_before, current, required=True)
+            for name, expected in frozen_peers.items():
+                actual = frozen_driver_snapshot(name)
+                if (actual != expected
+                        or {key: actual[key] for key in fence.SHOW_PROPS} != current[name]):
+                    fail("FROZEN_DRIVER_PEER_CHANGED:" + name)
             for name, path in guard_paths.items():
                 expected = guard if name == unit else GUARD_YES
                 if read_private(path, 65536) != expected:

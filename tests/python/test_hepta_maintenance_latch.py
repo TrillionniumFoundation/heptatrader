@@ -4,6 +4,7 @@ Tests never touch real /run/user/UID paths, the IB API, or actual orders.
 """
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -145,6 +146,59 @@ class HoldTests(unittest.TestCase):
         with self.assertRaisesRegex(HoldError,"INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE"):
             self.run_action("paper-on")
 
+    def test_expected_hold_release_preserves_the_original_empty_native_identity(self):
+        marker = self._make_independent_empty_marker()
+        original_native = latch._identity(marker.stat())
+        created = perform("maintenance-hold", self.control, self.state, task="unique-deployment-owner")
+        expected = created["hold_sha256"]
+        self.assertEqual(expected, hashlib.sha256(self.hold_path.read_bytes()).hexdigest())
+        self.assertEqual(created["hold_details"]["task"], "unique-deployment-owner")
+        with patch.object(latch, "_command", side_effect=AssertionError("no native resume/service action")):
+            result = perform("maintenance-release", self.control, self.state,
+                             expected_hold_sha256=expected)
+        self.assertFalse(result["persistent_hold"])
+        self.assertIsNone(result["hold_sha256"])
+        self.assertTrue(result["native_kill_switch_engaged"])
+        self.assertEqual(result["native_marker_origin"], "INDEPENDENT_EMPTY_NATIVE")
+        self.assertEqual(latch._identity(marker.stat()), original_native)
+
+    def test_expected_hash_is_compared_after_acquiring_the_original_operator_lock(self):
+        self._make_independent_empty_marker()
+        perform("maintenance-hold", self.control, self.state, task="our-deployment")
+        expected = hashlib.sha256(self.hold_path.read_bytes()).hexdigest()
+        native = latch._identity(self.kill_path.stat())
+        lock = os.open(self.state / latch.LOCK, os.O_RDWR | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(perform, "maintenance-release", self.control, self.state,
+                                     expected_hold_sha256=expected)
+                try:
+                    time.sleep(0.06)
+                    self.assertFalse(future.done())
+                    replacement = json.loads(self.hold_path.read_bytes())
+                    replacement["task"] = "different-operator-hold"
+                    raw = (json.dumps(replacement) + "\n").encode()
+                    self.hold_path.write_bytes(raw)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                with self.assertRaisesRegex(HoldError, "MAINTENANCE_HOLD_IDENTITY_MISMATCH"):
+                    future.result(timeout=2)
+        finally:
+            os.close(lock)
+        self.assertEqual(self.hold_path.read_bytes(), raw)
+        self.assertEqual(latch._identity(self.kill_path.stat()), native)
+
+    def test_expected_hold_hash_is_validated_and_scoped_without_touching_markers(self):
+        self.run_action("maintenance-hold")
+        before = self.hold_path.read_bytes(), self.kill_path.read_bytes()
+        for value in ("", "A" * 64, "x" * 64, "a" * 63):
+            with self.subTest(value=value), self.assertRaisesRegex(HoldError, "INVALID_EXPECTED"):
+                perform("maintenance-release", self.control, self.state, expected_hold_sha256=value)
+        with self.assertRaisesRegex(HoldError, "REQUIRES_MAINTENANCE_RELEASE"):
+            perform("paper-on", self.control, self.state, expected_hold_sha256="a" * 64)
+        self.assertEqual((self.hold_path.read_bytes(), self.kill_path.read_bytes()), before)
+
     def test_unrecognized_native_marker_allows_status_only(self):
         marker=self.control/"kill-switch"
         marker.write_bytes(b"unknown-origin")
@@ -266,12 +320,107 @@ class HoldTests(unittest.TestCase):
         systemctl = fake_bin / "systemctl"
         systemctl.write_text("#!/bin/sh\nexit 0\n")
         systemctl.chmod(0o700)
-        args = ["paper-on", "--resume-native-hold", "--check"]
-        result = subprocess.run([str(wrapper), *args], capture_output=True, text=True,
-                                timeout=5, env={**os.environ, "HOME": str(self.parent),
-                                "PATH": str(fake_bin) + os.pathsep + os.defpath})
+        for args in (["paper-on", "--resume-native-hold", "--check"],
+                     ["maintenance-release", "--expected-hold-sha256", "a" * 64]):
+            with self.subTest(args=args):
+                result = subprocess.run([str(wrapper), *args], capture_output=True, text=True,
+                                        timeout=5, env={**os.environ, "HOME": str(self.parent),
+                                        "PATH": str(fake_bin) + os.pathsep + os.defpath})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), args)
+
+
+class MaintenanceReleaseWrapperTests(unittest.TestCase):
+    """Run the real bash wrapper against isolated manager/helper executables."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hepta-maintenance-wrapper-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.release = self.root / "release"; self.release.mkdir()
+        self.bin = self.root / "bin"; self.bin.mkdir()
+        self.wrapper = self.release / "heptatrader"
+        self.wrapper.write_bytes((Path(__file__).resolve().parents[2] / "scripts/heptatrader-user").read_bytes())
+        (self.release / "hepta_maintenance_latch.py").write_text(
+            "import json,sys;print(json.dumps(sys.argv[1:]))\n")
+        systemctl = self.bin / "systemctl"
+        systemctl.write_text("#!" + sys.executable + "\n" + '''
+import json,sys
+from pathlib import Path
+root=Path(__file__).resolve().parents[1]
+args=sys.argv[1:]
+with (root/'calls').open('a') as stream:stream.write(json.dumps(args)+'\\n')
+states=json.loads((root/'manager.json').read_text())
+assert args[0]=='--user'
+if args[1]=='is-active':
+    units=[value for value in args[2:] if value.endswith('.service')]
+    sys.exit(0 if any(states[name]['ActiveState']=='active' for name in units) else 3)
+if args[1]=='show':
+    state=states[args[2]]
+    for index,value in enumerate(args):
+        if value=='-p' and args[index+1] in state:print(args[index+1]+'='+state[args[index+1]])
+    for line in state.get('extra_lines',[]):print(line)
+    sys.exit(0)
+raise AssertionError('non-read-only systemctl operation: '+str(args))
+''')
+        systemctl.chmod(0o700)
+        self.paper = "heptatrader-paper-driver.service"
+        self.crypto = "heptatrader-crypto-driver.service"
+        self.states = {
+            "heptatrader-execution.service": {"ActiveState": "active"},
+            "heptatrader-gateway.service": {"ActiveState": "active"},
+            self.paper: {"LoadState": "loaded", "ActiveState": "active", "UnitFileState": "enabled",
+                         "MainPID": "4201", "RefuseManualStop": "yes"},
+            self.crypto: {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "disabled",
+                          "MainPID": "0", "RefuseManualStop": "yes"},
+        }
+        self.args = ["maintenance-release", "--expected-hold-sha256", "a" * 64]
+
+    def invoke(self):
+        (self.root / "manager.json").write_text(json.dumps(self.states))
+        (self.root / "calls").unlink(missing_ok=True)
+        result = subprocess.run(["/bin/bash", str(self.wrapper), *self.args], capture_output=True, text=True,
+            timeout=5, env={**os.environ, "PATH": str(self.bin) + os.pathsep + os.defpath})
+        self.calls = [json.loads(line) for line in (self.root / "calls").read_text().splitlines()]
+        self.assertTrue(all(call[1] in ("is-active", "show") for call in self.calls))
+        return result
+
+    def test_disabled_inactive_btc_allows_helper_to_release_only_the_expected_hold(self):
+        result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), args)
+        self.assertEqual(json.loads(result.stdout), self.args)
+        self.assertEqual([call[2] for call in self.calls if call[1] == "show"], [self.crypto])
+
+    def test_ordinary_active_drivers_keep_the_active_path(self):
+        self.states[self.crypto].update(ActiveState="active", MainPID="4202")
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), self.args)
+        self.assertFalse(any(call[1] == "show" for call in self.calls))
+
+    def test_abnormal_inactive_driver_policy_never_invokes_release_helper(self):
+        original = dict(self.states[self.crypto])
+        cases = [dict(original, UnitFileState="enabled"), dict(original, MainPID="99"),
+                 dict(original, LoadState="not-found"), dict(original, RefuseManualStop="no"),
+                 dict(original, ActiveState="failed"), dict(original, extra_lines=["MainPID=0"]),
+                 {key: value for key, value in original.items() if key != "UnitFileState"}]
+        for state in cases:
+            with self.subTest(state=state):
+                self.states[self.crypto] = state
+                result = self.invoke()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+
+    def test_both_core_services_must_still_be_active(self):
+        for unit in ("heptatrader-execution.service", "heptatrader-gateway.service"):
+            with self.subTest(unit=unit):
+                self.states[unit]["ActiveState"] = "inactive"
+                try:
+                    result = self.invoke()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertFalse(any(call[1] == "show" for call in self.calls))
+                finally:
+                    self.states[unit]["ActiveState"] = "active"
 
 
 class NativeHoldResumeTests(unittest.TestCase):

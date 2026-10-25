@@ -236,6 +236,7 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.observations = 0
         self.die_after_observations = None
         self.audit_counter = 0
+        self.frozen_policies = {}
         self.audit_credit = None
         self.audit_mode = None
         self.fail_stop = False
@@ -254,6 +255,7 @@ class MaintenanceUpgradeTests(unittest.TestCase):
             "proc_bytes": self._unexpected_proc_read,
             "marker_identity": self._marker_identity,
             "audit_environment": self._audit_environment,
+            "frozen_driver_snapshot": self._frozen_driver_snapshot,
             "fence": _ModuleProxy(activation.fence, show_unit=self._show_unit),
             "subprocess": _ModuleProxy(subprocess, run=self._audit_run),
             "time": _ModuleProxy(time, monotonic=lambda: self.clock, sleep=self._sleep),
@@ -391,6 +393,18 @@ class MaintenanceUpgradeTests(unittest.TestCase):
     def _show_unit(self, name):
         self._require(name in self.statuses, "unexpected unit: " + name)
         return dict(self.statuses[name])
+
+    def _frozen_driver_snapshot(self, name):
+        self._boundary()
+        self._require(name in self.frozen_policies, "unexpected frozen driver read: " + name)
+        return {**self._show_unit(name), **self.frozen_policies[name]}
+
+    def _freeze_crypto_peer(self):
+        name = "heptatrader-crypto-driver.service"
+        self.statuses[name].update(ActiveState="inactive", SubState="dead", MainPID="0", InvocationID="")
+        self.peer_statuses[name] = dict(self.statuses[name])
+        self.frozen_policies[name] = {"UnitFileState": "disabled", "ExecStart": "fixture original BTC entry"}
+        return name
 
     def _running_driver(self, unit, instrument):
         self._boundary()
@@ -669,6 +683,67 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(stopped["pid_key"], self.original_key)
         self.assertEqual(stopped["audit_command_id"], audit["command_id"])
 
+    def test_disabled_inactive_crypto_peer_stays_frozen_during_fx_activation(self):
+        peer = self._freeze_crypto_peer()
+        before = {**self.statuses[peer], **self.frozen_policies[peer]}
+        result = self._upgrade()
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual(result["frozen_inactive_peers"], {peer: before})
+        self.assertEqual({**self.statuses[peer], **self.frozen_policies[peer]}, before)
+        self.assertTrue(result["other_risk_units_preserved"])
+
+    def test_inactive_peer_exception_requires_loaded_disabled_zero_pid_and_guard(self):
+        peer = self._freeze_crypto_peer()
+        original = dict(self.statuses[peer])
+        policy = dict(self.frozen_policies[peer])
+        for field, value in (("LoadState", "not-found"), ("MainPID", "41000"),
+                             ("RefuseManualStop", "no"), ("UnitFileState", "enabled"),
+                             ("ActiveState", "failed")):
+            with self.subTest(field=field):
+                if field in policy:
+                    self.frozen_policies[peer][field] = value
+                else:
+                    self.statuses[peer][field] = value
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "INACTIVE_DRIVER_PEER|RISK_PATH_NOT_ACTIVE"):
+                        self._upgrade()
+                    self.assertEqual(self.events, [])
+                finally:
+                    self.statuses[peer] = dict(original)
+                    self.frozen_policies[peer] = dict(policy)
+
+    def test_frozen_peer_policy_or_identity_drift_prevents_any_selected_stop(self):
+        self._freeze_crypto_peer()
+        for field in ("ExecStart", "UnitFileState", "MainPID", "InvocationID", "PartOf",
+                      "ActiveState", "SubState", "LoadState", "RefuseManualStop"):
+            with self.subTest(field=field):
+                self.audit_counter = 0; self.audit_credit = None; self.events.clear()
+                def changed(name):
+                    value = self._frozen_driver_snapshot(name)
+                    if self.audit_counter:
+                        value[field] = "changed-after-audit"
+                    return value
+                with mock.patch.object(activation, "frozen_driver_snapshot", side_effect=changed):
+                    result = self._upgrade()
+                self.assertEqual(result["status"], "FAILED", result)
+                self.assertIn("FROZEN_DRIVER_PEER_CHANGED", result["error"])
+                self.assertEqual(self._events("stop"), [])
+                self.assertEqual(self._events("start"), [])
+                self.assertEqual(self.exec_path.read_bytes(), self.old_exec)
+
+    def test_selected_driver_and_non_driver_risk_units_still_require_active(self):
+        self._freeze_crypto_peer()
+        for name in (self.unit, "heptatrader-execution.service"):
+            with self.subTest(unit=name):
+                original = dict(self.statuses[name])
+                self.statuses[name].update(ActiveState="inactive", MainPID="0")
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "DRIVER_NOT_ACTIVE|RISK_PATH_NOT_ACTIVE"):
+                        self._upgrade()
+                    self.assertEqual(self.events, [])
+                finally:
+                    self.statuses[name] = original
+
     def test_prepared_stream_manifest_preserves_the_existing_activation_boundary(self):
         record = json.loads(self.candidate.read_bytes())
         record["native_read_stream"] = True
@@ -922,6 +997,28 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(self._current_key(), self.original_key)
         self.assertEqual(self.state_path.read_bytes(), self.initial_state_raw)
 
+
+
+class FrozenDriverReadbackTests(unittest.TestCase):
+    def test_loaded_peer_readback_binds_enablement_and_full_execstart(self):
+        peer = "heptatrader-crypto-driver.service"
+        values = {name: "fixture" for name in activation.fence.SHOW_PROPS}
+        values.update(UnitFileState="disabled", ExecStart="{ argv[]=/fixture/driver --manifest=/fixture/m.json ; }")
+        raw = "".join(name + "=" + value + "\n" for name, value in values.items())
+        with mock.patch.object(activation.subprocess, "check_output", return_value=raw) as read:
+            self.assertEqual(activation.frozen_driver_snapshot(peer), values)
+            self.assertEqual(read.call_args.args[0][:4], ["systemctl", "--user", "show", peer])
+            self.assertIn("UnitFileState", read.call_args.args[0])
+            self.assertIn("ExecStart", read.call_args.args[0])
+        for invalid in (raw + "ExecStart=changed\n", raw.replace("UnitFileState=disabled\n", "")):
+            with self.subTest(raw=invalid), mock.patch.object(
+                    activation.subprocess, "check_output", return_value=invalid):
+                with self.assertRaisesRegex(RuntimeError, "FROZEN_DRIVER_READBACK"):
+                    activation.frozen_driver_snapshot(peer)
+        with mock.patch.object(activation.subprocess, "check_output") as read:
+            with self.assertRaisesRegex(RuntimeError, "INVALID_FROZEN_DRIVER_SCOPE"):
+                activation.frozen_driver_snapshot("heptatrader-execution.service")
+            read.assert_not_called()
 
 
 class ResidentLoopProgressTests(unittest.TestCase):
