@@ -6,7 +6,7 @@ After=heptatrader-execution.service heptatrader-gateway.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/share/heptatrader/current/libexec/heptatrader/heptatrader_paper_driver.py
+ExecStart=%h/.local/share/heptatrader/current/libexec/heptatrader/heptatrader_paper_driver.py --native-read-stream
 Environment=PYTHONDONTWRITEBYTECODE=1
 UMask=0077
 Restart=always

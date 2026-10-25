@@ -3,6 +3,7 @@
 #include "execution/ib_paper_account_broker_evidence.h"
 #include "../HeptaTrade/execution/ib_paper_fx_cash_restart_catchup.h"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -764,6 +765,105 @@ void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
     ::unlink(path.c_str());
 }
 
+// The real IB policy still serializes mutation/recovery operations. This
+// fixture measures that boundary above the coordinator: its venue callback
+// releases the coordinator mutex, while a cancel still waits on policyMutex.
+// No sockets, vendor API, trading service or wall-clock SLO are involved.
+void TestSlowPlaceMeasuresActualPolicyCancelWait()
+{
+    using Clock = std::chrono::steady_clock;
+    IbPaperExecutionProfileConfig config; std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
+    std::string path = FixtureTemporaryPath("hepta-policy-place-wait");
+    const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path.c_str()));
+    std::mutex gate; std::condition_variable changed;
+    bool entered = false, released = false;
+    Clock::time_point enteredAt, releasedAt, cancelDispatchedAt;
+    std::atomic<int> places{0}, cancels{0};
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) { return true; };
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string&) {
+        ++places;
+        std::unique_lock<std::mutex> lock(gate);
+        enteredAt = Clock::now(); entered = true; changed.notify_all();
+        assert(changed.wait_for(lock, std::chrono::seconds(5), [&] { return released; }));
+        return VenuePlaceResult::Submitted(42);
+    });
+    callbacks.cancelOrder = [&](long orderId) {
+        assert(orderId == 42); ++cancels; cancelDispatchedAt = Clock::now();
+        return VenueCancelResult::Submitted();
+    };
+    ExecutionCoordinator coordinator(journal, callbacks);
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
+    policyCallbacks.riskSnapshot = [] {
+        IbPaperAuthoritativeRiskSnapshot risk; risk.complete = true; return risk;
+    };
+    policyCallbacks.authoritativeQuote = [&](const std::string& instrument) {
+        MarketQuoteSnapshot quote;
+        quote.subscriptionId = "policy-wait-fixture"; quote.instrument = instrument;
+        quote.state = MarketSubscriptionState::Active; quote.bid = 1.10; quote.ask = 1.11;
+        quote.observedAtMs = OmsJournal::NowEpochMs();
+        quote.staleAfterMs = quote.observedAtMs + config.externalQuoteMaxAgeMs;
+        return quote;
+    };
+    std::shared_ptr<IbPaperKillSwitchReader> killSwitch(new FixedKillSwitchReader(IbPaperKillSwitchState::Disarmed));
+    IbPaperExecutionPolicyAuthority policy(coordinator, config, policyCallbacks, killSwitch);
+    PlaceOrderCommand place = QualificationOrder(config, "BUY", 1.0);
+    place.context.agentId = "policy-wait"; place.context.sessionId = "session";
+    place.context.toolCallId = "slow-place"; place.context.decisionLeaseFencingToken = 1;
+    place.context.decisionLeaseGeneration = 1; place.contract.symbol = "EUR";
+    place.instrument = "EUR.USD"; place.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
+    auto pendingPlace = std::async(std::launch::async, [&] { return policy.PlaceOrder(place); });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        assert(changed.wait_for(lock, std::chrono::seconds(2), [&] { return entered; }));
+    }
+    CancelOrderCommand cancel; cancel.context = place.context;
+    cancel.context.toolCallId = "queued-cancel"; cancel.orderId = 42;
+    std::promise<void> cancelStarted;
+    auto started = cancelStarted.get_future();
+    auto pendingCancel = std::async(std::launch::async, [&] {
+        const auto begin = Clock::now(); cancelStarted.set_value();
+        const auto result = policy.CancelOrder(cancel);
+        return std::make_pair(result, std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
+    });
+    assert(started.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    assert(pendingCancel.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
+    assert(cancels.load() == 0);
+    ExecutionControlCommand control; control.context = place.context;
+    control.context.toolCallId = "query-while-place"; control.targetCommandId = "slow-place";
+    const auto queryAt = Clock::now();
+    auto query = std::async(std::launch::async, [&] { return policy.QueryCommandStatus(control); });
+    assert(query.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    const auto queried = query.get();
+    const auto queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - queryAt).count();
+    assert(queried.status == ExecutionCommandStatus::Accepted);
+    assert(queried.targetStatus == ExecutionCommandStatus::Uncertain);
+    // Recovery release keeps its existing policy serialization; measuring a
+    // slow provider must not introduce a bypass around this protection.
+    assert(policy.ReleaseSessionOwnerFence(control).reasonCode == "IB_PAPER_CONTROL_BUSY");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        releasedAt = Clock::now(); released = true; changed.notify_all();
+    }
+    assert(pendingPlace.get().status == ExecutionCommandStatus::Accepted);
+    const auto cancelled = pendingCancel.get();
+    assert(cancelled.first.status == ExecutionCommandStatus::Accepted);
+    assert(cancelDispatchedAt >= releasedAt);
+    assert(policy.PlaceOrder(place).status == ExecutionCommandStatus::Duplicate);
+    assert(policy.CancelOrder(cancel).status == ExecutionCommandStatus::Duplicate);
+    assert(places.load() == 1 && cancels.load() == 1);
+    std::cout << "{\"schema\":\"heptatrader.policy-wait-fixture.v1\","
+              << "\"cancel_total_ns\":" << cancelled.second
+              << ",\"injected_venue_hold_ns\":"
+              << std::chrono::duration_cast<std::chrono::nanoseconds>(releasedAt - enteredAt).count()
+              << ",\"control_query_ns\":" << queryNs
+              << ",\"place_calls\":1,\"cancel_calls\":1,\"policy_lock_retained\":true}\n";
+    ::unlink(path.c_str());
+}
+
 void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 {
     IbPaperExecutionProfileConfig config; std::string reason;
@@ -1436,6 +1536,7 @@ int main()
     TestConfiguredUserOwnerResumeScopesAreIndependent();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
+    TestSlowPlaceMeasuresActualPolicyCancelWait();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();
     TestQualificationProfileRejectsWiderOrAmbiguousAuthority();

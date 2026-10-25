@@ -146,6 +146,54 @@ class Gate:
         if self.c.get('value_priority') is not None and role in ('trainer','evaluator'):
             from .value_priority_admission import verify_policy
             verify_policy(self.c['value_priority'])
+    def record_native_exit(self,returncode,subject):
+        """Stop new heavy work after a native crash; preserve CPU closeout.
+
+        The ordinary worker failure remains authoritative for its job/slot.
+        This receipt only owns resource admission and never rewrites a trial.
+        """
+        fatal=(-signal.SIGSEGV,-signal.SIGBUS,-signal.SIGABRT,-signal.SIGILL)
+        if type(returncode) is not int or returncode not in fatal:return None
+        identity={'role':self.role,'subject':subject,'exit_code':returncode}
+        path=self.root/'native-failures'/(digest(identity)+'.json')
+        try:
+            if path.exists():
+                receipt=read(path)
+                if any(receipt.get(k)!=v for k,v in identity.items()):
+                    raise EvidenceError('NATIVE_FAILURE_IDENTITY_CHANGED')
+            else:
+                receipt={'schema':'heptatrader.resident-native-failure.v1',**identity,
+                    'at_ms':int(time.time()*1000),'signal':signal.Signals(-returncode).name,
+                    'automatic_trading':False,'original_trial_assessment_changed':False}
+                write_once(path,receipt)
+            manual=self.c.get('manual_hold_path')
+            if not isinstance(manual,str) or not Path(manual).is_absolute():
+                raise EvidenceError('NATIVE_FAILURE_HOLD_PATH_REQUIRED')
+            hold={'schema':'heptatrader.operator-diagnostic-hold.v1',
+                'created_ms':receipt['at_ms'],'owner':'heptatrader-resident-resource-guard',
+                'reason':'NATIVE_WORKER_FATAL_SIGNAL',
+                'scope':'NEW_HEAVY_GPU_WORK_ONLY_ORIGINAL_CPU_CLOSEOUT_CONTINUES',
+                'evidence':{'receipt_path':str(path),'receipt_sha256':sha(path),
+                            'role':self.role,'signal':receipt['signal'],'subject':subject},
+                'ordinary_training_retry_is_not_stability_verification':True,
+                'release_conditions':'Controlled diagnosis and finite stability acceptance; remove only this exact marker.'}
+            # Any existing marker, including a concurrently created one, already
+            # blocks admission. Never overwrite another owner's hold.
+            if not os.path.lexists(manual):
+                try:write_once(manual,hold)
+                except (OSError,EvidenceError):
+                    if not os.path.lexists(manual):raise
+            for directory in {path.parent,Path(manual).parent}:
+                fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+                try:os.fsync(fd)
+                finally:os.close(fd)
+            return receipt
+        except Exception:
+            # If durable fault admission cannot be recorded, this controller
+            # drains instead of retrying the crashed workload.
+            self.draining=True
+            raise
+
     def status_diagnostics(self):
         """Cheap current blockers even when a prior calendar/queue gate returned.
 
@@ -454,8 +502,17 @@ def guarded_evaluator_class(base,gate):
                 if not self.tasks:gate.release();self._worker_lease_fd=None
             except Exception:gate.release();raise
         def reap(self):
-            super().reap()
-            if not self.tasks:gate.release()
+            record=getattr(gate,'record_native_exit',None)
+            previous=([(key,task[0]) for key,task in self.tasks.items()]
+                      if callable(record) else [])
+            try:super().reap()
+            finally:
+                try:
+                    if callable(record):
+                        for (plan,slot),child in previous:
+                            record(child.poll(),{'plan':str(plan),'slot':slot})
+                finally:
+                    if not self.tasks:gate.release()
     return GuardedEvaluator
 
 
@@ -467,6 +524,16 @@ class _ForwardRegistrationHold(Exception):
 
 def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
+        def _complete_worker(self,job_id,rc,state,*,failure=None):
+            record=getattr(gate,'record_native_exit',None)
+            try:
+                if callable(record):record(rc,{'job_id':job_id})
+            finally:
+                # A failed hold write drains the guard, but must not suppress
+                # the original job's terminal receipt after its child is gone.
+                result=super()._complete_worker(job_id,rc,state,failure=failure)
+            return result
+
         def register_evaluation(self,job_id,candidate,job):
             if self.c.get('future_plan_admission_profile') is None:
                 return super().register_evaluation(job_id,candidate,job)

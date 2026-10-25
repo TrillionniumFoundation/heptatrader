@@ -4,7 +4,7 @@ Only the scheduler checks the old service; children cannot contact its bus or an
 trading endpoint. Landlock confines files and seccomp denies new network sockets.
 """
 from __future__ import annotations
-import argparse,json,os
+import argparse,faulthandler,json,os
 from pathlib import Path
 from .integrity import read_json,sha_file,ContractError
 from .resident import config_check,bootstrap_still_off
@@ -25,6 +25,8 @@ def main():
  p.add_argument('--plan',type=Path);p.add_argument('--slot',type=int)
  p.add_argument('--held-lock-fd',type=int,action='append',default=[])
  a=p.parse_args();os.umask(0o077);retain_worker_locks(a.held_lock_fd)
+ # Capture the Python call stack even when HIP fails before a JSON result.
+ faulthandler.enable(all_threads=True)
  c=read_json(a.config);base=dict(c);base['schema']='heptatrader.laya-resident-config.v1';config_check(base);bootstrap_still_off()
  if c.get('require_worker_sandbox') is not True:raise ContractError('SANDBOX_REQUIRED')
  if a.target=='train':

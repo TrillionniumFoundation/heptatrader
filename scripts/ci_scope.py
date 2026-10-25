@@ -17,6 +17,16 @@ from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
+# Observation reports use stable document categories, not a per-experiment
+# allowlist. Contract/configuration names retain full feedback even when a
+# report suffix is appended; unknown research Markdown does too.
+RESEARCH_REPORT = re.compile(
+    r"[A-Z0-9][A-Z0-9_-]*_(?:PHYSICAL|AUDIT|CLOSEOUT|FORENSICS|"
+    r"CONVERGENCE|OBSERVATIONS|REPORT)_20[0-9]{6}\.md")
+RESEARCH_CONTRACT = re.compile(
+    r"(?:^|_)(?:CONTRACT|CONFIG|CONFIGURATION|SCHEMA|PROTOCOL|"
+    r"SPEC|SPECIFICATION|MANIFEST|REQUIREMENTS)(?:_|\.)")
+
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/hepta_nav_assurance.py", "tests/python/test_nav_assurance.py",
@@ -231,8 +241,9 @@ def docs_only(paths: list[str]) -> bool:
             continue
         if len(components) >= 2 and components[0] == "research":
             name = components[-1]
-            # Reports are prose; unnamed research contracts retain full CI.
-            if name == "README.md" or re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*_(?:PHYSICAL|AUDIT|CLOSEOUT|FORENSICS)_20[0-9]{6}\.md", name):
+            if name == "README.md" or (
+                    RESEARCH_REPORT.fullmatch(name) and
+                    not RESEARCH_CONTRACT.search(name)):
                 continue
             return False
         if len(components) < 2 or components[0] != "docs" or not path.endswith(".md"):

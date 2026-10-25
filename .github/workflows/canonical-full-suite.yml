@@ -47,6 +47,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Assert and retain exact source identity
+        id: identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -73,6 +74,7 @@ jobs:
       - name: Build the canonical sanitizer dependency closure
         run: cmake --build "$BUILD_DIR" --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
       - name: Run nonempty core suite and retain machine-readable results
+        id: core_tests
         run: |
           set -euo pipefail
           ctest --test-dir "$BUILD_DIR" --show-only=json-v1 > "$BUILD_DIR/test-inventory.json"
@@ -81,6 +83,7 @@ jobs:
             --output-junit "$PWD/$BUILD_DIR/core-results.xml" \
             --output-log "$PWD/$BUILD_DIR/core-ctest.log"
       - name: Repeat real research Execution crash and recovery acceptance
+        id: recovery_tests
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
@@ -103,6 +106,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Reassert clean exact source
+        id: clean_source
         if: always()
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

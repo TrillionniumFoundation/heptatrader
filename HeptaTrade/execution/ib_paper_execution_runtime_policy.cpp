@@ -492,14 +492,6 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
         result.detail = health.str();
         return result;
     }
-    const IBAuthoritativeRiskSnapshot risk =
-        m_adapter->GetAuthoritativeRiskSnapshot();
-    const IBAuthoritativeCorrelationSnapshot orders =
-        m_adapter->GetAuthoritativeCorrelationSnapshot();
-    const bool postFillPending = PostFillRiskRefreshPending();
-    const std::string riskReason = m_startupRecoveryReadOnly.load() ?
-        StartupRecoveryReadOnlyReason() : (postFillPending ?
-        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode);
     std::ostringstream output;
     output.precision(17);
     if (command.query == "market.get_quote")
@@ -568,8 +560,24 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                << "\"stale\":false,\"bid\":"
                << subscription->second.quote.bid << ",\"ask\":"
                << subscription->second.quote.ask << "}";
+        // Quote reads need no risk or order copies. The health/recovery
+        // composite above still samples all its inputs under one adapter lock.
+        result.detail = output.str();
+        return result;
     }
-    else if (command.query == "account.get_summary")
+    if (command.query == "orders.list")
+    {
+        result.detail = OwnedOrdersJson(command.context,
+            m_adapter->GetAuthoritativeCorrelationSnapshot());
+        return result;
+    }
+    const IBAuthoritativeRiskSnapshot risk =
+        m_adapter->GetAuthoritativeRiskSnapshot();
+    const bool postFillPending = PostFillRiskRefreshPending();
+    const std::string riskReason = m_startupRecoveryReadOnly.load() ?
+        StartupRecoveryReadOnlyReason() : (postFillPending ?
+        "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode);
+    if (command.query == "account.get_summary")
     {
         const std::map<std::string, IBAuthoritativeFxCashExposure>
             exposures = m_adapter->GetAuthoritativeFxCashExposures();
@@ -658,8 +666,6 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
         }
         output << '}';
     }
-    else if (command.query == "orders.list")
-        output << OwnedOrdersJson(command.context, orders);
     else if (command.query == "risk.get_limits")
     {
         output << "{\"source\":\"IB\",\"authoritative\":"

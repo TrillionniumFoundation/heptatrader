@@ -1,7 +1,13 @@
 from pathlib import Path
 import ast
 import fnmatch
+import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 import yaml
 
@@ -13,10 +19,10 @@ def workflow(name):
                      Loader=yaml.BaseLoader)
 
 
-def command_steps(ci, command):
+def identified_steps(ci, step_id):
     return [(name, job, step)
             for name, job in ci["jobs"].items()
-            for step in job["steps"] if command in step.get("run", "")]
+             for step in job["steps"] if step.get("id") == step_id]
 
 
 def condition_value(step, context, *, succeeded=True, cancelled=False):
@@ -57,49 +63,65 @@ def condition_value(step, context, *, succeeded=True, cancelled=False):
 
 
 class DevelopmentCiTests(unittest.TestCase):
-    def step(self, ci, command):
-        matches = command_steps(ci, command)
-        self.assertEqual(len(matches), 1, command)
+    def step(self, ci, step_id):
+        matches = identified_steps(ci, step_id)
+        self.assertEqual(len(matches), 1, step_id)
         return matches[0]
 
     def test_each_behavior_lane_runs_once(self):
         ci = workflow("core-ci.yml")
-        self.step(ci, "./scripts/dev_core.sh")
-        for lane in ("core", "source", "learning"):
-            self.step(ci, "scripts/run_python_tests.py --lane " + lane)
-        commands = "\n".join(step.get("run", "")
-                             for job in ci["jobs"].values() for step in job["steps"])
-        for obsolete in ("verify_required_checks", "accept_core_release",
-                         "ci_change_scope", "--write-module-metadata"):
-            self.assertNotIn(obsolete, commands)
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-lanes-") as directory:
+            root = Path(directory)
+            scripts, binary, log = root / "scripts", root / "bin", root / "calls.jsonl"
+            scripts.mkdir()
+            binary.mkdir()
+            (binary / "python3").symlink_to(sys.executable)
+            record = (
+                "import json, os\n"
+                "with open(os.environ['HEPTA_TEST_CALLS'], 'a') as output:\n"
+                "    output.write(json.dumps(call) + '\\n')\n")
+            (scripts / "run_python_tests.py").write_text(
+                "import argparse\nparser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--lane', choices=('core', 'source', 'learning'), required=True)\n"
+                "call = ['python', parser.parse_args().lane]\n" + record)
+            native = scripts / "dev_core.sh"
+            native.write_text("#!" + sys.executable + "\nimport sys\n"
+                              "assert sys.argv[1:] in ([], ['--core'])\n"
+                              "call = ['native']\n" + record)
+            native.chmod(0o755)
+            for step_id in ("native", "python_core", "python_source", "python_learning"):
+                _, _, step = self.step(ci, step_id)
+                result = subprocess.run(
+                    [shutil.which("bash"), "-e", "-o", "pipefail", "-c", step["run"]],
+                    cwd=root, capture_output=True, text=True, timeout=10,
+                    env={**os.environ, "PATH": str(binary), "HEPTA_TEST_CALLS": str(log)})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual([json.loads(line) for line in log.read_text().splitlines()],
+                             [["native"], ["python", "core"], ["python", "source"],
+                              ["python", "learning"]])
 
     def test_behavior_steps_follow_scope_and_real_dependencies(self):
         ci = workflow("core-ci.yml")
-        _, job, identity = self.step(ci, 'test "$(git rev-parse HEAD)"')
-        _, _, deps = self.step(ci, "apt-get install")
-        _, _, scope = self.step(ci, "scripts/ci_scope.py")
-        _, _, install = self.step(ci, "pip install torch==")
+        _, job, identity = self.step(ci, "identity")
+        _, _, deps = self.step(ci, "deps")
+        _, _, scope = self.step(ci, "scope")
+        _, _, install = self.step(ci, "learning_install")
         ids = [step["id"] for step in job["steps"] if "id" in step]
         context = {f"steps.{name}.{field}": "success" for name in ids
                    for field in ("outcome", "conclusion")}
         flags = ("run_native", "run_python", "run_learning")
         context.update({f"steps.{scope['id']}.outputs.{flag}": "true" for flag in flags})
         self.assertNotIn("continue-on-error", scope)
-        self.assertIn("--format github", scope["run"])
-        self.assertIn("GITHUB_OUTPUT", scope["run"])
         self.assertIn("github.event.pull_request.base.sha", scope["env"]["BASE_SHA"])
-        lanes = (("./scripts/dev_core.sh", "run_native"),
-                 ("scripts/run_python_tests.py --lane core", "run_python"),
-                 ("scripts/run_python_tests.py --lane source", "run_python"),
-                 ("scripts/run_python_tests.py --lane learning", "run_learning"),
-                 ("pip install torch==", "run_learning"),
-                 ("scripts/check_documentation.py", None), ("git diff --check", None))
-        for command, flag in lanes:
-            _, _, step = self.step(ci, command)
+        lanes = (("native", "run_native"), ("python_core", "run_python"),
+                 ("python_source", "run_python"), ("python_learning", "run_learning"),
+                 ("learning_install", "run_learning"), ("docs", None), ("whitespace", None))
+        for step_id, flag in lanes:
+            _, _, step = self.step(ci, step_id)
             required = {identity["id"]} | ({deps["id"]} if flag else set())
-            if command.endswith("--lane learning"):
+            if step_id == "python_learning":
                 required.add(install["id"])
-            with self.subTest(command=command):
+            with self.subTest(step_id=step_id):
                 self.assertNotIn("continue-on-error", step)
                 self.assertTrue(condition_value(step, context))
                 self.assertTrue(condition_value(step, context, succeeded=False))
@@ -108,15 +130,45 @@ class DevelopmentCiTests(unittest.TestCase):
                     failed_context = {**context, **{f"steps.{failed}.{field}": "failure"
                                                     for field in ("outcome", "conclusion")}}
                     self.assertEqual(condition_value(step, failed_context, succeeded=False),
-                                     failed not in required, (command, failed))
+                                      failed not in required, (step_id, failed))
                 for output in ("false", ""):
                     values = {**context, **{f"steps.{scope['id']}.outputs.{name}": output for name in flags}}
                     self.assertEqual(condition_value(step, values, succeeded=False),
-                                     flag is None or output != "false", (command, output))
+                                      flag is None or output != "false", (step_id, output))
                 if flag:
                     values = {**context, **{f"steps.{scope['id']}.outputs.{name}": "false" for name in flags}}
                     values[f"steps.{scope['id']}.outputs.{flag}"] = "true"
                     self.assertTrue(condition_value(step, values))
+
+    def test_scope_step_publishes_machine_outputs_with_the_original_base(self):
+        _, _, step = self.step(workflow("core-ci.yml"), "scope")
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-scope-") as directory:
+            root = Path(directory)
+            binary, scripts = root / "bin", root / "scripts"
+            binary.mkdir()
+            scripts.mkdir()
+            (binary / "python3").symlink_to(sys.executable)
+            git = binary / "git"
+            git.write_text("#!/bin/sh\nexit 0\n")  # Never contacts a remote.
+            git.chmod(0o755)
+            (scripts / "ci_scope.py").write_text(
+                "import argparse, os\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--base', required=True)\n"
+                "parser.add_argument('--format', default='text')\n"
+                "args = parser.parse_args()\n"
+                "assert args.base == os.environ['BASE_SHA']\n"
+                "print('run_native=false\\nrun_python=true\\nrun_learning=false'\n"
+                "      if args.format == 'github' else 'human-readable scope')\n")
+            output = root / "github-output"
+            result = subprocess.run(
+                [shutil.which("bash"), "-e", "-o", "pipefail", "-c", step["run"]],
+                cwd=root, capture_output=True, text=True, timeout=10,
+                env={**os.environ, "PATH": str(binary), "BASE_SHA": "a" * 40,
+                     "GITHUB_OUTPUT": str(output)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines()),
+                             {"run_native": "false", "run_python": "true", "run_learning": "false"})
 
 
     def test_routine_events_use_read_only_credentials_and_exact_source(self):
@@ -135,16 +187,14 @@ class DevelopmentCiTests(unittest.TestCase):
             self.assertRegex(checkout["uses"], r"^actions/checkout@[0-9a-f]{40}$")
             self.assertEqual(checkout["with"]["persist-credentials"], "false")
             self.assertIn("github.event.pull_request.head.sha", checkout["with"]["ref"])
-            commands = "\n".join(step.get("run", "") for step in job["steps"])
-            self.assertIn('git rev-parse HEAD', commands)
-            self.assertIn('$EXPECTED_SHA', commands)
+        self.step(ci, "identity")  # The real Git fixture below checks its behavior.
 
     def test_archived_contract_lane_runs_only_for_its_inputs(self):
         ci = workflow("legacy-qualification.yml")
         self.assertEqual(ci["permissions"], {"contents": "read"})
         self.assertNotIn("pull_request_target", ci["on"])
         self.assertIn("workflow_dispatch", ci["on"])
-        self.step(ci, "scripts/run_python_tests.py --lane legacy")
+        self.step(ci, "legacy_tests")
         inputs = (".github/retired-workflows/ib-paper-qualification.yml",
                   ".github/workflows/legacy-qualification.yml",
                   "scripts/check_qualification_trust_boundary.py", "scripts/run_python_tests.py",
@@ -170,7 +220,7 @@ class DevelopmentCiTests(unittest.TestCase):
         import subprocess
         import tempfile
         ci = workflow("core-ci.yml")
-        _, job, identity = self.step(ci, 'test "$(git rev-parse HEAD)"')
+        _, job, identity = self.step(ci, "identity")
         self.assertNotIn("if", identity)
         self.assertNotIn("continue-on-error", identity)
         self.assertNotIn("continue-on-error", job)
@@ -202,7 +252,7 @@ class DevelopmentCiTests(unittest.TestCase):
         import tempfile
 
         ci = workflow("core-ci.yml")
-        _, _, step = self.step(ci, "git diff --check")
+        _, _, step = self.step(ci, "whitespace")
         script = step["run"]
         self.assertIn("github.event.pull_request.base.sha", step["env"]["BASE_SHA"])
         self.assertIn("github.event.pull_request.head.sha", step["env"]["HEAD_SHA"])
@@ -244,7 +294,7 @@ class DevelopmentCiTests(unittest.TestCase):
         import subprocess
         import tempfile
 
-        _, _, step = self.step(workflow("core-ci.yml"), "apt-get install")
+        _, _, step = self.step(workflow("core-ci.yml"), "deps")
         with tempfile.TemporaryDirectory(prefix="hepta-ci-apt-") as directory:
             root = Path(directory)
             mirrors = root / "apt-mirrors.txt"
@@ -322,21 +372,94 @@ class DevelopmentCiTests(unittest.TestCase):
 
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")
-        _, job, tests = self.step(ci, "scripts/run_python_tests.py --lane learning")
+        _, job, tests = self.step(ci, "python_learning")
         caches = [step for step in job["steps"]
                   if step.get("uses", "").startswith("actions/cache@")]
         self.assertTrue(caches)
         for cache in caches:
             self.assertRegex(cache["uses"], r"^actions/cache@[0-9a-f]{40}$")
             self.assertEqual(cache.get("continue-on-error"), "true")
-        _, _, install = self.step(ci, "pip install torch==")
-        self.assertIn("--index-url https://download.pytorch.org/whl/cpu", install["run"])
-        self.assertIn("safetensors==", install["run"])
-        self.assertIn("torch.version.cuda is None", install["run"])
+        _, _, install = self.step(ci, "learning_install")
         self.assertLess(job["steps"].index(install), job["steps"].index(tests))
         for step in (install, tests):
-            self.assertNotIn("cache-hit", str(step))
             self.assertNotIn("continue-on-error", step)
+        context = {f"steps.{step['id']}.{field}": "success"
+                   for step in job["steps"] if "id" in step
+                   for field in ("outcome", "conclusion")}
+        context.update({f"steps.scope.outputs.{flag}": "true"
+                        for flag in ("run_native", "run_python", "run_learning")})
+        for cache in caches:
+            for hit in ("true", "false", ""):
+                with self.subTest(cache=cache["id"], hit=hit):
+                    values = {**context, f"steps.{cache['id']}.outputs.cache-hit": hit}
+                    self.assertTrue(condition_value(install, values))
+                    self.assertTrue(condition_value(tests, values))
+
+    def test_learning_install_executes_pinned_cpu_checks_and_propagates_failure(self):
+        _, _, install = self.step(workflow("core-ci.yml"), "learning_install")
+        with tempfile.TemporaryDirectory(prefix="hepta-ci-learning-") as directory:
+            root = Path(directory)
+            binary, site = root / "bin", root / "fake-site"
+            binary.mkdir()
+            site.mkdir()
+            shim = binary / "python3"
+            shim.write_text("#!" + sys.executable + "\n" + '''
+import json, os, pathlib, shutil, sys
+args = sys.argv[1:]
+if args[:2] == ['-m', 'venv']:
+    target = pathlib.Path(args[-1]) / 'bin' / 'python'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(__file__, target)
+    target.chmod(0o755)
+elif args[:3] == ['-m', 'pip', 'install']:
+    with open(os.environ['HEPTA_TEST_PIP_LOG'], 'a') as log:
+        log.write(json.dumps(args[3:]) + '\\n')
+    if os.environ.get('HEPTA_TEST_PIP_FAIL'):
+        raise SystemExit(23)
+    site = pathlib.Path(os.environ['HEPTA_TEST_SITE'])
+    for package in args[3:]:
+        if package.startswith('torch=='):
+            version = package.split('==', 1)[1]
+            (site / 'torch.py').write_text(
+                'import os, types\\n__version__=' + repr(version + '+cpu') + '\\n' +
+                "version=types.SimpleNamespace(cuda=os.environ.get('HEPTA_TEST_CUDA'))\\n")
+        elif package.startswith('safetensors=='):
+            version = package.split('==', 1)[1]
+            (site / 'safetensors.py').write_text('__version__=' + repr(version) + '\\n')
+else:
+    os.execv(sys.executable, [sys.executable, *args])
+''')
+            shim.chmod(0o755)
+            log = root / "pip.jsonl"
+            for cuda, pip_failure, expected in (("", "", True), ("12.0", "", False),
+                                                ("", "1", False)):
+                with self.subTest(cuda=cuda, pip_failure=pip_failure):
+                    log.unlink(missing_ok=True)
+                    for package in ("torch", "safetensors"):
+                        (site / (package + ".py")).write_text(
+                            "raise RuntimeError('dependency was not installed')\n")
+                    env = {**os.environ, "PATH": str(binary), "PYTHONPATH": str(site),
+                           "PYTHONDONTWRITEBYTECODE": "1", "RUNNER_TEMP": str(root),
+                           "GITHUB_PATH": str(root / "github-path"),
+                           "HEPTA_TEST_SITE": str(site), "HEPTA_TEST_PIP_LOG": str(log),
+                           "HEPTA_TEST_PIP_FAIL": pip_failure}
+                    env.pop("HEPTA_TEST_CUDA", None)
+                    if cuda:
+                        env["HEPTA_TEST_CUDA"] = cuda
+                    result = subprocess.run(
+                        [shutil.which("bash"), "-e", "-o", "pipefail", "-c", install["run"]],
+                        cwd=root, capture_output=True, text=True, timeout=15, env=env)
+                    self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+                    if expected:
+                        calls = [json.loads(line) for line in log.read_text().splitlines()]
+                        torch_calls = [call for call in calls if any(arg.startswith("torch==") for arg in call)]
+                        tensor_calls = [call for call in calls if any(arg.startswith("safetensors==") for arg in call)]
+                        self.assertEqual(len(torch_calls), 1)
+                        self.assertEqual(len(tensor_calls), 1)
+                        parser = __import__("argparse").ArgumentParser()
+                        parser.add_argument("--index-url")
+                        options, _ = parser.parse_known_args(torch_calls[0])
+                        self.assertEqual(options.index_url, "https://download.pytorch.org/whl/cpu")
 
     def test_deep_suites_are_manual_and_broker_qualification_is_separate(self):
         for name in ("canonical-full-suite.yml", "heptadll-integration.yml"):
@@ -352,13 +475,16 @@ class DevelopmentCiTests(unittest.TestCase):
 
     def test_superseded_feedback_can_cancel_but_broker_run_cannot(self):
         ci = workflow("core-ci.yml")
-        self.assertEqual(ci["concurrency"]["cancel-in-progress"],
-                         "${{ github.event_name != 'workflow_dispatch' }}")
+        cancel = {"if": ci["concurrency"]["cancel-in-progress"]}
+        for event, expected in (("push", True), ("pull_request", True),
+                                ("workflow_dispatch", False)):
+            with self.subTest(event=event):
+                self.assertEqual(condition_value(cancel, {"github.event_name": event}), expected)
         self.assertIn("github.event_name", ci["concurrency"]["group"])
-        self.assertEqual(
-            yaml.load((ROOT / ".github/retired-workflows/ib-paper-qualification.yml").read_text(),
-                      Loader=yaml.BaseLoader)["concurrency"]["cancel-in-progress"],
-            "false")
+        retired = yaml.load(
+            (ROOT / ".github/retired-workflows/ib-paper-qualification.yml").read_text(),
+            Loader=yaml.BaseLoader)
+        self.assertFalse(condition_value({"if": retired["concurrency"]["cancel-in-progress"]}, {}))
 
 
 if __name__ == "__main__":
