@@ -155,8 +155,9 @@ Performance changes must preserve the safety invariants above. Host-specific low
 
 The objective is to preserve behavior-bearing defenses while keeping source, CI and deployment evidence as small and direct as the invariant allows.
 
-Historical HeptaDLL inventory consistency belongs only to the Python source
-partition. It is not repeated in native/sanitizer CTest and no longer requires
+Historical HeptaDLL inventory consistency uses the archived Python partition
+when its metadata or validators change, or on manual dispatch. It is not repeated
+in routine source/native/sanitizer feedback and no longer requires
 particular English explanation phrases. Canonical old-record decoding, retired
 interface rejection and unprivileged-client boundary tests remain native behavior.
 

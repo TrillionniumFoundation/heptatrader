@@ -23,3 +23,9 @@ Run the archived shell and trust-boundary fixtures with
 lane only when its archived inputs, verifier, runner or tests change, and also
 supports manual dispatch. The fixtures use disposable stubs; the retired broker
 workflow itself is not reactivated.
+
+The same lane checks the frozen HeptaDLL consumer migration, lifecycle and
+93-asset source-disposition inventories when their JSON inputs or validators
+change. Ordinary source changes do not revalidate those completed historical
+records. Current old-record decoding, ABI rejection, permissions and recovery
+behavior remain in the existing source/native suites.

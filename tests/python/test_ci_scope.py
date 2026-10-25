@@ -246,6 +246,10 @@ class ComponentScopeTests(unittest.TestCase):
              "tests/python/test_verified_sealed_readiness_cache.py"),
             ("research/neuron_learning/laya_cell/resident_price_baselines.py",
              "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py"),
+            ("research/neuron_learning/laya_cell/resident_training_v5.py",
+             "research/neuron_learning/laya_cell/tests/test_resident_closed_action_optimizer.py"),
+            ("research/neuron_learning/laya_cell/resident_training_v8.py",
+             "research/neuron_learning/laya_cell/tests/test_resident_price_cache.py"),
         ):
             with self.subTest(implementation=implementation):
                 test = self.root / test_name
@@ -283,6 +287,36 @@ class ComponentScopeTests(unittest.TestCase):
         paired = self.root / "tests/python/test_consumer_checkpoint.py"
         paired.unlink()
         self.assertEqual(scope_for_paths([leaves[0]], self.root), self.FULL)
+
+    def test_current_resident_objectives_keep_learning_and_native_boundaries(self):
+        # Use the real checkout so a misspelled or absent fixture cannot pass
+        # merely because the synthetic setup copied the scope's own file list.
+        root = Path(__file__).resolve().parents[2]
+        leaves = [
+            f"research/neuron_learning/laya_cell/resident_training_v{version}.py"
+            for version in range(5, 9)
+        ] + [
+            "research/neuron_learning/laya_cell/resident_closed_action_training.py",
+            "research/neuron_learning/laya_cell/resident_price_calibration.py",
+            "research/neuron_learning/laya_cell/resident_price_calibration_v2.py",
+            "research/neuron_learning/laya_cell/resident_price_calibration_v3.py",
+            "research/neuron_learning/laya_cell/resident_price_input.py",
+            "research/neuron_learning/laya_cell/tests/test_resident_training_v6_integration.py",
+            "research/neuron_learning/laya_cell/tests/test_resident_price_input_v8.py",
+        ]
+        for path in leaves:
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], root), self.PYTHON_LEARNING)
+        self.assertEqual(scope_for_paths(leaves, root), self.PYTHON_LEARNING)
+        for shared in (
+            "research/neuron_learning/laya_cell/native.py",
+            "research/neuron_learning/laya_cell/integrity.py",
+            "research/neuron_learning/laya_cell/install_resident.py",
+            "CMakeLists.txt",
+            ".github/workflows/core-ci.yml",
+        ):
+            with self.subTest(shared=shared):
+                self.assertEqual(scope_for_paths([leaves[0], shared], root), self.FULL)
 
     def test_progress_scope_requires_installation_support_and_stdlib_imports(self):
         observer = "scripts/hepta_progress.py"
@@ -355,10 +389,10 @@ class ComponentScopeTests(unittest.TestCase):
         git("add", ".")
         git("commit", "-qm", "tool change")
         self.assertEqual(outputs(base), self.PYTHON)
-        (self.root / "research/neuron_learning/laya_cell/resident_price_baselines.py").write_text(
+        (self.root / "research/neuron_learning/laya_cell/resident_training_v8.py").write_text(
             "value = 2\n")
         git("add", ".")
-        git("commit", "-qm", "baseline change")
+        git("commit", "-qm", "resident objective change")
         self.assertEqual(outputs(base), self.PYTHON_LEARNING)
         (self.root / "shared.py").write_text("value = 2\n")
         git("add", ".")

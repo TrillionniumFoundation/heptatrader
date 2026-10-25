@@ -150,6 +150,11 @@ class DevelopmentCiTests(unittest.TestCase):
                   "scripts/check_qualification_trust_boundary.py", "scripts/run_python_tests.py",
                   "tests/python/test_ib_workflow_interfaces.py",
                   "tests/python/test_qualification_trust_boundary.py",
+                  "tests/python/test_heptadll_migration_state.py",
+                  "tests/python/test_heptadll_source_disposition.py",
+                  "docs/technical/heptadll-consumer-migrations.json",
+                  "docs/technical/heptadll-lifecycle-status.json",
+                  "docs/technical/heptadll-source-disposition.json",
                   "tests/python/test_python_test_partition.py")
         for event in ("pull_request", "push"):
             patterns = ci["on"][event]["paths"]

@@ -27,8 +27,13 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertTrue(required <= groups["learning"])
         self.assertFalse(groups["learning"] & groups["core"])
         self.assertEqual(groups["legacy"], {
-            "test_ib_workflow_interfaces.py", "test_qualification_trust_boundary.py"})
+            "test_ib_workflow_interfaces.py", "test_qualification_trust_boundary.py",
+            "test_heptadll_migration_state.py", "test_heptadll_source_disposition.py"})
         self.assertFalse(groups["legacy"] & groups["core"])
+        self.assertTrue({
+            "test_protocol_reference.py", "test_build_ownership.py",
+            "test_risk_legacy_compatibility_boundary.py", "test_legacy_runtime_boundary.py",
+        } <= groups["source"])
 
     def test_future_test_defaults_to_core_and_install_is_not_duplicated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
