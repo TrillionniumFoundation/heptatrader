@@ -15,6 +15,8 @@ from .resident_row_accounting import MIN_TRAINING_ROWS, MAX_TRAINING_ROWS
 
 SCHEMA = 'heptatrader.laya-price-calibration.v3'
 OUTPUT = 'FROZEN_SAME_PRICE_TRAIN_ROWS_CENTERED_BRIER_V3'
+CHILD_SCOPE = 'ACTUAL_FINAL_CHILD_PRICE_TRAINING_FORWARD_PASSES'
+PARENT_SCOPE = 'ACTUAL_FROZEN_PARENT_SAME_PRICE_TRAINING_FORWARD_PASSES'
 SPEC = {
     'method': 'LAPLACE_TRAIN_PRIOR_PLUS_CENTERED_RAW_CHILD',
     'fit_population': 'SAME_UNIQUE_PRICE_TRAINING_ROWS_AS_CHILD_AND_BASELINES',
@@ -32,6 +34,8 @@ SPEC = {
     'zero_weight_output': 'EXACT_REQUIRED_TRAIN_PRIOR',
     'checkpoint_selection': 'FIXED_SOLUTION_NO_FUTURE_SELECTION',
 }
+PARENT_SPEC = {**SPEC, 'method': 'LAPLACE_TRAIN_PRIOR_PLUS_CENTERED_RAW_PARENT',
+    'centering': 'NORMALIZED_FROZEN_PARENT_TRAINING_PROBABILITY_MEAN'}
 _SHA = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -60,8 +64,9 @@ def _maximum_weight(prior, mean):
 
 
 def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
-        price_baselines):
+        price_baselines, raw_logits_scope=CHILD_SCOPE):
     import numpy as np
+    _need(raw_logits_scope in (CHILD_SCOPE, PARENT_SCOPE), 'PRICE_CALIBRATION_V3_RAW_SCOPE')
     from .resident_price_calibration import _fit_population
     n, ids, raw, target, baseline = _fit_population(rows, raw_probabilities,
         cutoff_ms=cutoff_ms, parent_id=parent_id, adapter_sha256=adapter_sha256,
@@ -85,7 +90,8 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
     maximum = _maximum_weight(prior.tolist(), mean.tolist())
     weight = min(maximum, max(0., numerator/denominator)) if denominator > 0 else 0.
     result = {
-        'schema': SCHEMA, 'output_profile': OUTPUT, 'fit_spec': deepcopy(SPEC),
+        'schema': SCHEMA, 'output_profile': OUTPUT,
+        'fit_spec': deepcopy(PARENT_SPEC if raw_logits_scope == PARENT_SCOPE else SPEC),
         'parent_id': parent_id, 'adapter_sha256': adapter_sha256,
         'training_cutoff_ms': cutoff_ms, 'training_rows': n,
         'training_row_ids_digest': digest(sorted(ids)),
@@ -97,7 +103,7 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
         'train_prior_probs': prior.tolist(), 'mean_training_raw_probs': mean.tolist(),
         'model_weight': weight, 'model_weight_max': maximum,
         'quadratic_numerator': numerator, 'quadratic_denominator': denominator,
-        'raw_logits_scope': 'ACTUAL_FINAL_CHILD_PRICE_TRAINING_FORWARD_PASSES',
+        'raw_logits_scope': raw_logits_scope,
         'calibration_is_train_only': True, 'future_value_proven': False,
         'additional_independent_training_rows': 0, 'model_or_trading_authority': False,
     }
@@ -107,8 +113,9 @@ def fit(rows, raw_probabilities, *, cutoff_ms, parent_id, adapter_sha256,
 
 def validate(profile):
     _need(isinstance(profile, dict) and profile.get('schema') == SCHEMA
-          and profile.get('output_profile') == OUTPUT and profile.get('fit_spec') == SPEC
-          and profile.get('raw_logits_scope') == 'ACTUAL_FINAL_CHILD_PRICE_TRAINING_FORWARD_PASSES'
+          and profile.get('output_profile') == OUTPUT
+          and profile.get('fit_spec') == (PARENT_SPEC if profile.get('raw_logits_scope') == PARENT_SCOPE else SPEC)
+          and profile.get('raw_logits_scope') in (CHILD_SCOPE, PARENT_SCOPE)
           and profile.get('calibration_is_train_only') is True
           and profile.get('future_value_proven') is False
           and profile.get('additional_independent_training_rows') == 0
@@ -178,10 +185,10 @@ def training_measurement(profile, raw_probabilities, rows):
     return result
 
 
-def verify_candidate_fit(job, candidate):
+def verify_candidate_fit(job, candidate, *, rows=None):
     from .resident_price_calibration import verify_candidate_fit as verify
     _need(candidate.get('price_output_profile') == OUTPUT, 'PRICE_CALIBRATION_V3_OUTPUT_CHANGED')
-    return verify(job, candidate)
+    return verify(job, candidate, rows=rows)
 
 
 def verify_prediction(plan, prediction):

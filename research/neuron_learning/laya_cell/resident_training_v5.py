@@ -106,21 +106,25 @@ def check_config(config):
     return source
 
 
-def check_job(job):
+def _checked_job(job):
     check_objective(job.get("objective"))
     ids = previous.check_job(_price_job(job))
     source = _source_metadata(job)
     if (source["parent_id"] != job.get("parent_id") or
             source["training_cutoff_ms"] > job["window"]["training_end_ms"]):
         raise ContractError("CLOSED_ACTION_JOB_PARENT_OR_FUTURE_CUTOFF")
-    return ids
+    return ids, source
+
+
+def check_job(job):
+    return _checked_job(job)[0]
 
 
 def source_for_job(job):
-    check_job(job)
-    return closed_action.load_source(job["closed_action_source"], job["closed_action_source_sha256"],
-        parent_id=job["parent_id"], cutoff_ms=job["closed_action_training_cutoff_ms"],
-        evaluation_root=job["evaluation_directory"])
+    _, source = _checked_job(job)
+    # The same call has already read, hashed and bound these exact bytes.
+    # Replay originals once without reopening the identical source manifest.
+    return closed_action.check_source(source)
 
 
 def context(job):
@@ -141,8 +145,8 @@ def freeze(job, batches, targets, calibration, price_baselines):
 
 
 def action_receipt(source, steps, profile, *, price_parameters_unchanged,
-                   encoder_parameters_unchanged):
-    closed_action.check_source(source)
+                   encoder_parameters_unchanged, verify_originals=True):
+    closed_action.check_source(source, verify_originals=verify_originals)
     closed_action.check_profile_source(source, profile)
     pairs = source["pair_row_ids"]
     if (profile.get("closed_action_source_id") != source["source_id"] or
@@ -260,7 +264,7 @@ def verify_action_update(job, candidate):
             "future_value_proven": False, "model_or_trading_authority": False}
 
 
-def _verify_training(job, candidate, source):
+def _verify_training(job, candidate, source, *, source_originals_verified=False):
     if candidate.get("objective") != job["objective"]:
         raise ContractError("V5_CANDIDATE_OBJECTIVE_CHANGED")
     profile = candidate.get("action_training_profile")
@@ -270,7 +274,8 @@ def _verify_training(job, candidate, source):
     phase = candidate.get("action_phase", {})
     rebuilt = action_receipt(source, phase.get("steps"), profile,
         price_parameters_unchanged=phase.get("price_parameters_unchanged"),
-        encoder_parameters_unchanged=phase.get("encoder_parameters_unchanged"))
+        encoder_parameters_unchanged=phase.get("encoder_parameters_unchanged"),
+        verify_originals=not source_originals_verified)
     if phase != rebuilt or candidate.get("action_update_steps") != rebuilt["applied_steps"]:
         raise ContractError("V5_CANDIDATE_ACTION_RECEIPT_CHANGED")
     if candidate.get("action_adapter_validation") != verify_action_update(job, candidate):
@@ -292,7 +297,7 @@ def _verify_training(job, candidate, source):
 
 def verify_candidate(job, candidate):
     check_job(job)
-    _verify_training(job, candidate, source_for_job(job))
+    _verify_training(job, candidate, source_for_job(job), source_originals_verified=True)
     from .resident_price_calibration import validate, verify_candidate_fit
     calibration = validate(candidate.get("price_calibration"))
     if (candidate.get("price_output_profile") != PRICE_OUTPUT or

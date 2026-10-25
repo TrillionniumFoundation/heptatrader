@@ -91,7 +91,7 @@ class _CPUTransfer:
 
 
 class ProspectiveV6IntegrationTests(unittest.TestCase):
-    def fixture(self, target_class, *, prepare_dataset=None):
+    def fixture(self, target_class, *, prepare_dataset=None, prepare_job=None):
         original = source_fixture.ClosedOriginalParentSourceTests()
         original.setUp()
         self.addCleanup(original.doCleanups)
@@ -166,6 +166,8 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
             'closed_action_parent_id': parent['candidate_id'],
             'closed_action_training_cutoff_ms': cutoff, 'generation': 0,
             'native_binary': '/synthetic/native', 'native_binary_sha256': 'f' * 64}
+        if prepare_job is not None:
+            prepare_job(job)
         service = object.__new__(Supervisor)
         service.root = root / 'control'
         service.root.mkdir()
@@ -175,8 +177,8 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
             'future_plan_admission_profile': admission.PROFILE,
             'future_plan_admission_effective_at_ms': cutoff - 10000,
             'promotion_protocol': PROTOCOL,
-            'runtime_sha256': {n: 'b' * 64 for n in
-                set(policy.RUNTIME_PINS) | set(admission.RUNTIME_PIN)}}
+            'runtime_sha256': {**job.get('runtime_sha256',{}), **{n: 'b' * 64 for n in
+                set(policy.RUNTIME_PINS) | set(admission.RUNTIME_PIN)}}}
         # The genuine closed-source fixture already contains historical trial1.
         with service.db:
             put_meta(service.db, 'evaluation_trial', 1)
@@ -277,7 +279,8 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
             candidate['price_calibration'], prediction['candidate_raw_probs']))
         calibration.verify_prediction(plan, prediction)
         quotes = [{'t': anchor + i * 10000, 'mid': 1.12, 'receipt': str(i)} for i in range(31)]
-        outcome = measure(plan, 0, prediction, quotes, anchor + 300001)
+        publication=read_json(path.parent/'phase-000.json')['publication']
+        outcome = measure(plan, 0, prediction, quotes, anchor + 300001,publication_record=publication)
         self.assertEqual(outcome['status'], 'OBSERVED')
         self.assertEqual(outcome['same_window_price_scores']['laya_candidate'],
             baselines.probability_metrics(prediction['candidate_probs'], 3))

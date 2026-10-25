@@ -9,7 +9,10 @@ import unittest
 from laya_cell.integrity import ContractError, digest
 from laya_cell import resident_price_baselines as baselines
 from laya_cell import resident_price_calibration_v3 as calibration
-from laya_cell.tests.test_resident_price_calibration import population
+from laya_cell import resident_parent_calibration as comparator
+from laya_cell import resident_price_input as inputs
+from laya_cell.resident_row_accounting import row_id
+from laya_cell.tests.test_resident_price_calibration import population,real_dataset_population
 
 
 class CenteredBrierCalibrationTests(unittest.TestCase):
@@ -188,6 +191,69 @@ class CenteredBrierCalibrationTests(unittest.TestCase):
             'import sys; from laya_cell import resident_price_calibration_v3; '
             'assert "torch" not in sys.modules'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def comparator_fixture(self):
+        _,window,self.rows=real_dataset_population()
+        self.cutoff=window['training_end_ms']
+        self.reference=baselines.freeze(self.rows,self.cutoff)
+        raw=self.weak_signal()
+        parent={'candidate_id':'a'*64,'adapter_sha256':'b'*64}
+        job={comparator.FIELD:comparator.PROFILE,'objective':{'schema':inputs.V8_OBJECTIVE_SCHEMA},
+             'parent_id':parent['candidate_id'],'parent_manifest_sha256':'c'*64,
+             'window':{'training_end_ms':self.cutoff},'training_row_ids':[row_id(r) for r in self.rows]}
+        receipts=[{'training_row_id':row_id(row),'raw_probs':probs,
+                   'price_input_profile':inputs.RAW,'price_input_id':digest(inputs.model_state(row['state'],inputs.RAW))}
+                  for row,probs in zip(self.rows,raw)]
+        value=comparator.freeze(job,self.rows,receipts,parent,self.reference)
+        candidate={comparator.FIELD:comparator.PROFILE,comparator.RECORD:value,
+                   'price_baselines':self.reference,'parent_price_forward_receipts':receipts}
+        return job,parent,candidate,raw
+
+    def test_same_calibration_budget_removes_gain_from_applying_calibration_only_to_child(self):
+        job,parent,candidate,raw=self.comparator_fixture()
+        value=candidate[comparator.RECORD]
+        child=self.fit(raw);frozen_parent=value['calibration']
+        for vector in raw+[[float(i==k) for i in range(7)] for k in range(7)]:
+            self.assertEqual(calibration.apply(child,vector),calibration.apply(frozen_parent,vector))
+        self.assertNotEqual(child['profile_id'],frozen_parent['profile_id'])
+        self.assertEqual(frozen_parent['raw_logits_scope'],calibration.PARENT_SCOPE)
+        self.assertEqual(frozen_parent['fit_spec'],calibration.PARENT_SPEC)
+        self.assertEqual(comparator.verify_candidate(job,candidate,rows=self.rows,parent=parent),value)
+        plan={comparator.FIELD:comparator.PROFILE,comparator.RECORD:value,
+              'parent_id':parent['candidate_id'],'price_baselines':self.reference}
+        prediction={'parent_probs':raw[0],**comparator.prediction_fields(plan,raw[0])}
+        outcome=comparator.measure(plan,prediction,self.rows[0]['target_class'])
+        outcome['candidate_brier']=outcome['calibrated_parent_brier']
+        report=comparator.assessment(plan,[outcome])
+        self.assertEqual(report['mean_brier_improvement'],0.)
+        self.assertEqual(report['paired_brier']['ties'],1)
+        self.assertFalse(report['selection_gate'])
+
+    def test_parent_comparator_cannot_be_added_to_old_job_or_substituted_as_child_output(self):
+        job,parent,candidate,_=self.comparator_fixture()
+        legacy={k:v for k,v in job.items() if k!=comparator.FIELD}
+        with self.assertRaisesRegex(ContractError,'UNDECLARED_PARENT_CALIBRATION'):
+            comparator.verify_candidate(legacy,candidate,rows=self.rows,parent=parent)
+        self.assertEqual(comparator.plan_binding(legacy,{}),{})
+        changed=deepcopy(candidate)
+        changed[comparator.RECORD]['calibration']['adapter_sha256']='d'*64
+        profile=changed[comparator.RECORD]['calibration']
+        profile['profile_id']=digest({k:v for k,v in profile.items() if k!='profile_id'})
+        value=changed[comparator.RECORD]
+        value['comparator_id']=digest({k:v for k,v in value.items() if k!='comparator_id'})
+        with self.assertRaisesRegex(ContractError,'PARENT_CALIBRATION_REPLAY_CHANGED'):
+            comparator.verify_candidate(job,changed,rows=self.rows,parent=parent)
+        changed_job=deepcopy(job);changed_job['training_row_ids'][0]='e'*64
+        with self.assertRaisesRegex(ContractError,'PARENT_CALIBRATION_TRAINING_BINDING'):
+            comparator.verify_candidate(changed_job,candidate,rows=self.rows,parent=parent)
+        with self.assertRaisesRegex(ContractError,'CHILD_PRICE_CALIBRATION_SCOPE_CHANGED'):
+            calibration.verify_prediction({'price_output_profile':calibration.OUTPUT,
+                'price_input_objective':inputs.V8_OBJECTIVE_SCHEMA,
+                'price_calibration':candidate[comparator.RECORD]['calibration']},{})
+        with self.assertRaisesRegex(ContractError,'RUNTIME_PINS_REQUIRED'):
+            comparator.check_config(job)
+        job['runtime_sha256']={name:'f'*64 for name in comparator.RUNTIME_PINS}
+        self.assertTrue(comparator.check_config(job))
 
 
 if __name__ == '__main__':

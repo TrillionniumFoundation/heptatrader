@@ -303,3 +303,62 @@ existing no-forward-trial rule and allocates no alpha budget.
 These are training-only measurements, not held-out or future quality evidence.
 The same 32-row/24-hour selection, 64 PRICE steps, native masks/norm limits,
 resource admission and all original future observation and baseline gates apply.
+
+### Prospective same-budget frozen-parent comparison
+
+New v8 releases can opt in to
+`parent_calibration_comparator_profile=FROZEN_PARENT_SAME_ROWS_CENTERED_BRIER_V1`
+using `configuration_for_release(..., parent_calibration_comparator=True)`.
+The release pins `resident_parent_calibration.py` and all affected training,
+registration, prediction and assessment code. Each newly admitted job fits the
+same centered closed-form Brier calibration to the frozen parent's existing
+forward receipts on exactly the child's selected rows, labels, cutoff and prior.
+This adds no encoder call, optimizer step, selected training row or future refit.
+The parent adapter and manifest remain frozen and bound to the comparison.
+
+New immutable plans carry that comparison into prediction and report the child's
+paired future Brier gain against the calibrated parent, alongside the original
+raw-parent gate. Identical raw parent and child probabilities therefore receive
+identical calibration output. If the input profiles differ, the report explicitly
+does not isolate parameter updates. The paired report is descriptive and does
+not change promotion thresholds, alpha spending or trading authority. A job
+without the declaration cannot acquire it when its evaluation is registered;
+existing artifacts, plans, slots and results are not upgraded or backfilled.
+
+### Fixed-slot dispatch and publication time
+
+The evaluator processes known failed or expired slots before admission, then
+dispatches eligible prediction workers before decoding mature outcome archives.
+Plans with an eligible current-runtime slot take priority over historical CPU
+closeout. The original 90-second prewarm and fixed input/outcome deadlines stay
+unchanged. The wall clock is checked again after resource preflight immediately
+before process creation, so an expensive check cannot start an already missed
+slot. No historical slot is rescheduled or filled later.
+
+New plans declare `FIXED_SLOT_DURABLE_PUBLICATION_V1`. The existing phase file
+records model-ready time, remaining input budget, the fixed input and prediction
+deadlines, write start and actual completion after prediction file/directory
+fsync. Its final publication receipt binds the immutable prediction digest.
+Future scoring uses that observed publication time; a late publication is
+censored, and a crash before the publication receipt is conservatively censored
+after the original outcome grace. Payload preparation time is not presented as
+proof that a prediction was durably available. Legacy plans keep their original
+publication semantics and evaluator runtime.
+
+### Validation reuse within a single call
+
+The current v8 adapter invokes the underlying PRICE/closed-ACT validation
+directly after checking its own exact objective and parent input. It no longer
+re-enters v7 and v6 just to project the objective repeatedly. One independent
+candidate verification reads and hashes the selected PRICE population once,
+then checks child calibration, input-effect receipts and the optional parent
+comparison against those same rows. Standalone verifiers still read originals;
+there is no persistent dataset or adapter trust cache.
+
+The guard can pass its just-completed configuration and queue preflight to the
+same controller call. A changed configuration invalidates that reuse, actual
+training admission rereads storage after the resource gate, and the worker
+validates its pinned runtime again in the separate process. Pending evaluator
+progress reuses immutable outcomes read during that round and adds only its own
+new writes. Terminal qualification rereads the original outcomes. Proven-futile
+plans remain in CPU closeout and cannot take dispatch priority from viable plans.

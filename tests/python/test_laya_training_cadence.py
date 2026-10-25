@@ -15,6 +15,7 @@ class TrainingCadenceTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         gate = MagicMock()
+        gate.status_diagnostics = None
         gate.acquire.return_value = True
         cls = guarded_trainer_class(Supervisor, gate) if guarded else Supervisor
         service = cls.__new__(cls)
@@ -124,6 +125,7 @@ class CandidateRegistrationStatusTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         gate = MagicMock()
+        gate.status_diagnostics = None
         gate.acquire.return_value = False
         gate.last_admission = {'at_ms': 200, 'admit_new_worker': False,
                                'reasons': ['HOST_SWAP_RESERVE_BELOW_1GIB']}

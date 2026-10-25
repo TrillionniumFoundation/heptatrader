@@ -41,6 +41,9 @@ def assess(plan,results,now_ms):
   raise ContractError('EVALUATION_CANDIDATE_OR_SLOT')
  base={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'rule_id':digest(rule),
        'automatic_execution_selection':False,'canonical_owner_admitted':False,'promotion_performed':False}
+ from . import resident_parent_calibration
+ parent_comparison=resident_parent_calibration.assessment(plan,[r for r in results if r['status']=='OBSERVED'])
+ if parent_comparison is not None:base['same_budget_calibrated_parent']=parent_comparison
  if now_ms<plan['outcome_end_ms']:
   return {**base,'state':'PENDING','results':len(results),'reason':'FIXED_FUTURE_WINDOW_NOT_COMPLETE'}
  reasons=[];observed=[r for r in results if r['status']=='OBSERVED'];censored=rule['slots']-len(observed)

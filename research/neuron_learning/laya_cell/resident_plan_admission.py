@@ -312,6 +312,8 @@ def _identity(service, job_id, candidate, job):
         if check_bindings(candidate) != bindings(validate_candidate_artifact(Path(job['parent_directory'])),objective_schema=policy.SCHEMA):
             raise ContractError('V7_REGISTRATION_PARENT_INPUT_PROFILE')
         identity.update(check_bindings(candidate))
+    from .resident_parent_calibration import plan_binding
+    identity.update(plan_binding(job, candidate))
     return identity
 
 
@@ -340,7 +342,7 @@ def _check_record(record, identity):
                 or plan.get("candidate_id") != identity["candidate_id"]
                 or plan.get("candidate_manifest_sha256") != identity["candidate_manifest_sha256"]):
             raise ContractError("FORWARD_RESERVED_PLAN_BINDING")
-        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec"):
+        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec", "parent_calibration_comparator_profile", "parent_calibration_comparator"):
             if name in identity and plan.get(name) != identity[name]:
                 raise ContractError("FORWARD_V5_RESERVED_PROFILE_CHANGED")
 

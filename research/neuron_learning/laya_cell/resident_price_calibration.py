@@ -192,6 +192,8 @@ def verify_prediction(plan, prediction):
         _need(plan.get('price_input_objective') == 'heptatrader.laya-resident-objective.v8',
               'PRICE_CALIBRATION_V3_OBJECTIVE_REQUIRED')
     p = validate(plan.get('price_calibration'))
+    _need(p.get('raw_logits_scope') == 'ACTUAL_FINAL_CHILD_PRICE_TRAINING_FORWARD_PASSES',
+          'CHILD_PRICE_CALIBRATION_SCOPE_CHANGED')
     baseline = price_refs.validate(plan.get('price_baselines'))
     _need(plan.get('price_calibration_profile_id') == p['profile_id']
           and prediction.get('price_calibration_profile_id') == p['profile_id']
@@ -232,13 +234,8 @@ def training_measurement(profile, raw_probabilities, rows):
                 for name, values in scores.items()}}
 
 
-def verify_candidate_fit(job, candidate):
-    """Rebuild CPU fit from pinned real labels and recorded final-child vectors.
-
-    The raw vectors are forward-pass receipts, not a fresh GPU remeasurement.
-    Dataset bytes, original row identity, availability, model hash, fit and
-    report must all agree. No archived source is rewritten or refrozen here.
-    """
+def training_rows_for_job(job):
+    """Read the pinned population once for validators in one verification call."""
     from pathlib import Path
     from .integrity import read_json, sha_file
     from .dataset import rows_for_training
@@ -251,6 +248,21 @@ def verify_candidate_fit(job, candidate):
     wanted = set(job['training_row_ids'])
     rows = [row for row in rows if row['horizon_sec'] == 300 and row_id(row) in wanted]
     _need(len(rows) == len(wanted) == len(job['training_row_ids']),
+          'PRICE_CALIBRATION_JOB_POPULATION_CHANGED')
+    return rows
+
+
+def verify_candidate_fit(job, candidate, *, rows=None):
+    """Rebuild CPU fit from pinned real labels and recorded final-child vectors.
+
+    Standalone calls reread the pinned dataset. A caller validating multiple
+    receipts together may pass its own just-verified population; it is never a
+    cache across jobs, processes or independent verification calls.
+    """
+    if rows is None:
+        rows = training_rows_for_job(job)
+    _need(len(rows) == len(job['training_row_ids'])
+          and {row_id(row) for row in rows} == set(job['training_row_ids']),
           'PRICE_CALIBRATION_JOB_POPULATION_CHANGED')
     receipts = candidate.get('final_price_raw_forward_receipts')
     _need(isinstance(receipts, list) and len(receipts) == len(rows),

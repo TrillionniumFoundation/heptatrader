@@ -27,6 +27,7 @@ from . import resident_training_v8 as training_v8
 from . import resident_price_input as price_input
 from . import resident_price_calibration as price_calibration
 from . import resident_price_baselines as price_refs
+from . import resident_parent_calibration as parent_calibration
 
 
 def _prediction_batches(tokenizer,row,input_binding):
@@ -44,12 +45,22 @@ def _prediction_batches(tokenizer,row,input_binding):
 
 def predict(config,plan_path,slot):
  plan=read_json(plan_path)
+ from .promotion import validate_plan_rule
+ from .resident_evaluate import PUBLICATION_PROFILE,PREDICTION_PREWARM_MS
+ rule=validate_plan_rule(plan)
+ if (plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'})
+     or type(slot) is not int or not 0<=slot<rule['slots']):raise ContractError('PREDICT_PLAN_OR_SLOT_CHANGED')
+ publication_profile=plan.get('prediction_publication_profile')
+ if publication_profile not in (None,PUBLICATION_PROFILE):raise ContractError('PREDICTION_PUBLICATION_PROFILE_CHANGED')
+ due_start=plan['start_ms']+slot*rule['slot_spacing_ms'];late=due_start+rule['input_grace_ms']
  # Preflight the sealed NEW source profile before heavyweight model loading:
  # a mismatched/corrupt future plan must never consume a GPU admission.
  expected_source_profile=declared_profile(config,plan)
  from safetensors.torch import load_file
  candidate_dir=Path(plan['candidate_directory']);parent_dir=Path(plan['parent_directory'])
- timing={'process_started_at_ms':int(time.time()*1000),'phase':'VALIDATE_AND_LOAD'}
+ timing={'process_started_at_ms':int(time.time()*1000),'phase':'VALIDATE_AND_LOAD',
+  'slot_start_ms':due_start,'fixed_input_deadline_ms':late,
+  'prewarm_start_ms':due_start-PREDICTION_PREWARM_MS}
  stage=plan_path.parent/f'phase-{slot:03}.json'
  atomic(stage,timing)
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
@@ -99,8 +110,7 @@ def predict(config,plan_path,slot):
   input_binding=price_input.check_bindings(candidate)
   if (input_binding!=price_input.bindings(parent,objective_schema=training_policy.SCHEMA) or price_input.check_bindings(plan)!=input_binding):
    raise ContractError('V7_PREDICT_INPUT_PROFILE_CHANGED')
- if not 0<=slot<plan['rule']['slots']:raise ContractError('SLOT_BOUND')
- due_start=plan['start_ms']+slot*plan['rule']['slot_spacing_ms'];late=due_start+plan['rule']['input_grace_ms']
+ parent_calibration.verify_plan(plan,candidate,parent,sha_file(parent_dir/'candidate.json'))
  if int(time.time()*1000)>late:raise ContractError('SLOT_ALREADY_MISSED')
  raw,tok,base_id=load_verified_laya(Path(config['base_directory']),read_json(Path(config['base_directory'])/'base-manifest.json'))
  if candidate['base_id']!=base_id:raise ContractError('BASE_CHANGED')
@@ -108,7 +118,10 @@ def predict(config,plan_path,slot):
  cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True);parent_tensors=cell.trainable_state()
  candidate_tensors=load_file(str(candidate_dir/'adapter.safetensors'))
  cell.eval()
- timing.update(model_ready_at_ms=int(time.time()*1000),phase='WAIT_FOR_FIXED_SLOT_INPUT')
+ ready=int(time.time()*1000)
+ timing.update(model_ready_at_ms=ready,phase='WAIT_FOR_FIXED_SLOT_INPUT',
+  model_preparation_ms=ready-timing['process_started_at_ms'],
+  input_budget_remaining_after_model_ms=late-ready)
  atomic(stage,timing)
  last_input_error=None
  while True:
@@ -128,8 +141,10 @@ def predict(config,plan_path,slot):
    break
   except ContractError as exc:
    last_input_error=str(exc);time.sleep(.5)
- anchor=sample['anchor_ms']
- timing.update(input_selected_at_ms=int(time.time()*1000),anchor_ms=anchor,phase='INFERENCE',
+ anchor=sample['anchor_ms'];selected_at=int(time.time()*1000)
+ if selected_at>late:raise ContractError('INPUT_SLOT_EXPIRED:DURING_INPUT_SELECTION')
+ timing.update(input_selected_at_ms=selected_at,anchor_ms=anchor,phase='INFERENCE',
+  fixed_prediction_deadline_ms=anchor+rule['horizon_ms'],
   input_quote_age_ms=int(time.time()*1000)-anchor,contiguous_history_reset=sample.get('contiguous_history_reset_at_gap',False))
  atomic(stage,timing)
  input_record={'schema':'heptatrader.laya-committed-input.v1','plan_id':plan['plan_id'],'slot':slot,
@@ -192,11 +207,23 @@ def predict(config,plan_path,slot):
   result.update(price_input.receipt(row['state'],input_binding))
   price_input.verify_prediction(plan,result)
   price_input.verify_committed_input(plan,input_record,result)
+ result.update(parent_calibration.prediction_fields(plan,parent_probs))
  result['input_receipt_sha256']=sha_file(input_path)
- timing.update(prediction_committed_at_ms=available,phase='COMPLETE')
- result['timing']=timing
  result['resource_usage']=worker_resource_usage()
+ available=int(time.time()*1000)
+ if available>=anchor+rule['horizon_ms']:raise ContractError('PREDICTION_AFTER_OUTCOME')
+ result['created_at_ms']=available
+ if publication_profile is not None:result['prediction_publication_profile']=publication_profile
+ timing.update(prediction_write_started_at_ms=available,phase='PUBLISH_PREDICTION',
+  inference_and_validation_ms=available-timing['input_selected_at_ms'])
+ result['timing']=dict(timing)
  destination=plan_path.parent/f'prediction-{slot:03}.json';write_once(destination,result)
+ published=int(time.time()*1000)
+ timing.update(prediction_committed_at_ms=published,phase='COMPLETE',
+  prediction_write_ms=published-available)
+ if publication_profile is not None:
+  timing['publication']={'profile':publication_profile,'plan_id':plan['plan_id'],'slot':slot,
+   'prediction_digest':digest(result),'durably_published_at_ms':published}
  atomic(stage,timing)
  print(json.dumps({'prediction':str(destination),'candidate_id':candidate['candidate_id'],'slot':slot,'anchor_ms':anchor,'broker_orders_sent':0}),flush=True)
  return result

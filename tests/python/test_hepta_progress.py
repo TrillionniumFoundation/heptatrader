@@ -161,6 +161,32 @@ class ProgressTests(unittest.TestCase):
   rendered=progress.format_text(out)
   self.assertIn('"active_prediction_workers":0',rendered);self.assertIn('"source_scan_performed":false',rendered)
   self.assertIn('"freshness":"STALE"',rendered.splitlines()[1])
+ def test_calendar_wait_keeps_old_persistent_gpu_hold_current_without_admission_refresh(self):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
+  self.write(hold,{'created_ms':NOW-86400000,'reason':'RECURRENT_NATIVE_HIP_STARTUP_SIGSEGV'})
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard),'manual_hold_path':str(hold)})
+  name='heptatrader-laya-trainer.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,active='active',extra=('--role','trainer'))
+  self.units[name]['MainPID']='9'
+  status=root/'control/status.json'
+  self.write(status,{'at_ms':NOW,'state':'HOLD_NEW_TRAINING_FORWARD_WINDOW',
+   'reason':'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT','next_training_at_ms':NOW+10000})
+  admission=self.write(guard/'trainer-admission.json',{'at_ms':NOW-86400000,'admit_new_worker':False,'reasons':['OPERATOR_RESOURCE_HOLD']})
+  before={p:p.read_bytes() for p in (status,hold,admission)}
+  out=self.collect();entry=out['learning'][0]
+  self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+  self.assertEqual({r['reason'] for r in entry['current_blockers']},
+   {'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT','OPERATOR_RESOURCE_HOLD'})
+  self.assertFalse(entry['resume']['automatic_resume_expected'])
+  self.assertEqual(entry['resume']['next_calendar_eligible_at_ms'],NOW+10000)
+  self.assertTrue(entry['manual_hold']['present'])
+  self.assertEqual(before,{p:p.read_bytes() for p in before})
+  self.assertIn('RECURRENT_NATIVE_HIP_STARTUP_SIGSEGV',progress.format_text(out))
+  hold.unlink()
+  resumed=self.collect()['learning'][0]
+  self.assertNotIn('OPERATOR_RESOURCE_HOLD',{r['reason'] for r in resumed['current_blockers']})
+  self.assertIsNone(resumed['resume']['automatic_resume_expected'])
+  self.assertEqual(resumed['resume']['conditions_to_recheck'],['TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'])
  def test_status_still_displays_progress_when_service_check_fails(self):
   target=self.home/'cli';target.mkdir();shutil.copyfile(ROOT/'scripts/heptatrader-user',target/'heptatrader-user')
   (target/'hepta_progress.py').write_text('print("PROGRESS_SEEN")\n')
