@@ -21,6 +21,62 @@ PREDICTION_PREWARM_MS=90000
 PUBLICATION_PROFILE='FIXED_SLOT_DURABLE_PUBLICATION_V1'
 
 
+def progress_with_coverage(plan,results,assessment):
+ """Annotate a copy using already assessed outcomes, with no further file reads.
+
+ These are observational counts, never an alternate qualification rule. Missing
+ outcomes remain pending here even after the deadline; assess() independently
+ keeps its original denominator and rejection rules. Unknown historical reasons
+ stay verbatim, and absent provenance is never inferred from other slots.
+ """
+ rule=plan['rule'];observed=0;censored=0
+ reasons={};dispositions={};denial_slots={};details={};phases={}
+ reason_missing=0;disposition_missing=0;detail_missing=0;phase_missing=0
+ first_denial_slots=set()
+ def count_text(counts,value):
+  if not isinstance(value,str) or not value:return False
+  counts[value]=counts.get(value,0)+1
+  return True
+ for result in results:
+  first=result.get('first_admission_denial_reasons')
+  if isinstance(first,list):
+   for reason in first:
+    if isinstance(reason,str) and reason:
+     denial_slots.setdefault(reason,set()).add(result['slot'])
+     first_denial_slots.add(result['slot'])
+  if result['status']=='OBSERVED':
+   observed+=1;continue
+  if result['status']!='CENSORED':continue
+  censored+=1;reason=result.get('reason')
+  reason_missing+=not count_text(reasons,reason)
+  if reason=='NO_PREDICTION_IN_FIXED_SLOT':
+   disposition_missing+=not count_text(dispositions,result.get('no_prediction_disposition'))
+  elif reason=='PREDICTION_PROCESS_FAILED':
+   detail_missing+=not count_text(details,result.get('detail'))
+   phase=result.get('phase')
+   if isinstance(phase,dict):phase=phase.get('phase')
+   phase_missing+=not count_text(phases,phase)
+ coverage={'schema':'heptatrader.laya-coverage-diagnostics.v1','observational_only':True,
+  'frozen_rule':{key:rule.get(key) for key in ('slots','min_observed','min_non_ties','max_censored')},
+  'counts':{'OBSERVED':observed,'CENSORED':censored,'pending':rule['slots']-len(results)},
+  'pending_scope':'SLOTS_WITHOUT_RECORDED_OUTCOME_NO_CAUSE_ASSIGNED',
+  'censor_budget':{'scope':'RECORDED_CENSORED_OUTCOMES_ONLY',
+   'remaining':max(0,rule['max_censored']-censored),
+   'excess':max(0,censored-rule['max_censored']),
+   'maximum_possible_observed':rule['slots']-censored},
+  'censored_reasons':dict(sorted(reasons.items())),
+  'censored_reason_unrecorded':reason_missing,
+  'no_prediction_dispositions':dict(sorted(dispositions.items())),
+  'no_prediction_disposition_unrecorded':disposition_missing,
+  'first_admission_denial_reasons':{reason:len(slots) for reason,slots in sorted(denial_slots.items())},
+  'first_admission_denial_slots':len(first_denial_slots),
+  'first_admission_denial_scope':'FIRST_DENIAL_RECORDED_IN_OUTCOME_PER_SLOT_NOT_EVERY_ATTEMPT_OR_COMPLETE_CAUSAL_ATTRIBUTION',
+  'prediction_process_failed':{'details':dict(sorted(details.items())),
+   'phases':dict(sorted(phases.items())),
+   'detail_unrecorded':detail_missing,'phase_unrecorded':phase_missing}}
+ return {**assessment,'coverage_diagnostics':coverage}
+
+
 def _slot_order(path,plan,rule,now_ms):
  """Account known misses, dispatch due work, then read mature source archives."""
  def priority(slot):
@@ -505,9 +561,7 @@ class Evaluator:
    if plan.get('price_baselines') is not None:assessment['same_window_price_baselines']=price_refs.summarize(results)
    if assessment['state'] != 'PENDING':
     write_once(path.parent / 'qualification.json', assessment)
-    atomic(path.parent / 'progress.json', assessment)
-   else:
-    atomic(path.parent / 'progress.json', assessment)
+   atomic(path.parent / 'progress.json', progress_with_coverage(plan,results,assessment))
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
