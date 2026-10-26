@@ -9,6 +9,7 @@ import socket
 import stat
 import struct
 import sys
+import time
 import uuid
 
 
@@ -252,10 +253,19 @@ def encode_request(token, tool_name, tool_call_id, arguments, schema_hash):
     return bytes(body)
 
 
-def recv_exact(connection, size):
+def arm_io_deadline(connection, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("tool gateway I/O deadline exceeded")
+    connection.settimeout(remaining)
+
+
+def recv_exact(connection, size, deadline=None):
     chunks = []
     remaining = size
     while remaining:
+        if deadline is not None:
+            arm_io_deadline(connection, deadline)
         chunk = connection.recv(remaining)
         if not chunk:
             raise RuntimeError("tool gateway closed the response early")
@@ -334,14 +344,18 @@ class NativeToolGateway:
             validate_command_id(tool_call_id)
         body = encode_request(
             token, tool_name, tool_call_id, arguments, schema_hash)
+        # One native call owns this budget. Partial response reads and a
+        # completed send must not each grant another full timeout.
+        deadline = time.monotonic() + self.timeout_seconds
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(self.timeout_seconds)
+            arm_io_deadline(connection, deadline)
             connection.connect(self.socket_path)
+            arm_io_deadline(connection, deadline)
             connection.sendall(struct.pack("!I", len(body)) + body)
-            response_size = struct.unpack("!I", recv_exact(connection, 4))[0]
+            response_size = struct.unpack("!I", recv_exact(connection, 4, deadline))[0]
             if response_size < 1 or response_size > MAX_MESSAGE_BYTES:
                 raise RuntimeError("tool gateway response exceeds adapter limit")
-            response = recv_exact(connection, response_size)
+            response = recv_exact(connection, response_size, deadline)
         envelope = validate_envelope(response)
         if envelope["tool"] != tool_name:
             raise RuntimeError("tool gateway response tool mismatch")
