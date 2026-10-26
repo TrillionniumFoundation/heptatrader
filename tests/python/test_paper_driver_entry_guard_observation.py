@@ -48,6 +48,7 @@ class EntryGuardObservabilityTests(unittest.TestCase):
                     self.position=position;self.observed_at_ms=now
                     self.decision={"action":next(action_iter,"HOLD"),"confidence":1.}
                 def done(self):return True
+                def wait_for_completion(self,timeout):driver.time.sleep(timeout)
                 def cancel(self,reason):pass
                 def close(self):pass
                 def result(self):return dict(self.decision)

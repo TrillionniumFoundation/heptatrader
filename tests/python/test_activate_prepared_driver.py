@@ -1197,6 +1197,92 @@ class InteractiveBrokerSnapshotTests(unittest.TestCase):
         self.assertFalse(proof["broker_manual_stop_shield_claimed"])
         self.assertNotIn("must-not-appear", json.dumps(proof))
 
+    def _use_gnome_session(self):
+        self.gnome_unit = "org.gnome.Shell@ubuntu.service"
+        group = f"/user.slice/user-{self.uid}.slice/user@{self.uid}.service/session.slice/{self.gnome_unit}"
+        self.shell_pid = 1403000
+        self._process(self.shell_pid, "7708000", "gnome-shell", group, self.root / "netns")
+        _put(self.proc / str(self.broker_pid) / "cgroup", ("0::" + group + "\n").encode())
+        self.units[self.gnome_unit] = {
+            "Id": self.gnome_unit, "LoadState": "loaded", "ActiveState": "active",
+            "SubState": "running", "InvocationID": "gnome-session-invocation",
+            "ControlGroup": group, "PartOf": "graphical-session.target",
+            "RefuseManualStop": "no", "UnitFileState": "static",
+            "MainPID": str(self.shell_pid), "User": str(self.uid),
+        }
+
+    def test_gnome_session_binds_shell_java_and_actual_paper_connection(self):
+        self._use_gnome_session()
+        proof = self._snapshot()
+        self.assertEqual(proof, self._snapshot())
+        self.assertEqual(proof["scope"]["Id"], self.gnome_unit)
+        self.assertEqual(proof["gnome_shell_process"]["pid_key"], (str(self.shell_pid), "7708000"))
+        self.assertEqual(proof["broker_process"]["pid_key"], (str(self.broker_pid), "8029516"))
+        self.assertEqual(proof["sockets"]["execution"]["fds"], [9])
+        self.assertEqual(proof["sockets"]["accepted"]["fds"], [92])
+        self.assertEqual(proof["sockets"]["listener"]["fds"], [87])
+        self.assertFalse(proof["broker_manual_stop_shield_claimed"])
+        self.assertNotIn("must-not-appear", json.dumps(proof))
+
+    def test_gnome_session_requires_current_static_same_owner_service(self):
+        self._use_gnome_session()
+        for name, changed in (("ActiveState", "inactive"), ("SubState", "dead"),
+                              ("InvocationID", ""), ("ControlGroup", "/other.service"),
+                              ("UnitFileState", "transient"), ("User", str(self.uid + 1)),
+                              ("MainPID", "0"), ("MainPID", str(self.broker_pid))):
+            with self.subTest(property=name, value=changed):
+                old = self.units[self.gnome_unit][name]
+                self.units[self.gnome_unit][name] = changed
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "SCOPE_NOT_ACTIVE|GNOME_SESSION"):
+                        self._snapshot()
+                finally:
+                    self.units[self.gnome_unit][name] = old
+
+    def test_gnome_session_main_process_must_be_live_shell_in_same_namespace(self):
+        self._use_gnome_session()
+        base = self.proc / str(self.shell_pid)
+        old_exe = os.readlink(base / "exe")
+        (base / "exe").unlink()
+        (base / "exe").symlink_to(self.proc / str(self.broker_pid) / "exe")
+        with self.assertRaisesRegex(RuntimeError, "GNOME_SESSION_PROCESS_INVALID"):
+            self._snapshot()
+        (base / "exe").unlink()
+        (base / "exe").symlink_to(old_exe)
+        namespace = _put(self.root / "shell-other-netns", b"other namespace")
+        (base / "ns/net").unlink()
+        (base / "ns/net").symlink_to(namespace)
+        with self.assertRaisesRegex(RuntimeError, "GNOME_SESSION_PROCESS_INVALID"):
+            self._snapshot()
+
+    def test_gnome_child_without_listener_or_accepted_connection_is_not_broker(self):
+        self._use_gnome_session()
+        for fd, inode, reason in ((87, 333, "LISTENER_REQUIRED"),
+                                 (92, 222, "ACCEPTED_SOCKET_REQUIRED")):
+            with self.subTest(fd=fd):
+                self._fd(self.broker_pid, fd, 9999)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, reason):
+                        self._snapshot()
+                finally:
+                    self._fd(self.broker_pid, fd, inode)
+
+    def test_gnome_session_restart_during_snapshot_is_rejected(self):
+        self._use_gnome_session()
+        original = activation.unit_properties
+        reads = 0
+        def changed(unit, *args):
+            nonlocal reads
+            value = original(unit, *args)
+            if unit == self.gnome_unit:
+                reads += 1
+                if reads > 1:
+                    value["InvocationID"] = "restarted-session"
+            return value
+        with mock.patch.object(activation, "unit_properties", side_effect=changed):
+            with self.assertRaisesRegex(RuntimeError, "GNOME_SESSION_CHANGED_DURING_INSPECTION"):
+                self._snapshot()
+
     def test_default_shutdown_conflict_is_allowed_only_while_inactive(self):
         self.units["shutdown.target"]["ActiveState"] = "active"
         with self.assertRaisesRegex(RuntimeError, "INTERACTIVE_BROKER_SHUTDOWN_ACTIVE"):

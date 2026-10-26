@@ -52,10 +52,43 @@ def immutable(path,value):
 
 
 def _frozen_price_logits(cell, encoded, device, input_profile):
- """Cache only frozen features for one PRICE phase and exact input batches."""
- inputs={}
- def forward(selected):
-  key=(input_profile,tuple(row_id(row) for row in selected),torch.is_grad_enabled())
+ """Cache frozen scorer inputs for one PRICE phase, never output logits.
+
+ A raw-parent no-grad pass may populate the same exact-input/no-grad cache.
+ Scorer parameters remain live and are recomputed on every cache hit. Other
+ inputs, gradient modes and batch shapes never borrow that parent forward.
+ """
+ inputs={};row_states={}
+ def upstream(name):return not name.startswith(('scorer.','act_head.'))
+ # Keep strong references plus version/layout/storage metadata. Module dtype
+ # conversion or Parameter.data replacement can preserve identity and version;
+ # neither may silently reuse features from the old frozen encoder. These are
+ # metadata reads, not tensor copies/hashes or device synchronization. The final
+ # assert_frozen still hashes tensors at the independent job boundary.
+ source_tensors=tuple(value for name,value in
+   (*cell.model.named_parameters(),*cell.model.named_buffers()) if upstream(name))
+ def source_state(_retained=source_tensors):
+  tensors=tuple((kind,name,id(value),value._version,value.dtype,value.device,
+    value.layout,tuple(value.shape),tuple(value.stride()),value.storage_offset(),
+    value.untyped_storage().data_ptr(),value.untyped_storage().nbytes(),value.requires_grad)
+    for kind,values in (('parameter',cell.model.named_parameters()),('buffer',cell.model.named_buffers()))
+    for name,value in values if upstream(name))
+  modes=tuple((name,module.training) for name,module in cell.model.named_modules() if upstream(name))
+  return tensors,modes
+ original_source=source_state()
+ if any(record[-1] for record in original_source[0]) or any(mode for _,mode in original_source[1]):
+  raise ContractError('PRICE_CACHE_REQUIRES_FROZEN_EVAL_UPSTREAM')
+ def forward(selected,*,parent=False):
+  if source_state()!=original_source:raise ContractError('PRICE_CACHE_UPSTREAM_CHANGED')
+  if parent and (input_profile!=price_input.RAW or torch.is_grad_enabled()):
+   raise ContractError('PARENT_PRICE_CACHE_REQUIRES_RAW_NO_GRAD')
+  ids=[]
+  for row in selected:
+   identity=row_id(row);state=digest({'state':row['state'],'question':row['question']})
+   if row_states.setdefault(identity,state)!=state:raise ContractError('PRICE_CACHE_INPUT_CHANGED')
+   ids.append(identity)
+  key=(input_profile,tuple(ids),torch.is_grad_enabled())
+  if parent and key in inputs:raise ContractError('PARENT_PRICE_CACHE_ALREADY_PRIMED')
   if key not in inputs:
    batch={name:value.to(device) for name,value in encoded(selected).items()}
    captured=[]
@@ -63,15 +96,15 @@ def _frozen_price_logits(cell, encoded, device, input_profile):
     if args[0].requires_grad:raise ContractError('PRICE_CACHE_REQUIRES_FROZEN_FEATURES')
     captured.append(args[0].detach().clone())
    hook=cell.model.scorer.register_forward_pre_hook(capture)
-   try:logits,_=cell(**batch)
+   try:logits,action=cell(**batch)
    finally:hook.remove()
    if len(captured)!=1:raise ContractError('PRICE_CACHE_SCORER_INPUT_COUNT')
+   if source_state()!=original_source:raise ContractError('PRICE_CACHE_UPSTREAM_CHANGED')
    inputs[key]=(captured[0],batch['marker_mask'].detach().clone())
-   return logits
+   return (logits,action) if parent else logits
   features,mask=inputs[key]
   return cell.model.scorer(features).squeeze(-1).float().masked_fill(~mask,-1e4)
  return forward
-
 
 def run_closed_action_phase(cell, source, profile, encoded, device, *, verify_frozen=True):
  """Use a separate ACT-only optimizer; PRICE momentum cannot move its head."""
@@ -221,8 +254,14 @@ def run_job(c,*,old_learner_verified=False):
  targets={};parent_scores=[];parent_brier=[];parent_action_logits={};parent_price_receipts=[]
  with torch.no_grad():
   for row in rows:
-   values=encoded([row],parent_input=True) if v7 else encoded([row])
-   batch={k:v.to(device) for k,v in values.items()};p,a=cell(**batch)
+   if v8 and input_binding['parent_price_input_profile']==child_input_profile==price_input.RAW:
+    # The parent and zero-step child have identical raw input and parameters.
+    # Capture the ordinary parent's frozen scorer input once; its ACT output
+    # remains the original full-model output. Later PRICE updates rerun scorer.
+    p,a=price_logits([row],parent=True)
+   else:
+    values=encoded([row],parent_input=True) if v7 else encoded([row])
+    batch={k:v.to(device) for k,v in values.items()};p,a=cell(**batch)
    if v7:parent_price_receipts.append({'training_row_id':row_id(row),'raw_probs':p.softmax(-1)[0].detach().cpu().tolist(),
     'price_input_profile':input_binding['parent_price_input_profile'],'price_input_id':digest(price_input.model_state(row['state'],input_binding['parent_price_input_profile']))})
    key=digest([row['sample_id'],row['horizon_sec']]);truth=torch.tensor([row['target_class']],device=device)

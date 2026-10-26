@@ -1,8 +1,9 @@
-"""Conditional read-only promotion consumer, independent of fit and evaluation.
+"""Read-only verification of canonical selections after independent evaluation.
 
 A local signed PASS only prepares a request. Canonical CURRENT plus distinct
-canonical selector signatures and exact payload must verify before loading. No
-fake acknowledgement, effect capability, actor change or trade permission exists.
+canonical selector signatures and exact payload must verify before byte loading.
+This bridge does not invoke a product consumer or acknowledge its deployment.
+No effect capability, actor change or trade permission exists.
 """
 from __future__ import annotations
 import argparse,fcntl,json,os,signal,subprocess,time
@@ -20,8 +21,26 @@ def native(config,request):
  if sha_file(p)!=config['canonical_verifier_sha256']:raise ContractError('CANONICAL_VERIFIER_CHANGED')
  process=subprocess.run([str(p)],input=json.dumps(request,sort_keys=True,separators=(',',':')).encode(),capture_output=True,timeout=10)
  out=json.loads(process.stdout)
- if process.returncode or out.get('native_source_sha')!='78fdb0cf8537e3a84fc6e0a849707559c80881e8' or out.get('effect_authority') is not False:
-  raise ContractError('CANONICAL_VERIFIER_REJECTED:'+str(out.get('error')))
+ if (type(out) is not dict or process.returncode
+     or out.get('native_source_sha')!='78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+     or out.get('effect_authority') is not False):
+  raise ContractError('CANONICAL_VERIFIER_REJECTED:'+str(out.get('error') if isinstance(out,dict) else 'RESPONSE_SHAPE'))
+ operation=request.get('operation')
+ contracts={
+  'validate_candidate_manifest':('CANONICAL_MANIFEST_VALID_NOT_OWNER_ADMITTED',False,('manifest_digest',)),
+  'verify_current_selection':('CANONICAL_SIGNED_SELECTION_VERIFIED_READ_ONLY',True,('selection_digest','content_digest','registry_head_digest'))}
+ if operation not in contracts:raise ContractError('CANONICAL_VERIFIER_OPERATION')
+ status,selected,digests=contracts[operation]
+ # These are the pinned Rust adapter's typed read-only results. Neither a
+ # generic PASS nor an owner-admitted boolean is an equivalent receipt.
+ if (out.get('status')!=status or out.get('selection_verified') is not selected
+     or out.get('canonical_agentd_admitted') is not False):
+  raise ContractError('CANONICAL_VERIFIER_RECEIPT_CONTRACT')
+ if any(type(out.get(key)) is not str or len(out[key])!=64
+        or any(char not in '0123456789abcdef' for char in out[key]) for key in digests):
+  raise ContractError('CANONICAL_VERIFIER_RECEIPT_DIGEST')
+ if selected and out['content_digest']!=request.get('expected_content_digest'):
+  raise ContractError('NO_CANONICAL_SIGNED_SELECTION')
  return out
 
 
@@ -50,12 +69,18 @@ def evaluate_gate(config,plan,signed,now):
 
 
 def canonical_selection(config,plan,signed):
- candidate=read_json(Path(plan['candidate_directory'])/'candidate.json');support=digest({'plan_id':plan['plan_id'],
+ candidate=read_json(Path(plan['candidate_directory'])/'candidate.json');evaluation_support=digest({'plan_id':plan['plan_id'],
   'candidate_id':plan['candidate_id'],'outcome_set_digest':signed['outcome_set_digest'],'training_dataset_sha256':plan['training_dataset_sha256']})
  m=manifest_for(plan,candidate)
  manifest_receipt=native(config,{'operation':'validate_candidate_manifest','manifest':m,'payload_path':str(Path(plan['candidate_directory'])/'value-head.safetensors')})
- base={'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],'support_digest':support,'structural_receipt':manifest_receipt,
-       'promotion_performed':False,'automatic_trading':False,'actor_updated':False,'canonical_agentd_accepted':False}
+ # Canonical V2 publication uses the validated manifest digest as the V1
+ # registry support_digest (LearningArtifactOwnerHost), not evaluation support.
+ # Keep the independent outcome binding explicitly separate.
+ support=manifest_receipt['manifest_digest']
+ base={'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],'support_digest':support,
+       'evaluation_support_digest':evaluation_support,'structural_receipt':manifest_receipt,
+       'promotion_performed':False,'automatic_trading':False,'actor_updated':False,'canonical_agentd_accepted':False,
+       'canonical_selection_verified':False,'product_consumed':False,'product_consume_receipt':None}
  trust_spec=config.get('canonical_owner_registration')
  if not trust_spec:return {**base,'state':'AWAITING_CANONICAL_AGENTD_OWNER_ENROLLMENT'}
  # The operator pins a real host trust root; a supplied model bundle cannot
@@ -71,9 +96,11 @@ def canonical_selection(config,plan,signed):
   'expected_content_digest':plan['head_tensor_sha256'],'expected_support_digest':support,'expected_compatibility_digest':digest(plan['behavior_scope'])}
  out=native(config,request)
  if out.get('selection_verified') is not True or out.get('content_digest')!=plan['head_tensor_sha256']:raise ContractError('NO_CANONICAL_SIGNED_SELECTION')
- return {**base,'state':'NATIVE_SELECTED_READONLY_CANDIDATE','promotion_performed':True,
+ # load_selected_candidate/with_current verified bytes only. This adapter
+ # neither admits a product deployment nor calls a financial-value consumer.
+ return {**base,'state':'NATIVE_SELECTED_READONLY_CANDIDATE','canonical_selection_verified':True,
    'canonical_selection_verification':out,'verified_host_route':host['route'],
-   'canonical_agentd_accepted':True,'payload_path':bundle['payload_path'],'artifact_generation':bundle['signed_selection']['artifact_generation']}
+   'payload_path':bundle['payload_path'],'artifact_generation':bundle['signed_selection']['artifact_generation']}
 
 
 class Selector:
@@ -87,14 +114,15 @@ class Selector:
    structural=native(self.c,{'operation':'validate_candidate_manifest','manifest':manifest_for(plan,candidate),'payload_path':str(Path(plan['candidate_directory'])/'value-head.safetensors')})
    status={'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],'as_of_ms':now,
     'state':'WAIT_INDEPENDENT_PROSPECTIVE_EVALUATION','manifest_structurally_verified':True,
-    'native_manifest_digest':structural['manifest_digest'],'canonical_agentd_accepted':False,'promotion_performed':False,'trading_authority':False}
+    'native_manifest_digest':structural['manifest_digest'],'canonical_agentd_accepted':False,'promotion_performed':False,'trading_authority':False,
+    'canonical_selection_verified':False,'product_consumed':False,'product_consume_receipt':None}
    assessment_path=path.parent/'assessment-signed.json'
    if assessment_path.exists():
     signed=read_json(assessment_path)
     if evaluate_gate(self.c,plan,signed,now):status.update(canonical_selection(self.c,plan,signed))
     else:status.update(evaluation_state=signed['state'],evaluation_reasons=signed['reasons'])
    state_path=path.parent/'selector-status.json';atomic(state_path,sign_record(self.c,'selector',status));states.append(status)
-   if status.get('promotion_performed'):selected.append(status)
+   if status.get('canonical_selection_verified') is True:selected.append(status)
   target=self.root/'selection-current.json'
   if selected:
    # Never silently roll back to a lower generation on missing/corrected evidence.
@@ -103,12 +131,17 @@ class Selector:
    if chosen['artifact_generation']<previous:raise ContractError('READONLY_SELECTION_ROLLBACK')
    atomic(target,sign_record(self.c,'selector',{'state':'READONLY_AVAILABLE','candidate_id':chosen['candidate_id'],
       'high_water_generation':chosen['artifact_generation'],'native':chosen['canonical_selection_verification'],
+      'support_digest':chosen['support_digest'],'evaluation_support_digest':chosen['evaluation_support_digest'],
+      'canonical_selection_verified':True,'canonical_agentd_accepted':False,'promotion_performed':False,
+      'product_consumed':False,'product_consume_receipt':None,
       'authority':'READ_ONLY_FINANCIAL_VALUE_NO_TRADES','at_ms':now}))
   elif target.exists():
    old=read_json(target);atomic(target,sign_record(self.c,'selector',{'state':'UNAVAILABLE_NO_FALLBACK',
-    'high_water_generation':old.get('high_water_generation',0),'previous_candidate_id':old.get('candidate_id',old.get('previous_candidate_id')),'at_ms':now}))
+    'canonical_selection_verified':False,'canonical_agentd_accepted':False,'promotion_performed':False,
+    'product_consumed':False,'product_consume_receipt':None,'high_water_generation':old.get('high_water_generation',0),'previous_candidate_id':old.get('candidate_id',old.get('previous_candidate_id')),'at_ms':now}))
   result={'at_ms':now,'plans':len(states),'selected_count':len(selected),'canonical_owner_configured':bool(self.c.get('canonical_owner_registration')),
-   'states':{s:sum(x['state']==s for x in states) for s in sorted({x['state'] for x in states})},'broker_orders_sent':0,'actor_updated':False}
+   'states':{s:sum(x['state']==s for x in states) for s in sorted({x['state'] for x in states})},
+   'consumed_count':0,'canonical_agentd_accepted':False,'broker_orders_sent':0,'actor_updated':False}
   atomic(self.root/'selector-status.json',result);return result
 
 
@@ -124,7 +157,9 @@ def main():
    atomic(root/'selector-status.json',{'at_ms':int(time.time()*1000),'state':'UNAVAILABLE_NO_SELECTION','reason':str(exc)[:250],'broker_orders_sent':0})
    target=root/'selection-current.json'
    if target.exists():
-    old=read_json(target);atomic(target,{'state':'UNAVAILABLE_NO_FALLBACK','high_water_generation':old.get('high_water_generation',0),'at_ms':int(time.time()*1000)})
+    old=read_json(target);atomic(target,{'state':'UNAVAILABLE_NO_FALLBACK','high_water_generation':old.get('high_water_generation',0),
+    'canonical_selection_verified':False,'canonical_agentd_accepted':False,'promotion_performed':False,
+    'product_consumed':False,'product_consume_receipt':None,'at_ms':int(time.time()*1000)})
   if a.once:break
   for _ in range(10):
    if worker.stop:break

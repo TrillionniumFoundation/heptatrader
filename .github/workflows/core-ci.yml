@@ -46,6 +46,7 @@ jobs:
         fi
         python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
     - name: Documentation links preflight
+      id: docs
       if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
       run: python3 scripts/check_documentation.py
     - name: Install selected lane dependencies
@@ -88,6 +89,7 @@ jobs:
         sudo apt-get update "${apt_options[@]}"
         sudo apt-get install "${apt_options[@]}" --yes --no-install-recommends "${packages[@]}"
     - name: Native build and behavior tests
+      id: native
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
       env:
         HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
@@ -105,12 +107,15 @@ jobs:
         if-no-files-found: warn
         retention-days: 7
     - name: Python core behavior tests
+      id: python_core
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
       run: python3 scripts/run_python_tests.py --lane core
     - name: Python source contracts
+      id: python_source
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
       run: python3 scripts/run_python_tests.py --lane source
     - name: Cache CPU research dependency downloads
+      id: learning_cache
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
       continue-on-error: true
@@ -128,12 +133,14 @@ jobs:
         echo "$RUNNER_TEMP/hepta-core-python/bin" >> "$GITHUB_PATH"
       id: learning_install
     - name: Python learning tests once
+      id: python_learning
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.learning_install.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
       env:
         OMP_NUM_THREADS: '1'
         MKL_NUM_THREADS: '1'
       run: python3 scripts/run_python_tests.py --lane learning
     - name: Whitespace check
+      id: whitespace
       if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

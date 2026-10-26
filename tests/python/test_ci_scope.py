@@ -23,6 +23,36 @@ class DocsOnlyScope(unittest.TestCase):
             "research/train_v2/FX_ORIGINAL_HEALTH_FIRST160_PHYSICAL_20261013.md",
         ]))
 
+    def test_dated_observation_reports_do_not_rebuild_runtime(self):
+        for path in (
+            "research/historical_training/POCKET4_LAYA_CONVERGENCE_20261015.md",
+            "research/train_v2/INPUT_LATENCY_OBSERVATIONS_20261025.md",
+            "research/future_component/EXPERIMENT_REPORT_20261026.md",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(docs_only([path]))
+                self.assertEqual(scope_for_paths([path]),
+                                 {"run_native": False, "run_python": False,
+                                  "run_learning": False})
+
+    def test_report_suffix_does_not_exempt_contracts_or_executable_changes(self):
+        full = {"run_native": True, "run_python": True, "run_learning": True}
+        report = "research/historical_training/POCKET4_LAYA_CONVERGENCE_20261015.md"
+        for path in (
+            "research/train_v2/SOURCE_CONTRACT_REPORT_20261025.md",
+            "research/train_v2/INPUT_SCHEMA_AUDIT_20261025.md",
+            "research/train_v2/CONFIG_OBSERVATIONS_20261025.md",
+            "research/train_v2/PROTOCOL_CONVERGENCE_20261025.md",
+            "research/train_v2/UNKNOWN_20261025.md",
+            "research/train_v2/EXPERIMENT_REPORT_20261025.py",
+            "research/train_v2/EXPERIMENT_REPORT_20261025.json",
+            "research/train_v2/EXPERIMENT_REPORT_20261025.yaml",
+            "research/train_v2/EXPERIMENT_REPORT_20261025.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(docs_only([path]))
+                self.assertEqual(scope_for_paths([report, path]), full)
+
     def test_named_research_incident_report_is_prose(self):
         paths = ["research/historical_training/RESIDENT_RESOURCE_GUARD.md"]
         self.assertTrue(docs_only(paths))

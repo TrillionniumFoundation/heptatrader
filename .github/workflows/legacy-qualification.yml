@@ -62,4 +62,5 @@ jobs:
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends python3-yaml
     - name: Run archived contracts and historical inventories
+      id: legacy_tests
       run: python3 scripts/run_python_tests.py --lane legacy

@@ -27,7 +27,7 @@ from hepta_cost_policy import (CostError, FORECAST_VERSION, MODEL_ID, HORIZONS,
     dec, digest, validate_forecast)
 from hepta_cost_capture import Capture, QUOTE_FIELDS, ResetHold, require_no_reset_hold
 
-BASE_DRIVER_SHA256 = "6f349f23b19deecbac6d20938b98955e8653bab60a50621a40907088585d2c86"
+BASE_DRIVER_SHA256 = "e45e6724e76df9f06c60c0d8f7d3f7d19bf03aa2b482ca5d479171e79b8b101b"
 # Historical adapter origin only. The current executable base is bound by
 # BASE_DRIVER_SHA256 above; this is not a qualification of later base revisions.
 BASE_COMMIT = "4df4aab12d67b151902e1531565558d82a986d7c"

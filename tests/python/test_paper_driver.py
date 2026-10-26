@@ -321,6 +321,60 @@ class DriverPolicyTests(unittest.TestCase):
             gate.set(); self.assertTrue(worker._done.wait(1)); self.assertEqual(worker.result()["action"],"HOLD")
         finally: d.model_decision=old
 
+    def test_completed_model_wakes_sample_once_without_cleanup_busy_spin(self):
+        from unittest.mock import patch
+        gate=__import__("threading").Event()
+        def model(*_):
+            self.assertTrue(gate.wait(2))
+            return {"action":"HOLD","confidence":0.9,"rationale":"fixture"}
+        with patch.object(d,"model_decision",side_effect=model):
+            worker=d.ModelWorker("unused",Path("/unused"),
+                [{"observed_at_ms":d.now_ms(),"bid":1.,"ask":1.1,"mid":1.05}],0.)
+            try:
+                gate.set();self.assertTrue(worker._done.wait(2))
+                with patch.object(d.time,"monotonic",return_value=100.),patch.object(d.time,"sleep") as sleep:
+                    d.wait_for_next_sample(100.,worker)
+                    sleep.assert_not_called()
+                    # A retained completion/cleanup handle gets only one early
+                    # wake; subsequent loops retain the bounded sample delay.
+                    d.wait_for_next_sample(100.,worker)
+                    sleep.assert_called_once_with(d.SAMPLE_SEC)
+            finally:
+                gate.set();worker.close()
+
+    def test_waiting_sample_is_released_by_real_worker_completion(self):
+        from unittest.mock import patch
+        import concurrent.futures,threading
+        gate=threading.Event();waiting=threading.Event()
+        def model(*_):
+            self.assertTrue(gate.wait(2))
+            return {"action":"HOLD","confidence":0.9,"rationale":"fixture"}
+        with patch.object(d,"model_decision",side_effect=model):
+            worker=d.ModelWorker("unused",Path("/unused"),
+                [{"observed_at_ms":d.now_ms(),"bid":1.,"ask":1.1,"mid":1.05}],0.)
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    def wait():
+                        waiting.set();return worker.wait_for_completion(30.)
+                    future=pool.submit(wait)
+                    self.assertTrue(waiting.wait(1));self.assertFalse(future.done())
+                    gate.set();self.assertTrue(future.result(timeout=2))
+            finally:
+                gate.set();worker.close()
+
+    def test_completion_latency_uses_monotonic_clock_without_extending_signal_ttl(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        state={};worker=SimpleNamespace(completed_at_ms=2000,
+            completed_at_monotonic=10.,observed_at_ms=1000)
+        with patch.object(d,"now_ms",return_value=1500),patch.object(d.time,"monotonic",return_value=10.125):
+            observation=d.record_model_completion(state,worker)
+        self.assertEqual(observation["completion_to_consumption_ms"],125.)
+        self.assertEqual(observation["completed_at_ms"],2000)
+        self.assertEqual(observation["consumed_at_ms"],1500)
+        self.assertEqual(d.MODEL_SIGNAL_TTL_MS,60000)
+        self.assertIsNone(d.record_model_completion({},SimpleNamespace()))
+
     def test_uncertain_renewal_latches_without_reprovision_or_blind_retry(self):
         state=self.state(); state.update(lease_renewal_state="POSSIBLY_SENT",lease_uncertain=True)
         old_run,old_atomic=d.run,d.atomic_json

@@ -13,12 +13,43 @@ NATIVE_READER_CLASS=None  # An attributed release supplies its exact verified he
 NATIVE_READ_BINARY=None  # Optional path/hash binding applies only to read streams.
 CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
 RESIDENT_LOOP_PROGRESS_SCHEMA="heptatrader.driver-loop-progress.v1"
+LOOP_OBSERVATION_SCHEMA="heptatrader.driver-loop-observation.v1"
 QUANTITY_TOLERANCE=1e-9
 MODEL_SIGNAL_TTL_MS=60000
 _MODEL_RUN_CONTEXT=threading.local()
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
 def cid(p): return p+"-"+uuid.uuid4().hex
+
+def record_loop_observation(state,phase,reason=""):
+    """Current loop evidence; a retained diagnostic is not current readiness."""
+    state["loop_observation"]={"schema":LOOP_OBSERVATION_SCHEMA,
+        "iteration":int((state.get("resident_loop_progress") or {}).get("iteration",0)),
+        "checked_at_ms":now_ms(),"phase":phase,"reason_code":reason}
+
+def record_loop_error(state):
+    # Preserve historical diagnostics independently from the latest loop mode.
+    state["last_error_observation"]={"message":str(state.get("last_error",""))[:500],
+        "at_ms":now_ms(),"scope":"LAST_OBSERVED_LOOP_ERROR"}
+
+def wait_for_next_sample(started,model_worker):
+    delay=max(0.2,SAMPLE_SEC-(time.monotonic()-started))
+    if model_worker is None:
+        time.sleep(delay)
+    else:
+        model_worker.wait_for_completion(delay)
+
+def record_model_completion(state,worker):
+    completed=getattr(worker,"completed_at_ms",None)
+    monotonic_completed=getattr(worker,"completed_at_monotonic",None)
+    if type(completed) is not int or type(monotonic_completed) not in (int,float):
+        return None  # Older/isolated producers do not manufacture a zero sample.
+    observation={"schema":"heptatrader.model-completion-observation.v1",
+        "input_observed_at_ms":worker.observed_at_ms,"completed_at_ms":completed,
+        "consumed_at_ms":now_ms(),"completion_to_consumption_ms":
+            round(max(0.0,time.monotonic()-monotonic_completed)*1000,3)}
+    state["model_completion_observation"]=observation
+    return observation
 
 def strict_json(text):
     def unique(pairs):
@@ -807,6 +838,8 @@ class ModelWorker:
     def __init__(self,openclaw,state_dir,history,position):
         self.position=float(position); self.observed_at_ms=int(history[-1]["observed_at_ms"])
         self._decision=None; self._error=None; self._done=threading.Event()
+        self.completed_at_ms=None;self.completed_at_monotonic=None
+        self._completion_wake_delivered=False
         self._cancelled=threading.Event();self.cancel_reason=None
         self.cancel_requested_at_ms=None;self.process_pid=None;self._process=None
         # Queueing, process startup and inference share the original quote's
@@ -825,6 +858,8 @@ class ModelWorker:
             except BaseException as error: self._error=error
             finally:
                 del _MODEL_RUN_CONTEXT.worker
+                self.completed_at_ms=now_ms()
+                self.completed_at_monotonic=time.monotonic()
                 self._done.set()
         self._thread=threading.Thread(target=target,name="heptatrader-paper-model",daemon=True)
         self._thread.start()
@@ -884,6 +919,18 @@ class ModelWorker:
         finally:
             if completed:self._process=None
             else:self._stop_process(process)
+
+    def wait_for_completion(self,timeout):
+        # Wake the main loop once, including a completion that raced with entry
+        # into this wait. The next loop re-reads owner/position/quote before use.
+        # A completed worker with a still-live cleanup child must not busy-spin.
+        if self._completion_wake_delivered:
+            time.sleep(timeout)
+            return False
+        if self._done.wait(timeout):
+            self._completion_wake_delivered=True
+            return True
+        return False
 
     def done(self):
         if not self._done.is_set():return False
@@ -1241,6 +1288,9 @@ def main():
         nonlocal stop; stop=True
     signal.signal(signal.SIGTERM,stopping); signal.signal(signal.SIGINT,stopping)
     state=load_state(state_path)
+    if state.get("last_error") and "last_error_observation" not in state:
+        state["last_error_observation"]={"message":str(state["last_error"])[:500],
+            "at_ms":None,"scope":"LEGACY_UNDATED_DIAGNOSTIC"}
     if crypto:
         state.setdefault("pnl_currency","USD")
         state.setdefault("pnl_basis","BROKER_FILL_GROSS")
@@ -1306,9 +1356,11 @@ def main():
             started=time.monotonic();loop_iteration+=1
             state["resident_loop_progress"]={"schema":RESIDENT_LOOP_PROGRESS_SCHEMA,**process_identity,
                 "iteration":loop_iteration,"at_ms":now_ms()}
+            record_loop_observation(state,"CHECKING_OWNER_SNAPSHOT")
             try:
                 pending_mode=state.get("pending") is not None
                 snap=snapshot(cli,state,state_path,require_quote=False); pos=float(snap["position"])
+                record_loop_observation(state,"OWNER_SNAPSHOT_OBSERVED")
                 if model_worker is not None and abs(pos-model_worker.position)>QUANTITY_TOLERANCE:
                     model_worker.cancel("AUTHORITATIVE_POSITION_CHANGED")
                 if not pending_mode and state.get("active_lease_continuation_supported"):
@@ -1317,11 +1369,14 @@ def main():
                 model_worker,model_worker_discarded=sync_model_inference(
                     state,model_worker,model_worker_discarded,inference_reason)
                 if pending_mode:
+                    record_loop_observation(state,"RECONCILING_ORIGINAL_COMMAND")
                     inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                    wait_for_next_sample(started,model_worker)
                     continue
                 if state.get("owner_fence_recovery_required"):
+                    record_loop_observation(state,"OWNER_RECOVERY_REQUIRED",
+                        state.get("owner_fence_block_reason","SESSION_OWNER_FENCED"))
                     state["position"]=pos; state["halt_new_entries"]=True
                     if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                         prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
@@ -1330,7 +1385,7 @@ def main():
                         recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
                     atomic_json(state_path,state)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                    wait_for_next_sample(started,model_worker)
                     continue
                 if INSTRUMENT=="BTC.USD" and abs(pos-float(state.get("position",0)))>QUANTITY_TOLERANCE:
                     state["halt_new_entries"]=True;state["risk_halt_reason"]="EXTERNAL_CRYPTO_POSITION_CHANGE"
@@ -1338,20 +1393,23 @@ def main():
                 state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
                     pos,len(snap["active"]),state.get("pending"))
                 if state.get("owner_fence_recovery_required"):
+                    record_loop_observation(state,"OWNER_RECOVERY_REQUIRED",
+                        state.get("owner_fence_block_reason","SESSION_OWNER_FENCED"))
                     model_worker,model_worker_discarded=sync_model_inference(
                         state,model_worker,model_worker_discarded,"OWNER_CONTROL_RECOVERY")
                     atomic_json(state_path,state)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                    wait_for_next_sample(started,model_worker); continue
                 pause_reason=entry_inference_hold_reason(state,home,os.geteuid()) if abs(pos)<=QUANTITY_TOLERANCE else None
                 if pause_reason:
+                    record_loop_observation(state,"INFERENCE_PAUSED",pause_reason)
                     state["entry_inference_pause"]={"reason_code":pause_reason,"checked_at_ms":now_ms(),
                         "scope":"ENTRY_INFERENCE_ONLY"}
                     model_worker,model_worker_discarded=sync_model_inference(
                         state,model_worker,model_worker_discarded,pause_reason)
                     atomic_json(state_path,state)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                    wait_for_next_sample(started,model_worker); continue
                 state.pop("entry_inference_pause",None)
                 if abs(pos)<=QUANTITY_TOLERANCE and snap["owner_health"]["mutation_ready"] is not True:
                     raise DriverError("authoritative mutation state is not ready")
@@ -1359,11 +1417,12 @@ def main():
                 # request. Native execution still validates the exact reduce-only order.
                 if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE and state.get("halt_new_entries"):
                     why="HALT_REDUCE_ONLY"
+                    record_loop_observation(state,"REDUCE_ONLY_PATH",why)
                     state["last_exit_reason"]=why; atomic_json(state_path,state)
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",exit_reason=why)
                     atomic_json(state_path,state)
                     if args.once: break
-                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                    wait_for_next_sample(started,model_worker); continue
                 # Price-based exits and new entries still require a fresh IB quote.
                 snap["quote"]=native(cli,"market.get_quote","instrument="+INSTRUMENT)
                 q=snap["quote"]
@@ -1378,16 +1437,18 @@ def main():
                 if not snap["active"] and abs(pos)>QUANTITY_TOLERANCE:
                     close,why=should_close(state,pos,q,None)
                     if close:
+                        record_loop_observation(state,"PRICE_EXIT_PATH",why)
                         state["last_exit_reason"]=why; atomic_json(state_path,state)
                         prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
                             q,exit_reason=why)
                         atomic_json(state_path,state)
                         if args.once: break
-                        time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                        wait_for_next_sample(started,model_worker); continue
                 inference_reason=model_inference_hold_reason(state,snap,home,os.geteuid())
                 model_worker,model_worker_discarded=sync_model_inference(
                     state,model_worker,model_worker_discarded,inference_reason)
                 if model_worker is not None and model_worker.done():
+                    completion=record_model_completion(state,model_worker)
                     try:
                         if model_worker_discarded:
                             raise DriverError("model decision discarded after inference hold")
@@ -1399,14 +1460,18 @@ def main():
                             raise DriverError("model decision discarded after market snapshot expiry")
                         decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
                         state["last_decision_ms"]=now_ms(); state["last_error"]=""
+                        if completion is not None:completion["outcome"]="USED"
                     except Exception as error:
                         state["last_error"]=("model HOLD: "+str(error))[:500]
+                        record_loop_error(state)
+                        if completion is not None:completion["outcome"]="DISCARDED"
                     model_worker=None; model_worker_discarded=False
                 if snap["active"]:
                     state["last_error"]="active broker order present; observing only"
                 elif abs(pos)>QUANTITY_TOLERANCE and decision is not None:
                     close,why=should_close(state,pos,q,decision)
                     if close:
+                        record_loop_observation(state,"PRICE_EXIT_PATH",why)
                         state["last_exit_reason"]=why; atomic_json(state_path,state)
                         prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE",
                             q,exit_reason=why)
@@ -1431,6 +1496,10 @@ def main():
                     state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
                     model_worker_discarded=False
                     model_worker=ModelWorker(openclaw,state_dir,state["history"],pos)
+                record_loop_observation(state,
+                    "INFERENCE_PAUSED" if inference_reason is not None else
+                    ("MODEL_INFLIGHT" if model_worker is not None else "OBSERVING"),
+                    inference_reason or "")
                 atomic_json(state_path,state)
             except Exception as e:
                 if state.get("owner_fence_recovery_required"):
@@ -1438,9 +1507,11 @@ def main():
                     state["last_error"]="owner fence recovery required: "+state.get("owner_fence_block_reason","SESSION_OWNER_FENCED")
                 else:
                     state["last_error"]=str(e)[:500]
+                record_loop_error(state)
+                record_loop_observation(state,"ERROR",type(e).__name__)
                 atomic_json(state_path,state)
             if args.once: break
-            time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+            wait_for_next_sample(started,model_worker)
     finally:
         try:
             if model_worker is not None:model_worker.close()

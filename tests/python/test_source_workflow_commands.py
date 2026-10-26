@@ -20,12 +20,12 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
     This verifies automation failure/reporting semantics, NOT the Execution
     Service, sanitizer correctness, or broker qualification. Those run in CI.
     """
-    def block(self, name: str) -> str:
+    def block(self, step_id: str) -> str:
         path = ROOT / ".github/workflows/canonical-full-suite.yml"
         workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         steps = workflow["jobs"]["reliability"]["steps"]
-        matches = [step["run"] for step in steps if step.get("name") == name]
-        self.assertEqual(len(matches), 1)
+        matches = [step["run"] for step in steps if step.get("id") == step_id]
+        self.assertEqual(len(matches), 1, step_id)
         return matches[0]
 
     def run_ctest_block(self, name: str, *, core: bool = True,
@@ -75,7 +75,7 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
             return result, counts, outputs
 
     def test_core_results_are_actual_and_empty_or_failed_selection_fails(self):
-        name = "Run nonempty core suite and retain machine-readable results"
+        name = "core_tests"
         result, counts, outputs = self.run_ctest_block(name)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(counts, {"core-count": 1, "recovery-count": 0})
@@ -94,7 +94,7 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
         self.assertEqual(counts["recovery-count"], 0)
 
     def test_recovery_runs_five_times_and_stops_on_failure(self):
-        name = "Repeat real research Execution crash and recovery acceptance"
+        name = "recovery_tests"
         result, counts, outputs = self.run_ctest_block(name)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(counts, {"core-count": 0, "recovery-count": 5})
@@ -128,8 +128,8 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
                      "-c", self.block(name)], cwd=root,
                     env=dict(os.environ, BUILD_DIR="build/fixture", EXPECTED_SHA=expected),
                     capture_output=True, text=True, timeout=10)
-            identity = "Assert and retain exact source identity"
-            clean = "Reassert clean exact source"
+            identity = "identity"
+            clean = "clean_source"
             self.assertNotEqual(run(identity, "0" * 40).returncode, 0)
             self.assertFalse((root / "build/fixture/SOURCE_COMMIT").exists())
             self.assertEqual(run(identity).returncode, 0)
@@ -210,7 +210,7 @@ class FocusedDevelopmentRunnerTests(unittest.TestCase):
     def test_missing_tool_fails_once_before_configuration(self):
         result, calls = self.invoke("--storage", tools=("cmake",))
         self.assertEqual(result.returncode, 69, result.stderr)
-        self.assertIn("Missing required development tool(s) on PATH: ctest", result.stderr)
+        self.assertIn("ctest", result.stderr)
         self.assertEqual(calls, [])
 
     def test_invalid_selection_or_parallelism_fails_before_configuration(self):

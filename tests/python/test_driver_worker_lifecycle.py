@@ -42,9 +42,11 @@ class DriverWorkerLifecycleTests(unittest.TestCase):
         first.done.side_effect = lambda: ticks[0] >= 4
         first.observed_at_ms = self.clock[0]
         first.position = 0.0
+        first.wait_for_completion.side_effect = lambda timeout: self.d.time.sleep(timeout)
         first.result.return_value = {'action': 'BUY', 'confidence': 1.0, 'rationale': 'pre-hold answer'}
         second = Mock()
         second.done.return_value = False
+        second.wait_for_completion.side_effect = lambda timeout: self.d.time.sleep(timeout)
         created = []
         overlap = []
 
@@ -121,6 +123,7 @@ class DriverWorkerLifecycleTests(unittest.TestCase):
         answer.done.side_effect = lambda: ticks[0] >= 1
         answer.observed_at_ms = self.clock[0]
         answer.position = 0.0
+        answer.wait_for_completion.side_effect = lambda timeout: self.d.time.sleep(timeout)
         answer.result.return_value = {'action': 'BUY', 'confidence': 1.0, 'rationale': 'fresh fixture'}
 
         def sleep(_seconds):

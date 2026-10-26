@@ -180,6 +180,7 @@ class DriverInferenceModesTests(unittest.TestCase):
         answer.done.side_effect = lambda: sleeps[0] >= 2
         answer.observed_at_ms = self.clock[0]
         answer.position = 0.0
+        answer.wait_for_completion.side_effect = lambda timeout: self.d.time.sleep(timeout)
         answer.result.return_value = {"action": "BUY", "confidence": 1.0, "rationale": "old"}
         handlers = {}
         sleeps = [0]
@@ -201,6 +202,30 @@ class DriverInferenceModesTests(unittest.TestCase):
             self.submit.assert_not_called()
         self.assertEqual(self.state["decisions"], 0)
         self.assertIn("discarded after inference hold", self.state["last_error"])
+
+    def test_fresh_pause_does_not_relabel_an_undated_old_error_as_current(self):
+        self.make_hold()
+        self.state["last_error"] = "native rejected: EXECUTION_EVENT_SERVICE_NOT_READY"
+        with self.harness(["--once"]):
+            self.assertEqual(self.d.main(), 0)
+        self.assertEqual(self.state["last_error_observation"], {
+            "message": "native rejected: EXECUTION_EVENT_SERVICE_NOT_READY",
+            "at_ms": None, "scope": "LEGACY_UNDATED_DIAGNOSTIC"})
+        current = self.state["loop_observation"]
+        self.assertEqual(current["phase"], "INFERENCE_PAUSED")
+        self.assertEqual(current["reason_code"], "PERSISTENT_MAINTENANCE_HOLD")
+        self.assertEqual(current["checked_at_ms"], self.clock[0])
+        self.assertEqual(current["iteration"], 1)
+
+    def test_current_snapshot_error_gets_its_actual_loop_timestamp(self):
+        with self.harness(["--once"]) as stack:
+            stack.enter_context(patch.object(self.d, "snapshot", side_effect=self.d.DriverError("fixture-unready")))
+            self.assertEqual(self.d.main(), 0)
+        self.assertEqual(self.state["last_error_observation"], {
+            "message": "fixture-unready", "at_ms": self.clock[0],
+            "scope": "LAST_OBSERVED_LOOP_ERROR"})
+        self.assertEqual(self.state["loop_observation"]["phase"], "ERROR")
+        self.assertEqual(self.state["loop_observation"]["checked_at_ms"], self.clock[0])
 
     def test_unreadable_hold_state_conservatively_pauses_inference(self):
         with patch.object(self.d.Path, "lstat", side_effect=PermissionError("unreadable")):

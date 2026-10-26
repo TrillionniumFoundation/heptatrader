@@ -17,6 +17,19 @@ No approval polling, reviewer-count requirement or cross-workflow receipt exists
 The owner may integrate reviewed, tested source directly; a missing hosted run
 is reported as missing, never as PASS and never as a reason to wait indefinitely.
 
+Workflow command fixtures locate behavioral steps by stable `id`, not the
+English display name or a shell-command substring. They execute inert command
+fixtures and evaluate cancellation/selection behavior; a cosmetic step rename
+or equivalent boolean expression is not a new acceptance requirement.
+
+Dated research observation reports ending in `PHYSICAL`, `AUDIT`, `CLOSEOUT`,
+`FORENSICS`, `CONVERGENCE`, `OBSERVATIONS` or `REPORT` followed by `_YYYYMMDD.md`
+use documentation feedback. No per-experiment path registration is required.
+Contract/configuration/schema/protocol/specification/manifest/requirements
+names, unknown research Markdown and executable or data-format changes keep
+their existing full feedback. A report edit mixed with such a change does not
+exempt that change. Historical report contents remain evidence of their own date.
+
 `python3 scripts/run_python_tests.py --lane core` runs portable behavior tests;
 `--lane source` runs source/build contracts. `--lane external` retains the tests
 that execute separately built Canonical Rust and Laya native fixtures. Missing fixtures fail that
