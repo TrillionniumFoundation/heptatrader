@@ -19,6 +19,7 @@ from data import canonical,digest,strict,prefix,exports,valid_quote,features,mak
 from gpu import GpuHead,initial_weights,project_candidate,numerical_self_test
 from runner import Native,OBJECTIVE,target_arrays,independent_counts,write_once,connect,Learner
 import evaluate
+import data as learning_data
 
 T=1791297075000
 PERIOD='a'*64
@@ -48,6 +49,59 @@ def export_file(root,source='REAL_PAPER_RUNTIME_EXPORT',period=PERIOD,dropped=0,
 
 
 class CausalDataTests(unittest.TestCase):
+    def freeze_quotes(self,count,step=1000,*,prediction_samples=()):
+        records=[]
+        for i in range(count):
+            row=quote_record(T+i*step);row['kind']='QUOTE';records.append(row)
+        c={'instrument':'EUR.USD','period_start_ms':T,'period_sha256':PERIOD,
+           'export_dir':'unused','legacy_capture':'unused'}
+        with patch('data.exports',return_value=(records,[],[])),\
+             patch('data.legacy_quotes',return_value=([],None,0)):
+            return freeze(c,T+(count-1)*step,prediction_samples=prediction_samples)
+
+    def test_dense_source_retains_both_mature_horizons_and_fresh_predictions(self):
+        dataset=self.freeze_quotes(1800)
+        samples=dataset['samples'];mature=[s for s in samples if any(v is not None for v in s['targets'])]
+        self.assertLessEqual(len(samples),512);self.assertLessEqual(len(mature),256)
+        self.assertGreaterEqual(sum(s['targets'][0] is not None for s in mature),128)
+        self.assertGreaterEqual(sum(s['targets'][1] is not None for s in mature),128)
+        self.assertEqual(max(s['anchor_ms'] for s in samples),T+1799000)
+        self.assertTrue(all(T+1799000-s['anchor_ms']<=60000 for s in samples if s not in mature))
+        self.assertEqual(len({s['sample_id'] for s in samples}),len(samples))
+        self.assertIn('sample_selection_profile',dataset)
+
+    def test_feature_construction_is_bounded_before_full_history_materialization(self):
+        with patch.object(learning_data,'make_sample',wraps=make_sample) as made:
+            dataset=self.freeze_quotes(1800)
+        self.assertEqual(made.call_count,len(dataset['samples']))
+        self.assertLessEqual(made.call_count,512)
+
+    def test_gap_prefix_preserves_original_path_censoring(self):
+        qs=[q for q in quotes(200) if not T+300000<q['t']<T+380000]
+        times=[q['t'] for q in qs];gaps=[0]*len(times)
+        for i in range(1,len(times)):gaps[i]=gaps[i-1]+int(times[i]-times[i-1]>30000)
+        original=label(sample(),qs,times,T+2100000)
+        accelerated=label(sample(),qs,times,T+2100000,gap_prefix=gaps)
+        self.assertEqual(accelerated,original)
+        self.assertEqual(accelerated['label_reasons'],['PATH_GAP','PATH_GAP'])
+
+    def test_sampler_never_manufactures_mature_labels_for_short_history(self):
+        dataset=self.freeze_quotes(100)
+        self.assertTrue(dataset['samples'])
+        self.assertTrue(all(s['targets']==[None,None] for s in dataset['samples']))
+        self.assertTrue(all(T+99000-s['anchor_ms']<=60000 for s in dataset['samples']))
+
+    def test_persisted_prediction_rejects_outer_fields_that_disagree_with_snapshot(self):
+        original=sample()
+        mutations={'anchor_ms':original['anchor_ms']+1,'reference_mid':original['reference_mid']*2,
+            'known_at_ms':original['known_at_ms']-1,'input_gap':True,
+            'input_kind':'EXACT_REMOTE_INPUT','source_input_id':'b'*64}
+        for key,value in mutations.items():
+            with self.subTest(field=key):
+                changed=copy.deepcopy(original);changed[key]=value
+                with self.assertRaisesRegex(ValueError,'PREDICTION_INPUT_IDENTITY'):
+                    self.freeze_quotes(1800,prediction_samples=[changed])
+
     def test_duplicate_fields_fail(self):
         with self.assertRaisesRegex(ValueError,'DUPLICATE'):strict('{"x":1,"x":2}')
     def test_nan_fails(self):
@@ -159,18 +213,18 @@ class ForwardEvaluationRecoveryTests(unittest.TestCase):
                 body={'schema':'heptatrader.learning-export.v1','producer_id':'unitfixture','segment':0,
                     'sequence':i,'previous':previous,'dropped_total':0,'kind':kind,'at_ms':at,'data':data}
                 row={**body,'sha256':digest(body)};previous=row['sha256'];lines.append(canonical(row))
-            source=export/'unitfixture-0000.jsonl';source.write_text('\n'.join(lines[:25])+'\n');source.chmod(0o600)
+            source=export/'unitfixture-0000.jsonl';source.write_text('\n'.join(lines[:7])+'\n');source.chmod(0o600)
             output=root/'output';output.mkdir()
             c={'period_path':str(period),'period_sha256':period_sha,'period_start_ms':T,
                'output_dir':str(output),'export_dir':str(export),'legacy_capture':str(root/'absent'),
                'instrument':'EUR.USD'}
-            s=freeze(c,qs[23]['t']+1)['samples'][-1]
+            s=freeze(c,qs[5]['t']+1)['samples'][-1]
             db=connect(output/'bridge.sqlite')
             p={'sample':s,'model_id':'model','model_trained_until_ms':0,
                'created_at_ms':s['anchor_ms']+1,'prediction_scaled':[0,0]}
             db.execute('INSERT INTO predictions VALUES (?,?,?,?)',('prediction',s['sample_id'],p['created_at_ms'],canonical(p)))
             db.commit();db.close()
-            with source.open('a') as f:f.write('\n'.join(lines[25:])+'\n')
+            with source.open('a') as f:f.write('\n'.join(lines[7:])+'\n')
             now=T+1200000
             # Prove the ordinary bounded training view no longer contains this input.
             self.assertNotIn(s['sample_id'],[x['sample_id'] for x in freeze(c,now)['samples']])
@@ -255,7 +309,8 @@ class TrainingCadenceRecoveryTests(unittest.TestCase):
                 s['outcome_receipts'][0]={'available_at_ms':T};samples.append(s)
             dataset={'samples':samples,'source_kind':'SYNTHETIC_CONTROL_FIXTURE',
                 'scope':c['period_sha256']+':EUR.USD','label_reason_counts':{},'exact_remote_inputs':0,
-                'teacher_actions':{},'legacy_teachers_without_exact_input_not_distilled':0,'settlements':[]}
+                'teacher_actions':{},'legacy_teachers_without_exact_input_not_distilled':0,'settlements':[],
+                'sample_selection_profile':copy.deepcopy(learning_data.SAMPLE_SELECTION_PROFILE)}
             with patch('runner.freeze',return_value=dataset),patch('runner.replay_economics',return_value={}),\
                  patch.object(a,'predict_before_learning',return_value=0),\
                  patch.object(a.native,'encode',return_value=(np.zeros((16,32)),{'episodes':[]})),\
@@ -265,6 +320,8 @@ class TrainingCadenceRecoveryTests(unittest.TestCase):
                 self.assertEqual(a.step()['state'],'GPU_CANDIDATE_TRAINED')
             self.assertEqual(a.db.execute("SELECT value FROM meta WHERE key='last_training_ms'").fetchone()[0],str(T))
             self.assertEqual(a.db.execute('SELECT count(*) FROM trains').fetchone()[0],1)
+            record=json.loads(a.db.execute('SELECT payload FROM trains').fetchone()[0])
+            self.assertEqual(record['sample_selection_profile'],learning_data.SAMPLE_SELECTION_PROFILE)
             model=a.model;a.db.close();b=Learner(c)
             self.assertEqual(b.last_train_ms,T);self.assertEqual(b.model,model);b.db.close()
 

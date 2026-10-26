@@ -246,6 +246,7 @@ class Learner:
             'evaluation_digest':digest(diagnostic)})
         record={'schema':'heptatrader.neuron-training-receipt.v1','at_ms':int(time.time()*1000),
             'dataset_digest':dataset_id,'parent_model_id':self.model['model_id'],'diagnostic':diagnostic,
+            'sample_selection_profile':dataset.get('sample_selection_profile'),
             'native_plasticity':proposal,'gpu_backend':self.gpu.identity,'gpu_kernel_ms':raw['gpu_kernel_ms'],
             'training_rows':len(mature),'mature_labels':int(mask.sum()),'teacher_auxiliary_labels':int(tm.sum()),
             'nonoverlapping_outcome_windows':independent_counts(mature),'effect_authority':False,

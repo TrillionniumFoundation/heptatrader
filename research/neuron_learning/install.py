@@ -71,6 +71,7 @@ def main():
     if target_config.exists() and target_config.read_text()!=raw:raise RuntimeError('IMMUTABLE_CONFIG_DRIFT')
     if not target_config.exists():target_config.write_text(raw);target_config.chmod(0o400)
     output=Path(config['output_dir']);output.mkdir(parents=True,mode=0o700,exist_ok=True)
+    unit_directory=home/'.config/systemd/user'
     definitions={}
     for name,script,description in (
         ('heptatrader-neuron-learning.service','runner.py','HeptaTrader small Neuron GPU candidate learner (NO trade authority)'),
@@ -105,8 +106,9 @@ TimeoutStopSec=15
 [Install]
 WantedBy=default.target
 '''
-        definitions[home/'.config/systemd/user'/name]=text
+        definitions[unit_directory/name]=text
     check_unit_updates(definitions,a.update_owned_sidecars)
+    unit_directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     units={}
     for unit,text in definitions.items():
         name=unit.name

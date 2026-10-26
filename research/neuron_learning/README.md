@@ -80,6 +80,20 @@ Nothing about local training readiness blocks the remote PAPER driver.
 
 Each bounded training batch uses at most 256 rows and 16 epochs. Training is
 considered at most every five minutes when the mature-data fingerprint changes.
+The dataset's `causal-observed-horizon-balanced-v1` profile retains the latest
+128 inputs with valid observed labels for each of the 300/900-second horizons,
+deduplicates them, then fills any remaining training slots with the latest
+observed inputs, up to 256. Eligibility uses the existing causal, path and
+numeric validity rules; selection uses time and availability, without ranking
+outcome values. Up to 256 additional inputs from the last 60 seconds remain
+available for fresh predictions. The total stays at most 512, and fresh inputs
+cannot displace mature 900-second labels from the optimizer's 256-row budget.
+The profile is recorded in the frozen dataset and training receipt, and bound
+by their existing digests. This changes the small numerical sidecar's future
+input selection; it does not change the separate Laya resident's objective or
+existing trials. Features are materialized only after selection. A source gap
+prefix preserves the original path-gap censoring rule without rescanning each
+outcome interval.
 Candidate deltas are conservatively projected before the existing native verifier
 checks the actual per-layer 0.5% and global 0.25% norm limits. The NDU loss
 comparison used for candidate generation is explicitly a training diagnostic,
@@ -108,8 +122,9 @@ persists each fresh prediction before observing the horizon, together with model
 identity and training cutoff. The evaluator only later joins observable outcomes,
 rejects lookahead, records censoring and compares per-model/horizon price loss
 against zero-return and exact same-input remote forecasts where available.
-It joins outcomes to the original persisted prediction input even after that
-input leaves the latest 512 training samples. Each pass handles up to 4096 oldest
+It checks persisted anchor, reference MID, availability and gap fields against
+the original input snapshot, then joins outcomes even after that input leaves
+the bounded learner dataset. Each pass handles up to 4096 oldest
 unfinished predictions, excluding already completed predictions before applying
 the limit; the reported pending count refers to that bounded batch. With no
 unfinished predictions it does not rescan the market source.

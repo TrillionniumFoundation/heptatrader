@@ -64,6 +64,18 @@ class NeuronInstallationTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(second["config"]).read_text())["period_sha256"], "c" * 64)
         self.assertTrue(Path(first["release"]).is_dir())
 
+    def test_first_install_creates_user_unit_directory(self):
+        directory = self.home / ".config/systemd/user"
+        directory.rmdir()
+        directory.parent.rmdir()
+        receipt, service = self.install(self.config)
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        for unit in receipt["units"].values():
+            path = Path(unit["path"])
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        service.assert_called_once_with(["systemctl", "--user", "daemon-reload"], check=True)
+
     def test_reordered_config_is_idempotent(self):
         first, _ = self.install(self.config)
         second, service = self.install(dict(reversed(list(self.config.items()))))
@@ -81,8 +93,12 @@ class NeuronInstallationTests(unittest.TestCase):
         evaluator = Path(first["units"]["heptatrader-neuron-shadow-eval.service"]["path"])
         before = learning.read_bytes()
         evaluator.write_text("[Service]\nExecStart=/usr/bin/true\n")
+        # A new binary also changes the old installer's file-only identity.
+        # This reaches its per-unit update loop instead of failing earlier on
+        # the separate same-release configuration-drift bug.
+        Path(self.config["native_binary"]).write_text("updated native artifact")
         with self.assertRaisesRegex(RuntimeError, "EXISTING_UNIT_CHANGE_REQUIRES_REVIEW"):
-            self.install({**self.config, "period_sha256": "d" * 64}, update=True)
+            self.install(self.config, update=True)
         self.assertEqual(learning.read_bytes(), before)
         self.last_service.assert_not_called()
 
