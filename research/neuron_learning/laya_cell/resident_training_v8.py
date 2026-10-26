@@ -148,7 +148,10 @@ def configuration_for_release(config, runtime_directory, *, closed_action_source
         closed_action_source=closed_action_source,
         closed_action_source_sha256=closed_action_source_sha256)
     runtime = Path(result['runtime_directory'])
-    for name in RUNTIME_PINS:
+    from .resident_owner import RUNTIME_PINS as owner_runtime_pins
+    from .resident_owner_consume import RUNTIME_PINS as advisory_runtime_pins
+    # Handoff code belongs in the release, outside the frozen forecast rule.
+    for name in (*RUNTIME_PINS, *owner_runtime_pins, *advisory_runtime_pins):
         result['runtime_sha256'][name] = sha_file(runtime / name)
     result['objective'] = deepcopy(OBJECTIVE)
     if parent_calibration_comparator:

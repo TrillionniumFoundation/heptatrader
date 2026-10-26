@@ -53,6 +53,8 @@ class RawDecisionModel(nn.Module):
 def rows():
     return [{'sample_id': digest({'sample': index}), 'horizon_sec': 300,
              'outcome_receipt_digest': digest({'outcome': index}), 'index': index,
+             'state': f'synthetic quote state {index}',
+             'question': 'Predict EUR.USD PRICE7 after 300 seconds',
              'target_class': index % 7, 'teacher_probs': [1/7]*7 if index % 3 == 0 else None}
             for index in range(32)]
 
@@ -197,9 +199,19 @@ class PriceInputCacheTests(unittest.TestCase):
     def test_upstream_gradients_are_rejected_and_hook_is_removed(self):
         cell = ResidentDecisionCell(RawDecisionModel(), 'c'*64)
         cell.model.encoder.requires_grad_(True)
+        with self.assertRaisesRegex(ContractError, 'REQUIRES_FROZEN_EVAL_UPSTREAM'):
+            cache_factory(cell, encode, torch.device('cpu'), 'COMPACT')
+        self.assertEqual(len(cell.model.scorer._forward_pre_hooks), 0)
+
+        # A later upstream forward can still return gradients despite frozen
+        # parameters. Its rejection must remove the temporary scorer hook.
+        cell.model.encoder.requires_grad_(False)
         forward = cache_factory(cell, encode, torch.device('cpu'), 'COMPACT')
-        with self.assertRaisesRegex(ContractError, 'REQUIRES_FROZEN_FEATURES'):
-            forward(rows()[:2])
+        original_forward = cell.model.encoder.forward
+        with patch.object(cell.model.encoder, 'forward',
+                          side_effect=lambda values: original_forward(values).requires_grad_(True)):
+            with self.assertRaisesRegex(ContractError, 'REQUIRES_FROZEN_FEATURES'):
+                forward(rows()[:2])
         self.assertEqual(len(cell.model.scorer._forward_pre_hooks), 0)
 
     def test_cached_logits_keep_the_original_marker_mask(self):

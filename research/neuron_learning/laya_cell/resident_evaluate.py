@@ -273,6 +273,8 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publicatio
 class Evaluator:
  def __init__(self,config_path):
   self.path=Path(config_path);self.c=read_json(self.path);self.root=Path(self.c['evaluation_directory'])
+  from .resident import check_owner_handoff_runtime
+  check_owner_handoff_runtime(self.c)
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
   self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
  def operator_stop_binding(self,path,plan,now):
@@ -393,7 +395,7 @@ class Evaluator:
    if plan.get('scope')!=self.c['period_sha256']:raise ContractError('EVALUATION_PERIOD_SCOPE')
    prepared.append((path,plan,rule))
   prepared.sort(key=lambda entry:_plan_dispatch_priority(*entry,now,self.c.get('runtime_sha256'),cycle_records))
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[]
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[];qualified_owner_plans=[]
   for path,plan,rule in prepared:
    # A closed v1 plan remains bound to its original result, never re-evaluated
    # against replacement source bytes or re-registered as a new experiment.
@@ -408,6 +410,7 @@ class Evaluator:
     stopped=self.operator_stop_binding(path,plan,now)
     if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
      'performance_assessment':False,'new_heavy_workers_allowed':False})
+    if q['state']=='QUALIFIED_AWAITING_CANONICAL_OWNER' and not stopped:qualified_owner_plans.append((path,plan['plan_id']))
     continue
    stopped=self.operator_stop_binding(path,plan,now)
    if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
@@ -561,8 +564,23 @@ class Evaluator:
    if plan.get('price_baselines') is not None:assessment['same_window_price_baselines']=price_refs.summarize(results)
    if assessment['state'] != 'PENDING':
     write_once(path.parent / 'qualification.json', assessment)
+    if assessment['state']=='QUALIFIED_AWAITING_CANONICAL_OWNER' and not stopped:qualified_owner_plans.append((path,plan['plan_id']))
    atomic(path.parent / 'progress.json', progress_with_coverage(plan,results,assessment))
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
+  # Ordinary prediction dispatch takes priority. Publication is CPU/native I/O,
+  # never a GPU worker, and its outbox deduplicates each plan/enrollment attempt.
+  owner_handoffs=[];allow_new_handoff=True
+  if qualified_owner_plans:
+   from .resident_owner import handoff
+   for qualified_path,qualified_plan_id in qualified_owner_plans:
+    try:
+     handoff_result=handoff(self.c,qualified_path,allow_new=allow_new_handoff)
+     owner_handoffs.append(handoff_result)
+     if handoff_result.get('attempt_started'):allow_new_handoff=False
+    except (ContractError,OSError,KeyError,TypeError,ValueError) as exc:
+     allow_new_handoff=False
+     owner_handoffs.append({'plan_id':qualified_plan_id,'state':'CANONICAL_OWNER_HANDOFF_BLOCKED',
+      'reason':str(exc)[:240],'canonical_agentd_accepted':False,'product_consumed':False,'effect_authority':False})
   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':int(time.time()*1000),
    'plans':len(plans),'counts':counts,'observed':observed,'censored':censored,'active_prediction_workers':len(self.tasks),
    'prediction_prewarm_ms':PREDICTION_PREWARM_MS,'worker_failure_details':worker_errors,
@@ -574,7 +592,11 @@ class Evaluator:
    'operator_stopped_trials':len(operator_stops),'operator_stopped_plans':operator_stops,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
-   'automatic_trading':False,'canonical_owner_connected':False,'promotion_performed':False,'broker_orders_sent':0}
+   'canonical_owner_handoffs':owner_handoffs,
+   'canonical_owner_connection_scope':'SUCCESSFUL_PUBLICATION_RECEIPT_NOT_SERVICE_LIVENESS',
+   'automatic_trading':False,'canonical_owner_connected':any(
+    row['state']=='CANONICAL_MODEL_PUBLISHED_AWAITING_INDEPENDENT_SELECTION' for row in owner_handoffs),
+   'promotion_performed':False,'broker_orders_sent':0}
   atomic(self.root/'status.json',status)
   if now-self.last_log_ms>=30000:print(json.dumps(status),flush=True);self.last_log_ms=now
   return status
