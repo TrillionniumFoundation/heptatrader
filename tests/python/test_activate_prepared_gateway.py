@@ -561,23 +561,24 @@ class GatewayProcessAndEnvironmentTests(unittest.TestCase):
             "HEPTA_TOOL_AGENT_ID": "agent", "HEPTA_TOOL_ACCOUNT": "account",
             "HEPTA_TOOL_SUPERVISOR_LEASE_STORE": "/store", "HEPTA_IB_PAPER_USER_SCOPE": "1",
             "HEPTA_EXECUTION_REMOTE_MODE": "PAPER", "HEPTA_FUTURE_POLICY": "default",
-            "LD_LIBRARY_PATH": "/private/lib", "LD_PRELOAD": "", "CREDENTIALS_DIRECTORY": "/credentials"}
+            "LD_LIBRARY_PATH": "/private/lib", "LD_PRELOAD": "", "LD_AUDIT": "/private/audit.so",
+            "CREDENTIALS_DIRECTORY": "/credentials"}
         raw = b"\0".join((key + "=" + value).encode() for key, value in dict(values, UNRELATED="not-captured").items()) + b"\0"
         with mock.patch.object(gateway.driver, "proc_bytes", return_value=raw):
             self.assertEqual(gateway.gateway_environment(123), values)
 
-    def check_environment_change_refuses(self, expected, changed, *, manager="", unset=""):
+    def check_environment_change_refuses(self, expected, changed, *, manager="", unset="", reason="DIFFERS_FROM_NEXT_CONFIGURED_ENVIRONMENT"):
         with tempfile.TemporaryDirectory(prefix="hepta-gateway-policy-") as name:
             path = Path(name) / "gateway.env"
             put(path, changed.encode())
             props = {"Environment": "", "EnvironmentFiles": str(path) + " (ignore_errors=no)", "UnsetEnvironment": unset}
             with mock.patch.object(gateway.driver, "unit_properties", return_value=props), mock.patch.object(
                     gateway.subprocess, "check_output", return_value=manager):
-                with self.assertRaisesRegex(RuntimeError, "DIFFERS_FROM_NEXT_CONFIGURED_ENVIRONMENT"):
+                with self.assertRaisesRegex(RuntimeError, reason):
                     gateway.configured_environment(expected)
 
     def test_old_runtime_unset_but_file_adds_explicit_policy_or_loader_value_refuses(self):
-        for field in ("HEPTA_TOOL_MAX_ORDER_QTY=25000", "HEPTA_FUTURE_POLICY=", "LD_PRELOAD=", "LD_LIBRARY_PATH=/lib"):
+        for field in ("HEPTA_TOOL_MAX_ORDER_QTY=25000", "HEPTA_FUTURE_POLICY=", "LD_PRELOAD=", "LD_LIBRARY_PATH=/lib", "LD_AUDIT=/private/audit.so"):
             with self.subTest(field=field):
                 self.check_environment_change_refuses({}, field + "\n")
 
@@ -591,6 +592,31 @@ class GatewayProcessAndEnvironmentTests(unittest.TestCase):
 
     def test_manager_addition_is_also_part_of_next_policy_presence(self):
         self.check_environment_change_refuses({}, "# no unit value\n", manager="HEPTA_NEW_POLICY=enabled\n")
+
+    def test_inline_hash_is_literal_and_cannot_false_pass_old_runtime(self):
+        self.check_environment_change_refuses({"HEPTA_TOOL_AGENT_ID": "original"},
+            "HEPTA_TOOL_AGENT_ID=original#changed\n")
+
+    def test_embedded_quotes_backslash_and_continuations_are_refused(self):
+        for value in ('abc"def"', "abc'def'", r"abc\def", "abc\\"):
+            with self.subTest(value=value):
+                self.check_environment_change_refuses({"HEPTA_TOOL_AGENT_ID": "abcdef"},
+                    "HEPTA_TOOL_AGENT_ID=" + value + "\n", reason="UNSUPPORTED_GATEWAY_ENVIRONMENT_FILE_SYNTAX")
+
+    def test_plain_and_whole_quoted_environment_file_subset_preserves_literal_values(self):
+        with tempfile.TemporaryDirectory(prefix="hepta-gateway-plain-environment-") as name:
+            path = Path(name) / "gateway.env"
+            expected = {"HEPTA_TOOL_AGENT_ID": "ordinary#literal;kept", "HEPTA_TOOL_MAX_ORDER_QTY": "100000",
+                "HEPTA_TOOL_CONTRACT_BINDINGS": "EUR.USD|EUR|CASH|IDEALPRO|USD;BTC.USD|BTC|CRYPTO|PAXOS|USD",
+                "CREDENTIALS_DIRECTORY": "/private/credentials"}
+            put(path, ("  # leading comment\n ; another leading comment\n"
+                " HEPTA_TOOL_AGENT_ID = ordinary#literal;kept \nHEPTA_TOOL_MAX_ORDER_QTY=\"100000\"\n"
+                "HEPTA_TOOL_CONTRACT_BINDINGS='" + expected["HEPTA_TOOL_CONTRACT_BINDINGS"] + "'\n"
+                "CREDENTIALS_DIRECTORY='/private/credentials'\n").encode())
+            props = {"Environment": "", "EnvironmentFiles": str(path) + " (ignore_errors=no)", "UnsetEnvironment": ""}
+            with mock.patch.object(gateway.driver, "unit_properties", return_value=props), mock.patch.object(
+                    gateway.subprocess, "check_output", return_value=""):
+                self.assertEqual(gateway.configured_environment(expected), expected)
 
 
 if __name__ == "__main__":

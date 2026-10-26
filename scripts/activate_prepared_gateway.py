@@ -180,8 +180,8 @@ def gateway_environment(pid):
 
 
 def bound_environment_name(name):
-    return (name.startswith("HEPTA_") or name in driver.AUDIT_ENV
-        or name in ("CREDENTIALS_DIRECTORY", "LD_LIBRARY_PATH", "LD_PRELOAD"))
+    return (name.startswith("HEPTA_") or name.startswith("LD_") or name in driver.AUDIT_ENV
+        or name == "CREDENTIALS_DIRECTORY")
 
 
 def configured_environment(expected):
@@ -209,12 +209,23 @@ def configured_environment(expected):
         fail("GATEWAY_ENVIRONMENT_FILE_REQUIRED")
     for path in paths:
         for raw in read_private(path, 262144).decode().splitlines():
-            fields = shlex.split(raw, comments=True)
-            if not fields:
+            line = raw.strip()
+            if not line or line.startswith(("#", ";")):
                 continue
-            if len(fields) != 1 or "=" not in fields[0]:
+            name, separator, value = line.partition("=")
+            name, value = name.strip(), value.strip()
+            if (not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
+                    or "\\" in value or "\0" in value):
                 fail("UNSUPPORTED_GATEWAY_ENVIRONMENT_FILE_SYNTAX")
-            name, value = fields[0].split("=", 1)
+            if value.startswith(("'", '"')):
+                if len(value) < 2 or value[-1] != value[0] or any(char in value[1:-1] for char in "'\""):
+                    fail("UNSUPPORTED_GATEWAY_ENVIRONMENT_FILE_SYNTAX")
+                value = value[1:-1]
+            elif any(char in value for char in "'\""):
+                fail("UNSUPPORTED_GATEWAY_ENVIRONMENT_FILE_SYNTAX")
+            # Unlike shell comments, # and ; inside an unquoted systemd
+            # EnvironmentFile value are literal. Complex quoting/escapes
+            # above are refused instead of being interpreted as shell code.
             values[name] = value
     for field in shlex.split(props["UnsetEnvironment"]):
         name, separator, value = field.partition("=")
