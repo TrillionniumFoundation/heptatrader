@@ -1,5 +1,15 @@
 # Laya Trainer/Evaluator: archive-aware pinned Guard repair (2026-10-13)
 
+Historical operation; the one-time staging, unit-planning, activation and closeout
+helpers and their paired tests are retired from current source. Their fixed
+2026-10-13 paths, source pins, canary and candidate identities are not a current
+deployment interface. The measurements and original evidence below are retained.
+Read the original implementation from Git history, for example:
+
+```sh
+git show 15853b2d04a933cea779897779e621adc8daecc9:research/historical_training/laya_guard_archive_cutover.py
+```
+
 ## Verified root cause
 
 Both original resident units use historical_training.resident_resource_guard.
