@@ -632,6 +632,32 @@ def start_gateway(binary):
     fail("GATEWAY_STARTUP_NOT_STABLE")
 
 
+def observe_controller_start(owner, first=None):
+    """Wait for the first strict image of this transaction's original driver."""
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            actual = driver.running_driver(owner["unit"], owner["instrument"])
+        except (RuntimeError, FileNotFoundError) as error:
+            transient = isinstance(error, FileNotFoundError) or str(error) in {
+                "DRIVER_NOT_ACTIVE", "RUNNING_DRIVER_ARGV_MISMATCH", "DRIVER_CHANGED_DURING_INSPECTION"}
+            if first is not None or not transient:
+                raise
+            status = driver.fence.show_unit(owner["unit"])
+            if status["ActiveState"] == "failed" and status["MainPID"] in ("", "0"):
+                fail("CONTROLLER_START_FAILED")
+            if time.monotonic() >= deadline:
+                fail("CONTROLLER_STARTUP_NOT_OBSERVED")
+            time.sleep(0.2)
+            continue
+        if (actual["manifest"] != owner["resident"]["manifest"]
+                or actual["manifest_sha256"] != owner["resident"]["manifest_sha256"]):
+            fail("ORIGINAL_CONTROLLER_RELEASE_CHANGED")
+        if first is not None:
+            driver.same_driver(first, actual)
+        return actual
+
+
 def resume_owner(plan, snapshot, owner, state, save, context):
     """Lost Resume replies are reconciled from the authenticated catalog.
 
@@ -766,6 +792,12 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 "markers": driver.marker_identity(home), "stopped_controllers": []}
         def save():
             atomic_json(checkpoint, state)
+        controller_observations = {}
+        def observe_controller(owner):
+            unit = owner["unit"]
+            actual = observe_controller_start(owner, controller_observations.get(unit))
+            controller_observations[unit] = actual
+            return actual
         def context(*, expected_interactive=None, allow_reconnect_refresh=True):
             check_lock_binding()
             if not equivalent(driver.marker_identity(home), state["markers"]):
@@ -815,11 +847,8 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                         fail("RESTORED_CONTROLLER_PROCESS_CHANGED")
                 elif unit == state.get("starting_controller"):
                     owner = next(owner for owner in snapshot["owners"] if owner["unit"] == unit)
-                    if current[unit]["ActiveState"] == "active":
-                        actual = driver.running_driver(unit, owner["instrument"])
-                        if (actual["manifest"] != owner["resident"]["manifest"]
-                                or actual["manifest_sha256"] != owner["resident"]["manifest_sha256"]):
-                            fail("STARTING_CONTROLLER_RELEASE_CHANGED")
+                    if unit in controller_observations or current[unit]["ActiveState"] in ("active", "activating"):
+                        observe_controller(owner)
                     elif current[unit]["ActiveState"] != "inactive" or current[unit]["MainPID"] not in ("", "0"):
                         fail("STARTING_CONTROLLER_STATE_UNRESOLVED")
                 elif current[unit]["ActiveState"] != "inactive" or current[unit]["MainPID"] not in ("", "0"):
@@ -969,8 +998,8 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                     fail("CONTROLLER_START_INTENT_WITHOUT_RESUME_PROOF")
                 check_transition_catalog(plan, snapshot, state)
                 resume_owner(plan, snapshot, owner, state, save, context)
-                if driver.fence.show_unit(unit)["ActiveState"] == "active":
-                    actual = driver.running_driver(unit, owner["instrument"])
+                if unit in controller_observations or driver.fence.show_unit(unit)["ActiveState"] in ("active", "activating"):
+                    actual = observe_controller(owner)
                     state.setdefault("controllers_started", {})[unit] = actual
                 state.pop("starting_controller"); save()
             if state.get("stopping"):
@@ -1099,10 +1128,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 stop_policy = home / ".config/systemd/user" / (owner["unit"] + ".d") / POLICY
                 state["starting_controller"] = owner["unit"]; state["phase"] = "CONTROLLER_START_REQUESTED"; save()
                 driver.ctl("start", owner["unit"])
-                actual = driver.running_driver(owner["unit"], owner["instrument"])
-                if (actual["manifest"] != owner["resident"]["manifest"]
-                        or actual["manifest_sha256"] != owner["resident"]["manifest_sha256"]):
-                    fail("ORIGINAL_CONTROLLER_RELEASE_CHANGED")
+                actual = observe_controller(owner)
                 state.setdefault("controllers_started", {})[owner["unit"]] = actual
                 state.pop("starting_controller", None)
                 state["phase"] = "CONTROLLER_STARTED"; save()
@@ -1195,4 +1221,3 @@ if __name__ == "__main__":
     except Exception as error:
         print(json.dumps({"status": "REFUSED", "reason": str(error)}))
         raise SystemExit(2)
-

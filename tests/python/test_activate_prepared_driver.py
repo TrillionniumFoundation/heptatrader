@@ -853,6 +853,39 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.assertEqual(result["original_business_correlation"], self.business)
         self.assertEqual(len(self._events("audit")), 1)
 
+    def test_startup_transient_before_first_identity_still_waits_for_loop_progress(self):
+        injected = False
+        def observe(unit, instrument):
+            nonlocal injected
+            if self.current_manifest == self.candidate and self.has_started and not injected:
+                injected = True
+                raise RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH")
+            return self._running_driver(unit, instrument)
+        with mock.patch.object(activation, "running_driver", observe):
+            result = self._upgrade()
+        self.assertTrue(injected)
+        self.assertEqual(result["status"], "ACTIVATED", result)
+        self.assertEqual(result["startup_progress_basis"], "LEGACY_STATE_WRITES")
+        self.assertGreaterEqual(result["startup_observed_state_versions"], 3)
+
+    def test_startup_transients_after_first_identity_fail_without_rebinding_the_candidate(self):
+        for error in (RuntimeError("DRIVER_NOT_ACTIVE"), RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH"),
+                      RuntimeError("DRIVER_CHANGED_DURING_INSPECTION"), FileNotFoundError("process lost")):
+            with self.subTest(error=str(error)):
+                injected = False
+                def observe(unit, instrument):
+                    nonlocal injected
+                    if (self.current_manifest == self.candidate and self.has_started
+                            and self.observations == 1 and not injected):
+                        injected = True
+                        raise error
+                    return self._running_driver(unit, instrument)
+                with mock.patch.object(activation, "running_driver", observe):
+                    result = self._upgrade()
+                self.assertTrue(injected)
+                self.assertIn(type(error).__name__ + ":" + str(error), result["error"])
+                self._assert_original_restored(result)
+
     def _write_pause_observation(self, record):
         record["entry_inference_pause"] = {
             "reason_code": "PERSISTENT_MAINTENANCE_HOLD",
@@ -1048,7 +1081,9 @@ class MaintenanceUpgradeTests(unittest.TestCase):
         self.start_mode = "short-lived"
         result = self._upgrade()
         self._assert_original_restored(result)
-        self.assertIn("DRIVER_START_FAILED", result["error"])
+        # The first strict identity was already observed; its disappearance
+        # is rejected immediately rather than entering the startup retry path.
+        self.assertIn("DRIVER_NOT_ACTIVE", result["error"])
         self.assertEqual(
             [event["manifest"] for event in self._events("start")],
             [str(self.candidate), str(self.old_manifest)],

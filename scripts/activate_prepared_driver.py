@@ -1042,6 +1042,8 @@ def maintenance_upgrade(
                             receipt["startup_resident_loop_progress"] = progress
                         return actual
                 except (RuntimeError, FileNotFoundError) as error:
+                    if first is not None:
+                        raise
                     transient = isinstance(error, FileNotFoundError) or str(error) in {
                         "DRIVER_NOT_ACTIVE", "RUNNING_DRIVER_ARGV_MISMATCH",
                         "DRIVER_CHANGED_DURING_INSPECTION",

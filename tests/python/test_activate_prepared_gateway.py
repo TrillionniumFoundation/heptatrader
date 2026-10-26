@@ -433,8 +433,66 @@ class GatewayUpgradeTests(unittest.TestCase):
         checkpoint = self.root / "operator-maintenance" / gateway.CHECKPOINT
         checkpoint.write_bytes(durable_before_start)
         starts = self.events.count(("start", self.driver_unit))
-        result = self.run_upgrade(resume=True)
+        reads = 0
+        def observe(unit, instrument):
+            nonlocal reads
+            if unit == self.driver_unit:
+                reads += 1
+                if reads <= 2:
+                    raise RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH")
+            return self.running_driver(unit, instrument)
+        with mock.patch.object(gateway.driver, "running_driver", observe):
+            result = self.run_upgrade(resume=True)
         self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(self.events.count(("start", self.driver_unit)), starts)
+        self.assertEqual(self.resume_count, 1)
+        self.assertGreater(reads, 2)
+
+    def test_original_controller_start_waits_for_initial_exec_without_repeating_start_or_resume(self):
+        reads = 0
+        def observe(unit, instrument):
+            nonlocal reads
+            if unit == self.driver_unit and ("start", unit) in self.events:
+                reads += 1
+                if reads <= 2:
+                    raise RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH")
+            return self.running_driver(unit, instrument)
+        with mock.patch.object(gateway.driver, "running_driver", observe):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(self.events.count(("start", self.driver_unit)), 1)
+        self.assertEqual(self.resume_count, 1)
+        self.assertGreater(reads, 2)
+
+    def test_resumed_start_intent_keeps_its_first_verified_identity_across_context_checks(self):
+        original = gateway.atomic_json
+        durable_before_start = None
+        failed = False
+        def write(path, value):
+            nonlocal durable_before_start, failed
+            if Path(path).name == gateway.CHECKPOINT and value.get("phase") == "CONTROLLER_START_REQUESTED":
+                original(path, value); durable_before_start = Path(path).read_bytes(); return
+            if Path(path).name == gateway.CHECKPOINT and value.get("phase") == "CONTROLLER_STARTED" and not failed:
+                failed = True; raise OSError("FIXTURE_CRASH_AFTER_START")
+            original(path, value)
+        with mock.patch.object(gateway, "atomic_json", write):
+            self.assertEqual(self.run_upgrade()["status"], "HELD")
+        checkpoint = self.root / "operator-maintenance" / gateway.CHECKPOINT
+        checkpoint.write_bytes(durable_before_start)
+        starts = self.events.count(("start", self.driver_unit))
+        reads = 0
+        def observe(unit, instrument):
+            nonlocal reads
+            if unit == self.driver_unit:
+                reads += 1
+                if reads == 2:
+                    raise RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH")
+            return self.running_driver(unit, instrument)
+        with mock.patch.object(gateway.driver, "running_driver", observe):
+            result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("RUNNING_DRIVER_ARGV_MISMATCH", result["error"])
+        self.assertEqual(reads, 2)
         self.assertEqual(self.events.count(("start", self.driver_unit)), starts)
         self.assertEqual(self.resume_count, 1)
 
@@ -749,6 +807,74 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(result["status"], "HELD", result)
         self.assertIn("REFRESH_NOT_ALLOWED", result["error"])
         self.assertFalse(any(event[0] == "stop" for event in self.events))
+
+
+class ControllerStartupObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = 0.0
+        self.observed = {"status": {"MainPID": "777", "InvocationID": "new-invocation", "ActiveState": "active"},
+            "pid_key": ("777", "123"), "manifest": "/fixture/original/manifest.json", "manifest_sha256": "a" * 64}
+        self.owner = {"unit": "fixture-driver.service", "instrument": "EUR.USD", "resident": self.observed}
+        self.patches = contextlib.ExitStack(); self.addCleanup(self.patches.close)
+        self.patches.enter_context(mock.patch.object(gateway, "time", types.SimpleNamespace(
+            monotonic=lambda: self.clock, sleep=self.sleep)))
+        self.status = self.patches.enter_context(mock.patch.object(gateway.driver.fence, "show_unit",
+            return_value={"ActiveState": "active", "MainPID": "777"}))
+
+    def sleep(self, seconds):
+        self.clock += seconds
+
+    def test_known_initial_exec_observation_races_retry_only_until_first_strict_identity(self):
+        for error in (RuntimeError("DRIVER_NOT_ACTIVE"), RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH"),
+                      RuntimeError("DRIVER_CHANGED_DURING_INSPECTION"), FileNotFoundError("process exec")):
+            with self.subTest(error=str(error)):
+                self.clock = 0.0
+                with mock.patch.object(gateway.driver, "running_driver", side_effect=[error, self.observed]) as observe:
+                    self.assertEqual(gateway.observe_controller_start(self.owner), self.observed)
+                    self.assertEqual(observe.call_count, 2)
+                self.assertEqual(self.clock, 0.2)
+
+    def test_initial_exec_wait_is_bounded_and_failed_service_does_not_wait(self):
+        with mock.patch.object(gateway.driver, "running_driver", side_effect=RuntimeError("DRIVER_NOT_ACTIVE")):
+            with self.assertRaisesRegex(RuntimeError, "CONTROLLER_STARTUP_NOT_OBSERVED"):
+                gateway.observe_controller_start(self.owner)
+        self.assertGreaterEqual(self.clock, 30)
+        self.assertLessEqual(self.clock, 30.3)
+        self.clock = 0.0
+        self.status.return_value = {"ActiveState": "failed", "MainPID": "0"}
+        with mock.patch.object(gateway.driver, "running_driver", side_effect=RuntimeError("DRIVER_NOT_ACTIVE")) as observe:
+            with self.assertRaisesRegex(RuntimeError, "CONTROLLER_START_FAILED"):
+                gateway.observe_controller_start(self.owner)
+            observe.assert_called_once()
+        self.assertEqual(self.clock, 0)
+
+    def test_first_verified_identity_disables_all_transient_retries(self):
+        for error in (RuntimeError("DRIVER_NOT_ACTIVE"), RuntimeError("RUNNING_DRIVER_ARGV_MISMATCH"),
+                      RuntimeError("DRIVER_CHANGED_DURING_INSPECTION"), FileNotFoundError("process lost"),
+                      PermissionError("process no longer readable")):
+            with self.subTest(error=str(error)):
+                with mock.patch.object(gateway.driver, "running_driver", side_effect=error) as observe:
+                    with self.assertRaises(type(error)):
+                        gateway.observe_controller_start(self.owner, self.observed)
+                    observe.assert_called_once()
+                self.assertEqual(self.clock, 0)
+
+    def test_wrong_release_permissions_or_process_identity_are_immediate_refusals(self):
+        for field, value in (("manifest", "/fixture/another/manifest.json"), ("manifest_sha256", "b" * 64)):
+            with self.subTest(field=field):
+                with mock.patch.object(gateway.driver, "running_driver", return_value=dict(self.observed, **{field: value})) as observe:
+                    with self.assertRaisesRegex(RuntimeError, "ORIGINAL_CONTROLLER_RELEASE_CHANGED"):
+                        gateway.observe_controller_start(self.owner)
+                    observe.assert_called_once()
+        with mock.patch.object(gateway.driver, "running_driver", side_effect=PermissionError("unreadable")) as observe:
+            with self.assertRaises(PermissionError):
+                gateway.observe_controller_start(self.owner)
+            observe.assert_called_once()
+        with mock.patch.object(gateway.driver, "running_driver", return_value=dict(self.observed, pid_key=("777", "999"))) as observe:
+            with self.assertRaisesRegex(RuntimeError, "DRIVER_PROCESS_CHANGED"):
+                gateway.observe_controller_start(self.owner, self.observed)
+            observe.assert_called_once()
+        self.assertEqual(self.clock, 0)
 
 
 class GatewayStartupObservationTests(unittest.TestCase):
