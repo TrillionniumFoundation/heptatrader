@@ -4,6 +4,9 @@ using namespace hepta_supervisor_test;
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--user-recovery-only")
+    { TestUserZeroRecoverySurvivesRestartAndMaintenance(); TestConfiguredFxResumeKeepsExactPolicyScope();
+      TestUserPaperResumeAuditsBeforeActivation(); TestRootRecoveryQueryIsDurableAndRestartClosed(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--activation-budget-only")
     { TestFailedPaperActivationRetainsOriginalWorkDeadline(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--work-budget-only")
@@ -14,6 +17,8 @@ int main(int argc, char** argv)
     assert(argc == 1);
     TestUserPaperResumeAuditsBeforeActivation();
     TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume();
+    TestUserZeroRecoverySurvivesRestartAndMaintenance();
+    TestConfiguredFxResumeKeepsExactPolicyScope();
     TestCryptoAndFxSessionContractScopesRemainDisjoint();
     TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
     TestFailedPaperActivationRetainsOriginalWorkDeadline();

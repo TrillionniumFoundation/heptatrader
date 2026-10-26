@@ -1,4 +1,5 @@
 #include "unix_session_supervisor_test_support.h"
+#include <thread>
 
 namespace hepta_supervisor_test {
 
@@ -284,6 +285,352 @@ void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume()
     assert(restartedHost.GetSession(fxToken,local) && !local.recoveryOnly && local.leaseGeneration==2);
     restarted.Stop();
     std::remove(journalPath.c_str());std::remove(storePath.c_str());std::remove(keyPath.c_str());std::remove(auditPath.c_str());
+}
+
+void TestUserZeroRecoverySurvivesRestartAndMaintenance()
+{
+    if (::geteuid() == 0 || ::getegid() == 0) return;
+    enum class Phase { Maintenance, Restart, RestartGlobalZero, ExpiredSweep, ExpiredRestart, AuditPastDeadline };
+    for (const auto phase : {Phase::Maintenance, Phase::Restart, Phase::RestartGlobalZero,
+            Phase::ExpiredSweep, Phase::ExpiredRestart, Phase::AuditPastDeadline})
+    {
+        const bool pastDeadline = phase == Phase::AuditPastDeadline;
+        const bool restart = phase == Phase::Restart || phase == Phase::RestartGlobalZero ||
+            phase == Phase::ExpiredRestart || pastDeadline;
+        const bool expired = phase == Phase::ExpiredSweep || phase == Phase::ExpiredRestart;
+        const int restartCount = phase == Phase::Restart ? 3 : (pastDeadline ? 2 : 1);
+        const auto journalPath = TempPath("/tmp/hepta-zero-resume-journal-XXXXXX");
+        const auto socketPath = TempPath("/tmp/hepta-zero-resume-socket-XXXXXX");
+        const auto storePath = TempPath("/tmp/hepta-zero-resume-store-XXXXXX");
+        const auto auditPath = TempPath("/tmp/hepta-zero-resume-audit-XXXXXX");
+        const auto keyPath = TempKeyPath();
+        std::string reason;
+        SessionSupervisorLeaseStore store;
+        assert(store.Init(storePath, keyPath, reason));
+        SessionSupervisorAuditJournal audit;
+        assert(audit.Init(auditPath, reason));
+        OmsJournal journal;
+        assert(journal.Init(journalPath));
+        ExecutionCoordinatorCallbacks callbacks;
+        ExecutionCoordinator execution(journal, callbacks);
+        TradingToolRegistry registry(execution);
+        const std::string token(64, restart ? 'r' : 'm');
+        const std::string originalCommand = "hexec-original-fx-command";
+        enum class AuditState { Zero, Active, Uncertain };
+        AuditState auditState = AuditState::Zero;
+        int releaseCalls = 0, queryCalls = 0, recoveryAudits = 0, fenceCalls = 0;
+        std::uint64_t expectedRecoveryExpiry = 0;
+        bool delayRestoreAudit = false;
+        bool delayedAuditReturned = false;
+        RecoveryControlAuthority authority;
+        authority.ownerAudit = [&](const ExecutionControlCommand& command) {
+            assert(command.context.agentId == "zero-fx-agent");
+            assert(command.context.sessionId == "zero-fx-session");
+            assert(command.context.account == "DU123");
+            assert(command.context.executionDomain == "PAPER");
+            if (command.recoveryIngressFence != 0)
+            {
+                ++recoveryAudits;
+                assert(command.recoveryIngressFence == 1);
+                std::string why;
+                assert(execution.EnterRecoveryOnlyOwner("zero-fx-agent", "zero-fx-session", 1, why));
+                if (delayRestoreAudit)
+                {
+                    assert(static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) < expectedRecoveryExpiry);
+                    std::this_thread::sleep_until(std::chrono::system_clock::time_point(
+                        std::chrono::milliseconds(expectedRecoveryExpiry + 1)));
+                    assert(static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) > expectedRecoveryExpiry);
+                    delayRestoreAudit = false;
+                    delayedAuditReturned = true;
+                }
+            }
+            ExecutionControlResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = ExecutionCommandStatus::Accepted;
+            result.reasonCode = expired || pastDeadline || phase == Phase::RestartGlobalZero ?
+                "SESSION_OWNER_ZERO_CONFIRMED" : "SESSION_FX_OWNER_ZERO_CONFIRMED";
+            result.ownerAuditAuthoritative = true;
+            result.ownerAuditComplete = true;
+            result.ownerAccount = command.context.account;
+            result.ownerExecutionDomain = command.context.executionDomain;
+            result.ownerActiveOrderCount = auditState == AuditState::Active ? 1 : 0;
+            result.ownerUncertainCommandCount = auditState == AuditState::Uncertain ? 1 : 0;
+            result.brokerConnectionEpoch = 1;
+            result.brokerActiveGeneration = 2;
+            result.brokerTerminalGeneration = 3;
+            result.brokerRiskGeneration = 4;
+            result.brokerAccountGeneration = 5;
+            result.brokerPositionGeneration = 6;
+            result.brokerFxCashGeneration = 7;
+            result.brokerRecoveryAuditBarrierComplete = true;
+            result.brokerPositionQuantity = "0";
+            result.brokerGrossAbsolutePosition = "0";
+            return result;
+        };
+        authority.query = [&](const ExecutionControlCommand& command) {
+            ++queryCalls;
+            assert(command.targetCommandId == originalCommand);
+            assert(command.context.agentId == "zero-fx-agent");
+            assert(command.context.sessionId == "zero-fx-session");
+            assert(command.context.account == "DU123");
+            assert(command.context.executionDomain == "PAPER");
+            assert(command.recoveryIngressFence == 1);
+            ExecutionControlResult result;
+            result.status = ExecutionCommandStatus::Accepted;
+            result.targetCommandId = originalCommand;
+            result.targetStatus = ExecutionCommandStatus::Accepted;
+            result.orderId = 9123;
+            result.serviceEpoch = "hexec-zero-resume-test";
+            result.serviceFencingGeneration = 7;
+            return result;
+        };
+        authority.release = [&](const ExecutionControlCommand& command) {
+            ++releaseCalls;
+            assert(auditState == AuditState::Zero);
+            assert(command.context.agentId == "zero-fx-agent");
+            assert(command.context.sessionId == "zero-fx-session");
+            assert(command.context.account == "DU123");
+            assert(command.context.executionDomain == "PAPER");
+            const auto ingress = execution.SessionOwnerRecoveryIngressFence("zero-fx-agent", "zero-fx-session");
+            assert(ingress == 1);
+            std::string why;
+            assert(execution.AuditAndReleaseSessionOwnerFence("zero-fx-agent", "zero-fx-session", true, why, ingress));
+            ExecutionControlStatusResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = ExecutionCommandStatus::Accepted;
+            result.reasonCode = "SESSION_OWNER_FENCE_RELEASED";
+            return result;
+        };
+        authority.fence = [&](const ExecutionControlCommand& command) {
+            ++fenceCalls;
+            assert((expired || pastDeadline) && auditState == AuditState::Zero);
+            assert(command.context.agentId == "zero-fx-agent");
+            assert(command.context.sessionId == "zero-fx-session");
+            assert(command.context.account == "DU123" && command.context.executionDomain == "PAPER");
+            assert(command.recoveryIngressFence == 1);
+            execution.FenceSessionOwner(command.context.agentId, command.context.sessionId);
+            ExecutionControlResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = ExecutionCommandStatus::Accepted;
+            return result;
+        };
+        auto authorizer = [](const std::string& issuer, const TradingToolHostSessionBinding&, std::string&) {
+            return issuer == "test.owner";
+        };
+        auto resolver = [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding, std::string&) {
+            binding.token = request.token;
+            binding.peerUid = request.peerUid;
+            binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+            binding.session.executionContext.agentId = request.agentId;
+            binding.session.executionContext.sessionId = request.sessionId;
+            binding.session.executionContext.account = "DU123";
+            binding.session.executionContext.venue = "IB";
+            binding.session.environment = "PAPER";
+            binding.executionDomain = "PAPER";
+            IBContractLite contract;
+            contract.symbol = "EUR"; contract.secType = "CASH";
+            contract.exchange = "IDEALPRO"; contract.currency = "USD";
+            binding.allowedInstruments.insert("EUR.USD");
+            binding.instrumentContracts["EUR.USD"] = contract;
+            binding.maxOrderQuantity = 25000;
+            return true;
+        };
+        std::map<std::uint32_t, std::string> issuers;
+        issuers[::geteuid()] = "test.owner";
+        SessionSupervisorRequest request;
+        request.operation = SessionSupervisorOperation::Provision;
+        request.templateId = "paper"; request.token = token;
+        request.agentId = "zero-fx-agent"; request.sessionId = "zero-fx-session";
+        request.peerUid = ::geteuid(); request.ttlMs = 60000;
+        auto assertRetained = [&](TradingToolHost& host) {
+            SessionSupervisorLeaseRecord record;
+            assert(store.List().size() == 1 && store.Get(token, record));
+            assert(record.token == token && record.leaseGeneration == 1);
+            assert(record.agentId == request.agentId && record.sessionId == request.sessionId);
+            assert(record.ownerAccount == "DU123" && record.ownerExecutionDomain == "PAPER");
+            assert(record.recoveryOnly && record.recoveryCommandId == originalCommand);
+            assert(!record.fencePending && !record.fenceComplete && !record.paperFinalizationRequired);
+            assert(record.paperFinalizationState == SessionSupervisorPaperFinalizationState::None);
+            TradingToolHostSessionBinding local;
+            assert(host.GetSession(token, local) && local.enabled && local.recoveryOnly);
+            if (expectedRecoveryExpiry != 0)
+            {
+                if (record.expiresAtMs != expectedRecoveryExpiry || local.expiresAtMs != expectedRecoveryExpiry)
+                    std::cerr << "recovery expiry phase=" << static_cast<int>(phase)
+                        << " expected=" << expectedRecoveryExpiry << " durable=" << record.expiresAtMs
+                        << " local=" << local.expiresAtMs << '\n';
+                assert(record.expiresAtMs == expectedRecoveryExpiry &&
+                    local.expiresAtMs == expectedRecoveryExpiry);
+            }
+            assert(local.leaseGeneration == 1 && local.maxOrderQuantity == 25000);
+            assert(local.session.executionContext.agentId == record.agentId);
+            assert(local.session.executionContext.sessionId == record.sessionId);
+            assert(local.session.executionContext.account == record.ownerAccount);
+            assert(local.executionDomain == record.ownerExecutionDomain);
+            const auto catalog = host.GetContractCatalogSnapshot();
+            assert(catalog.sessionCount == 1 && catalog.contracts.size() == 1);
+            const auto contract = catalog.contracts.find("EUR.USD");
+            assert(contract != catalog.contracts.end() && contract->second.sessionReferences == 1);
+            assert(contract->second.contract.symbol == "EUR" && contract->second.contract.secType == "CASH");
+            assert(contract->second.contract.exchange == "IDEALPRO" && contract->second.contract.currency == "USD");
+            assert(execution.IsSessionOwnerRecoveryOnly(request.agentId, request.sessionId));
+        };
+        auto resume = [&](TradingToolHost& host) {
+            assertRetained(host);
+            // This is a new explicit recovery request, not a restart. Its
+            // existing recovery-TTL behavior remains independent of restore.
+            const auto expiryBeforeExplicitQuery = expectedRecoveryExpiry;
+            expectedRecoveryExpiry = 0;
+            request.operation = SessionSupervisorOperation::RecoveryQuery;
+            request.expectedGeneration = 1; request.targetCommandId = originalCommand;
+            const auto recovered = Call(socketPath, request);
+            assert(recovered.accepted && recovered.recoveryOnly && recovered.leaseGeneration == 1);
+            assert(recovered.authoritativeCommandStatus && recovered.orderId == 9123);
+            assert(recovered.recoveryExpiresAtMs > static_cast<std::uint64_t>(OmsJournal::NowEpochMs()));
+            if (expiryBeforeExplicitQuery != 0)
+                assert(recovered.recoveryExpiresAtMs > expiryBeforeExplicitQuery);
+            expectedRecoveryExpiry = recovered.recoveryExpiresAtMs;
+            assertRetained(host);
+            // Later explicit resume attempts keep their existing failure-
+            // recovery TTL behavior; the restart deadline was checked above.
+            expectedRecoveryExpiry = 0;
+            request.operation = SessionSupervisorOperation::PaperResume;
+            for (const auto state : {AuditState::Active, AuditState::Uncertain})
+            {
+                auditState = state;
+                const auto refused = Call(socketPath, request);
+                assert(!refused.accepted && refused.leaseGeneration == 1);
+                assert(refused.ReasonCode() == (phase == Phase::RestartGlobalZero ?
+                    "SESSION_OWNER_RECOVERY_REQUIRED" : "FX_OWNER_RESUME_AUDIT_INVALID") && releaseCalls == 0);
+                assertRetained(host);
+            }
+            auditState = AuditState::Zero;
+            const auto resumed = Call(socketPath, request);
+            assert(resumed.accepted && resumed.leaseGeneration == 2 && releaseCalls == 1);
+            SessionSupervisorLeaseRecord active;
+            assert(store.List().size() == 1 && store.Get(token, active));
+            assert(active.token == token && active.leaseGeneration == 2 && !active.recoveryOnly);
+            assert(active.agentId == request.agentId && active.sessionId == request.sessionId);
+            assert(active.ownerAccount == "DU123" && active.ownerExecutionDomain == "PAPER");
+            assert(active.recoveryCommandId.empty() && !active.fencePending);
+            TradingToolHostSessionBinding local;
+            assert(host.GetSession(token, local) && local.enabled && !local.recoveryOnly);
+            assert(local.leaseGeneration == 2 && local.maxOrderQuantity == 25000);
+            assert(host.GetContractCatalogSnapshot().sessionCount == 1);
+            assert(!execution.IsSessionOwnerRecoveryOnly(request.agentId, request.sessionId));
+            assert(!Call(socketPath, request).accepted && releaseCalls == 1);
+        };
+        auto assertFinalized = [&](TradingToolHost& host) {
+            SessionSupervisorLeaseRecord record;
+            TradingToolHostSessionBinding local;
+            assert(store.List().empty() && !store.Get(token, record));
+            assert(host.SessionCount() == 0 && !host.GetSession(token, local));
+            const auto catalog = host.GetContractCatalogSnapshot();
+            assert(catalog.sessionCount == 0 && catalog.contracts.empty());
+            assert(fenceCalls == 1 && releaseCalls == 0);
+            request.operation = SessionSupervisorOperation::PaperResume;
+            assert(!Call(socketPath, request).accepted && releaseCalls == 0);
+        };
+        {
+            TradingToolHost host(registry); host.SetRecoveryControlAuthority(&authority);
+            TradingToolSessionControlPlane control(host, authorizer);
+            UnixSessionSupervisorServer server(control);
+            server.SetLeaseStore(&store); server.SetAuditJournal(&audit);
+            assert(server.ConfigureUserPaperCustodian(reason));
+            assert(server.Start(socketPath, issuers, resolver, reason, 4096, 2000));
+            assert(Call(socketPath, request).accepted);
+            request.operation = SessionSupervisorOperation::RecoveryQuery;
+            request.expectedGeneration = 1; request.targetCommandId = originalCommand;
+            const auto recovered = Call(socketPath, request);
+            assert(recovered.accepted && recovered.recoveryOnly && recovered.ownerAuditComplete);
+            assert(recovered.ownerActiveOrderCount == 0 && recovered.ownerUncertainCommandCount == 0);
+            assertRetained(host);
+            if (!restart)
+            {
+                SessionSupervisorLeaseRecord record;
+                assert(store.Get(token, record));
+                const auto originalExpiry = record.expiresAtMs;
+                std::size_t reaped = 99;
+                if (expired)
+                {
+                    assert(server.ReapExpired(originalExpiry, reaped, reason) && reaped == 1);
+                    assertFinalized(host);
+                }
+                else
+                {
+                    const auto now = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
+                    assert(now < originalExpiry);
+                    const auto beforeAudit = recoveryAudits;
+                    assert(server.ReapExpired(now, reaped, reason) && reaped == 0);
+                    assertRetained(host);
+                    assert(store.Get(token, record) && record.expiresAtMs == originalExpiry);
+                    assert(recoveryAudits == beforeAudit);
+                    resume(host);
+                }
+            }
+            else if (expired)
+            {
+                // Model a lease whose recovery TTL elapsed while Gateway was down.
+                SessionSupervisorLeaseRecord record;
+                assert(store.Get(token, record));
+                record.expiresAtMs = 1;
+                assert(store.Replace(token, record, reason));
+            }
+            else
+            {
+                // A restart must retain the receiver's existing deadline,
+                // including when it is shorter than a fresh recovery TTL.
+                SessionSupervisorLeaseRecord record;
+                assert(store.Get(token, record));
+                expectedRecoveryExpiry = static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) +
+                    (pastDeadline ? 500 : 120000);
+                record.expiresAtMs = expectedRecoveryExpiry;
+                assert(store.Replace(token, record, reason));
+                delayRestoreAudit = pastDeadline;
+            }
+            server.Stop();
+        }
+        if (restart)
+        {
+          for (int attempt = 0; attempt < restartCount; ++attempt)
+          {
+            TradingToolHost host(registry); host.SetRecoveryControlAuthority(&authority);
+            TradingToolSessionControlPlane control(host, authorizer);
+            UnixSessionSupervisorServer server(control);
+            server.SetLeaseStore(&store); server.SetAuditJournal(&audit);
+            assert(server.ConfigureUserPaperCustodian(reason));
+            const bool started = server.Start(socketPath, issuers, resolver, reason, 4096, 2000);
+            if (pastDeadline && attempt == 0)
+            {
+                // A complete zero audit arriving after expiry cannot create a
+                // live receiver. A later startup uses normal expired cleanup.
+                assert(delayedAuditReturned && !started);
+                assert(reason == "SESSION_RECOVERY_RESTORE_TTL_EXPIRED");
+                assert(releaseCalls == 0 && fenceCalls == 0);
+                assertRetained(host);
+                assert(static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) > expectedRecoveryExpiry);
+            }
+            else
+            {
+                assert(started);
+                if (expired || pastDeadline) assertFinalized(host);
+                else
+                {
+                    assertRetained(host);
+                    if (attempt + 1 == restartCount) resume(host);
+                }
+            }
+            server.Stop();
+          }
+        }
+        if (expired || pastDeadline)
+            assert(queryCalls == 1 && recoveryAudits == (pastDeadline ? 4 : 3) &&
+                releaseCalls == 0 && fenceCalls == 1);
+        else assert(queryCalls == 2 && recoveryAudits == (restart ? restartCount + 2 : 2) &&
+            releaseCalls == 1 && fenceCalls == 0);
+        std::remove(journalPath.c_str()); std::remove(storePath.c_str());
+        std::remove(keyPath.c_str()); std::remove(auditPath.c_str());
+    }
 }
 
 void TestRestartAtEveryPersistedGeneration()

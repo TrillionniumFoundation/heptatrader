@@ -28,7 +28,8 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 	ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason,
     std::unique_lock<std::timed_mutex>* serialization,
-    std::chrono::steady_clock::time_point deadline)
+    std::chrono::steady_clock::time_point deadline,
+    bool preserveRecoveryExpiry)
 {
 	if (m_leaseStore == nullptr || record.templateId != "paper" ||
 		record.paperFinalizationState !=
@@ -40,9 +41,21 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 		reason = "SESSION_PAPER_RECOVERY_RECORD_INVALID";
 		return false;
 	}
+    if (preserveRecoveryExpiry &&
+        (!record.recoveryOnly || !CanResumeExactUserPaperRecord(record)))
+    {
+        reason = "SESSION_RECOVERY_RESTORE_RECORD_NOT_RESUMABLE";
+        return false;
+    }
+    if (preserveRecoveryExpiry && record.expiresAtMs <= nowMs)
+    {
+        reason = "SESSION_RECOVERY_RESTORE_TTL_EXPIRED";
+        return false;
+    }
 	SessionSupervisorLeaseRecord recovery = record;
 	std::string durableCurrentToken = record.token;
-	recovery.expiresAtMs = nowMs + m_maxSessionTtlMs;
+    if (!preserveRecoveryExpiry)
+        recovery.expiresAtMs = nowMs + m_maxSessionTtlMs;
 	recovery.fencePending = false;
 	recovery.fenceComplete = false;
 	recovery.fenceReason.clear();

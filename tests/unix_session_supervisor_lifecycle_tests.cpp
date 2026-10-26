@@ -66,6 +66,103 @@ void TestCryptoAndFxSessionContractScopesRemainDisjoint()
 }
 
 
+void TestConfiguredFxResumeKeepsExactPolicyScope()
+{
+    if (::geteuid()==0 || ::getegid()==0)return;
+    AgentOsRuntimeConfig agent;agent.userPaperScope=true;agent.agentUid=::geteuid();
+    agent.supervisorUid=::geteuid();agent.toolSocket="/tmp/scoped-resume-tool.sock";
+    agent.supervisorSocket="/tmp/scoped-resume-supervisor.sock";
+    ExecutionGatewayRuntimeConfig remote;remote.mode=ExecutionGatewayMode::Paper;
+    remote.mutationToolsEnabled=true;
+    for (const double configuredQuantity : {25000.0,100000.0})
+    {
+        std::map<std::string,std::string> values{
+            {"HEPTA_TOOL_AGENT_ID","pocket4-paper"},{"HEPTA_TOOL_ACCOUNT","DU123"},
+            {"HEPTA_EXECUTION_DOMAIN_ID","PAPER"},{"HEPTA_TOOL_SESSION_TEMPLATES","watch,paper"},
+            {"HEPTA_TOOL_MAX_ORDER_QTY",std::to_string(configuredQuantity)},
+            {"HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN","2"},
+            {"HEPTA_TOOL_CRYPTO_SESSION_ID","pocket4-crypto-owner"},
+            {"HEPTA_TOOL_CONTRACT_BINDINGS","BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD"}};
+        ToolGatewaySessionPolicy policy;std::string reason;
+        assert(ToolGatewaySessionPolicy::FromValues(values,remote,agent,policy,reason));
+        SessionSupervisorRequest request;request.operation=SessionSupervisorOperation::Provision;
+        request.templateId="paper";request.agentId="pocket4-paper";request.sessionId="existing-fx-owner";
+        request.peerUid=::geteuid();request.token="configured-fx-resume-token";request.ttlMs=60000;
+        TradingToolHostSessionBinding original;
+        assert(policy.Resolve(request,original,reason));
+        assert(original.maxOrderQuantity==configuredQuantity);
+        assert(policy.Authorize("hepta.os.bootstrap",original,reason));
+        for (int scenario=0;scenario!=6;++scenario)
+        {
+            const std::string journalPath=TempPath("/tmp/hepta-configured-fx-resume-XXXXXX");
+            {
+                OmsJournal journal;assert(journal.Init(journalPath));
+                ExecutionCoordinatorCallbacks callbacks;ExecutionCoordinator execution(journal,callbacks);
+                TradingToolRegistry registry(execution);TradingToolHost host(registry);
+                TradingToolHostSessionBinding binding=original;
+                if(scenario==1)binding.maxOrderQuantity=configuredQuantity+1;
+                if(scenario==2)binding.maxOrderQuantity=configuredQuantity-1;
+                if(scenario==3)binding.session.executionContext.agentId="different-agent";
+                if(scenario==4)binding.session.executionContext.venue="SIM";
+                if(scenario==5)binding.instrumentContracts.at("EUR.USD").exchange="SMART";
+                // A stale/tampered local binding is not current policy authority.
+                // The real control plane must reauthorize it before any native call.
+                assert(host.RegisterSession(binding,reason));
+                int auditCalls=0,releaseCalls=0;
+                RecoveryControlAuthority authority;
+                authority.ownerAudit=[&](const ExecutionControlCommand& command){
+                    ++auditCalls;ExecutionControlResult result;
+                    result.commandId=command.context.toolCallId;
+                    result.status=ExecutionCommandStatus::Accepted;
+                    result.reasonCode="SESSION_FX_OWNER_ZERO_CONFIRMED";
+                    result.ownerAccount=command.context.account;
+                    result.ownerExecutionDomain=command.context.executionDomain;
+                    result.ownerAuditAuthoritative=true;result.ownerAuditComplete=true;
+                    result.brokerRecoveryAuditBarrierComplete=true;
+                    result.brokerConnectionEpoch=1;result.brokerActiveGeneration=1;
+                    result.brokerTerminalGeneration=1;result.brokerRiskGeneration=1;
+                    result.brokerAccountGeneration=1;result.brokerPositionGeneration=1;
+                    result.brokerFxCashGeneration=1;
+                    return result;
+                };
+                authority.release=[&](const ExecutionControlCommand& command){
+                    ++releaseCalls;ExecutionControlResult result;
+                    result.commandId=command.context.toolCallId;
+                    result.status=ExecutionCommandStatus::Accepted;
+                    result.reasonCode="SESSION_OWNER_FENCE_RELEASED";
+                    return result;
+                };
+                host.SetRecoveryControlAuthority(&authority);
+                TradingToolSessionControlPlane control(host,
+                    [&](const std::string& issuer,const TradingToolHostSessionBinding& value,std::string& why){
+                        return policy.Authorize(issuer,value,why);
+                    });
+                std::uint64_t generation=0;ExecutionOwnerAuditResult audit;
+                const bool resumed=control.RenewPaperAfterAudit("hepta.os.bootstrap",
+                    binding.token,binding.token,binding.leaseGeneration,OmsJournal::NowEpochMs()+60000,
+                    generation,audit,reason,true,false);
+                TradingToolHostSessionBinding after;assert(host.GetSession(binding.token,after));
+                if(scenario==0){
+                    assert(resumed && generation==binding.leaseGeneration+1);
+                    assert(auditCalls==1 && releaseCalls==1);
+                    assert(after.maxOrderQuantity==configuredQuantity);
+                    assert(after.session.executionContext.agentId==original.session.executionContext.agentId);
+                    assert(after.session.executionContext.sessionId==original.session.executionContext.sessionId);
+                    assert(after.session.executionContext.account==original.session.executionContext.account);
+                    assert(after.instrumentContracts.at("EUR.USD").exchange=="IDEALPRO");
+                }else{
+                    assert(!resumed && auditCalls==0 && releaseCalls==0);
+                    assert(after.leaseGeneration==binding.leaseGeneration);
+                    assert(reason=="TOOL_GATEWAY_PAPER_SCOPE_INVALID" ||
+                           reason=="TOOL_GATEWAY_SESSION_POLICY_REJECTED");
+                }
+            }
+            std::remove(journalPath.c_str());
+        }
+    }
+}
+
+
 void TestDurableLiveExpiryReap()
 {
 	const std::string journalPath = TempPath("/tmp/hepta-supervisor-reap-journal-XXXXXX");
