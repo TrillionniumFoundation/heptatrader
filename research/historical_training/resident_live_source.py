@@ -40,16 +40,22 @@ def refresh(original, source, now_ms, reader=None):
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_mode&0o077:
             raise EvidenceError('LIVE_SOURCE_FILE_OWNER_OR_MODE')
-        remain=live['bytes'];parts=[]
+        remain=live['bytes'];prefix_remaining=pin['bytes']
+        live_hash=hashlib.sha256();prefix_hash=hashlib.sha256()
         while remain:
             part=os.read(fd,min(remain,1024*1024))
             if not part:raise EvidenceError('LIVE_SOURCE_SHORT_READ')
-            parts.append(part);remain-=len(part)
-        raw=b''.join(parts)
+            live_hash.update(part)
+            if prefix_remaining:
+                count=min(prefix_remaining,len(part))
+                prefix_hash.update(memoryview(part)[:count]);prefix_remaining-=count
+            remain-=len(part)
+            # Do not retain the previous chunk while the next read allocates.
+            del part
     finally:os.close(fd)
-    if hashlib.sha256(raw).hexdigest()!=live['sha256']:
+    if live_hash.hexdigest()!=live['sha256']:
         raise EvidenceError('LIVE_SOURCE_CHANGED_DURING_VERIFICATION')
-    if hashlib.sha256(raw[:pin['bytes']]).hexdigest()!=pin['sha256']:
+    if prefix_hash.hexdigest()!=pin['sha256']:
         raise EvidenceError('ORIGINAL_CONTINUITY_PREFIX_REWRITTEN')
     eligible=[q for q in quotes if type(q.get('t')) is int and type(q.get('known_at_ms')) is int
               and 0<q['t']<=q['known_at_ms']<=now_ms]
