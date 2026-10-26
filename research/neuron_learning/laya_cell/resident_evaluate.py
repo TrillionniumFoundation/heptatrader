@@ -81,7 +81,8 @@ def summarize_closed_coverage(entries,now_ms):
  """Expose existing final coverage only; never reconstruct or assess outcomes."""
  summary={'observational_only':True,'model_performance_result':False,'authorization_effect':'NONE',
   'scope':'RECORDED_FINAL_PROGRESS_AFTER_ORIGINAL_COMPLETE_DEADLINE',
-  'eligible_closed_plans':0,'plans_with_diagnostics':0,'plans_without_diagnostics':0,
+  'eligible_closed_plans':0,'closed_plans_without_verifiable_deadline':0,
+  'plans_with_diagnostics':0,'plans_without_diagnostics':0,
   'counts_scope':'PLANS_WITH_COMPATIBLE_FINAL_PROGRESS_ONLY_HISTORY_NOT_RECONSTRUCTED',
   'counts':{'OBSERVED':0,'CENSORED':0,'pending':0},
   'pending_count_scope':'SLOTS_WITHOUT_RECORDED_OUTCOME_NOT_ACTIVE_TRIALS',
@@ -101,8 +102,11 @@ def summarize_closed_coverage(entries,now_ms):
     target[key]=target.get(key,0)+value
    else:raise ValueError('DIAGNOSTIC_COUNTER_VALUE')
  for plan,qualification,progress in entries:
-  if (now_ms<plan['outcome_end_ms'] or qualification.get('state') not in
-      ('REJECTED','QUALIFIED_AWAITING_CANONICAL_OWNER')):continue
+  if qualification.get('state') not in ('REJECTED','QUALIFIED_AWAITING_CANONICAL_OWNER'):continue
+  end=plan.get('outcome_end_ms')
+  if type(end) is not int or end<=0:
+   summary['closed_plans_without_verifiable_deadline']+=1;continue
+  if now_ms<end:continue
   summary['eligible_closed_plans']+=1
   try:
    if (not isinstance(progress,dict) or any(progress.get(key)!=qualification.get(key)
@@ -337,7 +341,8 @@ class Evaluator:
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
   self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
  def closed_progress(self,path,plan,now_ms):
-  if now_ms<plan['outcome_end_ms']:return None
+  end=plan.get('outcome_end_ms')
+  if type(end) is not int or end<=0 or now_ms<end:return None
   if not hasattr(self,'_closed_progress_cache'):self._closed_progress_cache={}
   progress=path.parent/'progress.json'
   try:
