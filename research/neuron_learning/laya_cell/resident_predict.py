@@ -43,6 +43,41 @@ def _prediction_batches(tokenizer,row,input_binding):
  return raw,parent,child
 
 
+def _prediction_outputs(cell,parent_tensors,candidate_tensors,batch,parent_batch,price_batch,input_binding):
+ """Reuse one frozen RAW scorer input within this no-grad prediction only.
+
+ The ordinary candidate forward still owns ACT, including its PRICE-derived
+ confidence features. Different role inputs retain their ordinary forwards.
+ """
+ same_raw=(input_binding is not None and
+  input_binding['price_input_profile']==price_input.RAW and
+  input_binding['parent_price_input_profile']==price_input.RAW and
+  batch is parent_batch is price_batch)
+ if not same_raw:
+  cell.restore_trainable(parent_tensors)
+  parent_probs=cell(**parent_batch)[0].softmax(-1)[0].cpu().tolist()
+  cell.restore_trainable(candidate_tensors);p,a=cell(**price_batch)
+  if input_binding is not None and price_batch is not batch:
+   a=cell(**batch)[1]
+  return parent_probs,p,a
+ cell.restore_trainable(candidate_tensors)
+ captured=[]
+ def capture(_module,args):
+  captured.append(args[0].detach().clone())
+ hook=cell.model.scorer.register_forward_pre_hook(capture)
+ try:p,a=cell(**price_batch)
+ finally:hook.remove()
+ if len(captured)!=1:raise ContractError('PREDICTION_SCORER_INPUT_COUNT')
+ try:
+  cell.restore_trainable(parent_tensors)
+  # Same scorer-input formula as resident_train._frozen_price_logits; only
+  # the declared adapter coordinates change, never the frozen upstream.
+  parent_logits=cell.model.scorer(captured[0]).squeeze(-1).float().masked_fill(~parent_batch['marker_mask'],-1e4)
+  parent_probs=parent_logits.softmax(-1)[0].cpu().tolist()
+ finally:cell.restore_trainable(candidate_tensors)
+ return parent_probs,p,a
+
+
 def predict(config,plan_path,slot):
  plan=read_json(plan_path)
  from .resident_hip_runtime import check_plan,prove_before_publish
@@ -167,12 +202,8 @@ def predict(config,plan_path,slot):
  if bootstrap['trained_until_ms']>anchor:raise ContractError('BOOTSTRAP_LOOKAHEAD')
  batch,parent_batch,price_batch=_prediction_batches(tok,row,input_binding)
  with torch.no_grad():
-  cell.restore_trainable(parent_tensors);parent_probs=cell(**parent_batch)[0].softmax(-1)[0].cpu().tolist()
-  cell.restore_trainable(candidate_tensors);p,a=cell(**price_batch)
-  if v7 and price_batch is not batch:
-   # The ACT adapter was calibrated/trained on original raw quote inputs.
-   # A separate ordinary raw-input forward preserves that exact contract.
-   a=cell(**batch)[1]
+  parent_probs,p,a=_prediction_outputs(cell,parent_tensors,candidate_tensors,
+   batch,parent_batch,price_batch,input_binding)
   probs=p.softmax(-1)[0].cpu().tolist();action=a.softmax(-1)[0].cpu().tolist()
   if v5:
    raw_price_probs=list(probs);probs=price_calibration.apply(price_profile,raw_price_probs)
