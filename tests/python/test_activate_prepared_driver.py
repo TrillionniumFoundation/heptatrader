@@ -1134,8 +1134,12 @@ class InteractiveBrokerSnapshotTests(unittest.TestCase):
                 "RefuseManualStop": "yes", "PartOf": "heptatrader.target"}
         unused = dict(base, ActiveState="inactive", SubState="dead", MainPID="0", InvocationID="")
         self.current = {activation.EXECUTION_UNIT: dict(base), activation.BROKER_UNIT: dict(unused)}
+        executable = str(self.root / "bin/hepta-ib-executiond")
+        self.execution_start = ("{ path=" + executable + " ; argv[]=" + executable
+            + " existing-argument ; ignore_errors=no ; start_time=[Mon 2026-10-26 06:01:35 PDT] ; "
+            "stop_time=[n/a] ; pid=" + str(self.execution_pid) + " ; code=(null) ; status=0 }")
         self.units = {
-            activation.EXECUTION_UNIT: dict(base, ExecStart="original exact execution", ControlGroup=self.execution_group),
+            activation.EXECUTION_UNIT: dict(base, ExecStart=self.execution_start, ControlGroup=self.execution_group),
             activation.BROKER_UNIT: dict(unused, UnitFileState="static", ExecStart="unused original launcher", ControlGroup=""),
             self.scope_name: {"Id": self.scope_name, "LoadState": "loaded", "ActiveState": "active",
                 "SubState": "running", "InvocationID": "gnome-scope-invocation", "ControlGroup": self.scope_group,
@@ -1196,6 +1200,33 @@ class InteractiveBrokerSnapshotTests(unittest.TestCase):
         self.assertEqual(proof["scope"]["RefuseManualStop"], "no")
         self.assertFalse(proof["broker_manual_stop_shield_claimed"])
         self.assertNotIn("must-not-appear", json.dumps(proof))
+
+    def test_execstart_runtime_metadata_reset_keeps_the_same_actual_execution_proof(self):
+        expected = self._snapshot()
+        self.units[activation.EXECUTION_UNIT]["ExecStart"] = self.execution_start.replace(
+            "start_time=[Mon 2026-10-26 06:01:35 PDT]", "start_time=[n/a]").replace(
+            "stop_time=[n/a]", "stop_time=[Mon 2026-10-26 06:01:36 PDT]").replace(
+            "pid=" + str(self.execution_pid), "pid=0").replace("code=(null)", "code=exited").replace(
+            "status=0", "status=9")
+        self.assertEqual(self._snapshot(), expected)
+        self.assertEqual(expected["execution_unit"]["MainPID"], str(self.execution_pid))
+        self.assertEqual(expected["execution_process"]["pid_key"], (str(self.execution_pid), "7709970"))
+
+    def test_execstart_static_command_changes_and_ambiguous_descriptors_are_not_ignored(self):
+        expected = self._snapshot()
+        for old, new in (("path=", "path=/different-prefix"),
+                         ("existing-argument", "changed-argument"), ("ignore_errors=no", "ignore_errors=yes")):
+            with self.subTest(field=old):
+                self.units[activation.EXECUTION_UNIT]["ExecStart"] = self.execution_start.replace(old, new, 1)
+                self.assertNotEqual(self._snapshot(), expected)
+        for value in (self.execution_start + " " + self.execution_start,
+                      self.execution_start.replace(" ; pid=", " ; unknown=1 ; pid="),
+                      self.execution_start.replace(" ; pid=", " ; pid=1 ; pid="),
+                      self.execution_start.replace("existing-argument", "ambiguous;argument")):
+            with self.subTest(value=value):
+                self.units[activation.EXECUTION_UNIT]["ExecStart"] = value
+                with self.assertRaisesRegex(RuntimeError, "EXECSTART_INVALID"):
+                    self._snapshot()
 
     def _use_gnome_session(self):
         self.gnome_unit = "org.gnome.Shell@ubuntu.service"

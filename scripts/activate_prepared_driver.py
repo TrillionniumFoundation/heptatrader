@@ -329,6 +329,18 @@ def interactive_broker_container(broker):
     return container, shell
 
 
+def configured_execstart(value):
+    """Keep exact command policy, excluding systemd's last-run diagnostics."""
+    command = re.fullmatch(
+        r"\{ path=([^;{}\r\n]+) ; argv\[\]=([^;{}\r\n]+) ; ignore_errors=(yes|no) ; "
+        r"start_time=[^;{}\r\n]+ ; stop_time=[^;{}\r\n]+ ; pid=[0-9]+ ; "
+        r"code=[^;{}\r\n]+ ; status=[^;{}\r\n]+ \}", value)
+    if command is None:
+        fail("INTERACTIVE_EXECUTION_EXECSTART_INVALID")
+    path, argv, ignore_errors = command.groups()
+    return "{ path=" + path + " ; argv[]=" + argv + " ; ignore_errors=" + ignore_errors + " ; }"
+
+
 def interactive_broker_snapshot(broker_pid, selected, current):
     """Prove the existing GNOME Broker path without claiming a stop shield.
 
@@ -346,6 +358,10 @@ def interactive_broker_snapshot(broker_pid, selected, current):
             or execution_unit["LoadState"] != "loaded" or execution_unit["ActiveState"] != "active"
             or not execution_unit["MainPID"].isdigit() or int(execution_unit["MainPID"]) <= 0):
         fail("INTERACTIVE_EXECUTION_NOT_ACTIVE")
+    # daemon-reload resets ExecStart's result PID/times even while the same
+    # process remains alive. Its configured path/argv/ignore policy stay bound;
+    # MainPID/InvocationID and the actual process/image proof below stay exact.
+    execution_unit["ExecStart"] = configured_execstart(execution_unit["ExecStart"])
     execution_pid = int(execution_unit["MainPID"])
     execution = interactive_process(execution_pid)
     broker = interactive_process(broker_pid)
