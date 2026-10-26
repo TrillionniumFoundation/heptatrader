@@ -38,7 +38,7 @@ def stamp(info):
             info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
 
 
-def bound_file(path, expected, snapshots, *, json_value=False, limit=1024**3):
+def bound_file(path, expected, snapshots, *, json_value=False, limit=1024**3, original_sdk=False):
     path = Path(path)
     need(path.is_absolute() and path.resolve() == path, 'CANONICAL_FILE_REQUIRED')
     need(isinstance(expected, str) and re.fullmatch('[0-9a-f]{64}', expected), 'FILE_PIN_REQUIRED')
@@ -46,8 +46,12 @@ def bound_file(path, expected, snapshots, *, json_value=False, limit=1024**3):
     digest = hashlib.sha256(); chunks = []
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
+        # Installed SDK inputs may retain the owner's group-write permission.
+        # Newly staged code, manifests and replacement files keep the stricter default.
+        mode_ok = not before.st_mode & 0o022 or (
+            original_sdk and before.st_gid == os.getegid() and not before.st_mode & 0o002)
         need(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
-             and not before.st_mode & 0o022 and before.st_size <= limit, 'FILE_OWNER_TYPE_OR_SIZE')
+             and mode_ok and before.st_size <= limit, 'FILE_OWNER_TYPE_OR_SIZE')
         size = 0
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             size += len(chunk); need(size <= limit, 'FILE_GREW_PAST_BOUND')
@@ -108,8 +112,8 @@ def check_config(config):
         path = Path(item['path'])
         need(path.parent == core / 'lib' and (path.name == name or path.name.startswith(name + '.')),
              'DEPENDENCY_OUTSIDE_ORIGINAL_CORE')
-        bound_file(path, item['sha256'], snapshots)
-    bound_file(core / '__init__.py', proof['original_init']['sha256'], snapshots, limit=1024**2)
+        bound_file(path, item['sha256'], snapshots, original_sdk=True)
+    bound_file(core / '__init__.py', proof['original_init']['sha256'], snapshots, limit=1024**2, original_sdk=True)
     bound_file(package / '__init__.py', proof['original_init']['sha256'], snapshots, limit=1024**2)
     bound_file(lib / 'libamdhip64.so.7', proof['candidate_sha256'], snapshots)
     need(set(x.name for x in root.iterdir()) == {'_rocm_sdk_core'}, 'OVERLAY_ROOT_CONTENTS')

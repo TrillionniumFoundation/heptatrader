@@ -107,6 +107,58 @@ class SelectedHipRuntimeTests(unittest.TestCase):
         self.assertFalse(self.hip.samefile(self.original_hip))
         self.assertEqual(before, {p: (p.stat().st_ino, p.read_bytes()) for p in before})
 
+    def test_original_sdk_owner_group_writable_installation_is_read_without_changes(self):
+        original_init = self.core / '__init__.py'
+        original_init.write_bytes(b'')
+        (self.overlay / '_rocm_sdk_core/__init__.py').write_bytes(b'')
+        self.proof['original_init']['sha256'] = sha(original_init); self.write_manifest()
+        self.core.chmod(0o775); (self.core / 'lib').chmod(0o775)
+        original_init.chmod(0o664)
+        originals = [original_init, *(Path(item['path']) for item in self.proof['original_dependencies'].values())]
+        for path in originals[1:]: path.chmod(0o775)
+        before = {path: (runtime.stamp(path.stat()), path.read_bytes()) for path in originals}
+        value = runtime.check_config(self.config)
+        self.assertEqual(value['proof']['candidate_sha256'], sha(self.hip))
+        self.assertEqual(before, {path: (runtime.stamp(path.stat()), path.read_bytes()) for path in originals})
+
+    def test_new_code_manifest_copied_init_and_candidate_still_reject_group_write(self):
+        for path in (self.release / runtime.MODULE, self.manifest,
+                     self.overlay / '_rocm_sdk_core/__init__.py', self.hip):
+            with self.subTest(path=path.name):
+                path.chmod(0o664)
+                try:
+                    with self.assertRaisesRegex(ContractError, 'FILE_OWNER_TYPE_OR_SIZE'):
+                        runtime.check_config(self.config)
+                finally:
+                    path.chmod(0o600)
+
+    def test_original_sdk_world_write_is_rejected(self):
+        for path in (self.core / '__init__.py',
+                     *(Path(item['path']) for item in self.proof['original_dependencies'].values())):
+            with self.subTest(path=path.name):
+                path.chmod(0o777)
+                try:
+                    with self.assertRaisesRegex(ContractError, 'FILE_OWNER_TYPE_OR_SIZE'):
+                        runtime.check_config(self.config)
+                finally:
+                    path.chmod(0o600)
+
+    def test_original_sdk_group_write_requires_the_effective_group(self):
+        hsa = Path(self.proof['original_dependencies']['libhsa-runtime64.so']['path'])
+        hsa.chmod(0o775)
+        with patch.object(runtime.os, 'getegid', return_value=hsa.stat().st_gid + 1), \
+             self.assertRaisesRegex(ContractError, 'FILE_OWNER_TYPE_OR_SIZE'):
+            runtime.check_config(self.config)
+
+    def test_sdk_permission_change_invalidates_cache_and_blocks_prior_publication(self):
+        self.activated(); before = runtime.check_config(self.config)
+        hsa = Path(self.proof['original_dependencies']['libhsa-runtime64.so']['path'])
+        hsa.chmod(0o775)
+        self.assertIsNot(runtime.check_config(self.config), before)
+        with patch.object(Path, 'read_text', return_value=self.maps()), \
+             self.assertRaisesRegex(ContractError, 'MAPPED_LIBRARY_IDENTITY_CHANGED'):
+            runtime.prove_before_publish(self.config)
+
     def test_retargeted_dependency_is_rejected_even_if_other_bytes_are_equal(self):
         link = self.hip.parent / 'librocm_kpack.so.0'; link.unlink()
         replacement = self.root / 'librocm_kpack.so.0'; replacement.write_bytes(b'librocm_kpack.so')
