@@ -375,6 +375,8 @@ target_include_directories(hepta_sessionctl PRIVATE
 target_link_libraries(hepta_sessionctl PRIVATE
     hepta_session_audit
     hepta_session_supervisor_core
+    # Only the frame transport object is referenced from this static archive.
+    hepta_typed_tool_protocol
     hepta_execution_client
     Threads::Threads
     OpenSSL::Crypto ZLIB::ZLIB)

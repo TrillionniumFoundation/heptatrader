@@ -4,9 +4,12 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <fcntl.h>
 #include <limits>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
@@ -62,6 +65,33 @@ bool WriteAll(int fd, const char* data, std::size_t size, const Deadline& deadli
 }
 
 } // namespace
+
+bool TypedToolProtocol::ConnectUnixSocket(
+    int fd, const std::string& socketPath, int timeoutMs)
+{
+    if (timeoutMs <= 0 || socketPath.empty() ||
+        socketPath.size() >= sizeof(sockaddr_un::sun_path)) return false;
+    const int flags = ::fcntl(fd, F_GETFL);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return false;
+    sockaddr_un address;
+    std::memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, socketPath.c_str(), socketPath.size() + 1);
+    const Deadline deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMs);
+    bool connected = ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+    if (!connected && errno == EINPROGRESS && WaitFd(fd, POLLOUT, deadline))
+    {
+        int error = 0;
+        socklen_t length = sizeof(error);
+        connected = ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 &&
+            length == sizeof(error) && error == 0;
+    }
+    // AF_UNIX reports a full accept queue as EAGAIN: no connection is queued.
+    // Refuse that unsent call, rather than retrying or claiming connect success.
+    const bool restored = ::fcntl(fd, F_SETFL, flags) == 0;
+    return connected && restored;
+}
 
 bool TypedToolProtocol::ReadFrame(int fd,
                                   std::size_t maxBodyBytes,
