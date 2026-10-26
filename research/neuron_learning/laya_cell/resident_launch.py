@@ -68,6 +68,8 @@ def main():
  faulthandler.enable(all_threads=True)
  c=read_json(a.config);base=dict(c);base['schema']='heptatrader.laya-resident-config.v1';config_check(base);bootstrap_still_off()
  if c.get('require_worker_sandbox') is not True:raise ContractError('SANDBOX_REQUIRED')
+ from . import resident_hip_runtime as hip_runtime
+ hip_context=hip_runtime.prepare_worker(c,a.target)
  if a.target=='train':
   output=Path(c['output_directory']).parent
  elif a.target=='owner-predict':
@@ -81,6 +83,7 @@ def main():
   c['initial_parent_directory'],c['native_binary'],c['seed_dataset'],c['runtime_directory'],str(a.config),
   str(Path.home()/'.local/state/heptatrader/paper-driver/cost-observations.jsonl')]
  readonly.extend(c.get('completed_history_sources',[]))
+ if hip_context is not None:readonly.extend(hip_context['readonly'])
  if a.target=='train':readonly.extend([c['dataset'],c['parent_directory']])
  elif a.target=='owner-predict':readonly.extend([str(a.owner_task),str(payload)])
  else:
@@ -100,7 +103,9 @@ def main():
  receipt_name=('sandbox-train.json' if a.target=='train' else 'sandbox-owner-predict.json'
                if a.target=='owner-predict' else f'sandbox-predict-{a.slot:03}.json')
  atomic(output/receipt_name,receipt)
+ hip_runtime.activate(hip_context)
  import torch
+ hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
  torch.set_num_threads(2)
  if a.target=='train':
   from .resident_train import run_job
@@ -112,8 +117,11 @@ def main():
   result=predict_payload(c,selected_raw,task['request'])
   if sha_file(a.owner_task)!=a.owner_task_sha256 or sha_file(payload)!=task['payload_sha256']:
    raise ContractError('OWNER_PREDICTION_INPUT_CHANGED_AFTER_MODEL')
-  write_once(output/'result.json',{'schema':RESULT_SCHEMA,'task_sha256':a.owner_task_sha256,
-   'request_digest':task['request_digest'],'payload_sha256':task['payload_sha256'],'output':result})
+  hip_proof=hip_runtime.prove_before_publish(c)
+  receipt={'schema':RESULT_SCHEMA,'task_sha256':a.owner_task_sha256,
+   'request_digest':task['request_digest'],'payload_sha256':task['payload_sha256'],'output':result}
+  if hip_proof is not None:receipt['hip_runtime_proof']=hip_proof
+  write_once(output/'result.json',receipt)
  else:
   from .resident_predict import predict
   predict(c,a.plan,a.slot)

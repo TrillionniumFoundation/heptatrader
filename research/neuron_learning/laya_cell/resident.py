@@ -101,6 +101,8 @@ def config_check(config):
  for rel,expected in config.get('runtime_sha256',{}).items():
   if Path(rel).is_absolute() or '..' in Path(rel).parts:raise ContractError('RUNTIME_PATH_ESCAPE')
   if sha_file(Path(config['runtime_directory'])/rel)!=expected:raise ContractError('RUNTIME_CHANGED:'+rel)
+ from .resident_hip_runtime import check_config as check_hip_runtime
+ check_hip_runtime(config)
  if training_v2.enabled(config.get('objective')):
   if config['objective']!=training_v2.OBJECTIVE:raise ContractError('RESIDENT_V2_OBJECTIVE_CHANGED')
   if any(not config.get('runtime_sha256',{}).get(p) for p in training_v2.RUNTIME_PINS):
@@ -345,6 +347,8 @@ class Supervisor:
     if not expected:raise ContractError('PARENT_CALIBRATION_RUNTIME_PINS_REQUIRED')
     plan['evaluation_runtime_sha256'][name]=expected
    plan.update(comparison)
+  from .resident_hip_runtime import bind_plan
+  bind_plan(self.c,plan)
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -658,7 +662,8 @@ class Supervisor:
     # Closing the controller cannot free this lease while its worker survives.
     inherited=inherited_worker_locks(self)
     lock_args=[part for fd in inherited for part in ('--held-lock-fd',str(fd))]
-    self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','train','--config',str(job_path),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited)
+    from .resident_hip_runtime import worker_environment
+    self.child=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','train','--config',str(job_path),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited,env=worker_environment(self.c))
     rc=self.child.wait(timeout=TRAINING_TIMEOUT_SECONDS)
   except Exception as exc:
    failure={'reason':'WORKER_BUDGET_EXCEEDED' if isinstance(exc,subprocess.TimeoutExpired) else 'WORKER_SUPERVISION_FAILED',

@@ -341,7 +341,8 @@ class Evaluator:
   stream=(path.parent/f'prediction-{slot:03}.log').open('a')
   inherited=inherited_worker_locks(self)
   lock_args=[part for fd in inherited for part in ('--held-lock-fd',str(fd))]
-  try:p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited)
+  from .resident_hip_runtime import worker_environment
+  try:p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited,env=worker_environment(self.c))
   except BaseException:stream.close();raise
   self.tasks[key]=(p,stream,time.monotonic())
   return True

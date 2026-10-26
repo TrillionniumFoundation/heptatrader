@@ -278,7 +278,8 @@ def worker_environment(config):
             'PYTHONDONTWRITEBYTECODE': '1', 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '2',
             'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1', 'USE_TF': '0'}
     environment.update({name: os.environ[name] for name in GPU_ENVIRONMENT if name in os.environ})
-    return environment
+    from .resident_hip_runtime import worker_environment as selected_runtime_environment
+    return selected_runtime_environment(config,environment)
 
 
 def admitted_prediction(config_path, config, folder, raw, request, gate, request_lock, cancelled):

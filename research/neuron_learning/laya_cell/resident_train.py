@@ -470,6 +470,11 @@ def run_job(c,*,old_learner_verified=False):
     parent_calibration.RECORD:parent_calibration.freeze(c,rows,parent_price_receipts,parent,frozen_price_baselines)})
   episode_policy.verify_candidate(c,record)
  record['resource_usage']=worker_resource_usage()
+ # Publish only after the selected runtime proved its actual mapped libraries.
+ # Recovery may consume this durable artifact even if the process later fails.
+ from .resident_hip_runtime import prove_before_publish
+ hip_proof=prove_before_publish(c)
+ if hip_proof is not None:record['hip_runtime_proof']=hip_proof
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)
