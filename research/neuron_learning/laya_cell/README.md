@@ -119,6 +119,15 @@ vector. Brier scores apply only to real probability outputs. One forward window
 is integration evidence, not statistical strategy qualification, net PnL or
 permission to replace the remote model.
 
+The resident evaluator's `status.json` exposes `closed_coverage_diagnostics`
+only after each original full deadline and a terminal qualification. It reuses
+matching final `progress.json` coverage counters to distinguish source gaps,
+recorded admission denials and worker failure details, including timeouts.
+These counters are operational diagnostics, with no model-performance or
+authorization effect. Historical missing, stale or inconsistent final progress
+is counted as unavailable; no old outcome is reread to fill it. Canonical
+qualification bytes, scoring rules and owner verification remain unchanged.
+
 ## Canonical Model owner and read-only advisory
 
 After an unchanged `QUALIFIED_AWAITING_CANONICAL_OWNER` assessment,
