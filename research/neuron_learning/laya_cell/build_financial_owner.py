@@ -1,4 +1,4 @@
-"""Build the exact canonical artifact verifier in a new isolated workspace.
+"""Build the exact canonical artifact owner bridge in an isolated workspace.
 
 No Agentd source rewrite and no hand-written signature substitute. Native code
 bytes are verified; only copied Cargo workspace membership is narrowed.
@@ -30,6 +30,7 @@ def main():
  for k in ('ed25519-dalek','serde','serde_json','sha2','zeroize','pretty_assertions','tempfile'):text+=k+' = '+toml(deps[k])+'\n'
  (build/'Cargo.toml').write_text(text);bridge=build/'bridge';(bridge/'src').mkdir(parents=True)
  shutil.copyfile(adapter,bridge/'src/main.rs')
+ shutil.copyfile(adapter.with_name('financial_owner_laya_tests.rs'),bridge/'src/financial_owner_laya_tests.rs')
  (bridge/'Cargo.toml').write_text('''[package]
 name="hepta-financial-owner-verify"
 version="0.1.0"
@@ -38,6 +39,9 @@ edition="2024"
 codex-hepta-learning-artifacts={path="../hepta-learning-artifacts"}
 codex-hepta-types={path="../hepta-types"}
 serde_json={workspace=true}
+[dev-dependencies]
+ed25519-dalek={workspace=true}
+tempfile={workspace=true}
 ''')
  env={**os.environ,'CARGO_BUILD_JOBS':'2'}
  subprocess.run(['cargo','generate-lockfile','--offline','--manifest-path',str(build/'Cargo.toml')],check=True,env=env)

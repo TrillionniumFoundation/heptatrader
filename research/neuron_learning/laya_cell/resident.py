@@ -71,6 +71,27 @@ def training_forward_window(window,rule,now_ms):
          'future_data_availability_proven':False}
 
 
+def check_owner_handoff_runtime(config):
+ """Reject an incomplete typed-v8 handoff package before importing its code."""
+ if not training_v8.enabled(config.get('objective')) and config.get('canonical_owner_registration') is None:
+  return False
+ pins=config.get('runtime_sha256',{});root=Path(config.get('runtime_directory',''))
+ for rel in ('learn/laya_cell/resident_owner.py','learn/laya_cell/resident_owner_predict.py'):
+  expected=pins.get(rel) if isinstance(pins,dict) else None
+  if not isinstance(expected,str) or len(expected)!=64:raise ContractError('LAYA_OWNER_RUNTIME_PINS_REQUIRED')
+  path=root/rel
+  try:
+   if path.is_symlink() or not path.is_file():raise OSError('not an immutable source file')
+   actual=sha_file(path)
+  except OSError as exc:
+   raise ContractError('LAYA_OWNER_RUNTIME_MODULE_UNAVAILABLE:'+rel) from exc
+  if actual!=expected:raise ContractError('LAYA_OWNER_RUNTIME_CHANGED:'+rel)
+ if config.get('canonical_owner_registration') is not None:
+  from .resident_owner import check_config as check_owner_config
+  check_owner_config(config)
+ return True
+
+
 def config_check(config):
  if (config.get('schema')!='heptatrader.laya-resident-config.v1' or config.get('period_sha256') is None
      or config.get('training_cadence_ms')!=MIN_CADENCE_MS or config.get('automatic_trading') is not False):
@@ -126,6 +147,7 @@ def config_check(config):
   from .resident_plan_admission import check_config as check_forward_plan_config
   check_forward_plan_config(config)
  check_overlap_config(config)
+ check_owner_handoff_runtime(config)
  return config
 
 

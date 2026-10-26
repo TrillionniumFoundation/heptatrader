@@ -47,7 +47,7 @@ def parse_full_psi(text):
 
 
 def assess_resources(memory,pressure,now_ms,manual_hold,*,role='trainer'):
-    if role not in ('trainer','evaluator','value-predictor','forward_registration'):
+    if role not in ('trainer','evaluator','value-predictor','owner-advisory','forward_registration'):
         raise EvidenceError('RESOURCE_ADMISSION_ROLE_REQUIRED')
     # Keep the original heavy-worker RAM floor. Cold pages occupying swap are
     # not evidence of current pressure and cannot starve otherwise safe work.
@@ -139,11 +139,14 @@ class Lease:
 
 class Gate:
     def __init__(self,config,role):
-        if role not in ('trainer','evaluator','value-predictor'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
+        if role not in ('trainer','evaluator','value-predictor','owner-advisory'):raise EvidenceError('RESEARCH_ROLE_REQUIRED')
         self.c=config;self.role=role;self.root=Path(config['state_root']);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
+        # Explicit read-only model consumers obey the existing evaluator's
+        # original-source and Value priority policy, with their own receipts.
+        self.priority_role='evaluator' if role=='owner-advisory' else role
         self.lease=Lease(self.root/'heavy-worker.lock');self.draining=False
         self.last_admission=None
-        if self.c.get('value_priority') is not None and role in ('trainer','evaluator'):
+        if self.c.get('value_priority') is not None and self.priority_role in ('trainer','evaluator'):
             from .value_priority_admission import verify_policy
             verify_policy(self.c['value_priority'])
     def record_native_exit(self,returncode,subject):
@@ -240,13 +243,13 @@ class Gate:
         # original memory/PSI/source check, the one global flock and a second
         # source+priority check after taking that flock.
         manual=self.c.get('manual_hold_path')
-        if (self.role not in ('trainer','evaluator') or self.c.get('value_priority') is None or self.draining or
+        if (self.priority_role not in ('trainer','evaluator') or self.c.get('value_priority') is None or self.draining or
                 (manual is not None and os.path.lexists(manual))):
             return None
         try:
             from .value_priority_admission import decision
             held,reason,proof=decision(
-                self.c['value_priority'],self.role,int(time.time()*1000))
+                self.c['value_priority'],self.priority_role,int(time.time()*1000))
         except (OSError,ValueError,KeyError,TypeError) as exc:
             held=True;reason='VALUE_PRIORITY_UNVERIFIED_SOURCE'
             proof={'source':'UNVERIFIED','error_class':type(exc).__name__,
@@ -265,12 +268,12 @@ class Gate:
         atomic(self.root/(self.role+'-admission.json'),report)
         return report
     def _prioritize_background(self,report):
-        if (self.role not in ('trainer','evaluator') or not report['admit_new_worker'] or self.c.get('value_priority') is None):
+        if (self.priority_role not in ('trainer','evaluator') or not report['admit_new_worker'] or self.c.get('value_priority') is None):
             self.last_admission=report
             return report
         try:
             from .value_priority_admission import decision
-            held,reason,proof=decision(self.c['value_priority'],self.role,int(time.time()*1000))
+            held,reason,proof=decision(self.c['value_priority'],self.priority_role,int(time.time()*1000))
         except (OSError,ValueError,KeyError,TypeError) as exc:
             held=True;reason='VALUE_PRIORITY_UNVERIFIED_SOURCE'
             proof={'source':'UNVERIFIED','error_class':type(exc).__name__,

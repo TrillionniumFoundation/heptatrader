@@ -9,17 +9,26 @@ from pathlib import Path
 from .integrity import ContractError,canonical,digest,read_json,sha_file
 
 
-def install(config_path,start,update_owned=False,only=None):
- h=Path.home();source=Path(__file__).resolve().parent;learn=source.parent;repo=learn.parent.parent
- c=read_json(config_path)
- if os.geteuid()==0 or c.get('automatic_trading') is not False:raise ContractError('USER_ONLY_NO_TRADE_AUTHORITY')
+def runtime_files(source,native_binary):
+ """Collect the ordinary package without writing files or touching services."""
+ source=Path(source);learn=source.parent;repo=learn.parent.parent
  files={}
  for p in sorted(source.glob('*.py')):files['learn/laya_cell/'+p.name]=p
+ for name in ('resident_owner.py','resident_owner_predict.py'):
+  if 'learn/laya_cell/'+name not in files:raise ContractError('RESIDENT_OWNER_MODULE_MISSING:'+name)
  for name in ('data.py','sandbox.py'):files['learn/'+name]=learn/name
  # Existing authoritative accounting replay is pinned with this release.
  for name in ('hepta_pnl_accounting.py','hepta_decision_attribution.py','hepta_pnl_watch.py','hepta_change_watch.py'):
   files['scripts/'+name]=repo/'scripts'/name
- files['bin/hepta-trader-neuron-native']=Path(c['native_binary'])
+ files['bin/hepta-trader-neuron-native']=Path(native_binary)
+ return files
+
+
+def install(config_path,start,update_owned=False,only=None):
+ h=Path.home();source=Path(__file__).resolve().parent
+ c=read_json(config_path)
+ if os.geteuid()==0 or c.get('automatic_trading') is not False:raise ContractError('USER_ONLY_NO_TRADE_AUTHORITY')
+ files=runtime_files(source,c['native_binary'])
  inventory={name:sha_file(path) for name,path in files.items()};release_id=digest(inventory)
  release=h/'.local/share/heptatrader/laya-resident/releases'/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
  for name,src in files.items():

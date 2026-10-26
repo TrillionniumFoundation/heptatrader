@@ -78,9 +78,10 @@ resolution. The old 562-only operation is not reused for Laya tensors. Every
 proposal includes no-change and remains `RequiresIndependentAcceptance` with
 `authorization_effect=NONE`.
 
-This is a native-mechanism candidate bridge, not full canonical Agentd
-LearningLedger, LearningOperator service enrollment, or production model owner
-activation. No sidecar can self-select into the trading runtime.
+The proposal bridge supplies native-mechanism candidate evidence. The canonical
+Model owner handoff below additionally requires original future qualification
+and real host enrollment. Neither path gives a sidecar authority to select a
+trading model or initialize an Agentd LearningLedger deployment.
 
 ## Forward shadow
 
@@ -118,6 +119,72 @@ vector. Brier scores apply only to real probability outputs. One forward window
 is integration evidence, not statistical strategy qualification, net PnL or
 permission to replace the remote model.
 
+## Canonical Model owner and read-only advisory
+
+After an unchanged `QUALIFIED_AWAITING_CANONICAL_OWNER` assessment,
+`resident_evaluate` invokes `resident_owner.handoff`. It permits at most one new
+attempt per tick and records immutable attempt intent before preparation or
+publication. The payload contains the actual adapter bytes, complete base and
+tokenizer manifest, training/runtime lineage and original evaluation evidence.
+`build_financial_owner.py` builds the typed bridge against the same pinned
+canonical source. Publication uses the existing owner writer fence and an
+externally signed next CURRENT; selection remains independent. An attempt
+without a final receipt does not automatically retry. Qualification, alpha,
+plan clocks and outcomes are not rewritten by this handoff.
+
+The opt-in config needs `canonical_verifier_binary` and its SHA-256, and
+`canonical_owner_registration: {path, sha256}` pointing to an existing host's
+public enrollment. That envelope has schema
+`heptatrader.canonical-laya-owner-enrollment.v1`, route
+`CANONICAL_LAYA_PRICE_READONLY_V1`, the pinned native source SHA and
+`effect_authority=false`. Its `owner` supplies the existing store root, trust,
+externally signed writer lease, independently retained CURRENT floor,
+withdrawal evidence and storage binding. Publication additionally needs the
+exact plan's pinned `publication_requests` entry; consumption needs
+`selection_trust`, `selection_head_requirement`, pinned `selection_bundle` and
+host-authenticated lifecycle evidence. These are external authority inputs;
+the code does not create owner roots, private signers or selector enrollment.
+
+Build and stage runtime/verifier bytes before deployment. The ordinary
+`install_resident.runtime_files` glob includes the owner modules, and the v8
+release builder refreshes their runtime pins. Complete immutable package and
+CPU/native contract checks need no production enrollment. Preparing a qualified
+owner payload through `resident_owner.prepare` does require the original
+qualification and real enrollment, because its producer and manifest are bound
+to that owner. `install_resident.install` also writes user units and reloads
+systemd; it is not a staging-only call. Keep a viable trial's original runtime,
+wrapper and frozen pins active until the existing maintenance boundary. Stage
+new content-addressed bytes/configs separately without changing those units.
+
+An enrolled operator can make one explicit read-only request:
+
+```sh
+PYTHONPATH="$OWNER_RUNTIME/learn:$OWNER_RUNTIME/scripts:$GUARD_PACKAGE_PARENT" \
+  "$LAYA_PYTHON" -B -m laya_cell.resident_owner_consume \
+  --wrapper /absolute/path/to/owner-capable-wrapper.json \
+  --prepared /absolute/path/to/actual-prepared.json \
+  --request /absolute/path/to/advisory-request.json
+```
+
+The request contains `request_id`, `created_at_ms`, `expires_at_ms`, the existing
+`period_sha256` and `horizon_sec: 300`; it expires within five minutes of creation.
+Missing enrollment returns pending before starting any unit, native call or GPU
+worker. Otherwise native selected loading precedes the existing resource gate
+and confined `resident_launch owner-predict` worker. The original memory/PSI,
+source freshness, Value priority and shared heavy-worker lease still apply;
+viable original evaluations take priority. The worker reads the real current
+source and emits PRICE7/ACT advisory output, with no BUY/SELL conversion.
+
+The one-shot controller checks actual systemd cgroup/time limits, reaps all
+owned descendants before releasing the lease and rechecks native CURRENT after
+prediction. Actual unresolved cleanup records a separate resource hold while
+preserving any existing marker. Request, selected artifact/generation, output
+and final CURRENT are bound in a durable receipt. Expired or repeated requests
+return historical receipt identity without fresh model output. A read-only
+verified selection is not Agentd acceptance; a successful publication is not
+selection or consumption. `product_consumed=true` requires the real prediction
+and final currentness checks. None of these states grants trading authority.
+
 ## Reproduction
 
 Use a dedicated user-owned environment and private model/output paths. No root,
@@ -147,6 +214,23 @@ All outputs are new immutable candidates/plans, never overwrites of selected
 weights. The training command is one bounded job, not a silently enabled recurring
 trainer. Independent future data is required before another selected generation
 can be considered.
+
+For the complete affected CPU learning/source partitions, use the existing CI
+runner on Pocket4, with the pinned environment and `cmake`/`ctest` on PATH:
+
+```sh
+CUDA_VISIBLE_DEVICES='' HIP_VISIBLE_DEVICES='' ROCR_VISIBLE_DEVICES='' \
+  OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=2 \
+  "$LAYA_PYTHON" -B scripts/run_python_tests.py --lane learning
+"$LAYA_PYTHON" -B scripts/run_python_tests.py --lane source
+```
+
+The learning lane discovers all in-package tests and explicitly excludes the
+separately provisioned native/GPU cases. The normal core lane's
+`test_historical_training` entry also discovers the original resource/source
+and Value guard tests. Keep actual native-contract builds and any reserved GPU
+validation separate; CPU fixtures and a systemd metadata smoke test do not
+establish production enrollment, statistical qualification or live consumption.
 
 ## Current verification boundaries
 
