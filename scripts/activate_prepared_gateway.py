@@ -208,12 +208,12 @@ def configured_environment(expected):
     if not paths:
         fail("GATEWAY_ENVIRONMENT_FILE_REQUIRED")
     for path in paths:
-        for raw in read_private(path, 262144).decode().splitlines():
-            line = raw.strip()
+        for raw in read_private(path, 262144).decode().split('\n'):
+            line = raw.strip(' \t\r')
             if not line or line.startswith(("#", ";")):
                 continue
             name, separator, value = line.partition("=")
-            name, value = name.strip(), value.strip()
+            name, value = name.strip(' \t\r'), value.strip(' \t\r')
             if (not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
                     or "\\" in value or "\0" in value):
                 fail("UNSUPPORTED_GATEWAY_ENVIRONMENT_FILE_SYNTAX")

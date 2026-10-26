@@ -594,8 +594,10 @@ class GatewayProcessAndEnvironmentTests(unittest.TestCase):
         self.check_environment_change_refuses({}, "# no unit value\n", manager="HEPTA_NEW_POLICY=enabled\n")
 
     def test_inline_hash_is_literal_and_cannot_false_pass_old_runtime(self):
-        self.check_environment_change_refuses({"HEPTA_TOOL_AGENT_ID": "original"},
-            "HEPTA_TOOL_AGENT_ID=original#changed\n")
+        for suffix in ('#changed', '\u00a0', '\u2028'):
+            with self.subTest(suffix=suffix):
+                self.check_environment_change_refuses({"HEPTA_TOOL_AGENT_ID": "original"},
+                    "HEPTA_TOOL_AGENT_ID=original" + suffix + "\n")
 
     def test_embedded_quotes_backslash_and_continuations_are_refused(self):
         for value in ('abc"def"', "abc'def'", r"abc\def", "abc\\"):
