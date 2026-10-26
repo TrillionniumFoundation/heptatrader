@@ -138,13 +138,27 @@ class AdmissionReceiptTests(unittest.TestCase):
  def test_terminal_assessment_updates_qualification_and_progress(self):
      evaluator = self.active_evaluator()
      terminal = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'], 'state': 'REJECTED', 'observed': 0, 'censored': 1}
-     with patch('laya_cell.resident_evaluate.assess', return_value=terminal) as assess:
+     expected = dict(terminal)
+     with patch('laya_cell.resident_evaluate.assess', return_value=terminal) as assess, patch('laya_cell.resident_evaluate.time.time', return_value=self.now / 1000):
          evaluator.step()
      assess.assert_called_once()
      qualification = json.loads((self.folder / 'qualification.json').read_text())
      progress = json.loads((self.folder / 'progress.json').read_text())
-     self.assertEqual(qualification, terminal)
-     self.assertEqual(progress, qualification)
+     self.assertEqual(terminal, expected)
+     self.assertEqual(qualification, expected)
+     self.assertEqual({key: value for key, value in progress.items()
+                       if key != 'coverage_diagnostics'}, qualification)
+     coverage = progress['coverage_diagnostics']
+     rule = self.plan['rule']
+     self.assertTrue(coverage['observational_only'])
+     self.assertEqual(coverage['frozen_rule'], {key: rule[key] for key in
+                      ('slots', 'min_observed', 'min_non_ties', 'max_censored')})
+     self.assertEqual(coverage['counts'], {'OBSERVED': 0, 'CENSORED': 1, 'pending': rule['slots'] - 1})
+     self.assertEqual(coverage['censor_budget']['remaining'], rule['max_censored'] - 1)
+     self.assertEqual(coverage['censor_budget']['excess'], 0)
+     self.assertEqual(coverage['censored_reasons'], {'NO_PREDICTION_IN_FIXED_SLOT': 1})
+     self.assertEqual(coverage['no_prediction_dispositions'], {'NO_LOCAL_ADMISSION_OR_FUTILITY_RECEIPT': 1})
+     self.assertEqual(coverage['first_admission_denial_reasons'], {})
 
  def test_closed_qualification_preserves_bytes_and_skips_source_work(self):
      evaluator = self.active_evaluator()

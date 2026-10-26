@@ -128,6 +128,46 @@ class RealDriverIntegration(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertFalse(self.path.exists())
 
+    def test_real_adapter_forecast_keeps_worker_completion_and_input_identity(self):
+        import threading
+        from types import SimpleNamespace
+        entered = threading.Event()
+        finish = threading.Event()
+        history = [{"observed_at_ms": NOW, "bid": 100000., "ask": 100000., "mid": 100000.}]
+        candidate = {key: forecast()[key] for key in adapter.CANDIDATE_SCHEMA["required"]}
+
+        def infer(_argv, _timeout):
+            entered.set()
+            if not finish.wait(2):
+                raise AssertionError("fixture model completion was not released")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "ok": True, "outputs": [{"text": json.dumps(candidate)}],
+            }))
+
+        with patch.object(self.d, "run", side_effect=infer):
+            worker = self.d.ModelWorker("fixture-openclaw", self.root, history, 0.)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertFalse(worker.done())
+                finish.set()
+                self.assertTrue(worker.wait_for_completion(2))
+                answer = worker.result()
+                self.assertEqual(answer["issued_at_ms"], NOW)
+                self.assertTrue(answer["position_neutral"])
+                self.assertEqual(answer["forecast_version"], policy.FORECAST_VERSION)
+                self.assertEqual(answer["action"], "BUY")
+                self.assertEqual(worker.position, 0.)
+                self.assertEqual(worker.observed_at_ms, NOW)
+                observed = self.d.record_model_completion({}, worker)
+                self.assertEqual(observed["input_observed_at_ms"], NOW)
+                self.assertEqual(observed["completed_at_ms"], NOW)
+                self.assertGreaterEqual(observed["completion_to_consumption_ms"], 0.)
+                self.assertEqual([name for name, _ in self.record.events], ["CANDIDATE"])
+                self.assertEqual(self.calls, [])  # No native read, prepare or submit.
+            finally:
+                finish.set()
+                worker.close()
+
     def test_valid_entry_runs_real_prepare_and_one_submit(self):
         self.open()
         self.assertEqual(self.calls.count('prepare-crypto-open'), 1)

@@ -293,6 +293,42 @@ def process_tcp_sockets(pid):
     return result
 
 
+def interactive_broker_container(broker):
+    """Bind the observed GNOME container; sockets still prove the Broker role."""
+    prefix = "/user.slice/user-%d.slice/user@%d.service/" % (os.geteuid(), os.geteuid())
+    app = re.fullmatch(re.escape(prefix + "app.slice/") +
+                      r"(app-gnome-ibgateway-[0-9]+\.scope)", broker["cgroup"])
+    session_name = "org.gnome.Shell@ubuntu.service"
+    session = broker["cgroup"] == prefix + "session.slice/" + session_name
+    if app is None and not session:
+        fail("INTERACTIVE_BROKER_TOPOLOGY_INVALID")
+    name = app[1] if app is not None else session_name
+    properties = ("Id", "LoadState", "ActiveState", "SubState", "InvocationID",
+                  "ControlGroup", "PartOf", "RefuseManualStop", "UnitFileState")
+    if session:
+        properties += ("MainPID", "User")
+    container = unit_properties(name, properties, "INTERACTIVE_BROKER_SCOPE")
+    if (container["Id"] != name or container["LoadState"] != "loaded"
+            or container["ActiveState"] != "active" or container["SubState"] != "running"
+            or not container["InvocationID"] or container["ControlGroup"] != broker["cgroup"]):
+        fail("INTERACTIVE_BROKER_SCOPE_NOT_ACTIVE")
+    if not session:
+        if container["UnitFileState"] != "transient":
+            fail("INTERACTIVE_BROKER_SCOPE_NOT_ACTIVE")
+        return container, None
+    if (container["UnitFileState"] != "static"
+            or container["User"] not in ("", str(os.geteuid()), pwd.getpwuid(os.geteuid()).pw_name)):
+        fail("INTERACTIVE_BROKER_GNOME_SESSION_UNIT_INVALID")
+    pid = container["MainPID"]
+    if not pid.isdigit() or int(pid) <= 0 or int(pid) == int(broker["pid_key"][0]):
+        fail("INTERACTIVE_BROKER_GNOME_SESSION_MAIN_PID_INVALID")
+    shell = interactive_process(int(pid))
+    if (Path(shell["exe"]).name != "gnome-shell" or shell["cgroup"] != broker["cgroup"]
+            or shell["netns"] != broker["netns"]):
+        fail("INTERACTIVE_BROKER_GNOME_SESSION_PROCESS_INVALID")
+    return container, shell
+
+
 def interactive_broker_snapshot(broker_pid, selected, current):
     """Prove the existing GNOME Broker path without claiming a stop shield.
 
@@ -314,19 +350,12 @@ def interactive_broker_snapshot(broker_pid, selected, current):
     execution = interactive_process(execution_pid)
     broker = interactive_process(broker_pid)
     uid = os.geteuid()
-    scope_match = re.fullmatch(re.escape("/user.slice/user-%d.slice/user@%d.service/app.slice/" % (uid, uid))
-                              + r"(app-gnome-ibgateway-[0-9]+\.scope)", broker["cgroup"])
     if (execution_pid == broker_pid or execution["netns"] != broker["netns"]
             or execution["cgroup"] != execution_unit["ControlGroup"]
-            or not scope_match or Path(broker["exe"]).name != "java"
+            or Path(broker["exe"]).name != "java"
             or broker["cgroup"] == unused["ControlGroup"]):
         fail("INTERACTIVE_BROKER_TOPOLOGY_INVALID")
-    scope = unit_properties(scope_match[1], ("Id", "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup", "PartOf", "RefuseManualStop", "UnitFileState"), "INTERACTIVE_BROKER_SCOPE")
-    if (scope["Id"] != scope_match[1] or scope["LoadState"] != "loaded"
-            or scope["ActiveState"] != "active" or scope["SubState"] != "running"
-            or not scope["InvocationID"] or scope["ControlGroup"] != broker["cgroup"]
-            or scope["UnitFileState"] != "transient"):
-        fail("INTERACTIVE_BROKER_SCOPE_NOT_ACTIVE")
+    scope, shell = interactive_broker_container(broker)
     edges = unit_properties(selected, (*STOP_EDGES, "Conflicts", "ConflictedBy"), "INTERACTIVE_SELECTED_EDGES")
     if any(edges[name] for name in STOP_EDGES):
         fail("INTERACTIVE_BROKER_DRIVER_STOP_PROPAGATION")
@@ -381,10 +410,17 @@ def interactive_broker_snapshot(broker_pid, selected, current):
                 fail("INTERACTIVE_BROKER_SOCKET_CHANGED_DURING_INSPECTION")
     if interactive_process(execution_pid) != execution or interactive_process(broker_pid) != broker:
         fail("INTERACTIVE_BROKER_PROCESS_CHANGED_DURING_INSPECTION")
-    return {"unused_unit": unused, "execution_unit": execution_unit,
-            "execution_process": execution, "broker_process": broker, "scope": scope,
-            "selected_edges": edges, "shutdown_target": shutdown, "profile": environment,
-            "sockets": sockets, "broker_manual_stop_shield_claimed": False}
+    if shell is not None:
+        if (interactive_process(int(scope["MainPID"])) != shell
+                or unit_properties(scope["Id"], tuple(scope), "INTERACTIVE_BROKER_SCOPE") != scope):
+            fail("INTERACTIVE_BROKER_GNOME_SESSION_CHANGED_DURING_INSPECTION")
+    proof = {"unused_unit": unused, "execution_unit": execution_unit,
+             "execution_process": execution, "broker_process": broker, "scope": scope,
+             "selected_edges": edges, "shutdown_target": shutdown, "profile": environment,
+             "sockets": sockets, "broker_manual_stop_shield_claimed": False}
+    if shell is not None:
+        proof["gnome_shell_process"] = shell
+    return proof
 
 
 def argv_for(manifest):

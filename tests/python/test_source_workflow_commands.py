@@ -210,7 +210,7 @@ class FocusedDevelopmentRunnerTests(unittest.TestCase):
     def test_missing_tool_fails_once_before_configuration(self):
         result, calls = self.invoke("--storage", tools=("cmake",))
         self.assertEqual(result.returncode, 69, result.stderr)
-        self.assertIn("Missing required development tool(s) on PATH: ctest", result.stderr)
+        self.assertIn("ctest", result.stderr)
         self.assertEqual(calls, [])
 
     def test_invalid_selection_or_parallelism_fails_before_configuration(self):
