@@ -11,6 +11,8 @@ NATIVE_ENDPOINT=None
 NATIVE_READER=None
 NATIVE_READER_CLASS=None  # An attributed release supplies its exact verified helper.
 NATIVE_READ_BINARY=None  # Optional path/hash binding applies only to read streams.
+NATIVE_CLIENTS=None  # An attributed manifest may pin all three native clients.
+NATIVE_BINARY_VERIFIER=None  # Supplied by the verified native-reader module.
 CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
 RESIDENT_LOOP_PROGRESS_SCHEMA="heptatrader.driver-loop-progress.v1"
 LOOP_OBSERVATION_SCHEMA="heptatrader.driver-loop-observation.v1"
@@ -66,6 +68,15 @@ def strict_json(text):
 def run(argv,timeout=20):
     argv=[str(x) for x in argv]
     worker=getattr(_MODEL_RUN_CONTEXT,"worker",None)
+    binding=next((item for item in (NATIVE_CLIENTS or {}).values() if item["path"]==argv[0]),None)
+    if binding is not None:
+        if NATIVE_BINARY_VERIFIER is None: raise DriverError("native client verifier unavailable")
+        with NATIVE_BINARY_VERIFIER(binding) as fd:
+            execution={"executable":"/proc/self/fd/"+str(fd),"pass_fds":(fd,)}
+            if worker is not None:
+                return worker.run_process(argv,timeout,**execution)
+            return subprocess.run(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,text=True,timeout=timeout,**execution)
     if worker is not None:
         return worker.run_process(argv,timeout)
     return subprocess.run(argv,stdin=subprocess.DEVNULL,
@@ -901,11 +912,11 @@ class ModelWorker:
         self._process=None
         return True
 
-    def run_process(self,argv,timeout):
+    def run_process(self,argv,timeout,**execution):
         self._check_usable()
         deadline=min(self._deadline,time.monotonic()+float(timeout))
         process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,text=True,start_new_session=True)
+            stderr=subprocess.PIPE,text=True,start_new_session=True,**execution)
         self._process=process;self.process_pid=process.pid
         completed=False
         try:
@@ -1280,13 +1291,19 @@ def main():
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
     CLOSE_RECEIPT_ROOT=state_dir/"close-command-receipts"
     lock=os.open(state_dir/"driver.lock",os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600); fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    cli=str(home/".local/bin/heptatrader"); binary=str(home/".local/share/heptatrader/current/bin/hepta-paper-command")
-    sessionctl=str(home/".local/share/heptatrader/current/bin/hepta-sessionctl")
+    native_clients={name:str(home/".local/share/heptatrader/current/bin"/name)
+        for name in ("heptactl","hepta-paper-command","hepta-sessionctl")}
+    if NATIVE_CLIENTS is not None:
+        if set(NATIVE_CLIENTS)!=set(native_clients) or NATIVE_BINARY_VERIFIER is None:
+            raise DriverError("native client bindings incomplete")
+        native_clients={name:item["path"] for name,item in NATIVE_CLIENTS.items()}
+    cli=str(home/".local/bin/heptatrader"); binary=native_clients["hepta-paper-command"]
+    sessionctl=native_clients["hepta-sessionctl"]
     openclaw=str(home/".npm-global/bin/openclaw")
     socket=f"/run/user/{os.geteuid()}/heptatrader/tools.sock"; supervisor=f"/run/user/{os.geteuid()}/heptatrader/supervisor.sock"
     token=str(home/".config/heptatrader"/("crypto.token" if crypto else "paper.token"))
-    if crypto:
-        NATIVE_ENDPOINT=[str(home/".local/share/heptatrader/current/bin/heptactl"),"--socket",socket,"--token-file",token]
+    if crypto or NATIVE_CLIENTS is not None:
+        NATIVE_ENDPOINT=[native_clients["heptactl"],"--socket",socket,"--token-file",token]
     # Operator recovery and reconciliation check only tools they actually use.
     # The model tool remains checked lazily when an eligible worker starts.
     required=[cli,token] if args.recover_owner else [cli,binary,token]

@@ -107,6 +107,17 @@ Preparation does not require a flat lane, a current quote, a cleared
 opening hold, or unrelated files in the checkout to be clean. Repeating the
 same preparation verifies and reuses the existing candidate.
 
+To bind a client artifact update without changing the global `current` release,
+preparation accepts `--native-client-bindings PATH` together with
+`--native-client-bindings-sha256 SHA256`. The private JSON object must contain
+exactly `heptactl`, `hepta-paper-command` and `hepta-sessionctl`, each with an
+absolute `path` and `sha256`. The prepared manifest records all three bindings;
+an enabled read stream uses that same `heptactl`. Activation rechecks all three
+executables, and each invocation executes its verified open inode while keeping
+the original command arguments and durable command identity. Socket, token,
+account, instrument and strategy settings are unchanged. Omitting the bindings
+retains the existing client paths. Preparation grants no trading authority.
+
 Preparation does not contact the broker, read or alter driver state, write a
 service configuration, or stop a process. Its output identifies a prepared
 candidate; it is not a receipt that the running driver has changed. Activation

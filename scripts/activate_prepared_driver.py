@@ -688,6 +688,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     read_transport_changed = (
         new.get("native_read_stream", False) != old.get("native_read_stream", False)
         or new.get("native_read_binary") != old.get("native_read_binary")
+        or new.get("native_clients") != old.get("native_clients")
     )
     expected = dict(old)
     expected.pop("created_at_ms", None)
@@ -712,6 +713,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("native_read_binary", None)
     if "native_read_binary" in new:
         expected["native_read_binary"] = new["native_read_binary"]
+    expected.pop("native_clients", None)
+    if "native_clients" in new:
+        expected["native_clients"] = new["native_clients"]
     names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}
@@ -723,6 +727,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         fail("CANDIDATE_MANIFEST_CHANGED")
     if "native_read_binary" in new:
         with attribution.verified_binary(new["native_read_binary"]):
+            pass
+    for binding in new.get("native_clients", {}).values():
+        with attribution.verified_binary(binding):
             pass
     return target
 
