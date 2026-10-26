@@ -145,6 +145,9 @@ add_executable(hepta_unix_tool_server_tests
     unix_tool_server_tests.cpp)
 target_link_libraries(hepta_unix_tool_server_tests
     hepta_agent_os_core hepta_execution_core hepta_native_tool_client)
+add_dependencies(hepta_unix_tool_server_tests heptactl)
+target_compile_definitions(hepta_unix_tool_server_tests PRIVATE
+    HEPTACTL_BINARY="$<TARGET_FILE:heptactl>")
 hepta_register_core_test(hepta_unix_tool_server_tests)
 set_tests_properties(hepta_unix_tool_server_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
