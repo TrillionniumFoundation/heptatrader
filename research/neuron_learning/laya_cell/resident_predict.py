@@ -45,6 +45,8 @@ def _prediction_batches(tokenizer,row,input_binding):
 
 def predict(config,plan_path,slot):
  plan=read_json(plan_path)
+ from .resident_hip_runtime import check_plan,prove_before_publish
+ check_plan(config,plan)
  from .promotion import validate_plan_rule
  from .resident_evaluate import PUBLICATION_PROFILE,PREDICTION_PREWARM_MS
  rule=validate_plan_rule(plan)
@@ -210,6 +212,10 @@ def predict(config,plan_path,slot):
  result.update(parent_calibration.prediction_fields(plan,parent_probs))
  result['input_receipt_sha256']=sha_file(input_path)
  result['resource_usage']=worker_resource_usage()
+ # Keep the original final deadline check after the runtime proof. A present
+ # prediction is authoritative for CPU closeout regardless of worker exit code.
+ hip_proof=prove_before_publish(config)
+ if hip_proof is not None:result['hip_runtime_proof']=hip_proof
  available=int(time.time()*1000)
  if available>=anchor+rule['horizon_ms']:raise ContractError('PREDICTION_AFTER_OUTCOME')
  result['created_at_ms']=available
