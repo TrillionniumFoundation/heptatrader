@@ -88,7 +88,8 @@ not independent efficacy evidence. Worse/no-update candidates retain no-change.
 Immutable candidate and training receipts precede a single local SQLite commit
 of the model, training fingerprint and receipt. The human-readable
 `latest-training-candidate.json` pointer is rebuilt from that committed record;
-a restart does not silently repeat the same committed training batch. This pointer
+a restart restores the five-minute training clock as well as the fingerprint.
+Existing spools recover that clock from their latest committed receipt. This pointer
 has no reader in the PAPER execution path. A changed accounting period blocks the
 learner/evaluator until a new explicit scoped configuration is created.
 
@@ -107,6 +108,11 @@ persists each fresh prediction before observing the horizon, together with model
 identity and training cutoff. The evaluator only later joins observable outcomes,
 rejects lookahead, records censoring and compares per-model/horizon price loss
 against zero-return and exact same-input remote forecasts where available.
+It joins outcomes to the original persisted prediction input even after that
+input leaves the latest 512 training samples. Each pass handles up to 4096 oldest
+unfinished predictions, excluding already completed predictions before applying
+the limit; the reported pending count refers to that bounded batch. With no
+unfinished predictions it does not rescan the market source.
 Neither an offline training-loss reduction nor HOLD-only avoidance of fees grants
 strategy acceptance. Prediction quality is not cost-aware execution PnL. Student
 replacement remains a separate, as-yet-unperformed execution integration with a
@@ -132,6 +138,10 @@ python3 research/neuron_learning/install.py --config "$CONFIG" --start
 Installation snapshots runtime Python/native/GPU/accounting bytes into a
 content-addressed immutable release and config. It creates only
 `heptatrader-neuron-learning.service` and `heptatrader-neuron-shadow-eval.service`.
+The installation identity includes the effective configuration as well as the
+runtime bytes: changing input paths or the accounting period creates a distinct
+immutable configuration. Reinstalling the same configuration is idempotent.
+An update checks ownership of both sidecar units before stopping either one.
 Each uses user-level CPU/memory/task limits and low priority. A fail-closed
 Landlock/ seccomp sandbox is entered before GPU worker threads: read-only
 allowlisted source files, write access confined to the learner output and GPU

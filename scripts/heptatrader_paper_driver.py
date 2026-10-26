@@ -187,7 +187,13 @@ def atomic_json(path,value):
     private_dir(path.parent); raw=(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n").encode()
     fd,tmp=tempfile.mkstemp(prefix=".state-",dir=path.parent)
     try:
-        os.fchmod(fd,0o600); os.write(fd,raw); os.fsync(fd); os.close(fd); fd=-1
+        os.fchmod(fd,0o600)
+        remaining=memoryview(raw)
+        while remaining:
+            written=os.write(fd,remaining)
+            if written<=0: raise DriverError("driver state write made no progress")
+            remaining=remaining[written:]
+        os.fsync(fd); os.close(fd); fd=-1
         os.replace(tmp,path); d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try: os.fsync(d)
         finally: os.close(d)
@@ -1281,7 +1287,12 @@ def main():
     token=str(home/".config/heptatrader"/("crypto.token" if crypto else "paper.token"))
     if crypto:
         NATIVE_ENDPOINT=[str(home/".local/share/heptatrader/current/bin/heptactl"),"--socket",socket,"--token-file",token]
-    for x in (cli,binary,sessionctl,token):
+    # Operator recovery and reconciliation check only tools they actually use.
+    # The model tool remains checked lazily when an eligible worker starts.
+    required=[cli,token] if args.recover_owner else [cli,binary,token]
+    if args.recover_owner or not (args.reconcile_only or args.canary_roundtrip):
+        required.append(sessionctl)
+    for x in required:
         if not Path(x).exists(): raise DriverError("required runtime missing: "+x)
     stop=False
     def stopping(_sig,_frame):

@@ -17,6 +17,106 @@ class DriverPolicyTests(unittest.TestCase):
         return {"pending":None,"position":0.0,"entry_price":None,"entry_price_basis":None,
             "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":""}
 
+    def test_atomic_state_completes_short_writes_before_replacement(self):
+        from unittest.mock import patch
+        real_write=d.os.write
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"state.json"
+            state=self.state();state["history"]=[{"mid":1.1}]*100
+            calls=[]
+            def short_write(fd,data):
+                calls.append(len(data))
+                return real_write(fd,data[:17])
+            with patch.object(d.os,"write",short_write):d.atomic_json(path,state)
+            self.assertGreater(len(calls),1)
+            self.assertEqual(d.strict_json(path.read_text()),state)
+
+    def test_failed_state_write_preserves_previous_command(self):
+        from unittest.mock import patch
+        real_write=d.os.write
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"state.json"
+            original=self.state();original["pending"]={"command_id":"original-command"}
+            d.atomic_json(path,original)
+            writes=0
+            def stalled_write(fd,data):
+                nonlocal writes
+                writes+=1
+                return real_write(fd,data[:17]) if writes==1 else 0
+            with patch.object(d.os,"write",stalled_write),self.assertRaises(d.DriverError):
+                d.atomic_json(path,self.state())
+            self.assertEqual(d.strict_json(path.read_text()),original)
+            self.assertEqual(list(Path(td).iterdir()),[path])
+
+    def test_reconcile_mode_does_not_require_model_or_lease_tools(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            for relative in (".local/bin/heptatrader",
+                    ".local/share/heptatrader/current/bin/hepta-paper-command",
+                    ".config/heptatrader/paper.token"):
+                runtime=home/relative;runtime.parent.mkdir(parents=True,exist_ok=True)
+                runtime.touch()
+            with patch.object(d.Path,"home",return_value=home), \
+                    patch("sys.argv",["driver","--reconcile-only"]), \
+                    patch.object(d.signal,"signal"), \
+                    patch.object(d,"CLOSE_RECEIPT_ROOT",None), \
+                    patch.object(d,"snapshot",return_value={"position":0.0,"active":[],"owner_health":{}}) as snap, \
+                    patch.object(d,"ModelWorker",side_effect=AssertionError("model must not run")):
+                self.assertEqual(d.main(),0)
+            snap.assert_called_once_with(str(home/".local/bin/heptatrader"),
+                require_quote=False,allow_settlement=False)
+
+    def test_owner_recovery_does_not_require_model_or_order_tools(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            for relative in (".local/bin/heptatrader",
+                    ".local/share/heptatrader/current/bin/hepta-sessionctl",
+                    ".config/heptatrader/paper.token"):
+                runtime=home/relative;runtime.parent.mkdir(parents=True,exist_ok=True)
+                runtime.touch()
+            with patch.object(d.Path,"home",return_value=home), \
+                    patch("sys.argv",["driver","--recover-owner"]), \
+                    patch.object(d.signal,"signal"), \
+                    patch.object(d,"CLOSE_RECEIPT_ROOT",None), \
+                    patch.object(d,"recover_owner",return_value=True) as recovery, \
+                    patch.object(d,"ModelWorker",side_effect=AssertionError("model must not run")):
+                self.assertEqual(d.main(),0)
+            recovery.assert_called_once()
+
+    def test_resident_starts_model_only_when_decisions_can_be_used(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            for relative in (".local/bin/heptatrader",
+                    ".local/share/heptatrader/current/bin/hepta-paper-command",
+                    ".local/share/heptatrader/current/bin/hepta-sessionctl",
+                    ".npm-global/bin/openclaw",".config/heptatrader/paper.token"):
+                runtime=home/relative;runtime.parent.mkdir(parents=True,exist_ok=True)
+                runtime.touch()
+            for active,halt,position,expected in (([123],False,0.0,0),([],True,0.0,0),
+                    ([],False,0.0,1),([],False,25000.0,1)):
+                with self.subTest(active=active,halt=halt,position=position):
+                    state=self.state();state.update(halt_new_entries=halt,last_decision_ms=0,
+                        history=[{"observed_at_ms":i,"bid":1.1,"ask":1.2,"mid":1.15}
+                            for i in range(6)])
+                    snap={"position":position,"active":active,"owner_health":{"mutation_ready":True}}
+                    quote={"observed_at_ms":d.now_ms(),"bid":1.1,"ask":1.2,
+                        "authoritative":True,"source":"IB","stale":False}
+                    with patch.object(d.Path,"home",return_value=home), \
+                            patch("sys.argv",["driver","--once"]), \
+                            patch.object(d.signal,"signal"), \
+                            patch.object(d,"CLOSE_RECEIPT_ROOT",None), \
+                            patch.object(d,"maintenance_entry_hold_reason",return_value=None), \
+                            patch.object(d,"load_state",return_value=state), \
+                            patch.object(d,"snapshot",return_value=snap), \
+                            patch.object(d,"native",return_value=quote), \
+                            patch.object(d,"maybe_renew"), \
+                            patch.object(d,"ModelWorker") as worker:
+                        self.assertEqual(d.main(),0)
+                    self.assertEqual(worker.call_count,expected)
+
     def test_send_boundary_is_durable_before_transport(self):
         state=self.state(); writes=[]; calls=[]
         old_cmd,old_atomic=d.paper_cmd,d.atomic_json

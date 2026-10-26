@@ -2,6 +2,7 @@
 #include "../HeptaTrade/client/native_tool_discovery_contract.h"
 
 #include <cassert>
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -526,6 +527,66 @@ void TestTransportResponseBoundary()
 
 int main()
 {
+    // Every fragment must share one frame budget. An occasional byte must
+    // not keep a Gateway worker occupied by resetting its I/O timeout.
+    {
+        int sockets[2];
+        assert(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+        const std::uint32_t length = htonl(5);
+        assert(::send(sockets[1], &length, sizeof(length), MSG_NOSIGNAL) == sizeof(length));
+        const pid_t child = ::fork();
+        assert(child >= 0);
+        if (child == 0)
+        {
+            ::close(sockets[0]);
+            for (int i = 0; i < 5; ++i)
+            {
+                ::usleep(40000);
+                if (::send(sockets[1], "x", 1, MSG_NOSIGNAL) != 1) break;
+            }
+            ::close(sockets[1]);
+            _exit(0);
+        }
+        ::close(sockets[1]);
+        std::string body, reason;
+        const bool accepted = TypedToolProtocol::ReadFrame(sockets[0], 64, 100, body, reason);
+        ::close(sockets[0]);
+        int status = 0;
+        assert(::waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!accepted);
+        assert(reason == "FRAME_BODY_TIMEOUT");
+    }
+
+    // A writable blocking socket can still block inside send() when the
+    // complete frame exceeds its buffer. Backpressure shares the same budget.
+    {
+        int sockets[2];
+        assert(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+        const int sendBuffer = 4096;
+        assert(::setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer)) == 0);
+        const pid_t child = ::fork();
+        assert(child >= 0);
+        if (child == 0)
+        {
+            ::close(sockets[0]);
+            ::usleep(200000);
+            char buffer[4096];
+            while (::recv(sockets[1], buffer, sizeof(buffer), 0) > 0) {}
+            ::close(sockets[1]);
+            _exit(0);
+        }
+        ::close(sockets[1]);
+        std::string reason;
+        const bool delivered = TypedToolProtocol::WriteFrame(sockets[0], std::string(524288, 'x'), 100, reason);
+        ::close(sockets[0]);
+        int status = 0;
+        assert(::waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!delivered);
+        assert(reason == "FRAME_WRITE_TIMEOUT");
+    }
+
     char path[] = "/tmp/hepta-native-client-token-XXXXXX";
     const int fd = ::mkstemp(path);
     assert(fd >= 0);

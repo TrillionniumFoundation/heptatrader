@@ -56,7 +56,9 @@ def connect(path):
     db.executescript('''CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS predictions(id TEXT PRIMARY KEY,sample_id TEXT NOT NULL,created_ms INTEGER NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS trains(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);''')
+    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS predictions_sample_id ON predictions(sample_id);
+    CREATE INDEX IF NOT EXISTS predictions_created_ms ON predictions(created_ms);''')
     return db
 
 

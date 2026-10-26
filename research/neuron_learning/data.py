@@ -6,6 +6,7 @@ No missing label/fee is zero reward. This spool is not an Agentd LedgerWriter.
 from __future__ import annotations
 from bisect import bisect_left
 from collections import Counter
+import copy
 from decimal import Decimal
 import hashlib
 import json
@@ -172,6 +173,7 @@ def make_sample(qs,known,scope,kind,input_id=None,teacher=None):
 def label(sample,quotes,times,now):
     anchor=sample['anchor_ms'];start=bisect_left(times,anchor)
     for j,horizon in enumerate(HORIZONS):
+        sample['targets'][j]=None;sample['outcome_receipts'][j]=None
         due=anchor+horizon*1000;end=bisect_left(times,due)
         reason=None
         if sample['input_gap']:reason='INPUT_GAP'
@@ -191,7 +193,7 @@ def label(sample,quotes,times,now):
     return sample
 
 
-def freeze(config,now):
+def freeze(config,now,*,prediction_samples=()):
     instrument=config['instrument'];start=config['period_start_ms'];scope=config['period_sha256']+':'+instrument
     records,manifests,exclusions=exports(config['export_dir'],config['period_sha256'],now)
     legacy,meta,old_teachers=legacy_quotes(config['legacy_capture'],instrument,start,now)
@@ -248,11 +250,19 @@ def freeze(config,now):
             exclusions.append({'input_id':input_id,'reason':str(exc)})
     samples.sort(key=lambda s:(s['anchor_ms'],s['sample_id']))
     samples=[label(s,quotes,times,now) for s in samples[-512:]]
+    # A prediction's original input remains evaluable after it leaves the bounded
+    # training window. Only outcomes are refreshed from the verified source.
+    evaluation_samples=[]
+    if len(prediction_samples)>4096:raise ValueError('PREDICTION_SAMPLE_BOUND')
+    for s in prediction_samples:
+        if s['scope']!=scope or digest(s['input_snapshot'])!=s['sample_id']:
+            raise ValueError('PREDICTION_INPUT_IDENTITY')
+        evaluation_samples.append(label(copy.deepcopy(s),quotes,times,now))
     candidates=Counter(d['forecast'].get('action') for d in forecasts.values())
     reason_counts=Counter(reason for s in samples for reason in s['label_reasons'])
     return {'schema':'heptatrader.neuron-dataset.v1','source_kind':'REAL_PAPER_RUNTIME',
         'frozen_at_ms':now,'scope':scope,'instrument':instrument,'horizons':list(HORIZONS),
-        'source_prefixes':manifests,'samples':samples,'exclusions':exclusions,
+        'source_prefixes':manifests,'samples':samples,'prediction_samples':evaluation_samples,'exclusions':exclusions,
         'quote_rejections':dict(quote_rejections),'label_reason_counts':dict(reason_counts),
         'exact_remote_inputs':len(inputs),'teacher_actions':dict(candidates),
         'legacy_teachers_without_exact_input_not_distilled':old_teachers,
