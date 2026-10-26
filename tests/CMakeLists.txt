@@ -177,6 +177,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
+add_executable(hepta_gateway_catalog_tests gateway_catalog_tests.cpp)
+target_link_libraries(hepta_gateway_catalog_tests PRIVATE hepta_session_supervisor_core)
+add_dependencies(hepta_gateway_catalog_tests hepta_gateway_catalog)
+target_compile_definitions(hepta_gateway_catalog_tests PRIVATE
+    HEPTA_CATALOG_BINARY="$<TARGET_FILE:hepta_gateway_catalog>")
+hepta_register_core_test(hepta_gateway_catalog_tests)
+
 add_executable(hepta_sessionctl_owner_audit_tests
     sessionctl_owner_audit_tests.cpp
     ../HeptaTrade/cli/hepta_sessionctl_owner_audit.cpp
@@ -373,6 +380,7 @@ add_custom_target(hepta_core_test_binaries
         hepta_executiond
         hepta_ib_executiond
         heptactl
+        hepta_gateway_catalog
         hepta_sessionctl)
 # The validation target must link the actual production entry points, not
 # merely the libraries also used by tests. This executes the Gateway's

@@ -20,6 +20,7 @@ set(_hepta_runtime_targets
     heptactl
     hepta_ib_profile
     hepta_sessionctl
+    hepta_gateway_catalog
     hepta_tool_gatewayd
     hepta_executiond)
 

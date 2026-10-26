@@ -381,6 +381,10 @@ target_link_libraries(hepta_sessionctl PRIVATE
     Threads::Threads
     OpenSSL::Crypto ZLIB::ZLIB)
 
+add_executable(hepta_gateway_catalog cli/hepta_gateway_catalog.cpp)
+set_target_properties(hepta_gateway_catalog PROPERTIES OUTPUT_NAME "hepta-gateway-catalog")
+target_link_libraries(hepta_gateway_catalog PRIVATE hepta_session_supervisor_core)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(hepta_paper_terminal_latch_committer
         cli/hepta_paper_terminal_latch_committer.cpp
