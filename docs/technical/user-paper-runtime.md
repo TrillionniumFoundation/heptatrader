@@ -113,6 +113,19 @@ observation-only profiles retain their existing quote-required startup behavior.
 The `heptatrader-user` command provides `start`, `restart`, `stop`, `status` and
 `logs` through the user manager. `native` and `session` forward to the existing
 CLIs with user paths; original command IDs and outcome semantics are unchanged.
+An immutable operator release may declare `native_clients` in its adjacent
+`MANIFEST.json`: exactly `heptactl`, `hepta-sessionctl` and
+`hepta-paper-command`, each with an absolute path and SHA-256. `native`,
+`session` and the explicit hold-resume health reads then execute the verified
+open client image. Their existing socket, owner token, arguments and deadlines
+are retained. This does not change the global `current` release or native units.
+The manifest also pins the local helper sources and the original configured
+`native_startup_guard` path and bytes. A prepared copy fixes its required flags
+and helper SHA in the generated wrapper/helper/launcher bytes; missing declared
+assets are errors. Its file manifest records those generated hashes and source
+parameters. Generic copies without a declaration retain the legacy paths.
+An operator-local `hepta-user-mcp` and `hepta_mcp_server.py` similarly keep `ask`
+on that release's adapter; a prepared copy refuses missing local assets.
 The runtime-directory unit creates an engaged kill switch on a fresh runtime.
 A deliberate local operator action is needed to allow new risk; no password or
 root identity is required. An ordinary restart must not be presented as a fill,
@@ -152,8 +165,12 @@ and risk checks remain mandatory.
 
 The native unit's loaded `ExecStartPre` must run
 `/usr/bin/python3 -B /absolute/path/to/hepta_maintenance_latch.py native-startup-hold`
-from the same versioned directory as the public wrapper's helper, with
-`Type=simple` and `KillMode=control-group`. Startup and explicit recovery share
+from the same versioned directory as the public wrapper's helper, or the exact
+original path and SHA pinned by its operator manifest, with `Type=simple` and
+`KillMode=control-group`. The configured interpreter, full startup arguments,
+single-command boundary and original helper bytes remain checked. A client-only
+operator update leaves that startup helper and its loaded unit unchanged.
+Startup and explicit recovery share
 the existing operator lock. Startup creates an empty `0440` marker when missing
 and preserves an existing marker, without interpreting a persistent maintenance
 record. Migrating an old uncoordinated startup hook requires manager reload and
