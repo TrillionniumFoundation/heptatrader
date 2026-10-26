@@ -6,7 +6,7 @@ use codex_hepta_types::{Digest32,Generation,StableId};
 use serde_json::{Value,json};
 use std::{fs::File,io::{self,Read},path::{Path,PathBuf},time::{SystemTime,UNIX_EPOCH}};
 type R<T> = Result<T,String>;
-const PIN:&str="78fdb0cf8537e3a84fc6e0a849707559c80881e8";
+const PIN:&str="108bc534d33c7f9e48caa569c254253f6c356271";
 fn text<'a>(v:&'a Value,k:&str)->R<&'a str>{v.get(k).and_then(Value::as_str).filter(|x|!x.is_empty()&&x.len()<=8192).ok_or_else(||format!("TEXT:{k}"))}
 fn number(v:&Value,k:&str)->R<u64>{v.get(k).and_then(Value::as_u64).ok_or_else(||format!("U64:{k}"))}
 fn dig(v:&Value,k:&str)->R<Digest32>{text(v,k)?.parse().map_err(|_|format!("DIGEST:{k}"))}
@@ -144,12 +144,16 @@ fn laya_dispatch(v:&Value,now:u64)->R<Value>{
  }
  let (mut loaded,signed,selection_digest)=selected_laya(v,now)?;
  let (lifecycle_records,lifecycle_head)=lifecycle(v,&signed,selection_digest)?;
- let service=existing_owner(&v["owner"],now)?;
- let current=service.current_registry_view(now).map_err(|e|format!("{e:?}"))?;
+ // Read the existing owner's fresh CURRENT without taking its writer fence.
+ // Publication still uses existing_owner; a submitted selection is not CURRENT.
+ let configured=&v["owner"];
+ let reader=a::ArtifactOwnerCurrentReaderV1::open_existing(existing(text(configured,"root")?)?,
+  owner(&configured["owner_trust"])?,signed_head(&configured["required_current_head"])?,now).map_err(|e|format!("{e:?}"))?;
+ let current=reader.current_registry_view(now).map_err(|e|format!("{e:?}"))?;
  let current_receipt=current.receipt();
  if let Some(prior)=v.get("loaded_registry"){
   let n=number(prior,"records")? as usize;
-  if n==0||service.registry().records().get(n-1).map(|r|r.chain_digest)!=Some(dig(prior,"head_digest")?){return Err("LAYA_CURRENT_ROLLBACK".into())}
+  if n==0||current.registry().records().get(n-1).map(|r|r.chain_digest)!=Some(dig(prior,"head_digest")?){return Err("LAYA_CURRENT_ROLLBACK".into())}
  }
  let raw=loaded.with_current(current,|raw|raw.to_vec()).map_err(|e|format!("{e:?}"))?;
  laya_payload(&raw)?;

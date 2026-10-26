@@ -85,7 +85,7 @@ additional work before exhausting the host.
 ## Actual canonical native boundary, not a fabricated owner ACK
 
 `financial_owner_verify.rs` links exact, unmodified
-`hepta-private-ci@78fdb0cf8537e3a84fc6e0a849707559c80881e8` source for
+`hepta-private-ci@108bc534d33c7f9e48caa569c254253f6c356271` source for
 `codex-hepta-learning-artifacts` and `codex-hepta-types`. It invokes canonical
 `validate_artifact_manifest_v2` against actual candidate bytes. A successful
 result is named `CANONICAL_MANIFEST_VALID_NOT_OWNER_ADMITTED`.
@@ -97,8 +97,21 @@ For a real externally enrolled owner, the bridge implements the actual canonical
 registry identity/epoch/expiry and retained anti-rollback requirements, exact
 support/content/compatibility, eligibility and loaded bytes. A plain
 `owner_accepted=true`, copied file, local statistical PASS, or publication status
-is not a substitute for those signatures. The bridge contains NO writer,
-publication, trust-enrollment or signing route.
+is not a substitute for those signatures. Financial-value selection is read-only.
+The typed Laya publication route uses the existing owner's writer service and
+operator-supplied signed request; it does not create an owner, enroll trust or
+sign credentials.
+
+Laya load and final-use revalidation use `ArtifactOwnerCurrentReaderV1` against
+that existing owner's store. They require an independently retained signed head
+floor, discover CURRENT around its exact durable snapshot, and can read while
+the live writer holds its exclusive fence. These read operations need no writer
+lease. Publication retains the writer fence. An available reader API does not
+prove that the financial tensor product route has been enrolled or consumed.
+
+This SDK pin belongs to the financial owner bridge and its receipt consumers.
+The existing NDU/Plasticity native evaluator, train_v2 adapters, historical build
+receipts and frozen evaluation plans retain their own exact source pins.
 
 Canonical source's Agentd product integration currently exposes a tabular
 terminal-cell path, not this financial tensor lane. Therefore the installed
