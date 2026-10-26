@@ -2,8 +2,10 @@
 
 Use the real upstream decision head and resident adapters with a tiny encoder.
 Original-model numerical equivalence was accepted in the finite Pocket4 run.
-Minimal CI has Torch and safetensors but no Laya: only the missing top-level
-Laya package skips this module; other dependency/import failures stay failures.
+Hosted CI lacks the upstream Laya package; a small, explicitly synthetic
+decision head exercises the RAW control flow there, while Pocket4 with Laya
+still runs the original-model numerical equivalence. Other import failures
+remain failures. Synthetic results are not pretrained-model evidence.
 """
 from types import SimpleNamespace
 import unittest
@@ -13,10 +15,42 @@ import torch
 from torch import nn
 try:
     from laya.common import DecisionModel
+    MODEL_SOURCE = "upstream_laya"
 except ModuleNotFoundError as exc:
     if exc.name != "laya":
         raise
-    raise unittest.SkipTest("Laya is not installed; original-model equivalence was accepted on Pocket4") from exc
+
+    MODEL_SOURCE = "synthetic_cpu_control_flow_only"
+
+    class DecisionModel(nn.Module):
+        """Tiny Laya-shaped test double, not a pretrained/model-equivalence test."""
+
+        def __init__(self, encoder, head_layers=0, dropout=0.):
+            super().__init__()
+            if head_layers != 0 or dropout != 0.:
+                raise ValueError("synthetic fixture supports only the pinned test")
+            self.encoder = encoder
+            d = encoder.config.hidden_size
+            self.type_emb = nn.Embedding(3, d)
+            self.scorer = nn.Sequential(
+                nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Linear(d, 1))
+            self.act_head = nn.Sequential(
+                nn.Linear(d + 4, 256), nn.GELU(), nn.Linear(256, 2))
+
+        def forward(self, input_ids, attention_mask, marker_pos, marker_mask, qtype):
+            h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+            h = h + self.type_emb(qtype)[:, None, :]
+            idx = marker_pos.clamp(min=0)[:, :, None].expand(-1, -1, h.size(-1))
+            m = torch.gather(h, 1, idx)
+            logits = self.scorer(m).squeeze(-1).float().masked_fill(~marker_mask, -1e4)
+            p = logits.detach().softmax(-1)
+            k = marker_mask.sum(-1).clamp(min=2).float()
+            top2 = p.topk(2, -1).values
+            entropy = -(p * p.clamp_min(1e-9).log()).sum(-1) / k.log()
+            confidence = torch.stack(
+                [top2[:, 0], top2[:, 0] - top2[:, 1], entropy, k / 255.], -1)
+            action_input = torch.cat([h[:, 0].float(), confidence], -1)
+            return logits, self.act_head(action_input)
 
 from laya_cell.integrity import ContractError
 from laya_cell.resident_model import ResidentDecisionCell
