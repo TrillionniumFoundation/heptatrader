@@ -91,9 +91,17 @@ def release(item, fixes):
 
 
 def unit_files(unit):
-    props = driver.unit_properties(unit, ("FragmentPath", "DropInPaths", "EnvironmentFiles"), "GATEWAY_CONFIG")
+    props = driver.unit_properties(unit, ("FragmentPath", "DropInPaths"), "GATEWAY_CONFIG")
+    # Some systemctl versions omit this empty array even with --all. Read
+    # this known optional property alone; required properties stay strict.
+    environment_files = subprocess.check_output(["systemctl", "--user", "show", unit,
+        "--no-pager", "--all", "--value", "-p", "EnvironmentFiles"], text=True, timeout=15)
+    if environment_files.endswith("\n"):
+        environment_files = environment_files[:-1]
+    if any(char in environment_files for char in "\n\r\0"):
+        fail("INVALID_GATEWAY_ENVIRONMENT_FILES_READBACK")
     paths = [props["FragmentPath"], *props["DropInPaths"].split()]
-    paths += re.findall(r"(/[^\s]+) \(ignore_errors=(?:yes|no)\)", props["EnvironmentFiles"])
+    paths += re.findall(r"(/[^\s]+) \(ignore_errors=(?:yes|no)\)", environment_files)
     files = {}
     for name in paths:
         if Path(name).name in (POLICY, RELEASE):

@@ -521,6 +521,32 @@ class GatewayUpgradeTests(unittest.TestCase):
 
 
 class GatewayProcessAndEnvironmentTests(unittest.TestCase):
+    def test_unit_without_environment_file_accepts_actual_omitted_empty_property_output(self):
+        with tempfile.TemporaryDirectory(prefix="hepta-gateway-empty-envfile-") as name:
+            path = put(Path(name) / "driver.service", b"[Service]\nExecStart=/bin/true\n")
+            def output(argv, **kwargs):
+                if "--value" in argv:
+                    self.assertEqual(argv[-2:], ["-p", "EnvironmentFiles"])
+                    return ""  # Actual empty-array output from this host.
+                return "FragmentPath=" + str(path) + "\nDropInPaths=\n"
+            with mock.patch.object(gateway.subprocess, "check_output", output):
+                files = gateway.unit_files("heptatrader-paper-driver.service")
+            self.assertEqual(files[str(path)]["sha256"], gateway.digest(path.read_bytes()))
+
+    def test_optional_environment_file_does_not_relax_required_unit_properties(self):
+        for required in ("FragmentPath=/fixture/unit.service\n", "DropInPaths=\n"):
+            with self.subTest(required=required):
+                with mock.patch.object(gateway.subprocess, "check_output", return_value=required):
+                    with self.assertRaisesRegex(RuntimeError, "INCOMPLETE_GATEWAY_CONFIG_READBACK"):
+                        gateway.unit_files("heptatrader-paper-driver.service")
+
+    def test_optional_environment_file_read_error_is_not_guessed_empty(self):
+        with mock.patch.object(gateway.driver, "unit_properties", return_value={
+                "FragmentPath": "/fixture/unit.service", "DropInPaths": ""}), mock.patch.object(
+                gateway.subprocess, "check_output", side_effect=subprocess.CalledProcessError(1, ["systemctl"])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                gateway.unit_files("heptatrader-paper-driver.service")
+
     def test_actual_running_image_cannot_be_replaced_by_matching_disk_pin(self):
         with tempfile.TemporaryDirectory(prefix="hepta-gateway-image-") as name:
             path = Path(name) / "cat"
