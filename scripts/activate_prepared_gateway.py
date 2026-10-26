@@ -471,7 +471,9 @@ def fresh_audit(plan, environment, owner):
             or health.get("execution_service_epoch") != result["service_epoch"]
             or health.get("execution_service_fencing_generation") != result["service_fencing_generation"]):
         fail("NATIVE_RISK_INCREASE_HOLD_NOT_OBSERVED")
-    return {"reply": result, "at_ms": completed_at_ms}
+    return {"reply": result, "at_ms": completed_at_ms,
+        "native_health": {name: native[name] for name in
+            ("source", "authoritative", "owner_fenced", "owner_recovery_only", "native_new_risk_guard_blocked", "mutation_ready")}}
 
 
 def read_tool(plan, environment, owner, tool, *fields):
@@ -527,6 +529,25 @@ def sync_confirmed_generation(owner, record, confirmed_at_ms):
 
 def equivalent(left, right):
     return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+
+def interactive_process_identity(proof):
+    """Only the connected TCP pair is ephemeral; the listener is identity."""
+    value = json.loads(json.dumps(proof))
+    try:
+        for name, endpoint in (("accepted", "remote"), ("execution", "local")):
+            row = value["sockets"][name]
+            for field in ("inode", "fds"):
+                if field not in row:
+                    return None
+                row[field] = None
+            address = row[endpoint]
+            if not isinstance(address, list) or len(address) != 2:
+                return None
+            row[endpoint] = [address[0], None]  # Only the ephemeral port changes.
+    except (KeyError, TypeError):
+        return None
+    return value
 
 
 def put_owned(path, raw, expected=None):
@@ -601,8 +622,11 @@ def start_gateway(binary):
                 same_gateway(first, actual)
             if time.monotonic() - stable_at >= 3:
                 return actual
-        except (FileNotFoundError, RuntimeError) as error:
-            if first is not None or str(error) != "GATEWAY_NOT_RUNNING_WITHOUT_ACTIVATOR":
+        except (FileNotFoundError, PermissionError, RuntimeError) as error:
+            # /proc may briefly be unavailable while exec establishes the
+            # process. Retry only BEFORE any successful image observation.
+            transient_read = isinstance(error, (FileNotFoundError, PermissionError))
+            if first is not None or (not transient_read and str(error) != "GATEWAY_NOT_RUNNING_WITHOUT_ACTIVATOR"):
                 raise
         time.sleep(0.2)
     fail("GATEWAY_STARTUP_NOT_STABLE")
@@ -742,7 +766,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 "markers": driver.marker_identity(home), "stopped_controllers": []}
         def save():
             atomic_json(checkpoint, state)
-        def context():
+        def context(*, expected_interactive=None, allow_reconnect_refresh=True):
             check_lock_binding()
             if not equivalent(driver.marker_identity(home), state["markers"]):
                 fail("MAINTENANCE_MARKERS_CHANGED")
@@ -802,8 +826,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                     fail("STOPPED_CONTROLLER_RESTARTED_EXTERNALLY")
             if not equivalent(native_hold_runtime(plan, current), snapshot["hold_runtime"]):
                 fail("NATIVE_EXECUTION_HOLD_RUNTIME_CHANGED")
-            if not equivalent(driver.interactive_broker_snapshot(plan["interactive_broker_pid"], GATEWAY, current), snapshot["interactive"]):
-                fail("INTERACTIVE_BROKER_CHANGED")
+            interactive = driver.interactive_broker_snapshot(plan["interactive_broker_pid"], GATEWAY, current)
             for unit, expected in snapshot.get("controller_topology", {}).items():
                 actual = controller_stop_edges(unit)
                 if not equivalent(actual, expected):
@@ -815,6 +838,97 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 fail("MAINTENANCE_TTL_BUDGET_EXHAUSTED")
             for item in snapshot["packages"].values():
                 pinned(item["binary"])
+            expected = snapshot["interactive"] if expected_interactive is None else expected_interactive
+            if not equivalent(interactive, expected):
+                if not allow_reconnect_refresh or expected_interactive is not None:
+                    fail("INTERACTIVE_BROKER_CHANGED")
+                refresh_interactive_witness(interactive)
+
+        def refresh_interactive_witness(interactive):
+            # This is a resume-only recovery boundary, never permission to
+            # ignore changed sockets before the original Gateway is drained.
+            if (not resume or state.get("gateway_stopped") is not True or state.get("owners_fenced") is not True
+                    or state.get("phase") not in ("GATEWAY_STOPPED", "GATEWAY_STARTED")
+                    or state.get("stopping") or state.get("starting_controller") or state.get("controllers_started")
+                    or any(any(name in progress for name in ("resume_sent", "resume_sent_at_ms", "state_synced"))
+                        for progress in state.get("owner_progress", {}).values())):
+                fail("INTERACTIVE_RECONNECT_REFRESH_NOT_ALLOWED")
+            original_identity = interactive_process_identity(snapshot["interactive"])
+            current_identity = interactive_process_identity(interactive)
+            if original_identity is None or current_identity is None or not equivalent(original_identity, current_identity):
+                fail("INTERACTIVE_BROKER_IDENTITY_CHANGED")
+            for owner in snapshot["owners"]:
+                resident = owner["resident"]
+                if resident is not None:
+                    status = driver.fence.show_unit(owner["unit"])
+                    if (owner["unit"] not in state["stopped_controllers"]
+                            or status["ActiveState"] != "inactive" or status["MainPID"] not in ("", "0")
+                            or driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"])):
+                        fail("RECONNECT_CONTROLLERS_NOT_NATURALLY_STOPPED")
+            selected = state.get("selected_release")
+            if selected not in snapshot["packages"]:
+                fail("RECONNECT_SELECTED_GATEWAY_UNKNOWN")
+            binary = snapshot["packages"][selected]["binary"]
+            observed_gateway = gateway(binary)
+            if state.get("gateway_started"):
+                same_gateway(state["gateway_started"], observed_gateway)
+            rows = catalog(plan, snapshot["environment"])
+            if not equivalent(rows, snapshot["records"]):
+                fail("RECONNECT_ORIGINAL_CATALOG_CHANGED")
+            paper = {row["token_sha256"]: row for row in rows if row["paper"] is True}
+            if set(paper) != {owner["token_sha256"] for owner in snapshot["owners"]}:
+                fail("RECONNECT_WRITING_OWNER_SET_CHANGED")
+            observations = []
+            authority = None
+            for owner in snapshot["owners"]:
+                row = paper[owner["token_sha256"]]
+                if (not equivalent(row, owner["record"]) or row["recovery_only"] is not True
+                        or row["generation"] != owner["state_generation"]
+                        or row["recovery_command_sha256"] != digest(owner["command"])):
+                    fail("RECONNECT_ORIGINAL_RECOVERY_SCOPE_CHANGED")
+                audit = fresh_audit(plan, snapshot["environment"], owner)
+                original_command(plan, snapshot["environment"], owner, audit)
+                reply = audit["reply"]
+                current_authority = (reply["service_epoch"], reply["service_fencing_generation"], reply["broker_connection_epoch"])
+                if authority is not None and current_authority != authority:
+                    fail("RECONNECT_NATIVE_AUTHORITIES_CHANGED")
+                authority = current_authority
+                observations.append({"token_sha256": owner["token_sha256"], "generation": row["generation"],
+                    "original_command_sha256": digest(owner["command"]), "audit_command_sha256": digest(reply["command_id"]),
+                    "at_ms": audit["at_ms"], "service_epoch": reply["service_epoch"],
+                    "service_fencing_generation": reply["service_fencing_generation"],
+                    "broker_connection_epoch": reply["broker_connection_epoch"],
+                    "broker_recovery_audit_barrier_complete": reply["broker_recovery_audit_barrier_complete"],
+                    "broker_recovery_audit_new_connection_epoch_required": reply["broker_recovery_audit_new_connection_epoch_required"],
+                    "owner_active_order_count": reply["owner_active_order_count"],
+                    "owner_uncertain_command_count": reply["owner_uncertain_command_count"],
+                    "broker_global_active_order_count": reply["broker_global_active_order_count"],
+                    "broker_position_quantity": reply["broker_position_quantity"],
+                    "broker_gross_absolute_position": reply["broker_gross_absolute_position"],
+                    "native_health": audit["native_health"]})
+            if not observations or any(not 0 <= now_ms() - item["at_ms"] <= MAX_AUDIT_AGE_MS for item in observations):
+                fail("RECONNECT_FRESH_AUDIT_EXPIRED")
+            # Re-check all frozen policy/markers/processes and the actual TCP
+            # pair after the native observations. This call cannot refresh.
+            context(expected_interactive=interactive, allow_reconnect_refresh=False)
+            same_gateway(observed_gateway, gateway(binary))
+            if not equivalent(catalog(plan, snapshot["environment"]), rows):
+                fail("RECONNECT_CATALOG_CHANGED_DURING_AUDIT")
+            check_lock_binding()
+            if not equivalent(driver.marker_identity(home), state["markers"]):
+                fail("MAINTENANCE_MARKERS_CHANGED")
+            if any(not 0 <= now_ms() - item["at_ms"] <= MAX_AUDIT_AGE_MS for item in observations):
+                fail("RECONNECT_FRESH_AUDIT_EXPIRED")
+            for owner in snapshot["owners"]:
+                resident = owner["resident"]
+                if resident and driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"]):
+                    fail("RECONNECT_CONTROLLERS_NOT_NATURALLY_STOPPED")
+            snapshot["interactive"] = interactive
+            state["interactive_refresh"] = {"at_ms": now_ms(), "gateway_pid_key": observed_gateway["pid_key"],
+                "gateway_binary_sha256": binary["sha256"], "witness_sha256": digest(json.dumps(interactive, sort_keys=True)),
+                "audits": observations}
+            save()  # Operational witness only; the authenticated catalog is never written.
+
         def controlled_stop(unit, original, audit, *, selected_policy):
             audits = audit if isinstance(audit, list) else [audit]
             context()

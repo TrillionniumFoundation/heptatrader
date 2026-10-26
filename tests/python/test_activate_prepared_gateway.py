@@ -519,6 +519,289 @@ class GatewayUpgradeTests(unittest.TestCase):
         active = dict(watch, expires_at_ms=int(self.clock * 1000) + 60000)
         self.assertIn(active, gateway.comparable_catalog([active], []))
 
+    def prepare_reconnect_boundary(self):
+        # Exact production boundary: old Gateway drained, replacement is
+        # running, but its first observation was not checkpointed yet.
+        proof = {"execution_process": {"pid_key": ["368455", "100"], "exe_sha256": "e" * 64,
+                "cgroup": "/execution", "netns": [1, 2]},
+            "broker_process": {"pid_key": ["10617", "200"], "exe_sha256": "b" * 64,
+                "cgroup": "/gnome", "netns": [1, 2]}, "scope": {"InvocationID": "gnome-original"},
+            "profile": {"HEPTA_IB_PAPER_HOST": "127.0.0.1", "HEPTA_IB_PAPER_PORT": "4002"},
+            "selected_edges": {"PropagatesStopTo": ""},
+            "sockets": {
+                "execution": {"inode": 2918032, "fds": [44], "local": ["127.0.0.1", 44164],
+                    "remote": ["127.0.0.1", 4002], "state": "01", "uid": os.geteuid()},
+                "accepted": {"inode": 2869080, "fds": [91], "local": ["127.0.0.1", 4002],
+                    "remote": ["127.0.0.1", 44164], "state": "01", "uid": os.geteuid()},
+                "listener": {"inode": 50, "fds": [90], "local": ["127.0.0.1", 4002],
+                    "remote": ["0.0.0.0", 0], "state": "0A", "uid": os.geteuid()}}}
+        self.snapshot["interactive"] = copy.deepcopy(proof)
+        self.interactive_current = copy.deepcopy(proof)
+        self.patches.enter_context(mock.patch.object(gateway.driver, "interactive_broker_snapshot",
+            side_effect=lambda *args: copy.deepcopy(self.interactive_current)))
+        original = gateway.atomic_json
+        last_durable = None
+        failed = False
+        def write(path, value):
+            nonlocal last_durable, failed
+            if Path(path).name == gateway.CHECKPOINT and value.get("phase") == "GATEWAY_STARTED" and not failed:
+                last_durable = Path(path).read_bytes(); failed = True
+                raise PermissionError("FIXTURE_INITIAL_PROC_PERMISSION_TRANSITION")
+            original(path, value)
+        with mock.patch.object(gateway, "atomic_json", write):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertEqual(self.resume_count, 0)
+        self.checkpoint = self.root / "operator-maintenance" / gateway.CHECKPOINT
+        self.checkpoint.write_bytes(last_durable)
+        value = json.loads(self.checkpoint.read_text())
+        self.assertEqual(value["phase"], "GATEWAY_STOPPED")
+        self.assertTrue(value["gateway_stopped"] and value["owners_fenced"])
+        self.assertNotIn("gateway_started", value)
+        self.original_interactive = copy.deepcopy(proof)
+        self.interactive_current["sockets"]["accepted"].update(
+            inode=12592053, fds=[101], remote=["127.0.0.1", 33336])
+        self.interactive_current["sockets"]["execution"].update(
+            inode=12626971, fds=[45], local=["127.0.0.1", 33336])
+        return value
+
+    def assert_no_reconnect_refresh(self, result):
+        self.assertEqual(result["status"], "HELD", result)
+        value = json.loads(self.checkpoint.read_text())
+        self.assertNotIn("interactive_refresh", value)
+        self.assertEqual(value["snapshot"]["interactive"], self.original_interactive)
+        self.assertEqual(self.resume_count, 0)
+
+    def test_exact_stopped_gateway_reconnect_refreshes_witness_and_recovers_once(self):
+        self.prepare_reconnect_boundary()
+        queries = sum("recovery-query" in event for event in self.events)
+        starts = self.events.count(("start", gateway.GATEWAY))
+        result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(self.events.count(("start", gateway.GATEWAY)), starts)
+        self.assertEqual(sum("recovery-query" in event for event in self.events), queries)
+        self.assertEqual(self.resume_count, 1)
+        value = json.loads(self.checkpoint.read_text())
+        self.assertEqual(value["snapshot"]["interactive"], self.interactive_current)
+        refresh = value["interactive_refresh"]
+        self.assertEqual(refresh["gateway_binary_sha256"], self.packages["candidate"]["binary"]["sha256"])
+        self.assertEqual(refresh["witness_sha256"], gateway.digest(json.dumps(self.interactive_current, sort_keys=True)))
+        self.assertEqual(len(refresh["audits"]), 1)
+        self.assertTrue(refresh["audits"][0]["native_health"]["owner_recovery_only"])
+        self.assertTrue(refresh["audits"][0]["native_health"]["native_new_risk_guard_blocked"])
+        self.assertNotIn("DU_FIXTURE", json.dumps(refresh))
+        self.assertEqual(self.checkpoint.stat().st_mode & 0o777, 0o600)
+
+    def test_reconnect_cannot_refresh_after_resume_or_controller_start_intent(self):
+        value = self.prepare_reconnect_boundary()
+        for changes in (
+                {"owner_progress": {self.owner["token_sha256"]: {"resume_sent": True}}},
+                {"owner_progress": {self.owner["token_sha256"]: {"resume_sent": False}}},
+                {"starting_controller": self.driver_unit},
+                {"controllers_started": {self.driver_unit: self.owner["resident"]}}):
+            with self.subTest(changes=changes):
+                self.checkpoint.write_text(json.dumps(dict(value, **changes)))
+                result = self.run_upgrade(resume=True)
+                self.assert_no_reconnect_refresh(result)
+
+    def test_reconnect_never_masks_listener_process_or_endpoint_host_changes(self):
+        value = self.prepare_reconnect_boundary()
+        tcp_only = copy.deepcopy(self.interactive_current)
+        for change in ("listener", "execution-process", "broker-process", "endpoint-host"):
+            with self.subTest(change=change):
+                self.interactive_current = copy.deepcopy(tcp_only)
+                if change == "listener":
+                    self.interactive_current["sockets"]["listener"]["fds"] = [999]
+                elif change == "execution-process":
+                    self.interactive_current["execution_process"]["pid_key"][1] = "replaced"
+                elif change == "broker-process":
+                    self.interactive_current["broker_process"]["exe_sha256"] = "f" * 64
+                else:
+                    self.interactive_current["sockets"]["execution"]["local"][0] = "127.0.0.2"
+                    self.interactive_current["sockets"]["accepted"]["remote"][0] = "127.0.0.2"
+                self.checkpoint.write_text(json.dumps(value))
+                result = self.run_upgrade(resume=True)
+                self.assert_no_reconnect_refresh(result)
+                self.assertIn("BROKER_IDENTITY_CHANGED", result["error"])
+
+    def test_reconnect_requires_original_catalog_scope_generation_and_command(self):
+        value = self.prepare_reconnect_boundary()
+        original = copy.deepcopy(self.rows[0])
+        for changes in ({"generation": original["generation"] + 1}, {"token_sha256": "f" * 64},
+                {"session_sha256": "e" * 64}, {"recovery_command_sha256": "d" * 64}, {"recovery_only": False}):
+            with self.subTest(changes=changes):
+                self.rows[0] = dict(original, **changes)
+                self.checkpoint.write_text(json.dumps(value))
+                result = self.run_upgrade(resume=True)
+                self.assert_no_reconnect_refresh(result)
+                self.assertIn("ORIGINAL_CATALOG_CHANGED", result["error"])
+
+    def test_reconnect_rejects_uncertain_nonflat_or_incomplete_native_audit(self):
+        value = self.prepare_reconnect_boundary()
+        original = self.native_call
+        for changes in ({"owner_uncertain_command_count": 1}, {"broker_position_quantity": "1"},
+                {"broker_recovery_audit_barrier_complete": False}, {"broker_recovery_audit_new_connection_epoch_required": True},
+                {"broker_connection_epoch": 0}, {"service_epoch": ""}):
+            with self.subTest(changes=changes):
+                def native(argv, **kwargs):
+                    result = original(argv, **kwargs)
+                    if "owner-audit" in argv:
+                        reply = json.loads(result.stdout); reply.update(changes)
+                        result.stdout = json.dumps(reply).encode()
+                    return result
+                self.checkpoint.write_text(json.dumps(value))
+                with mock.patch.object(gateway.subprocess, "run", native):
+                    result = self.run_upgrade(resume=True)
+                self.assert_no_reconnect_refresh(result)
+
+    def test_reconnect_requires_native_recovery_hold_and_original_command_same_epoch(self):
+        value = self.prepare_reconnect_boundary()
+        original = self.native_call
+        for change in ("recovery-only", "entry-gate", "command-epoch"):
+            with self.subTest(change=change):
+                def native(argv, **kwargs):
+                    result = original(argv, **kwargs)
+                    reply = json.loads(result.stdout)
+                    if "system.get_health" in argv and change != "command-epoch":
+                        field = "owner_recovery_only" if change == "recovery-only" else "native_new_risk_guard_blocked"
+                        reply["payload"]["execution_authoritative_health"][field] = False
+                    elif "execution.get_command_status" in argv and change == "command-epoch":
+                        reply["payload"]["execution_service_epoch"] = "unknown-new-service"
+                    result.stdout = json.dumps(reply).encode()
+                    return result
+                self.checkpoint.write_text(json.dumps(value))
+                with mock.patch.object(gateway.subprocess, "run", native):
+                    result = self.run_upgrade(resume=True)
+                self.assert_no_reconnect_refresh(result)
+
+    def test_reconnect_requires_tcp_stability_across_native_observation(self):
+        self.prepare_reconnect_boundary()
+        original = self.native_call
+        def native(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if "execution.get_command_status" in argv:
+                self.interactive_current["sockets"]["accepted"]["inode"] += 1
+            return result
+        with mock.patch.object(gateway.subprocess, "run", native):
+            result = self.run_upgrade(resume=True)
+        self.assert_no_reconnect_refresh(result)
+        self.assertIn("INTERACTIVE_BROKER_CHANGED", result["error"])
+
+    def test_reconnect_audit_cannot_expire_during_final_context_checks(self):
+        self.prepare_reconnect_boundary()
+        original = self.native_call
+        observed_command = False
+        def native(argv, **kwargs):
+            nonlocal observed_command
+            result = original(argv, **kwargs)
+            if "execution.get_command_status" in argv:
+                observed_command = True
+            return result
+        def runtime(*args):
+            if observed_command:
+                self.clock += 6
+            return {"same_execution": True}
+        with mock.patch.object(gateway.subprocess, "run", native), mock.patch.object(gateway, "native_hold_runtime", runtime):
+            result = self.run_upgrade(resume=True)
+        self.assert_no_reconnect_refresh(result)
+        self.assertIn("FRESH_AUDIT_EXPIRED", result["error"])
+
+    def test_reconnect_witness_requires_every_writer_in_one_native_authority(self):
+        unit = "heptatrader-crypto-driver.service"
+        self.units[unit].update(ActiveState="active", SubState="running", MainPID="7000", InvocationID="crypto-original")
+        self.alive["7000"] = ("7000", "123")
+        path = self.root / "crypto-driver/state.json"
+        put(path, json.dumps(dict(self.initial_state, instrument="BTC.USD")).encode())
+        put(path.parent / "driver.lock", b"")
+        put(self.home / ".config/heptatrader/crypto.token", b"second-token\n")
+        owner = gateway.controller("BTC.USD", self.home)
+        owner["resident"] = self.running_driver(unit, "BTC.USD")
+        row = dict(record(), token_sha256=gateway.digest("second-token"), session_sha256=gateway.digest("second-session"))
+        owner["record"] = copy.deepcopy(row); self.rows.append(row)
+        self.snapshot["owners"].append(owner); self.snapshot["records"] = copy.deepcopy(self.rows)
+        self.snapshot["statuses"] = copy.deepcopy(self.units); self.snapshot["frozen"] = {}
+        self.snapshot["service_policy"][unit] = dict(self.snapshot["service_policy"][self.driver_unit])
+        value = self.prepare_reconnect_boundary()
+        original = self.native_call
+        def native(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if "owner-audit" in argv and argv[argv.index("--token-file") + 1] == owner["token_path"]:
+                reply = json.loads(result.stdout); reply["broker_connection_epoch"] += 1
+                result.stdout = json.dumps(reply).encode()
+            return result
+        with mock.patch.object(gateway.subprocess, "run", native):
+            result = self.run_upgrade(resume=True)
+        self.assert_no_reconnect_refresh(result)
+        self.assertIn("NATIVE_AUTHORITIES_CHANGED", result["error"])
+        self.checkpoint.write_text(json.dumps(value))
+        with mock.patch.object(gateway, "resume_owner", side_effect=RuntimeError("FIXTURE_STOP_AFTER_WITNESS")):
+            result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("FIXTURE_STOP_AFTER_WITNESS", result["error"])
+        refreshed = json.loads(self.checkpoint.read_text())["interactive_refresh"]
+        self.assertEqual({item["token_sha256"] for item in refreshed["audits"]}, {r["token_sha256"] for r in self.rows})
+        self.assertEqual(len(refreshed["audits"]), 2)
+        self.assertEqual(self.resume_count, 0)
+
+    def test_activation_never_globally_ignores_dynamic_tcp_changes(self):
+        self.snapshot["interactive"] = {"sockets": {}}
+        result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("REFRESH_NOT_ALLOWED", result["error"])
+        self.assertFalse(any(event[0] == "stop" for event in self.events))
+
+
+class GatewayStartupObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = 0.0
+        self.binary = {"path": "/fixture/candidate", "sha256": "a" * 64}
+        self.observed = {"status": {"MainPID": "777", "InvocationID": "new-invocation", "NRestarts": "0"},
+            "pid_key": ("777", "123"), "binary": self.binary}
+        self.patches = contextlib.ExitStack(); self.addCleanup(self.patches.close)
+        self.patches.enter_context(mock.patch.object(gateway, "time", types.SimpleNamespace(
+            monotonic=lambda: self.clock, sleep=self.sleep)))
+        self.start = self.patches.enter_context(mock.patch.object(gateway.driver, "ctl"))
+
+    def sleep(self, seconds):
+        self.clock += seconds
+
+    def test_transient_initial_process_read_then_strict_stable_observation_succeeds(self):
+        for error in (PermissionError("temporary exec permissions"), FileNotFoundError("temporary proc path")):
+            with self.subTest(error=type(error).__name__):
+                self.clock = 0.0; self.start.reset_mock()
+                first = True
+                def observe(binary):
+                    nonlocal first
+                    if first:
+                        first = False; raise error
+                    return self.observed
+                with mock.patch.object(gateway, "gateway", side_effect=observe) as observations:
+                    self.assertEqual(gateway.start_gateway(self.binary), self.observed)
+                    self.assertGreater(observations.call_count, 2)
+                self.assertGreaterEqual(self.clock, 3)
+                self.assertLess(self.clock, 35)
+                self.start.assert_called_once_with("start", gateway.GATEWAY)
+
+    def test_continuous_initial_permission_denial_is_bounded_by_existing_deadline(self):
+        with mock.patch.object(gateway, "gateway", side_effect=PermissionError("still unavailable")) as observations:
+            with self.assertRaisesRegex(RuntimeError, "GATEWAY_STARTUP_NOT_STABLE"):
+                gateway.start_gateway(self.binary)
+            self.assertGreater(observations.call_count, 1)
+        self.assertGreaterEqual(self.clock, 35)
+        self.assertLessEqual(self.clock, 35.3)
+        self.start.assert_called_once_with("start", gateway.GATEWAY)
+
+    def test_read_failure_after_first_verified_image_is_immediate_refusal(self):
+        for error in (PermissionError("permission lost"), FileNotFoundError("process disappeared")):
+            with self.subTest(error=type(error).__name__):
+                self.clock = 0.0; self.start.reset_mock()
+                with mock.patch.object(gateway, "gateway", side_effect=[self.observed, error]) as observations:
+                    with self.assertRaises(type(error)):
+                        gateway.start_gateway(self.binary)
+                    self.assertEqual(observations.call_count, 2)
+                self.assertEqual(self.clock, 0.2)
+                self.start.assert_called_once_with("start", gateway.GATEWAY)
+
 
 class GatewayProcessAndEnvironmentTests(unittest.TestCase):
     def test_unit_without_environment_file_accepts_actual_omitted_empty_property_output(self):
@@ -566,6 +849,14 @@ class GatewayProcessAndEnvironmentTests(unittest.TestCase):
                     pin["sha256"] = gateway.digest(path.read_bytes())
                     with self.assertRaisesRegex(RuntimeError, "INTERACTIVE_PROCESS_EXE_INVALID|GATEWAY_RUNNING_IMAGE_MISMATCH"):
                         gateway.gateway(pin)
+                    # The startup retry must not turn an ACTUAL stale image
+                    # into a retryable /proc permission transition.
+                    with mock.patch.object(gateway.driver, "ctl") as start, mock.patch.object(
+                            gateway.time, "sleep") as sleep:
+                        with self.assertRaisesRegex(RuntimeError, "INTERACTIVE_PROCESS_EXE_INVALID|GATEWAY_RUNNING_IMAGE_MISMATCH"):
+                            gateway.start_gateway(pin)
+                        start.assert_called_once_with("start", gateway.GATEWAY)
+                        sleep.assert_not_called()
             finally:
                 process.stdin.close(); process.wait(timeout=3); process.stdout.close()
 
