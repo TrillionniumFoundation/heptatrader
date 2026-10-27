@@ -186,14 +186,50 @@ fn publication_admission(registry:&a::DatasetWithdrawalRegistry,expected:Digest3
  a::validate_artifact_publication_v3(&admission,registry,now).map_err(|e|format!("{e:?}"))?;
  Ok(admission)
 }
+fn registry_prefix(registry:&a::ArtifactRegistry,head:Digest32)->R<a::ArtifactRegistry>{
+ let mut prefix=a::ArtifactRegistry::new();
+ if head.is_zero(){return Ok(prefix)}
+ // Snapshot internals are SDK-private; replay the authenticated current events
+ // through the same canonical append validator/hash path, never a bare digest.
+ for record in registry.records(){
+  prefix.append(record.event.clone()).map_err(|e|format!("{e:?}"))?;
+  if prefix.snapshot().head_digest==head{return Ok(prefix)}
+ }
+ Err("LAYA_PUBLICATION_PREDECESSOR_NOT_CURRENT_PREFIX".into())
+}
+fn project_registration(transaction:&a::ArtifactPublicationTransactionV1,registry:&mut a::ArtifactRegistry)->R<()>{
+ // Typed mapping of canonical SDK78f owner_host::stage_compatibility_registration.
+ // The SDK still validates the event and computes EVERY event/chain digest.
+ let admission=&transaction.intent().admission;let m=&admission.validated_manifest.manifest;
+ let predecessor_id=if m.predecessor_ids.len()==1{m.predecessor_ids.first().cloned()}else{None};
+ registry.append(a::ArtifactEvent::Register{
+  event_id:StableId::new(format!("artifact-publication:{}",transaction.intent().intent_digest)).map_err(|e|format!("{e:?}"))?,
+  manifest:a::ArtifactManifest{artifact_id:m.artifact_id.clone(),kind:m.kind,generation:m.generation,predecessor_id,
+   content_digest:m.bytes_digest,objective_digest:m.objective_class_digest,support_digest:admission.validated_manifest.manifest_digest,
+   producer_id:m.producer_id.clone(),compatibility_digest:m.compatibility_digest,encoded_size_bytes:m.encoded_size_bytes}
+ }).map_err(|e|format!("{e:?}"))?;
+ Ok(())
+}
 fn laya_dispatch(v:&Value,now:u64)->R<Value>{
  let op=text(v,"operation")?;
  if op=="publish_laya_model"{
-  let (m,raw)=actual_payload(v)?;let mut service=existing_owner(&v["owner"],now)?;
+  let (m,raw)=actual_payload(v)?;let config=existing_owner_config(&v["owner"],now)?;
+  let binding=config.storage_binding;let registry_id=config.trust.registry_id.clone();
+  let mut service=a::LearningArtifactOwnerService::open(config).map_err(|e|format!("{e:?}"))?;
   let publication_head=signed_head(&v["publication_head"])?;
   let admission=publication_admission(service.withdrawal_registry(),dig(v,"expected_withdrawal_head")?,m,publication_head.witness.issued_at,now)?;
+  let predecessor=dig(v,"expected_registry_predecessor_head")?;
+  let original=registry_prefix(service.registry(),predecessor)?;
+  let transaction=a::ArtifactPublicationTransactionV1::begin(id(v,"operation_id")?,admission.clone(),service.withdrawal_registry(),&original,predecessor,now).map_err(|e|format!("{e:?}"))?;
+  let mut projected=original;project_registration(&transaction,&mut projected)?;
+  // Keep this SAME service writer fence through projection and publish. SDK
+  // signature/time checks still precede CURRENT; no unbound signed head may
+  // be persisted for a different operation or manifest before those checks.
+  if publication_head.binding!=binding||publication_head.withdrawal_scope_digest!=admission.withdrawal_scope_digest
+   ||publication_head.witness.registry_id!=registry_id||publication_head.witness.predecessor_head_digest!=predecessor
+   ||publication_head.witness.head_digest!=projected.snapshot().head_digest{return Err("LAYA_PUBLICATION_HEAD_BINDING".into())}
   let receipt=service.publish(a::LearningArtifactPublishRequestV1{operation_id:id(v,"operation_id")?,admission,payload:raw,
-   signed_current_head:publication_head,expected_registry_predecessor_head:dig(v,"expected_registry_predecessor_head")?,now}).map_err(|e|format!("{e:?}"))?;
+   signed_current_head:publication_head,expected_registry_predecessor_head:predecessor,now}).map_err(|e|format!("{e:?}"))?;
   if receipt.authority.grants_any(){return Err("UNEXPECTED_AUTHORITY".into())}
   return Ok(json!({"status":"CANONICAL_LAYA_MODEL_PUBLISHED_NOT_SELECTED","operation_id":receipt.operation_id.as_str(),
    "admission_digest":receipt.admission_digest.to_string(),"registry_head_digest":receipt.registry_head_digest.to_string(),

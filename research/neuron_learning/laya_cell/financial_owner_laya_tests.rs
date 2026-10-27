@@ -272,3 +272,25 @@ fn readonly_preview_keeps_service_configuration_and_recovery_gates(){
  assert!(prepare_laya_publication(&unrelated,40).unwrap_err().contains("RECOVERY_REQUIRED"));
  assert_eq!(before,file_inventory(f._temp.path()));
 }
+
+#[test]
+fn typed_projection_matches_canonical_host_stage_and_blocks_changed_identity(){
+ let f=Fixture::new();let (publish,_)=f.publication("fixture-laya",&payload());
+ let host=a::LearningArtifactOwnerHost::open_with_required_current_head(&f.root,
+  owner(&f.owner["owner_trust"]).unwrap(),lease(&f.owner["writer_lease"]).unwrap(),f.head.clone(),30).unwrap();
+ let original=host.recover_current_registry(30).unwrap();
+ let admission=a::admit_manifest_at_withdrawal_head_v3(&f.withdrawals,f.withdrawals.head_digest(),manifest(&publish["manifest"]).unwrap(),30).unwrap();
+ let tx=a::ArtifactPublicationTransactionV1::begin(id(&publish,"operation_id").unwrap(),admission,&f.withdrawals,&original,original.snapshot().head_digest,30).unwrap();
+ let mut canonical=original.clone();host.stage_compatibility_registration(&tx,&mut canonical,30).unwrap();
+ let mut projected=original;project_registration(&tx,&mut projected).unwrap();
+ assert_eq!(canonical.records(),projected.records());assert_eq!(canonical.snapshot().head_digest,projected.snapshot().head_digest);
+ drop(host);
+ for field in ["operation","manifest"]{
+  let mut changed=publish.clone();
+  if field=="operation"{changed["operation_id"]=json!("fixture-different-operation");}
+  else{changed["manifest"]["normalization_digest"]=json!(d("fixture-different-normalization").to_string());}
+  let before=file_inventory(f._temp.path());
+  assert!(laya_dispatch(&changed,31).unwrap_err().contains("LAYA_PUBLICATION_HEAD_BINDING"));
+  assert_eq!(before,file_inventory(f._temp.path()));
+ }
+}

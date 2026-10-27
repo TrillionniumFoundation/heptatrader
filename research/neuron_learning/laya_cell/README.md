@@ -170,6 +170,11 @@ so a later CLI invocation produces the same digest. The actual system clock
 still validates the manifest, writer lease, signed head and withdrawal state;
 an expired request cannot regain validity through an older identity timestamp.
 A changed payload or frontier needs a fresh preview and external signature.
+Under the same existing owner writer fence, publication checks that the signed
+next head commits to the requested operation and manifest before persisting the
+publication. A mismatched request cannot advance CURRENT before returning an
+error. Signature and freshness checks remain canonical SDK checks; an invalid
+signature can leave a partial transaction checkpoint, never a selected model.
 
 Build and stage runtime/verifier bytes before deployment. The ordinary
 `install_resident.runtime_files` glob includes the owner modules, and the v8
