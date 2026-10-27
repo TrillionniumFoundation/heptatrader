@@ -1465,6 +1465,21 @@ bool HeptaIBGatewayAdapter::EventIngressAdmissionFailed() const {
     return m_api && m_api->EventIngressAdmissionFailed();
 }
 
+IBIngressFirstFault HeptaIBGatewayAdapter::GetIngressFirstFault(
+    std::uint64_t* wrapperConnectionEpoch, bool* failed) const {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    if (wrapperConnectionEpoch) *wrapperConnectionEpoch = m_connectionEpoch;
+    // Sample failure first: on this immutable wrapper the bit is sticky, so
+    // the following record read can only be pending or fully published.
+    const bool wasFailed = m_api && m_api->EventIngressAdmissionFailed();
+    auto out = m_api ? m_api->GetIngressFirstFault() : IBIngressFirstFault();
+    if (wasFailed && out.kind == IBIngressFaultKind::None) out.pending = true;
+    // A callback may win between the two atomic observations. Preserve a
+    // fault that this read has already observed before shutdown as well.
+    if (failed) *failed = wasFailed || out.pending || out.kind != IBIngressFaultKind::None;
+    return out;
+}
+
 void HeptaIBGatewayAdapter::BindEventIngressFence() {
     if (m_api) m_api->SetEventIngressFence(m_eventIngressFence);
 }

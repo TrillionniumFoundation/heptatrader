@@ -336,6 +336,14 @@ target_link_libraries(hepta_ib_recent_order_replay_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_recent_order_replay_tests)
 
+add_executable(hepta_ib_ingress_first_fault_tests
+    ib_ingress_first_fault_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
+target_link_libraries(hepta_ib_ingress_first_fault_tests PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
+hepta_register_core_test(hepta_ib_ingress_first_fault_tests)
+set_tests_properties(hepta_ib_ingress_first_fault_tests PROPERTIES TIMEOUT 15)
+
 # The same production runtime source list and adapter/subscription/admission
 # objects; an injected wrapper has no socket and throws on every order method.
 add_executable(hepta_ib_quote_recovery_component_tests

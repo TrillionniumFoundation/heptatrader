@@ -202,7 +202,35 @@ int main(int argc, char**)
         if (runtime.HasFatalRuntimeError(&fatalReason))
         {
             std::cerr << "IB PAPER runtime fatal: " << fatalReason << '\n';
+            // Stop can itself observe a disconnect during admission. Only
+            // report a fault that already existed, then let the original
+            // Stop join finish any in-flight diagnostic publication.
+            bool ingressFailedBeforeStop = false;
+            std::uint64_t wrapperEpochBeforeStop = 0;
+            auto fault = runtime.Adapter().GetIngressFirstFault(
+                &wrapperEpochBeforeStop, &ingressFailedBeforeStop);
             runtime.Stop();
+            if (ingressFailedBeforeStop)
+            {
+                if (fault.pending)
+                {
+                    // A reconnect already in progress may finish during
+                    // Stop's poll-thread join. Never substitute that new
+                    // wrapper's record for the original pending fault.
+                    std::uint64_t wrapperEpochAfterStop = 0;
+                    const auto afterStop = runtime.Adapter().GetIngressFirstFault(
+                        &wrapperEpochAfterStop);
+                    fault = CompleteIngressFirstFaultObservation(fault,
+                        wrapperEpochBeforeStop, afterStop, wrapperEpochAfterStop);
+                }
+                std::cerr << "IB PAPER ingress first fault: kind="
+                    << IBIngressFaultKindName(fault.kind)
+                    << " pending=" << (fault.pending ? "true" : "false")
+                    << " monotonic_ns=" << fault.monotonicNs
+                    << " connection_epoch=" << fault.connectionEpoch
+                    << " admission_generation=" << fault.admissionGeneration
+                    << '\n';
+            }
             return 9;
         }
     }
