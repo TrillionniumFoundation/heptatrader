@@ -289,6 +289,91 @@ void HeldAndReleasedPreserveAuthority() {
     Check(f.authority.audits == 1 && f.authority.reads == 8, "released reran the global audit");
 }
 
+void UpgradeHeldBootstrapsOnlyMaintenanceFromAnOldRuntime() {
+    Fixture f;
+    f.authority.positions.erase("configured_crypto_position_observation");
+    // The op15 crypto-zero verdict does not assert an all-account flat FX
+    // position. Preserve a known nonzero FX position through maintenance.
+    f.authority.audit.brokerPositionQuantity = "-123";
+    f.authority.audit.brokerGrossAbsolutePosition = "123";
+    f.authority.positions["positions"] = "[{\"instrument\":\"EUR.USD\",\"quantity\":-123}]";
+    f.authority.health["account_broker_zero_observed"] = "false";
+    const auto maintenance = f.Call("upgrade-held", "", "", "", false, true);
+    Check(maintenance.code == 0, "old-runtime upgrade audit failed: " + maintenance.err + maintenance.out);
+    const auto proof = Decode(maintenance.out);
+    Check(proof.at("schema") == "\"hepta_inactive_owner_upgrade_audit_v1\"" &&
+          proof.at("state") == "\"INACTIVE_FENCED_OWNER_UPGRADE_AUDIT\"" &&
+          proof.at("phase") == "\"upgrade-held\"" && proof.at("audit_performed") == "true",
+          "maintenance proof aliases the native-release contract");
+    Check(maintenance.out.find("INACTIVE_FENCED_ZERO_NO_LEASE") == std::string::npos &&
+          f.authority.audits == 1 && f.authority.reads == 4, "maintenance proof skipped op15 or authorized release");
+    const auto ordinaryHeld = f.Call("held");
+    Check(ordinaryHeld.code == 4 && ordinaryHeld.out.find("EXPLICIT_CRYPTO_POSITION_REQUIRED") != std::string::npos,
+          "maintenance bootstrap weakened ordinary held proof");
+    Check(Decode(ordinaryHeld.out).at("schema") == "\"hepta_inactive_owner_audit_v1\"",
+          "ordinary held schema changed");
+    f.ReleasedFx();
+    const auto released = f.Call("released");
+    Check(released.code == 4 && released.out.find("EXPLICIT_CRYPTO_POSITION_REQUIRED") != std::string::npos,
+          "old-runtime maintenance proof authorized native-hold release");
+    Check(f.authority.audits == 2, "released proof performed an unexpected bootstrap audit");
+}
+
+void UpgradeHeldRequiresCompleteCurrentCryptoZeroAndOriginalHold() {
+    for (int fault = 0; fault != 15; ++fault) {
+        Fixture f; f.authority.positions.erase("configured_crypto_position_observation");
+        if (fault == 0) {
+            f.authority.audit.status = ExecutionCommandStatus::Rejected;
+            f.authority.audit.reasonCode = "CRYPTO_POSITION_NONZERO";
+        }
+        if (fault == 1) f.authority.audit.ownerAuditAuthoritative = false;
+        if (fault == 2) f.authority.audit.ownerAuditComplete = false;
+        if (fault == 3) f.authority.audit.brokerGlobalActiveOrderCount = 1;
+        if (fault == 4) f.authority.audit.ownerActiveOrderCount = 1;
+        if (fault == 5) f.authority.audit.ownerUncertainCommandCount = 1;
+        if (fault == 6) f.authority.audit.brokerRecoveryAuditBarrierComplete = false;
+        if (fault == 7) f.authority.audit.mutationBlocked = true;
+        if (fault == 8) f.authority.audit.reasonCode = "RECOVERY_OWNER_ZERO_CONFIRMED";
+        if (fault == 9) f.authority.health["native_new_risk_guard_blocked"] = "false";
+        if (fault == 10) f.authority.health["owner_fenced"] = "false";
+        if (fault == 11) f.authority.positions["position_generation"] = "13";
+        if (fault == 12) f.authority.orders["active_order_ids"] = "[77]";
+        if (fault == 13) f.authority.health["risk_mutation_dispatch_in_flight"] = "true";
+        if (fault == 14) f.authority.audit.brokerConnectionEpoch = 8;
+        const auto rejected = f.Call("upgrade-held");
+        Check(rejected.code == 4 && Decode(rejected.out).at("accepted") == "false" &&
+              Decode(rejected.out).at("schema") == "\"hepta_inactive_owner_upgrade_audit_v1\"",
+              "maintenance accepted incomplete crypto/hold evidence, fault " + std::to_string(fault));
+    }
+    Fixture existing;
+    auto crypto = existing.fx; crypto.sessionId = "configured-crypto";
+    crypto.token = "existing-recovery-crypto-token-0123456789"; crypto.recoveryOnly = true;
+    existing.Put(crypto);
+    Check(existing.Call("upgrade-held").code == 2 && existing.authority.audits == 0 &&
+          existing.authority.reads == 0, "maintenance bypassed an existing crypto lease");
+}
+
+void UpgradeHeldNeverHidesContradictoryPositionEvidence() {
+    for (const auto& rows : {"[{\"instrument\":\"BTC.USD\",\"quantity\":1}]",
+         "[{\"instrument\":\"BTC.USD\",\"quantity\":1e-9999}]",
+         "[{\"instrument\":\"BTC.USD\",\"quantity\":\"0\"}]",
+         "[{\"instrument\":\"CONID:123\",\"quantity\":0}]"}) {
+        Fixture f; f.authority.positions.erase("configured_crypto_position_observation");
+        f.authority.positions["positions"] = rows;
+        Check(f.Call("upgrade-held").code == 4, "maintenance ignored contradictory/unmapped portfolio");
+    }
+    for (const auto& change : std::vector<std::pair<std::string, std::string>>{
+            {"authoritative", "false"}, {"positions", "[]"},
+            {"positions", "[{\"instrument\":\"BTC.USD\",\"quantity\":1}]"},
+            {"connection_epoch", "8"}}) {
+        Fixture f; f.ChangeExplicit(change.first, change.second);
+        Check(f.Call("upgrade-held").code == 4, "maintenance fell back after explicit evidence failed");
+    }
+    Fixture malformed;
+    malformed.authority.positions["configured_crypto_position_observation"] = "null";
+    Check(malformed.Call("upgrade-held").code == 4, "maintenance treated a null field as an old runtime");
+}
+
 void HeldUsesRealOwnerFenceWithoutInventingAnAccountFence() {
     Fixture f;
     Environment env; env.Set("HEPTA_OMS_ASYNC_FLUSH", "0"); env.Set("HEPTA_OMS_SYNC_CRITICAL", "1");
@@ -351,12 +436,14 @@ void CatalogRejectionDoesNotEvenDiscoverTheNativeService() {
 }
 
 void RealPeerPidAndStartTimeArePinned() {
-    Fixture f;
-    Check(f.Call("held", "", std::to_string(::getpid() + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
-          "different real SO_PEERCRED pid accepted");
-    Check(f.Call("held", "", "", std::to_string(std::stoull(StartTicks()) + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
-          "reused pid/start-time mismatch accepted");
-    Check(f.authority.audits == 0 && f.authority.reads == 0, "mismatched peer received authority request");
+    for (const auto& phase : {"held", "upgrade-held"}) {
+        Fixture f;
+        Check(f.Call(phase, "", std::to_string(::getpid() + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
+              "different real SO_PEERCRED pid accepted");
+        Check(f.Call(phase, "", "", std::to_string(std::stoull(StartTicks()) + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
+              "reused pid/start-time mismatch accepted");
+        Check(f.authority.audits == 0 && f.authority.reads == 0, "mismatched peer received authority request");
+    }
 }
 
 void ExplicitZeroIsNotAbsenceOrUnderflow() {
@@ -412,19 +499,19 @@ void FenceUnknownAndMalformedEvidenceFailClosed() {
     }
 }
 
-void ConcurrentCatalogWriteIsDetectedWithoutClaimingExclusiveLock() {
+void ConcurrentCatalogWriteIsDetectedWithoutClaimingExclusiveLock(const std::string& phase = "held") {
     Fixture f;
     f.authority.onRead = [&](int index) {
         if (index != 4) return;
         auto row = f.fx; row.token = "concurrent-owner-token-0123456789abcdef";
         row.sessionId = "configured-crypto"; f.Put(row);
     };
-    const auto result = f.Call("held", "", "", "", true);
+    const auto result = f.Call(phase, "", "", "", true);
     Check(result.code == 4 && result.out.find("CATALOG_RECORD_PRESENT") != std::string::npos,
           "concurrent normal provisioning was hidden by a fictional exclusive lock");
 }
 
-void RealSocketEpochReplacementRejectsTheNextRead() {
+void RealSocketEpochReplacementRejectsTheNextRead(const std::string& phase = "held") {
     Fixture f;
     f.authority.onRead = [&](int index) {
         if (index != 1) return;
@@ -438,7 +525,7 @@ void RealSocketEpochReplacementRejectsTheNextRead() {
         Check(GenerateExecutionServiceIdentity(2, identity, reason), reason);
         Check(f.replacement.StartFromFd(fd, {static_cast<std::uint32_t>(::geteuid())}, identity, reason, 32768, 1500), reason);
     };
-    const auto result = f.Call();
+    const auto result = f.Call(phase);
     Check(result.code == 4 && result.out.find("EPOCH_") != std::string::npos,
           "new server epoch between RPCs accepted: " + result.out + result.err);
     Check(f.authority.reads == 1, "new-epoch native authority was dispatched");
@@ -452,13 +539,18 @@ int main() {
     }
     try {
         HeldAndReleasedPreserveAuthority(); HeldUsesRealOwnerFenceWithoutInventingAnAccountFence();
+        UpgradeHeldBootstrapsOnlyMaintenanceFromAnOldRuntime();
+        UpgradeHeldRequiresCompleteCurrentCryptoZeroAndOriginalHold();
+        UpgradeHeldNeverHidesContradictoryPositionEvidence();
         CatalogStatesRejectBeforeAnyNativeAuthority();
         CatalogRejectionDoesNotEvenDiscoverTheNativeService();
         RealPeerPidAndStartTimeArePinned(); ExplicitZeroIsNotAbsenceOrUnderflow();
         FenceUnknownAndMalformedEvidenceFailClosed();
         ConcurrentCatalogWriteIsDetectedWithoutClaimingExclusiveLock();
+        ConcurrentCatalogWriteIsDetectedWithoutClaimingExclusiveLock("upgrade-held");
         RealSocketEpochReplacementRejectsTheNextRead();
-        std::cout << "PASS inactive owner held/released proofs, explicit zero, complete catalog, real peer/epoch and no authority mutations\n";
+        RealSocketEpochReplacementRejectsTheNextRead("upgrade-held");
+        std::cout << "PASS inactive owner held/released and separate upgrade-held proofs, explicit zero, complete catalog, real peer/epoch and no authority mutations\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
 }

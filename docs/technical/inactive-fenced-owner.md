@@ -126,3 +126,22 @@ reuses the existing Execution read/control operations and catalog reader. Native
 socket fixtures and private-directory Python tests cover stale identity,
 catalog changes, nonzero/incomplete crypto evidence, preserved original state,
 phase boundaries, and the unchanged active-owner path.
+
+## Upgrading an older Execution runtime
+
+The separate `--phase upgrade-held` native diagnostic supports preparation for
+an Execution upgrade while the original native hold remains installed. It
+returns schema `hepta_inactive_owner_upgrade_audit_v1` and state
+`INACTIVE_FENCED_OWNER_UPGRADE_AUDIT`. Neither is accepted by the normal
+`paper-on` proof, whose phases remain only `held` and `released`.
+
+An older runtime may lack `configured_crypto_position_observation`. Only this
+maintenance diagnostic can use its current, complete op15 configured-crypto
+zero result together with the original global zero-order gate, current owner
+fence, native hold, catalog absence, and exact native peer/epoch. Its ordinary
+portfolio position generation must match that op15 audit, and any nonzero BTC
+or contradictory portfolio evidence rejects it. If the new explicit field is
+present but invalid, there is no fallback. A known nonzero FX position is not
+changed or represented as zero. This diagnostic sends no stop/start request and
+does not authorize native-hold release or substitute for the upgrade
+transaction's process, configuration, stop-guard and reconciliation checks.
