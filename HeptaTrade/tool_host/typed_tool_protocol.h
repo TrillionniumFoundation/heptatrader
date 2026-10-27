@@ -52,6 +52,10 @@ public:
                                             TypedPreviewAuthorization& authorization,
                                             std::string& reason);
 
+    // Connect a caller-owned AF_UNIX stream within a positive time budget.
+    // A full listen backlog fails before sending any request. Preserve fd flags.
+    static bool ConnectUnixSocket(int fd, const std::string& socketPath, int timeoutMs);
+
     static bool ReadFrame(int fd, std::size_t maxBodyBytes, int timeoutMs,
                           std::string& body, std::string& reason);
     static bool WriteFrame(int fd, const std::string& body, int timeoutMs, std::string& reason);

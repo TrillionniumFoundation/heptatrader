@@ -86,6 +86,73 @@ class ProspectiveEvaluatorDiagnosticsTests(unittest.TestCase):
     def files(self):
         return {p.name: p.read_bytes() for p in self.folder.iterdir() if p.is_file()}
 
+    def test_terminal_status_keeps_source_and_worker_failures_distinct_without_rereading_outcomes(self):
+        from laya_cell.promotion import assess
+        end=self.plan['outcome_end_ms'];statuses=[];qualification_bytes=None
+        for reason,detail in (('PATH_GAP',None),('PREDICTION_PROCESS_FAILED','WORKER_SIGNAL_SIGSEGV')):
+            results=[{'candidate_id':self.plan['candidate_id'],'plan_id':self.plan['plan_id'],
+                'slot':slot,'status':'CENSORED','reason':reason,
+                **({'detail':detail,'phase':{'phase':'PREDICTION'}} if detail else {})}
+                for slot in range(self.plan['rule']['slots'])]
+            assessment=assess(self.plan,results,end)
+            raw=json.dumps(assessment,sort_keys=True).encode()
+            if qualification_bytes is not None:self.assertEqual(raw,qualification_bytes)
+            qualification_bytes=raw
+            qualification=self.folder/'qualification.json';qualification.write_bytes(raw)
+            progress=evaluation.progress_with_coverage(self.plan,results,assessment)
+            (self.folder/'progress.json').write_text(json.dumps(progress))
+            original_read=evaluation.read_json
+            def no_outcomes(path,*args,**kwargs):
+                self.assertFalse(Path(path).name.startswith('outcome-'))
+                return original_read(path,*args,**kwargs)
+            with patch.object(evaluation,'read_json',side_effect=no_outcomes):
+                statuses.append(self.step(self.engine(),end+1))
+            self.assertEqual(qualification.read_bytes(),qualification_bytes)
+        source=statuses[0]['closed_coverage_diagnostics'];worker=statuses[1]['closed_coverage_diagnostics']
+        self.assertNotEqual(source,worker)
+        self.assertEqual(source['censored_reasons'],{'PATH_GAP':self.plan['rule']['slots']})
+        self.assertEqual(worker['prediction_process_failed']['details'],
+            {'WORKER_SIGNAL_SIGSEGV':self.plan['rule']['slots']})
+        self.assertTrue(source['observational_only']);self.assertFalse(source['model_performance_result'])
+        self.assertEqual(source['authorization_effect'],'NONE')
+
+    def test_terminal_status_never_uses_old_pending_progress_or_future_deadline(self):
+        from laya_cell.promotion import assess
+        end=self.plan['outcome_end_ms'];assessment=assess(self.plan,[],end)
+        qualification=self.folder/'qualification.json';qualification.write_text(json.dumps(assessment))
+        pending=assess(self.plan,[],end-1)
+        (self.folder/'progress.json').write_text(json.dumps(evaluation.progress_with_coverage(self.plan,[],pending)))
+        result=self.step(self.engine(),end+1)['closed_coverage_diagnostics']
+        self.assertEqual(result['eligible_closed_plans'],1)
+        self.assertEqual(result['plans_with_diagnostics'],0)
+        self.assertEqual(result['plans_without_diagnostics'],1)
+        original_read=evaluation.read_json
+        def no_progress(path,*args,**kwargs):
+            self.assertNotEqual(Path(path).name,'progress.json')
+            return original_read(path,*args,**kwargs)
+        with patch.object(evaluation,'read_json',side_effect=no_progress):
+            result=self.step(self.engine(),end-1)['closed_coverage_diagnostics']
+        self.assertEqual(result['eligible_closed_plans'],0)
+
+    def test_natural_closeout_reports_existing_coverage_then_caches_final_progress(self):
+        end=self.plan['outcome_end_ms']
+        for slot in range(self.plan['rule']['slots']):self.outcome(slot,reason='ENDPOINT_GAP')
+        engine=self.engine();result=self.step(engine,end+1)
+        summary=result['closed_coverage_diagnostics']
+        self.assertEqual(summary['plans_with_diagnostics'],1)
+        self.assertEqual(summary['censored_reasons'],{'ENDPOINT_GAP':self.plan['rule']['slots']})
+        qualification=self.folder/'qualification.json';original=qualification.read_bytes()
+        reads=[];original_read=evaluation.read_json
+        def no_outcomes(path,*args,**kwargs):
+            self.assertFalse(Path(path).name.startswith('outcome-'))
+            if Path(path).name=='progress.json':reads.append(path)
+            return original_read(path,*args,**kwargs)
+        with patch.object(evaluation,'read_json',side_effect=no_outcomes):
+            self.assertEqual(self.step(engine,end+2)['closed_coverage_diagnostics'],summary)
+            self.assertEqual(self.step(engine,end+3)['closed_coverage_diagnostics'],summary)
+        self.assertEqual(len(reads),1)
+        self.assertEqual(qualification.read_bytes(),original)
+
     def retained_other_route(self):
         self.config['retained_futile_plan_closeouts'] = [{
             'plan_id': 'unrelated-old-plan', 'config_path': str(self.root / 'unused.json'),

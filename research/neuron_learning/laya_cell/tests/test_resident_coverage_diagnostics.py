@@ -77,6 +77,42 @@ class CoverageDiagnosticsTests(unittest.TestCase):
                           'phases': {'STARTUP': 1, 'PREDICTION': 1},
                           'detail_unrecorded': 0, 'phase_unrecorded': 0})
 
+    def test_closed_summary_distinguishes_resource_source_and_worker_timeouts(self):
+        plan=self.plan()
+        results=[self.outcome(0,reason='NO_PREDICTION_IN_FIXED_SLOT',
+            no_prediction_disposition='ADMISSION_DENIAL_OBSERVED',
+            first_admission_denial_reasons=['HOST_FULL_MEMORY_PSI_PRESSURE']),
+            self.outcome(1,reason='PATH_GAP'),
+            self.outcome(2,reason='PREDICTION_PROCESS_FAILED',detail='WORKER_BUDGET_EXCEEDED',phase='PREDICTION')]
+        assessment=assess(plan,results,plan['outcome_end_ms'])
+        progress=self.progress(plan,results,assessment)
+        with patch.object(resident_evaluate,'read_json',side_effect=AssertionError('No diagnostic I/O')):
+            summary=resident_evaluate.summarize_closed_coverage([(plan,assessment,progress)],plan['outcome_end_ms'])
+        self.assertEqual(summary['plans_with_diagnostics'],1)
+        self.assertEqual(summary['first_admission_denial_reasons'],{'HOST_FULL_MEMORY_PSI_PRESSURE':1})
+        self.assertEqual(summary['censored_reasons']['PATH_GAP'],1)
+        self.assertEqual(summary['prediction_process_failed']['details'],{'WORKER_BUDGET_EXCEEDED':1})
+        self.assertEqual(summary['counts'],{'OBSERVED':0,'CENSORED':3,'pending':RULE['slots']-3})
+        self.assertNotIn('mean_brier_improvement',summary)
+
+    def test_closed_summary_rejects_changed_plan_state_and_counts_without_altering_qualification(self):
+        plan=self.plan();results=[self.outcome(0,reason='PATH_GAP')]
+        assessment=assess(plan,results,plan['outcome_end_ms'])
+        original=json.dumps(assessment,sort_keys=True)
+        progress=self.progress(plan,results,assessment)
+        changes=[('plan_id','other'),('candidate_id','other'),('state','PENDING'),
+            ('counts',{'OBSERVED':1,'CENSORED':1,'pending':RULE['slots']-2}),
+            ('censored_reasons',{'PATH_GAP':{'malformed':1}})]
+        for key,value in changes:
+            with self.subTest(field=key):
+                bad=copy.deepcopy(progress)
+                (bad['coverage_diagnostics'] if key in ('counts','censored_reasons') else bad)[key]=value
+                summary=resident_evaluate.summarize_closed_coverage([(plan,assessment,bad)],plan['outcome_end_ms'])
+                self.assertEqual(summary['plans_without_diagnostics'],1)
+                self.assertEqual(summary['plans_with_diagnostics'],0)
+                self.assertEqual(summary['censored_reasons'],{})
+                self.assertEqual(json.dumps(assessment,sort_keys=True),original)
+
     def test_censor_budget_boundary_does_not_turn_pending_trial_into_qualification(self):
         plan = self.plan()
         for censored, remaining, excess in ((0, 2, 0), (2, 0, 0), (3, 0, 1)):

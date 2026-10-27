@@ -17,6 +17,12 @@ No approval polling, reviewer-count requirement or cross-workflow receipt exists
 The owner may integrate reviewed, tested source directly; a missing hosted run
 is reported as missing, never as PASS and never as a reason to wait indefinitely.
 
+`./scripts/dev_core.sh` and `--storage` reuse the generator of an existing
+build directory; Ninja is selected only for a new directory. The core Python
+suite also runs Neuron causal-data, evaluation-recovery and training-cadence
+controls with NumPy on the CPU. Those tests reject native/GPU library loading
+and subprocess launches; real GPU conformance remains explicitly configured.
+
 Workflow command fixtures locate behavioral steps by stable `id`, not the
 English display name or a shell-command substring. They execute inert command
 fixtures and evaluate cancellation/selection behavior; a cosmetic step rename

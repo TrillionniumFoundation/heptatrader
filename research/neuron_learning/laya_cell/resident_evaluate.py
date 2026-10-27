@@ -77,6 +77,69 @@ def progress_with_coverage(plan,results,assessment):
  return {**assessment,'coverage_diagnostics':coverage}
 
 
+def summarize_closed_coverage(entries,now_ms):
+ """Expose existing final coverage only; never reconstruct or assess outcomes."""
+ summary={'observational_only':True,'model_performance_result':False,'authorization_effect':'NONE',
+  'scope':'RECORDED_FINAL_PROGRESS_AFTER_ORIGINAL_COMPLETE_DEADLINE',
+  'eligible_closed_plans':0,'closed_plans_without_verifiable_deadline':0,
+  'plans_with_diagnostics':0,'plans_without_diagnostics':0,
+  'counts_scope':'PLANS_WITH_COMPATIBLE_FINAL_PROGRESS_ONLY_HISTORY_NOT_RECONSTRUCTED',
+  'counts':{'OBSERVED':0,'CENSORED':0,'pending':0},
+  'pending_count_scope':'SLOTS_WITHOUT_RECORDED_OUTCOME_NOT_ACTIVE_TRIALS',
+  'censored_reasons':{},'censored_reason_unrecorded':0,
+  'no_prediction_dispositions':{},'no_prediction_disposition_unrecorded':0,
+  'first_admission_denial_reasons':{},'first_admission_denial_slots':0,
+  'first_admission_denial_scope':'FIRST_RECORDED_DENIAL_NOT_COMPLETE_CAUSAL_ATTRIBUTION',
+  'prediction_process_failed':{'details':{},'phases':{},'detail_unrecorded':0,'phase_unrecorded':0}}
+ fields=('counts','censored_reasons','censored_reason_unrecorded','no_prediction_dispositions',
+  'no_prediction_disposition_unrecorded','first_admission_denial_reasons',
+  'first_admission_denial_slots','prediction_process_failed')
+ def add_counts(target,source,maximum=None):
+  for key,value in source.items():
+   if not isinstance(key,str) or not 0<len(key)<=240:raise ValueError('DIAGNOSTIC_COUNTER_KEY')
+   if isinstance(value,dict):add_counts(target.setdefault(key,{}),value,maximum)
+   elif type(value) is int and value>=0 and (maximum is None or value<=maximum):
+    target[key]=target.get(key,0)+value
+   else:raise ValueError('DIAGNOSTIC_COUNTER_VALUE')
+ for plan,qualification,progress in entries:
+  if qualification.get('state') not in ('REJECTED','QUALIFIED_AWAITING_CANONICAL_OWNER'):continue
+  end=plan.get('outcome_end_ms')
+  if type(end) is not int or end<=0:
+   summary['closed_plans_without_verifiable_deadline']+=1;continue
+  if now_ms<end:continue
+  summary['eligible_closed_plans']+=1
+  try:
+   if (not isinstance(progress,dict) or any(progress.get(key)!=qualification.get(key)
+       for key in ('plan_id','candidate_id','state'))
+       or progress.get('plan_id')!=plan['plan_id']
+       or progress.get('candidate_id')!=plan['candidate_id']):raise ValueError('STALE_FINAL_PROGRESS')
+   coverage=progress['coverage_diagnostics'];counts=coverage['counts'];rule=plan['rule']
+   if (coverage.get('schema')!='heptatrader.laya-coverage-diagnostics.v1'
+       or coverage.get('observational_only') is not True
+       or coverage.get('frozen_rule')!={key:rule.get(key) for key in ('slots','min_observed','min_non_ties','max_censored')}
+       or set(counts)!={'OBSERVED','CENSORED','pending'}
+       or counts['OBSERVED']!=qualification.get('observed')
+       or counts['CENSORED']+counts['pending']!=qualification.get('censored')
+       or sum(counts.values())!=rule['slots']):raise ValueError('FINAL_COVERAGE_COUNTS_CHANGED')
+   projection={};add_counts(projection,{key:coverage[key] for key in fields},rule['slots'])
+   failure=projection['prediction_process_failed']
+   if set(failure)!={'details','phases','detail_unrecorded','phase_unrecorded'}:
+    raise ValueError('FINAL_FAILURE_COUNTERS_CHANGED')
+   for counters in (projection['censored_reasons'],projection['no_prediction_dispositions'],
+       projection['first_admission_denial_reasons'],failure['details'],failure['phases']):
+    if not isinstance(counters,dict) or any(type(value) is not int for value in counters.values()):
+     raise ValueError('FINAL_DIAGNOSTIC_COUNTER_SHAPE')
+   for value in (projection['censored_reason_unrecorded'],projection['no_prediction_disposition_unrecorded'],
+       projection['first_admission_denial_slots'],failure['detail_unrecorded'],failure['phase_unrecorded']):
+    if type(value) is not int:raise ValueError('FINAL_DIAGNOSTIC_COUNTER_SHAPE')
+   if sum(projection['censored_reasons'].values())+projection['censored_reason_unrecorded']!=counts['CENSORED']:
+    raise ValueError('FINAL_CENSOR_REASONS_INCOMPLETE')
+  except (KeyError,TypeError,ValueError,AttributeError,RecursionError):
+   summary['plans_without_diagnostics']+=1;continue
+  summary['plans_with_diagnostics']+=1;add_counts(summary,projection)
+ return summary
+
+
 def _slot_order(path,plan,rule,now_ms):
  """Account known misses, dispatch due work, then read mature source archives."""
  def priority(slot):
@@ -277,6 +340,20 @@ class Evaluator:
   check_owner_handoff_runtime(self.c)
   self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
   self.stop=False;self.tasks={};self.last_log_ms=0;self._retained_closeout_cache={}
+ def closed_progress(self,path,plan,now_ms):
+  end=plan.get('outcome_end_ms')
+  if type(end) is not int or end<=0 or now_ms<end:return None
+  if not hasattr(self,'_closed_progress_cache'):self._closed_progress_cache={}
+  progress=path.parent/'progress.json'
+  try:
+   metadata=progress.stat();token=(metadata.st_dev,metadata.st_ino,metadata.st_size,metadata.st_mtime_ns,metadata.st_ctime_ns)
+  except OSError:return None
+  cached=self._closed_progress_cache.get(progress)
+  if cached is not None and cached[0]==token:return cached[1]
+  try:value=read_json(progress,65536)
+  except (OSError,ValueError,RecursionError):value=None
+  self._closed_progress_cache[progress]=(token,value)
+  return value
  def operator_stop_binding(self,path,plan,now):
   from .resident_trial_stop import read_stop
   return read_stop(self.c,path,plan,now_ms=now)
@@ -396,7 +473,7 @@ class Evaluator:
    if plan.get('scope')!=self.c['period_sha256']:raise ContractError('EVALUATION_PERIOD_SCOPE')
    prepared.append((path,plan,rule))
   prepared.sort(key=lambda entry:_plan_dispatch_priority(*entry,now,self.c.get('runtime_sha256'),cycle_records))
-  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[];qualified_owner_plans=[]
+  counts={};observed=0;censored=0;worker_errors={};futile_pending=0;launches_suppressed=0;retained_plans=[];operator_stops=[];source_route_holds=[];qualified_owner_plans=[];closed_coverage=[]
   for path,plan,rule in prepared:
    # A closed v1 plan remains bound to its original result, never re-evaluated
    # against replacement source bytes or re-registered as a new experiment.
@@ -408,6 +485,7 @@ class Evaluator:
      raise ContractError('CLOSED_QUALIFICATION_IDENTITY')
     counts[q['state']]=counts.get(q['state'],0)+1
     observed+=q.get('observed',0);censored+=q.get('censored',0)
+    closed_coverage.append((plan,q,self.closed_progress(path,plan,now)))
     stopped=self.operator_stop_binding(path,plan,now)
     if stopped:operator_stops.append({'plan_id':plan['plan_id'],'receipt_sha256':stopped['sha256'],
      'performance_assessment':False,'new_heavy_workers_allowed':False})
@@ -566,7 +644,9 @@ class Evaluator:
    if assessment['state'] != 'PENDING':
     write_once(path.parent / 'qualification.json', assessment)
     if assessment['state']=='QUALIFIED_AWAITING_CANONICAL_OWNER' and not stopped:qualified_owner_plans.append((path,plan['plan_id']))
-   atomic(path.parent / 'progress.json', progress_with_coverage(plan,results,assessment))
+   progress=progress_with_coverage(plan,results,assessment)
+   atomic(path.parent / 'progress.json', progress)
+   if assessment['state']!='PENDING':closed_coverage.append((plan,assessment,progress))
    counts[assessment['state']]=counts.get(assessment['state'],0)+1
   # Ordinary prediction dispatch takes priority. Publication is CPU/native I/O,
   # never a GPU worker, and its outbox deduplicates each plan/enrollment attempt.
@@ -593,6 +673,7 @@ class Evaluator:
    'operator_stopped_trials':len(operator_stops),'operator_stopped_plans':operator_stops,
    'new_prediction_launches_suppressed':launches_suppressed,'statistical_rule':RULE if not self.c.get('promotion_protocol') else None,
    'promotion_protocol':self.c.get('promotion_protocol','LEGACY_V1'),'counts_include_closed_plans':True,
+   'closed_coverage_diagnostics':summarize_closed_coverage(closed_coverage,int(time.time()*1000)),
    'canonical_owner_handoffs':owner_handoffs,
    'canonical_owner_connection_scope':'SUCCESSFUL_PUBLICATION_RECEIPT_NOT_SERVICE_LIVENESS',
    'automatic_trading':False,'canonical_owner_connected':any(

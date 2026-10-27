@@ -18,7 +18,7 @@ class MainQuoteOrderingTests(unittest.TestCase):
     instruments=("EUR.USD","BTC.USD")
 
     def once(self,instrument,*,position=1.0,halt=False,fenced=False,pending=None,
-             active=False,quote_error=False,stale=False,snapshot_error=False):
+             active=False,quote_error=False,stale=False,snapshot_error=False,native_clients=None):
         state={"history":[],"pending":copy.deepcopy(pending),"position":position,
                "entry_price":1.0,"halt_new_entries":halt,
                "owner_fence_recovery_required":fenced,
@@ -43,6 +43,12 @@ class MainQuoteOrderingTests(unittest.TestCase):
                     ".config/heptatrader/crypto.token"):
                     path=home/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("fixture")
                 stack.enter_context(patch.object(d.Path,"home",return_value=home))
+                stack.enter_context(patch.object(d,"NATIVE_CLIENTS",native_clients))
+                stack.enter_context(patch.object(d,"NATIVE_BINARY_VERIFIER",lambda binding: None if native_clients is not None else None))
+                if native_clients:
+                    for binding in native_clients.values():
+                        Path(binding['path']).parent.mkdir(parents=True,exist_ok=True)
+                        Path(binding['path']).touch()
                 # Quote-ordering fixtures must not inherit the host native kill switch.
                 stack.enter_context(patch.object(d,"maintenance_entry_hold_reason",return_value=None))
                 stack.enter_context(patch.object(sys,"argv",[str(ROOT/"scripts/heptatrader_paper_driver.py"),
@@ -65,9 +71,28 @@ class MainQuoteOrderingTests(unittest.TestCase):
                 snap_mock.assert_called_once()
                 self.assertFalse(snap_mock.call_args.kwargs["require_quote"])
                 return SimpleNamespace(state=state,snap=snap,quote=quote,quote_call=quote_mock,
-                                       send=send,reconcile=reconcile,closes=closes)
+                                       send=send,reconcile=reconcile,closes=closes,
+                                       endpoint=copy.deepcopy(d.NATIVE_ENDPOINT),renew=d.maybe_renew)
         finally:
             for name,value in globals_before.items():setattr(d,name,value)
+
+    def test_manifest_client_paths_preserve_original_owner_endpoints_and_pending_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bindings={name:{'path':str(Path(directory)/name),'sha256':'a'*64}
+                for name in ('heptactl','hepta-paper-command','hepta-sessionctl')}
+            for instrument in self.instruments:
+                with self.subTest(instrument=instrument):
+                    result=self.once(instrument,halt=True,native_clients=bindings)
+                    self.assertEqual(result.endpoint[0],bindings['heptactl']['path'])
+                    self.assertEqual(result.endpoint[1:3],['--socket',f'/run/user/{d.os.geteuid()}/heptatrader/tools.sock'])
+                    self.assertEqual(Path(result.endpoint[-1]).name,'paper.token' if instrument=='EUR.USD' else 'crypto.token')
+                    self.assertEqual(result.send.call_args.args[2],bindings['hepta-paper-command']['path'])
+                    self.assertEqual(result.renew.call_args.args[2],bindings['hepta-sessionctl']['path'])
+                    pending={'command_id':'original-prepared-command','kind':'CLOSE'}
+                    resumed=self.once(instrument,pending=pending,halt=True,native_clients=bindings)
+                    self.assertEqual(resumed.state['pending'],pending)
+                    self.assertEqual(resumed.reconcile.call_args.args[2],bindings['hepta-paper-command']['path'])
+                    resumed.send.assert_not_called()
 
     def test_price_independent_exits_do_not_request_quotes(self):
         for instrument in self.instruments:

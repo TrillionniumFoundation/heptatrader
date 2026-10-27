@@ -143,6 +143,8 @@ pool. Event relay cursor updates remain serialized per owner.
 
 Malformed framing, unknown fields, schema mismatch, expired sessions, missing capabilities, invalid quantities, rate exhaustion, unavailable Execution transport, and ambiguous forwarding all fail closed. A forwarding timeout after a mutation may produce `uncertain`; it must not be converted to `rejected` or retried with a fresh command identity.
 
+The Python MCP adapter's `HEPTA_MCP_TIMEOUT_SEC` is one I/O budget for a native call: connect, request send, response header and response body share a monotonic deadline. Partial reads and a completed send do not renew that budget, and a timeout does not resend the command.
+
 ## Observability
 
 Required dimensions are tool, effect, decision status, reason code, execution domain, and bounded latency. Do not label a call successful until the complete result envelope has been encoded. Track rejected, permission-denied, duplicate, uncertain, timeout, and transport-error outcomes independently.

@@ -9,7 +9,7 @@ import argparse,copy,hashlib,json,os,stat,sys
 from pathlib import Path
 from hepta_verified_loader import SourceHashMismatch,load_verified_module
 from hepta_btc_entry_policy import PROFILE,HORIZONS,PolicyError,canonical,digest,number,validate_forecast,validate_control,reserve,evaluate
-BASE_SHA256='e45e6724e76df9f06c60c0d8f7d3f7d19bf03aa2b482ca5d479171e79b8b101b'
+BASE_SHA256='aa6f216a2f69d849550eb73a6da20932d0f260cb5ee4d2bdfd0aab9bb9749e79'
 SCHEMA={'type':'object','required':['action','confidence','rationale','expected_move_bps','horizon_sec'],
  'additionalProperties':False,'properties':{'action':{'enum':['BUY','SELL','HOLD']},
  'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string','minLength':1,'maxLength':2000},

@@ -329,6 +329,18 @@ def interactive_broker_container(broker):
     return container, shell
 
 
+def configured_execstart(value):
+    """Keep exact command policy, excluding systemd's last-run diagnostics."""
+    command = re.fullmatch(
+        r"\{ path=([^;{}\r\n]+) ; argv\[\]=([^;{}\r\n]+) ; ignore_errors=(yes|no) ; "
+        r"start_time=[^;{}\r\n]+ ; stop_time=[^;{}\r\n]+ ; pid=[0-9]+ ; "
+        r"code=[^;{}\r\n]+ ; status=[^;{}\r\n]+ \}", value)
+    if command is None:
+        fail("INTERACTIVE_EXECUTION_EXECSTART_INVALID")
+    path, argv, ignore_errors = command.groups()
+    return "{ path=" + path + " ; argv[]=" + argv + " ; ignore_errors=" + ignore_errors + " ; }"
+
+
 def interactive_broker_snapshot(broker_pid, selected, current):
     """Prove the existing GNOME Broker path without claiming a stop shield.
 
@@ -346,6 +358,10 @@ def interactive_broker_snapshot(broker_pid, selected, current):
             or execution_unit["LoadState"] != "loaded" or execution_unit["ActiveState"] != "active"
             or not execution_unit["MainPID"].isdigit() or int(execution_unit["MainPID"]) <= 0):
         fail("INTERACTIVE_EXECUTION_NOT_ACTIVE")
+    # daemon-reload resets ExecStart's result PID/times even while the same
+    # process remains alive. Its configured path/argv/ignore policy stay bound;
+    # MainPID/InvocationID and the actual process/image proof below stay exact.
+    execution_unit["ExecStart"] = configured_execstart(execution_unit["ExecStart"])
     execution_pid = int(execution_unit["MainPID"])
     execution = interactive_process(execution_pid)
     broker = interactive_process(broker_pid)
@@ -688,6 +704,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     read_transport_changed = (
         new.get("native_read_stream", False) != old.get("native_read_stream", False)
         or new.get("native_read_binary") != old.get("native_read_binary")
+        or new.get("native_clients") != old.get("native_clients")
     )
     expected = dict(old)
     expected.pop("created_at_ms", None)
@@ -712,6 +729,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("native_read_binary", None)
     if "native_read_binary" in new:
         expected["native_read_binary"] = new["native_read_binary"]
+    expected.pop("native_clients", None)
+    if "native_clients" in new:
+        expected["native_clients"] = new["native_clients"]
     names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}
@@ -723,6 +743,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         fail("CANDIDATE_MANIFEST_CHANGED")
     if "native_read_binary" in new:
         with attribution.verified_binary(new["native_read_binary"]):
+            pass
+    for binding in new.get("native_clients", {}).values():
+        with attribution.verified_binary(binding):
             pass
     return target
 
@@ -1019,6 +1042,8 @@ def maintenance_upgrade(
                             receipt["startup_resident_loop_progress"] = progress
                         return actual
                 except (RuntimeError, FileNotFoundError) as error:
+                    if first is not None:
+                        raise
                     transient = isinstance(error, FileNotFoundError) or str(error) in {
                         "DRIVER_NOT_ACTIVE", "RUNNING_DRIVER_ARGV_MISMATCH",
                         "DRIVER_CHANGED_DURING_INSPECTION",

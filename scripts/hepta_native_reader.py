@@ -18,6 +18,7 @@ import time
 
 INSTRUMENTS = frozenset({"EUR.USD", "BTC.USD"})
 READ_TOOLS = frozenset({"system.get_health", "orders.list", "portfolio.list_positions", "market.get_quote"})
+NATIVE_CLIENT_NAMES = frozenset({"heptactl", "hepta-paper-command", "hepta-sessionctl"})
 
 
 def validate_binary_binding(binding):
@@ -26,6 +27,15 @@ def validate_binary_binding(binding):
             or "\x00" in binding["path"] or type(binding["sha256"]) is not str
             or re.fullmatch(r"[0-9a-f]{64}", binding["sha256"]) is None):
         raise ValueError("NATIVE_READ_BINARY_BINDING_INVALID")
+
+
+def validate_client_bindings(bindings):
+    if not isinstance(bindings, dict) or set(bindings) != NATIVE_CLIENT_NAMES:
+        raise ValueError("NATIVE_CLIENT_BINDINGS_INCOMPLETE")
+    for binding in bindings.values():
+        validate_binary_binding(binding)
+    if len({binding["path"] for binding in bindings.values()}) != len(bindings):
+        raise ValueError("NATIVE_CLIENT_BINDINGS_AMBIGUOUS")
 
 
 @contextmanager

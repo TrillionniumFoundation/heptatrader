@@ -119,6 +119,15 @@ vector. Brier scores apply only to real probability outputs. One forward window
 is integration evidence, not statistical strategy qualification, net PnL or
 permission to replace the remote model.
 
+The resident evaluator's `status.json` exposes `closed_coverage_diagnostics`
+only after each original full deadline and a terminal qualification. It reuses
+matching final `progress.json` coverage counters to distinguish source gaps,
+recorded admission denials and worker failure details, including timeouts.
+These counters are operational diagnostics, with no model-performance or
+authorization effect. Historical missing, stale or inconsistent final progress
+is counted as unavailable; no old outcome is reread to fill it. Canonical
+qualification bytes, scoring rules and owner verification remain unchanged.
+
 ## Canonical Model owner and read-only advisory
 
 After an unchanged `QUALIFIED_AWAITING_CANONICAL_OWNER` assessment,
@@ -144,6 +153,28 @@ exact plan's pinned `publication_requests` entry; consumption needs
 `selection_trust`, `selection_head_requirement`, pinned `selection_bundle` and
 host-authenticated lifecycle evidence. These are external authority inputs;
 the code does not create owner roots, private signers or selector enrollment.
+
+Use `resident_owner.prepare_publication(config, prepared, operation_id=...,
+expected_registry_predecessor_head=..., expected_withdrawal_head=...)` before
+the independent owner signs a publication request. Its native
+`prepare_laya_publication` operation checks the existing fenced owner and
+returns `CANONICAL_LAYA_PUBLICATION_PREVIEW_NOT_PUBLISHED`: the canonical intent
+and unsigned next-head identity. It writes no publication checkpoint, payload,
+registry or CURRENT. The signer adds its own credential, epoch, expiry and
+signature, preserving the returned head fields, including `issued_at`, then
+pins the complete request in `publication_requests`. The preview grants no
+selection, product or trading authority and does not change handoff retries.
+
+Publication reconstructs the admission identity using that signed `issued_at`
+so a later CLI invocation produces the same digest. The actual system clock
+still validates the manifest, writer lease, signed head and withdrawal state;
+an expired request cannot regain validity through an older identity timestamp.
+A changed payload or frontier needs a fresh preview and external signature.
+Under the same existing owner writer fence, publication checks that the signed
+next head commits to the requested operation and manifest before persisting the
+publication. A mismatched request cannot advance CURRENT before returning an
+error. Signature and freshness checks remain canonical SDK checks; an invalid
+signature can leave a partial transaction checkpoint, never a selected model.
 
 Build and stage runtime/verifier bytes before deployment. The ordinary
 `install_resident.runtime_files` glob includes the owner modules, and the v8

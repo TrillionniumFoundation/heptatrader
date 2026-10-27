@@ -2,7 +2,6 @@
 
 #include "typed_tool_protocol.h"
 
-#include <cstring>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -30,11 +29,7 @@ bool UnixToolClient::Call(const std::string& socketPath,
         return false;
     }
 
-    sockaddr_un address;
-    std::memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    std::strncpy(address.sun_path, socketPath.c_str(), sizeof(address.sun_path) - 1);
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+    if (!TypedToolProtocol::ConnectUnixSocket(fd, socketPath, timeoutMs))
     {
         ::close(fd);
         reason = "SOCKET_CONNECT_FAILED";

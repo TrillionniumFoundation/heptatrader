@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -179,6 +180,75 @@ class McpBridgeTests(unittest.TestCase):
 
     def test_oversized_line_drains_once_and_next_message_survives(self) -> None:
         self.assertEqual(list(mcp.bounded_stdin_messages(io.BytesIO(b"x" * 50 + b"\n{}\n"), 8)), [None, b"{}"])
+
+    def assert_rpc_deadline(self, response_parts, *, read_delay=0, large_request=False):
+        with tempfile.TemporaryDirectory(prefix="mcp-budget-") as directory:
+            path = str(Path(directory) / "gateway.sock")
+            token = Path(directory) / "token"
+            token.write_text("private-test-token\n")
+            token.chmod(0o600)
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(listener.close)
+            listener.bind(path)
+            listener.listen(1)
+            listener.settimeout(3)
+            encoded = json.dumps(envelope("system.get_health", {})).encode()
+            header = struct.pack("!I", len(encoded))
+            observed, errors = [], []
+
+            def serve():
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(3)
+                        time.sleep(read_delay)
+                        size = struct.unpack("!I", mcp.recv_exact(connection, 4))[0]
+                        observed.append(decode_fields(mcp.recv_exact(connection, size)))
+                        for delay, part in response_parts(header, encoded):
+                            time.sleep(delay)
+                            connection.sendall(part)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # The timed-out client closed its one request.
+                except BaseException as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=serve, daemon=True)
+            worker.start()
+            with mock.patch.dict(os.environ, {"HEPTA_TOOL_EXPECTED_UID": ""}):
+                gateway = mcp.NativeToolGateway()
+            gateway.socket_path, gateway.token_file = path, str(token)
+            gateway.timeout_seconds = 0.23
+            real_socket = socket.socket
+
+            def small_send_buffer(*args, **kwargs):
+                connection = real_socket(*args, **kwargs)
+                connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+                return connection
+
+            try:
+                with mock.patch.object(mcp.socket, "socket", small_send_buffer):
+                    with self.assertRaises(TimeoutError):
+                        gateway._call_native("system.get_health",
+                            {"symbol": "x" * 32000} if large_request else {},
+                            tool_call_id="deadline-original-command")
+            finally:
+                worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0][2], "deadline-original-command")
+
+    def test_partial_header_does_not_refresh_rpc_deadline(self):
+        self.assert_rpc_deadline(lambda header, body:
+            [(0.08, bytes([byte])) for byte in header] + [(0, body)])
+
+    def test_header_and_body_share_rpc_deadline(self):
+        self.assert_rpc_deadline(lambda header, body:
+            [(0.1, header), (0.1, body[:1]), (0.1, body[1:])])
+
+    def test_send_backpressure_does_not_grant_a_new_response_budget(self):
+        self.assert_rpc_deadline(lambda header, body: [(0.15, header + body)],
+                                 read_delay=0.15, large_request=True)
 
     def test_actual_process_preserves_id_through_uncertain_retry_over_unix_socket(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mcp-test-") as directory:

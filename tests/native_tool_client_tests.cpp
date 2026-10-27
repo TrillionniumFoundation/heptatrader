@@ -1,11 +1,17 @@
 #include "../HeptaTrade/client/native_tool_client.h"
 #include "../HeptaTrade/client/native_tool_discovery_contract.h"
+#include "../HeptaTrade/tool_host/unix_session_supervisor_client.h"
+#include "../HeptaTrade/tool_host/unix_tool_client.h"
 
+#include <algorithm>
 #include <cassert>
+#include <arpa/inet.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -14,8 +20,252 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef HEPTA_TEST_WRAP_SOCKET
+namespace { bool smallNextSupervisorSocket = false; }
+extern "C" int __real_socket(int domain, int type, int protocol);
+extern "C" int __wrap_socket(int domain, int type, int protocol)
+{
+    const int fd = __real_socket(domain, type, protocol);
+    if (fd >= 0 && smallNextSupervisorSocket && domain == AF_UNIX && (type & SOCK_STREAM))
+    {
+        smallNextSupervisorSocket = false;
+        const int bytes = 1024;
+        assert(::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) == 0);
+    }
+    return fd;
+}
+#endif
+
 namespace
 {
+enum class SupervisorResponse { Immediate, SlowBody, NoHeader, InvalidLength, BackpressuredRequest };
+
+bool SupervisorCallAgainstResponse(SupervisorResponse scenario,
+                                  const SessionSupervisorRequest& request,
+                                  SessionSupervisorResult& result,
+                                  std::string& reason)
+{
+    // A local wire peer only decodes the request; it owns no real lease or
+    // Broker authority. Slow fragments and send-buffer pressure remain real I/O.
+    char directory[] = "/tmp/hepta-supervisor-client-socket-XXXXXX";
+    assert(::mkdtemp(directory) != nullptr);
+    const std::string socketPath = std::string(directory) + "/supervisor.sock";
+    const int listener = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    assert(listener >= 0);
+    sockaddr_un address;
+    std::memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    assert(socketPath.size() < sizeof(address.sun_path));
+    std::strncpy(address.sun_path, socketPath.c_str(), sizeof(address.sun_path) - 1);
+    assert(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+    assert(::listen(listener, 1) == 0);
+
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0)
+    {
+        const int connection = ::accept(listener, nullptr, nullptr);
+        if (connection < 0) _exit(2);
+        if (scenario == SupervisorResponse::BackpressuredRequest) ::usleep(400000);
+        std::string body, error;
+        if (!TypedToolProtocol::ReadFrame(connection, 16384, 2000, body, error))
+        {
+            // The fixed client can exhaust its write budget and close before
+            // its large request reaches this deliberately delayed reader.
+            ::close(connection); ::close(listener);
+            _exit(scenario == SupervisorResponse::BackpressuredRequest ? 0 : 3);
+        }
+        SessionSupervisorRequest decoded;
+        if (!SessionSupervisorProtocol::DecodeRequest(body, decoded, error) ||
+            decoded.operation != request.operation || decoded.token != request.token ||
+            decoded.terminalEvidence != request.terminalEvidence) _exit(4);
+        if (scenario == SupervisorResponse::NoHeader) ::usleep(400000);
+        else if (scenario == SupervisorResponse::InvalidLength)
+        {
+            const std::uint32_t invalid = htonl(65537);
+            if (::send(connection, &invalid, sizeof(invalid), MSG_NOSIGNAL) != sizeof(invalid)) _exit(5);
+        }
+        else
+        {
+            SessionSupervisorResult reply;
+            reply.accepted = true; reply.leaseGeneration = 2;
+            reply.ReasonCode() = "FIXTURE_CONTROL_ACCEPTED";
+            const std::string response = SessionSupervisorProtocol::EncodeResult(reply);
+            if (scenario == SupervisorResponse::SlowBody)
+            {
+                const std::uint32_t size = htonl(static_cast<std::uint32_t>(response.size()));
+                if (::send(connection, &size, sizeof(size), MSG_NOSIGNAL) != sizeof(size)) _exit(6);
+                const std::size_t chunk = (response.size() + 4) / 5;
+                for (std::size_t offset = 0; offset < response.size(); offset += chunk)
+                {
+                    ::usleep(80000);  // Every fragment arrives within 200 ms; the frame does not.
+                    const std::size_t count = std::min(chunk, response.size() - offset);
+                    if (::send(connection, response.data() + offset, count, MSG_NOSIGNAL) !=
+                            static_cast<ssize_t>(count)) break;
+                }
+            }
+            else TypedToolProtocol::WriteFrame(connection, response, 2000, error);
+        }
+        ::close(connection); ::close(listener);
+        _exit(0);
+    }
+#ifdef HEPTA_TEST_WRAP_SOCKET
+    // Only the next client socket changes. Listener and all unrelated tests
+    // keep their normal buffers, and the syscall/transport remains unchanged.
+    smallNextSupervisorSocket = scenario == SupervisorResponse::BackpressuredRequest;
+#endif
+    const bool called = UnixSessionSupervisorClient::Call(socketPath, request, result, reason,
+        scenario == SupervisorResponse::Immediate ? 2000 : 200, 32768);
+#ifdef HEPTA_TEST_WRAP_SOCKET
+    assert(!smallNextSupervisorSocket);
+#endif
+    ::close(listener);
+    int status = 0;
+    assert(::waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    std::remove(socketPath.c_str());
+    assert(::rmdir(directory) == 0);
+    return called;
+}
+
+void TestSupervisorClientFrameBudgetsAndReasons()
+{
+    SessionSupervisorRequest request;
+    request.operation = SessionSupervisorOperation::Revoke;
+    request.token = "supervisor-client-fixture-token";
+    request.expectedGeneration = 1;
+    SessionSupervisorResult result;
+    std::string reason;
+    assert(SupervisorCallAgainstResponse(SupervisorResponse::Immediate, request, result, reason));
+    assert(result.accepted && result.leaseGeneration == 2);
+    assert(!SupervisorCallAgainstResponse(SupervisorResponse::SlowBody, request, result, reason));
+    assert(reason == "SUPERVISOR_FRAME_BODY_TIMEOUT");
+    assert(!SupervisorCallAgainstResponse(SupervisorResponse::NoHeader, request, result, reason));
+    assert(reason == "SUPERVISOR_FRAME_HEADER_TIMEOUT");
+    assert(!SupervisorCallAgainstResponse(SupervisorResponse::InvalidLength, request, result, reason));
+    assert(reason == "SUPERVISOR_FRAME_LENGTH_REJECTED");
+#ifdef HEPTA_TEST_WRAP_SOCKET
+    request.operation = SessionSupervisorOperation::PaperTerminalWitnessAck;
+    request.recoveryId = "fixture-recovery";
+    request.finalizationId = "fixture-finalization";
+    request.expectedOwnerSetSha256 = "sha256:" + std::string(64, 'a');
+    request.expectedOwnerCount = 1;
+    request.receiptSha256 = "sha256:" + std::string(64, 'b');
+    request.terminalEvidenceSha256 = "sha256:" + std::string(64, 'c');
+    request.terminalEvidence.assign(12288, 'e');
+    request.terminalEvidence.replace(0, 5, "HPE1\n");
+    request.terminalEvidence.back() = '\n';
+    std::string encoded;
+    assert(SessionSupervisorProtocol::EncodeRequest(request, encoded, reason));
+    assert(encoded.size() > 12288 && encoded.size() <= 16384);
+    assert(!SupervisorCallAgainstResponse(SupervisorResponse::BackpressuredRequest, request, result, reason));
+    assert(reason == "SUPERVISOR_FRAME_WRITE_TIMEOUT");
+#endif
+}
+
+#ifdef HEPTA_TEST_WRAP_SOCKET
+void TestClientConnectBacklogDeadline(bool supervisor)
+{
+    char directory[] = "/tmp/hepta-client-backlog-XXXXXX";
+    assert(::mkdtemp(directory) != nullptr);
+    const std::string socketPath = std::string(directory) + "/full.sock";
+    const int listener = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    assert(listener >= 0);
+    sockaddr_un address;
+    std::memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    assert(socketPath.size() < sizeof(address.sun_path));
+    std::strncpy(address.sun_path, socketPath.c_str(), sizeof(address.sun_path) - 1);
+    assert(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+    // Linux permits one pending AF_UNIX connection for backlog=0. Occupy it
+    // before Call(), so an unbounded blocking connect cannot reach framing.
+    assert(::listen(listener, 0) == 0);
+    const int filler = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    assert(filler >= 0);
+    assert(::connect(filler, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+    const int probe = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    assert(probe >= 0);
+    assert(::connect(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1);
+    assert(errno == EAGAIN || errno == EWOULDBLOCK);
+    ::close(probe);
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0)
+    {
+        ::close(filler);
+        ::usleep(400000);  // Longer than the caller's entire connect budget.
+        const int first = ::accept(listener, nullptr, nullptr);
+        if (first < 0) _exit(2);
+        ::close(first);
+        // The fixed nonblocking client refused the full queue and never
+        // enqueued this second connection. Do not block in accept for it.
+        pollfd pending = {listener, POLLIN, 0};
+        const int ready = ::poll(&pending, 1, 500);
+        if (ready == 0) { ::close(listener); _exit(0); }
+        if (ready < 0 || !(pending.revents & POLLIN)) _exit(3);
+        const int connection = ::accept(listener, nullptr, nullptr);
+        if (connection < 0) _exit(4);
+        std::string body, error, response;
+        if (!TypedToolProtocol::ReadFrame(connection, 16384, 2000, body, error)) _exit(5);
+        if (supervisor)
+        {
+            SessionSupervisorRequest decoded;
+            if (!SessionSupervisorProtocol::DecodeRequest(body, decoded, error)) _exit(6);
+            SessionSupervisorResult reply;
+            reply.accepted = true; reply.leaseGeneration = 2;
+            response = SessionSupervisorProtocol::EncodeResult(reply);
+        }
+        else
+        {
+            TradingToolHostRequest decoded;
+            if (!TypedToolProtocol::DecodeRequest(body, decoded, error)) _exit(7);
+            response = "{\"status\":\"ok\",\"tool\":\"system.get_health\","
+                "\"reason_code\":\"\",\"detail\":\"\",\"order_id\":-1,\"payload\":null}";
+        }
+        if (!TypedToolProtocol::WriteFrame(connection, response, 2000, error)) _exit(8);
+        ::close(connection); ::close(listener);
+        _exit(0);
+    }
+    std::string reason;
+    bool called;
+    if (supervisor)
+    {
+        SessionSupervisorRequest request;
+        request.operation = SessionSupervisorOperation::Revoke;
+        request.token = "supervisor-backlog-fixture-token";
+        request.expectedGeneration = 1;
+        SessionSupervisorResult result;
+        called = UnixSessionSupervisorClient::Call(socketPath, request, result, reason, 200, 32768);
+    }
+    else
+    {
+        TradingToolHostRequest request;
+        request.sessionToken = "tool-backlog-fixture-token";
+        request.toolCallId = "backlog-call";
+        request.call.name = "system.get_health";
+        std::string response;
+        called = UnixToolClient::Call(socketPath, request, response, reason, 200, 32768);
+    }
+    ::close(listener);
+    int status = 0;
+    assert(::waitpid(child, &status, 0) == child);
+    ::close(filler);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    std::remove(socketPath.c_str());
+    assert(::rmdir(directory) == 0);
+    if (supervisor)
+    {
+        assert(!called);
+        assert(reason == "SUPERVISOR_SOCKET_CONNECT_FAILED");
+    }
+    else
+    {
+        assert(!called);
+        assert(reason == "SOCKET_CONNECT_FAILED");
+    }
+}
+#endif
+
 bool CallAgainstResponse(const std::string& response,
                          std::size_t maxResponseBytes,
                          NativeToolClientResult& result,
@@ -526,6 +776,71 @@ void TestTransportResponseBoundary()
 
 int main()
 {
+#ifdef HEPTA_TEST_WRAP_SOCKET
+    TestClientConnectBacklogDeadline(true);
+    TestClientConnectBacklogDeadline(false);
+#endif
+    TestSupervisorClientFrameBudgetsAndReasons();
+    // Every fragment must share one frame budget. An occasional byte must
+    // not keep a Gateway worker occupied by resetting its I/O timeout.
+    {
+        int sockets[2];
+        assert(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+        const std::uint32_t length = htonl(5);
+        assert(::send(sockets[1], &length, sizeof(length), MSG_NOSIGNAL) == sizeof(length));
+        const pid_t child = ::fork();
+        assert(child >= 0);
+        if (child == 0)
+        {
+            ::close(sockets[0]);
+            for (int i = 0; i < 5; ++i)
+            {
+                ::usleep(40000);
+                if (::send(sockets[1], "x", 1, MSG_NOSIGNAL) != 1) break;
+            }
+            ::close(sockets[1]);
+            _exit(0);
+        }
+        ::close(sockets[1]);
+        std::string body, reason;
+        const bool accepted = TypedToolProtocol::ReadFrame(sockets[0], 64, 100, body, reason);
+        ::close(sockets[0]);
+        int status = 0;
+        assert(::waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!accepted);
+        assert(reason == "FRAME_BODY_TIMEOUT");
+    }
+
+    // A writable blocking socket can still block inside send() when the
+    // complete frame exceeds its buffer. Backpressure shares the same budget.
+    {
+        int sockets[2];
+        assert(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+        const int sendBuffer = 4096;
+        assert(::setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer)) == 0);
+        const pid_t child = ::fork();
+        assert(child >= 0);
+        if (child == 0)
+        {
+            ::close(sockets[0]);
+            ::usleep(200000);
+            char buffer[4096];
+            while (::recv(sockets[1], buffer, sizeof(buffer), 0) > 0) {}
+            ::close(sockets[1]);
+            _exit(0);
+        }
+        ::close(sockets[1]);
+        std::string reason;
+        const bool delivered = TypedToolProtocol::WriteFrame(sockets[0], std::string(524288, 'x'), 100, reason);
+        ::close(sockets[0]);
+        int status = 0;
+        assert(::waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!delivered);
+        assert(reason == "FRAME_WRITE_TIMEOUT");
+    }
+
     char path[] = "/tmp/hepta-native-client-token-XXXXXX";
     const int fd = ::mkstemp(path);
     assert(fd >= 0);

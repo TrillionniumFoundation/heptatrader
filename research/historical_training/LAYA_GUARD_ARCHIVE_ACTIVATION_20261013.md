@@ -1,5 +1,16 @@
 # Laya archive-aware research service activation (2026-10-13)
 
+Historical operation; the fixed-canary activation CLI, exact-job closeout,
+stage/unit helpers and paired tests are retired from current source. The commands
+below describe only the original operation. Its measurements, failed attempts,
+receipts and local runtime data remain retained. Read the original code and tests
+from Git history, for example:
+
+```sh
+git show 15853b2d04a933cea779897779e621adc8daecc9:research/historical_training/laya_guard_archive_activate.py
+git show 15853b2d04a933cea779897779e621adc8daecc9:research/historical_training/tests/test_laya_guard_archive_activate.py
+```
+
 This operator extension is intentionally separate from the stage-only source
 and immutable evidence in PR #253. The real deployed fix is possible only
 after the precommitted 10:05 UTC+8 **original-versus-verified-cache** source

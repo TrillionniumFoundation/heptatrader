@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 prefix="$HOME/.local/share/heptatrader/current"
+operator_release="$(dirname "$(readlink -f "$0")")"
+operator_release_required=false # A prepared operator copy fixes this to true.
 config="$HOME/.config/heptatrader"
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/heptatrader"
 # PnL is a read-only observer, never the driver's legacy realized-only counter.
@@ -79,9 +81,20 @@ case "${1:-status}" in
   logs)
     exec journalctl --user -u heptatrader-execution.service -u heptatrader-gateway.service -n 60 --no-pager ;;
   native)
-    shift; exec "$prefix/bin/heptactl" --socket "$runtime/tools.sock" --token-file "$config/paper.token" "$@" ;;
+    shift
+    if $operator_release_required || [[ -e "$operator_release/MANIFEST.json" || -L "$operator_release/MANIFEST.json" ]]; then
+      exec /usr/bin/python3 -B "$operator_release/hepta_operator_clients.py" heptactl --socket "$runtime/tools.sock" --token-file "$config/paper.token" "$@"
+    fi
+    exec "$prefix/bin/heptactl" --socket "$runtime/tools.sock" --token-file "$config/paper.token" "$@" ;;
   session)
-    shift; exec "$prefix/bin/hepta-sessionctl" --socket "$runtime/supervisor.sock" "$@" ;;
+    shift
+    session_endpoint=(--socket "$runtime/supervisor.sock")
+    # owner-audit is a top-level mode with its own Execution runtime config.
+    [[ "${1:-}" != owner-audit ]] || session_endpoint=()
+    if $operator_release_required || [[ -e "$operator_release/MANIFEST.json" || -L "$operator_release/MANIFEST.json" ]]; then
+      exec /usr/bin/python3 -B "$operator_release/hepta_operator_clients.py" hepta-sessionctl "${session_endpoint[@]}" "$@"
+    fi
+    exec "$prefix/bin/hepta-sessionctl" "${session_endpoint[@]}" "$@" ;;
   ask)
     shift
     if [[ $# -ne 1 ]]; then echo 'usage: heptatrader ask "instruction"' >&2; exit 64; fi
@@ -91,11 +104,16 @@ case "${1:-status}" in
     [[ -x "$cli" ]] || { echo 'Codex CLI is not installed in the user tools directory' >&2; exit 69; }
     work="$HOME/.local/state/heptatrader/agent-workspace"
     mkdir -p "$work"; chmod 700 "$work"
+    mcp="$prefix/libexec/heptatrader/hepta-user-mcp"
+    if $operator_release_required && [[ ! -f "$operator_release/hepta-user-mcp" ]]; then
+      echo 'Selected operator MCP launcher is missing.' >&2; exit 69
+    fi
+    [[ ! -f "$operator_release/hepta-user-mcp" ]] || mcp="$operator_release/hepta-user-mcp"
     exec "$cli" -a never exec --ignore-user-config --ephemeral --skip-git-repo-check \
       --sandbox read-only --model "$model" --cd "$work" \
       --disable shell_tool --disable unified_exec --disable apps --disable skill_mcp_dependency_install \
       -c 'web_search="disabled"' \
-      -c "mcp_servers.heptatrader.command=\"$prefix/libexec/heptatrader/hepta-user-mcp\"" \
+      -c "mcp_servers.heptatrader.command=\"$mcp\"" \
       "You operate only the configured local IB PAPER simulator through the HeptaTrader MCP tools. Never request LIVE or change credentials, configuration, risk limits or kill switch. Obtain current tool schemas and authoritative state before acting. Use exact unqualified catalog names for tool_name, for example market.get_quote, without the heptatrader server prefix. A lost or uncertain send must be inspected under its original command ID, never resent as a new order. A quoted price or accepted request is not a fill. Do not place any order unless this user instruction explicitly asks for one. User instruction: $1" < /dev/null ;;
   *)
     echo 'usage: heptatrader {start|restart|stop|status|progress [--format json|--value-timing-report FILE]|pnl [--account|--format json|--cached|--import-flex FILE --statement-timezone ZONE]|logs|pause|training-pause|paper-on [--resume-native-hold [--check]]|maintenance-hold|maintenance-release [--expected-hold-sha256 SHA256]|maintenance-status|native <args>|session <args>|ask "instruction"}' >&2

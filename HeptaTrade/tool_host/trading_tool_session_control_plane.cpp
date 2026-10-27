@@ -380,7 +380,8 @@ bool TradingToolSessionControlPlane::RenewPaperAfterAudit(
     }
     return m_host.UpdatePaperSessionLeaseAfterAudit(
         token, replacementToken, expectedGeneration, expiresAtMs,
-        newGeneration, ownerAudit, reason, resumeOwner, continuation);
+        newGeneration, ownerAudit, reason, resumeOwner, continuation,
+        replacement.maxOrderQuantity);
 }
 
 bool TradingToolSessionControlPlane::Rotate(

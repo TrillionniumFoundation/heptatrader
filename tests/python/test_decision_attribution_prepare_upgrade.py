@@ -161,6 +161,50 @@ class PrepareUpgradeTests(unittest.TestCase):
    activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
   self._unchanged()
 
+ def test_all_native_clients_are_prepared_together_and_reverified_before_activation(self):
+  for stream in (False,True):
+   with self.subTest(stream=stream):
+    service,old,resident=self._resident('EUR.USD','all-clients-'+str(stream))
+    bindings={}
+    for name in ('heptactl','hepta-paper-command','hepta-sessionctl'):
+     binary=self.root/('native-'+str(stream))/name
+     self._put(binary,(name+' fixture bytes\n').encode());binary.chmod(0o500)
+     bindings[name]={'path':str(binary),'sha256':installer.sha(binary)}
+    with self._offline(service):
+     result=installer.prepare_upgrade('EUR.USD',native_read_stream=stream,native_clients=bindings)
+    candidate=Path(result['manifest']);manifest=json.loads(candidate.read_bytes())
+    self.assertEqual(manifest['native_clients'],bindings)
+    self.assertEqual(manifest.get('native_read_binary'),bindings['heptactl'] if stream else None)
+    for key in ('period_path','period_sha256','state_path','ledger_path','strategy_config','behavior_profile'):
+     self.assertEqual(manifest[key],old[key])
+    self.assertEqual(manifest['runtime_sha256'],old['runtime_sha256'])
+    self.assertFalse(manifest['behavior_equivalence_assessed'])
+    installed={'manifest':str(resident/'manifest.json'),'manifest_sha256':installer.sha(resident/'manifest.json')}
+    target=activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
+    self.assertEqual(target['native_clients'],bindings)
+    # Mutation/recovery clients are reverified too, not only the read stream.
+    changed=Path(bindings['hepta-paper-command']['path'])
+    self._put(changed,b'changed order transport\n');changed.chmod(0o500)
+    with self.assertRaisesRegex(ValueError,'NATIVE_READ_BINARY_CHANGED'):
+     activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
+    self._unchanged()
+
+ def test_client_bindings_cli_requires_exact_private_file_digest(self):
+  bindings={name:{'path':'/qualified/'+name,'sha256':'a'*64}
+   for name in ('heptactl','hepta-paper-command','hepta-sessionctl')}
+  path=self.root/'clients.json';self._put(path,(json.dumps(bindings)+'\n').encode())
+  arguments=['install_decision_attribution.py','--instrument','EUR.USD','--prepare-upgrade',
+   '--native-client-bindings',str(path),'--native-client-bindings-sha256',installer.sha(path)]
+  with mock.patch.object(sys,'argv',arguments),mock.patch.object(installer,'os',self.os_proxy), \
+       mock.patch.object(installer,'prepare_upgrade',return_value={}) as prepare:
+   installer.main()
+  prepare.assert_called_once_with('EUR.USD',native_clients=bindings)
+  arguments[-1]='0'*64
+  with mock.patch.object(sys,'argv',arguments),mock.patch.object(installer,'os',self.os_proxy), \
+       mock.patch.object(installer,'prepare_upgrade') as prepare:
+   with self.assertRaisesRegex(RuntimeError,'NATIVE_CLIENT_BINDINGS_FILE_CHANGED'):installer.main()
+  prepare.assert_not_called()
+
  def test_complete_candidate_preserves_bindings_while_flat_held_or_pending(self):
   states={
    'flat':{'position':0,'pending':None,'halt_new_entries':False},
