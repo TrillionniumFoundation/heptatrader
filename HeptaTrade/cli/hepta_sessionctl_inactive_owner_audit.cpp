@@ -312,7 +312,7 @@ bool Orders(const Fields& fields, const AgentExecutionContext& owner, bool held,
 
 bool Positions(const Fields& fields, const AgentExecutionContext& owner,
                const ExecutionServiceIdentity& identity, std::uint64_t connectionEpoch,
-               std::string& reason)
+               std::string& reason, const ExecutionOwnerAuditResult* upgradeAudit = nullptr)
 {
     if (!Equal(fields, "source", "\"IB\"", reason) ||
         !Equal(fields, "authoritative", "true", reason) ||
@@ -327,6 +327,19 @@ bool Positions(const Fields& fields, const AgentExecutionContext& owner,
             (instrument == "\"BTC.USD\"" && !ZeroNumber(Value(row, "quantity")))) {
             reason = "INACTIVE_OWNER_PORTFOLIO_INVALID_OR_CRYPTO_NONZERO"; return false;
         }
+    }
+    if (upgradeAudit) {
+        // Only the separate maintenance audit may bootstrap an older runtime.
+        // The current op15 result, not an omitted portfolio row, proves the
+        // configured physical crypto position is zero. Keep the ordinary
+        // portfolio in that same position generation and reject contradictory
+        // or incomplete explicit evidence when the new field is present.
+        std::uint64_t positionGeneration;
+        if (!Number(fields, "position_generation", positionGeneration, true, reason)) return false;
+        if (positionGeneration != upgradeAudit->brokerPositionGeneration) {
+            reason = "INACTIVE_OWNER_UPGRADE_POSITION_GENERATION_CHANGED"; return false;
+        }
+        if (fields.find("configured_crypto_position_observation") == fields.end()) return true;
     }
     Fields observation;
     if (!TypedToolProtocol::DecodeJsonObjectFields(
@@ -421,7 +434,9 @@ int HeptaSessionCtlInactiveOwnerAudit::Run(int argc, char** argv,
 {
     std::string phase;
     const auto fail = [&](int code, const std::string& reason) {
-        std::cout << "{\"schema\":\"hepta_inactive_owner_audit_v1\",\"accepted\":false,"
+        std::cout << "{\"schema\":" << Quoted(phase == "upgrade-held"
+                      ? "hepta_inactive_owner_upgrade_audit_v1" : "hepta_inactive_owner_audit_v1")
+                  << ",\"accepted\":false,"
                   << "\"phase\":" << Quoted(phase) << ",\"reason_code\":" << Quoted(reason) << "}\n";
         std::cerr << reason << '\n'; return code;
     };
@@ -438,9 +453,12 @@ int HeptaSessionCtlInactiveOwnerAudit::Run(int argc, char** argv,
         !Unsigned(Value(options, "--execution-pid"), pid) || pid == 0 ||
         pid > static_cast<std::uint64_t>(std::numeric_limits<pid_t>::max()) ||
         !Unsigned(Value(options, "--execution-start-ticks"), startTicks) || startTicks == 0 ||
-        (Value(options, "--phase") != "held" && Value(options, "--phase") != "released"))
+        (Value(options, "--phase") != "held" && Value(options, "--phase") != "released" &&
+         Value(options, "--phase") != "upgrade-held"))
         return fail(2, "INACTIVE_OWNER_AUDIT_USAGE");
-    phase = options.at("--phase"); const bool held = phase == "held";
+    phase = options.at("--phase");
+    const bool upgradeHeld = phase == "upgrade-held";
+    const bool held = phase == "held" || upgradeHeld;
     const std::uint32_t uid = ::geteuid(); std::string reason;
     if (!osConfig.Validate(reason) || !gateway.Validate(reason)) return fail(2, reason);
     if (uid == 0 || !osConfig.userPaperScope || osConfig.supervisorUid != uid ||
@@ -495,7 +513,7 @@ int HeptaSessionCtlInactiveOwnerAudit::Run(int argc, char** argv,
         bool valid;
         if (i == 0 || i == 3) valid = Health(fields, held, reason);
         else if (i == 1) valid = Orders(fields, owner, held, brokerEpoch, reason);
-        else valid = Positions(fields, owner, identity, brokerEpoch, reason);
+        else valid = Positions(fields, owner, identity, brokerEpoch, reason, upgradeHeld ? &audit : nullptr);
         if (!valid) return fail(4, reason);
         payloads[labels[i]] = result.detail;
     }
@@ -504,8 +522,11 @@ int HeptaSessionCtlInactiveOwnerAudit::Run(int argc, char** argv,
     SessionSupervisorLeaseStore finalCatalog;
     if (!LoadCatalog(finalCatalog, osConfig, owner, before, after, reason)) return fail(4, reason);
     std::cout << std::boolalpha
-        << "{\"schema\":\"hepta_inactive_owner_audit_v1\",\"accepted\":true,"
-        << "\"state\":\"INACTIVE_FENCED_ZERO_NO_LEASE\",\"phase\":" << Quoted(phase)
+        << "{\"schema\":" << Quoted(upgradeHeld
+            ? "hepta_inactive_owner_upgrade_audit_v1" : "hepta_inactive_owner_audit_v1")
+        << ",\"accepted\":true,\"state\":" << Quoted(upgradeHeld
+            ? "INACTIVE_FENCED_OWNER_UPGRADE_AUDIT" : "INACTIVE_FENCED_ZERO_NO_LEASE")
+        << ",\"phase\":" << Quoted(phase)
         << ",\"configured_owner\":{\"agent_id\":" << Quoted(owner.agentId)
         << ",\"session_id\":" << Quoted(owner.sessionId) << ",\"account\":" << Quoted(owner.account)
         << ",\"execution_domain\":\"PAPER\",\"instrument\":\"BTC.USD\"}"

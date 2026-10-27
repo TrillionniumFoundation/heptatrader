@@ -130,6 +130,21 @@ class InactiveOwnerTests(unittest.TestCase):
         with self.assertRaisesRegex(inactive.InactiveOwnerError, "PHASE_INVALID"): self.prove("released")
         self.assertEqual(self.calls, [])
 
+    def test_maintenance_upgrade_audit_cannot_be_used_as_a_native_release_proof(self):
+        with self.assertRaisesRegex(inactive.InactiveOwnerError, "PHASE_INVALID"):
+            self.prove("upgrade-held")
+        original = self.native
+        def maintenance(argv, environment):
+            proof = original(argv, environment)
+            proof.update(schema="hepta_inactive_owner_upgrade_audit_v1",
+                         state="INACTIVE_FENCED_OWNER_UPGRADE_AUDIT", phase="upgrade-held")
+            return proof
+        with patch.object(inactive, "run_native", side_effect=maintenance),\
+             self.assertRaisesRegex(inactive.InactiveOwnerError, "NATIVE_PROOF_INVALID"):
+            self.prove()
+        self.assertEqual(self.state_path.read_bytes(), self.original_state)
+        self.assertEqual(self.token.read_bytes(), self.original_token)
+
     def test_absent_or_changed_catalog_and_wrong_scope_never_form_a_proof(self):
         for fault in ("catalog", "catalog_changed", "scope", "fence", "timeout"):
             self.fault = fault
