@@ -191,6 +191,72 @@ class WorkerFailureDiagnosticTests(unittest.TestCase):
         self.assertEqual(record['exit_code'], 2)
         self.assertTrue(record['stderr_tail'].endswith(last+'\n'))
 
+    def test_real_hip_exception_title_survives_following_runtime_advice(self):
+        title = 'torch.AcceleratorError: CUDA error: no kernel image is available for execution on the device'
+        log = (title + '\n'
+               "Search for `hipErrorNoBinaryForGpu' in https://rocm.docs.amd.com/projects/HIP/en/latest/index.html for more information.\n"
+               'For more detailed error information, run with CUDA_LOG_FILE=stderr\n'
+               'Device-side assertion tracking was not enabled by user.\n')
+        record, _, _, _ = self.run_reap(1, log.encode())
+        self.assertEqual(record['reason'], title)
+        self.assertEqual(record['stderr_tail'], log)
+        self.assertEqual(record['phase'], {'phase':'VALIDATE_AND_LOAD'})
+        self.assertEqual(set(record), {'schema','slot','at_ms','exit_code','reason','phase','predicted','stderr_tail'})
+
+    def test_source_timeout_contract_error_survives_following_advice(self):
+        title = 'laya_cell.integrity.ContractError: RECENT_SOURCE_READ_TIMEOUT'
+        record, _, _, _ = self.run_reap(1, (title+'\nSee source diagnostics for details.\n').encode())
+        self.assertEqual(record['reason'], title)
+
+    def test_last_chained_exception_is_selected(self):
+        log = ('Traceback (most recent call last):\n'
+               'ValueError: original loader failure\n\n'
+               'The above exception was the direct cause of the following exception:\n\n'
+               'Traceback (most recent call last):\n'
+               '  File "worker.py", line 1, in load\n'
+               '    raise RuntimeError("wrapped")\n'
+               'loader.RuntimeError: wrapped\n'
+               'For additional details, inspect the loader log.\n')
+        record, _, _, _ = self.run_reap(1, log.encode())
+        self.assertEqual(record['reason'], 'loader.RuntimeError: wrapped')
+
+    def test_ordinary_log_mentions_and_indented_source_are_not_exception_titles(self):
+        log = ('INFO loader.RuntimeError: expected fixture label\n'
+               '  RuntimeError: indented source example\n'
+               'Exception statistics: 0\n'
+               'Info: source scan ended without output\n')
+        record, _, _, _ = self.run_reap(1, log.encode())
+        self.assertEqual(record['reason'], 'Info: source scan ended without output')
+
+    def test_common_termination_titles_without_traceback(self):
+        for title in ('KeyboardInterrupt: interrupted', 'SystemExit: 2',
+                      'subprocess.TimeoutExpired: source reader deadline'):
+            with self.subTest(title=title):
+                record, _, _, _ = self.run_reap(1, (title+'\nWorker cleanup completed.\n').encode())
+                self.assertEqual(record['reason'], title)
+                self.failure.unlink()
+
+    def test_first_indented_line_is_not_promoted_to_exception_title(self):
+        record, _, _, _ = self.run_reap(1,
+            b'  RuntimeError: source example\nWorker finished without prediction.\n')
+        self.assertEqual(record['reason'], 'Worker finished without prediction.')
+
+    def test_exception_title_keeps_original_reason_length_limit(self):
+        title = 'RuntimeError: '+('x'*300)
+        record, _, _, _ = self.run_reap(1, (title+'\nAdditional advice.\n').encode())
+        self.assertEqual(record['reason'], title[:240])
+
+    def test_exception_title_does_not_override_worker_deadline(self):
+        record, process, _, _ = self.run_reap(-signal.SIGSEGV,
+            b'torch.AcceleratorError: loader failure\nRuntime advice.\n', expired=True, running=True)
+        self.assertEqual(record['reason'], 'WORKER_BUDGET_EXCEEDED')
+        self.assertTrue(process.terminated)
+
+    def test_exception_title_does_not_override_native_signal(self):
+        record, _, _, _ = self.run_reap(-signal.SIGABRT,
+            b'torch.AcceleratorError: loader failure\nRuntime advice.\n')
+        self.assertEqual(record['reason'], 'WORKER_SIGNAL_SIGABRT')
+
     def test_empty_log_keeps_original_missing_diagnostic_reason(self):
         record, _, _, _ = self.run_reap(2)
         self.assertEqual(record['reason'], 'NO_PROCESS_DIAGNOSTIC')
