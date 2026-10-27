@@ -2,11 +2,19 @@
 // No native start, production state, network transport, or real broker send.
 #include "execution/ib_paper_execution_runtime_composition.h"
 #include "execution/execution_coordinator.h"
+#include "execution/execution_decision_lease_authority.h"
+#include "events/execution_event_hub.h"
+#include "execution/ib_paper_execution_profile.h"
 #include "execution/unix_execution_service_server.h"
 #include "adapter_ib/ib_venue_correlation.h"
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <future>
+#include <condition_variable>
+#include <atomic>
+#include <mutex>
+#include <fcntl.h>
 #include <dirent.h>
 #include <cstring>
 #include <iostream>
@@ -16,7 +24,9 @@
 
 static void need(bool v,const std::string& message) { if(!v) throw std::runtime_error(message); }
 struct ReplayBroker final : IIBApiWrapper {
-    bool connected=false;std::uint64_t epoch=0;int requests=0,execRequest=0,places=0;
+    bool connected=false;std::uint64_t epoch=0;int requests=0,execRequest=0;
+    std::atomic<int> places{0}, cancels{0};
+    bool allowSyntheticCancel=false, allowSyntheticQuotes=false, returnFalseAfterPlace=false;
     long orderId=0;IBOrderLite order;IBContractLite contract;std::deque<IBEvent> events;
     void SetConnectionEpoch(std::uint64_t e) override {epoch=e;}
     std::uint64_t GetConnectionEpoch() const override {return epoch;}
@@ -37,35 +47,88 @@ struct ReplayBroker final : IIBApiWrapper {
     bool ReqAllOpenOrders() override {return true;}
     bool ReqCompletedOrders() override {return true;}
     bool ReqExecutions(int id) override {execRequest=id;return true;}
-    bool ReqMktData(int,const IBContractLite&) override {throw std::runtime_error("UNEXPECTED_QUOTE_SEND");}
-    bool CancelMktData(int) override {throw std::runtime_error("UNEXPECTED_QUOTE_CANCEL");}
+    bool ReqMktData(int,const IBContractLite&) override {
+        if (!allowSyntheticQuotes) throw std::runtime_error("UNEXPECTED_QUOTE_SEND");
+        return true;
+    }
+    bool CancelMktData(int) override {
+        if (!allowSyntheticQuotes) throw std::runtime_error("UNEXPECTED_QUOTE_CANCEL");
+        return true;
+    }
     bool PlaceOrder(long id,const IBContractLite& c,const IBOrderLite& o) override {
-        ++places;orderId=id;contract=c;order=o;return true;
+        ++places;orderId=id;contract=c;order=o;return !returnFalseAfterPlace;
     }
     bool PlaceOrderWithTimeInForce(long id,const IBContractLite& c,const IBOrderLite& o,const std::string&) override {return PlaceOrder(id,c,o);}
-    bool CancelOrder(long) override {throw std::runtime_error("UNEXPECTED_CANCEL");}
+    bool CancelOrder(long) override {
+        if (!allowSyntheticCancel) throw std::runtime_error("UNEXPECTED_CANCEL");
+        ++cancels; return true;
+    }
     bool PollOnce(int) override {return true;}
-    bool TryDequeueEvent(IBEvent& e) override {if(events.empty())return false;e=events.front();events.pop_front();return true;}
+    std::function<void()> onQueueEmpty;
+    bool TryDequeueEvent(IBEvent& e) override {
+        if(events.empty()) {if(onQueueEmpty)onQueueEmpty();return false;}
+        e=events.front();events.pop_front();return true;
+    }
     long GetLastValidOrderId() const override {return 371;}
+};
+
+struct RuntimeExitBarrier {
+    std::mutex mutex; std::condition_variable changed;
+    bool entered=false, released=false;
+    void Signal() { std::lock_guard<std::mutex> lock(mutex); entered=true; changed.notify_all(); }
+    void Block() {
+        std::unique_lock<std::mutex> lock(mutex); entered=true; changed.notify_all();
+        need(changed.wait_for(lock,std::chrono::seconds(15),[&]{return released;}),"runtime fixture release deadline");
+    }
+    void Wait() {
+        std::unique_lock<std::mutex> lock(mutex);
+        need(changed.wait_for(lock,std::chrono::seconds(2),[&]{return entered;}),"runtime callback progress before release");
+    }
+    void Release() { std::lock_guard<std::mutex> lock(mutex); released=true; changed.notify_all(); }
+};
+class RuntimeExitKillSwitch final : public IbPaperKillSwitchReader {
+public:
+    IbPaperKillSwitchObservation Observe() const override {
+        IbPaperKillSwitchObservation observation; observation.state=IbPaperKillSwitchState::Disarmed; return observation;
+    }
+};
+struct RuntimeLogPipe {
+    std::string path; int reader=-1;
+    explicit RuntimeLogPipe(const std::string& p):path(p) {
+        need(::unlink(path.c_str())==0,"replace only private fixture diagnostic log");
+        need(::mkfifo(path.c_str(),0600)==0,"private blocked diagnostic sink");
+    }
+    void Unblock() noexcept { if(reader<0) reader=::open(path.c_str(),O_RDONLY|O_NONBLOCK|O_CLOEXEC); }
+    ~RuntimeLogPipe() {
+        if(reader>=0)::close(reader);
+        ::unlink(path.c_str());
+        const int file=::open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+        if(file>=0)::close(file);
+    }
+};
+struct RuntimeExitRelease {
+    RuntimeExitBarrier* barrier=nullptr; RuntimeLogPipe* pipe=nullptr;
+    ~RuntimeExitRelease() { if(barrier)barrier->Release(); if(pipe)pipe->Unblock(); }
 };
 
 struct IbPostFillReconciliationFixture {
     using Clock=std::chrono::steady_clock;
     static constexpr double total=.2796508;
-    std::string dir;ReplayBroker* broker;std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
+    std::string dir, account;ReplayBroker* broker;std::unique_ptr<IbPaperExecutionRuntimeComposition> runtime;
     ExecutionOrderOwner owner;long id=0;IBContractLite btc,eur;
-    explicit IbPostFillReconciliationFixture(bool issueSyntheticOrder = true) {
+    explicit IbPostFillReconciliationFixture(bool issueSyntheticOrder = true,
+        const std::string& accountName = "DU_TEST") : account(accountName) {
         const char* configured=std::getenv("TMPDIR");
         const std::string parent=configured && *configured ? configured : "/tmp";
         std::string name=parent+"/hepta-postfill-XXXXXX";
         auto p=::mkdtemp(&name[0]);need(p,"temporary private state");dir=p;
         btc.symbol="BTC";btc.secType="CRYPTO";btc.exchange="PAXOS";btc.currency="USD";
         eur.symbol="EUR";eur.secType="CASH";eur.exchange="IDEALPRO";eur.currency="USD";
-        IbPaperExecutionRuntimeConfig c;c.stateDirectory=dir;c.profile.account="DU_TEST";c.profile.clientId=73;
+        IbPaperExecutionRuntimeConfig c;c.stateDirectory=dir;c.profile.account=account;c.profile.clientId=73;
         c.profile.userScope=true;c.profile.observationOnly=false;c.profile.enabled=true;
         c.profile.userQuoteContracts="BTC.USD|BTC|CRYPTO|PAXOS|USD;EUR.USD|EUR|CASH|IDEALPRO|USD";
         c.quoteContracts={{"BTC.USD",btc},{"EUR.USD",eur}};
-        IbPaperFxCashBaseline b;b.account="DU_TEST";b.instrument="EUR.USD";b.currency="EUR";
+        IbPaperFxCashBaseline b;b.account=account;b.instrument="EUR.USD";b.currency="EUR";
         b.baselineCashBalance=b.observedCashBalance=1000;b.observedAtMs=1;b.proof="sha256:"+std::string(64,'e');
         c.fxCashBaselines["EUR.USD"]=b;
         runtime.reset(new IbPaperExecutionRuntimeComposition(c));
@@ -74,7 +137,8 @@ struct IbPostFillReconciliationFixture {
         runtime->m_lifecycleGate=std::make_shared<ExecutionServiceLifecycleGate>();
         runtime->m_lifecycleGate->ready.store(true);
         broker=new ReplayBroker;runtime->m_adapter.reset(new HeptaIBGatewayAdapter(std::unique_ptr<IIBApiWrapper>(broker)));
-        HeptaIBConfig a;a.account="DU_TEST";a.clientId=73;a.readOnly=false;
+        HeptaIBConfig a;a.account=account;a.clientId=73;a.readOnly=false;
+        a.observabilityLogPath=dir+"/observability.jsonl";
         a.risk.enableOrderSubmission=true;a.risk.maxDailyOrders=100;a.risk.maxPriceDeviationBps=0;a.risk.duplicateOrderWindowSec=0;
         a.authoritativeCryptoContracts["BTC.USD"]=btc;a.authoritativeCashFxContracts["EUR.USD"]=eur;
         a.authoritativeCashFxBaselines["EUR.USD"]=1000;a.authoritativeCashFxStartupObservedBalances["EUR.USD"]=1000;
@@ -83,7 +147,7 @@ struct IbPostFillReconciliationFixture {
         need(runtime->m_adapter->ReqTerminalCorrelations(),"terminal barrier");push(event(IBEventType::CompletedOrdersEnd));
         auto end=event(IBEventType::ExecutionDetailsEnd);end.requestId=broker->execRequest;push(end);
         need(runtime->m_adapter->ReqRiskRefresh(),"baseline risk");finishRisk(total);
-        owner.instrument="BTC.USD";owner.side="SELL";owner.account="DU_TEST";owner.executionDomain="PAPER";
+        owner.instrument="BTC.USD";owner.side="SELL";owner.account=account;owner.executionDomain="PAPER";
         owner.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'a');
         if(!issueSyntheticOrder)return; // flat/no-live-order owner probe
         IBOrderLite order;order.action="SELL";order.orderType="MKT";order.totalQuantity=total;
@@ -99,7 +163,7 @@ struct IbPostFillReconciliationFixture {
         ::rmdir(dir.c_str());
     }
     IBEvent event(IBEventType type) const {
-        IBEvent e;e.type=type;e.id=id;e.account="DU_TEST";e.brokerClientId=73;e.connectionEpoch=broker->epoch;return e;
+        IBEvent e;e.type=type;e.id=id;e.account=account;e.brokerClientId=73;e.connectionEpoch=broker->epoch;return e;
     }
     void push(IBEvent e,bool deliver=false) {
         broker->events.push_back(e);IBEvent out;int count=0;
@@ -122,6 +186,176 @@ struct IbPostFillReconciliationFixture {
         e.key="CashBalance:EUR";e.value="1000";push(e);push(event(IBEventType::AccountSummaryEnd));
         if(quantity!=0){e=event(IBEventType::PositionSnapshotItem);e.key="BTC.USD";e.number=quantity;e.contract=btc;push(e);}
         if(!omitEnd)push(event(IBEventType::PositionEnd));
+    }
+    void prepareConcurrentPolicy() {
+        need(broker->places==0,"concurrency fixture starts with no synthetic order");
+        IbPaperExecutionProfileConfig profile;
+        profile.enabled=true;profile.account=account;profile.host="127.0.0.1";
+        profile.port=4002;profile.clientId=73;profile.stateDirectory=dir;
+        profile.controlDirectory="/run/hepta/ib-paper-control-fixture";
+        profile.authorizationCredentialPath=dir+"/hepta-ib-paper-authorization";
+        profile.maxOrderQuantity=1;profile.maxOrderNotional=100;
+        profile.maxOrdersPerMinute=4;profile.maxActiveOrders=4;profile.maxGrossPosition=4;
+        std::string reason;
+        need(profile.Validate(reason),"valid bounded LOCAL concurrency profile: "+reason);
+        runtime->m_config.profile=profile;
+        runtime->m_config.quoteMaxAgeMs=5000;
+        runtime->m_config.primaryQuoteInstrument="EUR.USD";
+        runtime->m_config.quoteContracts={{"EUR.USD",eur}};
+        runtime->m_killSwitch=std::make_shared<RuntimeExitKillSwitch>();
+        need(GenerateExecutionServiceIdentity(1,runtime->m_serviceIdentity,reason),"isolated service identity");
+        runtime->m_eventHub.reset(new ExecutionEventHub(1024,runtime->m_serviceIdentity.serviceEpoch));
+        runtime->m_decisionLeases.reset(new ExecutionDecisionLeaseAuthority());
+        runtime->m_quoteSubscriptions.reset(new IBAuthoritativeQuoteSubscriptionSet(runtime->m_authoritativeSnapshots,1000001));
+        need(runtime->m_quoteSubscriptions->Configure({{"EUR.USD",eur}},"EUR.USD",reason),"synthetic quote configuration: "+reason);
+        const auto now=OmsJournal::NowEpochMs();
+        const auto plan=runtime->m_quoteSubscriptions->BeginCycle(broker->epoch,1,now);
+        need(plan.accepted&&plan.subscriptions.size()==1,"synthetic quote cycle");
+        broker->allowSyntheticQuotes=true;
+        const auto& subscription=plan.subscriptions.front();
+        need(runtime->m_adapter->ReqMktData(subscription.requestId,subscription.contract),"socket-free quote dispatch");
+        need(runtime->m_quoteSubscriptions->RecordDispatchResult(plan.generation,subscription.requestId,true),"quote dispatch recorded");
+        for(const auto& leg:std::map<std::string,double>{{"1",1.10},{"2",1.11}}) {
+            auto tick=event(IBEventType::TickPrice);tick.id=subscription.requestId;tick.key=leg.first;tick.number=leg.second;
+            need(runtime->m_quoteSubscriptions->ConsumeTick(tick,now).status==IBAuthoritativeQuoteConsumeStatus::Applied,"real quote projection");
+        }
+        runtime->m_adapter->UpdateReferencePrice(1.105);
+        runtime->m_adapter->SetPrePlaceOrderSendCheck([this](const IBFinalOrderSendContext* context,
+            const IBContractLite& contract,const IBOrderLite& order,std::string* detail) {
+            return runtime->AuthorizeFinalBrokerSend(context,contract,order,detail);
+        });
+        need(runtime->m_journal.Init(dir+"/oms-journal.jsonl"),"private concurrency OMS");
+        runtime->BuildCoordinator();
+        need(runtime->RecoveryReason().empty(),"coordinator starts from actual empty journal");
+        need(runtime->BuildPolicyAuthority(reason),"real runtime policy construction: "+reason);
+        broker->allowSyntheticCancel=true;
+    }
+    PlaceOrderCommand concurrentOrder(const std::string& request) {
+        PlaceOrderCommand command;command.context.agentId="runtime-exit-fixture";
+        command.context.sessionId="session";command.context.toolCallId=request;
+        command.context.account=account;command.context.venue="IB";command.context.executionDomain="PAPER";
+        command.instrument="EUR.USD";command.contract=eur;command.order.action="BUY";
+        command.order.orderType="MKT";command.order.totalQuantity=1;command.timeInForce="DAY";
+        command.referencePrice=1.11;command.expiresAtMs=OmsJournal::NowEpochMs()+60000;
+        std::string reason;
+        need(runtime->m_decisionLeases->Authorize(command.context,command.instrument,reason),"real native decision lease: "+reason);
+        return command;
+    }
+    CancelOrderCommand confirmedCancel() {
+        const auto original=concurrentOrder("confirmed-old");
+        const auto sent=runtime->m_policyAuthority->PlaceOrder(original);
+        need(sent.status==ExecutionCommandStatus::Accepted,"real policy/adapter synthetic original send: "+sent.reasonCode);
+        auto acknowledgement=event(IBEventType::OrderStatus);
+        acknowledgement.id=sent.orderId;acknowledgement.key="Submitted";
+        acknowledgement.number=1.11;acknowledgement.number2=0;acknowledgement.number3=1;
+        push(acknowledgement);
+        std::string reason;
+        need(runtime->m_adapter->CanCancelOrder(sent.orderId,&reason),"original order independently acknowledged: "+reason);
+        CancelOrderCommand cancel;cancel.context=original.context;
+        cancel.context.toolCallId="cancel-confirmed";cancel.orderId=sent.orderId;
+        return cancel;
+    }
+    void slowRuntimePreparationAllowsConfirmedCancel() {
+        prepareConcurrentPolicy();
+        const auto cancel=confirmedCancel();
+        const auto entry=concurrentOrder("slow-prepare");
+        RuntimeExitBarrier blocked;
+        runtime->m_testHooks.onStage=[&](const char* stage) {
+            if(std::strcmp(stage,"before_venue_send")==0)blocked.Block();
+        };
+        std::future<ExecutionCommandResult> placement,cancellation;
+        RuntimeExitRelease release;release.barrier=&blocked;
+        placement=std::async(std::launch::async,[&]{return runtime->m_policyAuthority->PlaceOrder(entry);});
+        blocked.Wait();
+        const auto started=Clock::now();
+        cancellation=std::async(std::launch::async,[&]{return runtime->m_policyAuthority->CancelOrder(cancel);});
+        need(cancellation.wait_for(std::chrono::seconds(1))==std::future_status::ready,"confirmed cancel progresses before slow runtime preparation release");
+        const auto cancelled=cancellation.get();
+        const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-started).count();
+        need(cancelled.status==ExecutionCommandStatus::Accepted&&broker->cancels==1,"exact synthetic cancel sent once");
+        need(placement.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"new placement remains blocked outside send locks");
+        need(runtime->m_policyAuthority->CancelOrder(cancel).status==ExecutionCommandStatus::Duplicate&&broker->cancels==1,"runtime duplicate cancel remains idempotent");
+        blocked.Release();
+        need(placement.get().status==ExecutionCommandStatus::Accepted&&broker->places==2,"same runtime executes original new placement once after release");
+        runtime->m_testHooks.onStage={};
+        std::cout<<"{\"schema\":\"heptatrader.runtime-exit-progress.v1\",\"cancel_total_ns\":"<<ns
+                 <<",\"before_prepare_release\":true,\"real_adapter\":true,\"socket_free\":true}\n";
+    }
+    void blockedDiagnosticFlushReleasesSendLocks() {
+        prepareConcurrentPolicy();
+        const auto cancel=confirmedCancel();
+        auto acknowledgement=event(IBEventType::OrderStatus);
+        acknowledgement.id=cancel.orderId;acknowledgement.key="Submitted";
+        acknowledgement.number=1.11;acknowledgement.number2=0;acknowledgement.number3=1;
+        acknowledgement.contract=broker->contract;acknowledgement.order=broker->order;
+        const auto entry=concurrentOrder("blocked-log");
+        RuntimeExitBarrier afterPlace,afterCancel,queueDrained;
+        runtime->m_testHooks.onStage=[&](const char* stage) {
+            if(std::strcmp(stage,"after_venue_send")==0)afterPlace.Signal();
+            if(std::strcmp(stage,"after_cancel_venue_send")==0)afterCancel.Signal();
+        };
+        // A writer open cannot complete until this private FIFO gets a reader.
+        // The fixture unblocks it on every exception path before futures join.
+        RuntimeLogPipe pipe(dir+"/observability.jsonl");
+        struct QueueHookReset {
+            ReplayBroker* broker;
+            ~QueueHookReset() {broker->onQueueEmpty={};}
+        } queueHookReset{broker};
+        std::future<ExecutionCommandResult> placement,cancellation;
+        std::future<bool> drain;
+        RuntimeExitRelease release;release.pipe=&pipe;
+        placement=std::async(std::launch::async,[&]{return runtime->m_policyAuthority->PlaceOrder(entry);});
+        afterPlace.Wait();
+        need(placement.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"diagnostic writer still blocked");
+        // Use the real polling entry point. The last empty-queue notification
+        // is unreachable if ACK logging recaptures the API/quote locks before
+        // waiting on the blocked writer; cancel cannot win that race first.
+        broker->events.push_back(acknowledgement);
+        broker->onQueueEmpty=[&]{queueDrained.Signal();};
+        drain=std::async(std::launch::async,[&]{return runtime->DrainAdapterEvents(0);});
+        queueDrained.Wait();
+        need(drain.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"ACK diagnostic flush remains blocked outside send locks");
+        const auto started=Clock::now();
+        cancellation=std::async(std::launch::async,[&]{return runtime->m_policyAuthority->CancelOrder(cancel);});
+        afterCancel.Wait();
+        const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-started).count();
+        need(broker->cancels==1&&broker->places==2,"confirmed cancel reached real adapter while other send logging is blocked");
+        need(placement.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"no diagnostic unblock was needed for cancel transport progress");
+        pipe.Unblock();need(pipe.reader>=0,"open private diagnostic drain");
+        need(placement.get().status==ExecutionCommandStatus::Accepted,"logging delay preserves place result");
+        need(cancellation.get().status==ExecutionCommandStatus::Accepted,"logging delay preserves cancel result");
+        need(drain.get(),"real event drain accepted the queued ACK");
+        need(!runtime->HasFatalRuntimeError(nullptr),"ACK projection and durable routing retain valid identity");
+        char bytes[8192];const auto count=::read(pipe.reader,bytes,sizeof(bytes));
+        need(count>0,"deferred immutable observations are written");
+        const std::string records(bytes,static_cast<std::size_t>(count));
+        need(records.find("api_place")!=std::string::npos&&records.find("api_cancel")!=std::string::npos&&
+             records.find("callback.order_status")!=std::string::npos,"place, cancel and ACK observations survive deferred flush");
+        runtime->m_testHooks.onStage={};
+        std::cout<<"{\"schema\":\"heptatrader.runtime-exit-progress.v1\",\"cancel_dispatch_ns\":"<<ns
+                 <<",\"before_log_unblock\":true,\"ack_processed_before_cancel\":true,\"quote_and_api_locks_released\":true,\"socket_free\":true}\n";
+    }
+    void falseOrdinarySendRequiresReconciliationAndNeverRetries() {
+        prepareConcurrentPolicy();
+        auto invalid=concurrentOrder("invalid-local-order");invalid.order.totalQuantity=0;
+        const auto rejected=runtime->m_adapter->PlaceOrderWithResult(invalid.contract,invalid.order,
+            "hepta-v1-sha256:"+std::string(64,'d'));
+        need(rejected.disposition==VenuePlaceDisposition::Rejected&&broker->places==0,
+             "proven pre-send invalid quantity retains no-effect rejection");
+        broker->returnFalseAfterPlace=true;
+        const auto entry=concurrentOrder("false-send");
+        const auto uncertain=runtime->m_policyAuthority->PlaceOrder(entry);
+        need(uncertain.status==ExecutionCommandStatus::Uncertain&&
+             uncertain.reasonCode=="IB_PLACE_OUTCOME_UNCERTAIN"&&broker->places==1,
+             "false after real wrapper invocation is an unknown effect");
+        need(runtime->m_coordinator->IsMutationBlocked(nullptr),"unknown result requires authoritative reconciliation");
+        const auto replay=runtime->m_policyAuthority->PlaceOrder(entry);
+        need(replay.status==ExecutionCommandStatus::Uncertain&&broker->places==1,
+             "exact unknown command never invokes wrapper again");
+        const auto another=runtime->m_policyAuthority->PlaceOrder(concurrentOrder("new-after-unknown"));
+        need(another.status==ExecutionCommandStatus::Rejected&&another.reasonCode=="MUTATION_BLOCKED"&&broker->places==1,
+             "changing the request identity cannot bypass unknown-effect hold");
+        std::cout<<"{\"schema\":\"heptatrader.runtime-exit-progress.v1\",\"false_send_uncertain\":true,\"wrapper_calls\":1,\"retry_suppressed\":true,\"socket_free\":true}\n";
     }
     void nonflatRejectedAuditMustNotScheduleReconnect() {
         // Original account cash push arrived outside an account request.
@@ -453,6 +687,12 @@ struct IbPostFillReconciliationFixture {
 };
 int main(int argc, char** argv) {
     try {
+        if(argc==1||(argc==2&&std::string(argv[1])=="--concurrent-exits")) {
+            {IbPostFillReconciliationFixture runtime(false,"DU90001");runtime.slowRuntimePreparationAllowsConfirmedCancel();}
+            {IbPostFillReconciliationFixture runtime(false,"DU90002");runtime.blockedDiagnosticFlushReleasesSendLocks();}
+            {IbPostFillReconciliationFixture runtime(false,"DU90003");runtime.falseOrdinarySendRequiresReconciliationAndNeverRetries();}
+            if(argc==2)return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--late-live-fill-disconnect-fails-closed") {
             IbPostFillReconciliationFixture boundary(false);
             boundary.lateLiveFillDuringRecoveryAuditDisconnectMustFailClosed();

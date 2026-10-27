@@ -57,6 +57,7 @@ void HeptaIBGatewayAdapter::SetPrePlaceOrderSendCheck(
 }
 bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLite& o,
                                       long* outOrderId) {
+    IbDeferredObservationScope observations;
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (!o.orderRef.empty()) {
         m_lastRejectReason = "IB_ORDER_REF_RESERVED";
@@ -68,7 +69,15 @@ bool HeptaIBGatewayAdapter::PlaceOrderCorrelated(
     const IBContractLite& c, const IBOrderLite& o,
     const std::string& venueCorrelationId, long* outOrderId,
     const IBFinalOrderSendContext* context) {
+    IbDeferredObservationScope observations;
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    return PlaceOrderCorrelatedLocked(c,o,venueCorrelationId,outOrderId,context,nullptr);
+}
+bool HeptaIBGatewayAdapter::PlaceOrderCorrelatedLocked(
+    const IBContractLite& c, const IBOrderLite& o,
+    const std::string& venueCorrelationId, long* outOrderId,
+    const IBFinalOrderSendContext* context, bool* sendAttempted) {
+    if (sendAttempted) *sendAttempted = false;
     if (!o.orderRef.empty()) {
         m_lastRejectReason = "IB_ORDER_REF_RESERVED";
         return false;
@@ -82,7 +91,7 @@ bool HeptaIBGatewayAdapter::PlaceOrderCorrelated(
     }
     long orderId = -1;
     if (!PlaceOrderInternal(
-        c, correlatedOrder, &orderId, context))
+        c, correlatedOrder, &orderId, context, sendAttempted))
         return false;
     // A previously complete snapshot remains conservative between broker
     // refreshes: locally accepted correlated sends are immediately visible to
@@ -98,12 +107,19 @@ VenuePlaceResult HeptaIBGatewayAdapter::PlaceOrderWithResult(
 {
     // Capture send result and reason before any concurrent callback/cancel can
     // replace m_lastRejectReason. Legacy bool methods remain adapter-only APIs.
+    IbDeferredObservationScope observations;
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
     long orderId = -1;
+    bool sendAttempted = false;
     try
     {
-        if (PlaceOrderCorrelated(contract, order, correlation, &orderId, context))
+        if (PlaceOrderCorrelatedLocked(contract,order,correlation,&orderId,context,&sendAttempted))
             return VenuePlaceResult::Submitted(orderId);
+        // Invocation may have emitted bytes before a false return. Only the
+        // captured pre-send boundary proves a rejection; mutable diagnostics
+        // cannot turn a possible broker effect into permission for another send.
+        if (sendAttempted)
+            return VenuePlaceResult::Uncertain("IB_PLACE_API_OUTCOME_UNCERTAIN",orderId);
         return m_lastRejectReason.empty()
             ? VenuePlaceResult::Uncertain("adapter returned no rejection evidence", orderId)
             : VenuePlaceResult::Rejected(m_lastRejectReason, orderId);

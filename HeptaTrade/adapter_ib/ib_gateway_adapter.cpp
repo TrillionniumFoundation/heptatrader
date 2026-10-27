@@ -29,6 +29,7 @@ std::unique_ptr<IIBApiWrapper> CreateDefaultIBApiWrapper() {
 }
 
 std::mutex g_obsLogMutex;
+thread_local IbDeferredObservationScope* g_deferredObservations = nullptr;
 unsigned long long g_obsFailedLines = 0;
 unsigned long long g_obsFailedEpisodeLines = 0;
 bool g_obsFailureActive = false;
@@ -46,11 +47,13 @@ long ObsProcessId() {
 // stay observable without changing any broker/risk decision or flooding the
 // service journal. No account, authentication material or callback body is
 // copied into these fallback notices.
-void ReportObsLogFailure(const char* operation, int errorNumber) {
-    if (g_obsFailedLines != std::numeric_limits<unsigned long long>::max())
-        ++g_obsFailedLines;
-    if (g_obsFailedEpisodeLines != std::numeric_limits<unsigned long long>::max())
-        ++g_obsFailedEpisodeLines;
+void ReportObsLogFailure(const char* operation, int errorNumber,
+                         unsigned long long count = 1) {
+    const auto maximum = std::numeric_limits<unsigned long long>::max();
+    g_obsFailedLines = count > maximum - g_obsFailedLines ?
+        maximum : g_obsFailedLines + count;
+    g_obsFailedEpisodeLines = count > maximum - g_obsFailedEpisodeLines ?
+        maximum : g_obsFailedEpisodeLines + count;
     const auto now = std::chrono::steady_clock::now();
     if (!g_obsFailureActive || now >= g_obsNextFailureReport) {
         std::fprintf(stderr,
@@ -203,8 +206,9 @@ bool ShouldEmitObsLatencySample(const char* path, const char* stage) {
     return true;
 }
 void AppendObsLogLine(const std::string& line, const std::string& explicitPath) {
-    std::lock_guard<std::mutex> lk(g_obsLogMutex);
     const std::string path = explicitPath.empty() ? ObsLogPath() : explicitPath;
+    if (IbDeferredObservationScope::DeferIfScoped(line, path)) return;
+    std::lock_guard<std::mutex> lk(g_obsLogMutex);
     errno = 0;
     std::ofstream ofs(path.c_str(), std::ios::out | std::ios::app);
     if (!ofs.is_open()) {
@@ -227,7 +231,68 @@ void AppendObsLogLine(const std::string& line, const std::string& explicitPath) 
     }
     ReportObsLogRecovery();
 }
+
+void ReportDeferredObservationFailure(const char* operation, int errorNumber,
+                                      unsigned long long count = 1) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(g_obsLogMutex);
+        ReportObsLogFailure(operation, errorNumber, count);
+    } catch (...) {
+        std::fprintf(stderr, "{\"event\":\"observability.deferred_report_failed\"}\n");
+    }
+}
 } // namespace
+
+IbDeferredObservationScope::IbDeferredObservationScope() noexcept
+    : m_owner(g_deferredObservations == nullptr)
+{
+    if (m_owner) g_deferredObservations = this;
+}
+
+bool IbDeferredObservationScope::DeferIfScoped(
+    const std::string& line, const std::string& path) noexcept
+{
+    auto* const scope = g_deferredObservations;
+    if (!scope) return false;
+    if (scope->m_size < kMaxRecords && line.size() <= kMaxBytes - scope->m_bytes &&
+        path.size() <= kMaxBytes - scope->m_bytes - line.size())
+    {
+        try
+        {
+            auto& record = scope->m_records[scope->m_size];
+            record.line = line;
+            record.path = path;
+            scope->m_bytes += line.size() + path.size();
+            ++scope->m_size;
+            return true;
+        }
+        catch (...) { scope->m_allocationFailed = true; }
+    }
+    if (scope->m_dropped != std::numeric_limits<std::size_t>::max()) ++scope->m_dropped;
+    return true;
+}
+
+IbDeferredObservationScope::~IbDeferredObservationScope() noexcept
+{
+    if (!m_owner) return;
+    g_deferredObservations = nullptr;
+    for (std::size_t i = 0; i < m_size; ++i)
+    {
+        try { AppendObsLogLine(m_records[i].line, m_records[i].path); }
+        catch (...)
+        {
+            // A diagnostic failure after a broker result must not relabel
+            // that result, throw from cleanup, or retry an ambiguous write.
+            ReportDeferredObservationFailure("deferred_flush", EIO);
+        }
+    }
+    if (m_dropped != 0)
+    {
+        ReportDeferredObservationFailure(m_allocationFailed ? "deferred_allocation" : "deferred_capacity",
+            m_allocationFailed ? ENOMEM : ENOBUFS,
+            static_cast<unsigned long long>(m_dropped));
+    }
+}
 
 HeptaIBGatewayAdapter::HeptaIBGatewayAdapter()
     : HeptaIBGatewayAdapter(
@@ -1535,6 +1600,7 @@ bool HeptaIBGatewayAdapter::CanCancelOrder(long orderId, std::string* suppressRe
 }
 
 VenueCancelResult HeptaIBGatewayAdapter::CancelOrder(long orderId) {
+    IbDeferredObservationScope observations;
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
     try {
         const auto started = std::chrono::steady_clock::now();

@@ -520,6 +520,9 @@ bool IbPaperExecutionRuntimeComposition::StartQuoteSubscriptions(
 bool IbPaperExecutionRuntimeComposition::CollectAdapterIngressEvents(
     int pollTimeoutMs)
 {
+    // Adapter callbacks may emit observations while holding the API lock.
+    // Flush only after both this ingress drain and its quote fence finish.
+    IbDeferredObservationScope observations;
     std::lock_guard<std::mutex> eventDrainLock(m_adapterEventDrainMutex);
     bool drained = false;
     bool overflow = false;
@@ -674,6 +677,9 @@ bool IbPaperExecutionRuntimeComposition::RoutePendingAdapterEvents(
 
 bool IbPaperExecutionRuntimeComposition::DrainAdapterEvents(int pollTimeoutMs)
 {
+    // ACK/error processing can also send a previously deferred cancel. Keep
+    // its diagnostic sink outside the complete quote/API lock hierarchy.
+    IbDeferredObservationScope observations;
     std::lock_guard<std::mutex> eventDrainLock(m_adapterEventDrainMutex);
     std::vector<IBEvent> pendingEvents;
     pendingEvents.swap(m_pendingAdapterEvents);

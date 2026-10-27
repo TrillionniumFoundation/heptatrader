@@ -111,6 +111,12 @@ public:
     ExecutionCoordinator(OmsJournal& journal, const ExecutionCoordinatorCallbacks& callbacks);
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override;
+    // Policy-only admission: recheck the account/domain send budget under the
+    // same coordinator lock as the durable send reservation. An independently
+    // completed reduction cannot consume a stale entry budget in between.
+    ExecutionCommandResult PlaceOrderWithSendAttemptLimit(
+        const PlaceOrderCommand& command, std::int64_t cutoffMs,
+        std::size_t maximumAttempts);
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
     // Planless flatten is deliberately unavailable. Only the privileged
     // policy authority can construct a plan from service-owned state.
@@ -472,9 +478,18 @@ private:
                                           const std::string& requestHash);
 
 private:
+    struct EntrySendAttemptLimit
+    {
+        std::int64_t cutoffMs;
+        std::size_t maximumAttempts;
+    };
+    bool GetPlaceSendAttemptTimesLocked(const std::string& account,
+        const std::string& executionDomain, std::int64_t cutoffMs,
+        std::vector<std::int64_t>& out) const;
     ExecutionCommandResult PlaceOrderLocked(
         const PlaceOrderCommand& command, std::unique_lock<std::mutex>& lock,
-        ExecutionOperationTiming& timing);
+        ExecutionOperationTiming& timing,
+        const EntrySendAttemptLimit* sendAttemptLimit = nullptr);
     ExecutionCommandResult CancelOrderLocked(
         const CancelOrderCommand& command, std::unique_lock<std::mutex>& lock,
         ExecutionOperationTiming& timing);
@@ -518,8 +533,22 @@ private:
     std::unordered_set<std::string> m_placeSendAttemptKeys;
     bool m_mutationBlocked = false;
     std::string m_mutationBlockReason;
-    bool m_riskMutationDispatchInFlight = false;
-    std::string m_riskMutationDispatchOwnerKey;
+    struct RiskMutationDispatchScope
+    {
+        std::string ownerKey;
+        std::string account;
+        std::string executionDomain;
+        std::string instrument;
+        std::string symbol;
+    };
+    // Only strict, independently scoped reductions may coexist. New entries
+    // retain the original aggregate exclusion. Keys are original command IDs.
+    std::unordered_map<std::string, RiskMutationDispatchScope> m_riskMutationDispatches;
+    void BeginRiskMutationDispatchLocked(const AgentExecutionContext& context,
+        const std::string& instrument, const InstrumentRef& contract, const std::string& requestKey);
+    bool RiskMutationConflictsLocked(const AgentExecutionContext& context,
+        const std::string& instrument, const InstrumentRef& contract) const;
+    std::size_t RiskMutationDispatchesForOwnerLocked(const std::string& ownerKey) const;
     std::uint64_t m_venueDispatchesInFlight = 0;
     // Pre-intent, process-local reservation only. It prevents two different
     // cancel command identities from concurrently passing the unlocked

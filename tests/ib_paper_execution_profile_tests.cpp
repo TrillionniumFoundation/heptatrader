@@ -765,103 +765,338 @@ void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
     ::unlink(path.c_str());
 }
 
-// The real IB policy still serializes mutation/recovery operations. This
-// fixture measures that boundary above the coordinator: its venue callback
-// releases the coordinator mutex, while a cancel still waits on policyMutex.
-// No sockets, vendor API, trading service or wall-clock SLO are involved.
-void TestSlowPlaceMeasuresActualPolicyCancelWait()
+// Real policy/coordinator path with latch-controlled venue callbacks. Progress
+// must occur before releasing the slow provider, not merely below a benchmark
+// percentile. No sockets, Broker API or trading service are used.
+struct PolicyExitBarrier
 {
-    using Clock = std::chrono::steady_clock;
-    IbPaperExecutionProfileConfig config; std::string reason;
-    assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
-    std::string path = FixtureTemporaryPath("hepta-policy-place-wait");
-    const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
-    OmsJournal journal; assert(journal.Init(path.c_str()));
-    std::mutex gate; std::condition_variable changed;
-    bool entered = false, released = false;
-    Clock::time_point enteredAt, releasedAt, cancelDispatchedAt;
-    std::atomic<int> places{0}, cancels{0};
-    ExecutionCoordinatorCallbacks callbacks;
-    callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) { return true; };
-    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string&) {
-        ++places;
-        std::unique_lock<std::mutex> lock(gate);
-        enteredAt = Clock::now(); entered = true; changed.notify_all();
-        assert(changed.wait_for(lock, std::chrono::seconds(5), [&] { return released; }));
-        return VenuePlaceResult::Submitted(42);
-    });
-    callbacks.cancelOrder = [&](long orderId) {
-        assert(orderId == 42); ++cancels; cancelDispatchedAt = Clock::now();
-        return VenueCancelResult::Submitted();
-    };
-    ExecutionCoordinator coordinator(journal, callbacks);
-    IbPaperExecutionPolicyCallbacks policyCallbacks;
-    policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
-    policyCallbacks.riskSnapshot = [] {
-        IbPaperAuthoritativeRiskSnapshot risk; risk.complete = true; return risk;
-    };
-    policyCallbacks.authoritativeQuote = [&](const std::string& instrument) {
-        MarketQuoteSnapshot quote;
-        quote.subscriptionId = "policy-wait-fixture"; quote.instrument = instrument;
-        quote.state = MarketSubscriptionState::Active; quote.bid = 1.10; quote.ask = 1.11;
-        quote.observedAtMs = OmsJournal::NowEpochMs();
-        quote.staleAfterMs = quote.observedAtMs + config.externalQuoteMaxAgeMs;
-        return quote;
-    };
-    std::shared_ptr<IbPaperKillSwitchReader> killSwitch(new FixedKillSwitchReader(IbPaperKillSwitchState::Disarmed));
-    IbPaperExecutionPolicyAuthority policy(coordinator, config, policyCallbacks, killSwitch);
-    PlaceOrderCommand place = QualificationOrder(config, "BUY", 1.0);
-    place.context.agentId = "policy-wait"; place.context.sessionId = "session";
-    place.context.toolCallId = "slow-place"; place.context.decisionLeaseFencingToken = 1;
-    place.context.decisionLeaseGeneration = 1; place.contract.symbol = "EUR";
-    place.instrument = "EUR.USD"; place.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
-    auto pendingPlace = std::async(std::launch::async, [&] { return policy.PlaceOrder(place); });
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+    void Block()
     {
-        std::unique_lock<std::mutex> lock(gate);
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true;
+        changed.notify_all();
+        assert(changed.wait_for(lock, std::chrono::seconds(15), [&] { return released; }));
+    }
+    void WaitEntered()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
         assert(changed.wait_for(lock, std::chrono::seconds(2), [&] { return entered; }));
     }
-    CancelOrderCommand cancel; cancel.context = place.context;
-    cancel.context.toolCallId = "queued-cancel"; cancel.orderId = 42;
-    std::promise<void> cancelStarted;
-    auto started = cancelStarted.get_future();
-    auto pendingCancel = std::async(std::launch::async, [&] {
-        const auto begin = Clock::now(); cancelStarted.set_value();
-        const auto result = policy.CancelOrder(cancel);
-        return std::make_pair(result, std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
-    });
-    assert(started.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
-    assert(pendingCancel.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
-    assert(cancels.load() == 0);
-    ExecutionControlCommand control; control.context = place.context;
-    control.context.toolCallId = "query-while-place"; control.targetCommandId = "slow-place";
-    const auto queryAt = Clock::now();
-    auto query = std::async(std::launch::async, [&] { return policy.QueryCommandStatus(control); });
-    assert(query.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
-    const auto queried = query.get();
-    const auto queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - queryAt).count();
-    assert(queried.status == ExecutionCommandStatus::Accepted);
-    assert(queried.targetStatus == ExecutionCommandStatus::Uncertain);
-    // Recovery release keeps its existing policy serialization; measuring a
-    // slow provider must not introduce a bypass around this protection.
-    assert(policy.ReleaseSessionOwnerFence(control).reasonCode == "IB_PAPER_CONTROL_BUSY");
+    void Release()
     {
-        std::lock_guard<std::mutex> lock(gate);
-        releasedAt = Clock::now(); released = true; changed.notify_all();
+        std::lock_guard<std::mutex> lock(mutex);
+        released = true;
+        changed.notify_all();
     }
-    assert(pendingPlace.get().status == ExecutionCommandStatus::Accepted);
-    const auto cancelled = pendingCancel.get();
-    assert(cancelled.first.status == ExecutionCommandStatus::Accepted);
-    assert(cancelDispatchedAt >= releasedAt);
-    assert(policy.PlaceOrder(place).status == ExecutionCommandStatus::Duplicate);
-    assert(policy.CancelOrder(cancel).status == ExecutionCommandStatus::Duplicate);
-    assert(places.load() == 1 && cancels.load() == 1);
-    std::cout << "{\"schema\":\"heptatrader.policy-wait-fixture.v1\","
-              << "\"cancel_total_ns\":" << cancelled.second
-              << ",\"injected_venue_hold_ns\":"
-              << std::chrono::duration_cast<std::chrono::nanoseconds>(releasedAt - enteredAt).count()
-              << ",\"control_query_ns\":" << queryNs
-              << ",\"place_calls\":1,\"cancel_calls\":1,\"policy_lock_retained\":true}\n";
-    ::unlink(path.c_str());
+};
+
+void TestPolicyGateClosesExitAdmissionWhenOriginalCohortDrains()
+{
+    IbPolicyOperationGate gate;
+    const auto original = gate.lock_shared(false);
+    PolicyExitBarrier exclusiveBarrier;
+    auto recovery = std::async(std::launch::async, [&] {
+        std::lock_guard<IbPolicyOperationGate> lock(gate);
+        exclusiveBarrier.Block();
+    });
+    // Observe the captured cohort through the admission token instead of
+    // assuming the recovery thread has reached lock() after a short sleep.
+    std::uint64_t joined = original;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do
+    {
+        joined = gate.lock_shared(true);
+        if (joined > original) break;
+        gate.unlock_shared(joined);
+        std::this_thread::yield();
+        assert(std::chrono::steady_clock::now() < deadline);
+    } while (true);
+    gate.unlock_shared(original);
+    std::promise<void> attempting;
+    auto attempted = attempting.get_future();
+    auto lateExit = std::async(std::launch::async, [&] {
+        attempting.set_value();
+        IbPolicySharedOperation operation(gate, true);
+    });
+    attempted.wait();
+    assert(lateExit.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout);
+    gate.unlock_shared(joined);
+    exclusiveBarrier.WaitEntered();
+    assert(lateExit.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    exclusiveBarrier.Release();
+    recovery.get();
+    assert(lateExit.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    lateExit.get();
+}
+
+struct ConcurrentPolicyFixture
+{
+    IbPaperExecutionProfileConfig config;
+    std::string path;
+    OmsJournal journal;
+    PolicyExitBarrier placeBarrier, flattenBarrier, riskBarrier;
+    std::atomic<int> places{0}, cancels{0}, flattens{0}, recoveryReads{0}, terminalCalls{0};
+    std::atomic<std::size_t> activeOrders{0};
+    std::atomic<bool> pauseNextRiskSnapshot{false};
+    bool uncertainPlace = false, uncertainCancel = false, uncertainFlatten = false;
+    const std::uint64_t quoteAt = OmsJournal::NowEpochMs();
+    std::unique_ptr<ExecutionCoordinator> coordinator;
+    std::unique_ptr<IbPaperExecutionPolicyAuthority> policy;
+
+    ConcurrentPolicyFixture()
+    {
+        auto values = QualificationValues();
+        values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
+        values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
+        values.erase("HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS");
+        values.erase("HEPTA_IB_PAPER_QUOTE_CONTRACTS");
+        values.erase("HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT");
+        values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "2";
+        values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"] = "100";
+        values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "4";
+        values["HEPTA_IB_PAPER_MAX_ACTIVE_ORDERS"] = "4";
+        values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"] = "2";
+        std::string reason;
+        assert(IbPaperExecutionProfileConfig::FromValues(values, config, reason));
+        path = FixtureTemporaryPath("hepta-policy-concurrent-exits");
+        const int fd = ::mkstemp(&path[0]); assert(fd >= 0); ::close(fd);
+        assert(journal.Init(path.c_str()));
+        ExecutionCoordinatorCallbacks callbacks;
+        callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) { return true; };
+        callbacks.placement = VenuePlacement::Immediate([this](const PlaceOrderCommand& command, const std::string&) {
+            ++places;
+            if (command.context.toolCallId == "slow-place")
+            {
+                placeBarrier.Block();
+                if (uncertainPlace) return VenuePlaceResult::Uncertain("fixture lost place acknowledgement");
+                return VenuePlaceResult::Submitted(42);
+            }
+            return VenuePlaceResult::Submitted(41);
+        });
+        callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
+        callbacks.cancelOrder = [this](long id) {
+            assert(id == 41); ++cancels;
+            return uncertainCancel ? VenueCancelResult::Uncertain("fixture lost cancel acknowledgement") :
+                VenueCancelResult::Submitted();
+        };
+        callbacks.flattenOrder = [this](const AuthoritativeFlattenPlan& plan, const std::string&) {
+            assert(plan.instrument == "GBP.USD" && plan.expectedPositionQuantity == 1.0 &&
+                   plan.order.action == "SELL" && plan.order.totalQuantity == 1.0);
+            ++flattens;
+            flattenBarrier.Block();
+            return uncertainFlatten ? VenueFlattenResult::Uncertain("fixture lost flatten acknowledgement", 43) :
+                VenueFlattenResult::Submitted(43);
+        };
+        coordinator.reset(new ExecutionCoordinator(journal, callbacks));
+        IbPaperExecutionPolicyCallbacks policyCallbacks;
+        policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
+        policyCallbacks.riskSnapshot = [this] {
+            if (pauseNextRiskSnapshot.exchange(false)) riskBarrier.Block();
+            IbPaperAuthoritativeRiskSnapshot risk; risk.complete = true;
+            risk.grossAbsolutePosition = 1.0; risk.activeOrderCount = activeOrders.load(); return risk;
+        };
+        policyCallbacks.authoritativeContract = [](const std::string& instrument, InstrumentRef& contract) {
+            if (instrument != "EUR.USD" && instrument != "GBP.USD") return false;
+            contract.symbol = instrument == "EUR.USD" ? "EUR" : "GBP";
+            contract.secType = "CASH"; contract.exchange = "IDEALPRO"; contract.currency = "USD"; return true;
+        };
+        policyCallbacks.authoritativePosition = [](const std::string&) {
+            IbPaperAuthoritativePositionSnapshot position; position.complete = true;
+            position.connectionEpoch = 1; position.generation = 1; position.quantity = 1.0; return position;
+        };
+        policyCallbacks.authoritativeQuote = [this](const std::string& instrument) {
+            MarketQuoteSnapshot quote; quote.subscriptionId = "concurrent-" + instrument; quote.instrument = instrument;
+            quote.state = MarketSubscriptionState::Active; quote.bid = 1.10; quote.ask = 1.11;
+            quote.observedAtMs = quoteAt; quote.staleAfterMs = quoteAt + 60000; return quote;
+        };
+        policyCallbacks.correlationSnapshot = [this] {
+            ++recoveryReads;
+            IBAuthoritativeCorrelationSnapshot result; result.complete = false;
+            result.reasonCode = "FIXTURE_RECONCILIATION_NOT_PROVEN"; return result;
+        };
+        policyCallbacks.beginTerminalRecoveryAudit = [this](const ExecutionControlCommand&,
+            IBAuthoritativeRecoveryAuditSnapshot&, ExecutionTerminalResult&, std::string& reason) {
+            ++terminalCalls; reason = "FIXTURE_TERMINAL_WITNESS_NOT_PROVEN"; return false;
+        };
+        policyCallbacks.commitTerminalRecoveryAudit = [](const ExecutionControlCommand&,
+            const ExecutionOwnerAuditResult&, ExecutionTerminalResult&, std::string&) { assert(false); return false; };
+        std::shared_ptr<IbPaperKillSwitchReader> killSwitch(new FixedKillSwitchReader(IbPaperKillSwitchState::Disarmed));
+        policy.reset(new IbPaperExecutionPolicyAuthority(*coordinator, config, policyCallbacks, killSwitch));
+    }
+    ~ConcurrentPolicyFixture() { policy.reset(); coordinator.reset(); ::unlink(path.c_str()); }
+    PlaceOrderCommand Place(const std::string& id) const
+    {
+        PlaceOrderCommand command;
+        command.context.agentId = "entry-owner"; command.context.sessionId = "session";
+        command.context.account = config.account; command.context.venue = "IB"; command.context.executionDomain = "PAPER";
+        command.context.toolCallId = id; command.context.decisionLeaseFencingToken = 1; command.context.decisionLeaseGeneration = 1;
+        command.instrument = "EUR.USD"; command.contract.symbol = "EUR"; command.contract.secType = "CASH";
+        command.contract.exchange = "IDEALPRO"; command.contract.currency = "USD";
+        command.order.action = "BUY"; command.order.orderType = "MKT"; command.order.totalQuantity = 1.0;
+        command.referencePrice = 1.11; command.timeInForce = "DAY"; command.expiresAtMs = quoteAt + 60000;
+        return command;
+    }
+    FlattenPositionCommand Flatten(const std::string& instrument, const std::string& id)
+    {
+        FlattenPositionCommand command; command.context = Place(id).context;
+        command.context.agentId = "exit-owner"; command.instrument = instrument;
+        command.contract.symbol = instrument == "EUR.USD" ? "EUR" : "GBP";
+        command.contract.secType = "CASH"; command.contract.exchange = "IDEALPRO"; command.contract.currency = "USD";
+        const auto preview = policy->PreviewFlattenPosition(command);
+        assert(preview.status == ExecutionCommandStatus::Accepted);
+        command.hasAuthoritativePreviewSnapshot = true;
+        command.previewPositionQuantity = preview.authoritativeFlattenPositionQuantity;
+        command.previewPositionConnectionEpoch = preview.authoritativeFlattenConnectionEpoch;
+        command.previewPositionGeneration = preview.authoritativeFlattenPositionGeneration;
+        command.authoritativePreviewPlanBinding = preview.authoritativeFlattenPlanBinding;
+        return command;
+    }
+};
+
+void TestSlowPlaceAllowsConfirmedCancelAndPreservesRecovery()
+{
+    for (const bool uncertain : {false, true})
+    {
+        ConcurrentPolicyFixture fixture; fixture.uncertainPlace = uncertain; fixture.uncertainCancel = uncertain;
+        assert(fixture.policy->PlaceOrder(fixture.Place("confirmed-old")).status == ExecutionCommandStatus::Accepted);
+        fixture.activeOrders.store(1); // Independently observed older active order.
+        const auto slow = fixture.Place("slow-place");
+        auto place = std::async(std::launch::async, [&] { return fixture.policy->PlaceOrder(slow); });
+        fixture.placeBarrier.WaitEntered();
+        std::string replayReason;
+        assert(!fixture.coordinator->RecoverFromJournal(replayReason));
+        assert(replayReason == "OMS_RECOVERY_DISPATCH_IN_FLIGHT");
+        assert(fixture.coordinator->RuntimeObservation().riskMutationDispatchInFlight);
+        auto recovery = std::async(std::launch::async, [&] {
+            std::size_t count = 0; std::string reason;
+            return fixture.policy->ReconcileAuthoritativeState(count, reason);
+        });
+        assert(recovery.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout);
+        assert(fixture.recoveryReads.load() == 0);
+        CancelOrderCommand cancel; cancel.context = slow.context; cancel.context.toolCallId = "cancel-confirmed"; cancel.orderId = 41;
+        const auto started = std::chrono::steady_clock::now();
+        auto pending = std::async(std::launch::async, [&] { return fixture.policy->CancelOrder(cancel); });
+        assert(pending.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+        const auto result = pending.get();
+        const auto cancelNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-started).count();
+        assert(cancelNs < 1000000000LL && fixture.cancels.load() == 1);
+        assert(result.status == (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Accepted));
+        assert(fixture.policy->CancelOrder(cancel).status ==
+            (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Duplicate));
+        assert(fixture.cancels.load() == 1);
+        assert(place.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+        ExecutionControlCommand control; control.context = slow.context; control.targetCommandId = "slow-place";
+        assert(fixture.policy->QueryCommandStatus(control).targetStatus == ExecutionCommandStatus::Uncertain);
+        assert(fixture.policy->ReleaseSessionOwnerFence(control).reasonCode == "IB_PAPER_CONTROL_BUSY");
+        assert(fixture.coordinator->FenceSessionOwner(slow.context.agentId, slow.context.sessionId) >= 1);
+        auto fenced = cancel; fenced.context.toolCallId = "new-after-fence";
+        assert(fixture.policy->CancelOrder(fenced).reasonCode == "SESSION_OWNER_FENCED");
+        fixture.placeBarrier.Release();
+        assert(place.get().status == (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Accepted));
+        assert(!recovery.get() && fixture.recoveryReads.load() == 1);
+        assert(fixture.policy->PlaceOrder(slow).status ==
+            (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Duplicate));
+        assert(fixture.places.load() == 2 && fixture.cancels.load() == 1);
+        if (uncertain) assert(fixture.coordinator->IsMutationBlocked(nullptr));
+        std::cout << "{\"schema\":\"heptatrader.policy-exit-progress.v1\",\"operation\":\"cancel\",\"cancel_total_ns\":"
+                  << cancelNs << ",\"progress_before_place_release\":true,\"uncertain_case\":" << (uncertain?"true":"false") << "}\n";
+    }
+}
+
+void TestSlowPlaceAllowsIndependentFlattenAndRetainsScopes()
+{
+    for (const bool uncertain : {false, true})
+    {
+        ConcurrentPolicyFixture fixture; fixture.uncertainFlatten = uncertain;
+        const auto same = fixture.Flatten("EUR.USD", "same-scope-close");
+        auto crossDomain = same;
+        crossDomain.context.toolCallId = "same-scope-cross-domain";
+        crossDomain.context.executionDomain = "PAPER:exit";
+        const auto independent = fixture.Flatten("GBP.USD", "independent-close");
+        const auto slow = fixture.Place("slow-place");
+        auto place = std::async(std::launch::async, [&] { return fixture.policy->PlaceOrder(slow); });
+        fixture.placeBarrier.WaitEntered();
+        const auto began = std::chrono::steady_clock::now();
+        for (const auto& candidate : {same, crossDomain})
+        {
+            auto conflict = std::async(std::launch::async, [&] { return fixture.policy->FlattenPosition(candidate); });
+            assert(conflict.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+            assert(conflict.get().reasonCode == "MUTATION_BLOCKED" && fixture.flattens.load() == 0);
+        }
+        auto reduction = std::async(std::launch::async, [&] { return fixture.policy->FlattenPosition(independent); });
+        fixture.flattenBarrier.WaitEntered();
+        const auto progressNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-began).count();
+        assert(progressNs < 2000000000LL && fixture.flattens.load() == 1);
+        assert(place.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+        assert(fixture.coordinator->ObserveAccountLocalDrain(slow.context).venueDispatchesInFlight == 2);
+        assert(fixture.policy->FlattenPosition(independent).status == ExecutionCommandStatus::Uncertain);
+        assert(fixture.flattens.load() == 1);
+        fixture.placeBarrier.Release();
+        assert(place.get().status == ExecutionCommandStatus::Accepted);
+        // Completing one scope must not clear the other scope's in-flight bit.
+        assert(fixture.coordinator->RuntimeObservation().riskMutationDispatchInFlight);
+        assert(fixture.coordinator->ObserveAccountLocalDrain(slow.context).venueDispatchesInFlight == 1);
+        auto newEntry = fixture.Place("new-while-reducing");
+        const auto blocked = fixture.policy->PlaceOrder(newEntry);
+        assert(blocked.status == ExecutionCommandStatus::Rejected);
+        assert(blocked.reasonCode == "IB_PAPER_ORDER_RATE_EXCEEDED");
+        assert(fixture.places.load() == 1); // Both original send attempts consume the entry budget.
+        assert(fixture.coordinator->FenceSessionOwner(independent.context.agentId, independent.context.sessionId) >= 1);
+        ExecutionControlCommand terminal; terminal.context = independent.context;
+        terminal.recoveryIngressFence = 19; terminal.targetCommandId = "terminal-test";
+        terminal.terminalPreliminaryReceiptSha256 = "sha256:" + std::string(64, 'a');
+        auto finalize = std::async(std::launch::async, [&] { return fixture.policy->TerminalizeRecoveryOwner(terminal); });
+        assert(finalize.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout);
+        assert(fixture.terminalCalls.load() == 0);
+        fixture.flattenBarrier.Release();
+        assert(reduction.get().status == (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Accepted));
+        const auto finalized = finalize.get();
+        assert(finalized.status == ExecutionCommandStatus::Rejected);
+        assert(finalized.reasonCode == "FIXTURE_TERMINAL_WITNESS_NOT_PROVEN");
+        assert(fixture.terminalCalls.load() == 1); // A fence alone cannot manufacture a terminal witness.
+        assert(!fixture.coordinator->RuntimeObservation().riskMutationDispatchInFlight);
+        assert(fixture.policy->FlattenPosition(independent).status ==
+            (uncertain ? ExecutionCommandStatus::Uncertain : ExecutionCommandStatus::Duplicate));
+        assert(fixture.flattens.load() == 1);
+        if (uncertain) assert(fixture.coordinator->IsMutationBlocked(nullptr));
+        std::cout << "{\"schema\":\"heptatrader.policy-exit-progress.v1\",\"operation\":\"flatten\",\"progress_ns\":"
+                  << progressNs << ",\"progress_before_place_release\":true,\"same_scope_blocked\":true,\"uncertain_case\":"
+                  << (uncertain?"true":"false") << "}\n";
+    }
+}
+
+void TestCompletedFlattenCannotSpendStaleEntryBudget()
+{
+    ConcurrentPolicyFixture fixture;
+    assert(fixture.policy->PlaceOrder(fixture.Place("budget-first")).status == ExecutionCommandStatus::Accepted);
+    std::string reason;
+    assert(fixture.coordinator->RecordOrderTerminalDurably(41, &reason));
+    const auto independent = fixture.Flatten("GBP.USD", "budget-reduction");
+    fixture.pauseNextRiskSnapshot.store(true);
+    const auto entry = fixture.Place("budget-race");
+    auto placement = std::async(std::launch::async, [&] { return fixture.policy->PlaceOrder(entry); });
+    fixture.riskBarrier.WaitEntered(); // Entry has read one send; cap is two.
+    auto reduction = std::async(std::launch::async, [&] { return fixture.policy->FlattenPosition(independent); });
+    fixture.flattenBarrier.WaitEntered();
+    fixture.flattenBarrier.Release();
+    assert(reduction.get().status == ExecutionCommandStatus::Accepted);
+    assert(!fixture.coordinator->RuntimeObservation().riskMutationDispatchInFlight);
+    // The reduction finished completely between the entry's first budget read
+    // and coordinator admission. Neither an in-flight bit nor entryMutex can
+    // detect this; the final locked budget check must refuse without a send.
+    fixture.riskBarrier.Release();
+    const auto result = placement.get();
+    assert(result.status == ExecutionCommandStatus::Rejected);
+    assert(result.reasonCode == "IB_PAPER_ORDER_RATE_EXCEEDED");
+    assert(fixture.places.load() == 1 && fixture.flattens.load() == 1);
+    std::vector<std::int64_t> attempts;
+    fixture.coordinator->GetPlaceSendAttemptTimes(entry.context.account,
+        entry.context.executionDomain, fixture.quoteAt - 60000, attempts);
+    assert(attempts.size() == fixture.config.maxOrdersPerMinute);
 }
 
 void TestPolicyControlsDoNotWaitBehindVenueDispatch()
@@ -1536,7 +1771,10 @@ int main()
     TestConfiguredUserOwnerResumeScopesAreIndependent();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
-    TestSlowPlaceMeasuresActualPolicyCancelWait();
+    TestPolicyGateClosesExitAdmissionWhenOriginalCohortDrains();
+    TestSlowPlaceAllowsConfirmedCancelAndPreservesRecovery();
+    TestSlowPlaceAllowsIndependentFlattenAndRetainsScopes();
+    TestCompletedFlattenCannotSpendStaleEntryBudget();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();
     TestQualificationProfileRejectsWiderOrAmbiguousAuthority();

@@ -223,7 +223,7 @@ ExecutionCommandResult
 IbPaperExecutionPolicyAuthority::PreviewFlattenPosition(
     const FlattenPositionCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    IbPolicySharedOperation operation(m_mutex);
     if (!ValidContext(command.context))
         return Reject(command.context, -1,
             "IB_PAPER_CONTEXT_REQUIRED");
@@ -245,7 +245,6 @@ IbPaperExecutionPolicyAuthority::PreviewFlattenPosition(
     if (!BuildAuthoritativeFlattenPlan(
             command, now, plan, reason))
         return Reject(command.context, -1, reason);
-    RefreshRateBudget(now, command.context.executionDomain);
     if (!m_guard.AllowFlatten(
             command, plan, m_callbacks.riskSnapshot(), now, reason))
         return Reject(command.context, -1, reason);
@@ -301,7 +300,7 @@ IbPaperExecutionPolicyAuthority::PreviewFlattenPosition(
 ExecutionCommandResult IbPaperExecutionPolicyAuthority::FlattenPosition(
     const FlattenPositionCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    IbPolicySharedOperation operation(m_mutex, true);
     if (!ValidContext(command.context))
         return Reject(command.context, -1,
             "IB_PAPER_MUTATION_CONTEXT_INVALID");
@@ -321,13 +320,11 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::FlattenPosition(
     if (!BuildAuthoritativeFlattenPlan(
             command, now, plan, reason))
         return Reject(command.context, -1, reason);
-    RefreshRateBudget(now, command.context.executionDomain);
     if (!m_guard.AllowFlatten(
             command, plan, m_callbacks.riskSnapshot(), now, reason))
         return Reject(command.context, -1, reason);
     const ExecutionCommandResult result =
         m_coordinator.ExecuteAuthoritativeFlatten(command, plan);
-    RefreshRateBudget(now, command.context.executionDomain);
     return result;
 }
 

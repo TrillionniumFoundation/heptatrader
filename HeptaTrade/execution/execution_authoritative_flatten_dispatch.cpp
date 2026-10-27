@@ -256,9 +256,7 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
     }
 
-    m_riskMutationDispatchInFlight = true;
-    m_riskMutationDispatchOwnerKey =
-        OwnerKey(context.agentId, context.sessionId);
+    BeginRiskMutationDispatchLocked(context, command.instrument, plan.contract, dispatch.requestKey);
     ++m_venueDispatchesInFlight;
     timing.PauseHeld();
     lock.unlock();
@@ -269,8 +267,7 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
     lock.lock();
     timing.ResumeHeld();
     --m_venueDispatchesInFlight;
-    m_riskMutationDispatchInFlight = false;
-    m_riskMutationDispatchOwnerKey.clear();
+    m_riskMutationDispatches.erase(dispatch.requestKey);
     if (failure)
     {
         try { std::rethrow_exception(failure); }
