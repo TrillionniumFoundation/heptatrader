@@ -82,8 +82,9 @@ class PendingOutcomeSourceTests(unittest.TestCase):
     def sources(self):
         with ExitStack() as stack:
             stack.enter_context(patch('laya_cell.source_archive.inventory_index', return_value=(self.archived, self.pages)))
-            stack.enter_context(patch.object(recent, 'inventory', return_value=(self.archived, self.pages)))
             index = stack.enter_context(patch.object(recent, 'inventory_index', return_value=(self.archived, self.pages)))
+            # Use the real prefix_version checks on these private, regular
+            # fixture files; only their synthetic rows and SHA proof are mocked.
             stack.enter_context(patch.object(resident_data, 'sha_file', return_value=self.period_sha))
             stack.enter_context(patch.object(recent, 'sha_file', return_value=self.period_sha))
             full_reader = stack.enter_context(patch.object(resident_data, 'read_source', side_effect=self.read_source))
@@ -110,6 +111,10 @@ class PendingOutcomeSourceTests(unittest.TestCase):
             decoded = [Path(call.args[0]) for call in probes['reader'].call_args_list]
             self.assertNotIn(self.paths[0], decoded)
             self.assertIn(self.paths[1], decoded)
+            for call in probes['reader'].call_args_list:
+                index = self.paths.index(Path(call.args[0]))
+                self.assertEqual(call.kwargs, {'expected_prefix': self.archived[index]}
+                                 if index < len(self.archived) else {})
             probes['verify'].assert_any_call(self.pins[0], sealed=True)
             probes['verify'].assert_any_call(self.pins[1], sealed=True)
             return actual, bounded
@@ -159,7 +164,7 @@ class PendingOutcomeSourceTests(unittest.TestCase):
         with self.sources() as probes:
             changed = copy.deepcopy(self.archived)
             changed[0]['sha256'] = 'f' * 64
-            probes['index'].return_value = (changed, self.pages)
+            probes['index'].side_effect = [(self.archived, self.pages), (changed, self.pages)]
             with self.assertRaisesRegex(ContractError, 'ARCHIVE_CHANGED_DURING_READ'):
                 recent.read_original_quote_range(self.config, now, self.anchor, self.anchor + self.horizon + 5000)
 
@@ -178,9 +183,9 @@ class PendingOutcomeSourceTests(unittest.TestCase):
         now = self.anchor + self.horizon + 20000
         with self.sources() as probes:
             changed = False
-            def read(path):
+            def read(path, *, expected_prefix=None):
                 nonlocal changed
-                result = self.read_source(path)
+                result = self.read_source(path, expected_prefix=expected_prefix)
                 if not changed:
                     added = self.feed / 'segment-9999' / 'quotes.jsonl'
                     added.parent.mkdir()

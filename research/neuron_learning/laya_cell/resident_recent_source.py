@@ -11,12 +11,39 @@ import stat
 from pathlib import Path
 
 from .integrity import ContractError, sha_file
-from .shadow_source import read_source, strict
-from .source_archive import inventory, inventory_index, verify_prefix
+from .shadow_source import read_source, strict, digest as source_digest
+from .source_archive import inventory_index, prefix_version, verify_prefix
 
 MAX_FOOTER_BYTES = 65536
 MIN_CAUSAL_SPAN_MS = 360000
 MIN_OUTCOME_SPAN_MS = 420000
+
+
+def _archive_snapshot(config, paths):
+    """Capture the checked ledger and file versions; these are not SHA proof.
+
+    The final full hash remains mandatory. Any END used before that boundary
+    is authenticated against its pinned chain head, and parsed sealed rows
+    are bound to the original SHA by read_source(expected_prefix=...).
+    """
+    archived, pages = inventory_index(config, paths)
+    versions = [prefix_version(pin, sealed=True) for pin in archived]
+    return archived, pages, versions
+
+
+def _archive_unchanged(config, paths, archived, pages, versions, reason):
+    after_paths = sorted(Path(config["feed_directory"]).glob("segment-*/quotes.jsonl"))
+    after_archived, after_pages = inventory_index(config, after_paths)
+    if paths != after_paths or archived != after_archived or pages != after_pages:
+        raise ContractError(reason)
+    for pin, version in zip(archived, versions):
+        if prefix_version(pin, sealed=True) != version:
+            raise ContractError("RECENT_SOURCE_ORIGINAL_CHANGED_DURING_READ")
+        # Keep the full final byte check: an already writable mmap can alter
+        # a dirty page without updating the stat tuple. No stat-only reuse.
+        verify_prefix(pin, sealed=True)
+        if prefix_version(pin, sealed=True) != version:
+            raise ContractError("RECENT_SOURCE_ORIGINAL_CHANGED_DURING_READ")
 
 
 def _sealed_end_timestamp(pin):
@@ -44,6 +71,7 @@ def _sealed_end_timestamp(pin):
     end = strict(tail.splitlines()[-1])
     if (end.get("kind") != "END"
             or end.get("sha256") != pin["chain_head"]
+            or source_digest({k:v for k,v in end.items() if k != "sha256"}) != pin["chain_head"]
             or type(end.get("at_ms")) is not int
             or end["at_ms"] <= 0):
         raise ContractError("RECENT_SEALED_SOURCE_END_CHANGED")
@@ -68,7 +96,7 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
         raise ContractError("RESIDENT_PERIOD_CHANGED")
     feed = Path(config["feed_directory"])
     paths = sorted(feed.glob("segment-*/quotes.jsonl"))
-    archived, pages = inventory(config, paths)
+    archived, pages, versions = _archive_snapshot(config, paths)
     if len(archived) >= len(paths):
         raise ContractError("RECENT_SOURCE_NO_UNSEALED_TAIL")
     unsealed = paths[len(archived):]
@@ -97,8 +125,9 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
         raise ContractError("RECENT_SOURCE_INSUFFICIENT_HORIZON_COVERAGE")
     if latest_event > now_ms:
         raise ContractError("RECENT_SOURCE_FUTURE_EVENT")
-    # Every sealed original prefix was rehashed by inventory(); its
-    # verified END event places a strict upper bound on ALL archived quotes.
+    # The END's own digest is bound to the archive's pinned chain head. It
+    # places a strict upper bound on ALL original quotes. Every sealed byte
+    # still passes the full SHA check before this function returns.
     # The recovery-live unsealed segment may span earlier dates and overlap
     # archived input. Only a RECENT as-of window is eligible here.
     for pin in archived:
@@ -106,14 +135,8 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
             raise ContractError("RECENT_SOURCE_CANNOT_SKIP_RECENT_ARCHIVE")
     # A concurrent archive rotation cannot silently change the pin
     # population used to build this new as-of decision.
-    after_paths = sorted(feed.glob("segment-*/quotes.jsonl"))
-    after_archived, after_pages = inventory_index(config, after_paths)
-    if paths != after_paths or archived != after_archived or pages != after_pages:
-        raise ContractError("RECENT_SOURCE_ARCHIVE_CHANGED_DURING_READ")
-    # Recheck all originally sealed bytes after collecting the tail:
-    # a changed historical source cannot produce a "fast" success.
-    for pin in archived:
-        verify_prefix(pin, sealed=True)
+    _archive_unchanged(config, paths, archived, pages, versions,
+                       "RECENT_SOURCE_ARCHIVE_CHANGED_DURING_READ")
     ordered = [
         {**quotes[t], "bid": float(quotes[t]["bid"]),
          "ask": float(quotes[t]["ask"])} for t in sorted(quotes)
@@ -126,7 +149,8 @@ def read_original_quote_range(config, now_ms, first_ms, last_ms):
 
     The successor preserves ENDPOINT_GAP versus OUTCOME_MISSING and grace.
     A sealed END bounds every quote: observed_at <= QUOTE.at <= END.at.
-    Original archive bytes remain verified before and after this projection.
+    Original archive bytes pass a fresh SHA check; their exact file versions
+    must remain unchanged throughout this projection.
     '''
     if (any(type(value) is not int for value in (now_ms, first_ms, last_ms))
             or not 0 < first_ms <= last_ms <= now_ms):
@@ -137,14 +161,15 @@ def read_original_quote_range(config, now_ms, first_ms, last_ms):
         raise ContractError('RESIDENT_PERIOD_CHANGED')
     feed = Path(config['feed_directory'])
     paths = sorted(feed.glob('segment-*/quotes.jsonl'))
-    archived, pages = inventory(config, paths)
+    archived, pages, versions = _archive_snapshot(config, paths)
     quotes = {}
     prefixes = list(pages)
     successor_ms = None
     for index, path in enumerate(paths):
         if index < len(archived) and _sealed_end_timestamp(archived[index]) < first_ms:
             continue
-        header, records, pin = read_source(path)
+        header, records, pin = (read_source(path, expected_prefix=archived[index])
+                                if index < len(archived) else read_source(path))
         if header['period_sha256'] != config['period_sha256']:
             raise ContractError('CROSS_PERIOD_FEED')
         if index < len(archived):
@@ -169,12 +194,8 @@ def read_original_quote_range(config, now_ms, first_ms, last_ms):
                 raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
             if previous is None or quote['known_at_ms'] < previous['known_at_ms']:
                 quotes[stamp] = quote
-    after_paths = sorted(feed.glob('segment-*/quotes.jsonl'))
-    after_archived, after_pages = inventory_index(config, after_paths)
-    if paths != after_paths or archived != after_archived or pages != after_pages:
-        raise ContractError('PENDING_OUTCOME_SOURCE_ARCHIVE_CHANGED_DURING_READ')
-    for pin in archived:
-        verify_prefix(pin, sealed=True)
+    _archive_unchanged(config, paths, archived, pages, versions,
+                       'PENDING_OUTCOME_SOURCE_ARCHIVE_CHANGED_DURING_READ')
     ordered = [
         {**quotes[stamp], 'bid': float(quotes[stamp]['bid']),
          'ask': float(quotes[stamp]['ask'])}
