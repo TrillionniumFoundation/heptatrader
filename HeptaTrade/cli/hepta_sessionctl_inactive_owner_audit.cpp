@@ -486,7 +486,8 @@ int HeptaSessionCtlInactiveOwnerAudit::Run(int argc, char** argv,
     // below; the native owner fence remains the execution authority boundary.
     UnixExecutionServiceClient client(gateway.executionSocket, gateway.ioTimeoutMs,
         gateway.maxResponseBytes, {gateway.executionServiceUid}, gateway.responseTimeoutMs,
-        static_cast<std::uint32_t>(pid), startTicks);
+        static_cast<std::uint32_t>(pid), startTicks,
+        UnixExecutionServiceClient::ProcessBindingMode::InactiveOwnerAuditResponse);
     ExecutionServiceIdentity identity;
     if (!client.GetServiceIdentity(identity, reason)) return fail(4, reason);
     const std::string callPrefix = "inactive-owner-" + std::to_string(::getpid()) + "-" +

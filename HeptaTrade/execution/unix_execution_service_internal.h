@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <set>
 #include <string>
 #include <sys/un.h>
@@ -22,6 +23,16 @@ bool ReadFrame(int fd,
                std::size_t maxBytes,
                const IoDeadline& deadline,
                std::string& body);
+// Consumes every header/body fragment with recvmsg, rejects any ancillary
+// other than one complete SCM_CREDENTIALS, and closes received SCM_RIGHTS on
+// all rejection paths. The caller binds the actual sender to its process.
+bool ReadFrameWithCredentials(int fd,
+                              std::size_t maxBytes,
+                              const IoDeadline& deadline,
+                              std::string& body,
+                              const std::function<bool(std::uint32_t, int,
+                                                       std::string&)>& verify,
+                              std::string& reason);
 bool WriteFrame(int fd,
                 const std::string& body,
                 const IoDeadline& deadline);

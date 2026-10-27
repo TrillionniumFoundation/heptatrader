@@ -26,9 +26,29 @@ blocks the path; these are local consistency checks, not Broker zero proofs.
 The current Gateway and Execution processes must agree on the configured crypto
 agent, session, account and PAPER scope. Configuration comes from those running
 processes, rather than the caller's environment. The helper binds manager
-invocations, process start ticks and executable identities. The native client's
-connections additionally check the exact Execution peer PID and start ticks,
-and all native replies must share one service epoch and fencing generation.
+invocations, process start ticks and executable identities. The native client
+additionally binds every response fragment to the exact Execution sender PID,
+allowed UID and start ticks. All native replies must share one service epoch
+and fencing generation.
+
+With systemd socket activation, `SO_PEERCRED` identifies the manager that
+created the listener, which can differ from the Execution process accepting
+the connection. Only this CLI explicitly selects
+`ProcessBindingMode::InactiveOwnerAuditResponse`. It requires both PID and
+start ticks, enables `SO_PASSCRED` before connecting, and uses `recvmsg` with
+`SCM_CREDENTIALS` for every consumed header and body fragment of the existing
+identity, authoritative-state and owner-audit operations (7, 8 and 15). Missing,
+truncated, duplicate or unexpected ancillary data, a changed sender, or a
+changed process start time rejects the response. Received `SCM_RIGHTS` file
+descriptors are closed before rejection. The actual sender UID must be in the
+allowed set; the listener's PID 1 activation exception does not apply to it.
+
+This is a response-sender proof after dispatch. The existing owner audit can
+resolve uncertain commands and reconcile existing OMS ownership, so it is not
+a claim that dispatch has no internal side effects. It adds no order, cancel,
+fence release, retry or wire operation. The default public client keeps its
+original pre-request `SO_PEERCRED` process check. Every other operation retains
+that same check even when this explicit audit mode is selected.
 
 `hepta-sessionctl inactive-owner-audit` reads the existing encrypted catalog with
 the ordinary store reader. Any record for the exact owner rejects the proof,

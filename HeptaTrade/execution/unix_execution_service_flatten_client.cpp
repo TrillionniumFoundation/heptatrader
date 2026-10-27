@@ -33,7 +33,7 @@ ExecutionCommandResult UnixExecutionServiceClient::FlattenPositionWithIdentity(
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
     const ExecutionCommandResult result =
-        Call(command.context.toolCallId, body, identity);
+        Call(command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -70,7 +70,7 @@ UnixExecutionServiceClient::PreviewFlattenPositionWithIdentity(
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
     const ExecutionCommandResult result =
-        Call(command.context.toolCallId, body, identity);
+        Call(command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
