@@ -52,8 +52,8 @@ std::string Read(const std::string& path) {
     Check(input.good(), "fixture read");
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
-std::string StartTicks() {
-    const std::string stat = Read("/proc/self/stat");
+std::string StartTicks(pid_t pid = ::getpid()) {
+    const std::string stat = Read("/proc/" + std::to_string(pid) + "/stat");
     std::istringstream input(stat.substr(stat.rfind(')') + 1)); std::string field;
     for (int i = 0; i != 20; ++i) Check(bool(input >> field), "fixture proc stat");
     return field;
@@ -438,8 +438,12 @@ void CatalogRejectionDoesNotEvenDiscoverTheNativeService() {
 void RealPeerPidAndStartTimeArePinned() {
     for (const auto& phase : {"held", "upgrade-held"}) {
         Fixture f;
-        Check(f.Call(phase, "", std::to_string(::getpid() + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
-              "different real SO_PEERCRED pid accepted");
+        // Use a real, still-live wrong process with its actual start ticks.
+        // A guessed getpid()+1 can be absent, which is a distinct preflight
+        // failure and does not exercise the response-sender PID comparison.
+        Check(f.Call(phase, "", std::to_string(::getppid()), StartTicks(::getppid()))
+                  .out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
+              "different actual response sender pid accepted");
         Check(f.Call(phase, "", "", std::to_string(std::stoull(StartTicks()) + 1)).out.find("PEER_PROCESS_MISMATCH") != std::string::npos,
               "reused pid/start-time mismatch accepted");
         Check(f.authority.audits == 0 && f.authority.reads == 0, "mismatched peer received authority request");
@@ -532,12 +536,16 @@ void RealSocketEpochReplacementRejectsTheNextRead(const std::string& phase = "he
 }
 } // namespace
 
+void RunExecutionClientSenderCredentialTests();
+void RunExecutionClientAncillaryTests();
+
 int main() {
     if (::geteuid() == 0 || ::getegid() == 0) {
         std::cerr << "Run native inactive-owner tests as an actual unprivileged uid/gid; no root skip.\n";
         return 1;
     }
     try {
+        RunExecutionClientSenderCredentialTests(); RunExecutionClientAncillaryTests();
         HeldAndReleasedPreserveAuthority(); HeldUsesRealOwnerFenceWithoutInventingAnAccountFence();
         UpgradeHeldBootstrapsOnlyMaintenanceFromAnOldRuntime();
         UpgradeHeldRequiresCompleteCurrentCryptoZeroAndOriginalHold();

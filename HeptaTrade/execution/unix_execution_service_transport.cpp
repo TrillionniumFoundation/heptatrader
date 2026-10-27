@@ -38,6 +38,90 @@ bool ReadAll(int fd, char* data, std::size_t size, const IoDeadline& deadline)
     return true;
 }
 
+bool ResponseCredential(struct msghdr& message, struct ucred& credential,
+                        std::string& reason)
+{
+    unsigned int credentials = 0;
+    bool unexpected = false;
+    for (struct cmsghdr* item = CMSG_FIRSTHDR(&message); item != nullptr;
+         item = CMSG_NXTHDR(&message, item))
+    {
+        const std::size_t available = message.msg_controllen -
+            (reinterpret_cast<char*>(item) - static_cast<char*>(message.msg_control));
+        if (item->cmsg_len < CMSG_LEN(0) || item->cmsg_len > available)
+        {
+            unexpected = true;
+            break;
+        }
+        if (item->cmsg_level == SOL_SOCKET && item->cmsg_type == SCM_RIGHTS)
+        {
+            // Even MSG_CTRUNC may have installed some FDs in this process.
+            // Close every delivered descriptor before rejecting the frame.
+            const std::size_t bytes = item->cmsg_len - CMSG_LEN(0);
+            for (std::size_t offset = 0; offset + sizeof(int) <= bytes; offset += sizeof(int))
+            {
+                int received = -1;
+                std::memcpy(&received, CMSG_DATA(item) + offset, sizeof(received));
+                if (received >= 0) ::close(received);
+            }
+            unexpected = true;
+        }
+        else if (item->cmsg_level == SOL_SOCKET && item->cmsg_type == SCM_CREDENTIALS &&
+                 item->cmsg_len == CMSG_LEN(sizeof(credential)))
+        {
+            ++credentials;
+            std::memcpy(&credential, CMSG_DATA(item), sizeof(credential));
+        }
+        else unexpected = true;
+    }
+    if ((message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0)
+    {
+        reason = "EXECUTION_SERVICE_RESPONSE_CREDENTIALS_TRUNCATED"; return false;
+    }
+    if (unexpected || credentials > 1)
+    {
+        reason = "EXECUTION_SERVICE_RESPONSE_CREDENTIALS_INVALID"; return false;
+    }
+    if (credentials != 1)
+    {
+        reason = "EXECUTION_SERVICE_RESPONSE_CREDENTIALS_MISSING"; return false;
+    }
+    return true;
+}
+
+bool ReadAllWithCredentials(int fd, char* data, std::size_t size,
+                            const IoDeadline& deadline,
+                            const std::function<bool(std::uint32_t, int,
+                                                     std::string&)>& verify,
+                            std::string& reason)
+{
+    std::size_t offset = 0;
+    while (offset < size)
+    {
+        if (!WaitFd(fd, POLLIN, deadline)) return false;
+        struct iovec buffer = {data + offset, size - offset};
+        union {
+            struct cmsghdr alignment;
+            char bytes[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(16 * sizeof(int))];
+        } control;
+        struct msghdr message = {};
+        message.msg_iov = &buffer;
+        message.msg_iovlen = 1;
+        message.msg_control = control.bytes;
+        message.msg_controllen = sizeof(control.bytes);
+        const ssize_t count = ::recvmsg(fd, &message, MSG_CMSG_CLOEXEC);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count < 0) return false;
+        struct ucred credential = {};
+        // Parse ancillary before any return, including EOF, to close rights.
+        const bool valid = ResponseCredential(message, credential, reason);
+        if (count <= 0 || !valid || !verify(static_cast<std::uint32_t>(credential.uid),
+                                          credential.pid, reason)) return false;
+        offset += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
 bool WriteAll(int fd,
               const char* data,
               std::size_t size,
@@ -111,6 +195,23 @@ bool ReadFrame(int fd,
     if (length == 0 || length > maxBytes) return false;
     body.assign(length, '\0');
     return ReadAll(fd, &body[0], body.size(), deadline);
+}
+
+bool ReadFrameWithCredentials(int fd,
+                              std::size_t maxBytes,
+                              const IoDeadline& deadline,
+                              std::string& body,
+                              const std::function<bool(std::uint32_t, int,
+                                                       std::string&)>& verify,
+                              std::string& reason)
+{
+    std::uint32_t networkLength = 0;
+    if (!ReadAllWithCredentials(fd, reinterpret_cast<char*>(&networkLength),
+            sizeof(networkLength), deadline, verify, reason)) return false;
+    const std::size_t length = ntohl(networkLength);
+    if (length == 0 || length > maxBytes) return false;
+    body.assign(length, '\0');
+    return ReadAllWithCredentials(fd, &body[0], body.size(), deadline, verify, reason);
 }
 
 bool WriteFrame(int fd, const std::string& body, const IoDeadline& deadline)

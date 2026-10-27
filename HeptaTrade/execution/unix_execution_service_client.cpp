@@ -18,9 +18,11 @@ UnixExecutionServiceClient::UnixExecutionServiceClient(const std::string& socket
                                                        const std::set<std::uint32_t>& allowedServerUids,
                                                        int responseTimeoutMs,
                                                        std::uint32_t expectedServerPid,
-                                                       std::uint64_t expectedServerStartTicks)
+                                                       std::uint64_t expectedServerStartTicks,
+                                                       ProcessBindingMode processBindingMode)
     : m_socketPath(socketPath), m_expectedServerPid(expectedServerPid),
-      m_expectedServerStartTicks(expectedServerStartTicks), m_ioTimeoutMs(ioTimeoutMs),
+      m_expectedServerStartTicks(expectedServerStartTicks), m_processBindingMode(processBindingMode),
+      m_ioTimeoutMs(ioTimeoutMs),
       m_responseTimeoutMs(responseTimeoutMs > 0 ? responseTimeoutMs : ioTimeoutMs),
       m_maxResponseBytes(maxResponseBytes), m_allowedServerUids(allowedServerUids)
 {
@@ -28,7 +30,31 @@ UnixExecutionServiceClient::UnixExecutionServiceClient(const std::string& socket
         m_allowedServerUids.insert(static_cast<std::uint32_t>(::geteuid()));
 }
 
-bool UnixExecutionServiceClient::VerifyServerPeer(int fd, std::string& reason) const
+bool UnixExecutionServiceClient::ConfigureResponseBinding(
+    int fd, ExecutionServiceOperation operation, bool& responseBound, std::string& reason) const
+{
+    responseBound = false;
+    if (m_processBindingMode != ProcessBindingMode::InactiveOwnerAuditResponse) return true;
+    // The special audit mode never degrades to the ordinary UID-only path.
+    if (!m_expectedServerPid || !m_expectedServerStartTicks)
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_MISMATCH"; return false;
+    }
+    responseBound = operation == ExecutionServiceOperation::GetServiceIdentity ||
+        operation == ExecutionServiceOperation::ReadAuthoritativeState ||
+        operation == ExecutionServiceOperation::AuditSessionOwner;
+    if (!responseBound) return true;
+    const int enabled = 1;
+    // Set before connect so no queued response bytes can lack credentials.
+    if (::setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled)) != 0)
+    {
+        reason = "EXECUTION_SERVICE_RESPONSE_CREDENTIALS_UNAVAILABLE"; return false;
+    }
+    return true;
+}
+
+bool UnixExecutionServiceClient::VerifyServerPeer(
+    int fd, bool responseBound, std::string& reason) const
 {
     struct ucred credential;
     socklen_t length = sizeof(credential);
@@ -39,12 +65,34 @@ bool UnixExecutionServiceClient::VerifyServerPeer(int fd, std::string& reason) c
         reason = "execution service peer uid rejected"; return false;
     }
     if (!m_expectedServerPid && !m_expectedServerStartTicks) return true;
-    if (!m_expectedServerPid || !m_expectedServerStartTicks ||
-        credential.pid <= 0 || static_cast<std::uint32_t>(credential.pid) != m_expectedServerPid)
+    return VerifyServerProcess(responseBound ? m_expectedServerPid :
+        static_cast<std::uint32_t>(credential.pid), reason);
+}
+
+bool UnixExecutionServiceClient::VerifyResponseSender(
+    std::uint32_t uid, int pid, std::string& reason) const
+{
+    // The listener's PID 1 activation exception is not a sender exception.
+    if (m_allowedServerUids.find(uid) == m_allowedServerUids.end())
+    {
+        reason = "EXECUTION_SERVICE_RESPONSE_SENDER_UID_REJECTED"; return false;
+    }
+    if (pid <= 0)
     {
         reason = "EXECUTION_SERVICE_PEER_PROCESS_MISMATCH"; return false;
     }
-    std::ifstream input("/proc/" + std::to_string(credential.pid) + "/stat");
+    return VerifyServerProcess(static_cast<std::uint32_t>(pid), reason);
+}
+
+bool UnixExecutionServiceClient::VerifyServerProcess(
+    std::uint32_t pid, std::string& reason) const
+{
+    if (!m_expectedServerPid || !m_expectedServerStartTicks ||
+        pid == 0 || pid != m_expectedServerPid)
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_MISMATCH"; return false;
+    }
+    std::ifstream input("/proc/" + std::to_string(pid) + "/stat");
     std::string line;
     if (!std::getline(input, line) || line.size() > 8192 || line.rfind(')') == std::string::npos)
     {
@@ -101,7 +149,7 @@ ExecutionCommandResult UnixExecutionServiceClient::PlaceIbOrderWithIdentity(
     std::string body;
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
-    const ExecutionCommandResult result = Call(command.context.toolCallId, body, identity);
+    const ExecutionCommandResult result = Call(command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -131,7 +179,7 @@ ExecutionCommandResult UnixExecutionServiceClient::CancelIbOrderWithIdentity(
     std::string body;
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
-    const ExecutionCommandResult result = Call(command.context.toolCallId, body, identity);
+    const ExecutionCommandResult result = Call(command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -311,7 +359,7 @@ ExecutionControlResult UnixExecutionServiceClient::DispatchControlWithIdentity(
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return ControlTransportFailure(command.context.toolCallId, reason);
     const ExecutionControlResult result =
-        CallControl(command.context.toolCallId, body, identity, command.localDeadline);
+        CallControl(command.context.toolCallId, body, identity, request.operation, command.localDeadline);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -352,7 +400,7 @@ ExecutionCommandResult UnixExecutionServiceClient::PreviewOrderWithIdentity(
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
     const ExecutionCommandResult result = Call(
-        command.context.toolCallId, body, identity);
+        command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -375,7 +423,7 @@ ExecutionCommandResult UnixExecutionServiceClient::ReadAuthoritativeStateWithIde
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return TransportFailure(command.context.toolCallId, reason);
     const ExecutionCommandResult result = Call(
-        command.context.toolCallId, body, identity);
+        command.context.toolCallId, body, identity, request.operation);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -403,7 +451,7 @@ bool UnixExecutionServiceClient::GetServiceIdentity(
     std::string body;
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason)) return false;
     const ExecutionCommandResult result = Call(
-        "__service_identity__", body, ExecutionServiceIdentity(), deadline);
+        "__service_identity__", body, ExecutionServiceIdentity(), request.operation, deadline);
     ExecutionServiceIdentity received;
     received.serviceEpoch = result.serviceEpoch;
     received.serviceFencingGeneration = result.serviceFencingGeneration;
@@ -439,6 +487,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
                                                         const std::string& requestBody,
                                                         const ExecutionServiceIdentity&
                                                             expectedIdentity,
+                                                        ExecutionServiceOperation operation,
                                                         std::chrono::steady_clock::time_point deadline)
 {
     if (std::chrono::steady_clock::now() >= deadline)
@@ -449,6 +498,12 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
     if (!BuildAddress(m_socketPath, address, reason)) return TransportFailure(commandId, reason);
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) return TransportFailure(commandId, "socket creation failed");
+    bool responseBound = false;
+    if (!ConfigureResponseBinding(fd, operation, responseBound, reason))
+    {
+        ::close(fd);
+        return TransportFailure(commandId, reason);
+    }
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
@@ -470,7 +525,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
         ::close(fd);
         return TransportFailure(commandId, "connect failed");
     }
-    if (!VerifyServerPeer(fd, reason))
+    if (!VerifyServerPeer(fd, responseBound, reason))
     {
         ::close(fd);
         return TransportFailure(commandId, reason);
@@ -485,10 +540,15 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
     // conservative transport failure and never triggers an automatic retry.
     const IoDeadline responseDeadline = std::min(DeadlineAfter(m_responseTimeoutMs), deadline);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
+    const bool read = responseBound ? ReadFrameWithCredentials(
+        fd, m_maxResponseBytes, responseDeadline, responseBody,
+        [this](std::uint32_t uid, int pid, std::string& error) {
+            return VerifyResponseSender(uid, pid, error);
+        }, reason) : ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody);
+    if (!read)
     {
         ::close(fd);
-        return TransportFailure(commandId, "response read failed");
+        return TransportFailure(commandId, reason.empty() ? "response read failed" : reason);
     }
     ::close(fd);
     ExecutionCommandResult result;
@@ -510,6 +570,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     const std::string& commandId,
     const std::string& requestBody,
     const ExecutionServiceIdentity& expectedIdentity,
+    ExecutionServiceOperation operation,
     std::chrono::steady_clock::time_point deadline)
 {
     if (std::chrono::steady_clock::now() >= deadline)
@@ -521,6 +582,12 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
         return ControlTransportFailure(commandId, reason);
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) return ControlTransportFailure(commandId, "socket creation failed");
+    bool responseBound = false;
+    if (!ConfigureResponseBinding(fd, operation, responseBound, reason))
+    {
+        ::close(fd);
+        return ControlTransportFailure(commandId, reason);
+    }
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
@@ -543,7 +610,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
         ::close(fd);
         return ControlTransportFailure(commandId, "connect failed");
     }
-    if (!VerifyServerPeer(fd, reason))
+    if (!VerifyServerPeer(fd, responseBound, reason))
     {
         ::close(fd);
         return ControlTransportFailure(commandId, reason);
@@ -558,10 +625,15 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     // conservative transport failure and never triggers an automatic retry.
     const IoDeadline responseDeadline = std::min(DeadlineAfter(m_responseTimeoutMs), deadline);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
+    const bool read = responseBound ? ReadFrameWithCredentials(
+        fd, m_maxResponseBytes, responseDeadline, responseBody,
+        [this](std::uint32_t uid, int pid, std::string& error) {
+            return VerifyResponseSender(uid, pid, error);
+        }, reason) : ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody);
+    if (!read)
     {
         ::close(fd);
-        return ControlTransportFailure(commandId, "response read failed");
+        return ControlTransportFailure(commandId, reason.empty() ? "response read failed" : reason);
     }
     ::close(fd);
     ExecutionControlResult result;

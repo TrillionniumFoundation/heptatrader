@@ -17,6 +17,15 @@ class UnixExecutionServiceClient : public ExecutionAuthority,
                                    public ExecutionReadAuthority
 {
 public:
+    enum class ProcessBindingMode
+    {
+        PeerBeforeRequest,
+        // Only the inactive-owner CLI opts into this mode. Identity/state
+        // reads and owner audit bind every response byte to the expected
+        // sender. Owner audit may reconcile existing OMS state; this is a
+        // post-dispatch sender proof, not a pre-dispatch receiver proof.
+        InactiveOwnerAuditResponse
+    };
     // An empty server UID set means the current effective UID. Cross-identity
     // deployments must pass the dedicated Execution Service UID explicitly.
     explicit UnixExecutionServiceClient(const std::string& socketPath,
@@ -27,7 +36,9 @@ public:
                                                 std::set<std::uint32_t>(),
                                         int responseTimeoutMs = 0,
                                         std::uint32_t expectedServerPid = 0,
-                                        std::uint64_t expectedServerStartTicks = 0);
+                                        std::uint64_t expectedServerStartTicks = 0,
+                                        ProcessBindingMode processBindingMode =
+                                            ProcessBindingMode::PeerBeforeRequest);
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override;
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
@@ -115,10 +126,16 @@ public:
         std::chrono::steady_clock::time_point deadline);
 
 private:
-    // Optional process binding for operator observations. Every connection,
-    // including GetServiceIdentity, checks the real SO_PEERCRED pid before
-    // writing a request. Default callers retain the existing UID contract.
-    bool VerifyServerPeer(int fd, std::string& reason) const;
+    // Default process binding and all ordinary control/order operations
+    // require SO_PEERCRED PID/start ticks before writing. A socket activator
+    // owns that endpoint credential, so the explicit inactive-owner mode
+    // instead verifies the actual sender of every response fragment for its
+    // three necessary operations. UID-only callers keep their existing path.
+    bool ConfigureResponseBinding(int fd, ExecutionServiceOperation operation,
+                                  bool& responseBound, std::string& reason) const;
+    bool VerifyServerPeer(int fd, bool responseBound, std::string& reason) const;
+    bool VerifyServerProcess(std::uint32_t pid, std::string& reason) const;
+    bool VerifyResponseSender(std::uint32_t uid, int pid, std::string& reason) const;
     ExecutionControlResult DispatchControlWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity,
@@ -127,18 +144,21 @@ private:
         const std::string& commandId,
         const std::string& requestBody,
         const ExecutionServiceIdentity& expectedIdentity,
+        ExecutionServiceOperation operation,
         std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::time_point::max());
     ExecutionControlResult CallControl(
         const std::string& commandId,
         const std::string& requestBody,
         const ExecutionServiceIdentity& expectedIdentity,
+        ExecutionServiceOperation operation,
         std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::time_point::max());
 
     std::string m_socketPath;
     std::uint32_t m_expectedServerPid;
     std::uint64_t m_expectedServerStartTicks;
+    ProcessBindingMode m_processBindingMode;
     int m_ioTimeoutMs;
     int m_responseTimeoutMs;
     std::size_t m_maxResponseBytes;
