@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 from collections import defaultdict,Counter
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -10,30 +11,49 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from data import canonical,digest,freeze,HORIZONS
+from data import canonical,digest,freeze,strict,HORIZONS
 from runner import config_load,atomic
+
+MAX_PREDICTION_BATCH=4096
+
+
+def pending_predictions(root):
+    # Completed recent rows must not push older unscored predictions outside the
+    # processing limit after evaluator downtime. Both attached databases are RO.
+    with closing(sqlite3.connect((root/'bridge.sqlite').as_uri()+'?mode=ro',uri=True,timeout=2)) as source:
+        source.execute('PRAGMA query_only=ON')
+        source.execute('ATTACH DATABASE ? AS shadow',((root/'shadow-evaluation.sqlite').as_uri()+'?mode=ro',))
+        missing=' OR '.join('NOT EXISTS (SELECT 1 FROM shadow.outcomes o WHERE o.key=p.id||\':\'||?)' for _ in HORIZONS)
+        rows=source.execute('SELECT p.id,p.payload FROM predictions p WHERE '+missing+
+            ' ORDER BY p.created_ms,p.id LIMIT ?',(*HORIZONS,MAX_PREDICTION_BATCH)).fetchall()
+    return [(pid,strict(payload)) for pid,payload in rows]
 
 
 def evaluate(config):
     if hashlib.sha256(Path(config['period_path']).read_bytes()).hexdigest()!=config['period_sha256']:
         raise ValueError('ACCOUNTING_PERIOD_CHANGED_STOP_EVALUATION')
-    now=int(time.time()*1000);root=Path(config['output_dir']);dataset=freeze(config,now)
-    by_id={s['sample_id']:s for s in dataset['samples']}
+    now=int(time.time()*1000);root=Path(config['output_dir']).resolve()
     if not (root/'bridge.sqlite').exists():return {'state':'NO_PREDICTIONS','strategy_accepted':False}
-    source=sqlite3.connect('file:'+str(root/'bridge.sqlite')+'?mode=ro',uri=True,timeout=2)
-    db=sqlite3.connect(root/'shadow-evaluation.sqlite',timeout=2)
-    db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL')
-    db.execute('CREATE TABLE IF NOT EXISTS outcomes(key TEXT PRIMARY KEY,model TEXT NOT NULL,horizon INTEGER NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)')
+    with closing(sqlite3.connect(root/'shadow-evaluation.sqlite',timeout=2)) as db:
+        db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL')
+        db.execute('CREATE TABLE IF NOT EXISTS outcomes(key TEXT PRIMARY KEY,model TEXT NOT NULL,horizon INTEGER NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)')
+        db.commit()
+        return evaluate_batch(config,root,db,now,pending_predictions(root))
+
+
+def evaluate_batch(config,root,db,now,predictions):
+    dataset=freeze(config,now,prediction_samples=[p['sample'] for _,p in predictions]) if predictions else None
+    by_id={s['sample_id']:s for s in dataset['prediction_samples']} if dataset else {}
     pending=0
-    for pid,payload in source.execute('SELECT id,payload FROM predictions ORDER BY created_ms DESC LIMIT 4096'):
-        p=json.loads(payload);s=by_id.get(p['sample']['sample_id'])
+    for pid,p in predictions:
+        s=by_id.get(p['sample']['sample_id'])
         for j,horizon in enumerate(HORIZONS):
             key=pid+':'+str(horizon)
             if db.execute('SELECT 1 FROM outcomes WHERE key=?',(key,)).fetchone():continue
             if s is None:
                 pending+=1;continue
             reason=s['label_reasons'][j]
-            if reason=='OUTCOME_NOT_MATURE':pending+=1;continue
+            if reason in ('OUTCOME_NOT_MATURE','OUTCOME_NOT_KNOWN'):pending+=1;continue
             status='OBSERVED' if reason=='OBSERVED' else 'CENSORED'
             if (p['model_trained_until_ms']>s['anchor_ms'] or p['created_at_ms']>=s['anchor_ms']+horizon*1000):
                 status='INVALID_TIMING';reason='MODEL_OR_PREDICTION_LOOKAHEAD'
@@ -52,7 +72,7 @@ def evaluate(config):
                     row['same_input_remote_huber']=huber(guess-target)
                     row['remote_candidate_id']=t['candidate_id']
             db.execute('INSERT INTO outcomes VALUES (?,?,?,?,?)',(key,p['model_id'],horizon,status,canonical(row)))
-    db.commit();source.close()
+    db.commit()
     groups=defaultdict(list);counts=Counter()
     for model,h,status,payload in db.execute('SELECT model,horizon,status,payload FROM outcomes'):
         counts[status]+=1
@@ -69,10 +89,11 @@ def evaluate(config):
           'same_input_remote_comparisons':len(paired),
           'mean_same_input_remote_huber':sum(r['same_input_remote_huber'] for r in paired)/len(paired) if paired else None,
           'mean_student_huber_on_remote_pairs':sum(r['student_huber'] for r in paired)/len(paired) if paired else None})
-    db.close()
     result={'schema':'heptatrader.neuron-forward-shadow.v1','at_ms':now,
       'state':'OBSERVING' if counts['OBSERVED'] else 'WAITING_FOR_FORWARD_OUTCOMES',
       'outcomes':dict(counts),'pending':pending,'by_model_and_horizon':metrics,
+      'prediction_batch_size':len(predictions),'prediction_batch_limit':MAX_PREDICTION_BATCH,
+      'pending_scope':'OLDEST_UNFINISHED_PREDICTION_BATCH',
       'metric_basis':'FORWARD_PRICE_PREDICTION_NOT_EXECUTION_NET_PNL',
       'strategy_accepted':False,'model_replacement_performed':False,'broker_orders_sent':0,
       'training_performed_by_evaluator':False,'no_zero_trade_profitability_claim':True}

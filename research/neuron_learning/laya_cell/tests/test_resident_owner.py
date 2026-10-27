@@ -228,6 +228,138 @@ class LayaOwnerTests(unittest.TestCase):
                  patch.object(owner.subprocess, 'run', return_value=process), self.assertRaises(ContractError):
                 owner.native(config, {'operation': 'load_laya_selected'})
 
+    def publication_preview_fixture(self):
+        context = {'owner_trust': {'registry_id': 'synthetic-registry',
+                   'withdrawal_scope_digest': '5' * 64}, 'storage_binding': '6' * 64}
+        request = {'operation': 'prepare_laya_publication', 'owner': context,
+            'manifest': self.prepared['manifest'], 'payload_path': self.prepared['payload_path'],
+            'operation_id': 'synthetic-preview-operation',
+            'expected_registry_predecessor_head': '7' * 64, 'expected_withdrawal_head': '8' * 64}
+        reply = {'status': 'CANONICAL_LAYA_PUBLICATION_PREVIEW_NOT_PUBLISHED',
+            'native_source_sha': owner.PIN, 'selection_verified': False,
+            'canonical_agentd_admitted': False, 'product_consumed': False,
+            'effect_authority': False, 'published': False,
+            'operation_id': request['operation_id'], 'content_digest': self.prepared['manifest']['bytes_digest'],
+            'manifest_digest': self.prepared['support_digest'], 'admission_digest': '9' * 64,
+            'intent_digest': 'a' * 64, 'owner_trust_digest': 'b' * 64, 'writer_lease_digest': 'c' * 64,
+            'withdrawal_scope_digest': context['owner_trust']['withdrawal_scope_digest'],
+            'withdrawal_head_digest': request['expected_withdrawal_head'],
+            'expected_registry_predecessor_head': request['expected_registry_predecessor_head'],
+            'prospective_registry_head_digest': 'd' * 64, 'publication_generation': 2,
+            'registry_id': context['owner_trust']['registry_id'], 'storage_binding': context['storage_binding'],
+            'admitted_at': 55000000}
+        reply['unsigned_publication_head'] = {
+            'withdrawal_scope_digest': reply['withdrawal_scope_digest'], 'binding': reply['storage_binding'],
+            'witness': {'registry_id': reply['registry_id'], 'generation': reply['publication_generation'],
+                'head_digest': reply['prospective_registry_head_digest'],
+                'predecessor_head_digest': reply['expected_registry_predecessor_head'],
+                'issued_at': reply['admitted_at']}}
+        config = {**self.config, 'canonical_verifier_binary': '/synthetic-fixture-never-executed',
+                  'canonical_verifier_sha256': 'e' * 64}
+        return config, request, reply
+
+    def call_preview_contract(self, request, reply):
+        config, _, _ = self.publication_preview_fixture()
+        process = SimpleNamespace(returncode=0, stdout=canonical(reply))
+        with patch.object(owner, 'sha_file', return_value='e' * 64), \
+             patch.object(owner.subprocess, 'run', return_value=process):
+            return owner.native(config, request)
+
+    def test_prepare_publication_returns_bound_unsigned_identity_without_writes_or_clock_input(self):
+        config, request, reply = self.publication_preview_fixture()
+        process = SimpleNamespace(returncode=0, stdout=canonical(reply))
+        files = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch.object(owner, 'enrollment', return_value={'owner': request['owner']}), \
+             patch.object(owner, 'sha_file', return_value='e' * 64), \
+             patch.object(owner.subprocess, 'run', return_value=process) as call, \
+             patch.object(owner, 'write_once', side_effect=AssertionError('preview must not write')), \
+             patch.object(owner, 'publish', side_effect=AssertionError('preview must not publish')):
+            actual = owner.prepare_publication(config, self.prepared,
+                operation_id=request['operation_id'],
+                expected_registry_predecessor_head=request['expected_registry_predecessor_head'],
+                expected_withdrawal_head=request['expected_withdrawal_head'])
+        self.assertEqual(actual, reply)
+        call.assert_called_once()
+        self.assertEqual(call.call_args.args, ([config['canonical_verifier_binary']],))
+        self.assertEqual(json.loads(call.call_args.kwargs['input']), request)
+        self.assertEqual(call.call_args.kwargs['timeout'], 15)
+        self.assertTrue({'now', 'now_ms', 'admitted_at', 'publication_head', 'signature'}.isdisjoint(request))
+        self.assertEqual(files, {p.relative_to(self.root): p.read_bytes()
+                               for p in self.root.rglob('*') if p.is_file()})
+
+    def test_prepare_publication_without_enrollment_does_not_call_native_or_validate_payload(self):
+        with patch.object(owner, 'native', side_effect=AssertionError('native must not run')), \
+             patch.object(owner, '_prepared', side_effect=AssertionError('payload must not be read')):
+            result = owner.prepare_publication(self.config, self.prepared, operation_id='unused',
+                expected_registry_predecessor_head='7' * 64, expected_withdrawal_head='8' * 64)
+        self.assertEqual(result['state'], 'AWAITING_CANONICAL_OWNER_ENROLLMENT')
+        self.assertFalse(result['canonical_agentd_accepted'])
+
+    def test_prepare_publication_rejects_changed_payload_before_native(self):
+        _, request, _ = self.publication_preview_fixture()
+        Path(self.prepared['payload_path']).write_bytes(self.raw + b' ')
+        with patch.object(owner, 'enrollment', return_value={'owner': request['owner']}), \
+             patch.object(owner, 'native', side_effect=AssertionError('native must not run')):
+            with self.assertRaisesRegex(ContractError, 'PREPARED_BYTES_CHANGED'):
+                owner.prepare_publication(self.config, self.prepared,
+                    operation_id=request['operation_id'],
+                    expected_registry_predecessor_head=request['expected_registry_predecessor_head'],
+                    expected_withdrawal_head=request['expected_withdrawal_head'])
+
+    def test_preview_receipt_cannot_claim_publication_selection_or_authority(self):
+        _, request, reply = self.publication_preview_fixture()
+        for key, value in [('published', True), ('published', 0), ('effect_authority', True),
+                           ('canonical_agentd_admitted', True), ('product_consumed', True),
+                           ('selection_verified', 0),
+                           ('status', 'CANONICAL_LAYA_MODEL_PUBLISHED_NOT_SELECTED')]:
+            with self.subTest(key=key, value=value), self.assertRaises(ContractError):
+                self.call_preview_contract(request, {**reply, key: value})
+
+    def test_preview_receipt_rejects_wrong_scope_content_operation_and_typed_digests(self):
+        _, request, reply = self.publication_preview_fixture()
+        changes = [('operation_id', 'another-operation'), ('content_digest', 'f' * 64),
+            ('withdrawal_scope_digest', 'f' * 64), ('withdrawal_head_digest', 'f' * 64),
+            ('expected_registry_predecessor_head', 'f' * 64), ('registry_id', 'another-registry'),
+            ('storage_binding', 'f' * 64), ('admission_digest', 'not-a-digest'),
+            ('intent_digest', None), ('owner_trust_digest', True), ('writer_lease_digest', 1)]
+        for key, value in changes:
+            with self.subTest(key=key), self.assertRaises(ContractError):
+                self.call_preview_contract(request, {**reply, key: value})
+
+    def test_preview_time_and_generation_are_unsigned_integer_identities(self):
+        _, request, reply = self.publication_preview_fixture()
+        for key, values in [('admitted_at', [None, True, -1, 1.5, 2**64]),
+                            ('publication_generation', [None, True, 0, -1, 2**64])]:
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaises(ContractError):
+                    self.call_preview_contract(request, {**reply, key: value})
+
+    def test_unsigned_preview_head_cannot_gain_signer_or_drift_from_returned_identity(self):
+        _, request, reply = self.publication_preview_fixture()
+        for field, value in [('head_digest', 'e' * 64), ('issued_at', reply['admitted_at'] + 1),
+                             ('generation', 2.0), ('signature', '00' * 64),
+                             ('signer_id', 'not-an-enrolled-signature')]:
+            bad = deepcopy(reply); bad['unsigned_publication_head']['witness'][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ContractError, 'PREVIEW_UNSIGNED_HEAD'):
+                self.call_preview_contract(request, bad)
+        bad = deepcopy(reply); bad['publication_generation'] = 1
+        bad['unsigned_publication_head']['witness']['generation'] = True
+        with self.assertRaisesRegex(ContractError, 'PREVIEW_UNSIGNED_HEAD'):
+            self.call_preview_contract(request, bad)
+
+    def test_prepare_preview_support_must_match_original_prepared_manifest(self):
+        config, request, reply = self.publication_preview_fixture()
+        reply['manifest_digest'] = 'f' * 64
+        process = SimpleNamespace(returncode=0, stdout=canonical(reply))
+        with patch.object(owner, 'enrollment', return_value={'owner': request['owner']}), \
+             patch.object(owner, 'sha_file', return_value='e' * 64), \
+             patch.object(owner.subprocess, 'run', return_value=process):
+            with self.assertRaisesRegex(ContractError, 'PREVIEW_SUPPORT_BINDING'):
+                owner.prepare_publication(config, self.prepared,
+                    operation_id=request['operation_id'],
+                    expected_registry_predecessor_head=request['expected_registry_predecessor_head'],
+                    expected_withdrawal_head=request['expected_withdrawal_head'])
+
 
     def qualified_plan(self, *, terminal=True, extra=None):
         plan = deepcopy(self.payload['plan'])

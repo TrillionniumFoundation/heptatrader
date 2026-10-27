@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_laya_pause.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
-    "scripts/hepta_native_reader.py",
+    "scripts/hepta_native_reader.py", "scripts/hepta_operator_clients.py", "scripts/hepta_verified_loader.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
     "scripts/hepta_nav_assurance.py",
@@ -59,6 +59,8 @@ def installed_fixture(*, readme: bool = False):
         for helper in HELPERS:
             if helper in {
                 "scripts/hepta_maintenance_latch.py",
+                "scripts/hepta_operator_clients.py",
+                "scripts/hepta_verified_loader.py",
                 "scripts/hepta_agent_mcp_launcher.py",
                 "scripts/hepta_agent_trust_domain.py",
                 "adapters/mcp/hepta_mcp_server.py",
@@ -93,7 +95,7 @@ def installed_fixture(*, readme: bool = False):
         write("CMakeLists.txt", """cmake_minimum_required(VERSION 3.16)
 project(InstallFixture VERSION 0.1.0 LANGUAGES C)
 set(HEPTA_ENABLE_IBAPI OFF)
-foreach(name heptactl hepta_ib_profile hepta_sessionctl hepta_tool_gatewayd hepta_executiond hepta_agent_simulator_e2e_tests)
+foreach(name heptactl hepta_ib_profile hepta_sessionctl hepta_gateway_catalog hepta_tool_gatewayd hepta_executiond hepta_agent_simulator_e2e_tests)
   add_executable(${name} fixture.c)
 endforeach()
 include(cmake/HeptaInstall.cmake)

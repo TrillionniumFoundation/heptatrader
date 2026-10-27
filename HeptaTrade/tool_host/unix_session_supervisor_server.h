@@ -75,7 +75,8 @@ private:
 		ExecutionOwnerAuditResult& ownerAudit,
 		std::string& reason,
         std::unique_lock<std::timed_mutex>* serialization,
-        std::chrono::steady_clock::time_point deadline);
+        std::chrono::steady_clock::time_point deadline,
+        bool preserveRecoveryExpiry = false);
 	bool FinalizePaperRecovery(
 		const SessionSupervisorLeaseRecord& record,
 		ExecutionOwnerAuditResult& ownerAudit,

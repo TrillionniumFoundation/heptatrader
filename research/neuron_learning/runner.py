@@ -56,7 +56,9 @@ def connect(path):
     db.executescript('''CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS predictions(id TEXT PRIMARY KEY,sample_id TEXT NOT NULL,created_ms INTEGER NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS trains(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);''')
+    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS predictions_sample_id ON predictions(sample_id);
+    CREATE INDEX IF NOT EXISTS predictions_created_ms ON predictions(created_ms);''')
     return db
 
 
@@ -244,6 +246,7 @@ class Learner:
             'evaluation_digest':digest(diagnostic)})
         record={'schema':'heptatrader.neuron-training-receipt.v1','at_ms':int(time.time()*1000),
             'dataset_digest':dataset_id,'parent_model_id':self.model['model_id'],'diagnostic':diagnostic,
+            'sample_selection_profile':dataset.get('sample_selection_profile'),
             'native_plasticity':proposal,'gpu_backend':self.gpu.identity,'gpu_kernel_ms':raw['gpu_kernel_ms'],
             'training_rows':len(mature),'mature_labels':int(mask.sum()),'teacher_auxiliary_labels':int(tm.sum()),
             'nonoverlapping_outcome_windows':independent_counts(mature),'effect_authority':False,

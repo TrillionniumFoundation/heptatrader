@@ -38,7 +38,9 @@ if (( ${#missing_tools[@]} )); then
 fi
 
 generator=()
-if command -v ninja >/dev/null 2>&1; then
+# CMake persists the generator in its cache. A later Ninja installation must
+# not invalidate an existing Makefiles build or force developers to rebuild.
+if [[ ! -f "$build_dir/CMakeCache.txt" ]] && command -v ninja >/dev/null 2>&1; then
   generator=(-G Ninja)
 fi
 

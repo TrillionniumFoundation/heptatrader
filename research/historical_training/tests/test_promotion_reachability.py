@@ -74,6 +74,8 @@ class ClosedStatusTests(unittest.TestCase):
    with patch('laya_cell.resident_evaluate.read_quotes',return_value=([],[])):
     status=e.step()
    self.assertEqual((status['observed'],status['censored']),(10,2));self.assertEqual(f.read_bytes(),before)
+   self.assertEqual(status['closed_coverage_diagnostics']['closed_plans_without_verifiable_deadline'],1)
+   self.assertEqual(status['closed_coverage_diagnostics']['plans_with_diagnostics'],0)
 
 class StorageStatusTests(unittest.TestCase):
  def test_actual_scheduler_publishes_storage_hold_without_consuming_rows(self):

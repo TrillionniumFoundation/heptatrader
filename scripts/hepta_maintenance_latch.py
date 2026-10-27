@@ -30,6 +30,8 @@ ACTIONS = {"pause", "paper-on", "maintenance-hold", "maintenance-release",
 # Only reviewed, exact CLI machine codes may leave captured stderr. Never echo
 # a general uppercase token, arbitrary line, argv, token path or native stdout.
 NATIVE_READ_STDERR_CODES = frozenset({"DISCOVERY_LIST_REJECTED"})
+OPERATOR_CLIENT_HELPER_SHA256 = "ea638d70dde4221fe2b4e8ce3346bf7a979dfd2baa41116404cd2567116b4b01"
+OPERATOR_CLIENTS_REQUIRED = False  # A prepared operator copy fixes this to True.
 
 
 class HoldError(Exception):
@@ -230,8 +232,27 @@ def _native_read_failure(owner: str, method: str, cause: BaseException | None) -
     return "NATIVE_RESUME_READ_FAILED:" + owner + ":" + method + ":" + detail
 
 
+def _operator_clients():
+    root = Path(__file__).resolve().parent
+    path = root / "MANIFEST.json"
+    if not os.path.lexists(path):
+        if OPERATOR_CLIENTS_REQUIRED:
+            raise HoldError("OPERATOR_CLIENT_DECLARATION_REQUIRED")
+        return None
+    from hepta_verified_loader import load_verified_module
+    helper = load_verified_module("hepta_latch_pinned_operator_clients",
+                                  root / "hepta_operator_clients.py", OPERATOR_CLIENT_HELPER_SHA256)
+    config = helper.load_config(root)
+    if config is None and OPERATOR_CLIENTS_REQUIRED:
+        raise HoldError("OPERATOR_CLIENT_DECLARATION_REQUIRED")
+    return config
+
+
 def _service_snapshot() -> dict:
     """Read the manager's loaded policy; disk drop-ins alone are insufficient."""
+    clients = _operator_clients()
+    startup_guard = (Path(clients["native_startup_guard"]["path"]) if clients is not None
+                     else Path(__file__).resolve())
     result = {}
     for unit in ("heptatrader-execution.service", "heptatrader-gateway.service"):
         props = ["ActiveState", "SubState", "MainPID", "InvocationID"]
@@ -252,22 +273,27 @@ def _service_snapshot() -> dict:
         if unit == "heptatrader-execution.service":
             guard = values["ExecStartPre"]
             expected = ("{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -B "
-                        + str(Path(__file__).resolve())
+                        + str(startup_guard)
                         + " native-startup-hold ; ignore_errors=no ;")
             if (values["Type"] != "simple" or values["KillMode"] != "control-group"
                     or not guard.startswith(expected) or guard.count("{") != 1
                     or guard.count("}") != 1 or not guard.endswith("}")):
                 raise HoldError("NATIVE_STARTUP_GUARD_NOT_COORDINATED")
         result[unit] = {key: values[key] for key in ("MainPID", "InvocationID")}
+    if clients is not None and _operator_clients() != clients:
+        raise HoldError("OPERATOR_CLIENT_DECLARATION_CHANGED")
     return result
 
 
 def _native_payload(control: Path, owner: str, method: str) -> dict:
     # No token, endpoint, path, or method overrides are exposed to the CLI.
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    binary = [str(home / ".local/share/heptatrader/current/bin/heptactl")]
+    if _operator_clients() is not None:
+        binary = ["/usr/bin/python3", "-B", str(Path(__file__).resolve().with_name(
+            "hepta_operator_clients.py")), "heptactl"]
     try:
-        raw = _command([
-            str(home / ".local/share/heptatrader/current/bin/heptactl"),
+        raw = _command([*binary,
             "--socket", str(control.parent / "tools.sock"), "--token-file",
             str(home / (".config/heptatrader/" + owner + ".token")),
             "--io-timeout-ms", "4000", "--call-id", "hold-resume-" + uuid.uuid4().hex,

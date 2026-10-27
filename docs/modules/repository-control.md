@@ -28,6 +28,12 @@ release blockers. Only the tagged release workflow applies the current register'
 `--release-profile core` admission check. Unit fixtures continue to verify that
 an unresolved blocker rejects that release without blocking ordinary development.
 
+`./scripts/dev_core.sh` and `--storage` reuse the generator of an existing
+build directory; Ninja is selected only for a new directory. The core Python
+suite also runs Neuron causal-data, evaluation-recovery and training-cadence
+controls with NumPy on the CPU. Those tests reject native/GPU library loading
+and subprocess launches; real GPU conformance remains explicitly configured.
+
 Workflow command fixtures locate behavioral steps by stable `id`, not the
 English display name or a shell-command substring. They execute inert command
 fixtures and evaluate cancellation/selection behavior; a cosmetic step rename

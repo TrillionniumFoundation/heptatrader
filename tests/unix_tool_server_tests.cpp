@@ -23,6 +23,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
@@ -1773,8 +1774,68 @@ void TestDeniedAuditRetainsPeerAndPresentedOwner()
     std::remove(path.c_str());
 }
 
+void TestRealCliOriginalCommandStatus()
+{
+    const auto journalPath = TempPath("/tmp/hepta-cli-command-journal-XXXXXX");
+    const auto socketPath = TempPath("/tmp/hepta-cli-command-socket-XXXXXX");
+    const auto tokenPath = TempPath("/tmp/hepta-cli-command-token-XXXXXX");
+    const auto outputPath = TempPath("/tmp/hepta-cli-command-output-XXXXXX");
+    OmsJournal journal; assert(journal.Init(journalPath));
+    ExecutionCoordinatorCallbacks callbacks; ExecutionCoordinator execution(journal, callbacks);
+    std::atomic<int> reads(0);
+    TradingToolReadCallbacks readCallbacks;
+    readCallbacks.executionGetCommandStatus = [&](const TradingToolSession&, const TradingToolCall& call,
+        std::string& payload, std::string&) {
+        assert(call.targetCommandId == "original-close-command"); ++reads;
+        payload = "{\"authoritative\":true,\"command_id\":\"original-close-command\","
+            "\"command_status\":\"accepted\",\"order_id\":9123,\"reason_code\":\"NONE\","
+            "\"execution_service_epoch\":\"fixture-execution-epoch\",\"execution_service_fencing_generation\":7}";
+        return true;
+    };
+    TradingToolRegistry registry(execution, readCallbacks); TradingToolHost host(registry);
+    TradingToolHostSessionBinding binding;
+    binding.token = "gateway-command-status-token"; binding.peerUid = ::geteuid();
+    binding.session.executionContext.agentId = "gateway-maintenance-agent";
+    binding.session.executionContext.sessionId = "original-session";
+    binding.session.executionContext.account = "DU123";
+    binding.session.environment = "PAPER"; binding.executionDomain = "PAPER";
+    binding.session.capabilities.insert("orders.read");
+    binding.session.capabilities.insert("system.read");
+    binding.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
+    std::string reason; assert(host.RegisterSession(binding, reason));
+    UnixToolServer server(host); server.AllowMissingDecisionAuditForTests();
+    assert(server.Start(socketPath, reason));
+    const int token = ::open(tokenPath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    assert(token >= 0 && ::write(token, binding.token.data(), binding.token.size()) == static_cast<ssize_t>(binding.token.size()));
+    ::close(token);
+    auto run = [&](const char* argument) {
+        const pid_t pid = ::fork(); assert(pid >= 0);
+        if (pid == 0) {
+            const int output = ::open(outputPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (output < 0 || ::dup2(output, STDOUT_FILENO) < 0 || ::dup2(output, STDERR_FILENO) < 0) _exit(98);
+            ::close(output);
+            ::execl(HEPTACTL_BINARY, HEPTACTL_BINARY, "--socket", socketPath.c_str(), "--token-file", tokenPath.c_str(),
+                "--call-id", "gateway-status-cli-0001", "call", "execution.get_command_status", argument,
+                static_cast<char*>(nullptr));
+            _exit(99);
+        }
+        int status = 0; assert(::waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+        return WEXITSTATUS(status);
+    };
+    assert(run("command_id=original-close-command") == 0 && reads == 1);
+    std::ifstream output(outputPath); const std::string json((std::istreambuf_iterator<char>(output)), {});
+    for (const char* field : {"\"status\":\"ok\"", "\"tool\":\"execution.get_command_status\"", "\"payload\":{",
+            "\"command_id\":\"original-close-command\"", "\"authoritative\":true"})
+        assert(json.find(field) != std::string::npos);
+    assert(run("target_command_id=original-close-command") != 0 && reads == 1);
+    server.Stop();
+    for (const auto& path : {journalPath, tokenPath, outputPath}) std::remove(path.c_str());
+}
+
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--command-status-cli")
+    { TestRealCliOriginalCommandStatus(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--audit-exit-capability")
     { TestAuditReserveRequiresExitCapability(); return 0; }
     assert(argc == 1);
@@ -1782,6 +1843,7 @@ int main(int argc, char** argv)
     TestAuditReserveRequiresMatchingPeer();
     TestDeniedAuditRetainsPeerAndPresentedOwner();
     TestSocketRoundTripAndStrictProtocol();
+    TestRealCliOriginalCommandStatus();
     TestGlobalQueueBackpressureDecisionAudit();
     TestWatchRejectionAndDescriptorEffectAudit();
     TestWatchSnapshotAuditCardinalityAndBoundedDelivery();

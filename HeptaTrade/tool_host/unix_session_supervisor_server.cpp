@@ -809,6 +809,13 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 			(record.recoveryOnly || record.fencePending ||
 				record.expiresAtMs <= nowMs))
 		{
+            // A still-valid exact user custody receiver survives a Gateway
+            // restart. Its original expiry bounds this exception; an expired
+            // lease keeps the existing finalization path.
+            const std::uint64_t recoveryExpiresBeforeRestore = record.expiresAtMs;
+            const bool resumableUserRecovery = record.recoveryOnly &&
+                recoveryExpiresBeforeRestore > nowMs &&
+                CanResumeExactUserPaperRecord(record);
 			// The execution runtime may need to reconnect once after the first
 			// recovery audit observes the old broker epoch.  RestoreLeases runs
 			// before the normal ReapExpired loop, so give only this narrowly
@@ -825,7 +832,8 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 				ExecutionControlStatusResult commandResult;
 				ExecutionOwnerAuditResult ownerAudit;
 				if (!EnterPaperRecovery(record, recoveryNowMs, std::string(),
-						commandResult, ownerAudit, reason, nullptr, retryDeadline))
+						commandResult, ownerAudit, reason, nullptr, retryDeadline,
+                        resumableUserRecovery))
 				{
 					if (!IsTransientPaperRecoveryAuditReason(reason) ||
 						std::chrono::steady_clock::now() >= retryDeadline)
@@ -834,13 +842,27 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 						std::chrono::milliseconds(100));
 					continue;
 				}
+                // A remote audit can finish after this receiver's original
+                // TTL. Do not expose a resumable catalog using a pre-audit
+                // clock. Keep the expired recovery fence and refuse startup;
+                // a later restore uses the existing expired-record cleanup.
+                const std::uint64_t recoveryObservedAtMs =
+                    static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
+                if (resumableUserRecovery &&
+                    recoveryExpiresBeforeRestore <= recoveryObservedAtMs)
+                {
+                    reason = "SESSION_RECOVERY_RESTORE_TTL_EXPIRED";
+                    return false;
+                }
 				if (ownerAudit.status == ExecutionCommandStatus::Accepted &&
 					ownerAudit.ownerAuditAuthoritative &&
 					ownerAudit.ownerAuditComplete &&
 					ownerAudit.ownerActiveOrderCount == 0 &&
 					ownerAudit.ownerUncertainCommandCount == 0)
 				{
-					if (!record.paperFinalizationRequired)
+					if (!record.paperFinalizationRequired && !resumableUserRecovery)
 					{
 						ExecutionOwnerAuditResult finalAudit;
 						if (!FinalizePaperRecovery(record, finalAudit, reason) &&

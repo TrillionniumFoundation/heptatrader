@@ -98,6 +98,20 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(EvidenceError):parse_meminfo('MemTotal: 100 kB')
 
 class LeaseTests(unittest.TestCase):
+    def test_failed_post_lock_admission_releases_unused_worker_lease(self):
+        with tempfile.TemporaryDirectory() as td:
+            gate=Gate({'state_root':td},'trainer')
+            other=Lease(Path(td)/'heavy-worker.lock')
+            try:
+                admission={'admit_new_worker':True,'reasons':[]}
+                with patch.object(gate,'check',side_effect=[admission,OSError('admission receipt unavailable')]), \
+                        self.assertRaises(OSError):
+                    gate.acquire({'role':'trainer'})
+                self.assertIsNone(gate.lease.fd)
+                self.assertTrue(other.acquire())
+            finally:
+                gate.lease.release();other.release()
+
     def test_two_roles_cannot_own_lease_simultaneously(self):
         with tempfile.TemporaryDirectory() as td:
             a=Lease(Path(td)/'lease');b=Lease(Path(td)/'lease')

@@ -1186,7 +1186,8 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
     ExecutionOwnerAuditResult& ownerAudit,
-    std::string& reason, bool resumeOwner, bool continuation)
+    std::string& reason, bool resumeOwner, bool continuation,
+    double authorizedMaxOrderQuantity)
 {
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     TradingToolHostSessionBinding binding;
@@ -1247,7 +1248,12 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
                  binding.maxOrderQuantity == 1.0) :
                 (c->second.symbol == "EUR" && c->second.secType == "CASH" &&
                  c->second.exchange == "IDEALPRO" && c->second.currency == "USD" &&
-                 binding.maxOrderQuantity == 25000.0));
+                 // The control plane has just authorized this exact binding
+                 // against the current configured policy. Resume retains that
+                 // limit; no quantity is accepted from the control request.
+                 std::isfinite(authorizedMaxOrderQuantity) &&
+                 authorizedMaxOrderQuantity > 0.0 && authorizedMaxOrderQuantity <= 100000.0 &&
+                 binding.maxOrderQuantity == authorizedMaxOrderQuantity));
         if (currentToken != replacementToken || binding.allowedInstruments.size() != 1 ||
             binding.allowedInstruments.count(instrument) != 1 || binding.instrumentContracts.size() != 1 ||
             !contractOk || ownerAudit.status != ExecutionCommandStatus::Accepted ||

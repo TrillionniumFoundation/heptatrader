@@ -71,9 +71,14 @@ add_executable(hepta_trading_contract_tests
 hepta_register_core_test(hepta_trading_contract_tests)
 
 add_executable(hepta_native_tool_client_tests
-    native_tool_client_tests.cpp)
+    native_tool_client_tests.cpp
+    ../HeptaTrade/tool_host/unix_session_supervisor_client.cpp)
 target_link_libraries(hepta_native_tool_client_tests
-    hepta_native_tool_client)
+    hepta_native_tool_client hepta_session_supervisor_core)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(hepta_native_tool_client_tests PRIVATE -Wl,--wrap=socket)
+    target_compile_definitions(hepta_native_tool_client_tests PRIVATE HEPTA_TEST_WRAP_SOCKET=1)
+endif()
 hepta_register_core_test(hepta_native_tool_client_tests)
 
 add_executable(hepta_pnl_read_stream_tests
@@ -140,6 +145,9 @@ add_executable(hepta_unix_tool_server_tests
     unix_tool_server_tests.cpp)
 target_link_libraries(hepta_unix_tool_server_tests
     hepta_agent_os_core hepta_execution_core hepta_native_tool_client)
+add_dependencies(hepta_unix_tool_server_tests heptactl)
+target_compile_definitions(hepta_unix_tool_server_tests PRIVATE
+    HEPTACTL_BINARY="$<TARGET_FILE:heptactl>")
 hepta_register_core_test(hepta_unix_tool_server_tests)
 set_tests_properties(hepta_unix_tool_server_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
@@ -171,6 +179,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         PRIVATE -Wl,--wrap=fsync -Wl,--wrap=rename)
 endif()
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
+
+add_executable(hepta_gateway_catalog_tests gateway_catalog_tests.cpp)
+target_link_libraries(hepta_gateway_catalog_tests PRIVATE hepta_session_supervisor_core)
+add_dependencies(hepta_gateway_catalog_tests hepta_gateway_catalog)
+target_compile_definitions(hepta_gateway_catalog_tests PRIVATE
+    HEPTA_CATALOG_BINARY="$<TARGET_FILE:hepta_gateway_catalog>")
+hepta_register_core_test(hepta_gateway_catalog_tests)
 
 add_executable(hepta_sessionctl_owner_audit_tests
     sessionctl_owner_audit_tests.cpp
@@ -368,6 +383,7 @@ add_custom_target(hepta_core_test_binaries
         hepta_executiond
         hepta_ib_executiond
         heptactl
+        hepta_gateway_catalog
         hepta_sessionctl)
 # The validation target must link the actual production entry points, not
 # merely the libraries also used by tests. This executes the Gateway's

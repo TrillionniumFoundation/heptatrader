@@ -144,6 +144,41 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
 
 
 class FocusedDevelopmentRunnerTests(unittest.TestCase):
+    def test_existing_makefiles_build_survives_ninja_becoming_available(self):
+        # Exercise real CMake cache reuse and CTest with a tiny build. The
+        # fixture Ninja deliberately fails if the entry point switches to it.
+        with tempfile.TemporaryDirectory(prefix="hepta-dev-cache-") as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            entry = root / "scripts/dev_core.sh"
+            shutil.copyfile(ROOT / "scripts/dev_core.sh", entry)
+            (root / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)\n"
+                "project(DevelopmentCacheFixture NONE)\ninclude(CTest)\n"
+                "add_custom_target(hepta_core_test_binaries)\n"
+                "add_test(NAME cached_core COMMAND ${CMAKE_COMMAND} -E true)\n"
+                'set_tests_properties(cached_core PROPERTIES LABELS "core")\n',
+                encoding="utf-8")
+            build = root / "build with spaces"
+            configured = subprocess.run(
+                ["cmake", "-S", str(root), "-B", str(build), "-G", "Unix Makefiles"],
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            binary = root / "bin"
+            binary.mkdir()
+            ninja = binary / "ninja"
+            ninja.write_text("#!/bin/sh\necho unexpected-generator-switch >&2\nexit 97\n")
+            ninja.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", str(entry)],
+                env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
+                         HEPTA_BUILD_DIR=str(build), HEPTA_JOBS="1", BASH_ENV="/dev/null"),
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = ET.parse(build / "core-results.xml").getroot()
+            self.assertEqual(report.attrib["tests"], "1")
+            self.assertEqual(report.attrib["failures"], "0")
+
     def invoke(self, *arguments, fail="", jobs="2", tools=("cmake", "ctest")):
         with tempfile.TemporaryDirectory(prefix="hepta-dev-entry-") as directory:
             root = Path(directory)

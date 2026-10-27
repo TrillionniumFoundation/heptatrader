@@ -16,6 +16,7 @@ def load_manifest(path):
  if m.get('fx_churn_profile_sha256'):raise ValueError('FX_CHURN_RETIRED')
  if type(m.get('native_read_stream',False)) is not bool:raise ValueError('NATIVE_READER_MODE_INVALID')
  if 'native_read_binary' in m and m.get('native_read_stream') is not True:raise ValueError('NATIVE_READ_BINARY_REQUIRES_STREAM')
+ if 'native_clients' in m and 'hepta_native_reader.py' not in m['runtime_sha256']:raise ValueError('NATIVE_CLIENT_RUNTIME_NOT_PINNED')
  period=read_private(m['period_path'],65536)
  if hashlib.sha256(period).hexdigest()!=m['period_sha256'] or strict(period).get('execution_domain')!='PAPER':
   raise ValueError('PERIOD_CHANGED_NO_LAUNCH')
@@ -34,8 +35,17 @@ def main():
  stream=a.native_read_stream or m.get('native_read_stream') is True
  if stream and 'hepta_native_reader.py' not in m['runtime_sha256']:raise ValueError('NATIVE_READER_RUNTIME_NOT_PINNED')
  driver=load_verified_module('hepta_attributed_pinned_base',base,m['runtime_sha256']['heptatrader_paper_driver.py'])
- if stream:
+ if stream or 'native_clients' in m:
   reader=load_verified_module('hepta_attributed_pinned_reader',root/'hepta_native_reader.py',m['runtime_sha256']['hepta_native_reader.py'])
+  if 'native_clients' in m:
+   reader.validate_client_bindings(m['native_clients'])
+   for binding in m['native_clients'].values():
+    with reader.verified_binary(binding):pass
+   if stream and m.get('native_read_binary')!=m['native_clients']['heptactl']:
+    raise ValueError('NATIVE_CLIENT_READ_BINDING_MISMATCH')
+   driver.NATIVE_CLIENTS={name:dict(binding) for name,binding in m['native_clients'].items()}
+   driver.NATIVE_BINARY_VERIFIER=reader.verified_binary
+ if stream:
   driver.NATIVE_READER_CLASS=reader.NativeReader
   if 'native_read_binary' in m:
    reader.validate_binary_binding(m['native_read_binary'])

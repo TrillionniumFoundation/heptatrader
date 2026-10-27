@@ -592,7 +592,14 @@ class Gate:
         # Recheck BOTH original admission and Value priority after taking the
         # same original lease. Never stop another worker or extend any deadline.
         if report['admit_new_worker']:
-            report=self._prioritize_background(self.check())
+            try:
+                report=self._prioritize_background(self.check())
+            except BaseException:
+                # No worker has been dispatched yet. A failed recheck must not
+                # leave this controller holding the global lease while its
+                # next queue/calendar preflight returns without launching.
+                self.lease.release()
+                raise
             if report['admit_new_worker']:return True
             self.lease.release()
         self.attach_resource_attribution(report)

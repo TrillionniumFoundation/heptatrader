@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+operator_mcp_required=false # A prepared operator copy fixes this to true.
 export HEPTA_TOOL_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/heptatrader/tools.sock"
 export HEPTA_TOOL_SESSION_TOKEN_FILE="$HOME/.config/heptatrader/paper.token"
 export HEPTA_TOOL_EXPECTED_UID="$(id -u)"
-exec /usr/bin/python3 -I "$HOME/.local/share/heptatrader/current/libexec/heptatrader/hepta_mcp_server.py"
+adapter="$HOME/.local/share/heptatrader/current/libexec/heptatrader/hepta_mcp_server.py"
+beside="$(dirname "$(readlink -f "$0")")/hepta_mcp_server.py"
+if $operator_mcp_required && [[ ! -f "$beside" ]]; then
+  echo 'Selected operator MCP adapter is missing.' >&2; exit 69
+fi
+[[ ! -f "$beside" ]] || adapter="$beside"
+exec /usr/bin/python3 -I "$adapter"

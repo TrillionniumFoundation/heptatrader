@@ -92,7 +92,10 @@ impl Fixture{
    "expected_withdrawal_head":self.withdrawals.head_digest().to_string()}),head)
  }
  fn selected_request(&self,published:&Value)->Value{
-  let service=existing_owner(&self.owner,30).unwrap();let current=service.current_registry_view(30).unwrap();
+  self.selected_request_at(published,30)
+ }
+ fn selected_request_at(&self,published:&Value,now:u64)->Value{
+  let service=existing_owner(&self.owner,now).unwrap();let current=service.current_registry_view(now).unwrap();
   let m=manifest(&published["manifest"]).unwrap();let pin=service.registry().manifest(&m.artifact_id).unwrap();
   let selector_key=SigningKey::from_bytes(&[92;32]);
   let selection_trust_value=json!({"registry_id":"fixture-artifacts","withdrawal_scope_digest":self.withdrawals.scope_digest().unwrap().to_string(),
@@ -104,10 +107,10 @@ impl Fixture{
    artifact_kind:a::ArtifactKind::Model,artifact_generation:m.generation,predecessor_id:None,content_digest:m.bytes_digest,
    objective_digest:m.objective_class_digest,support_digest:pin.support_digest,compatibility_digest:m.compatibility_digest,
    encoded_size_bytes:m.encoded_size_bytes,selector_id:sid("fixture-independent-selector"),selector_credential_digest:d("fixture-selector-credential"),
-   signing_key_digest:Digest32::of_bytes(&selector_key.verifying_key().to_bytes()),authority_epoch:1,issued_at:30,expires_at:1000000,signature:[0;64]};
+   signing_key_digest:Digest32::of_bytes(&selector_key.verifying_key().to_bytes()),authority_epoch:1,issued_at:now,expires_at:1000000,signature:[0;64]};
   signed.signature=selector_key.sign(&signed.signing_bytes()).to_bytes();
   let verifier=a::ArtifactSelectionVerifierV1::new(selection_trust(&selection_trust_value).unwrap(),&owner(&self.owner["owner_trust"]).unwrap()).unwrap();
-  let verified=verifier.verify(&signed,&current,30).unwrap();
+  let verified=verifier.verify(&signed,&current,now).unwrap();
   let mut journal=a::ArtifactLifecycleJournalV2::new();
   let transitions=[(a::LifecycleActorRoleV2::Producer,"fixture-producer",a::ArtifactLifecycleStateV1::Proposed,a::ArtifactLifecycleStateV1::Trained),
    (a::LifecycleActorRoleV2::Evaluator,"fixture-evaluator",a::ArtifactLifecycleStateV1::Trained,a::ArtifactLifecycleStateV1::Evaluated),
@@ -118,10 +121,10 @@ impl Fixture{
    journal.append(journal.head_digest(),&m.producer_id,a::LifecycleActorEvidenceV2{actor_id:sid(actor),credential_digest:d(actor),role,
     authority_epoch:1,verified_at:20,expires_at:1000000},a::ArtifactLifecycleEventV1{event_id:sid(&format!("fixture-lifecycle-{i}")),
     artifact_id:m.artifact_id.clone(),prior_state:prior,next_state:next,actor_id:sid(actor),actor_credential_digest:d(actor),
-    evidence_digest:d(&format!("fixture-evidence-{i}")),authority_epoch:1,occurred_at:30},30).unwrap();
+    evidence_digest:d(&format!("fixture-evidence-{i}")),authority_epoch:1,occurred_at:now},now).unwrap();
   }
   let prior=journal.head_digest();
-  a::record_verified_selection(&mut journal,prior,&m.producer_id,&verified,sid("fixture-selected"),30).unwrap();
+  a::record_verified_selection(&mut journal,prior,&m.producer_id,&verified,sid("fixture-selected"),now).unwrap();
   let lifecycle_path=self._temp.path().join("lifecycle.snapshot");
   let lr=a::write_artifact_lifecycle_snapshot(a::CreateOnlyArtifactFile::create(&lifecycle_path).unwrap(),&journal,d("fixture-lifecycle-binding")).unwrap();
   let receipt=current.receipt();let selected=json!({"selection_id":signed.selection_id.as_str(),"artifact_id":signed.artifact_id.as_str(),
@@ -131,7 +134,7 @@ impl Fixture{
    "predecessor_id":null,"content_digest":signed.content_digest.to_string(),"objective_digest":signed.objective_digest.to_string(),
    "support_digest":signed.support_digest.to_string(),"compatibility_digest":signed.compatibility_digest.to_string(),
    "encoded_size_bytes":signed.encoded_size_bytes,"selector_id":signed.selector_id.as_str(),"selector_credential_digest":signed.selector_credential_digest.to_string(),
-   "signing_key_digest":signed.signing_key_digest.to_string(),"authority_epoch":1,"issued_at":30,"expires_at":1000000,"signature":hex(&signed.signature)});
+   "signing_key_digest":signed.signing_key_digest.to_string(),"authority_epoch":1,"issued_at":now,"expires_at":1000000,"signature":hex(&signed.signature)});
   json!({"operation":"load_laya_selected","owner":self.owner,"manifest":published["manifest"],"selection_trust":selection_trust_value,
    "selection_head_requirement":{"registry_id":"fixture-artifacts","minimum_generation":self.head.witness.generation.get(),
     "expected_predecessor_head_digest":self.head.witness.predecessor_head_digest.to_string(),"minimum_authority_epoch":1},
@@ -188,4 +191,106 @@ fn selected_bundle_cannot_replace_real_current_or_lifecycle(){
  assert!(laya_dispatch(&bad,30).is_err());
  let mut bad=request;bad["manifest"]["generation"]=json!(2);
  assert!(laya_dispatch(&bad,30).is_err());
+}
+
+fn file_inventory(root:&Path)->Vec<(PathBuf,Vec<u8>)>{
+ let mut result=Vec::new();
+ for entry in std::fs::read_dir(root).unwrap(){
+  let path=entry.unwrap().path();
+  if path.is_dir(){result.extend(file_inventory(&path));}
+  else{result.push((path.clone(),std::fs::read(path).unwrap()));}
+ }
+ result.sort_by(|a,b|a.0.cmp(&b.0));result
+}
+
+#[test]
+fn readonly_preview_and_later_publication_keep_one_stable_signed_identity(){
+ let mut f=Fixture::new();let (mut publish,_)=f.publication("fixture-laya",&payload());
+ let mut request=publish.clone();request["operation"]=json!("prepare_laya_publication");
+ let before=file_inventory(f._temp.path());
+ let preview=prepare_laya_publication(&request,40).unwrap();
+ assert_eq!(before,file_inventory(f._temp.path()));
+ assert_eq!(preview["admitted_at"],40);assert_eq!(preview["published"],false);
+ assert_eq!(preview["effect_authority"],false);assert_eq!(preview["selection_verified"],false);
+ assert!(preview["unsigned_publication_head"].get("signature").is_none());
+ let mut head=Fixture::sign_head(&f.key,f.withdrawals.scope_digest().unwrap(),
+  preview["publication_generation"].as_u64().unwrap(),
+  preview["prospective_registry_head_digest"].as_str().unwrap().parse().unwrap(),f.head.witness.head_digest);
+ head.witness.issued_at=40;head.signature=f.key.sign(&head.signing_bytes()).to_bytes();
+ publish["publication_head"]=head_json(&head);
+ let first=laya_dispatch(&publish,41).unwrap();
+ assert_eq!(first["status"],"CANONICAL_LAYA_MODEL_PUBLISHED_NOT_SELECTED");
+ assert_eq!(first["admission_digest"],preview["admission_digest"]);
+ assert_eq!(laya_dispatch(&publish,49).unwrap(),first);
+ f.head=head;
+ let selected=f.selected_request_at(&publish,50);
+ let loaded=laya_dispatch(&selected,50).unwrap();
+ assert_eq!(loaded["status"],"CANONICAL_LAYA_SELECTED_BYTES_LOADED");
+ let mut final_request=selected;final_request["operation"]=json!("revalidate_laya_output");
+ final_request["loaded_registry"]=loaded["loaded_registry"].clone();
+ final_request["loaded_lifecycle"]=loaded["loaded_lifecycle"].clone();
+ final_request["request_digest"]=json!(d("fixture-request").to_string());
+ final_request["output_digest"]=json!(d("fixture-output").to_string());
+ assert_eq!(laya_dispatch(&final_request,51).unwrap()["status"],"CANONICAL_LAYA_OUTPUT_REVALIDATED");
+}
+
+#[test]
+fn signed_identity_anchor_never_replaces_the_actual_freshness_clock(){
+ for anchor in [9,51]{
+  let f=Fixture::new();let (mut publish,mut head)=f.publication("fixture-laya",&payload());
+  head.witness.issued_at=anchor;head.signature=f.key.sign(&head.signing_bytes()).to_bytes();
+  publish["publication_head"]=head_json(&head);
+  let before=file_inventory(f._temp.path());
+  assert!(laya_dispatch(&publish,50).unwrap_err().contains("ADMISSION_ANCHOR"));
+  assert_eq!(before,file_inventory(f._temp.path()));
+ }
+ let f=Fixture::new();let (mut publish,_)=f.publication("fixture-laya",&payload());
+ publish["manifest"]["expires_at"]=json!(45);
+ assert!(laya_dispatch(&publish,50).is_err());
+ // The old signed owner lease/current head are valid at the identity anchor30,
+ // but opening the actual owner at a later expired wall clock must still fail.
+ let f=Fixture::new();let (publish,_)=f.publication("fixture-laya",&payload());
+ assert!(laya_dispatch(&publish,1000001).is_err());
+}
+
+#[test]
+fn readonly_preview_keeps_service_configuration_and_recovery_gates(){
+ for (field,value) in [("storage_binding",Digest32::ZERO.to_string()),("scope",d("wrong-scope").to_string())]{
+  let f=Fixture::new();let (mut request,_)=f.publication("fixture-laya",&payload());
+  if field=="scope"{request["owner"]["owner_trust"]["withdrawal_scope_digest"]=json!(value);}
+  else{request["owner"][field]=json!(value);}
+  let before=file_inventory(f._temp.path());
+  assert!(prepare_laya_publication(&request,40).unwrap_err().contains("LAYA_OWNER_CONFIGURATION"));
+  assert_eq!(before,file_inventory(f._temp.path()));
+ }
+ let f=Fixture::new();let (mut publish,mut head)=f.publication("fixture-laya",&payload());
+ head.signature=[0;64];publish["publication_head"]=head_json(&head);
+ assert!(laya_dispatch(&publish,31).is_err());
+ let (mut unrelated,_)=f.publication("fixture-unrelated",&payload());
+ unrelated["operation"]=json!("prepare_laya_publication");
+ let before=file_inventory(f._temp.path());
+ assert!(prepare_laya_publication(&unrelated,40).unwrap_err().contains("RECOVERY_REQUIRED"));
+ assert_eq!(before,file_inventory(f._temp.path()));
+}
+
+#[test]
+fn typed_projection_matches_canonical_host_stage_and_blocks_changed_identity(){
+ let f=Fixture::new();let (publish,_)=f.publication("fixture-laya",&payload());
+ let host=a::LearningArtifactOwnerHost::open_with_required_current_head(&f.root,
+  owner(&f.owner["owner_trust"]).unwrap(),lease(&f.owner["writer_lease"]).unwrap(),f.head.clone(),30).unwrap();
+ let original=host.recover_current_registry(30).unwrap();
+ let admission=a::admit_manifest_at_withdrawal_head_v3(&f.withdrawals,f.withdrawals.head_digest(),manifest(&publish["manifest"]).unwrap(),30).unwrap();
+ let tx=a::ArtifactPublicationTransactionV1::begin(id(&publish,"operation_id").unwrap(),admission,&f.withdrawals,&original,original.snapshot().head_digest,30).unwrap();
+ let mut canonical=original.clone();host.stage_compatibility_registration(&tx,&mut canonical,30).unwrap();
+ let mut projected=original;project_registration(&tx,&mut projected).unwrap();
+ assert_eq!(canonical.records(),projected.records());assert_eq!(canonical.snapshot().head_digest,projected.snapshot().head_digest);
+ drop(host);
+ for field in ["operation","manifest"]{
+  let mut changed=publish.clone();
+  if field=="operation"{changed["operation_id"]=json!("fixture-different-operation");}
+  else{changed["manifest"]["normalization_digest"]=json!(d("fixture-different-normalization").to_string());}
+  let before=file_inventory(f._temp.path());
+  assert!(laya_dispatch(&changed,31).unwrap_err().contains("LAYA_PUBLICATION_HEAD_BINDING"));
+  assert_eq!(before,file_inventory(f._temp.path()));
+ }
 }

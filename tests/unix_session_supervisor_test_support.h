@@ -147,6 +147,8 @@ void TestDeterministicGenerationSchedules();
 void TestRestartAtEveryPersistedGeneration();
 void TestUserPaperResumeAuditsBeforeActivation();
 void TestUserRecoveryRestoreSurvivesHeldFxAndExplicitCryptoResume();
+void TestUserZeroRecoverySurvivesRestartAndMaintenance();
+void TestConfiguredFxResumeKeepsExactPolicyScope();
 void TestCryptoAndFxSessionContractScopesRemainDisjoint();
 void TestWatchLeaseRestartFailsClosed();
 void TestSameHostWatchRestartFencesExactLocalSession();
