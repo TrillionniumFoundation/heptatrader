@@ -320,6 +320,7 @@ void TestUserZeroRecoverySurvivesRestartAndMaintenance()
         AuditState auditState = AuditState::Zero;
         int releaseCalls = 0, queryCalls = 0, recoveryAudits = 0, fenceCalls = 0;
         std::uint64_t expectedRecoveryExpiry = 0;
+        std::uint64_t automaticTriggerExpiry = 0;
         bool delayRestoreAudit = false;
         bool delayedAuditReturned = false;
         RecoveryControlAuthority authority;
@@ -528,6 +529,28 @@ void TestUserZeroRecoverySurvivesRestartAndMaintenance()
             const auto catalog = host.GetContractCatalogSnapshot();
             assert(catalog.sessionCount == 0 && catalog.contracts.empty());
             assert(fenceCalls == 1 && releaseCalls == 0);
+            std::vector<std::string> automatic;
+            for (const auto& payload : AuditPayloads(auditPath))
+            {
+                assert(payload.find(token) == std::string::npos);
+                if (payload.find("operation=paper-recovery-finalize\n") != std::string::npos)
+                    automatic.push_back(payload);
+            }
+            assert(automatic.size() == 2);
+            for (const auto& payload : automatic)
+            {
+                assert(payload.find("origin=maintenance\n") != std::string::npos);
+                assert(payload.find(std::string("trigger=") +
+                    (restart ? "restore-leases\n" : "reap-expired\n")) != std::string::npos);
+                assert(payload.find("agent_id=zero-fx-agent\n") != std::string::npos);
+                assert(payload.find("session_id=zero-fx-session\n") != std::string::npos);
+                assert(payload.find("lease_generation=1\n") != std::string::npos);
+                assert(payload.find("trigger_expires_at_ms=" +
+                    std::to_string(automaticTriggerExpiry) + "\n") != std::string::npos);
+                assert(payload.find("trigger_recovery_only=1\n") != std::string::npos);
+            }
+            assert(automatic[0].find("phase=intent\noutcome=pending\n") != std::string::npos);
+            assert(automatic[1].find("phase=outcome\noutcome=lease_removed\n") != std::string::npos);
             request.operation = SessionSupervisorOperation::PaperResume;
             assert(!Call(socketPath, request).accepted && releaseCalls == 0);
         };
@@ -553,6 +576,7 @@ void TestUserZeroRecoverySurvivesRestartAndMaintenance()
                 std::size_t reaped = 99;
                 if (expired)
                 {
+                    automaticTriggerExpiry = originalExpiry;
                     assert(server.ReapExpired(originalExpiry, reaped, reason) && reaped == 1);
                     assertFinalized(host);
                 }
@@ -574,6 +598,7 @@ void TestUserZeroRecoverySurvivesRestartAndMaintenance()
                 SessionSupervisorLeaseRecord record;
                 assert(store.Get(token, record));
                 record.expiresAtMs = 1;
+                automaticTriggerExpiry = record.expiresAtMs;
                 assert(store.Replace(token, record, reason));
             }
             else
@@ -584,6 +609,7 @@ void TestUserZeroRecoverySurvivesRestartAndMaintenance()
                 assert(store.Get(token, record));
                 expectedRecoveryExpiry = static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) +
                     (pastDeadline ? 500 : 120000);
+                automaticTriggerExpiry = expectedRecoveryExpiry;
                 record.expiresAtMs = expectedRecoveryExpiry;
                 assert(store.Replace(token, record, reason));
                 delayRestoreAudit = pastDeadline;

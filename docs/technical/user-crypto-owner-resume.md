@@ -99,6 +99,11 @@ projection contains hashed owner/bearer identities, generation, expiry and
 recovery/fence/finalization state. Compare the configured owner hashes to
 distinguish a stale token file from an owner with no remaining record. Never
 extract bearer values from the encrypted store or edit its records.
+If an older selected release omitted this helper, build the existing
+`hepta_gateway_catalog` target from reviewed, pinned source into a separate
+diagnostic directory. Verify its source/ELF hashes and runtime dependencies,
+then use the same actual store, key and cleanup-lock configuration. This does
+not require replacing the Gateway release or installing a new runtime entry.
 
 A successful owner audit still does not prove that the host catalog has restored
 the bearer or that `paper-resume` is admissible. Verify the exact lease state,
@@ -110,12 +115,32 @@ and any residual native owner fence. After an admissible resume, repeat both
 owners' authoritative native health, orders and positions checks before the
 separate native-hold release.
 
-Historical attribution has two current limits. Non-provision supervisor requests
-can have empty Agent/session fields in their journal records, and automatic
-user-PAPER expiry/finalization does not append a supervisor operation record.
-An exact-session journal filter therefore cannot prove that no renewal, rotation
-or automatic cleanup occurred. Correlate the available supervisor records with
-driver state and the Execution OMS `session_owner_recovery_only`,
+Older builds did not bind non-provision audit records to the durable bearer;
+their Agent/session fields can be empty. They also omitted supervisor records
+for automatic user-PAPER recovery finalization. The lifecycle-audit repair does
+not backfill those historical gaps: an exact-session filter cannot establish
+that no earlier renewal, rotation or automatic cleanup occurred.
+
+With that repair, a non-provision request snapshots its server-owned identity
+before rotation or deletion. A missing bearer remains unattributed. Automatic
+cleanup appends `operation=paper-recovery-finalize`, `origin=maintenance` to the
+same HJA2 journal, with `trigger=reap-expired` or `trigger=restore-leases`.
+The intent and outcome preserve the pre-transition expiry and recovery/fence
+flags separately from the recovery receiver's deadline. `lease_removed` means
+the existing durable remove operation succeeded; `OWNER_FINALIZE_FAILED` and
+`LEASE_REMOVE_FAILED` identify the failed stage. An intent alone does not prove
+removal. Maintenance journal failures produce
+`SUPERVISOR_AUTOMATIC_AUDIT_FAILED` service diagnostics with the actual outcome
+and owner identity, without preventing a safety fence or changing cleanup's
+return value. Automatic records try the journal mutex and file lock without
+waiting; contention reports `SUPERVISOR_AUDIT_BUSY` through the same diagnostic
+path and cleanup continues. Ordinary authorization requests retain their
+existing audit requirement. This removes lock waits from automatic logging,
+not all filesystem latency. These diagnostics are not a replacement for a
+verified HJA2 chain.
+
+Correlate the available supervisor records with driver state and the Execution
+OMS `session_owner_recovery_only`,
 `session_owner_fenced` and `session_owner_fence_release` events. OMS binds the
 session in `trace_id` and the Agent in `source` as `agent.tool:<agent-id>`.
 Partial file scans or unverified record chains remain diagnostic evidence.

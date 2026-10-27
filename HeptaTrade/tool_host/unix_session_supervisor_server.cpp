@@ -331,7 +331,8 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 					}
 					ExecutionOwnerAuditResult finalAudit;
 					if (FinalizePaperRecovery(
-							recovery, finalAudit, recoveryReason))
+							recovery, finalAudit, recoveryReason,
+                            "reap-expired", &records[i]))
 						++reaped;
 					else if (recoveryReason !=
 							"SESSION_OWNER_RECOVERY_REQUIRED" &&
@@ -865,7 +866,8 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 					if (!record.paperFinalizationRequired && !resumableUserRecovery)
 					{
 						ExecutionOwnerAuditResult finalAudit;
-						if (!FinalizePaperRecovery(record, finalAudit, reason) &&
+						if (!FinalizePaperRecovery(record, finalAudit, reason,
+                                "restore-leases", &records[i]) &&
 							reason != "SESSION_OWNER_RECOVERY_REQUIRED")
 							return false;
 					}
@@ -1086,6 +1088,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
     auto workDeadline = std::chrono::steady_clock::time_point::max();
 	SessionSupervisorResult result;
 	SessionSupervisorRequest request;
+	SessionSupervisorRequest auditRequest;
 	std::string issuerName;
 	bool decodedRequest = false;
 	struct ucred credentials;
@@ -1116,8 +1119,34 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
                 reason = "SUPERVISOR_STOPPING";
                 return false;
             }
-			return SessionSupervisorProtocol::DecodeRequest(
-				body, request, reason);
+			if (!SessionSupervisorProtocol::DecodeRequest(body, request, reason))
+                return false;
+            // Non-provision requests identify their subject by bearer, not by
+            // caller-supplied Agent/session strings. Capture the server-bound
+            // identity before rotate/revoke can replace or remove that bearer.
+            // Keep this audit snapshot separate from the authorization request.
+            auditRequest = request;
+            if (request.operation != SessionSupervisorOperation::Provision)
+            {
+                auditRequest.agentId.clear();
+                auditRequest.sessionId.clear();
+                SessionSupervisorLeaseRecord record;
+                if (m_leaseStore != nullptr && m_leaseStore->Get(request.token, record))
+                {
+                    auditRequest.agentId = record.agentId;
+                    auditRequest.sessionId = record.sessionId;
+                }
+                else if (m_leaseStore == nullptr)
+                {
+                    TradingToolHostSessionBinding binding;
+                    if (m_controlPlane.m_host.GetSession(request.token, binding))
+                    {
+                        auditRequest.agentId = binding.session.executionContext.agentId;
+                        auditRequest.sessionId = binding.session.executionContext.sessionId;
+                    }
+                }
+            }
+            return true;
 		};
 		if (!TypedToolProtocol::ReadFrame(
 				clientFd, m_maxRequestBytes, m_ioTimeoutMs, body, reason))
@@ -1143,7 +1172,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 		else if (request.ttlMs > m_maxSessionTtlMs)
 			result.ReasonCode() = "SUPERVISOR_TTL_EXCEEDS_LIMIT";
 		else if (m_auditJournal != nullptr &&
-			!m_auditJournal->Append(request, issuerName, "intent", "pending",
+			!m_auditJournal->Append(auditRequest, issuerName, "intent", "pending",
 				request.expectedGeneration, result.ReasonCode()))
 			result.ReasonCode() = "SUPERVISOR_AUDIT_INTENT_FAILED:" + result.ReasonCode();
 		else if (request.operation ==
@@ -1993,7 +2022,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 	{
 		std::string auditReason;
 		const bool acceptedBeforeAudit = result.accepted;
-		if (!m_auditJournal->Append(request, issuerName, "outcome",
+		if (!m_auditJournal->Append(auditRequest, issuerName, "outcome",
 			result.accepted ? "accepted" : result.ReasonCode(),
 			result.leaseGeneration == 0 ? request.expectedGeneration : result.leaseGeneration,
 			auditReason))

@@ -80,7 +80,9 @@ private:
 	bool FinalizePaperRecovery(
 		const SessionSupervisorLeaseRecord& record,
 		ExecutionOwnerAuditResult& ownerAudit,
-		std::string& reason);
+		std::string& reason,
+        const char* automaticTrigger = nullptr,
+        const SessionSupervisorLeaseRecord* originalRecord = nullptr);
 	bool HandlePaperFinalize(
 		const SessionSupervisorRequest& request,
 		SessionSupervisorResult& result);
