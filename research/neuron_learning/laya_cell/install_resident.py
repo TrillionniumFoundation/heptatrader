@@ -24,7 +24,8 @@ def runtime_files(source,native_binary):
  return files
 
 
-def install(config_path,start,update_owned=False,only=None):
+def _stage(config_path):
+ """Write the immutable package and config, without touching runtime state."""
  h=Path.home();source=Path(__file__).resolve().parent
  c=read_json(config_path)
  if os.geteuid()==0 or c.get('automatic_trading') is not False:raise ContractError('USER_ONLY_NO_TRADE_AUTHORITY')
@@ -45,8 +46,27 @@ def install(config_path,start,update_owned=False,only=None):
  cfg=cfgdir/(config_id+'.json');raw=canonical(c)+b'\n'
  if cfg.exists() and cfg.read_bytes()!=raw:raise ContractError('IMMUTABLE_CONFIGURATION_CHANGED')
  if not cfg.exists():cfg.write_bytes(raw);cfg.chmod(0o400)
+ return c,release,inventory,cfg
+
+
+def install(config_path,start,update_owned=False,only=None,*,stage_only=False):
+ if stage_only and (start or update_owned or only is not None):
+  raise ContractError('STAGING_CANNOT_REQUEST_SERVICE_CHANGES')
+ c,release,inventory,cfg=_stage(config_path)
+ h=Path.home();cfgdir=cfg.parent;config_id=cfg.stem;release_id=release.name
+ if stage_only:
+  receipt={'schema':'heptatrader.laya-resident-stage.v1','release_id':release_id,
+   'release':str(release),'runtime_sha256':inventory,'configuration':str(cfg),
+   'configuration_sha256':sha_file(cfg),'units':{},'start_requested':False,
+   'unit_files_changed':False,'runtime_state_changed':False,'automatic_trading':False,
+   'configuration_execution_validated':False}
+  out=cfgdir/(config_id+'.stage.json');raw=canonical(receipt)+b'\n'
+  if out.exists() and out.read_bytes()!=raw:raise ContractError('STAGE_RECEIPT_CHANGED')
+  if not out.exists():out.write_bytes(raw);out.chmod(0o400)
+  print(json.dumps(receipt,indent=2));return receipt
  for k in ('control_directory','feed_directory','evaluation_directory','candidate_directory'):
   Path(c[k]).mkdir(mode=0o700,parents=True,exist_ok=True)
+ (h/'.config/systemd/user').mkdir(mode=0o700,parents=True,exist_ok=True)
  units={}
  for name,module,python,memory,cpu,description in (
   ('heptatrader-laya-feed.service','resident_feed','/usr/bin/python3','256M','20%','Read-only quote source for Laya candidates'),
@@ -110,5 +130,8 @@ WantedBy=default.target
  print(json.dumps(receipt,indent=2));return receipt
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--start',action='store_true');p.add_argument('--update-owned',action='store_true');p.add_argument('--only',choices=['trainer','feed','evaluator']);a=p.parse_args();os.umask(0o077);install(a.config,a.start,a.update_owned,a.only)
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True)
+ mode=p.add_mutually_exclusive_group();mode.add_argument('--start',action='store_true');mode.add_argument('--stage-only',action='store_true')
+ p.add_argument('--update-owned',action='store_true');p.add_argument('--only',choices=['trainer','feed','evaluator'])
+ a=p.parse_args();os.umask(0o077);install(a.config,a.start,a.update_owned,a.only,stage_only=a.stage_only)
 if __name__=='__main__':main()

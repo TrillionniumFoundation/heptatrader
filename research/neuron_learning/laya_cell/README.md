@@ -266,10 +266,14 @@ release builder refreshes their runtime pins. Complete immutable package and
 CPU/native contract checks need no production enrollment. Preparing a qualified
 owner payload through `resident_owner.prepare` does require the original
 qualification and real enrollment, because its producer and manifest are bound
-to that owner. `install_resident.install` also writes user units and reloads
-systemd; it is not a staging-only call. Keep a viable trial's original runtime,
-wrapper and frozen pins active until the existing maintenance boundary. Stage
-new content-addressed bytes/configs separately without changing those units.
+to that owner. Use `python -m laya_cell.install_resident --config /absolute/config.json --stage-only`
+to create the ordinary immutable package and configuration. This mode writes a
+stage receipt, preserves existing units and scheduling state, and makes no
+systemd calls. It rejects activation arguments such as `--start`,
+`--update-owned`, and `--only`. Staging verifies package bytes; it does not execute
+configuration validation, a model, or the native verifier. The usual install
+mode still writes user units and reloads systemd. Keep a viable trial's original
+runtime, wrapper and frozen pins active until the existing maintenance boundary.
 
 An enrolled operator can make one explicit read-only request:
 
