@@ -113,6 +113,9 @@ observation-only profiles retain their existing quote-required startup behavior.
 The `heptatrader-user` command provides `start`, `restart`, `stop`, `status` and
 `logs` through the user manager. `native` and `session` forward to the existing
 CLIs with user paths; original command IDs and outcome semantics are unchanged.
+`session owner-audit --token-file PATH` preserves that exact top-level native
+mode without prepending a Supervisor socket. It uses its existing Execution
+runtime configuration; ordinary session commands retain the Supervisor endpoint.
 An immutable operator release may declare `native_clients` in its adjacent
 `MANIFEST.json`: exactly `heptactl`, `hepta-sessionctl` and
 `hepta-paper-command`, each with an absolute path and SHA-256. `native`,

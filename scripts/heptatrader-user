@@ -88,10 +88,13 @@ case "${1:-status}" in
     exec "$prefix/bin/heptactl" --socket "$runtime/tools.sock" --token-file "$config/paper.token" "$@" ;;
   session)
     shift
+    session_endpoint=(--socket "$runtime/supervisor.sock")
+    # owner-audit is a top-level mode with its own Execution runtime config.
+    [[ "${1:-}" != owner-audit ]] || session_endpoint=()
     if $operator_release_required || [[ -e "$operator_release/MANIFEST.json" || -L "$operator_release/MANIFEST.json" ]]; then
-      exec /usr/bin/python3 -B "$operator_release/hepta_operator_clients.py" hepta-sessionctl --socket "$runtime/supervisor.sock" "$@"
+      exec /usr/bin/python3 -B "$operator_release/hepta_operator_clients.py" hepta-sessionctl "${session_endpoint[@]}" "$@"
     fi
-    exec "$prefix/bin/hepta-sessionctl" --socket "$runtime/supervisor.sock" "$@" ;;
+    exec "$prefix/bin/hepta-sessionctl" "${session_endpoint[@]}" "$@" ;;
   ask)
     shift
     if [[ $# -ne 1 ]]; then echo 'usage: heptatrader ask "instruction"' >&2; exit 64; fi

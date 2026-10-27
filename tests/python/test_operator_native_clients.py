@@ -129,6 +129,24 @@ class OperatorClientTests(unittest.TestCase):
                 self.assertTrue(args[7].startswith("hold-resume-"))
                 self.assertEqual(args[8:], ["call", "orders.list"])
 
+    def test_owner_audit_keeps_its_top_level_mode_and_exact_owner_arguments(self):
+        self.select()
+        arguments = ["owner-audit", "--token-file", "/original/private/owner.token"]
+        result = self.invoke("session", *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["payload"],
+                         {"client": "hepta-sessionctl", "arguments": arguments})
+        # The generic unconfigured wrapper preserves the same native mode too.
+        wrapper = self.release / "heptatrader-user"
+        wrapper.chmod(0o700); wrapper.write_bytes((ROOT / "scripts/heptatrader-user").read_bytes())
+        wrapper.chmod(0o500); (self.release / "MANIFEST.json").unlink()
+        legacy = self.home / ".local/share/heptatrader/current/bin"; legacy.mkdir(parents=True)
+        shutil.copyfile(self.bindings["hepta-sessionctl"]["path"], legacy / "hepta-sessionctl")
+        (legacy / "hepta-sessionctl").chmod(0o500)
+        result = self.invoke("session", *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["payload"]["arguments"], arguments)
+
     def systemd(self, argv):
         unit = argv[3]
         values = {"ActiveState": "active", "SubState": "running", "MainPID": "1234", "InvocationID": unit}
