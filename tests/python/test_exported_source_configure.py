@@ -43,7 +43,7 @@ class ExportedSourceConfigureTests(unittest.TestCase):
 
     def test_readonly_probe_build_phase_propagates_behavior_failure(self) -> None:
         text = BUILDER.read_text(encoding="utf-8")
-        phase = re.search(r"if ! timeout --signal=TERM --kill-after=5s 60s .*?\nfi", text, re.S)
+        phase = re.search(r"if ! run_oci 60 .*?\nfi", text, re.S)
         self.assertIsNotNone(phase)
         with tempfile.TemporaryDirectory(prefix="hepta-probe-build-phase-") as folder:
             root = Path(folder)
@@ -53,12 +53,12 @@ class ExportedSourceConfigureTests(unittest.TestCase):
             for status in (0, 37):
                 with self.subTest(status=status):
                     log.write_text("")
-                    script = 'set -euo pipefail\nCOMMON_DOCKER=("$STUB" --network none)\n'
+                    script = 'set -euo pipefail\nrun_oci() { shift; "$STUB" --network none "$IMAGE_ID" "$@"; }\n'
                     script += phase.group(0) + '\nprintf "PHASE_COMPLETED\\n"\n'
                     result = subprocess.run(["bash", "-c", script], capture_output=True,
                         text=True, timeout=5, env={**os.environ, "STUB": str(stub),
                             "RECORD": str(calls), "STUB_STATUS": str(status),
-                            "BUILD_LOG": str(log), "BUILDER_IMAGE": "synthetic-image"})
+                            "BUILD_LOG": str(log), "IMAGE_ID": "synthetic-image"})
                     self.assertEqual(result.returncode, 0 if status == 0 else 70,
                                      result.stdout + result.stderr)
                     self.assertEqual("PHASE_COMPLETED" in result.stdout, status == 0)
@@ -201,9 +201,9 @@ class BuilderDiagnosticsTests(unittest.TestCase):
                 output = self.root / f"candidate-{status}.tar"
                 env = {**os.environ, "TRUSTED_ROOT": str(ROOT), "WORK_ROOT": str(work),
                        "EXPECTED_SHA": "a" * 40, "BUILD_PHASE": "configure", "BUILD_LOG": str(log),
-                       "ARTIFACT_OUTPUT": str(output)}
+                       "ARTIFACT_OUTPUT": str(output), "WORK_ROOT_ID": f"{work.stat().st_dev}:{work.stat().st_ino}"}
                 command = 'kill -TERM "$$"' if status == 143 else f"exit {status}"
-                result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + text[begin:end] + command],
+                result = subprocess.run(["bash", "-c", "set -euo pipefail\nCONTAINER_ENTRIES=()\n" + text[begin:end] + command],
                                         capture_output=True, text=True, timeout=15, env=env)
                 self.assertEqual(result.returncode, status, result.stdout + result.stderr)
                 self.assertNotIn("real compiler diagnostic", result.stdout)
@@ -217,7 +217,7 @@ class BuilderDiagnosticsTests(unittest.TestCase):
         text = BUILDER.read_text()
         begin = text.index("cleanup() {\n")
         end = text.index('SOURCE_ROOT="$WORK_ROOT/source"', begin)
-        for status, expected in ((70, 70), (0, 0)):
+        for status, expected in ((70, 70), (0, 74)):
             work = self.root / f"conflict-work-{status}"
             work.mkdir()
             output = self.root / f"conflict-{status}.tar"
@@ -227,8 +227,8 @@ class BuilderDiagnosticsTests(unittest.TestCase):
             sentinel.write_text("preserve")
             env = {**os.environ, "TRUSTED_ROOT": str(ROOT), "WORK_ROOT": str(work),
                    "EXPECTED_SHA": "a" * 40, "BUILD_PHASE": "configure", "BUILD_LOG": str(work / "none"),
-                   "ARTIFACT_OUTPUT": str(output)}
-            result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + text[begin:end] + f"exit {status}"],
+                   "ARTIFACT_OUTPUT": str(output), "WORK_ROOT_ID": f"{work.stat().st_dev}:{work.stat().st_ino}"}
+            result = subprocess.run(["bash", "-c", "set -euo pipefail\nCONTAINER_ENTRIES=()\n" + text[begin:end] + f"exit {status}"],
                                     capture_output=True, text=True, timeout=15, env=env)
             self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
             self.assertEqual(sentinel.read_text(), "preserve")

@@ -536,17 +536,202 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 
+def _read_builder_evidence(path: Path, maximum: int = 2 * 1024 * 1024,
+                           *, private: bool = True) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or
+                before.st_uid != os.geteuid() or before.st_size > maximum or
+                (private and before.st_mode & 0o077)):
+            raise ArtifactError("builder evidence must be a bounded regular owner file")
+        data = os.pread(fd, maximum + 1, 0)
+        after = os.fstat(fd)
+        identity = lambda x: (x.st_dev, x.st_ino, x.st_mode, x.st_nlink, x.st_uid,
+                               x.st_size, x.st_mtime_ns, x.st_ctime_ns)
+        if len(data) != before.st_size or identity(before) != identity(after):
+            raise ArtifactError("builder evidence changed while reading")
+        return data
+    finally:
+        os.close(fd)
+
+
+def canonical_image_reference(reference: str) -> str:
+    if OCI_DIGEST.fullmatch(reference) is None:
+        raise ArtifactError("image reference must be digest-pinned")
+    name, digest = reference.split("@", 1)
+    first = name.split("/", 1)[0]
+    if "/" not in name:
+        name = "docker.io/library/" + name
+    elif "." not in first and ":" not in first and first != "localhost":
+        name = "docker.io/" + name
+    if name.startswith("docker.io/") and "/" not in name[len("docker.io/"):]:
+        name = "docker.io/library/" + name[len("docker.io/"):]
+    return name + "@" + digest
+
+
+def image_identity(inspected: Any, requested: str, engine: str,
+                   engine_version: str, engine_sha256: str) -> dict[str, Any]:
+    expected = canonical_image_reference(requested)
+    if engine not in {"docker", "podman"} or not engine_version.lower().startswith(engine + " version "):
+        raise ArtifactError("selected engine and actual engine version disagree")
+    if len(engine_version) > 512 or "\n" in engine_version or "\r" in engine_version:
+        raise ArtifactError("engine version must be one bounded line")
+    _validate_hex(engine_sha256, SHA256, "engine executable SHA-256")
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise ArtifactError("image inspect must return exactly one image")
+    value = inspected[0]
+    raw_id = value.get("Id")
+    image_id = "sha256:" + raw_id if isinstance(raw_id, str) and SHA256.fullmatch(raw_id) else raw_id
+    _validate_hex(image_id, IMAGE_ID, "actual image id")
+    digests = value.get("RepoDigests")
+    if not isinstance(digests, list) or not digests or len(digests) > 128 or not all(isinstance(x, str) for x in digests):
+        raise ArtifactError("actual RepoDigests is missing or invalid")
+    matched = next((x for x in digests if canonical_image_reference(x) == expected), None)
+    if matched is None:
+        raise ArtifactError("local image has no exact requested repository digest")
+    return {"schema": "heptatrader.ib-builder-image-identity.v1", "engine": engine,
+            "engine_version": engine_version, "engine_executable_sha256": engine_sha256,
+            "requested_image_reference": requested, "matched_repo_digest": matched,
+            "observed_repo_digests": digests, "raw_image_id": raw_id, "image_id": image_id}
+
+
+def sdk_identity(root: Path, dependency_receipt: Path | None = None) -> dict[str, Any]:
+    tree = hash_tree(root)
+    _regular(root / "libbid.a", "SDK BID archive", MAX_SDK_BYTES)
+    bid, _ = _sha256_file(root / "libbid.a", MAX_SDK_BYTES)
+    files = {}
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode):
+            digest, size = _sha256_file(path)
+            files[path.relative_to(root).as_posix()] = {"sha256": digest, "size": size}
+    value = {"schema": "heptatrader.ib-builder-sdk-identity.v1", "sdk_tree_sha256": tree,
+             "bid_sha256": bid, "files": files, "sdk_version": None,
+             "upstream_archive_sha256_claim": None, "dependency_receipt_sha256": None,
+             "version_evidence": "UNKNOWN", "upstream_archive_mapping_verified": False,
+             "bid_version": None}
+    if dependency_receipt is not None:
+        raw = _read_builder_evidence(dependency_receipt, private=False)
+        receipt = _json_load(raw, "owner dependency receipt")
+        if set(receipt) != {"sdk_version", "sdk_sha256", "bid_sha256"}:
+            raise ArtifactError("owner dependency receipt keys mismatch")
+        version = receipt["sdk_version"]
+        if not isinstance(version, str) or re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", version) is None:
+            raise ArtifactError("owner SDK version is invalid")
+        _validate_hex(receipt["sdk_sha256"], SHA256, "claimed SDK archive SHA-256")
+        if receipt["bid_sha256"] != bid:
+            raise ArtifactError("owner receipt does not match actual BID archive")
+        value.update(sdk_version=version, upstream_archive_sha256_claim=receipt["sdk_sha256"],
+                     dependency_receipt_sha256=_sha256_bytes(raw), version_evidence="OWNER_RECEIPT")
+    return value
+
+
+def container_cid(path: Path, proof: dict[str, Any] | None = None) -> tuple[str, dict[str, int]]:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid() or before.st_size > 65:
+            raise ArtifactError("container cidfile is not an owner regular file")
+        raw = os.pread(fd, 66, 0)
+        after = os.fstat(fd)
+        fields = ("st_dev", "st_ino", "st_uid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        identity = {key: getattr(before, key) for key in fields}
+        if identity != {key: getattr(after, key) for key in fields} or identity != {key: getattr(path.lstat(), key) for key in fields}:
+            raise ArtifactError("container cidfile changed while reading")
+        cid = raw.decode("ascii").removesuffix("\n")
+        _validate_hex(cid, SHA256, "container id")
+        if proof is not None and (proof.get("container_id") != cid or proof.get("cidfile_identity") != identity):
+            raise ArtifactError("container cidfile differs from original proof")
+        return cid, identity
+    finally:
+        os.close(fd)
+
+
+def container_identity(inspected: Any, intent: dict[str, Any], cidfile: Path,
+                       proof: dict[str, Any] | None = None,
+                       adopt_missing_cid: bool = False) -> dict[str, Any]:
+    import datetime
+    import time
+    if (intent.get("cid_file") != str(cidfile) or
+            re.fullmatch(r"[0-9a-f]{32}", str(intent.get("operation"))) is None or
+            intent.get("phase") not in {"toolchain", "configure", "compile", "probe"} or
+            type(intent.get("created_at_ms")) is not int or
+            type(intent.get("sequence")) is not int or intent["sequence"] < 1 or
+            intent.get("engine") not in {"docker", "podman"} or
+            intent.get("name") != "hepta-ib-build-"+str(intent.get("operation"))+"-"+str(intent.get("sequence"))):
+        raise ArtifactError("container creation intent is invalid")
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise ArtifactError("container inspect must contain exactly one object")
+    value = inspected[0]
+    cid = _validate_hex(value.get("Id"), SHA256, "inspected container id")
+    name = value.get("Name")
+    if not isinstance(name, str) or name.removeprefix("/") != intent.get("name"):
+        raise ArtifactError("container does not match its exact random name")
+    image = value.get("Image")
+    if isinstance(image, str) and SHA256.fullmatch(image): image = "sha256:" + image
+    config = value.get("Config")
+    state = value.get("State")
+    if not isinstance(config, dict) or not isinstance(state, dict):
+        raise ArtifactError("container configuration/state is missing")
+    labels = config.get("Labels", {})
+    expected_labels = {"io.heptatrader.ib-builder.operation": intent["operation"],
+                       "io.heptatrader.ib-builder.phase": intent["phase"],
+                       "io.heptatrader.ib-builder.sequence": str(intent["sequence"])}
+    if (value.get("Id") != cid or image != intent["image_id"] or
+            not isinstance(labels, dict) or any(labels.get(k) != v for k, v in expected_labels.items())):
+        raise ArtifactError("container identity/labels do not match this build intent")
+    _validate_hex(intent.get("image_id"), IMAGE_ID, "intended container image")
+    created = value.get("Created")
+    if not isinstance(created, str): raise ArtifactError("container creation time is missing")
+    created_value = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+    if created_value.tzinfo is None: raise ArtifactError("container creation time lacks a timezone")
+    created_ms = int(created_value.timestamp() * 1000)
+    if not intent["created_at_ms"] - 1000 <= created_ms <= int(time.time() * 1000) + 1000:
+        raise ArtifactError("container creation time predates build intent")
+    running = state.get("Running")
+    if type(running) is not bool: raise ArtifactError("container running state is missing")
+    if adopt_missing_cid and proof is None and not cidfile.exists() and not cidfile.is_symlink():
+        # Only a fresh exact-name/label/image/creation match above can recover
+        # a create whose CLI died before publishing its private cidfile.
+        _write_private(cidfile, (cid + "\n").encode("ascii"))
+    recorded_cid, file_identity = container_cid(cidfile, proof)
+    if recorded_cid != cid:
+        raise ArtifactError("inspected container differs from its cidfile")
+    result = {"container_id": cid, "name": intent["name"], "image_id": image, "labels": expected_labels,
+              "created": created, "cidfile_identity": file_identity}
+    if proof is not None and result != proof:
+        raise ArtifactError("container differs from its pre-start proof")
+    status = state.get("Status")
+    exit_code = state.get("ExitCode")
+    oom = state.get("OOMKilled")
+    error = state.get("Error")
+    success = (not running and status == "exited" and type(exit_code) is int and
+               exit_code == 0 and type(oom) is bool and not oom and isinstance(error, str) and not error)
+    completion = {"running": running, "status": status if isinstance(status, str) else None,
+                  "exit_code": exit_code if type(exit_code) is int else None,
+                  "oom_killed": oom if type(oom) is bool else None,
+                  "has_error": not isinstance(error, str) or bool(error), "success": success}
+    return {**result, "running": running, "completion": completion}
+
+
+BUILDER_EVIDENCE_FILES = ("builder-provenance.json", "resource-policy.json", "toolchain.txt",
+                          "image-identity.json", "sdk-provenance.json")
+
+
 MAX_DIAGNOSTIC_LOG_BYTES = 1024 * 1024
 BUILD_PHASES = frozenset({"setup", "source", "sdk", "toolchain", "configure",
                          "compile", "probe", "integrity", "package", "completed"})
 
 
 def capture_builder_diagnostics(build_log: Path, candidate_sha: str,
-                                phase: str, exit_code: int, output: Path) -> None:
+                                phase: str, exit_code: int, output: Path,
+                                evidence_root: Path | None = None) -> None:
     """Retain inert, bounded build output, never a qualification receipt.
 
     Only the compiler/probe log from the broker-disabled container is accepted.
-    No source, SDK, environment, credentials or host files are collected.
+    Optional fixed-name metadata binds the image, toolchain, resource policy
+    and SDK/BID inventory. No source/SDK bytes, environment or credentials are copied.
     The log is not replayed on stdout: candidate text cannot issue Actions commands.
     """
     _validate_hex(candidate_sha, FULL_SHA, "candidate SHA")
@@ -591,13 +776,39 @@ def capture_builder_diagnostics(build_log: Path, candidate_sha: str,
         "log_truncated": source_bytes is not None and source_bytes > len(data),
         "retained_log_sha256": _sha256_bytes(data),
     }
+    evidence = {}
+    if evidence_root is not None:
+        for name in (*BUILDER_EVIDENCE_FILES, "container-lifecycle.json"):
+            try:
+                evidence[name] = _read_builder_evidence(evidence_root / name)
+            except FileNotFoundError:
+                pass  # An early phase may not have produced this identity yet.
+        if phase == "completed" and exit_code == 0 and not set(BUILDER_EVIDENCE_FILES).issubset(evidence):
+            raise ArtifactError("completed build must retain all bound builder evidence")
+        if "builder-provenance.json" in evidence:
+            builder = validate_builder(_json_load(evidence["builder-provenance.json"], "builder evidence"))
+            for name, field in (("resource-policy.json", "resource_policy_sha256"),
+                                ("toolchain.txt", "toolchain_sha256")):
+                if name not in evidence or _sha256_bytes(evidence[name]) != builder[field]:
+                    raise ArtifactError("retained evidence does not match builder provenance")
+            policy = _json_load(evidence["resource-policy.json"], "resource policy")
+            for name, field in (("image-identity.json", "image_identity_sha256"),
+                                ("sdk-provenance.json", "sdk_identity_sha256")):
+                if name not in evidence or _sha256_bytes(evidence[name]) != policy.get(field):
+                    raise ArtifactError("retained input identity does not match resource policy")
+            image = _json_load(evidence["image-identity.json"], "image identity")
+            if (image.get("image_id") != builder["image_id"] or
+                    image.get("requested_image_reference") != builder["image_reference"] or
+                    image.get("engine") != policy.get("engine")):
+                raise ArtifactError("retained image identity does not match builder")
+        status["evidence_sha256"] = {name: _sha256_bytes(raw) for name, raw in evidence.items()}
     # Do not resolve the final component: even a dangling symlink must be refused.
     output.parent.mkdir(parents=True, exist_ok=True)
     os.mkdir(output, 0o700)
     directory = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         for name, value in (("candidate-build.log", data),
-                            ("build-status.json", _canonical_bytes(status))):
+                            ("build-status.json", _canonical_bytes(status)), *evidence.items()):
             descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=directory)
             with os.fdopen(descriptor, "wb") as stream:
@@ -641,6 +852,30 @@ def main(argv: list[str] | None = None) -> int:
     diagnostics.add_argument("--phase", required=True, choices=sorted(BUILD_PHASES))
     diagnostics.add_argument("--exit-code", required=True, type=int)
     diagnostics.add_argument("--output", required=True, type=Path)
+    diagnostics.add_argument("--evidence-root", type=Path)
+    image = subparsers.add_parser("image-identity")
+    image.add_argument("--inspect", required=True, type=Path)
+    image.add_argument("--reference", required=True)
+    image.add_argument("--engine", required=True, choices=("docker", "podman"))
+    image.add_argument("--engine-version", required=True)
+    image.add_argument("--engine-sha256", required=True)
+    image.add_argument("--output", required=True, type=Path)
+    sdk = subparsers.add_parser("sdk-identity")
+    sdk.add_argument("--root", required=True, type=Path)
+    sdk.add_argument("--dependency-receipt", type=Path)
+    sdk.add_argument("--output", required=True, type=Path)
+    cid = subparsers.add_parser("container-id")
+    cid.add_argument("--cid-file", required=True, type=Path)
+    cid.add_argument("--proof", type=Path)
+    owned = subparsers.add_parser("container-identity")
+    owned.add_argument("--cid-file", required=True, type=Path)
+    owned.add_argument("--intent", required=True, type=Path)
+    owned.add_argument("--inspect", required=True, type=Path)
+    owned.add_argument("--proof", type=Path)
+    owned.add_argument("--output", type=Path)
+    owned.add_argument("--adopt-missing-cid", action="store_true")
+    owned.add_argument("--require-success", action="store_true")
+    owned.add_argument("--result-output", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "hash-tree":
@@ -659,7 +894,29 @@ def main(argv: list[str] | None = None) -> int:
             print(value["bundle_sha256"])
         elif args.command == "diagnostics":
             capture_builder_diagnostics(args.build_log, args.candidate_sha,
-                                        args.phase, args.exit_code, args.output)
+                                        args.phase, args.exit_code, args.output, args.evidence_root)
+        elif args.command == "container-id":
+            proof_value = _json_load(_read_builder_evidence(args.proof), "container proof") if args.proof else None
+            print(container_cid(args.cid_file, proof_value)[0])
+        elif args.command == "container-identity":
+            intent_value = _json_load(_read_builder_evidence(args.intent), "container intent")
+            proof_value = _json_load(_read_builder_evidence(args.proof), "container proof") if args.proof else None
+            inspected = json.loads(_read_builder_evidence(args.inspect), object_pairs_hook=_unique_object)
+            value = container_identity(inspected, intent_value, args.cid_file, proof_value, args.adopt_missing_cid)
+            if args.output:
+                _write_private(args.output, _canonical_bytes({k:v for k,v in value.items() if k not in {"running", "completion"}}))
+            if args.result_output:
+                _write_private(args.result_output, _canonical_bytes({"container_id": value["container_id"], "completion": value["completion"]}))
+            if args.require_success and not value["completion"]["success"]:
+                raise ArtifactError("owned workload completion was not a clean exit0")
+            print("true" if value["running"] else "false")
+        elif args.command == "image-identity":
+            inspected = json.loads(_read_builder_evidence(args.inspect), object_pairs_hook=_unique_object)
+            value = image_identity(inspected, args.reference, args.engine, args.engine_version, args.engine_sha256)
+            _write_private(args.output, _canonical_bytes(value))
+            print(value["image_id"])
+        elif args.command == "sdk-identity":
+            _write_private(args.output, _canonical_bytes(sdk_identity(args.root, args.dependency_receipt)))
         elif args.command == "pack":
             provenance_value = _json_load(args.builder_provenance.read_bytes(), "builder provenance")
             builder = validate_builder(provenance_value)
