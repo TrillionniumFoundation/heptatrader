@@ -3,11 +3,14 @@
 Only original locally hash-chained PAPER quote fixtures; no GPU or broker.
 """
 import copy
+import mmap
+import os
 import unittest
 from unittest.mock import patch
 
 from laya_cell.resident_recent_source import (
-    read_recent_original_quotes, MIN_CAUSAL_SPAN_MS,MIN_OUTCOME_SPAN_MS)
+    read_recent_original_quotes, read_original_quote_range,
+    MIN_CAUSAL_SPAN_MS,MIN_OUTCOME_SPAN_MS)
 from laya_cell.resident_data import read_quotes,forecast_input
 from laya_cell.integrity import ContractError, digest
 from laya_cell.source_archive import inventory
@@ -104,12 +107,126 @@ class RecentSourceStrictParityTests(unittest.TestCase):
  def test_new_archive_page_during_read_not_passed_as_same_snapshot(self):
   arch,pages=inventory(self.config,sorted(
    self.source.feed.glob('segment-*/quotes.jsonl')))
-  with patch('laya_cell.resident_recent_source.inventory',return_value=(arch,pages)), \
-       patch('laya_cell.resident_recent_source.inventory_index',
-             return_value=(arch,pages+[{'changed':True}])):
+  with patch('laya_cell.resident_recent_source.inventory_index',
+             side_effect=[(arch,pages),(arch,pages+[{'changed':True}])]):
    with self.assertRaisesRegex(ContractError,
            'RECENT_SOURCE_ARCHIVE_CHANGED_DURING_READ'):
     read_recent_original_quotes(self.config,self.now)
+
+ def source_readers(self):
+  return (
+   ('recent',lambda:read_recent_original_quotes(self.config,self.now)),
+   ('pending',lambda:read_original_quote_range(
+    self.config,self.now,self.now-MIN_CAUSAL_SPAN_MS,self.now)),
+  )
+
+ def test_every_source_read_still_hashes_each_archived_original(self):
+  from laya_cell import resident_recent_source as mod
+  archived,_=inventory(self.config,sorted(self.source.feed.glob('segment-*/quotes.jsonl')))
+  for name,read in self.source_readers():
+   with self.subTest(reader=name),patch.object(mod,'verify_prefix',wraps=mod.verify_prefix) as verify:
+    read()
+    read()
+    self.assertEqual(verify.call_count,2*len(archived))
+    self.assertTrue(all(call.kwargs=={'sealed':True} for call in verify.call_args_list))
+
+ def reject_tail_time_archive_mutation(self,mutate):
+  from laya_cell import resident_recent_source as mod
+  original_read=mod.read_source
+  for name,read in self.source_readers():
+   changed=False
+   def changing_read(*args,**kwargs):
+    nonlocal changed
+    result=original_read(*args,**kwargs)
+    if not changed:
+     mutate();changed=True
+    return result
+   with self.subTest(reader=name),patch.object(mod,'read_source',side_effect=changing_read):
+    with self.assertRaisesRegex(ContractError,'RECENT_SOURCE_ORIGINAL_CHANGED_DURING_READ'):
+     read()
+   self.assertTrue(changed)
+
+ def test_identical_bytes_replacement_after_hash_is_rejected(self):
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  def replace():
+   before=file.stat();tmp=file.with_name('replacement.tmp')
+   tmp.write_bytes(file.read_bytes());tmp.chmod(0o600)
+   os.utime(tmp,ns=(before.st_atime_ns,before.st_mtime_ns))
+   os.replace(tmp,file)
+  self.reject_tail_time_archive_mutation(replace)
+
+ def test_modified_then_restored_bytes_and_mtime_are_rejected(self):
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  def mutate():
+   before=file.stat();raw=file.read_bytes()
+   file.write_bytes(raw.replace(b'1.125',b'1.124'))
+   file.write_bytes(raw)
+   os.utime(file,ns=(before.st_atime_ns,before.st_mtime_ns))
+  self.reject_tail_time_archive_mutation(mutate)
+
+ def test_mutation_during_original_hash_is_rejected(self):
+  from laya_cell import resident_recent_source as mod
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  verify=mod.verify_prefix
+  def changed_after_hash(pin,**kwargs):
+   verify(pin,**kwargs)
+   if pin['path']==str(file):
+    raw=file.read_bytes();file.write_bytes(raw)
+  for name,read in self.source_readers():
+   with self.subTest(reader=name),patch.object(mod,'verify_prefix',side_effect=changed_after_hash):
+    with self.assertRaisesRegex(ContractError,'RECENT_SOURCE_ORIGINAL_CHANGED_DURING_READ'):
+     read()
+
+ def test_a_previous_success_never_authorizes_changed_original_bytes(self):
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  raw=file.read_bytes()
+  for name,read in self.source_readers():
+   with self.subTest(reader=name):
+    read()
+    before=file.stat()
+    file.write_bytes(raw.replace(b'1.125',b'1.124'))
+    os.utime(file,ns=(before.st_atime_ns,before.st_mtime_ns))
+    try:
+     with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
+      read()
+    finally:file.write_bytes(raw)
+
+ def test_existing_dirty_mmap_mutation_is_caught_by_final_sha(self):
+  from laya_cell import resident_recent_source as mod
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  original=file.read_bytes();offset=original.index(b'1.125')
+  original_read=mod.read_source
+  for name,read in self.source_readers():
+   with self.subTest(reader=name),file.open('r+b') as stream:
+    with mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_WRITE) as mapping:
+     mapping[offset:offset+5]=b'1.125'
+     changed=False
+     def changing_read(*args,**kwargs):
+      nonlocal changed
+      result=original_read(*args,**kwargs)
+      if not changed:
+       mapping[offset:offset+5]=b'1.124';changed=True
+      return result
+     try:
+      with patch.object(mod,'read_source',side_effect=changing_read):
+       with self.assertRaises(ContractError):read()
+      self.assertTrue(changed)
+     finally:mapping[offset:offset+5]=b'1.125'
+
+ def test_end_bound_requires_its_own_digest_not_only_a_claimed_head(self):
+  from laya_cell import resident_recent_source as mod
+  from laya_cell.shadow_source import canonical,strict
+  archived,_=inventory(self.config,sorted(self.source.feed.glob('segment-*/quotes.jsonl')))
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  original=file.read_bytes();lines=original.splitlines(keepends=True)
+  end=strict(lines[-1]);end['at_ms']-=1
+  # The claimed chain head remains unchanged. Even if bytes are restored
+  # before the final bulk SHA, this forged timestamp cannot affect selection.
+  try:
+   file.write_bytes(b''.join(lines[:-1])+canonical(end)+b'\n')
+   with self.assertRaisesRegex(ContractError,'RECENT_SEALED_SOURCE_END_CHANGED'):
+    mod._sealed_end_timestamp(archived[0])
+  finally:file.write_bytes(original)
 
  def test_readonly_smoke_source_inventory_never_imports_gpu_model(self):
   # The smoke is a read-only source auditor. Importing resident_predict here
