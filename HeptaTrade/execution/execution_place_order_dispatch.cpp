@@ -222,9 +222,7 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     ExecutionCommandResult preVenueRejection;
     if (!PreVenuePlaceAllowedLocked(command, dispatch, preVenueRejection))
         return preVenueRejection;
-    m_riskMutationDispatchInFlight = true;
-    m_riskMutationDispatchOwnerKey =
-        OwnerKey(context.agentId, context.sessionId);
+    BeginRiskMutationDispatchLocked(context, dispatch.instrument, command.contract, dispatch.requestKey);
     ++m_venueDispatchesInFlight;
     timing.PauseHeld();
     lock.unlock();
@@ -235,8 +233,7 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     lock.lock();
     timing.ResumeHeld();
     --m_venueDispatchesInFlight;
-    m_riskMutationDispatchInFlight = false;
-    m_riskMutationDispatchOwnerKey.clear();
+    m_riskMutationDispatches.erase(dispatch.requestKey);
     if (failure)
     {
         try { std::rethrow_exception(failure); }

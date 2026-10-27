@@ -373,9 +373,9 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
         return RejectAuthoritativeFlattenLocked(
             command, plan, dispatch, "MUTATION_BLOCKED",
             m_mutationBlockReason);
-    if (m_riskMutationDispatchInFlight)
+    if (RiskMutationConflictsLocked(context, instrument, plan.contract))
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED",
-            "another risk mutation is already at the venue boundary");
+            "a risk mutation in the same or unknown instrument scope is at the venue boundary");
     if (!ExactReduceOnly(command, plan))
         return RejectAuthoritativeFlattenLocked(
             command, plan, dispatch,

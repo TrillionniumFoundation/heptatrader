@@ -3,6 +3,7 @@
 #include "execution_authority.h"
 #include "execution_coordinator.h"
 #include "ib_paper_kill_switch.h"
+#include "ib_policy_operation_gate.h"
 #include "ib_crypto_cash_envelope.h"
 #include "../adapter_ib/ib_gateway_adapter.h"
 
@@ -280,5 +281,9 @@ private:
     IbPaperExecutionPolicyCallbacks m_callbacks;
     const std::string m_account;
     const double m_maxOrderQuantity;
-    std::mutex m_mutex;
+    // Entry admission and its budget remain serialized through dispatch.
+    // Confirmed cancellations and independently scoped reductions do not
+    // acquire this mutex. Recovery remains exclusive through the gate.
+    std::mutex m_entryMutex;
+    IbPolicyOperationGate m_mutex;
 };

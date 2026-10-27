@@ -15,6 +15,7 @@
 
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
+#include "ib_deferred_observation_scope.h"
 #include "../oms_latency_observation.h"
 #include "../execution/venue_place_result.h"
 #include "../execution/venue_flatten_result.h"
@@ -450,6 +451,9 @@ private:
     void RememberLastOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs);
     bool IsPaperAccount(const std::string& account) const;
     bool IsAccountWhitelisted(const std::string& account) const;
+    bool PlaceOrderCorrelatedLocked(const IBContractLite& c, const IBOrderLite& o,
+        const std::string& venueCorrelationId, long* outOrderId,
+        const IBFinalOrderSendContext* context, bool* sendAttempted);
     bool PlaceOrderInternal(const IBContractLite& c, const IBOrderLite& o,
                             long* outOrderId,
                             const IBFinalOrderSendContext* context = nullptr,

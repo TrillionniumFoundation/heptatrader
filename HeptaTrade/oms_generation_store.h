@@ -4,7 +4,7 @@
 
 #include <cstdint>
 #include <functional>
-#include <set>
+#include <unordered_set>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -85,7 +85,7 @@ public:
         const std::string& account,
         const std::string& executionDomain,
         std::int64_t cutoffMs,
-        const std::set<std::string>& excludedRequestKeys,
+        const std::unordered_set<std::string>& excludedRequestKeys,
         std::vector<OmsGenerationSendAttempt>& attempts,
         std::string& reason) const;
 

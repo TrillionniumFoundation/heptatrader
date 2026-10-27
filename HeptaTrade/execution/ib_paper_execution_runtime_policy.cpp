@@ -31,6 +31,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
     callbacks.placement = VenuePlacement::Immediate([this](
         const IbPlaceOrderCommand& command,
         const std::string& correlation) {
+        IbDeferredObservationScope observations;
         NotifyTestStage("before_venue_send");
         VenuePlaceResult outcome;
         {
@@ -51,6 +52,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
         return outcome;
     });
     callbacks.cancelOrder = [this](long orderId) {
+        IbDeferredObservationScope observations;
         if (m_startupRecoveryReadOnly.load())
             return VenueCancelResult::RejectedBeforeSend(StartupRecoveryReadOnlyReason());
         NotifyTestStage("before_cancel_venue_send");
@@ -61,6 +63,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
     };
     callbacks.flattenOrder =
         [this](const AuthoritativeFlattenPlan& plan, const std::string& correlation) {
+            IbDeferredObservationScope observations;
             NotifyTestStage("before_flatten_venue_send");
             VenueFlattenResult outcome;
             {

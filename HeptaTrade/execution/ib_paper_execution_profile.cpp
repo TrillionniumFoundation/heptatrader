@@ -1077,7 +1077,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::Reject(
 ExecutionCommandResult IbPaperExecutionPolicyAuthority::PlaceOrder(
     const PlaceOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> entry(m_entryMutex);
+    IbPolicySharedOperation operation(m_mutex);
     if (!ValidContext(command.context))
         return Reject(command.context, -1, "IB_PAPER_MUTATION_CONTEXT_INVALID");
     ExecutionCommandResult prechecked;
@@ -1121,7 +1122,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PlaceOrder(
     authorized.authoritativeQuoteBinding.observedAtMs = quote.observedAtMs;
     authorized.authoritativeQuoteBinding.staleAfterMs = quote.staleAfterMs;
     const ExecutionCommandResult result =
-        m_coordinator.PlaceOrder(authorized);
+        m_coordinator.PlaceOrderWithSendAttemptLimit(
+            authorized, now - 60000, m_config.maxOrdersPerMinute);
     RefreshRateBudget(now, command.context.executionDomain);
     return result;
 }
@@ -1170,7 +1172,8 @@ bool IbPaperExecutionPolicyAuthority::ValidateFreshQuote(
 ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
     const PlaceOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> entry(m_entryMutex);
+    IbPolicySharedOperation operation(m_mutex);
     if (!ValidContext(command.context))
         return Reject(command.context, -1, "IB_PAPER_CONTEXT_REQUIRED");
     if (!m_callbacks.riskSnapshot || !m_callbacks.nowMs ||
@@ -1243,7 +1246,9 @@ bool IbPaperExecutionPolicyAuthority::IsDurablePlaceReplay(
 ExecutionCommandResult IbPaperExecutionPolicyAuthority::CancelOrder(
     const CancelOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    // AllowCancel reads immutable profile scope only. The coordinator owns
+    // order ownership, preflight reservation, fencing and durable idempotency.
+    IbPolicySharedOperation operation(m_mutex, true);
     if (!ValidContext(command.context))
         return Reject(command.context, command.orderId,
                       "IB_PAPER_MUTATION_CONTEXT_INVALID");
@@ -1387,7 +1392,7 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
 {
     ExecutionControlStatusResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
-    std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
+    std::unique_lock<IbPolicyOperationGate> lock(m_mutex, std::try_to_lock);
     if (!lock.owns_lock())
     {
         result.status = ExecutionCommandStatus::Rejected;
@@ -1470,7 +1475,7 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReconcileAuthorita
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionLease(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
     ExecutionOwnerAuditResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     if (!m_config.UsesUserCrypto() || !m_callbacks.leaseAuditSnapshot ||
@@ -1491,7 +1496,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionLease(
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
     ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
@@ -1511,7 +1516,7 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
     ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
@@ -1881,7 +1886,7 @@ IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
         return result;
     }
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
         std::string fenceReason;
         // The runtime terminal callback owns construction of the V2 fence
         // binding (service/broker epochs and socket identity).  The policy
@@ -1925,7 +1930,7 @@ IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
     }
     ExecutionOwnerAuditResult audit;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
         audit = AuditRecoveryOwner(command, frozen);
     }
     result = ExecutionTerminalResult(
@@ -1962,7 +1967,7 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::ReadAuthoritativeState(
 bool IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
     std::size_t& affectedCount, std::string& reason)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<IbPolicyOperationGate> lock(m_mutex);
     affectedCount = 0;
     if (!m_callbacks.correlationSnapshot)
     {

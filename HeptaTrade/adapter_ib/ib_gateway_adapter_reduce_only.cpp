@@ -25,6 +25,7 @@ VenueFlattenResult HeptaIBGatewayAdapter::PlaceReduceOnlyOrderCorrelated(
     double expectedQuoteBid,
     double expectedQuoteAsk, const std::string& timeInForce)
 {
+    IbDeferredObservationScope observations;
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
     long orderId = -1;
     try

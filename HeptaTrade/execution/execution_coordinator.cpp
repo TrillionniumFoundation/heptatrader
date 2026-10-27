@@ -378,6 +378,50 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
     return result;
 }
 
+void ExecutionCoordinator::BeginRiskMutationDispatchLocked(
+    const AgentExecutionContext& context, const std::string& instrument,
+    const InstrumentRef& contract, const std::string& requestKey)
+{
+    RiskMutationDispatchScope scope;
+    scope.ownerKey = OwnerKey(context.agentId, context.sessionId);
+    scope.account = context.account;
+    scope.executionDomain = context.executionDomain;
+    scope.instrument = instrument;
+    scope.symbol = contract.symbol;
+    m_riskMutationDispatches.emplace(requestKey, std::move(scope));
+}
+
+bool ExecutionCoordinator::RiskMutationConflictsLocked(
+    const AgentExecutionContext& context, const std::string& instrument,
+    const InstrumentRef& contract) const
+{
+    for (const auto& item : m_riskMutationDispatches)
+    {
+        const auto& scope = item.second;
+        // Missing scope can never prove independence. Exact instrument scope
+        // is service-owned, and the adapter still validates the fresh position
+        // and active-order evidence at the final vendor boundary. Different
+        // strategy domains or instrument aliases cannot partition the same
+        // account/symbol exposure.
+        if (scope.account.empty() || context.account.empty() ||
+            scope.executionDomain.empty() || context.executionDomain.empty() ||
+            scope.instrument.empty() || instrument.empty() ||
+            scope.symbol.empty() || contract.symbol.empty() ||
+            (scope.account == context.account &&
+             (scope.instrument == instrument || scope.symbol == contract.symbol))) return true;
+    }
+    return false;
+}
+
+std::size_t ExecutionCoordinator::RiskMutationDispatchesForOwnerLocked(
+    const std::string& ownerKey) const
+{
+    std::size_t count = 0;
+    for (const auto& item : m_riskMutationDispatches)
+        if (item.second.ownerKey == ownerKey) ++count;
+    return count;
+}
+
 ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand& command)
 {
     return ObserveCommand(0U, [&](std::unique_lock<std::mutex>& lock,
@@ -386,9 +430,20 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
     });
 }
 
+ExecutionCommandResult ExecutionCoordinator::PlaceOrderWithSendAttemptLimit(
+    const PlaceOrderCommand& command, std::int64_t cutoffMs,
+    std::size_t maximumAttempts)
+{
+    const EntrySendAttemptLimit limit = {cutoffMs, maximumAttempts};
+    return ObserveCommand(0U, [&](std::unique_lock<std::mutex>& lock,
+                                  ExecutionOperationTiming& timing) {
+        return PlaceOrderLocked(command, lock, timing, &limit);
+    });
+}
+
 ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
     const PlaceOrderCommand& command, std::unique_lock<std::mutex>& lock,
-    ExecutionOperationTiming& timing)
+    ExecutionOperationTiming& timing, const EntrySendAttemptLimit* sendAttemptLimit)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -423,9 +478,18 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
             -1);
     if (m_mutationBlocked)
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1);
-    if (m_riskMutationDispatchInFlight)
+    if (!m_riskMutationDispatches.empty())
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED",
             "another risk mutation is already at the venue boundary", -1);
+    if (sendAttemptLimit)
+    {
+        std::vector<std::int64_t> attempts;
+        if (!GetPlaceSendAttemptTimesLocked(context.account,
+                context.executionDomain, sendAttemptLimit->cutoffMs, attempts) ||
+            attempts.size() >= sendAttemptLimit->maximumAttempts)
+            return RefuseBeforeIntent(context, "IB_PAPER_ORDER_RATE_EXCEEDED",
+                "authoritative send-attempt budget is exhausted or unavailable", -1);
+    }
     if (!m_callbacks.placement.Configured())
         return RefuseBeforeIntent(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1);
@@ -556,22 +620,27 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    GetPlaceSendAttemptTimesLocked(account, executionDomain, cutoffMs, out);
+}
+
+bool ExecutionCoordinator::GetPlaceSendAttemptTimesLocked(
+    const std::string& account, const std::string& executionDomain,
+    std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
+{
     out.clear();
     if (m_generationStore.IsActive())
     {
-        std::set<std::string> excluded(
-            m_placeSendAttemptKeys.begin(), m_placeSendAttemptKeys.end());
         std::vector<OmsGenerationSendAttempt> historical;
         std::string reason;
         if (!m_generationStore.ReadPlaceSendAttemptTimes(
-                account, executionDomain, cutoffMs, excluded,
+                account, executionDomain, cutoffMs, m_placeSendAttemptKeys,
                 historical, reason))
         {
             // Every supported IB PAPER profile allows fewer than 64 sends per
             // minute. Index uncertainty must therefore fail closed at the
             // existing rate guard rather than reset the budget after restart.
             out.assign(64U, OmsJournal::NowEpochMs());
-            return;
+            return false;
         }
         for (std::size_t i = 0; i < historical.size(); ++i)
             out.push_back(historical[i].tsMs);
@@ -579,6 +648,7 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::vector<std::int64_t> hot;
     m_placeSendAttempts.ReadTimes(account, executionDomain, cutoffMs, hot);
     out.insert(out.end(), hot.begin(), hot.end());
+    return true;
 }
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()
@@ -593,8 +663,7 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_placeSendAttemptKeys.clear();
     m_mutationBlocked = false;
     m_mutationBlockReason.clear();
-    m_riskMutationDispatchInFlight = false;
-    m_riskMutationDispatchOwnerKey.clear();
+    m_riskMutationDispatches.clear();
     m_venueDispatchesInFlight = 0;
     m_paperTerminalFencePresent = false;
     m_paperTerminalFenceBinding = PaperTerminalFenceBinding();
@@ -870,7 +939,7 @@ ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
     result.fencedOwners = m_fencedSessionOwners.size();
     result.recoveryOnlyOwners = m_recoveryOnlySessionOwners.size();
     result.retainedSendAttempts = m_placeSendAttempts.size();
-    result.riskMutationDispatchInFlight = m_riskMutationDispatchInFlight;
+    result.riskMutationDispatchInFlight = !m_riskMutationDispatches.empty();
     result.mutationBlocked = m_mutationBlocked;
     return result;
 }
@@ -878,6 +947,15 @@ ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
 bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // Replaying would erase reservations/counters while an unlocked callback
+    // still owns them. Policy recovery is exclusive; retain the same invariant
+    // for direct coordinator callers without changing any durable evidence.
+    if (m_venueDispatchesInFlight != 0 || !m_riskMutationDispatches.empty() ||
+        !m_cancelPreflightsInFlight.empty())
+    {
+        reason = "OMS_RECOVERY_DISPATCH_IN_FLIGHT";
+        return false;
+    }
     OmsScopedLatencySample recoveryTimer(m_observation.recoveryLatency);
     ResetRecoveryProjectionLocked();
 
@@ -1469,7 +1547,7 @@ bool ExecutionCoordinator::EnterAccountNewEntryFence(
     // before this account stop was installed. No zero-drain acknowledgement
     // may be inferred while any callback has yet to return.
     outstanding += static_cast<std::size_t>(m_venueDispatchesInFlight);
-    if (m_riskMutationDispatchInFlight && m_venueDispatchesInFlight == 0)
+    if (!m_riskMutationDispatches.empty() && m_venueDispatchesInFlight == 0)
         ++outstanding;
     reason = outstanding ? "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_RISK_OUTSTANDING" :
         "ACCOUNT_NEW_ENTRY_FENCE_INSTALLED_NOT_STOP_PERMIT";
@@ -1497,7 +1575,7 @@ ExecutionAccountLocalDrainObservation ExecutionCoordinator::ObserveAccountLocalD
     observed.accountEntryFenced = m_accountNewEntryFences.count(context.account) != 0;
     observed.mutationBlocked = m_mutationBlocked;
     observed.mutationBlockReason = m_mutationBlockReason;
-    observed.riskMutationDispatchInFlight = m_riskMutationDispatchInFlight;
+    observed.riskMutationDispatchInFlight = !m_riskMutationDispatches.empty();
     observed.venueDispatchesInFlight = m_venueDispatchesInFlight;
     for (const auto& item : m_orderOwners)
     {
@@ -1548,9 +1626,7 @@ std::size_t ExecutionCoordinator::FenceSessionOwner(
     for (std::unordered_map<long, ExecutionOrderOwner>::const_iterator it = m_orderOwners.begin();
          it != m_orderOwners.end(); ++it)
         if (it->second.agentId == agentId && it->second.sessionId == sessionId) ++activeOrders;
-    if (m_riskMutationDispatchInFlight &&
-        m_riskMutationDispatchOwnerKey == ownerKey)
-        ++activeOrders;
+    activeOrders += RiskMutationDispatchesForOwnerLocked(ownerKey);
     return activeOrders;
 }
 
@@ -1604,8 +1680,7 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
         reason = "AUTHORITATIVE_OPEN_ORDERS_INCOMPLETE";
         return false;
     }
-    if (m_riskMutationDispatchInFlight &&
-        m_riskMutationDispatchOwnerKey == ownerKey)
+    if (RiskMutationDispatchesForOwnerLocked(ownerKey) != 0)
     {
         reason = "FENCED_OWNER_VENUE_DISPATCH_IN_FLIGHT";
         return false;
