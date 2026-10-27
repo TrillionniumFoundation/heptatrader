@@ -344,6 +344,10 @@ public:
     void FlushEventIngressAdmission();
     void CompleteEventIngressAdmission();
     bool EventIngressAdmissionFailed() const;
+    // Binds diagnostic reads to one wrapper under the existing API lock.
+    IBIngressFirstFault GetIngressFirstFault(
+        std::uint64_t* wrapperConnectionEpoch = nullptr,
+        bool* failed = nullptr) const;
     bool IsConnected() const;
     std::uint64_t GetConnectionEpoch() const;
     bool GetBrokerConnectionIdentity(

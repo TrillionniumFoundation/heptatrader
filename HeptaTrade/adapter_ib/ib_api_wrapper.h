@@ -312,6 +312,40 @@ private:
 // may have reached IB, so callers must clean it up and fail closed.  Callbacks
 // only perform atomics before touching the deferred queue; they never wait on
 // the sender or the SDK/EReader join path.
+enum class IBIngressFaultKind {
+    None = 0,
+    BlockingCallback,
+    FarmWarningDuringAdmission,
+    AuthoritativeQueueBusy,
+    AuthoritativeQueueOverflow,
+    CallbackPublishException,
+    DeferredQueueBusy,
+    DeferredQueueOverflow,
+    DeferredPublishException,
+    SdkCallException,
+    AdmissionLifecycle,
+    DisconnectDuringAdmission
+};
+
+// Observation only. No strings, credentials, or authorization effect.
+struct IBIngressFirstFault {
+    bool pending = false;
+    IBIngressFaultKind kind = IBIngressFaultKind::None;
+    std::uint64_t monotonicNs = 0;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t admissionGeneration = 0;
+};
+
+const char* IBIngressFaultKindName(IBIngressFaultKind kind);
+
+// Main-loop diagnostic selection only; never substitutes a new connection's
+// record or overwrites an already-published original cause.
+inline IBIngressFirstFault CompleteIngressFirstFaultObservation(
+    const IBIngressFirstFault& before, std::uint64_t beforeEpoch,
+    const IBIngressFirstFault& after, std::uint64_t afterEpoch) {
+    return before.pending && beforeEpoch == afterEpoch ? after : before;
+}
+
 class IBMarketDataAdmissionState {
 public:
     enum Phase {
@@ -329,6 +363,13 @@ public:
     };
 
     IBMarketDataAdmissionState();
+    // Diagnostic-only test clock must not throw, block, or allocate in
+    // production. A private fixture may pause it to test pending publication.
+    // It never participates in admission, freshness, or expiry decisions.
+    explicit IBMarketDataAdmissionState(
+        std::uint64_t (*diagnosticClock)());
+    void SetDiagnosticConnectionEpoch(std::uint64_t connectionEpoch);
+    IBIngressFirstFault GetFirstFault() const;
 
     // Begins a fresh generation. Returns false unless the previous state is a
     // clean Idle state and the generation counter is not exhausted.  A
@@ -343,14 +384,16 @@ public:
     // the next send.  A recoverable pre-admission control notice may pass
     // false: its Idle observation is validated with a no-op CAS, and a
     // concurrent Begin/Reserve is still re-evaluated and blocked.
-    CallbackDisposition ObserveBlockingCallback(bool faultWhileIdle = true);
+    CallbackDisposition ObserveBlockingCallback(bool faultWhileIdle = true,
+        IBIngressFaultKind kind = IBIngressFaultKind::BlockingCallback);
     // Records a non-callback ingress failure (for example queue contention or
     // overflow) in the same packed state word used by callback faults.
-    bool MarkFault();
+    bool MarkFault(
+        IBIngressFaultKind kind = IBIngressFaultKind::AdmissionLifecycle);
     // Ends one SDK send. A ReservedBad send can only settle to Blocked.
     bool EndSend(std::uint64_t generation, bool keepAdmissionOpen);
     // Completes the two-phase admission close (after the external fence is
-    // released), retaining the fault bit for diagnostics until the next Begin.
+    // released), retaining the fault bit until a fresh wrapper/state is constructed.
     bool Complete();
     bool IsFailed() const;
     bool IsDeferred() const;
@@ -373,8 +416,16 @@ private:
     static Phase DecodePhase(std::uint64_t state);
     static std::uint64_t DecodeGeneration(std::uint64_t state);
     static bool DecodeFault(std::uint64_t state);
+    void CaptureFirstFault(IBIngressFaultKind kind,
+                           std::uint64_t generation) noexcept;
 
     std::atomic<std::uint64_t> m_state;
+    std::atomic<std::uint64_t> m_diagnosticConnectionEpoch{0};
+    std::uint64_t (*const m_diagnosticClock)();
+    // Only the original fault-bit CAS winner writes this record. Readers may
+    // touch it only after acquiring the publication flag; there is no reset.
+    IBIngressFirstFault m_firstFault;
+    std::atomic<bool> m_firstFaultPublished{false};
 };
 
 class IIBApiWrapper {
@@ -412,6 +463,8 @@ public:
     // for any remaining request in the same plan.  Callers may stop dispatch
     // early; the deferred callback is still flushed by End...().
     virtual bool EventIngressAdmissionFailed() const { return false; }
+    virtual IBIngressFirstFault GetIngressFirstFault() const
+    { return IBIngressFirstFault(); }
     virtual std::uint64_t GetConnectionEpoch() const { return 0; }
     virtual void Disconnect() = 0;
     virtual bool IsConnected() const = 0;

@@ -426,8 +426,72 @@ void IBCashFarmAdmissionMarker::MarkUnsafe() {
     MarkContentionPending();
 }
 
+const char* IBIngressFaultKindName(IBIngressFaultKind kind) {
+    switch (kind) {
+    case IBIngressFaultKind::None: return "NONE";
+    case IBIngressFaultKind::BlockingCallback: return "BLOCKING_CALLBACK";
+    case IBIngressFaultKind::FarmWarningDuringAdmission: return "FARM_WARNING_DURING_ADMISSION";
+    case IBIngressFaultKind::AuthoritativeQueueBusy: return "AUTHORITATIVE_QUEUE_BUSY";
+    case IBIngressFaultKind::AuthoritativeQueueOverflow: return "AUTHORITATIVE_QUEUE_OVERFLOW";
+    case IBIngressFaultKind::CallbackPublishException: return "CALLBACK_PUBLISH_EXCEPTION";
+    case IBIngressFaultKind::DeferredQueueBusy: return "DEFERRED_QUEUE_BUSY";
+    case IBIngressFaultKind::DeferredQueueOverflow: return "DEFERRED_QUEUE_OVERFLOW";
+    case IBIngressFaultKind::DeferredPublishException: return "DEFERRED_PUBLISH_EXCEPTION";
+    case IBIngressFaultKind::SdkCallException: return "SDK_CALL_EXCEPTION";
+    case IBIngressFaultKind::AdmissionLifecycle: return "ADMISSION_LIFECYCLE";
+    case IBIngressFaultKind::DisconnectDuringAdmission: return "DISCONNECT_DURING_ADMISSION";
+    }
+    return "UNKNOWN";
+}
+
 IBMarketDataAdmissionState::IBMarketDataAdmissionState()
-    : m_state(Encode(0, Idle, false)) {
+    : IBMarketDataAdmissionState(nullptr) {
+}
+
+IBMarketDataAdmissionState::IBMarketDataAdmissionState(
+    std::uint64_t (*diagnosticClock)())
+    : m_state(Encode(0, Idle, false)), m_diagnosticClock(diagnosticClock) {
+    static_assert(ATOMIC_BOOL_LOCK_FREE == 2,
+        "callback diagnostic publication must be lock-free");
+}
+
+void IBMarketDataAdmissionState::SetDiagnosticConnectionEpoch(
+    std::uint64_t connectionEpoch) {
+    // This is a diagnostic context, never a rearm. The actual adapter creates
+    // a new wrapper/state for each reconnect; an old record remains immutable.
+    m_diagnosticConnectionEpoch.store(connectionEpoch, std::memory_order_release);
+}
+
+void IBMarketDataAdmissionState::CaptureFirstFault(
+    IBIngressFaultKind kind, std::uint64_t generation) noexcept {
+    const auto epoch = m_diagnosticConnectionEpoch.load(std::memory_order_acquire);
+    std::uint64_t monotonicNs = 0;
+    try {
+        if (m_diagnosticClock) monotonicNs = m_diagnosticClock();
+        else {
+            const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            monotonicNs = now > 0 ? static_cast<std::uint64_t>(now) : 0;
+        }
+    } catch (...) {
+        // Diagnostic failure cannot unwind a callback or alter its fault.
+    }
+    m_firstFault.kind = kind == IBIngressFaultKind::None ?
+        IBIngressFaultKind::AdmissionLifecycle : kind;
+    m_firstFault.monotonicNs = monotonicNs;
+    m_firstFault.connectionEpoch = epoch;
+    m_firstFault.admissionGeneration = generation;
+    m_firstFaultPublished.store(true, std::memory_order_release);
+}
+
+IBIngressFirstFault IBMarketDataAdmissionState::GetFirstFault() const {
+    if (m_firstFaultPublished.load(std::memory_order_acquire))
+        return m_firstFault;
+    // The fault CAS precedes publication. Never wait for its writer or read
+    // its not-yet-published POD, including during an SDK callback/join race.
+    IBIngressFirstFault out;
+    out.pending = IsFailed();
+    return out;
 }
 
 std::uint64_t IBMarketDataAdmissionState::Encode(
@@ -486,7 +550,8 @@ bool IBMarketDataAdmissionState::TryReserve(std::uint64_t generation) {
 }
 
 IBMarketDataAdmissionState::CallbackDisposition
-IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
+IBMarketDataAdmissionState::ObserveBlockingCallback(
+    bool faultWhileIdle, IBIngressFaultKind kind) {
     std::uint64_t observed = m_state.load(std::memory_order_acquire);
     for (;;) {
         const Phase phase = DecodePhase(observed);
@@ -512,16 +577,20 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
             const std::uint64_t desired = Encode(generation, Idle, true);
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+                    std::memory_order_acquire)) {
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
                 return CallbackBeforeReservation;
+            }
             continue;
         }
         if (phase == Open) {
             const std::uint64_t desired = Encode(generation, Blocked, true);
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+                    std::memory_order_acquire)) {
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
                 return CallbackBeforeReservation;
+            }
             continue;
         }
         if (phase == Reserved) {
@@ -529,8 +598,10 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
                 Encode(generation, ReservedBad, true);
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+                    std::memory_order_acquire)) {
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
                 return CallbackAfterReservation;
+            }
             continue;
         }
         if (phase == Blocked) {
@@ -540,8 +611,10 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
             const std::uint64_t desired = Encode(generation, Blocked, true);
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+                    std::memory_order_acquire)) {
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
                 return CallbackBeforeReservation;
+            }
             continue;
         }
         if (phase == ReservedBad) {
@@ -550,8 +623,10 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
                 Encode(generation, ReservedBad, true);
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+                    std::memory_order_acquire)) {
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
                 return CallbackAfterReservation;
+            }
             continue;
         }
         // Unknown phase is fail-closed and cannot be made admissible.  Fold
@@ -562,7 +637,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(bool faultWhileIdle) {
     }
 }
 
-bool IBMarketDataAdmissionState::MarkFault() {
+bool IBMarketDataAdmissionState::MarkFault(IBIngressFaultKind kind) {
     std::uint64_t observed = m_state.load(std::memory_order_acquire);
     for (;;) {
         const Phase phase = DecodePhase(observed);
@@ -592,7 +667,10 @@ bool IBMarketDataAdmissionState::MarkFault() {
         if (desired == observed) return true;
         if (m_state.compare_exchange_weak(
                 observed, desired, std::memory_order_acq_rel,
-                std::memory_order_acquire)) return true;
+                std::memory_order_acquire)) {
+            if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+            return true;
+        }
     }
 }
 
@@ -863,6 +941,7 @@ public:
     void SetConnectionEpoch(std::uint64_t connectionEpoch) override {
         m_connectionEpoch.store(
             connectionEpoch, std::memory_order_release);
+        m_eventIngressAdmissionState.SetDiagnosticConnectionEpoch(connectionEpoch);
         m_eventIngressFarmMarker.Reset(connectionEpoch);
         m_marketDataRequests.Reset(connectionEpoch);
     }
@@ -941,6 +1020,10 @@ public:
 
     bool EventIngressAdmissionFailed() const override {
         return m_eventIngressAdmissionState.IsFailed();
+    }
+
+    IBIngressFirstFault GetIngressFirstFault() const override {
+        return m_eventIngressAdmissionState.GetFirstFault();
     }
 
     std::uint64_t GetConnectionEpoch() const override {
@@ -1049,7 +1132,8 @@ public:
             m_eventIngressSendActive.load(std::memory_order_acquire) ||
             m_eventIngressAdmissionState.IsDeferred();
         if (admissionInFlight)
-            (void)m_eventIngressAdmissionState.MarkFault();
+            (void)m_eventIngressAdmissionState.MarkFault(
+                IBIngressFaultKind::DisconnectDuringAdmission);
         // Surface callbacks already deferred by the admission boundary before
         // the SDK reader is stopped.  This is outside the EReader callback
         // path, so the short queue lock is safe here and no evidence is lost
@@ -1417,7 +1501,7 @@ public:
             // IB (and the SDK request may have synchronously delivered a
             // fatal callback). Preserve a sticky fault before
             // cleanup so this generation can never be silently reopened.
-            (void)m_eventIngressAdmissionState.MarkFault();
+            (void)m_eventIngressAdmissionState.MarkFault(IBIngressFaultKind::SdkCallException);
             if (!m_connected.load(std::memory_order_acquire) ||
                 !m_client.isSocketOK())
                 reportConnectionLoss();
@@ -1452,7 +1536,7 @@ public:
             }
             m_client.cancelMktData(reqId);
         } catch (...) {
-            (void)m_eventIngressAdmissionState.MarkFault();
+            (void)m_eventIngressAdmissionState.MarkFault(IBIngressFaultKind::SdkCallException);
             throw;
         }
         return true;
@@ -1955,7 +2039,8 @@ private:
         m_events.Push(std::move(e));
         const std::uint64_t after = m_events.OverflowGeneration();
         if (after != before)
-            (void)m_eventIngressAdmissionState.MarkFault();
+            (void)m_eventIngressAdmissionState.MarkFault(
+                IBIngressFaultKind::AuthoritativeQueueOverflow);
         if (after != before && ((after % 1000ULL) == 1ULL)) {
             Trace("event_queue_overflow generation=" + std::to_string(static_cast<unsigned long long>(after))
                 + " dropped=" + std::to_string(static_cast<unsigned long long>(m_events.DroppedEventCount())));
@@ -1970,19 +2055,22 @@ private:
         try {
             bool overflowed = false;
             if (!m_events.TryPush(std::move(e), overflowed)) {
-                (void)m_eventIngressAdmissionState.MarkFault();
+                (void)m_eventIngressAdmissionState.MarkFault(
+                    IBIngressFaultKind::AuthoritativeQueueBusy);
                 m_ingressDropEpoch.store(epoch, std::memory_order_release);
                 m_ingressDropCount.fetch_add(1, std::memory_order_acq_rel);
                 return;
             }
             if (overflowed)
-                (void)m_eventIngressAdmissionState.MarkFault();
+                (void)m_eventIngressAdmissionState.MarkFault(
+                    IBIngressFaultKind::AuthoritativeQueueOverflow);
         }
         catch (...) {
             // EWrapper callbacks must not let an allocation failure unwind
             // through the SDK reader.  Convert it to the same explicit loss
             // witness used by a busy queue and keep the sender fail-closed.
-            (void)m_eventIngressAdmissionState.MarkFault();
+            (void)m_eventIngressAdmissionState.MarkFault(
+                IBIngressFaultKind::CallbackPublishException);
             m_ingressDropEpoch.store(epoch, std::memory_order_release);
             m_ingressDropCount.fetch_add(1, std::memory_order_acq_rel);
         }
@@ -2049,7 +2137,8 @@ private:
             (void)disposition;
         } else if (cashFarmWarning && !staleEpoch) {
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
-                m_eventIngressAdmissionState.ObserveBlockingCallback(false);
+                m_eventIngressAdmissionState.ObserveBlockingCallback(false,
+                    IBIngressFaultKind::FarmWarningDuringAdmission);
             (void)disposition;
         }
         const bool defer =
@@ -2068,7 +2157,8 @@ private:
                 // transaction.  Preserve the event in the authoritative
                 // queue, and make the packed state a blocking witness so no
                 // quote leg can be published from this admission.
-                (void)m_eventIngressAdmissionState.MarkFault();
+                (void)m_eventIngressAdmissionState.MarkFault(
+                    IBIngressFaultKind::DeferredQueueBusy);
                 PushCallbackEvent(std::move(e));
                 return;
             }
@@ -2089,7 +2179,8 @@ private:
                     // blocking witness; do not wait for the synthetic
                     // overflow callback at close before suppressing another
                     // quote leg.
-                    (void)m_eventIngressAdmissionState.MarkFault();
+                    (void)m_eventIngressAdmissionState.MarkFault(
+                        IBIngressFaultKind::DeferredQueueOverflow);
                 }
                 try {
                     m_deferredIngressEvents.push_back(std::move(e));
@@ -2098,7 +2189,8 @@ private:
                     // Keep the callback boundary noexcept. The dropped event
                     // is surfaced as an explicit overflow marker at close.
                     ++m_deferredIngressDropped;
-                    (void)m_eventIngressAdmissionState.MarkFault();
+                    (void)m_eventIngressAdmissionState.MarkFault(
+                        IBIngressFaultKind::DeferredPublishException);
                 }
                 return;
             }
