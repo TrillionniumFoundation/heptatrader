@@ -366,6 +366,11 @@ class BuilderIdentityTests(unittest.TestCase):
     def test_actual_id_and_hub_alias_are_checked_without_fabricating_digest_list(self):
         self.assertEqual(artifact.canonical_image_reference('docker.io/ubuntu@sha256:'+'a'*64),
                          artifact.canonical_image_reference('ubuntu@sha256:'+'a'*64))
+        for name in ['docker.io/library/ubuntu', 'docker.io/dockcross/linux-x64',
+                     'docker.io.evil.example/ubuntu', 'evil.example/docker.io/ubuntu']:
+            with self.subTest(repository=name):
+                reference = name + '@sha256:' + 'a'*64
+                self.assertEqual(artifact.canonical_image_reference(reference), reference)
         raw=[{'Id':'b'*64,'RepoDigests':[RESOLVED]}]
         value=artifact.image_identity(raw,REFERENCE,'podman','podman version 5.0','c'*64)
         self.assertEqual(value['raw_image_id'],'b'*64);self.assertEqual(raw[0]['RepoDigests'],[RESOLVED])

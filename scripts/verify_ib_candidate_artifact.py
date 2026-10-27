@@ -565,8 +565,9 @@ def canonical_image_reference(reference: str) -> str:
         name = "docker.io/library/" + name
     elif "." not in first and ":" not in first and first != "localhost":
         name = "docker.io/" + name
-    if name.startswith("docker.io/") and "/" not in name[len("docker.io/"):]:
-        name = "docker.io/library/" + name[len("docker.io/"):]
+    components = name.split("/")
+    if len(components) == 2 and components[0] == "docker.io":
+        name = "/".join((components[0], "library", components[1]))
     return name + "@" + digest
 
 
