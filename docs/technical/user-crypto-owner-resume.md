@@ -3,9 +3,12 @@
 The mixed user PAPER account has two isolated strategy owners: BTC/PAXOS/USD and
 EUR/IDEALPRO/USD. Neither owner is the whole-account finalization owner. Restoring
 one recovery receiver must not fail merely because the other owner still holds
-its authorized position. Expired or restarted leases remain recovery-only on
-disk and in the host; an explicit authenticated `paper-resume` is still
-required before mutation authority returns.
+its authorized position. A Gateway restart may retain an **unexpired, exact
+user-PAPER recovery receiver** in recovery-only state. That receiver's existing
+expiry still bounds restart restoration, and an explicit authenticated `paper-resume` is
+required before mutation authority returns. Expired, revoked, conflicting,
+pending-fence or terminal/finalization records do not become resumable merely
+because their token file or durable lease record still exists.
 
 ## Exact scope binding
 
@@ -46,11 +49,22 @@ they are never replaced with zero to imitate global flatness.
 
 ## Distinct lifecycle operations
 
-Gateway startup may retain a fenced, non-finalized user recovery receiver when
-the global audit reports a non-flat account. Explicit `paper-resume` verifies
-the same token, generation and durable account/domain owner, audits the
-server-owned asset scope, releases only that owner's fence, then commits the
-next lease generation.
+Gateway startup may retain an unexpired, non-finalized user recovery receiver
+when the global audit reports a non-flat account. `CanResumeExactUserPaperRecord`
+requires the same token, generation, account and domain, with no conflicting
+record for that owner and no pending/completed durable fence or finalization.
+`RestoreLeases` checks the original receiver expiry before and after its audit;
+an expired receiver follows the existing recovery/finalization path.
+The receiver's current recovery deadline is distinct from the former trading
+lease's deadline; an explicit recovery operation can establish recovery-only
+authority without restoring trading authority.
+
+Explicit `paper-resume` can handle that exact recovery-only receiver, or an
+active user-PAPER bearer with an Execution-only recovery marker. It requires the
+original bearer to remain in the host catalog, verifies its generation and
+durable owner, audits the server-owned asset scope, releases only that owner's
+fence, then commits the next lease generation. Ordinary `renew` and
+`renew-active` do not have this recovery-only promotion capability.
 
 The resident driver uses only its own instrument position as a precheck for
 scoped resume. That local precheck is not authority: native Execution proves both
@@ -61,6 +75,50 @@ the owner is released.
 terminalization retain their account-wide zero-position rules. Scoped owner
 resume and active-lease continuation results cannot be used as global zero
 proofs. Ordinary renewal does not promote a recovery-only lease.
+
+## Diagnosing a missing session
+
+`SESSION_NOT_FOUND` from tool discovery identifies a missing host-catalog bearer;
+it does not by itself distinguish expiry, revocation or a restoration failure.
+Use the existing `heptatrader session owner-audit --token-file PATH` with the
+original owner token and the deployment's actual Gateway/Execution runtime
+configuration to inspect its durable owner and obtain native audit evidence.
+The public wrapper forwards this top-level mode but does not load the service
+environment. `OWNER_AUDIT_USER_PAPER_SCOPE_REQUIRED` therefore identifies a
+missing or mismatched configured scope, not a missing token. Use the existing
+configuration; do not guess account, Agent, UID or PAPER authority values to
+satisfy the check. This operation does not renew or change the lease, release the native
+kill switch or grant trading authority. The native audit can reconcile OMS and
+request Broker recovery, so it is not a promise of a side-effect-free Broker read.
+
+`OWNER_AUDIT_EXISTING_TOKEN_REQUIRED` means that token is absent from the durable
+store. The native `hepta-gateway-catalog` helper can inspect the existing store
+without an Execution request or a lease write. Use the selected release's helper
+with the actual configured store, lease-key path and user cleanup interlock. Its
+projection contains hashed owner/bearer identities, generation, expiry and
+recovery/fence/finalization state. Compare the configured owner hashes to
+distinguish a stale token file from an owner with no remaining record. Never
+extract bearer values from the encrypted store or edit its records.
+
+A successful owner audit still does not prove that the host catalog has restored
+the bearer or that `paper-resume` is admissible. Verify the exact lease state,
+current recovery deadline and generation before selecting a recovery operation.
+An absent row alone is not retirement evidence or permission to provision a
+replacement. A new authorized lease is a separate lifecycle operation; it must
+preserve the old owner's settlement evidence and account for driver generation
+and any residual native owner fence. After an admissible resume, repeat both
+owners' authoritative native health, orders and positions checks before the
+separate native-hold release.
+
+Historical attribution has two current limits. Non-provision supervisor requests
+can have empty Agent/session fields in their journal records, and automatic
+user-PAPER expiry/finalization does not append a supervisor operation record.
+An exact-session journal filter therefore cannot prove that no renewal, rotation
+or automatic cleanup occurred. Correlate the available supervisor records with
+driver state and the Execution OMS `session_owner_recovery_only`,
+`session_owner_fenced` and `session_owner_fence_release` events. OMS binds the
+session in `trace_id` and the Agent in `source` as `agent.tool:<agent-id>`.
+Partial file scans or unverified record chains remain diagnostic evidence.
 
 ## Validation
 
@@ -75,5 +133,5 @@ Regression coverage includes both directions:
 - same-token resume advances the lease generation and survives supervisor
   restart without changing the other owner's state.
 
-For this change the Python PAPER-driver suite passes 43/43 and the complete
-native CTest suite passes 49/49. Live PAPER acceptance remains separate evidence.
+Live PAPER acceptance remains separate from the regression coverage above;
+this recovery contract does not replace current runtime evidence.

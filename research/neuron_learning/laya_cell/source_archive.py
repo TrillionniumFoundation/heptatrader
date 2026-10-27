@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import fcntl
+import errno
 import os
 import stat
+import sys
 from pathlib import Path
 
 from .integrity import ContractError, canonical, read_json
@@ -171,15 +173,62 @@ def prefix_version(pin, *, sealed=False):
         os.close(fd)
 
 
-def verify_prefix(pin, *, sealed=False):
+class _UncachedPrefixRead:
+    """A read hint for sealed SHA-only passes, never a source integrity shortcut.
+
+    Linux RWF_DONTCACHE prunes only cache instantiated by this read; it does
+    not evict ranges already cached by another consumer. Unsupported kernels
+    and filesystems use the ordinary read path and expose that fallback.
+    """
+    def __init__(self, fd, stats):
+        self.fd, self.stats = fd, stats
+        self.enabled = sys.platform.startswith("linux") and callable(getattr(os, "preadv", None))
+        if not self.enabled:
+            self._count("uncached_unavailable_files", 1)
+
+    def _count(self, name, amount):
+        if self.stats is not None:
+            self.stats[name] = self.stats.get(name, 0) + amount
+
+    def read(self, count):
+        if self.enabled:
+            buffer = bytearray(count)
+            try:
+                # Linux UAPI RWF_DONTCACHE; Python releases predating its named
+                # constant still expose preadv2 via os.preadv(..., flags).
+                got = os.preadv(self.fd, [buffer], -1, getattr(os, "RWF_DONTCACHE", 0x80))
+            except NotImplementedError:
+                # Some Python builds expose preadv but not its flags form.
+                self.enabled = False
+                self._count("uncached_unavailable_files", 1)
+            except OSError as exc:
+                if exc.errno not in (errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS):
+                    raise
+                self.enabled = False
+                self._count("uncached_unsupported_files", 1)
+            else:
+                self._count("uncached_read_calls", 1)
+                self._count("uncached_read_bytes", got)
+                return bytes(memoryview(buffer)[:got])
+        data = os.read(self.fd, count)
+        self._count("fallback_read_calls", 1)
+        self._count("fallback_read_bytes", len(data))
+        return data
+
+
+def verify_prefix(pin, *, sealed=False, prefer_uncached=False, read_stats=None):
     """Verify exact prefix bytes with O_NOFOLLOW; sealed files cannot grow."""
+    if type(prefer_uncached) is not bool or prefer_uncached and not sealed:
+        raise ContractError("UNCACHED_READ_REQUIRES_SEALED_PREFIX")
     fd, _ = _open_prefix(pin, sealed=sealed)
     try:
+        reader = _UncachedPrefixRead(fd, read_stats) if prefer_uncached else None
         hash_ = hashlib.sha256()
         remaining = pin["bytes"]
         final_byte = b""
         while remaining:
-            chunk = os.read(fd, min(1024 * 1024, remaining))
+            count = min(1024 * 1024, remaining)
+            chunk = reader.read(count) if reader is not None else os.read(fd, count)
             if not chunk:
                 raise ContractError("SOURCE_PREFIX_SHORT_READ")
             hash_.update(chunk)

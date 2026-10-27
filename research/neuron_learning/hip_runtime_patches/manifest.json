@@ -1,0 +1,80 @@
+{
+  "files": [
+    {
+      "after_sha256": "7d5a48b4b265ba27a9d7b3eab65f3d53a67f7785662f922094f262eb1d70f2de",
+      "before_sha256": "11b5f42ec1c2720304f2429c350e54894a3078538e08a158a4077215acbcc811",
+      "path": "projects/clr/hipamd/src/hip_code_object.cpp"
+    },
+    {
+      "after_sha256": "20c0ddd99c3faa09d8e9743e777f447a3256b74a18979df24eee017ef8af7b18",
+      "before_sha256": "340df9bcdd9880f7109ae7106ec189135b80c3288b6322b52211e6d9b61e0d27",
+      "path": "projects/clr/hipamd/src/hip_code_object.hpp"
+    },
+    {
+      "after_sha256": "eef61b3571348744dd4777267444c5c205a71afc61a4edfd8e2e0f9dae026580",
+      "before_sha256": "6a626f78da6e60f60c71d28099696cba8419af093e7712d845f240a57acb8437",
+      "path": "projects/clr/hipamd/src/hip_global.cpp"
+    },
+    {
+      "after_sha256": "34c01a76ed67de9f16f649c2ede3989bbaba36b2b1d65b813ee6457e485fa8ec",
+      "before_sha256": "29e4a08b15b334ae83ff61e06379a0cb9c0f81c0c27eb7b7f2a633269471019b",
+      "path": "projects/clr/hipamd/src/hip_global.hpp"
+    },
+    {
+      "after_sha256": "772887571a7e1a1246a212fb5918590034d1de621aed7a512d04a9544cfef881",
+      "before_sha256": "a0d88c64bfd79dd276bd61890c299a40a083f552786dd95ea0f3efde55e24913",
+      "path": "projects/clr/hipamd/src/hip_module.cpp"
+    },
+    {
+      "after_sha256": "774e282d3c544e178e40cd010682857572b02d55e07361940c31c52bc0a756d8",
+      "before_sha256": "12dddc0c60631780c88dfc82cd0949d98f7f2c38182c6ced24930aba9f74c180",
+      "path": "projects/clr/hipamd/src/hip_platform.cpp"
+    },
+    {
+      "after_sha256": "c3cc969898b8d8291825734b0b296aba497e3b7c202980e5c4ac67018ce04ecd",
+      "before_sha256": "cafe09131c80280e59a61e319a58a769eecf410beafe55edcdb04433026017ef",
+      "path": "projects/clr/hipamd/src/hip_platform.hpp"
+    }
+  ],
+  "gpu_test_performed": false,
+  "license": "MIT",
+  "license_file": "UPSTREAM_LICENSE.txt",
+  "patch_bytes": 8761,
+  "patch_file": "hip-kernel-handle-backport.patch",
+  "patch_sha256": "4c28a7184d0c3e1cc9983b8df7901aebe10f1aecf165a89648d293412ebc0c3f",
+  "preserved_patch": {
+    "commit": "22af9e98a3dad737d0a7b153c712622139e5a2e6",
+    "file": "projects/clr/rocclr/device/rocm/rocvirtual.cpp",
+    "number": 8113,
+    "patch_sha256": "09c3e3fbe8fb73338a4170f198e7e8c50dcf8b0f569b10a7f61af6d95c73890d"
+  },
+  "production_library_changed": false,
+  "schema": "heptatrader.hip-vendor-backport.v1",
+  "scope": "HIP launch error propagation and kernel handle validation only",
+  "source_commit": "2b22ab0195cc1461cd9abf3b969e9dd7c10af350",
+  "upstream_pull_requests": [
+    {
+      "merge": "e14bd0645af6178e3ae0fc0ca605d77636ae9cb8",
+      "number": 10150,
+      "url": "https://github.com/ROCm/rocm-systems/pull/10150",
+      "used": "Propagate DigestFatBinary errors from attribute/global/managed-variable lazy loads"
+    },
+    {
+      "head": "370b93da77623233ef695f3dfa2e9df039f7140a",
+      "merge": "210c1da6b9127472d378d3488cd9d3471b5b3289",
+      "number": 11580,
+      "url": "https://github.com/ROCm/rocm-systems/pull/11580",
+      "used": "Complete resolved launch lambda at upstream head plus produced-handle registry and removal of obsolete dynamic-only checks"
+    }
+  ],
+  "upstream_repository": "https://github.com/ROCm/rocm-systems",
+  "validation": {
+    "actual_fault_underlying_GetFunc_error": "NOT_CAPTURED",
+    "candidate_lambda_sha256": "ef110cdcc54b9dcf90e66cf17a366a1724bbd42ac45cb732caf4da40698f46bd",
+    "cpu_launch_contract": "PASS: 13 checks of extracted old/new launch lambdas and actual registry methods; 8 unsafe baseline fallbacks demonstrated",
+    "cpu_receipt_sha256": "225a29641462889ad6b004effd011c40fe589b014f72d82cfd4918fe6e9a348f",
+    "generated_contract_cpp_sha256": "506a5f26f858836a019952b7c77647bd93761d24e7a164d6f0e465de95262543",
+    "gpu_runtime_acceptance": "PENDING_SEPARATE_RUNTIME_EVIDENCE",
+    "patch_materialization": "PASS: 7 exact files, zero fuzz, before/after SHA-256 verified"
+  }
+}
