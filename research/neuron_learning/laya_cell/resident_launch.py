@@ -84,7 +84,11 @@ def main():
   str(Path.home()/'.local/state/heptatrader/paper-driver/cost-observations.jsonl')]
  readonly.extend(c.get('completed_history_sources',[]))
  if hip_context is not None:readonly.extend(hip_context['readonly'])
- if a.target=='train':readonly.extend([c['dataset'],c['parent_directory']])
+ if a.target=='train':
+  readonly.extend([c['dataset'],c['parent_directory']])
+  from .resident_parent_action_cache import readonly_input_path as parent_action_cache_input_path
+  cache_input=parent_action_cache_input_path(c)
+  if cache_input is not None:readonly.append(str(cache_input))
  elif a.target=='owner-predict':readonly.extend([str(a.owner_task),str(payload)])
  else:
   plan=read_json(a.plan);readonly.extend([str(a.plan),plan['candidate_directory'],plan['parent_directory']])

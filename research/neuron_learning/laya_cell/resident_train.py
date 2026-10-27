@@ -272,14 +272,20 @@ def run_job(c,*,old_learner_verified=False):
    parent_scores.append(float(F.cross_entropy(p,truth)))
    if episode:parent_brier.append(float((p.softmax(-1)[0]-F.one_hot(truth[0],7)).square().sum()))
    if v2:parent_action_logits[key]=a[0].detach().cpu()
- action_training_profile=None
+ action_training_profile=None;parent_action_cache_value=None;parent_action_cache_receipt=None
  if v5:
-  logits=[]
-  with torch.no_grad():
-   for row in closed_action.calibration_rows(closed_source):
-    batch={k:v.to(device) for k,v in encoded([row]).items()}
-    logits.append(cell(**batch)[1][0].detach().cpu())
-  action_training_profile=closed_action.prepare_profile(closed_source,torch.stack(logits))
+  from .resident_parent_action_cache import calibration_logits
+  calibration_rows=closed_action.calibration_rows(closed_source)
+  def parent_action_forwards():
+   logits=[]
+   with torch.no_grad():
+    for row in calibration_rows:
+     batch={k:v.to(device) for k,v in encoded([row]).items()}
+     logits.append(cell(**batch)[1][0].detach().cpu())
+   return torch.stack(logits)
+  logits,parent_action_cache_value,parent_action_cache_receipt=calibration_logits(
+   c,parent,closed_source,calibration_rows,parent_action_forwards)
+  action_training_profile=closed_action.prepare_profile(closed_source,logits)
  elif v2:action_training_profile,training_batches=training_policy.prepare_action(rows,targets,parent_action_logits,c['window']['training_end_ms'])
  initial_child_receipts=[];initial_child_measurement=None
  if v7:
@@ -478,6 +484,9 @@ def run_job(c,*,old_learner_verified=False):
  from .resident_hip_runtime import prove_before_publish
  hip_proof=prove_before_publish(c)
  if hip_proof is not None:record['hip_runtime_proof']=hip_proof
+ if parent_action_cache_receipt is not None:
+  from .resident_parent_action_cache import write_worker_output
+  record['parent_action_cache']=write_worker_output(out,parent_action_cache_value,parent_action_cache_receipt)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

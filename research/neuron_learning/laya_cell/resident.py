@@ -138,6 +138,8 @@ def config_check(config):
  check_parent_calibration(config)
  from .resident_trial_stop import check_config as check_trial_stop_config
  check_trial_stop_config(config)
+ from .resident_parent_action_cache import check_config as check_parent_action_cache
+ check_parent_action_cache(config)
  budget_policy(config)
  check_protocol_config(config)
  if config.get('future_source_read_profile') is not None:
@@ -277,6 +279,8 @@ class Supervisor:
    state['training_lineage'].update(closed_action_source_id=self.c['closed_action_source_id'],
     auxiliary_action_phase=training_v5.ACTION_PHASE,price_steps_exclude_auxiliary_action_steps=True)
   if latest_registration is not None:state['latest_candidate_registration']=latest_registration
+  if hasattr(self,'_parent_action_cache_publication'):
+   state['parent_action_cache_publication']=self._parent_action_cache_publication
   atomic(self.root/'status.json',state);print(json.dumps(state),flush=True);return state
  def candidate_done(self,row):
   job=json.loads(row['payload']);path=Path(job['output_directory'])/'candidate.json'
@@ -287,6 +291,8 @@ class Supervisor:
       or candidate.get('dataset_file_sha256')!=job['dataset_sha256'] or candidate.get('native_binary_sha256')!=job['native_binary_sha256']):
    raise ContractError('CHILD_RESULT_IDENTITY')
   complete_job(self.db,row['id'],candidate)
+  from .resident_parent_action_cache import publish_from_candidate
+  self._parent_action_cache_publication=publish_from_candidate(job,candidate)
   self.register_evaluation(row['id'],candidate,job)
   return True
  def _evaluation_plan(self,job_id,candidate,job,trial,now):
@@ -659,6 +665,8 @@ class Supervisor:
     'parent_directory':self.c['initial_parent_directory'],'parent_manifest_sha256':sha_file(Path(self.c['initial_parent_directory'])/'candidate.json'),
     'parent_id':parent_id,'generation':generation,'window':quality['window'],
     'output_directory':str(Path(self.c['candidate_directory'])/job_id/'artifact')}
+  from .resident_parent_action_cache import attach_input
+  job=attach_input(job)
   job_path=self.root/'jobs'/(job_id+'.json');write_once(job_path,job)
   if not admit_job(self.db,job_id,fingerprint,now,job,row_ids):return self.write_status(storage=self.storage,state='JOB_ALREADY_ADMITTED',**state)
   self.write_status(state='TRAINING_ON_GFX1150',active_job=job_id,**state)
