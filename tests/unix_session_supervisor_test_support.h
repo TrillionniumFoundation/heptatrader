@@ -138,6 +138,8 @@ void TestAuditJournalSecurity();
 void TestAuditJournalCacheAndGrowthBounds();
 void TestSupervisorPeerCredentialAndLifecycle();
 void TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
+void TestDurableAuditBindsOwnerBeforeMutation();
+void TestAutomaticPaperFinalizationAuditFailures();
 void TestDurableLiveExpiryReap();
 void TestWriteAheadActivationFailureFencesOwner();
 void TestRejectedRenewFenceRetryUsesExactPredecessorScope();

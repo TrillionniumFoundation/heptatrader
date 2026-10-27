@@ -1,4 +1,6 @@
 #include "unix_session_supervisor_test_support.h"
+#include <sys/file.h>
+#include <sys/syscall.h>
 
 namespace hepta_supervisor_test {
 
@@ -799,5 +801,193 @@ void TestDurablePendingFenceRestartRecoveryWithReviewedPolicy()
 	std::remove(journalPath.c_str());
 }
 
+
+void TestAutomaticPaperFinalizationAuditFailures()
+{
+    if (::geteuid() == 0 || ::getegid() == 0) return;
+    enum class Failure { OwnerFence, LeaseRemove, AuditIntent, AuditOutcome,
+                         AuditFileBusy, AuditMutexBusy };
+    for (const auto failure : {Failure::OwnerFence, Failure::LeaseRemove,
+            Failure::AuditIntent, Failure::AuditOutcome,
+            Failure::AuditFileBusy, Failure::AuditMutexBusy})
+    {
+        const auto journalPath = TempPath("/tmp/hepta-auto-audit-oms-XXXXXX");
+        const auto socketPath = TempPath("/tmp/hepta-auto-audit-socket-XXXXXX");
+        const auto storePath = TempPath("/tmp/hepta-auto-audit-store-XXXXXX");
+        const auto auditPath = TempPath("/tmp/hepta-auto-audit-journal-XXXXXX");
+        const auto errorPath = TempPath("/tmp/hepta-auto-audit-stderr-XXXXXX");
+        const auto keyPath = TempKeyPath();
+        std::string reason;
+        SessionSupervisorLeaseStore store; assert(store.Init(storePath, keyPath, reason));
+        SessionSupervisorAuditJournal audit; assert(audit.Init(auditPath, reason));
+        SessionSupervisorAuditJournal unavailableAudit;
+        OmsJournal journal; assert(journal.Init(journalPath));
+        ExecutionCoordinator execution(journal, ExecutionCoordinatorCallbacks());
+        TradingToolRegistry registry(execution); TradingToolHost host(registry);
+        RecoveryControlAuthority authority;
+        authority.ownerAudit = [](const ExecutionControlCommand& command) {
+            ExecutionControlResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = ExecutionCommandStatus::Accepted;
+            result.reasonCode = "SESSION_OWNER_ZERO_CONFIRMED";
+            result.ownerAuditAuthoritative = true; result.ownerAuditComplete = true;
+            result.ownerAccount = command.context.account;
+            result.ownerExecutionDomain = command.context.executionDomain;
+            result.brokerConnectionEpoch = 1; result.brokerActiveGeneration = 2;
+            result.brokerTerminalGeneration = 3;
+            return result;
+        };
+        int fenceCalls = 0;
+        authority.fence = [&](const ExecutionControlCommand& command) {
+            ++fenceCalls;
+            if (failure != Failure::AuditIntent && failure != Failure::AuditFileBusy &&
+                failure != Failure::AuditMutexBusy)
+            {
+                const auto evidence = AuditPayloads(auditPath);
+                assert(evidence.size() == 3); // Provision pair plus automatic intent.
+                assert(evidence.back().find("operation=paper-recovery-finalize\n") != std::string::npos);
+                assert(evidence.back().find("phase=intent\noutcome=pending\n") != std::string::npos);
+            }
+            ExecutionControlResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = failure == Failure::OwnerFence ?
+                ExecutionCommandStatus::Rejected : ExecutionCommandStatus::Accepted;
+            result.reasonCode = failure == Failure::OwnerFence ? "TEST_OWNER_FENCE_REFUSED" : "OK";
+            // Change only synthetic fixture metadata after owner finalization,
+            // so the actual persistence/journal layers exercise their failures.
+            if (failure == Failure::LeaseRemove) assert(::chmod(storePath.c_str(), 0644) == 0);
+            if (failure == Failure::AuditOutcome) assert(::chmod(auditPath.c_str(), 0644) == 0);
+            return result;
+        };
+        host.SetRecoveryControlAuthority(&authority);
+        TradingToolSessionControlPlane control(host,
+            [](const std::string&, const TradingToolHostSessionBinding&, std::string&) { return true; });
+        UnixSessionSupervisorServer server(control);
+        server.SetLeaseStore(&store); server.SetAuditJournal(&audit);
+        assert(server.ConfigureUserPaperCustodian(reason));
+        std::map<std::uint32_t, std::string> issuers;
+        issuers[::geteuid()] = "test.auto-audit";
+        assert(server.Start(socketPath, issuers,
+            [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding, std::string&) {
+                binding.token = request.token; binding.peerUid = request.peerUid;
+                binding.session.executionContext.agentId = request.agentId;
+                binding.session.executionContext.sessionId = request.sessionId;
+                binding.session.executionContext.account = "SYNTHETIC";
+                binding.session.environment = "PAPER"; binding.executionDomain = "PAPER";
+                binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+                return true;
+            }, reason, 4096, 1000));
+        SessionSupervisorRequest provision;
+        provision.templateId = "paper"; provision.token = "private-auto-finalization-bearer";
+        provision.agentId = "auto-audit-agent"; provision.sessionId = "auto-audit-session";
+        provision.peerUid = ::geteuid(); provision.ttlMs = 60000;
+        assert(Call(socketPath, provision).accepted);
+        SessionSupervisorLeaseRecord before;
+        assert(store.Get(provision.token, before));
+        if (failure == Failure::AuditIntent) server.SetAuditJournal(&unavailableAudit);
+        const bool auditBusy = failure == Failure::AuditFileBusy || failure == Failure::AuditMutexBusy;
+        int heldAuditFd = -1;
+        std::future<bool> ordinaryWriter;
+        std::atomic<long> writerTid(0);
+        if (auditBusy)
+        {
+            // This is the same shared file lock used by the supported full
+            // journal verifier. Keep it held until cleanup has completed.
+            heldAuditFd = ::open(auditPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            assert(heldAuditFd >= 0 && ::flock(heldAuditFd, LOCK_SH) == 0);
+            if (failure == Failure::AuditMutexBusy)
+            {
+                ordinaryWriter = std::async(std::launch::async, [&]() {
+                    writerTid.store(::syscall(SYS_gettid));
+                    SessionSupervisorRequest request;
+                    request.operation = SessionSupervisorOperation::Renew;
+                    std::string writerReason;
+                    return audit.Append(request, "test.concurrent-writer", "intent", "pending", 1, writerReason);
+                });
+                // Observe the real writer blocked in flock, after taking the
+                // journal mutex. This avoids timing sleeps or a production
+                // test hook that fabricates mutex contention.
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                bool writerAtFlock = false;
+                while (!writerAtFlock && std::chrono::steady_clock::now() < deadline)
+                {
+                    const long tid = writerTid.load();
+                    if (tid != 0)
+                    {
+                        std::ifstream syscallState("/proc/self/task/" + std::to_string(tid) + "/syscall");
+                        long number = -1;
+                        writerAtFlock = (syscallState >> number) && number == SYS_flock;
+                    }
+                    if (!writerAtFlock) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                assert(writerAtFlock);
+            }
+        }
+        const int errorFd = ::open(errorPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        const int savedError = ::dup(STDERR_FILENO);
+        assert(errorFd >= 0 && savedError >= 0);
+        std::fflush(stderr); assert(::dup2(errorFd, STDERR_FILENO) >= 0);
+        std::size_t reaped = 99;
+        bool accepted = false;
+        bool cleanupCompletedWhileAuditLocked = false;
+        if (auditBusy)
+        {
+            auto cleanup = std::async(std::launch::async, [&]() {
+                return server.ReapExpired(before.expiresAtMs, reaped, reason);
+            });
+            cleanupCompletedWhileAuditLocked = cleanup.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+            // Release and join even when this assertion will fail, so the
+            // regression is finite under the original blocking implementation.
+            if (ordinaryWriter.valid())
+                assert(ordinaryWriter.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+            assert(::flock(heldAuditFd, LOCK_UN) == 0); ::close(heldAuditFd);
+            if (ordinaryWriter.valid()) assert(ordinaryWriter.get());
+            accepted = cleanup.get();
+        }
+        else accepted = server.ReapExpired(before.expiresAtMs, reaped, reason);
+        std::fflush(stderr); assert(::dup2(savedError, STDERR_FILENO) >= 0);
+        ::close(savedError); ::close(errorFd);
+        if (auditBusy) assert(cleanupCompletedWhileAuditLocked);
+        assert(fenceCalls == 1);
+        assert(::chmod(storePath.c_str(), 0600) == 0);
+        assert(::chmod(auditPath.c_str(), 0600) == 0);
+        std::ifstream errors(errorPath);
+        std::stringstream captured; captured << errors.rdbuf();
+        const auto failureText = captured.str();
+        const auto payloads = AuditPayloads(auditPath);
+        for (const auto& payload : payloads)
+            assert(payload.find(provision.token) == std::string::npos);
+        assert(failureText.find(provision.token) == std::string::npos);
+        if (failure == Failure::OwnerFence || failure == Failure::LeaseRemove)
+        {
+            assert(!accepted && reaped == 0 && store.List().size() == 1);
+            assert(payloads.size() == 4 && failureText.empty());
+            assert(payloads.back().find(failure == Failure::OwnerFence ?
+                "outcome=OWNER_FINALIZE_FAILED:TEST_OWNER_FENCE_REFUSED\n" :
+                "outcome=LEASE_REMOVE_FAILED:") != std::string::npos);
+            if (failure == Failure::OwnerFence)
+                assert(reason == "TEST_OWNER_FENCE_REFUSED" && host.SessionCount() == 1);
+            else assert(host.SessionCount() == 0 && !reason.empty());
+        }
+        else
+        {
+            // Journal failure cannot undo a native fence, invent a retryable
+            // lease, or stop the pre-existing automatic cleanup path.
+            assert(accepted && reaped == 1 && reason.empty());
+            assert(store.List().empty() && host.SessionCount() == 0);
+            assert(payloads.size() == ((failure == Failure::AuditIntent || failure == Failure::AuditFileBusy) ? 2 : 3));
+            assert(failureText.find("SUPERVISOR_AUTOMATIC_AUDIT_FAILED") != std::string::npos);
+            assert(failureText.find("phase=outcome outcome=lease_removed") != std::string::npos);
+            assert(failureText.find("agent_id=auto-audit-agent session_id=auto-audit-session") != std::string::npos);
+            if (auditBusy) assert(failureText.find("reason=SUPERVISOR_AUDIT_BUSY") != std::string::npos);
+        }
+        server.Stop();
+        std::uint64_t records = 0;
+        assert(SessionSupervisorAuditJournal::Verify(auditPath, records, reason));
+        assert(records == payloads.size());
+        for (const auto& path : {journalPath, storePath, auditPath, keyPath, errorPath})
+            std::remove(path.c_str());
+    }
+}
 
 } // namespace hepta_supervisor_test

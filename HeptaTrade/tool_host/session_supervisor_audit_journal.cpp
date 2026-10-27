@@ -1,4 +1,5 @@
 #include "session_supervisor_audit_journal.h"
+#include "session_supervisor_lease_store.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -274,6 +275,35 @@ bool SessionSupervisorAuditJournal::Append(const SessionSupervisorRequest& reque
     return AppendRecord("session-supervisor", payload, reason, recordClass);
 }
 
+bool SessionSupervisorAuditJournal::AppendPaperRecoveryFinalization(
+    const SessionSupervisorLeaseRecord& original,
+    const SessionSupervisorLeaseRecord& recovery, const std::string& trigger,
+    const std::string& phase, const std::string& outcome, std::string& reason)
+{
+    // EnterPaperRecovery can extend a recovery receiver's deadline. Retain the
+    // pre-transition expiry/flags so a future operator can distinguish expiry
+    // from pending-fence or recovery-only cleanup. Never serialize a bearer.
+    const std::string payload =
+        "operation=paper-recovery-finalize\norigin=maintenance\ntrigger=" + trigger + "\n" +
+        "phase=" + phase + "\n" +
+        "outcome=" + outcome + "\n" +
+        "issuer=" + recovery.issuer + "\n" +
+        "agent_id=" + recovery.agentId + "\n" +
+        "session_id=" + recovery.sessionId + "\n" +
+        "lease_generation=" + std::to_string(recovery.leaseGeneration) + "\n" +
+        "trigger_lease_generation=" + std::to_string(original.leaseGeneration) + "\n" +
+        "trigger_expires_at_ms=" + std::to_string(original.expiresAtMs) + "\n" +
+        "trigger_recovery_only=" + (original.recoveryOnly ? "1" : "0") + "\n" +
+        "trigger_fence_pending=" + (original.fencePending ? "1" : "0") + "\n" +
+        "trigger_fence_complete=" + (original.fenceComplete ? "1" : "0") + "\n" +
+        "trigger_fence_reason=" + original.fenceReason + "\n" +
+        "recovery_expires_at_ms=" + std::to_string(recovery.expiresAtMs);
+    // Cleanup must not wait behind a legitimate history verifier or an
+    // ordinary writer. The caller diagnoses a busy audit without changing the
+    // existing fence/remove result. Authorized requests keep blocking Append.
+    return AppendRecord("session-supervisor", payload, reason, RecordClass::Safety, false);
+}
+
 bool SessionSupervisorAuditJournal::AppendToolDecision(
     const ToolDecisionAuditRecord& record, std::string& reason)
 {
@@ -306,11 +336,18 @@ bool SessionSupervisorAuditJournal::AppendToolDecision(
 
 bool SessionSupervisorAuditJournal::AppendRecord(
     const std::string& recordType, const std::string& payload, std::string& reason,
-    RecordClass recordClass)
+    RecordClass recordClass, bool waitForLock)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+    if (waitForLock) lock.lock();
+    else if (!lock.try_lock()) { reason = "SUPERVISOR_AUDIT_BUSY"; return false; }
     if (m_fd < 0) { reason = "SUPERVISOR_AUDIT_NOT_INITIALIZED"; return false; }
-    if (::flock(m_fd, LOCK_EX) != 0) { reason = std::strerror(errno); return false; }
+    if (::flock(m_fd, LOCK_EX | (waitForLock ? 0 : LOCK_NB)) != 0)
+    {
+        reason = !waitForLock && (errno == EWOULDBLOCK || errno == EAGAIN) ?
+            "SUPERVISOR_AUDIT_BUSY" : std::strerror(errno);
+        return false;
+    }
 
     // Nanosecond stat fields can still share one filesystem timestamp tick.
     // Kernel change notification invalidates the cache even for same-size,

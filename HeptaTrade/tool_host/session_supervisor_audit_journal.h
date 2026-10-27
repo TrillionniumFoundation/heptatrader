@@ -7,6 +7,7 @@
 #include <string>
 
 struct stat;
+struct SessionSupervisorLeaseRecord;
 
 struct ToolDecisionAuditRecord
 {
@@ -54,6 +55,12 @@ public:
     bool Append(const SessionSupervisorRequest& request, const std::string& issuer,
                 const std::string& phase, const std::string& outcome,
                 std::uint64_t leaseGeneration, std::string& reason);
+    // Internal maintenance evidence only; this is not an HSS1 operation and
+    // grants no authority. Uses the existing journal and safety reserve, but
+    // never waits for a busy journal mutex or file lock before owner cleanup.
+    bool AppendPaperRecoveryFinalization(const SessionSupervisorLeaseRecord& original,
+                const SessionSupervisorLeaseRecord& recovery, const std::string& trigger,
+                const std::string& phase, const std::string& outcome, std::string& reason);
     // A shed observation returns true with OBSERVATION_SHED and a counter,
     // never a durable receipt. Mutation/unknown records are never shed.
     bool AppendToolDecision(const ToolDecisionAuditRecord& record, std::string& reason);
@@ -91,7 +98,8 @@ private:
                               std::uint64_t& records, std::string& reason);
     enum class RecordClass { Observation, Admission, Safety };
     bool AppendRecord(const std::string& recordType, const std::string& payload,
-                      std::string& reason, RecordClass recordClass);
+                      std::string& reason, RecordClass recordClass,
+                      bool waitForLock = true);
     bool ValidateOpenFile(FileState& state, std::string& reason) const;
 
     mutable std::mutex m_mutex;

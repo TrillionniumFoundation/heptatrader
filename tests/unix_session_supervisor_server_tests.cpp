@@ -4,6 +4,9 @@ using namespace hepta_supervisor_test;
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--lifecycle-audit-only")
+    { TestDurableAuditBindsOwnerBeforeMutation(); TestAutomaticPaperFinalizationAuditFailures();
+      TestUserZeroRecoverySurvivesRestartAndMaintenance(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--user-recovery-only")
     { TestUserZeroRecoverySurvivesRestartAndMaintenance(); TestConfiguredFxResumeKeepsExactPolicyScope();
       TestUserPaperResumeAuditsBeforeActivation(); TestRootRecoveryQueryIsDurableAndRestartClosed(); return 0; }
@@ -21,6 +24,8 @@ int main(int argc, char** argv)
     TestConfiguredFxResumeKeepsExactPolicyScope();
     TestCryptoAndFxSessionContractScopesRemainDisjoint();
     TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
+    TestDurableAuditBindsOwnerBeforeMutation();
+    TestAutomaticPaperFinalizationAuditFailures();
     TestFailedPaperActivationRetainsOriginalWorkDeadline();
     TestReapPagesAdvancePastUnexpiredOwners();
     TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();

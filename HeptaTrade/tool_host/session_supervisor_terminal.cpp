@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <fcntl.h>
 #include <cstring>
 #include <limits>
@@ -149,7 +150,9 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 bool UnixSessionSupervisorServer::FinalizePaperRecovery(
 	const SessionSupervisorLeaseRecord& record,
 	ExecutionOwnerAuditResult& ownerAudit,
-	std::string& reason)
+	std::string& reason,
+    const char* automaticTrigger,
+    const SessionSupervisorLeaseRecord* originalRecord)
 {
 	if (m_leaseStore == nullptr || record.templateId != "paper" ||
 		!record.recoveryOnly || record.paperFinalizationRequired ||
@@ -161,11 +164,36 @@ bool UnixSessionSupervisorServer::FinalizePaperRecovery(
 			"SESSION_PAPER_RECOVERY_RECORD_INVALID";
 		return false;
 	}
+    const auto audit = [&](const char* phase, const std::string& outcome) {
+        if (automaticTrigger == nullptr || originalRecord == nullptr || m_auditJournal == nullptr)
+            return;
+        std::string auditReason;
+        if (!m_auditJournal->AppendPaperRecoveryFinalization(
+                *originalRecord, record, automaticTrigger, phase, outcome, auditReason))
+        {
+            // Maintenance already owns a safety fence. Journal failure must
+            // neither prevent that fence/cleanup nor turn a committed removal
+            // into a retryable lease operation. Surface the actual outcome in
+            // the service journal without exposing either bearer.
+            std::fprintf(stderr,
+                "SUPERVISOR_AUTOMATIC_AUDIT_FAILED trigger=%s phase=%s outcome=%s "
+                "agent_id=%s session_id=%s lease_generation=%llu reason=%s\n",
+                automaticTrigger, phase, outcome.c_str(), record.agentId.c_str(),
+                record.sessionId.c_str(), static_cast<unsigned long long>(record.leaseGeneration),
+                auditReason.c_str());
+        }
+    };
+    audit("intent", "pending");
 	if (!m_controlPlane.FinalizeRecoveryOnlyOwner(
 			record.issuer, record.token, record.leaseGeneration,
 			record, ownerAudit, reason))
+	{
+        audit("outcome", "OWNER_FINALIZE_FAILED:" + reason);
 		return false;
-	return m_leaseStore->Remove(record.token, reason);
+	}
+    const bool removed = m_leaseStore->Remove(record.token, reason);
+    audit("outcome", removed ? "lease_removed" : "LEASE_REMOVE_FAILED:" + reason);
+    return removed;
 }
 
 bool UnixSessionSupervisorServer::HandlePaperFinalize(

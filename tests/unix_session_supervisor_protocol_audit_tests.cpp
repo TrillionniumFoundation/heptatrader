@@ -539,6 +539,85 @@ void TestSupervisorPeerCredentialAndLifecycle()
 	std::remove(journalPath.c_str());
 }
 
+void TestDurableAuditBindsOwnerBeforeMutation()
+{
+    const auto journalPath = TempPath("/tmp/hepta-audit-owner-oms-XXXXXX");
+    const auto socketPath = TempPath("/tmp/hepta-audit-owner-socket-XXXXXX");
+    const auto storePath = TempPath("/tmp/hepta-audit-owner-store-XXXXXX");
+    const auto auditPath = TempPath("/tmp/hepta-audit-owner-journal-XXXXXX");
+    const auto keyPath = TempKeyPath();
+    std::string reason;
+    SessionSupervisorLeaseStore store; assert(store.Init(storePath, keyPath, reason));
+    SessionSupervisorAuditJournal audit; assert(audit.Init(auditPath, reason));
+    OmsJournal journal; assert(journal.Init(journalPath));
+    ExecutionCoordinator execution(journal, ExecutionCoordinatorCallbacks());
+    TradingToolRegistry registry(execution); TradingToolHost host(registry);
+    TradingToolSessionControlPlane control(host,
+        [](const std::string&, const TradingToolHostSessionBinding&, std::string&) { return true; });
+    UnixSessionSupervisorServer server(control);
+    server.SetLeaseStore(&store); server.SetAuditJournal(&audit);
+    std::map<std::uint32_t, std::string> issuers;
+    issuers[::getuid()] = "test.audit-owner";
+    assert(server.Start(socketPath, issuers,
+        [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding, std::string&) {
+            binding.token = request.token; binding.peerUid = request.peerUid;
+            binding.session.executionContext.agentId = request.agentId;
+            binding.session.executionContext.sessionId = request.sessionId;
+            binding.session.executionContext.account = "SYNTHETIC";
+            binding.session.environment = "WATCH"; binding.executionDomain = "SIM-AUDIT";
+            binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+            return true;
+        }, reason, 4096, 1000));
+    SessionSupervisorRequest provision;
+    provision.templateId = "watch"; provision.token = "private-audit-owner-original-bearer";
+    provision.agentId = "bound-agent"; provision.sessionId = "bound-session";
+    provision.peerUid = ::getuid(); provision.ttlMs = 60000;
+    assert(Call(socketPath, provision).accepted);
+    SessionSupervisorRequest mutation;
+    mutation.operation = SessionSupervisorOperation::Renew;
+    mutation.token = provision.token; mutation.expectedGeneration = 1; mutation.ttlMs = 60000;
+    assert(mutation.agentId.empty() && mutation.sessionId.empty());
+    auto result = Call(socketPath, mutation);
+    assert(result.accepted && result.leaseGeneration == 2);
+    mutation.operation = SessionSupervisorOperation::Rotate;
+    mutation.expectedGeneration = 2; mutation.replacementToken = "private-audit-owner-replacement-bearer";
+    result = Call(socketPath, mutation);
+    assert(result.accepted && result.leaseGeneration == 3);
+    SessionSupervisorLeaseRecord record;
+    assert(!store.Get(provision.token, record));
+    mutation.operation = SessionSupervisorOperation::Revoke;
+    mutation.token = mutation.replacementToken; mutation.expectedGeneration = 3;
+    result = Call(socketPath, mutation);
+    assert(result.accepted && store.List().empty() && host.SessionCount() == 0);
+    const auto bound = AuditPayloads(auditPath);
+    assert(bound.size() == 8);
+    for (const auto& payload : bound)
+    {
+        assert(payload.find("agent_id=bound-agent\n") != std::string::npos);
+        assert(payload.find("session_id=bound-session\n") != std::string::npos);
+        assert(payload.find(provision.token) == std::string::npos);
+        assert(payload.find(mutation.replacementToken) == std::string::npos);
+    }
+    assert(bound[2].find("operation=renew\n") != std::string::npos);
+    assert(bound[4].find("operation=rotate\n") != std::string::npos);
+    assert(bound[6].find("operation=revoke\n") != std::string::npos);
+    // Missing durable authority cannot acquire an attribution from caller
+    // strings or from the last successful operation on this worker.
+    mutation.agentId = "caller-claimed-agent"; mutation.sessionId = "caller-claimed-session";
+    assert(!Call(socketPath, mutation).accepted);
+    const auto absent = AuditPayloads(auditPath);
+    assert(absent.size() == 10);
+    for (std::size_t i = 8; i < absent.size(); ++i)
+    {
+        assert(absent[i].find("agent_id=\nsession_id=\n") != std::string::npos);
+        assert(absent[i].find("caller-claimed") == std::string::npos);
+    }
+    server.Stop();
+    std::uint64_t records = 0;
+    assert(SessionSupervisorAuditJournal::Verify(auditPath, records, reason) && records == 10);
+    for (const auto& path : {journalPath, storePath, auditPath, keyPath}) std::remove(path.c_str());
+}
+
 // Real local HSS1 server and encrypted lease store, WATCH-only. There is
 // no Broker transport, PAPER session or order submission in this fixture.
 void TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation()
