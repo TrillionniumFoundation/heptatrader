@@ -200,6 +200,18 @@ target_link_libraries(hepta_sessionctl_owner_audit_tests PRIVATE
 hepta_register_core_test(hepta_sessionctl_owner_audit_tests)
 set_tests_properties(hepta_sessionctl_owner_audit_tests PROPERTIES TIMEOUT 30)
 
+add_executable(hepta_sessionctl_inactive_owner_audit_tests
+    sessionctl_inactive_owner_audit_tests.cpp
+    ../HeptaTrade/cli/hepta_sessionctl_inactive_owner_audit.cpp
+    ../HeptaTrade/tool_host/agent_os_runtime_config.cpp
+    ../HeptaTrade/tool_host/execution_gateway_runtime_config.cpp)
+target_link_libraries(hepta_sessionctl_inactive_owner_audit_tests PRIVATE
+    hepta_session_audit hepta_session_supervisor_core hepta_typed_tool_protocol
+    hepta_execution_client hepta_execution_server hepta_execution_core hepta_agent_execution_support
+    Threads::Threads OpenSSL::Crypto ZLIB::ZLIB)
+hepta_register_core_test(hepta_sessionctl_inactive_owner_audit_tests)
+set_tests_properties(hepta_sessionctl_inactive_owner_audit_tests PROPERTIES TIMEOUT 60)
+
 
 add_executable(hepta_agent_simulator_e2e_tests
     agent_simulator_e2e_tests.cpp)
@@ -371,7 +383,7 @@ add_executable(hepta_ib_full_runtime_recovery_tests
     ib_full_runtime_recovery_tests.cpp $<TARGET_OBJECTS:hepta_ib_test_runtime_objects>)
 target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
-    hepta_authoritative_state hepta_risk_engine)
+    hepta_authoritative_state hepta_risk_engine hepta_typed_tool_protocol)
 hepta_register_core_test(hepta_ib_full_runtime_recovery_tests)
 
 # Deliberate local operator target only: no ordinary ctest, no installation,

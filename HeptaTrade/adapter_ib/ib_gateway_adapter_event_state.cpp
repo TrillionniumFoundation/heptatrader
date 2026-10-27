@@ -505,6 +505,61 @@ HeptaIBGatewayAdapter::GetPhysicalCryptoPositionObservation() const {
     return result;
 }
 
+IBPhysicalCryptoPositionObservation
+HeptaIBGatewayAdapter::GetConfiguredCryptoPositionObservation() const {
+    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
+    IBPhysicalCryptoPositionObservation result;
+    const auto snapshot = BuildRecoveryAuditSnapshotLocked();
+    if (m_cfg.authoritativeCryptoContracts.empty() ||
+        !CanObserveConfiguredCryptoPositions(IsConnected(), IsEventStreamAuthoritative(),
+            m_connectionEpoch, snapshot)) return result;
+    for (const auto& configured : m_cfg.authoritativeCryptoContracts) {
+        const auto& expected = configured.second;
+        if (expected.secType != "CRYPTO" || expected.symbol.empty() ||
+            expected.currency.empty() || expected.exchange.empty()) return IBPhysicalCryptoPositionObservation();
+        double quantity = 0.0; std::size_t matches = 0;
+        // Do not use the ordinary resolver's exact-key fast path here: a
+        // canonical key plus another matching alias must remain ambiguous.
+        // Inspect the original Broker contracts, not a display-key spelling.
+        for (const auto& entry : m_authoritativePositionContracts) {
+            const auto& observed = entry.second;
+            // A CONID-keyed holding with partial identity, or conflicting
+            // metadata for this symbol/type/currency, is not evidence that
+            // the configured position is absent. Do not manufacture zero by
+            // skipping a holding that could be this configured contract.
+            const bool couldMatch =
+                (observed.symbol.empty() || observed.symbol == expected.symbol) &&
+                (observed.secType.empty() || observed.secType == expected.secType) &&
+                (observed.currency.empty() || observed.currency == expected.currency);
+            const bool same = observed.symbol == expected.symbol &&
+                observed.secType == expected.secType && observed.currency == expected.currency &&
+                observed.exchange == expected.exchange &&
+                (expected.primaryExchange.empty() || observed.primaryExchange == expected.primaryExchange) &&
+                (expected.lastTradeDateOrContractMonth.empty() || observed.lastTradeDateOrContractMonth == expected.lastTradeDateOrContractMonth) &&
+                (expected.right.empty() || observed.right == expected.right) &&
+                (expected.strike == 0.0 || observed.strike == expected.strike) &&
+                (expected.multiplier.empty() || observed.multiplier == expected.multiplier) &&
+                (expected.tradingClass.empty() || observed.tradingClass == expected.tradingClass) &&
+                (expected.localSymbol.empty() || observed.localSymbol == expected.localSymbol);
+            if ((entry.first == configured.first || couldMatch) && !same)
+                return IBPhysicalCryptoPositionObservation();
+            if (!same) continue;
+            const auto position = m_authoritativePositionQuantities.find(entry.first);
+            if (++matches != 1 || position == m_authoritativePositionQuantities.end() ||
+                !std::isfinite(position->second)) return IBPhysicalCryptoPositionObservation();
+            quantity = position->second;
+        }
+        result.positions[configured.first] = quantity;
+    }
+    result.complete = true;
+    result.account = m_cfg.account;
+    result.connectionEpoch = m_connectionEpoch;
+    result.positionGeneration = snapshot.risk.positionsGeneration;
+    result.activeGeneration = snapshot.active.generation;
+    result.terminalGeneration = snapshot.terminal.generation;
+    return result;
+}
+
 std::map<std::string, double>
 HeptaIBGatewayAdapter::GetAuthoritativePositionQuantities() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);

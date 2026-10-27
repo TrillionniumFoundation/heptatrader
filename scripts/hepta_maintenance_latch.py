@@ -30,7 +30,7 @@ ACTIONS = {"pause", "paper-on", "maintenance-hold", "maintenance-release",
 # Only reviewed, exact CLI machine codes may leave captured stderr. Never echo
 # a general uppercase token, arbitrary line, argv, token path or native stdout.
 NATIVE_READ_STDERR_CODES = frozenset({"DISCOVERY_LIST_REJECTED"})
-OPERATOR_CLIENT_HELPER_SHA256 = "ea638d70dde4221fe2b4e8ce3346bf7a979dfd2baa41116404cd2567116b4b01"
+OPERATOR_CLIENT_HELPER_SHA256 = "9b96f650b581dc82a2668eb9e67743a2826d6728731853a96800ffb653850889"
 OPERATOR_CLIENTS_REQUIRED = False  # A prepared operator copy fixes this to True.
 
 
@@ -346,11 +346,44 @@ def _health_identity(value: dict, owner: str) -> tuple:
     return epoch, generation
 
 
+def _inactive_crypto_proof(control: Path, services: dict, *, previous=None):
+    """Use the explicit native proof only for a reviewed, disabled crypto lane."""
+    clients = _operator_clients()
+    if clients is None or "inactive_owner_runtime" not in clients:
+        if previous is not None:
+            raise HoldError("INACTIVE_OWNER_RUNTIME_BINDING_DISAPPEARED")
+        return None
+    from hepta_verified_loader import load_verified_module
+    root = Path(__file__).resolve().parent
+    helper = load_verified_module("hepta_latch_inactive_owner", root / "hepta_inactive_owner.py",
+                                  clients["files"]["hepta_inactive_owner.py"])
+    try:
+        policy = helper.crypto_policy(_command)
+        if policy is None and previous is None:
+            return None
+        proof = helper.prove(control, services, clients, "held" if previous is None else "released",
+                             _command, previous=previous)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HoldError(str(error)) from error
+    if _operator_clients() != clients:
+        raise HoldError("OPERATOR_CLIENT_DECLARATION_CHANGED")
+    return proof
+
+
 def _resume_observation(control: Path) -> dict:
     before = _service_snapshot()
     identity = None
     observations = {}
     for owner in ("paper", "crypto"):
+        if owner == "crypto":
+            proof = _inactive_crypto_proof(control, before)
+            if proof is not None:
+                current = proof["native"]["execution"]
+                first = (current["service_epoch"], current["service_fencing_generation"])
+                if identity is None or first != identity:
+                    raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+                observations[owner] = proof
+                continue
         first = _health_identity(_native_payload(control, owner, "system.get_health"), owner)
         if identity is not None and first != identity:
             raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
@@ -387,6 +420,14 @@ def _verify_native_release(control: Path, observation: dict) -> dict:
                 observation["execution_service_fencing_generation"])
     owners = {}
     for owner in ("paper", "crypto"):
+        previous = observation["owners"].get(owner, {})
+        if owner == "crypto" and previous.get("state") == "INACTIVE_FENCED_ZERO_NO_LEASE":
+            proof = _inactive_crypto_proof(control, observation["services"], previous=previous)
+            current = proof["native"]["execution"]
+            if (current["service_epoch"], current["service_fencing_generation"]) != expected:
+                raise HoldError("NATIVE_INSTANCE_CHANGED:" + owner)
+            owners[owner] = proof
+            continue
         value = _native_payload(control, owner, "system.get_health")
         health = value.get("execution_authoritative_health")
         if (value.get("execution_mode") != "PAPER" or value.get("gateway_ready") is not True

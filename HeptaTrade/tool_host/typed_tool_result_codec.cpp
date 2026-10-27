@@ -29,6 +29,61 @@ public:
     {
     }
 
+    bool ParseFields(std::map<std::string, std::string>& fields)
+    {
+        SkipWhitespace();
+        if (!Consume('{')) return false;
+        SkipWhitespace();
+        if (Consume('}')) return true;
+        while (true)
+        {
+            std::string key;
+            if (!ParseString(key) || fields.count(key)) return false;
+            SkipWhitespace();
+            if (!Consume(':')) return false;
+            SkipWhitespace();
+            const std::size_t start = m_offset;
+            if (!ParseValue(1)) return false;
+            fields.emplace(std::move(key), m_json.substr(start, m_offset - start));
+            SkipWhitespace();
+            if (Consume('}')) return true;
+            if (!Consume(',')) return false;
+            SkipWhitespace();
+        }
+    }
+
+    bool ParseFieldsDocument(std::map<std::string, std::string>& fields)
+    {
+        if (m_json.empty() || m_json.size() > TradingToolWireLimits::MaximumResultEnvelopeBytes()
+            || !ParseFields(fields)) return false;
+        SkipWhitespace();
+        return m_offset == m_json.size();
+    }
+
+    bool ParseObjectArrayDocument(std::vector<std::map<std::string, std::string>>& objects)
+    {
+        if (m_json.empty() || m_json.size() > TradingToolWireLimits::MaximumResultEnvelopeBytes())
+            return false;
+        SkipWhitespace();
+        if (!Consume('[')) return false;
+        SkipWhitespace();
+        if (!Consume(']'))
+        {
+            while (true)
+            {
+                std::map<std::string, std::string> fields;
+                if (objects.size() >= 1024 || !ParseFields(fields)) return false;
+                objects.push_back(std::move(fields));
+                SkipWhitespace();
+                if (Consume(']')) break;
+                if (!Consume(',')) return false;
+                SkipWhitespace();
+            }
+        }
+        SkipWhitespace();
+        return m_offset == m_json.size();
+    }
+
     bool ParseEnvelope(TypedToolResultEnvelope& result)
     {
         if (m_json.empty() ||
@@ -524,6 +579,30 @@ bool TypedToolProtocol::DecodeResultEnvelope(const std::string& json,
     }
     reason.clear();
     return true;
+}
+
+bool TypedToolProtocol::DecodeJsonObjectFields(const std::string& json,
+    std::map<std::string, std::string>& fields, std::string& reason)
+{
+    std::map<std::string, std::string> parsed;
+    ResultJsonParser parser(json);
+    if (!parser.ParseFieldsDocument(parsed))
+    {
+        fields.clear(); reason = "INVALID_NATIVE_JSON_OBJECT"; return false;
+    }
+    fields = std::move(parsed); reason.clear(); return true;
+}
+
+bool TypedToolProtocol::DecodeJsonObjectArray(const std::string& json,
+    std::vector<std::map<std::string, std::string>>& objects, std::string& reason)
+{
+    std::vector<std::map<std::string, std::string>> parsed;
+    ResultJsonParser parser(json);
+    if (!parser.ParseObjectArrayDocument(parsed))
+    {
+        objects.clear(); reason = "INVALID_NATIVE_JSON_OBJECT_ARRAY"; return false;
+    }
+    objects = std::move(parsed); reason.clear(); return true;
 }
 
 

@@ -89,8 +89,8 @@ case "${1:-status}" in
   session)
     shift
     session_endpoint=(--socket "$runtime/supervisor.sock")
-    # owner-audit is a top-level mode with its own Execution runtime config.
-    [[ "${1:-}" != owner-audit ]] || session_endpoint=()
+    # Native owner audits are top-level modes with Execution runtime config.
+    case "${1:-}" in owner-audit|inactive-owner-audit) session_endpoint=() ;; esac
     if $operator_release_required || [[ -e "$operator_release/MANIFEST.json" || -L "$operator_release/MANIFEST.json" ]]; then
       exec /usr/bin/python3 -B "$operator_release/hepta_operator_clients.py" hepta-sessionctl "${session_endpoint[@]}" "$@"
     fi

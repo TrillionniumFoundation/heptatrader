@@ -641,6 +641,33 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                    << it->second << "}";
         }
         output << ']';
+        if (m_config.profile.UsesUserCrypto() &&
+            command.context.account == m_config.profile.account &&
+            command.context.executionDomain == "PAPER") {
+            const auto physical = m_adapter->GetConfiguredCryptoPositionObservation();
+            const bool configuredComplete = physical.complete && complete &&
+                !m_startupRecoveryReadOnly.load() &&
+                physical.positionGeneration == risk.positionsGeneration &&
+                physical.connectionEpoch == risk.connectionEpoch;
+            output << ",\"configured_crypto_position_observation\":{\"source\":\"IB_REQ_POSITIONS\","
+                   << "\"authoritative\":" << (configuredComplete ? "true" : "false")
+                   << ",\"scope\":\"CONFIGURED_PHYSICAL_CRYPTO\",\"mutation_authorized\":false"
+                   << ",\"account\":\"" << EscapeJson(physical.account) << "\""
+                   << ",\"execution_service_epoch\":\"" << EscapeJson(m_serviceIdentity.serviceEpoch) << "\""
+                   << ",\"connection_epoch\":" << physical.connectionEpoch
+                   << ",\"position_generation\":" << physical.positionGeneration
+                   << ",\"active_orders_generation\":" << physical.activeGeneration
+                   << ",\"terminal_generation\":" << physical.terminalGeneration
+                   << ",\"sampled_at_ms\":" << NowEpochMs()
+                   << ",\"positions\":[";
+            std::size_t configuredCount = 0;
+            for (const auto& position : physical.positions) {
+                if (configuredCount++) output << ',';
+                output << "{\"instrument\":\"" << EscapeJson(position.first)
+                       << "\",\"quantity\":" << position.second << '}';
+            }
+            output << "]}";
+        }
         if (m_config.profile.UsesUserCrypto() && m_startupFxCashMismatchReadOnly.load() &&
             command.context.account == m_config.profile.account &&
             command.context.executionDomain == "PAPER") {

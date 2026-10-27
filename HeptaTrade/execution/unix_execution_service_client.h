@@ -25,7 +25,9 @@ public:
                                         const std::set<std::uint32_t>&
                                             allowedServerUids =
                                                 std::set<std::uint32_t>(),
-                                        int responseTimeoutMs = 0);
+                                        int responseTimeoutMs = 0,
+                                        std::uint32_t expectedServerPid = 0,
+                                        std::uint64_t expectedServerStartTicks = 0);
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override;
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
@@ -113,6 +115,10 @@ public:
         std::chrono::steady_clock::time_point deadline);
 
 private:
+    // Optional process binding for operator observations. Every connection,
+    // including GetServiceIdentity, checks the real SO_PEERCRED pid before
+    // writing a request. Default callers retain the existing UID contract.
+    bool VerifyServerPeer(int fd, std::string& reason) const;
     ExecutionControlResult DispatchControlWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity,
@@ -131,6 +137,8 @@ private:
             std::chrono::steady_clock::time_point::max());
 
     std::string m_socketPath;
+    std::uint32_t m_expectedServerPid;
+    std::uint64_t m_expectedServerStartTicks;
     int m_ioTimeoutMs;
     int m_responseTimeoutMs;
     std::size_t m_maxResponseBytes;
