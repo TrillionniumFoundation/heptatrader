@@ -57,7 +57,7 @@ fn withdrawal_receipt(v:&Value)->R<a::DatasetWithdrawalSnapshotReceiptV1>{Ok(a::
  binding:dig(v,"binding")?,scope_digest:dig(v,"scope_digest")?,head_digest:dig(v,"head_digest")?,
  file_digest:dig(v,"file_digest")?,records:number(v,"records")?.try_into().map_err(|_|"RECORDS")?,
  encoded_bytes:number(v,"encoded_bytes")?.try_into().map_err(|_|"SIZE")?})}
-fn existing_owner(v:&Value,now:u64)->R<a::LearningArtifactOwnerService>{
+fn existing_owner_config(v:&Value,now:u64)->R<a::LearningArtifactOwnerServiceConfigV1>{
  let root=existing(text(v,"root")?)?;
  // open() may create directories; this adapter deliberately requires a fully
  // existing owner store and an independently retained signed CURRENT floor.
@@ -68,10 +68,16 @@ fn existing_owner(v:&Value,now:u64)->R<a::LearningArtifactOwnerService>{
  let withdrawals=a::read_dataset_withdrawal_snapshot(
   open(text(v,"withdrawal_snapshot_path")?,64*1024*1024)?,withdrawal_receipt(&v["withdrawal_receipt"])?
  ).map_err(|e|format!("{e:?}"))?;
- a::LearningArtifactOwnerService::open(a::LearningArtifactOwnerServiceConfigV1{
-  root,trust:owner(&v["owner_trust"])?,writer_lease:lease(&v["writer_lease"])?,
+ let trust=owner(&v["owner_trust"])?;let binding=dig(v,"storage_binding")?;
+ // Preserve OwnerService::open's configuration gates for the one-host preview.
+ if binding.is_zero()||withdrawals.scope_digest()!=Some(trust.withdrawal_scope_digest){return Err("LAYA_OWNER_CONFIGURATION".into())}
+ Ok(a::LearningArtifactOwnerServiceConfigV1{
+  root,trust,writer_lease:lease(&v["writer_lease"])?,
   required_current_head:Some(signed_head(&v["required_current_head"])?),withdrawal_registry:withdrawals,
-  storage_binding:dig(v,"storage_binding")?,now}).map_err(|e|format!("{e:?}"))
+  storage_binding:binding,now})
+}
+fn existing_owner(v:&Value,now:u64)->R<a::LearningArtifactOwnerService>{
+ a::LearningArtifactOwnerService::open(existing_owner_config(v,now)?).map_err(|e|format!("{e:?}"))
 }
 fn laya_payload(raw:&[u8])->R<Value>{
  if raw.len() as u64>LAYA_LIMIT{return Err("LAYA_PAYLOAD_BOUND".into())}
@@ -129,13 +135,65 @@ fn lifecycle(v:&Value,signed:&a::SignedArtifactSelectionV1,selection_digest:Dige
  }
  Ok((journal.records().len(),journal.head_digest()))
 }
+fn prepare_laya_publication(v:&Value,now:u64)->R<Value>{
+ let (m,raw)=actual_payload(v)?;
+ let config=existing_owner_config(&v["owner"],now)?;
+ let withdrawals=config.withdrawal_registry;
+ let binding=config.storage_binding;
+ // ONE existing writer fence; neither opening a second host nor calling
+ // host.begin_publication (which persists a checkpoint) is a preview.
+ let host=a::LearningArtifactOwnerHost::open_with_required_current_head(
+  &config.root,config.trust,config.writer_lease,
+  config.required_current_head.ok_or("LAYA_EXISTING_CURRENT_REQUIRED")?,now).map_err(|e|format!("{e:?}"))?;
+ let current=host.discover_current_head(now).map_err(|e|format!("{e:?}"))?.ok_or("LAYA_EXISTING_CURRENT_REQUIRED")?;
+ let registry=host.recover_current_registry(now).map_err(|e|format!("{e:?}"))?;
+ if !host.recovery_required_operations().map_err(|e|format!("{e:?}"))?.is_empty(){return Err("LAYA_PUBLICATION_RECOVERY_REQUIRED".into())}
+ let predecessor=dig(v,"expected_registry_predecessor_head")?;
+ if predecessor!=registry.snapshot().head_digest{return Err("LAYA_PUBLICATION_PREDECESSOR_CHANGED".into())}
+ let operation=id(v,"operation_id")?;
+ if host.recover_publication(&operation).map_err(|e|format!("{e:?}"))?.is_some(){return Err("LAYA_PUBLICATION_ALREADY_PREPARED_USE_ORIGINAL_REQUEST".into())}
+ let admission=a::admit_manifest_at_withdrawal_head_v3(&withdrawals,dig(v,"expected_withdrawal_head")?,m,now).map_err(|e|format!("{e:?}"))?;
+ let manifest_digest=admission.validated_manifest.manifest_digest;
+ let admission_digest=admission.admission_digest;
+ let scope=admission.withdrawal_scope_digest;let withdrawal_head=admission.withdrawal_head_digest;
+ let transaction=a::ArtifactPublicationTransactionV1::begin(operation.clone(),admission,&withdrawals,&registry,predecessor,now).map_err(|e|format!("{e:?}"))?;
+ let mut projected=registry.clone();
+ host.stage_compatibility_registration(&transaction,&mut projected,now).map_err(|e|format!("{e:?}"))?;
+ let generation=current.signed.witness.generation.next().map_err(|e|format!("{e:?}"))?;
+ let registry_id=current.signed.witness.registry_id.as_str();
+ let prospective=projected.snapshot().head_digest;
+ // These are unsigned identity fields only. The independent existing head
+ // signer supplies its credential/epoch/expiry and signature outside this CLI.
+ Ok(json!({"status":"CANONICAL_LAYA_PUBLICATION_PREVIEW_NOT_PUBLISHED","operation_id":operation.as_str(),
+  "admitted_at":now,"content_digest":Digest32::of_bytes(&raw).to_string(),"manifest_digest":manifest_digest.to_string(),
+  "admission_digest":admission_digest.to_string(),"intent_digest":transaction.intent().intent_digest.to_string(),
+  "owner_trust_digest":host.trust_digest().to_string(),"writer_lease_digest":host.writer_lease_digest().to_string(),
+  "withdrawal_scope_digest":scope.to_string(),"withdrawal_head_digest":withdrawal_head.to_string(),
+  "expected_registry_predecessor_head":predecessor.to_string(),"prospective_registry_head_digest":prospective.to_string(),
+  "registry_id":registry_id,"storage_binding":binding.to_string(),"publication_generation":generation.get(),
+  "unsigned_publication_head":{"withdrawal_scope_digest":scope.to_string(),"binding":binding.to_string(),
+   "witness":{"registry_id":registry_id,"generation":generation.get(),"head_digest":prospective.to_string(),
+    "predecessor_head_digest":predecessor.to_string(),"issued_at":now}},
+  "native_source_sha":PIN,"selection_verified":false,"canonical_agentd_admitted":false,
+  "product_consumed":false,"effect_authority":false,"published":false}))
+}
+fn publication_admission(registry:&a::DatasetWithdrawalRegistry,expected:Digest32,m:a::LearningArtifactManifestV2,anchor:u64,now:u64)->R<a::WithdrawalBoundArtifactAdmissionV3>{
+ // Freshness is ALWAYS checked against the actual dispatch clock. The
+ // signed head's issued_at only reconstructs the stable admission identity.
+ a::admit_manifest_at_withdrawal_head_v3(registry,expected,m.clone(),now).map_err(|e|format!("{e:?}"))?;
+ if anchor<m.created_at||anchor>now{return Err("LAYA_PUBLICATION_ADMISSION_ANCHOR".into())}
+ let admission=a::admit_manifest_at_withdrawal_head_v3(registry,expected,m,anchor).map_err(|e|format!("{e:?}"))?;
+ a::validate_artifact_publication_v3(&admission,registry,now).map_err(|e|format!("{e:?}"))?;
+ Ok(admission)
+}
 fn laya_dispatch(v:&Value,now:u64)->R<Value>{
  let op=text(v,"operation")?;
  if op=="publish_laya_model"{
   let (m,raw)=actual_payload(v)?;let mut service=existing_owner(&v["owner"],now)?;
-  let admission=a::admit_manifest_at_withdrawal_head_v3(service.withdrawal_registry(),dig(v,"expected_withdrawal_head")?,m,now).map_err(|e|format!("{e:?}"))?;
+  let publication_head=signed_head(&v["publication_head"])?;
+  let admission=publication_admission(service.withdrawal_registry(),dig(v,"expected_withdrawal_head")?,m,publication_head.witness.issued_at,now)?;
   let receipt=service.publish(a::LearningArtifactPublishRequestV1{operation_id:id(v,"operation_id")?,admission,payload:raw,
-   signed_current_head:signed_head(&v["publication_head"])?,expected_registry_predecessor_head:dig(v,"expected_registry_predecessor_head")?,now}).map_err(|e|format!("{e:?}"))?;
+   signed_current_head:publication_head,expected_registry_predecessor_head:dig(v,"expected_registry_predecessor_head")?,now}).map_err(|e|format!("{e:?}"))?;
   if receipt.authority.grants_any(){return Err("UNEXPECTED_AUTHORITY".into())}
   return Ok(json!({"status":"CANONICAL_LAYA_MODEL_PUBLISHED_NOT_SELECTED","operation_id":receipt.operation_id.as_str(),
    "admission_digest":receipt.admission_digest.to_string(),"registry_head_digest":receipt.registry_head_digest.to_string(),
@@ -195,6 +253,7 @@ fn dispatch(v:&Value)->R<Value>{
    if actual!=signed.content_digest{return Err("LOADED_BYTES_CHANGED".into())}
    Ok(json!({"status":"CANONICAL_SIGNED_SELECTION_VERIFIED_READ_ONLY","selection_digest":result.to_string(),"content_digest":actual.to_string(),"registry_head_digest":snap.head_digest.to_string(),"native_source_sha":PIN,"selection_verified":true,"canonical_agentd_admitted":false,"effect_authority":false}))
    },
+   "prepare_laya_publication"=>prepare_laya_publication(v,now),
    "publish_laya_model"|"load_laya_selected"|"revalidate_laya_output"=>laya_dispatch(v,now),
    _=>Err("UNKNOWN_OPERATION_NO_WRITE_ROUTE".into())
  }

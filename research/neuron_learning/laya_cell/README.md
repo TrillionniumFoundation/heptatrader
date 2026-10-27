@@ -154,6 +154,23 @@ exact plan's pinned `publication_requests` entry; consumption needs
 host-authenticated lifecycle evidence. These are external authority inputs;
 the code does not create owner roots, private signers or selector enrollment.
 
+Use `resident_owner.prepare_publication(config, prepared, operation_id=...,
+expected_registry_predecessor_head=..., expected_withdrawal_head=...)` before
+the independent owner signs a publication request. Its native
+`prepare_laya_publication` operation checks the existing fenced owner and
+returns `CANONICAL_LAYA_PUBLICATION_PREVIEW_NOT_PUBLISHED`: the canonical intent
+and unsigned next-head identity. It writes no publication checkpoint, payload,
+registry or CURRENT. The signer adds its own credential, epoch, expiry and
+signature, preserving the returned head fields, including `issued_at`, then
+pins the complete request in `publication_requests`. The preview grants no
+selection, product or trading authority and does not change handoff retries.
+
+Publication reconstructs the admission identity using that signed `issued_at`
+so a later CLI invocation produces the same digest. The actual system clock
+still validates the manifest, writer lease, signed head and withdrawal state;
+an expired request cannot regain validity through an older identity timestamp.
+A changed payload or frontier needs a fresh preview and external signature.
+
 Build and stage runtime/verifier bytes before deployment. The ordinary
 `install_resident.runtime_files` glob includes the owner modules, and the v8
 release builder refreshes their runtime pins. Complete immutable package and

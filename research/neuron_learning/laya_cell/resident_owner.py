@@ -116,6 +116,7 @@ def native(config, request):
           'CANONICAL_LAYA_VERIFIER_REJECTED')
     contracts = {
         'validate_candidate_manifest': ('CANONICAL_MANIFEST_VALID_NOT_OWNER_ADMITTED', False),
+        'prepare_laya_publication': ('CANONICAL_LAYA_PUBLICATION_PREVIEW_NOT_PUBLISHED', False),
         'publish_laya_model': ('CANONICAL_LAYA_MODEL_PUBLISHED_NOT_SELECTED', False),
         'load_laya_selected': ('CANONICAL_LAYA_SELECTED_BYTES_LOADED', True),
         'revalidate_laya_output': ('CANONICAL_LAYA_OUTPUT_REVALIDATED', True),
@@ -128,6 +129,38 @@ def native(config, request):
         _need(value.get('product_consumed') is False, 'NATIVE_VERIFIER_IS_NOT_MODEL_EXECUTION')
     if request['operation'] == 'validate_candidate_manifest':
         _need(_digest(value.get('manifest_digest')), 'CANONICAL_LAYA_RECEIPT_DIGEST')
+    if request['operation'] == 'prepare_laya_publication':
+        context = request.get('owner')
+        _need(isinstance(context, dict) and isinstance(context.get('owner_trust'), dict),
+              'CANONICAL_LAYA_PREVIEW_SCOPE')
+        trust = context['owner_trust']
+        admitted_at = value.get('admitted_at'); generation = value.get('publication_generation')
+        _need(value.get('published') is False and value.get('operation_id') == request['operation_id']
+              and type(admitted_at) is int and 0 <= admitted_at < 2**64
+              and type(generation) is int and 0 < generation < 2**64
+              and all(_digest(value.get(key)) for key in ('content_digest', 'manifest_digest',
+                  'admission_digest', 'intent_digest', 'owner_trust_digest', 'writer_lease_digest',
+                  'withdrawal_scope_digest', 'withdrawal_head_digest',
+                  'expected_registry_predecessor_head', 'prospective_registry_head_digest', 'storage_binding')),
+              'CANONICAL_LAYA_PREVIEW_RECEIPT')
+        _need(value['content_digest'] == request['manifest']['bytes_digest']
+              and value['withdrawal_scope_digest'] == trust.get('withdrawal_scope_digest')
+              and value['withdrawal_head_digest'] == request['expected_withdrawal_head']
+              and value['expected_registry_predecessor_head'] == request['expected_registry_predecessor_head']
+              and isinstance(value.get('registry_id'), str) and bool(value['registry_id'])
+              and value['registry_id'] == trust.get('registry_id')
+              and value['storage_binding'] == context.get('storage_binding'),
+              'CANONICAL_LAYA_PREVIEW_BINDING')
+        unsigned = {'withdrawal_scope_digest': value['withdrawal_scope_digest'],
+                    'binding': value['storage_binding'], 'witness': {
+                        'registry_id': value['registry_id'], 'generation': generation,
+                        'head_digest': value['prospective_registry_head_digest'],
+                        'predecessor_head_digest': value['expected_registry_predecessor_head'],
+                        'issued_at': admitted_at}}
+        # This unsigned identity cannot carry an adapter-created signer or
+        # signature. Canonical bytes also distinguish bools from integer fields.
+        _need(canonical(value.get('unsigned_publication_head')) == canonical(unsigned),
+              'CANONICAL_LAYA_PREVIEW_UNSIGNED_HEAD')
     if request['operation'] == 'publish_laya_model':
         _need(value.get('operation_id') == request['operation_id']
               and value.get('registry_head_digest') == request['publication_head']['witness']['head_digest']
@@ -407,6 +440,28 @@ def _prepared(prepared):
     expected = manifest_for(payload, raw, prepared['manifest']['producer_id'])
     _need(expected == prepared['manifest'], 'LAYA_PREPARED_MANIFEST_CHANGED')
     return payload
+
+
+def prepare_publication(config, prepared, *, operation_id,
+                        expected_registry_predecessor_head, expected_withdrawal_head):
+    """Return an unsigned native preview for the existing independent signer.
+
+    The native process supplies its actual admission time. This helper never
+    signs, publishes, writes another outbox record or changes handoff retries.
+    """
+    host = enrollment(config)
+    if host is None:
+        return _pending('AWAITING_CANONICAL_OWNER_ENROLLMENT')
+    _prepared(prepared)
+    _need(isinstance(operation_id, str) and bool(operation_id) and len(operation_id) <= 8192
+          and _digest(expected_registry_predecessor_head) and _digest(expected_withdrawal_head),
+          'LAYA_PUBLICATION_PREVIEW_CONTEXT')
+    result = native(config, {'operation': 'prepare_laya_publication', 'owner': host['owner'],
+        'manifest': prepared['manifest'], 'payload_path': prepared['payload_path'],
+        'operation_id': operation_id, 'expected_registry_predecessor_head': expected_registry_predecessor_head,
+        'expected_withdrawal_head': expected_withdrawal_head})
+    _need(result['manifest_digest'] == prepared['support_digest'], 'LAYA_PUBLICATION_PREVIEW_SUPPORT_BINDING')
+    return result
 
 
 def publish(config, prepared, publication_request):
