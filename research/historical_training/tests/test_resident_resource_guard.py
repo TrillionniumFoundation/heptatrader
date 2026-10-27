@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import Mock,patch
 from historical_training.common import EvidenceError
 from historical_training.resident_resource_guard import (GIB,SOURCE_RULE,RESOURCE_RULE,assess,
-    parse_meminfo,parse_full_psi,Lease,Gate,guarded_evaluator_class,guarded_trainer_class,assess_resources)
+    parse_meminfo,parse_full_psi,Lease,Gate,guarded_evaluator_class,guarded_trainer_class,assess_resources,
+    collect_resource_attribution,ATTRIBUTION_LIMITS)
 
 NOW=1791470000000
 
@@ -130,6 +131,10 @@ class LeaseTests(unittest.TestCase):
                 a.release();b.release()
 
 class StatusDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        attribution=patch('historical_training.resident_resource_guard.collect_resource_attribution',
+            return_value={'at_ms':NOW,'diagnostic_only':True,'partial':False})
+        attribution.start();self.addCleanup(attribution.stop)
     def test_calendar_wait_reports_persistent_hold_and_memory_pressure_without_source_refresh(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);hold=root/'manual.json'
@@ -178,6 +183,156 @@ class StatusDiagnosticTests(unittest.TestCase):
         self.assertIsNone(result['automatic_resume_expected'])
         self.assertEqual(result['resume_conditions_to_recheck'],
             ['HOST_FULL_MEMORY_PSI_PRESSURE','TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'])
+
+
+class ResourceAttributionTests(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        self.root=Path(temp.name);self.proc=self.root/'proc';self.cg=self.root/'cgroup'
+        self.proc.mkdir();self.cg.mkdir()
+        (self.proc/'meminfo').write_text('MemAvailable: 100 kB\nSReclaimable: 80 kB\nSwapFree: 1 kB\n')
+        (self.proc/'vmstat').write_text('pswpin 42\npgpgin 1000\n')
+    def process(self,pid,name,rss,group):
+        root=self.proc/str(pid);root.mkdir();fields=['R']+['0']*21
+        fields[11]='40';fields[12]='3';fields[19]=str(pid*100);fields[21]=str(rss)
+        (root/'stat').write_text(f'{pid} ({name}) '+ ' '.join(fields)+'\n')
+        (root/'cgroup').write_text('0::/'+group+'\n')
+        (root/'cmdline').write_text('SECRET_ARGUMENTS_NOT_FOR_DIAGNOSTICS')
+        (root/'environ').write_text('SECRET_ENV_NOT_FOR_DIAGNOSTICS')
+        return root
+    def group(self,name):
+        root=self.cg/name;root.mkdir(parents=True)
+        for file,raw in {'memory.current':'8192\n','memory.stat':'anon 4096\nslab_reclaimable 2048\n',
+            'memory.swap.current':'0\n','memory.max':'max\n',
+            'memory.events':'high 3\noom_kill 0\n',
+            'memory.pressure':'full avg10=1.2 avg60=0.3 avg300=0.2 total=100\n',
+            'cpu.stat':'usage_usec 1000\nnr_throttled 2\n',
+            'io.stat':'259:0 rbytes=4096 wbytes=32 rios=2 wios=1\n'}.items():
+            (root/file).write_text(raw)
+        return root
+    def sample(self,**overrides):
+        return collect_resource_attribution(proc_root=self.proc,cgroup_root=self.cg,
+            limits={**ATTRIBUTION_LIMITS,**overrides},clock=lambda:0.,observer_pid=10)
+    def test_concurrent_workload_and_kernel_pressure_are_observed_without_claiming_cause(self):
+        self.process(10,'model',2,'user.slice/model.service')
+        self.process(20,'du ) scan',20,'user.slice/audit.scope/child')
+        self.group('user.slice/model.service');self.group('user.slice/audit.scope')
+        result=self.sample()
+        self.assertFalse(result['partial']);self.assertEqual(result['processes'][0]['name'],'du ) scan')
+        self.assertEqual(result['processes'][0]['start_ticks'],2000)
+        self.assertEqual(result['processes'][0]['cgroup'],'user.slice/audit.scope')
+        self.assertEqual(result['cgroups'][0]['memory_full_psi']['avg60'],.3)
+        self.assertEqual(result['cgroups'][0]['io_stat']['rbytes'],4096)
+        self.assertEqual(result['host_memory_bytes']['SReclaimable'],80*1024)
+        self.assertEqual(result['host_vmstat']['pswpin'],42)
+        self.assertEqual(result['causality'],'NOT_ESTABLISHED')
+        self.assertEqual(result['counter_semantics'],'CUMULATIVE_NOT_RATES')
+        self.assertNotIn('SECRET',json.dumps(result))
+    def test_pid_and_cgroup_limits_keep_explicitly_partial_result(self):
+        for pid in (10,20,30):
+            name=f'user.slice/p{pid}.service';self.process(pid,'worker',pid,name);self.group(name)
+        result=self.sample(max_pids=2,max_cgroups=1)
+        self.assertEqual({row['pid'] for row in result['processes']},{10,30})
+        self.assertEqual(len(result['cgroups']),1);self.assertTrue(result['partial'])
+        self.assertEqual(result['cgroups'][0]['path'],'user.slice/p10.service')
+        self.assertEqual(result['cgroups'][0]['selection_reason'],'OBSERVER_CGROUP')
+        self.assertEqual(set(result['scan']['limits_reached']),{'PID_BUDGET','CGROUP_BUDGET'})
+    def test_small_swap_heavy_related_services_survive_rss_and_pid_cutoffs(self):
+        parent='user.slice/user-1000.slice/user@1000.service/app.slice/'
+        own=parent+'heptatrader-laya-trainer.service'
+        evaluator=parent+'heptatrader-laya-evaluator.service'
+        health=parent+'heptatrader-learning-source-health.service'
+        self.process(10,'guard',1,own);self.group(own);self.group(evaluator)
+        health_root=self.group(health)
+        (health_root/'memory.current').write_text(str(110*1024**2)+'\n')
+        (health_root/'memory.swap.current').write_text(str(285*1024**2)+'\n')
+        (health_root/'memory.max').write_text(str(512*1024**2)+'\n')
+        (health_root/'memory.events').write_text('max 12680\noom_kill 0\n')
+        # Source-health and evaluator have no PID in this bounded proc fixture;
+        # their fixed sibling cgroups must still be sampled before RSS ranking.
+        for pid in range(20,32):
+            group=parent+f'large-{pid}.scope'
+            self.process(pid,'large',1000,group);self.group(group)
+        for pid_limit in (512,4):
+            with self.subTest(pid_limit=pid_limit):
+                result=self.sample(max_pids=pid_limit)
+                groups={group['path']:group for group in result['cgroups']}
+                self.assertTrue({own,evaluator,health}.issubset(groups))
+                self.assertEqual(result['cgroups'][0]['path'],own)
+                self.assertEqual(groups[health]['selection_reason'],'RELATED_RESEARCH_UNIT')
+                self.assertEqual(groups[health]['observed_processes'],0)
+                self.assertEqual(groups[health]['memory_events']['max'],12680)
+                self.assertEqual(groups[health]['memory_swap_current_bytes'],285*1024**2)
+                self.assertEqual(groups[health]['memory_max'],str(512*1024**2))
+                self.assertLessEqual(len(groups),8)
+                self.assertLessEqual(result['scan']['pids_attempted'],pid_limit)
+    def test_observed_related_unit_in_another_slice_is_prioritized_without_guessing_duplicate(self):
+        manager='user.slice/user-1000.slice/user@1000.service/'
+        own=manager+'app.slice/heptatrader-laya-trainer.service'
+        evaluator=manager+'app.slice/heptatrader-laya-evaluator.service'
+        health=manager+'background.slice/heptatrader-learning-source-health.service'
+        self.process(10,'guard',1,own);self.group(own);self.group(evaluator)
+        self.process(20,'source',1,health);self.group(health)
+        result=self.sample();groups={group['path']:group for group in result['cgroups']}
+        self.assertFalse(result['partial'])
+        self.assertEqual(groups[health]['selection_reason'],'RELATED_RESEARCH_UNIT')
+        self.assertNotIn(manager+'app.slice/heptatrader-learning-source-health.service',groups)
+    def test_file_byte_and_cooperative_time_budgets_stop_reads(self):
+        self.process(10,'worker',2,'unit.service');self.group('unit.service')
+        byte_limited=self.sample(max_bytes=16)
+        self.assertLessEqual(byte_limited['scan']['bytes_read'],16)
+        self.assertIn('BYTE_BUDGET',byte_limited['scan']['limits_reached'])
+        files=self.sample(max_files=1)
+        self.assertEqual(files['scan']['files_attempted'],1)
+        self.assertIn('FILE_BUDGET',files['scan']['limits_reached'])
+        ticks=iter((0.,.1,.1))
+        timeout=collect_resource_attribution(proc_root=self.proc,cgroup_root=self.cg,
+            clock=lambda:next(ticks))
+        self.assertEqual(timeout['scan']['files_attempted'],0)
+        self.assertIn('TIME_BUDGET',timeout['scan']['limits_reached'])
+    def test_process_and_cgroup_symlinks_and_parent_traversal_are_not_followed(self):
+        outside=self.root/'outside';outside.mkdir()
+        (outside/'memory.current').write_text('987654321\n')
+        (self.proc/'99').symlink_to(outside,target_is_directory=True)
+        self.process(10,'worker',2,'escape.service')
+        (self.cg/'escape.service').symlink_to(outside,target_is_directory=True)
+        self.process(20,'worker',3,'../outside')
+        result=self.sample()
+        self.assertTrue(result['partial']);self.assertGreater(result['scan']['read_errors'],0)
+        self.assertNotIn('987654321',json.dumps(result))
+        self.assertIsNone(next(row for row in result['processes'] if row['pid']==20)['cgroup'])
+    def test_cached_denial_snapshot_is_bounded_in_age_and_does_not_change_admission(self):
+        gate=Gate({'state_root':str(self.root/'guard')},'evaluator')
+        with patch('historical_training.resident_resource_guard.collect_resource_attribution',
+                return_value={'at_ms':NOW,'diagnostic_only':True}) as sample, \
+                patch('historical_training.resident_resource_guard.time.monotonic',side_effect=[10.,11.,41.]):
+            reports=[]
+            for _ in range(3):
+                reports.append(gate.attach_resource_attribution({'admit_new_worker':False,
+                    'reasons':['HOST_FULL_MEMORY_PSI_PRESSURE']}))
+        self.assertEqual(sample.call_count,2)
+        self.assertEqual(reports[1]['workload_attribution']['sample_age_ms'],1000)
+        self.assertTrue(reports[1]['workload_attribution']['reused_sample'])
+        self.assertTrue(all(row['admit_new_worker'] is False for row in reports))
+        self.assertTrue(all(row['reasons']==['HOST_FULL_MEMORY_PSI_PRESSURE'] for row in reports))
+    def test_each_denied_window_keeps_its_subject_and_diagnostic_failure_does_not_admit(self):
+        gate=Gate({'state_root':str(self.root/'guard')},'evaluator')
+        with patch.object(gate,'check',side_effect=lambda:{'admit_new_worker':False,
+                'reasons':['HOST_FULL_MEMORY_PSI_PRESSURE']}), \
+                patch('historical_training.resident_resource_guard.collect_resource_attribution',
+                      side_effect=OSError('telemetry unavailable')):
+            self.assertFalse(gate.acquire({'plan':'frozen','slot':1}))
+            self.assertFalse(gate.acquire({'plan':'frozen','slot':2}))
+        records=[json.loads(p.read_text()) for p in (self.root/'guard/denials').glob('*.json')]
+        self.assertEqual({row['subject']['slot'] for row in records},{1,2})
+        for row in records:
+            self.assertFalse(row['decision']['admit_new_worker'])
+            self.assertEqual(row['decision']['workload_attribution']['error_class'],'OSError')
+        with patch('historical_training.resident_resource_guard.collect_resource_attribution',
+                side_effect=AssertionError('source/manual denials must stay cheap')):
+            for reason in ('OPERATOR_RESOURCE_HOLD','SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY'):
+                report=gate.attach_resource_attribution({'admit_new_worker':False,'reasons':[reason]})
+                self.assertNotIn('workload_attribution',report)
 
 class FakeGate:
     def __init__(self,allow):self.allow=allow;self.acquisitions=0;self.releases=0

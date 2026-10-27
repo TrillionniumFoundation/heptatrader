@@ -15,9 +15,11 @@ def read_quotes(config,now_ms,*,read_hints=None):
         read_hints.clear()
     if sha_file(Path(config['period_path']))!=config['period_sha256']:
         raise ContractError('RESIDENT_PERIOD_CHANGED')
-    from .source_archive import inventory
+    from .source_archive import inventory_index
     feed_paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
-    sealed,pages=inventory(config,feed_paths)
+    # The ledger is checked here; each sealed original's SHA and strict chain
+    # are checked together against that pin in its one source read below.
+    sealed,pages=inventory_index(config,feed_paths)
     # Completed probes remain separate immutable training sources.
     extra=[Path(x) for x in config.get('completed_history_sources',[])]
     if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
@@ -25,7 +27,8 @@ def read_quotes(config,now_ms,*,read_hints=None):
     if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
     quotes={};prefixes=list(pages)
     for i,path in enumerate(paths):
-        header,records,prefix=read_source(path)
+        header,records,prefix=(read_source(path,expected_prefix=sealed[i])
+                               if i<len(sealed) else read_source(path))
         if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
         if i<len(sealed):
             if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')

@@ -10,12 +10,23 @@ Core Runtime CI accepts PRs targeting **any** branch, including stacked PRs and
 Drafts. It checks the exact head without persisted checkout credentials.
 `scripts/ci_scope.py` selects native, Python core/source and learning feedback
 for both PRs and main pushes. Unknown/shared changes run every lane; verified
-Python leaves avoid an unrelated native rebuild. One runner executes the selected
-native, Python core/source and learning steps; skipped lanes do not allocate
+Python operators and ordinary Laya/historical package changes avoid an unrelated
+native rebuild. Both packages retain all Python core/source and learning tests,
+including newly discovered in-package tests, without per-file/version registration.
+Native adapters, owner/protocol/integrity boundaries, build/install inputs, new
+subpackages and deleted/retyped paths retain full feedback. Existing native-port
+consumers do not rebuild the unchanged implementation solely for importing it.
+One runner executes the selected native, Python core/source and learning steps;
+skipped lanes do not allocate
 separate jobs. Native and core/source feedback precedes Torch installation.
 No approval polling, reviewer-count requirement or cross-workflow receipt exists.
 The owner may integrate reviewed, tested source directly; a missing hosted run
 is reported as missing, never as PASS and never as a reason to wait indefinitely.
+
+Ordinary source validation checks the gap register's integrity and permits open
+release blockers. Only the tagged release workflow applies the current register's
+`--release-profile core` admission check. Unit fixtures continue to verify that
+an unresolved blocker rejects that release without blocking ordinary development.
 
 Workflow command fixtures locate behavioral steps by stable `id`, not the
 English display name or a shell-command substring. They execute inert command

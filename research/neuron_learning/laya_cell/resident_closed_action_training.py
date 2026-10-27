@@ -87,7 +87,7 @@ def _original_pins(root, rows, selected_ids):
         if key in directories:
             raise ContractError("CLOSED_ACTION_DUPLICATE_PLAN_ID")
         directories[key] = path.parent
-    files = {}
+    paths = set()
     for row in rows:
         if row["row_id"] not in selected_ids:
             continue
@@ -95,8 +95,26 @@ def _original_pins(root, rows, selected_ids):
         for name in ("plan.json", "qualification.json",
                      "prediction-%03d.json" % row["slot"],
                      "outcome-%03d.json" % row["slot"]):
-            path = directory / name
-            files[str(path)] = sha_file(path)
+            paths.add(directory / name)
+    # Each selected original still receives a complete SHA in this call. A
+    # shared plan/qualification needs one read, not one for every selected row.
+    # These versions only guard the just-read bytes during this call; no proof
+    # or file identity is reused by a later source/candidate verification.
+    def version(path):
+        value = path.stat()
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+                value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid,
+                value.st_nlink)
+    files = {}
+    versions = {}
+    for path in sorted(paths):
+        before = version(path)
+        files[str(path)] = sha_file(path)
+        if version(path) != before:
+            raise ContractError("CLOSED_ACTION_ORIGINAL_FILE_CHANGED")
+        versions[path] = before
+    if any(version(path) != before for path, before in versions.items()):
+        raise ContractError("CLOSED_ACTION_ORIGINAL_FILE_CHANGED")
     return [{"path": path, "sha256": sha} for path, sha in sorted(files.items())]
 
 

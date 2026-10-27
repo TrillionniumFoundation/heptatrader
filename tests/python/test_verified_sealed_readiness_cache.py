@@ -325,6 +325,45 @@ class RecentViewTests(unittest.TestCase):
             self.assertEqual(cache.retired_segments_reverified, 1)
             self.assertEqual(cache.counters()["cached_original_quote_records"], 0)
 
+    def test_large_old_population_keeps_only_latest_complete_row_and_exact_alias_tie(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p1] = [
+                {"t": stamp, "known_at_ms": stamp + 30, "bid": "1.100", "ask": "1.200",
+                 "receipt": "a" * 64, "source": "sealed"}
+                for stamp in range(1, 1001)]
+            last = h.rows[h.p1][-1]
+            h.rows[h.p2] = [
+                dict(last, bid=1.1, ask=1.2, known_at_ms=1020, source="earlier-tail"),
+                dict(last, known_at_ms=1020, source="equal-later-row"),
+                dict(last, known_at_ms=4000, source="not-yet-known")]
+            full, pins = VerifiedSealedReadinessCache().read_quotes(h.config, 3000)
+            cold = cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            hot = cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertEqual(cold, (full[-1:], pins))
+            self.assertEqual(hot, cold)
+            self.assertEqual(cold[0][0]["source"], "earlier-tail")
+            self.assertEqual(cold[0][0]["known_at_ms"], 1020)
+            # A fresh pass retains the conflict population, without retaining
+            # the thousand full historical quote dictionaries in its merge.
+            fresh = VerifiedSealedReadinessCache()
+            self.assertEqual(fresh.read_quotes(h.config, 3000, earliest_ms=1500), cold)
+            counters = fresh.counters()
+            self.assertEqual(counters["last_merge_historical_price_keys"], 1000)
+            self.assertEqual(counters["last_merge_complete_quote_rows"], 1)
+            self.assertEqual(counters["cached_original_quote_records"], 0)
+
+    def test_compact_history_still_refuses_conflict_far_before_latest_old_row(self):
+        tmp, h, cache = self.new()
+        with tmp, h.patched():
+            h.rows[h.p1] = [
+                {"t": stamp, "known_at_ms": stamp + 30, "bid": "1.1", "ask": "1.2"}
+                for stamp in range(1, 1001)]
+            h.rows[h.p2] = [{"t": 7, "known_at_ms": 2900, "bid": "1.09", "ask": "1.2"}]
+            with self.assertRaisesRegex(ContractError, "CROSS_SEGMENT_PRICE_CONFLICT"):
+                cache.read_quotes(h.config, 3000, earliest_ms=1500)
+            self.assertIsNone(cache._history)
+
     def test_retired_same_size_mutation_is_rejected_at_consumption(self):
         tmp, h, cache = self.new()
         with tmp, h.patched():

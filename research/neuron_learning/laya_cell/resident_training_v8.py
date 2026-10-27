@@ -76,7 +76,13 @@ def check_config(config):
     check_objective(config.get('objective'))
     from .resident_parent_calibration import check_config as check_comparator
     check_comparator(config)
-    price_input.for_candidate(read_json(Path(config['initial_parent_directory']) / 'candidate.json'))
+    parent_input = price_input.for_candidate(read_json(Path(config['initial_parent_directory']) / 'candidate.json'))
+    from .promotion import check_protocol_config
+    from .promotion_power import MATCHED_PARENT_PROTOCOL
+    if config.get('promotion_protocol') == MATCHED_PARENT_PROTOCOL:
+        check_protocol_config(config)
+        if parent_input != price_input.RAW:
+            raise ContractError('MATCHED_PARENT_SCREEN_INPUTS_NOT_ISOLATED')
     return closed_policy.check_config(_closed_config(config))
 
 
@@ -143,7 +149,8 @@ def verify_candidate(job, candidate):
 
 def configuration_for_release(config, runtime_directory, *, closed_action_source,
                                closed_action_source_sha256=None,
-                               parent_calibration_comparator=False):
+                               parent_calibration_comparator=False,
+                               matched_parent_screen=False):
     result = previous.configuration_for_release(config, runtime_directory,
         closed_action_source=closed_action_source,
         closed_action_source_sha256=closed_action_source_sha256)
@@ -154,10 +161,15 @@ def configuration_for_release(config, runtime_directory, *, closed_action_source
     for name in (*RUNTIME_PINS, *owner_runtime_pins, *advisory_runtime_pins):
         result['runtime_sha256'][name] = sha_file(runtime / name)
     result['objective'] = deepcopy(OBJECTIVE)
-    if parent_calibration_comparator:
+    if parent_calibration_comparator or matched_parent_screen:
         from . import resident_parent_calibration as comparator
         result[comparator.FIELD] = comparator.PROFILE
         for name in comparator.RUNTIME_PINS:
+            result['runtime_sha256'][name] = sha_file(runtime / name)
+    if matched_parent_screen:
+        from .promotion_power import MATCHED_PARENT_PROTOCOL
+        result['promotion_protocol'] = MATCHED_PARENT_PROTOCOL
+        for name in ('learn/laya_cell/promotion.py', 'learn/laya_cell/promotion_power.py'):
             result['runtime_sha256'][name] = sha_file(runtime / name)
     check_config(result)
     return result

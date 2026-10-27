@@ -138,10 +138,20 @@ No original source receipt, timer, missed window or model-efficacy claim changes
 ## Laya pinned resource Guard archive cutover
 
 See [LAYA_GUARD_ARCHIVE_CUTOVER_20261013.md](LAYA_GUARD_ARCHIVE_CUTOVER_20261013.md).
-Staging is create-only, without source deletion or production installation.
-The direct original runtime path inside the resource Guard, not PYTHONPATH
-alone, determines the actual Supervisor and Evaluator code. Preserve
-original data and deny trading/model promotion through any migration.
+This completed 2026-10-13 operation is historical. Its fixed-commit staging,
+fixed-canary activation and exact-job closeout helpers and paired tests are
+retired from the active source; their pinned paths, hashes and one-time outputs
+cannot describe a current deployment. The original reports and operational data
+remain retained. The full implementation and tests remain available at Git commit
+`15853b2d04a933cea779897779e621adc8daecc9`, for example:
+
+```sh
+git show 15853b2d04a933cea779897779e621adc8daecc9:research/historical_training/laya_guard_archive_activate.py
+```
+
+The original finding still applies: the direct runtime path inside the Guard,
+not PYTHONPATH alone, determines the actual Supervisor and Evaluator source.
+Preserve original data and deny trading/model promotion through any migration.
 
 ## Future-only original archive source optimization
 
@@ -405,7 +415,7 @@ Train V2 finite-price cohort decision-unit accounting is documented in
 multiple horizon returns from one quote are not independent financial trades.
 
 See [archive Guard activation](LAYA_GUARD_ARCHIVE_ACTIVATION_20261013.md)
-for the separately guarded, rollback-capable Laya research service cutover.
+for the retained 2026-10-13 cutover record; its one-time CLI is retired above.
 
 
 ## Future-only Native numeric fixed-score shadow proof

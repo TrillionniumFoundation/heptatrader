@@ -85,6 +85,27 @@ class SourceArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
             read_quotes(self.c,int(time.time()*1000))
 
+    def test_sealed_hash_and_chain_use_one_read_of_original_bytes(self):
+        self.archive()
+        paths={}
+        for path in self.feed.glob('segment-*/quotes.jsonl'):
+            version=path.stat();paths[version.st_dev,version.st_ino]=str(path)
+        counts={};original_read=os.read
+        def counted_read(fd,size):
+            value=original_read(fd,size)
+            version=os.fstat(fd);name=paths.get((version.st_dev,version.st_ino))
+            if name is not None:
+                counts[name]=counts.get(name,0)+len(value)
+            return value
+        with patch('laya_cell.shadow_source.os.read',counted_read):
+            rows,pins=read_quotes(self.c,int(time.time()*1000))
+        self.assertEqual(len(rows),166)
+        self.assertEqual(len(pins),11)
+        self.assertEqual(len(counts),166)
+        for name,count in counts.items():
+            # The one-byte LF probe precedes the single hash/strict decode pass.
+            self.assertEqual(count,Path(name).stat().st_size+1)
+
     def test_closed_source_appended_after_archival_rejected(self):
         self.archive()
         p=self.feed/'segment-00000000'/'quotes.jsonl'

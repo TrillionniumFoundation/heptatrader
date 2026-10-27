@@ -150,7 +150,21 @@ class RealClockAndManualHoldTests(unittest.TestCase):
             if path==guard:return config
             if path==status:return fixture[2]
             raise AssertionError("unexpected file")
+        # Source, clock and cgroup are already synthetic. Supply matching host
+        # inputs too, while exercising the real parsers and manual-hold lookup.
+        proc_inputs={
+            Path("/proc/meminfo"):"".join(f"{key}: {value//1024} kB\n"
+                                         for key,value in fixture[0].items()),
+            Path("/proc/pressure/memory"):
+                "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+                "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"}
+        proc_reads=[]
+        def proc_text(path,*args,**kwargs):
+            self.assertIn(path,proc_inputs)
+            proc_reads.append(path)
+            return proc_inputs[path]
         with ExitStack() as stack:
+            stack.enter_context(patch.object(Path,"read_text",proc_text))
             stack.enter_context(patch("train_v2.swapless_resource.sha",
                                       return_value=PERIOD))
             stack.enter_context(patch("train_v2.swapless_resource.read",
@@ -169,6 +183,7 @@ class RealClockAndManualHoldTests(unittest.TestCase):
                 side_effect=[NOW*1000000,(NOW+end_offset_ms)*1000000]))
             r=once(status,p,manual_hold,guard)
             self.assertEqual(refresh.call_args[0][-1],NOW)
+            self.assertCountEqual(proc_reads,proc_inputs)
         return r
 
     def test_expired_during_original_chain_verification_fails_closed(self):

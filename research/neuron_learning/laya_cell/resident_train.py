@@ -198,7 +198,10 @@ def run_job(c,*,old_learner_verified=False):
  eligible_rows=list(rows)
  expected_accounting=training_v4.ROW_ACCOUNTING_SCHEMA if episode else ROW_ACCOUNTING_SCHEMA
  if c.get('training_row_accounting_schema')!=expected_accounting:raise ContractError('ROW_ACCOUNTING_SCHEMA_REQUIRED')
- if episode:episode_policy.check_job(c)
+ # source_for_job performs the selected closed policy's complete job check
+ # before returning its verified originals. Do not repeat it immediately here.
+ # Freeze, candidate publication and the scheduler retain their own checks.
+ if episode and not v5:episode_policy.check_job(c)
  closed_source=training_policy.source_for_job(c) if v5 else None
  allowed=set(checked_ids(c['training_row_ids'],16));rows=[r for r in rows if row_id(r) in allowed]
  if len(rows)!=len(allowed) or {row_id(r) for r in rows}!=allowed:raise ContractError('TRAINING_ROW_SET_CHANGED')

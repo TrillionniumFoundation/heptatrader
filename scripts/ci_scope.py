@@ -3,9 +3,10 @@
 
 Repository docs, research READMEs and identified observation reports are prose.
 Other research contracts/configuration keep full feedback. Verified operator tools
-run every core/source Python test. Source monitoring, PnL watchers and price
-baselines also retain learning tests. Neither verified group needs a native rebuild.
-Any unknown, shared, CI, missing or renamed-outside-group path restores full CI.
+run every core/source Python test. Ordinary Python changes in the Laya and
+historical-research packages also run the complete learning lane. Package tests
+are discovered, not registered one filename/version at a time. Native interfaces,
+shared contracts, build/install inputs and uncertain changes retain full CI.
 """
 from __future__ import annotations
 import argparse
@@ -50,9 +51,10 @@ VERIFIED_PYTHON_GROUPS = (
 # exemption. Keep import checks local to the verified Python entry points.
 VERIFIED_HELPER_DEPENDENCIES = {
     "scripts/hepta_progress.py": (
-        frozenset(),
+        frozenset({"hepta_maintenance_latch"}),
         frozenset({"scripts/heptatrader-user", "cmake/HeptaInstall.cmake",
-                   "tests/python/test_cmake_install_behavior.py"}),
+                   "tests/python/test_cmake_install_behavior.py",
+                   "scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py"}),
     ),
     "scripts/hepta_verified_loader.py": (
         frozenset(),
@@ -107,124 +109,83 @@ def _helper_imports_known(root: Path, path: str, local_imports: frozenset[str]) 
             return False
     return True
 
-# These components consume existing native interfaces. Keep all Python/source
-# and learning integration tests while avoiding an unrelated native rebuild.
+# Python consumers of existing native interfaces keep every Python/source and
+# learning test. The package owns discovery; adding a normal module or test does
+# not require another CI filename registration. New subpackages remain unknown.
+PYTHON_LEARNING_PACKAGES = {
+    "research/neuron_learning/laya_cell": (
+        "scripts/run_python_tests.py",
+        "research/neuron_learning/laya_cell/native.py",
+        "research/neuron_learning/laya_cell/integrity.py",
+    ),
+    "research/historical_training": (
+        "scripts/run_python_tests.py", "tests/python/test_historical_training.py",
+        "research/historical_training/common.py",
+    ),
+}
+# These names describe shared interfaces/installation, not ordinary consumers.
+# Non-Python inputs (Rust/C++/CMake/lockfiles/configuration) never enter this rule.
+PYTHON_BOUNDARY = re.compile(
+    r"(?:^|_)(?:build|install|integrate|native|integrity|protocol|schema|"
+    r"contracts?|owner|egress|hip)(?:_|$)")
+
+# Cross-package operator/observer dependencies remain explicit. Research package
+# members and their in-package tests no longer need per-version lists here.
 VERIFIED_PYTHON_LEARNING_GROUPS = (
     frozenset({
-        "scripts/hepta_pnl_watch.py",
-        "scripts/hepta_change_watch.py",
-        "tests/python/test_pnl_watch_regression.py",
-        "tests/python/test_pnl_append_ledger.py",
-        "tests/python/test_pnl_bounded_view.py",
-        "tests/python/test_pnl_journal_cache.py",
+        "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
+        "tests/python/test_pnl_watch_regression.py", "tests/python/test_pnl_append_ledger.py",
+        "tests/python/test_pnl_bounded_view.py", "tests/python/test_pnl_journal_cache.py",
     }),
     frozenset({
-        "research/neuron_learning/laya_cell/source_readiness.py",
         "scripts/hepta_change_watch.py",
+        "research/neuron_learning/laya_cell/source_readiness.py",
         "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
         "research/neuron_learning/laya_cell/readiness_heartbeat.py",
         "tests/python/test_verified_sealed_readiness_cache.py",
         "tests/python/test_source_original_proof_cache.py",
-        "tests/python/test_fx_source_monitor_cadence.py",
-        "tests/python/test_readiness_heartbeat.py",
+        "tests/python/test_fx_source_monitor_cadence.py", "tests/python/test_readiness_heartbeat.py",
     }),
     frozenset({
-        "research/neuron_learning/laya_cell/resident_price_baselines.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
-    }),
-    # Resident orchestration consumes the existing Python/native interfaces.
-    # Keep numerical integration feedback and the default-core discovery entry
-    # for historical_training's nested guard tests.
-    frozenset({
-        "research/historical_training/resident_resource_guard.py",
-        "research/historical_training/tests/test_resident_resource_guard.py",
+        "tests/python/test_laya_training_cadence.py", "tests/python/test_laya_training_window.py",
         "research/neuron_learning/laya_cell/resident.py",
-        "research/neuron_learning/laya_cell/resident_store.py",
-        "research/neuron_learning/laya_cell/resident_plan_admission.py",
-        "research/neuron_learning/laya_cell/resident_plan_calendar.py",
-        "research/neuron_learning/laya_cell/tests/test_resident.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_plan_calendar.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_plan_admission.py",
-        "tests/python/test_historical_training.py",
-        "tests/python/test_laya_training_cadence.py",
-        "tests/python/test_laya_training_window.py",
     }),
-    # Successor evaluation reads frozen evidence; a native/interface or install
-    # change outside this bounded group still restores every CI lane.
     frozenset({
+        "tests/python/test_value_successor_evaluator.py",
         "research/historical_training/value_successor_evaluator.py",
         "research/historical_training/value_ledger_stream.py",
-        "tests/python/test_value_successor_evaluator.py",
     }),
-
     frozenset({
-        "research/historical_training/consumer_launch.py",
+        "tests/python/test_consumer_checkpoint.py", "tests/python/test_consumer_runtime_inventory.py",
         "research/historical_training/consumer_checkpoint.py",
+        "research/historical_training/consumer_launch.py",
         "research/historical_training/current100k.py",
         "research/historical_training/export_current100k.py",
-        "research/historical_training/install_consumer.py",
         "research/neuron_learning/laya_cell/financial_value_data.py",
-        "tests/python/test_consumer_checkpoint.py",
-        "tests/python/test_consumer_runtime_inventory.py",
-    }),
-    # These training objectives, calibration and input transforms stay within
-    # the existing Python learner. Native, shared integrity and installation
-    # changes outside this group still require the complete source build.
-    frozenset({
-        "research/neuron_learning/laya_cell/resident_training_v4.py",
-        "research/neuron_learning/laya_cell/resident_training_v5.py",
-        "research/neuron_learning/laya_cell/resident_training_v6.py",
-        "research/neuron_learning/laya_cell/resident_training_v7.py",
-        "research/neuron_learning/laya_cell/resident_training_v8.py",
-        "research/neuron_learning/laya_cell/resident_closed_action_training.py",
-        "research/neuron_learning/laya_cell/resident_price_calibration.py",
-        "research/neuron_learning/laya_cell/resident_price_calibration_v2.py",
-        "research/neuron_learning/laya_cell/resident_price_calibration_v3.py",
-        "research/neuron_learning/laya_cell/resident_parent_calibration.py",
-        "research/neuron_learning/laya_cell/resident_price_input.py",
-        "research/neuron_learning/laya_cell/resident_train.py",
-        "research/neuron_learning/laya_cell/resident.py",
-        "research/neuron_learning/laya_cell/resident_data.py",
-        "research/neuron_learning/laya_cell/resident_predict.py",
-        "research/neuron_learning/laya_cell/resident_row_accounting.py",
-        "research/neuron_learning/laya_cell/resident_store.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v4.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v5.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v6.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v6_integration.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v7.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v8.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_closed_action_optimizer.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_calibration.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_calibration_v2.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_calibration_v3.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_input_v8.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_cache.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_row_worker.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_lineage.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
-        "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
-    }),
-    frozenset({
-        "research/neuron_learning/laya_cell/financial_forward_source.py",
-        "research/neuron_learning/laya_cell/financial_forward_predict.py",
-        "research/neuron_learning/laya_cell/current100k_forward.py",
-        "research/neuron_learning/laya_cell/current100k_forward_worker.py",
-        "research/neuron_learning/laya_cell/financial_forward_evaluate.py",
-        "research/historical_training/value_timing_reconcile.py",
-        "research/historical_training/tests/test_current100k_forward_scope.py",
-        "research/historical_training/tests/test_value_front_snapshot.py",
-        "research/historical_training/tests/test_value_timing_reconcile.py",
-    }),
-    frozenset({
-        "research/historical_training/resident_comgr_cache.py",
-        "research/historical_training/resident_resource_guard.py",
-        "research/historical_training/tests/test_resident_comgr_cache.py",
-        "research/historical_training/tests/test_resident_cache_lifecycle.py",
-        "research/historical_training/tests/test_value_predictor_resource_gate.py",
     }),
 )
+
+
+def learning_package(path: str) -> str | None:
+    for package in PYTHON_LEARNING_PACKAGES:
+        if not path.startswith(package + "/"):
+            continue
+        relative = path[len(package) + 1:]
+        parts = relative.split("/")
+        if (not relative.endswith(".py") or
+                not (len(parts) == 1 or len(parts) == 2 and parts[0] == "tests"
+                     and parts[1].startswith("test_"))):
+            return None
+        stem = Path(parts[-1]).stem
+        if stem in {"__init__", "common"} or PYTHON_BOUNDARY.search(stem):
+            return None
+        return package
+    return None
+
+
+def regular_source(root: Path, path: str) -> bool:
+    candidate = root / path
+    return candidate.resolve() == candidate and candidate.is_file()
 
 
 def docs_only(paths: list[str]) -> bool:
@@ -253,34 +214,51 @@ def docs_only(paths: list[str]) -> bool:
 
 def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, bool]:
     full = {"run_native": True, "run_python": True, "run_learning": True}
-    if not paths:
+    if not paths or any(path.startswith("/") or "\\" in path or "\0" in path or
+                        any(part in {"", ".", ".."} for part in path.split("/"))
+                        for path in paths):
         return full
     if docs_only(paths):
         return {key: False for key in full}
+    root = root.resolve()
     changed = [path for path in paths if not docs_only([path])]
     groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS
     allowed = frozenset.union(*groups)
-    if not changed or any(path not in allowed for path in changed):
+    packages = {learning_package(path) for path in changed}
+    if any(path not in allowed and learning_package(path) is None for path in changed):
         return full
-    # A deleted/retyped tool or missing paired test must not qualify for exemption.
-    needed = set.union(*(set(group) for group in groups
-                         if group.intersection(changed)))
+    packages.discard(None)
+    needed = set(changed)
+    for group in groups:
+        if group.intersection(changed):
+            needed.update(group)
     helpers = [path for path in VERIFIED_HELPER_DEPENDENCIES if path in needed]
     for path in helpers:
         needed.update(VERIFIED_HELPER_DEPENDENCIES[path][1])
     try:
-        if any((root / path).is_symlink() or not (root / path).is_file() for path in needed):
+        for package in packages:
+            needed.update(PYTHON_LEARNING_PACKAGES[package])
+            tests = list((root / package / "tests").glob("test_*.py"))
+            if not tests:
+                return full
+            needed.update(str(path.relative_to(root)) for path in tests)
+        # Deleted/retyped paths and missing test discovery are uncertain. A Git
+        # rename includes both sides, so moving outside a package remains full.
+        if any(not regular_source(root, path) for path in needed):
             return full
+        for path in changed:
+            if path.endswith(".py"):
+                ast.parse((root / path).read_bytes(), filename=path)
         if any(not _helper_imports_known(root, path, VERIFIED_HELPER_DEPENDENCIES[path][0])
                for path in helpers):
             return full
-    except (OSError, SyntaxError, ValueError, UnicodeError):
+    except (OSError, SyntaxError, ValueError, UnicodeError, RuntimeError):
         return full
     return {
         "run_native": False,
         "run_python": True,
-        "run_learning": any(group.intersection(changed)
-                            for group in VERIFIED_PYTHON_LEARNING_GROUPS),
+        "run_learning": bool(packages) or any(group.intersection(changed)
+                                              for group in VERIFIED_PYTHON_LEARNING_GROUPS),
     }
 
 

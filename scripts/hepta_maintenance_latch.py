@@ -27,6 +27,9 @@ HOLD = "maintenance-hold.json"
 LOCK = "operator-maintenance.lock"
 ACTIONS = {"pause", "paper-on", "maintenance-hold", "maintenance-release",
            "maintenance-status", "native-startup-hold"}
+# Only reviewed, exact CLI machine codes may leave captured stderr. Never echo
+# a general uppercase token, arbitrary line, argv, token path or native stdout.
+NATIVE_READ_STDERR_CODES = frozenset({"DISCOVERY_LIST_REJECTED"})
 
 
 class HoldError(Exception):
@@ -204,6 +207,29 @@ def _command(argv: list[str]) -> str:
     return result.stdout
 
 
+def _native_read_failure(owner: str, method: str, cause: BaseException | None) -> str:
+    detail = "READ_FAILED"
+    if isinstance(cause, subprocess.TimeoutExpired):
+        detail = "TIMEOUT"
+    elif isinstance(cause, subprocess.CalledProcessError):
+        code = "UNCLASSIFIED"
+        raw = cause.stderr
+        if type(raw) is bytes and len(raw) <= 128:
+            try:
+                raw = raw.decode("ascii")
+            except UnicodeError:
+                raw = None
+        if type(raw) is str and len(raw) <= 128 and raw.strip() in NATIVE_READ_STDERR_CODES:
+            code = raw.strip()
+        rc = cause.returncode
+        bounded_rc = str(rc) if type(rc) is int and -255 <= rc <= 255 else "UNKNOWN"
+        detail = "rc=" + bounded_rc + ":" + code
+    elif isinstance(cause, OSError):
+        detail = "OS_ERROR"
+    # Both fields come from the fixed local resume sequence, not CLI overrides.
+    return "NATIVE_RESUME_READ_FAILED:" + owner + ":" + method + ":" + detail
+
+
 def _service_snapshot() -> dict:
     """Read the manager's loaded policy; disk drop-ins alone are insufficient."""
     result = {}
@@ -239,12 +265,15 @@ def _service_snapshot() -> dict:
 def _native_payload(control: Path, owner: str, method: str) -> dict:
     # No token, endpoint, path, or method overrides are exposed to the CLI.
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-    raw = _command([
-        str(home / ".local/share/heptatrader/current/bin/heptactl"),
-        "--socket", str(control.parent / "tools.sock"), "--token-file",
-        str(home / (".config/heptatrader/" + owner + ".token")),
-        "--io-timeout-ms", "4000", "--call-id", "hold-resume-" + uuid.uuid4().hex,
-        "call", method])
+    try:
+        raw = _command([
+            str(home / ".local/share/heptatrader/current/bin/heptactl"),
+            "--socket", str(control.parent / "tools.sock"), "--token-file",
+            str(home / (".config/heptatrader/" + owner + ".token")),
+            "--io-timeout-ms", "4000", "--call-id", "hold-resume-" + uuid.uuid4().hex,
+            "call", method])
+    except HoldError as exc:
+        raise HoldError(_native_read_failure(owner, method, exc.__cause__)) from exc
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeError) as exc:
@@ -358,11 +387,16 @@ def _verify_native_release(control: Path, observation: dict) -> dict:
     return owners
 
 
+def native_marker_origin(marker: bytes | None) -> str:
+    """Classify existing bytes; empty payloads do not identify their writer."""
+    return ("ABSENT" if marker is None else
+            "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
+            "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
+            "UNRECOGNIZED_INDEPENDENT_NATIVE")
+
+
 def _status(action: str, marker: bytes | None, record: dict | None, hold_raw: bytes | None = None) -> dict:
-    origin = ("ABSENT" if marker is None else
-              "INDEPENDENT_EMPTY_NATIVE" if marker == b"" else
-              "CLI_TAGGED_PAUSE" if marker == b"engaged\n" else
-              "UNRECOGNIZED_INDEPENDENT_NATIVE")
+    origin = native_marker_origin(marker)
     blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
     if marker is not None:
         blockers.append(origin)
@@ -374,6 +408,7 @@ def _status(action: str, marker: bytes | None, record: dict | None, hold_raw: by
     return {"schema": "heptatrader.maintenance-latch-status.v1", "action": action,
             "persistent_hold": record is not None, "native_kill_switch_engaged": marker is not None,
             "native_marker_origin": origin, "hold_details": details,
+            "native_marker_origin_evidence": "PAYLOAD_SHAPE_ONLY", "native_marker_creator_verified": False,
             "hold_sha256": None if hold_raw is None else hashlib.sha256(hold_raw).hexdigest(),
             "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
             "may_stop_driver": False, "broker_orders_sent": 0}

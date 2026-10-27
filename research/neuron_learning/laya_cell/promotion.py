@@ -7,7 +7,8 @@ A statistical PASS is a proposal, not a canonical Agentd acknowledgement.
 from __future__ import annotations
 import math
 from .integrity import ContractError,digest
-from .promotion_power import PROTOCOL,SCHEMA,planned_rule,checked_trial
+from .promotion_power import (PROTOCOL,SCHEMA,planned_rule,checked_trial,
+ MATCHED_PARENT_PROTOCOL,MATCHED_PARENT_SCHEMA,MATCHED_PARENT,POWER_PROTOCOLS)
 
 RULE={'schema':'heptatrader.laya-promotion-rule.v1','slots':12,'slot_spacing_ms':360000,
  'horizon_ms':300000,'input_grace_ms':60000,'min_observed':10,'max_censored':2,
@@ -19,8 +20,28 @@ RULE={'schema':'heptatrader.laya-promotion-rule.v1','slots':12,'slot_spacing_ms'
 
 def rule_for_trial(trial, protocol=None):
  if protocol is None:return dict(RULE)
- if protocol!=PROTOCOL:raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
- return planned_rule(RULE,trial)
+ return planned_rule(RULE,trial,protocol)
+
+
+def check_protocol_config(config):
+ protocol=config.get('promotion_protocol')
+ if protocol not in (None,*POWER_PROTOCOLS):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
+ if protocol!=MATCHED_PARENT_PROTOCOL:return
+ from . import resident_parent_calibration as comparison
+ if (config.get('objective',{}).get('schema')!='heptatrader.laya-resident-objective.v8'
+     or not comparison.check_config(config)):
+  raise ContractError('MATCHED_PARENT_SCREEN_REQUIRES_V8_COMPARATOR')
+ for name in ('learn/laya_cell/promotion.py','learn/laya_cell/promotion_power.py'):
+  value=config.get('runtime_sha256',{}).get(name)
+  if not isinstance(value,str) or len(value)!=64 or any(c not in '0123456789abcdef' for c in value):
+   raise ContractError('MATCHED_PARENT_SCREEN_RUNTIME_PINS_REQUIRED')
+
+
+def protocol_for_job(config,job):
+ """A new screen never upgrades an already frozen job on configuration reload."""
+ selected=config.get('promotion_protocol');original=job.get('promotion_protocol')
+ if MATCHED_PARENT_PROTOCOL in (selected,original):return original
+ return selected
 
 
 def validate_plan_rule(plan):
@@ -28,8 +49,21 @@ def validate_plan_rule(plan):
  validate_value_rule(plan)
  rule=plan.get('rule')
  if rule==RULE:return rule
- if not isinstance(rule,dict) or rule.get('schema')!=SCHEMA:raise ContractError('PROMOTION_RULE_CHANGED')
- if rule!=planned_rule(RULE,plan.get('trial')):raise ContractError('PROMOTION_RULE_CHANGED')
+ schemas={SCHEMA:PROTOCOL,MATCHED_PARENT_SCHEMA:MATCHED_PARENT_PROTOCOL}
+ if not isinstance(rule,dict) or rule.get('schema') not in schemas:raise ContractError('PROMOTION_RULE_CHANGED')
+ if rule!=planned_rule(RULE,plan.get('trial'),schemas[rule['schema']]):raise ContractError('PROMOTION_RULE_CHANGED')
+ if rule['schema']==MATCHED_PARENT_SCHEMA:
+  from . import resident_parent_calibration as comparison
+  from . import resident_price_input as price_input
+  if not comparison.enabled(plan) or validate_value_rule(plan) is None:
+   raise ContractError('MATCHED_PARENT_SCREEN_COMPARATORS_REQUIRED')
+  bound=comparison.validate(plan.get(comparison.RECORD),
+   price_baselines=plan.get('price_baselines'),parent_id=plan.get('parent_id'))
+  inputs=price_input.check_bindings(plan)
+  if (bound['parameter_update_isolated'] is not True
+      or inputs['price_input_objective']!=price_input.V8_OBJECTIVE_SCHEMA
+      or inputs['parent_price_input_profile']!=price_input.RAW):
+   raise ContractError('MATCHED_PARENT_SCREEN_INPUTS_NOT_ISOLATED')
  return rule
 
 
@@ -59,7 +93,12 @@ def assess(plan,results,now_ms):
   if r['prediction_available_ms']>=previous or r['trained_until_ms']>r['anchor_ms']:
    reasons.append('LOOKAHEAD')
   if r.get('path_gap') is not False:reasons.append('OBSERVED_PATH_NOT_COMPLETE')
- improvements=[r['parent_brier']-r['candidate_brier'] for r in observed]
+ score='calibrated_parent_brier' if rule.get('schema')==MATCHED_PARENT_SCHEMA else 'parent_brier'
+ improvements=[r[score]-r['candidate_brier'] for r in observed]
+ if rule.get('schema')==MATCHED_PARENT_SCHEMA:
+  raw=[r['parent_brier']-r['candidate_brier'] for r in observed]
+  base.update(primary_comparator=MATCHED_PARENT,parameter_update_isolated=True,
+   raw_parent_mean_brier_improvement=sum(raw)/len(raw) if raw else None)
  if not all(math.isfinite(x) for x in improvements):raise ContractError('NONFINITE_EVALUATION_LOSS')
  mean=sum(improvements)/len(improvements) if improvements else None
  if mean is None or mean<=rule['minimum_mean_brier_improvement']:reasons.append('NO_POSITIVE_MEAN_IMPROVEMENT')
@@ -67,7 +106,7 @@ def assess(plan,results,now_ms):
  p=sum(math.comb(n,k) for k in range(wins,n+1))/2**n if n else 1.0
  alpha=.05/(plan['trial']*(plan['trial']+1))
  if p>alpha:reasons.append('PAIRED_SIGN_EVIDENCE_INSUFFICIENT')
- if rule.get('schema')==SCHEMA:
+ if rule.get('schema') in (SCHEMA,MATCHED_PARENT_SCHEMA):
   if n<rule['min_non_ties']:reasons.append('INSUFFICIENT_NON_TIE_POWER_SAMPLE')
   base.update(evidence_scope=rule['output_scope'],sign_null_assumption=rule['sign_null_assumption'],
     unconditional_efficacy_proven=False,power_is_design_assumption=True)
