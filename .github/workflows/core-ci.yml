@@ -20,6 +20,11 @@ jobs:
     name: core-runtime-exact-head
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/build/compiler-cache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 512M
     steps:
     - name: Use bounded Git HTTP transport
       run: git config --global http.version HTTP/1.1
@@ -58,7 +63,7 @@ jobs:
       run: |
         set -euo pipefail
         packages=(cmake libssl-dev zlib1g-dev python3-yaml python3-numpy python3-cryptography)
-        if [[ "$RUN_NATIVE" != false ]]; then packages+=(ninja-build); fi
+        if [[ "$RUN_NATIVE" != false ]]; then packages+=(ninja-build ccache); fi
         if [[ "$RUN_LEARNING" != false ]]; then packages+=(python3-venv); fi
         # Prefer upstream HTTPS over the hosted Azure mirror, retaining fallbacks.
         sudo python3 - <<'PY'
@@ -88,13 +93,28 @@ jobs:
         apt_options=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1)
         sudo apt-get update "${apt_options[@]}"
         sudo apt-get install "${apt_options[@]}" --yes --no-install-recommends "${packages[@]}"
+    - name: Restore native compiler cache
+      id: native_cache
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+      continue-on-error: true
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: heptatrader-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+        restore-keys: |
+          heptatrader-ccache-v1-${{ runner.os }}-${{ runner.arch }}-
     - name: Native build and behavior tests
       id: native
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
       env:
         HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
         HEPTA_JOBS: '2'
+        CMAKE_CXX_COMPILER_LAUNCHER: ccache
       run: ./scripts/dev_core.sh
+    - name: Observe compiler cache reuse
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      continue-on-error: true
+      run: ccache --show-stats
     - name: Retain actual test diagnostics
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -114,6 +134,10 @@ jobs:
       id: python_source
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
       run: python3 scripts/run_python_tests.py --lane source
+    - name: Artifact packaging behavior
+      id: python_packaging
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      run: python3 scripts/run_python_tests.py --lane packaging
     - name: Cache CPU research dependency downloads
       id: learning_cache
       if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}

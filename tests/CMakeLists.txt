@@ -23,7 +23,11 @@ function(hepta_register_core_test target)
     else()
         target_compile_options(${target} PRIVATE -UNDEBUG)
     endif()
-    add_test(NAME ${target} COMMAND ${target})
+    if(ARGC GREATER 1)
+        add_test(NAME ${target} COMMAND ${ARGN})
+    else()
+        add_test(NAME ${target} COMMAND ${target})
+    endif()
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
     set(HEPTA_CORE_TEST_TARGETS "${HEPTA_CORE_TEST_TARGETS}" PARENT_SCOPE)
@@ -110,6 +114,17 @@ add_executable(hepta_oms_journal_schema_v4_tests
     oms_journal_schema_v4_tests.cpp)
 target_link_libraries(hepta_oms_journal_schema_v4_tests PRIVATE hepta_oms_journal)
 hepta_register_core_test(hepta_oms_journal_schema_v4_tests)
+
+# The allocator-fault sweep runs the same production objects as the ordinary
+# coordinator tests, including the selected sanitizer profile. Its Python
+# wrapper owns only a disposable journal directory, never another compiler.
+add_executable(hepta_recovery_projection_faults recovery_projection_faults.cpp)
+target_link_libraries(hepta_recovery_projection_faults PRIVATE hepta_execution_core)
+hepta_register_core_test(hepta_recovery_projection_faults
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/recovery_projection_runner.py
+    $<TARGET_FILE:hepta_recovery_projection_faults>)
+set_tests_properties(hepta_recovery_projection_faults PROPERTIES
+    LABELS "core;storage" TIMEOUT 90)
 
 add_executable(hepta_trading_tool_registry_tests
     trading_tool_registry_tests.cpp)

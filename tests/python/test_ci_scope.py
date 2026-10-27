@@ -133,6 +133,15 @@ class ComponentScopeTests(unittest.TestCase):
     LAYA = "research/neuron_learning/laya_cell"
     HISTORY = "research/historical_training"
 
+    def test_artifact_builder_inputs_keep_native_and_packaging_feedback(self):
+        # Packaging CI follows run_native conservatively: all build/controller,
+        # verifier and fixture edits must retain it, even with a research edit.
+        for path in ("scripts/build_ib_candidate_artifact.sh",
+                     "scripts/verify_ib_candidate_artifact.py",
+                     "tests/python/test_ib_candidate_builder.py",
+                     "tests/ib_connection_probe_behavior.py"):
+            self.assertEqual(scope_for_paths([path]), self.FULL)
+
     def setUp(self):
         box = tempfile.TemporaryDirectory()
         self.addCleanup(box.cleanup)
@@ -178,6 +187,33 @@ class ComponentScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((root / path).is_file())
                 self.assertEqual(scope_for_paths([path], root), self.PYTHON_LEARNING)
+
+    def test_actual_report_and_accounting_imports_keep_python_behavior_feedback(self):
+        root = Path(__file__).resolve().parents[2]
+        for path in ("scripts/hepta_oms_report.py", "scripts/hepta_account_pnl.py",
+                     "scripts/hepta_pnl_accounting.py",
+                     "tests/python/test_oms_operational_report.py",
+                     "tests/python/test_account_pnl.py", "tests/python/test_pnl_accounting.py"):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], root), self.PYTHON)
+                self.assertEqual(scope_for_paths([path, "HeptaTrade/oms_journal.cpp"], root), self.FULL)
+
+    def test_reporting_unknown_import_or_missing_consumer_test_restores_full(self):
+        reports = ("scripts/hepta_oms_report.py", "scripts/hepta_account_pnl.py",
+                   "scripts/hepta_pnl_accounting.py")
+        for report in reports:
+            for source in ("import torch\n", "import new_native_adapter\n",
+                           "from . import unknown\n", "def invalid(\n"):
+                self.write(report, source)
+                with self.subTest(report=report, source=source):
+                    self.assertEqual(scope_for_paths([report], self.root), self.FULL)
+            self.write(report)
+            self.assertEqual(scope_for_paths([report], self.root), self.PYTHON)
+        self.write("scripts/hepta_account_pnl.py", "from hepta_pnl_accounting import amount\n")
+        self.assertEqual(scope_for_paths(["scripts/hepta_account_pnl.py"], self.root), self.PYTHON)
+        (self.root / "tests/python/test_paper_driver.py").unlink()
+        for report in reports:
+            self.assertEqual(scope_for_paths([report], self.root), self.FULL)
 
     def test_native_shared_and_install_boundaries_still_run_every_lane(self):
         for path in (

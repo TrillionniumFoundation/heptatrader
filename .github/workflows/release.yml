@@ -38,6 +38,9 @@ jobs:
         run: ./scripts/dev_core.sh
       - name: Verify deployment unit contract
         run: python3 scripts/check_systemd_units.py
+      - name: Artifact packaging behavior
+        id: packaging_tests
+        run: python3 scripts/run_python_tests.py --lane packaging
       - name: Accept this release artifact through the canonical installed lifecycle
         id: accept-core-artifact
         env:

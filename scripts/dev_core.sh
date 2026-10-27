@@ -21,7 +21,8 @@ case "${1:---core}" in
     targets=(hepta_session_supervisor_lease_store_migration_tests
              hepta_audit_journal_lifecycle_tests
              hepta_oms_journal_durability_tests
-             hepta_oms_journal_schema_v4_tests)
+             hepta_oms_journal_schema_v4_tests
+             hepta_recovery_projection_faults)
     expression="$(IFS='|'; printf '%s' "${targets[*]}")"
     selection=(-R "^($expression)$")
     ;;

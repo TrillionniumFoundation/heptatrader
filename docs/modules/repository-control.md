@@ -13,6 +13,9 @@ for both PRs and main pushes. Unknown/shared changes run every lane; verified
 Python operators and ordinary Laya/historical package changes avoid an unrelated
 native rebuild. Both packages retain all Python core/source and learning tests,
 including newly discovered in-package tests, without per-file/version registration.
+The OMS report and account-PnL/accounting modules retain full Python core/source
+tests; their stdlib/local-accounting import boundaries and consumer fixtures
+are checked before avoiding unrelated native or learning work.
 Native adapters, owner/protocol/integrity boundaries, build/install inputs, new
 subpackages and deleted/retyped paths retain full feedback. Existing native-port
 consumers do not rebuild the unchanged implementation solely for importing it.
@@ -54,6 +57,9 @@ selected lane rather than becoming a requirement for unrelated core development.
 The pure wire-format tests remain in core. All discovered files have exactly one
 partition; no skipped selected test is reported as complete acceptance.
 `--lane learning` also discovers every in-package Laya fixture automatically.
+`--lane packaging` retains the IB artifact-controller fake-engine failure tests.
+Core CI runs it for native/build/unknown changes and tagged releases run it
+explicitly; verified Python-only reporting/research changes do not repeat it.
 Native conformance classes and the native verifier method are explicitly routed
 to external; their CPU siblings, including registration recovery and calendar
 admission, run in learning without a separately maintained module allowlist.
