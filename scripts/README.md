@@ -50,6 +50,61 @@ Historical source remains at `6cdae64e04a92d234852aa14670a54538e9e5f9c`.
 
 Do not add developer-specific paths, untrusted `eval`/`source`, Broker secrets, encoded transfer payloads, an alternate order path, or a branch-mutating remediation carrier to this directory.
 
+The IB candidate builder still requires an explicit operator-selected
+`HEPTA_IB_BUILDER_IMAGE=repository@sha256:digest`, SDK root, and dedicated
+size-bounded quota mount. There is no built-in image default or image allowlist.
+The selected image, external SDK, and resulting artifact do not grant Broker
+authority. The retired workflow's repository variable remains an owner input,
+not an automatically discovered local default.
+
+For local use, `HEPTA_IB_BUILD_ENGINE` accepts `docker` (default) or rootless
+`podman`. `HEPTA_IB_BUILD_PULL_POLICY=never` requires that exact digest already
+exist locally and performs no registry pull; the default `always` preserves the
+original explicit pull. Docker Hub's omitted registry/namespace form is compared
+to the actual inspected RepoDigests, whose original bytes are retained. Every
+container run uses the inspected immutable image ID with `--pull=never`.
+Podman uses `keep-id`; the existing toolchain probe checks the actual UID/GID
+and writable `/build/home`. Missing required tools fail before configure.
+The image-selected `CXX`/`CC` executables (fallback `c++`/`cc` when unset) are
+checked and recorded by path/hash/version, then fixed in configure arguments
+and environment. Compiler values containing whitespace/flags are rejected
+without evaluation; use separate compiler flag settings instead.
+`HEPTA_IB_BUILD_PODMAN_USER_MAPPING=owner-root` is an explicit rootless-Podman
+compatibility option for owner-only FUSE mounts. It maps container UID/GID 0 to
+the non-root calling host user via `keep-id:uid=0,gid=0`; it does not map host
+UID 0. Docker and host-root callers are refused in this mode. The default is
+`keep-id`. Both host and container IDs and the actual namespace option are
+recorded, while network/capability/NNP/resource restrictions stay unchanged.
+No global FUSE configuration or `allow_other` is required by this option.
+
+`HEPTA_IB_BUILD_JOBS` defaults to 2 and controls both CMake parallel settings.
+`HEPTA_IB_BUILD_PHASE_TIMEOUT_SECONDS` defaults to 2700 for each engine metadata, pull, toolchain,
+configure, and compile invocation; this is not a whole-build deadline. Create, inspect and attach share one monotonic phase deadline; cleanup has
+separate short command limits. The synthetic loopback behavior probe retains
+one shared 60-second bound. Containers are created stopped with private CID
+files and random names/labels, verified against the image and creation intent,
+then started. A zero client status is insufficient: fresh same-proof container
+state must be exited with integer exit code 0, no OOM kill, and no runtime error.
+Timeout/exit cleans only proven owned containers. Workspace removal
+requires confirmed absence; uncertain ownership/cleanup keeps it and fails.
+Missing CID publication is recovered only by exact-name identity proof or a
+successful bounded name/operation listing proving absence.
+Existing memory, CPU, pids, nproc, tmpfs, and writable-filesystem settings retain
+their original names and defaults; engine selection does not bypass them.
+
+The TAR remains exactly `manifest.json` plus `hepta-ib-executiond`. The external
+`.diagnostics` directory retains the hash-bound builder/resource/toolchain,
+actual image identity, and SDK/BID inventory metadata. Completed builds fail
+if this provenance cannot be retained; a failed build keeps its original exit
+status. These metadata files contain no source/SDK bytes or credentials.
+Optionally supply `HEPTA_IB_BUILD_DEPENDENCY_RECEIPT` for the existing owner
+receipt containing `sdk_version`, upstream `sdk_sha256`, and `bid_sha256`.
+The actual BID digest must match. The release version and upstream archive hash
+remain explicitly owner-declared; without a separate archive-to-source check,
+this does not attest that mapping or invent a BID release version. Missing
+version evidence is reported as unknown. SDK snapshot integrity and the native
+Decimal ABI test remain required regardless of that optional metadata.
+
 ## Incremental native development
 
 Use the existing CMake targets and CTest names; no second registration system is
