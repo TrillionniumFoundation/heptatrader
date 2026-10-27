@@ -30,6 +30,8 @@ class PythonTestPartitionTests(unittest.TestCase):
             "test_ib_workflow_interfaces.py", "test_qualification_trust_boundary.py",
             "test_heptadll_migration_state.py", "test_heptadll_source_disposition.py"})
         self.assertFalse(groups["legacy"] & groups["core"])
+        self.assertEqual(groups["packaging"], {"test_ib_candidate_builder.py"})
+        self.assertFalse(groups["packaging"] & groups["core"])
         self.assertTrue({
             "test_protocol_reference.py", "test_build_ownership.py",
             "test_risk_legacy_compatibility_boundary.py", "test_legacy_runtime_boundary.py",
@@ -40,11 +42,12 @@ class PythonTestPartitionTests(unittest.TestCase):
             root = Path(directory)
             tests = root / "tests/python"
             tests.mkdir(parents=True)
-            for name in runner.SOURCE_TESTS | runner.LEARNING_TESTS | runner.INSTALL_TESTS | runner.PROCESS_TESTS | runner.EXTERNAL_TESTS | runner.LEGACY_TESTS | {"test_new_behavior.py"}:
+            for name in runner.SOURCE_TESTS | runner.LEARNING_TESTS | runner.INSTALL_TESTS | runner.PACKAGING_TESTS | runner.PROCESS_TESTS | runner.EXTERNAL_TESTS | runner.LEGACY_TESTS | {"test_new_behavior.py"}:
                 (tests / name).touch()
             groups = runner.partitions(root)
             self.assertIn("test_new_behavior.py", groups["core"])
             self.assertNotIn("test_cmake_install_integration.py", groups["core"])
+            self.assertNotIn("test_ib_candidate_builder.py", groups["core"])
 
     def test_missing_explicit_test_and_overlapping_ownership_fail(self) -> None:
         with mock.patch.object(runner, "INSTALL_TESTS", runner.SOURCE_TESTS):

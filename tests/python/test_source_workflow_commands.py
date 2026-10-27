@@ -224,7 +224,8 @@ class FocusedDevelopmentRunnerTests(unittest.TestCase):
         targets = calls[1][calls[1].index("--target") + 1:calls[1].index("--parallel")]
         self.assertEqual(set(targets), {
             "hepta_session_supervisor_lease_store_migration_tests", "hepta_audit_journal_lifecycle_tests",
-            "hepta_oms_journal_durability_tests", "hepta_oms_journal_schema_v4_tests"})
+            "hepta_oms_journal_durability_tests", "hepta_oms_journal_schema_v4_tests",
+            "hepta_recovery_projection_faults"})
         expression = calls[2][calls[2].index("-R") + 1]
         for target in targets:
             self.assertIsNotNone(re.fullmatch(expression, target))

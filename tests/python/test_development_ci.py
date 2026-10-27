@@ -82,14 +82,14 @@ class DevelopmentCiTests(unittest.TestCase):
                 "    output.write(json.dumps(call) + '\\n')\n")
             (scripts / "run_python_tests.py").write_text(
                 "import argparse\nparser = argparse.ArgumentParser()\n"
-                "parser.add_argument('--lane', choices=('core', 'source', 'learning'), required=True)\n"
+                "parser.add_argument('--lane', choices=('core', 'source', 'packaging', 'learning'), required=True)\n"
                 "call = ['python', parser.parse_args().lane]\n" + record)
             native = scripts / "dev_core.sh"
             native.write_text("#!" + sys.executable + "\nimport sys\n"
                               "assert sys.argv[1:] in ([], ['--core'])\n"
                               "call = ['native']\n" + record)
             native.chmod(0o755)
-            for step_id in ("native", "python_core", "python_source", "python_learning"):
+            for step_id in ("native", "python_core", "python_source", "python_packaging", "python_learning"):
                 _, _, step = self.step(ci, step_id)
                 result = subprocess.run(
                     [shutil.which("bash"), "-e", "-o", "pipefail", "-c", step["run"]],
@@ -98,7 +98,7 @@ class DevelopmentCiTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual([json.loads(line) for line in log.read_text().splitlines()],
                              [["native"], ["python", "core"], ["python", "source"],
-                              ["python", "learning"]])
+                              ["python", "packaging"], ["python", "learning"]])
 
     def test_behavior_steps_follow_scope_and_real_dependencies(self):
         ci = workflow("core-ci.yml")
@@ -114,7 +114,8 @@ class DevelopmentCiTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", scope)
         self.assertIn("github.event.pull_request.base.sha", scope["env"]["BASE_SHA"])
         lanes = (("native", "run_native"), ("python_core", "run_python"),
-                 ("python_source", "run_python"), ("python_learning", "run_learning"),
+                 ("python_source", "run_python"), ("python_packaging", "run_native"),
+                 ("python_learning", "run_learning"),
                  ("learning_install", "run_learning"), ("docs", None), ("whitespace", None))
         for step_id, flag in lanes:
             _, _, step = self.step(ci, step_id)
@@ -359,16 +360,41 @@ class DevelopmentCiTests(unittest.TestCase):
                             self.assertEqual(int(options["Acquire::Retries"]), 1)
                         packages = ["cmake", "libssl-dev", "zlib1g-dev", "python3-yaml", "python3-numpy", "python3-cryptography"]
                         if native == "true":
-                            packages.append("ninja-build")
+                            packages.extend(("ninja-build", "ccache"))
                         if learning == "true":
                             packages.append("python3-venv")
                         install = [arg for arg in calls[1][1:] if arg != "-o" and not arg.startswith("Acquire::")]
-                        self.assertEqual(install, ["--yes", "--no-install-recommends", *packages])
+                        self.assertIn("--yes", install)
+                        self.assertIn("--no-install-recommends", install)
+                        installed_packages = [arg for arg in install if not arg.startswith("-")]
+                        self.assertTrue(set(packages).issubset(installed_packages))
+                        if native == "false":
+                            self.assertNotIn("ccache", installed_packages)
             for failure, commands in (("update", ["update"]), ("install", ["update", "install"])):
                 with self.subTest(failure=failure):
                     result, calls = run(failure=failure)
                     self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
                     self.assertEqual([call[0] for call in calls], commands)
+
+    def test_native_cache_does_not_replace_current_build_or_behavior(self):
+        ci = workflow("core-ci.yml")
+        _, job, cache = self.step(ci, "native_cache")
+        _, _, native = self.step(ci, "native")
+        self.assertEqual(cache.get("continue-on-error"), "true")
+        self.assertEqual(native["env"].get("CMAKE_CXX_COMPILER_LAUNCHER"), "ccache")
+        self.assertEqual(job["env"].get("CCACHE_COMPILERCHECK"), "content")
+        self.assertNotIn("cache-hit", native["if"])
+        self.assertLess(job["steps"].index(cache), job["steps"].index(native))
+        context = {f"steps.{step['id']}.{field}": "success"
+                   for step in job["steps"] if "id" in step
+                   for field in ("outcome", "conclusion")}
+        context.update({f"steps.scope.outputs.{flag}": "true"
+                        for flag in ("run_native", "run_python", "run_learning")})
+        for cache_outcome in ("success", "failure", "skipped"):
+            values = {**context, "steps.native_cache.outcome": cache_outcome,
+                      "steps.native_cache.conclusion": cache_outcome}
+            self.assertTrue(condition_value(native, values, succeeded=False))
+            self.assertFalse(condition_value(native, values, cancelled=True))
 
     def test_learning_cache_cannot_replace_installation_or_tests(self):
         ci = workflow("core-ci.yml")
@@ -468,6 +494,7 @@ else:
             self.assertTrue(ci["jobs"])
         release = workflow("release.yml")
         self.assertIn("tags", release["on"]["push"])
+        self.step(release, "packaging_tests")
         self.assertIn("scripts/accept_core_release.py", str(release))
         self.assertTrue((ROOT / ".github/retired-workflows/ib-paper-qualification.yml").is_file())
         for retired in ("ib-paper-qualification.yml", "self-hosted-ib-availability.yml"):

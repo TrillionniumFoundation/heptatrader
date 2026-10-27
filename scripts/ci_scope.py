@@ -45,11 +45,35 @@ VERIFIED_PYTHON_GROUPS = (
                "tests/python/test_decision_attribution_installer_readonly.py",
                "tests/python/test_decision_attribution_prepare_upgrade.py"}),
     frozenset({"scripts/hepta_progress.py", "tests/python/test_hepta_progress.py"}),
+    # The OMS report is stdlib-only; account PnL consumes only the pure Python
+    # accounting module. Keep the complete core/source behavior suites, and
+    # recheck this actual import boundary before omitting native/learning work.
+    frozenset({"scripts/hepta_oms_report.py", "tests/python/test_oms_operational_report.py",
+               "scripts/hepta_account_pnl.py", "tests/python/test_account_pnl.py",
+               "scripts/hepta_pnl_accounting.py", "tests/python/test_pnl_accounting.py"}),
 )
 
 # These support files must exist, but changing one does not inherit the helper's
 # exemption. Keep import checks local to the verified Python entry points.
 VERIFIED_HELPER_DEPENDENCIES = {
+    "scripts/hepta_oms_report.py": (
+        frozenset(),
+        frozenset({"tests/python/test_oms_operational_report.py",
+                   "tests/python/test_oms_capacity.py",
+                   "tests/python/test_oms_observation_faults.py"}),
+    ),
+    "scripts/hepta_account_pnl.py": (
+        frozenset({"hepta_pnl_accounting"}),
+        frozenset({"scripts/hepta_pnl_accounting.py",
+                   "tests/python/test_account_pnl.py", "tests/python/test_pnl_accounting.py"}),
+    ),
+    "scripts/hepta_pnl_accounting.py": (
+        frozenset(),
+        frozenset({"scripts/hepta_account_pnl.py", "scripts/hepta_pnl_report.py",
+                   "scripts/heptatrader_paper_driver.py",
+                   "tests/python/test_pnl_accounting.py", "tests/python/test_pnl_cli.py",
+                   "tests/python/test_paper_driver.py"}),
+    ),
     "scripts/hepta_progress.py": (
         frozenset({"hepta_maintenance_latch"}),
         frozenset({"scripts/heptatrader-user", "cmake/HeptaInstall.cmake",
