@@ -1,5 +1,6 @@
 """Changed originals and lost observation invalidate local sealed SHA reuse."""
 import hashlib
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import tempfile
@@ -9,6 +10,10 @@ from unittest.mock import patch
 from laya_cell.integrity import ContractError
 from laya_cell.verified_sealed_readiness_cache import VerifiedSealedReadinessCache
 from laya_cell import verified_sealed_readiness_cache as module
+from laya_cell import shadow_source
+from laya_cell.integrity import canonical, digest, sha_file
+from laya_cell.resident_data import read_quotes
+from laya_cell.source_archive import inventory_index, seal
 from hepta_change_watch import _ChangeWatch
 from test_verified_sealed_readiness_cache import RecentHarness
 
@@ -146,6 +151,216 @@ class OriginalProofTests(unittest.TestCase):
         for value in (True, -1, 1, 59999, 3600001):
             with self.subTest(value=value), self.assertRaisesRegex(ContractError, "READINESS_ORIGINAL_PROOF_INTERVAL"):
                 VerifiedSealedReadinessCache(original_proof_reverify_ms=value)
+
+
+class ColdOriginalReadTests(unittest.TestCase):
+    """Count actual reads of strict JSONL sources, not mocked decoder calls."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        period = root / "period.json"
+        period.write_bytes(b'{}')
+        period.chmod(0o600)
+        self.feed = root / "feed"
+        self.feed.mkdir(mode=0o700)
+        self.config = {"period_path": str(period), "period_sha256": sha_file(period),
+                       "feed_directory": str(self.feed), "completed_history_sources": []}
+        self.start = 1791330000000
+        self.now = self.start + 40000
+        self.earliest = self.now - 5000
+        self.paths = []
+        for index in range(40):
+            path = self.feed / f"segment-{index:08d}" / "quotes.jsonl"
+            path.parent.mkdir(mode=0o700)
+            self.source(path, self.start + index * 1000, ended=index < 39)
+            self.paths.append(path)
+        seal(self.config, 8)
+        self.pins, self.pages = inventory_index(self.config, self.paths)
+        self.assertEqual(len(self.pins), 32)
+        self.clock = [100.0]
+
+    def source(self, path, stamp, *, ended=True, stale=False, period_sha=None):
+        header = {"source": "IB_TOOL_GATEWAY", "instrument": "EUR.USD",
+                  "execution_domain": "PAPER", "period_sha256": period_sha or self.config["period_sha256"],
+                  "write_operations_allowed": [], "broker_orders_sent": 0}
+        quote = {"instrument": "EUR.USD", "source": "IB", "authoritative": True,
+                 "stale": stale, "bid": "1.12500", "ask": "1.12502",
+                 "observed_at_ms": stamp, "stale_after_ms": stamp + 5000,
+                 "subscription_id": "CPU_FIXTURE", "subscription_state": "active"}
+        entries = [("HEADER", header, stamp), ("QUOTE", quote, stamp + 1)]
+        if ended:
+            entries.append(("END", {}, stamp + 2))
+        previous, lines = "0" * 64, []
+        for sequence, (kind, data, at) in enumerate(entries):
+            body = {"schema": shadow_source.SCHEMA, "sequence": sequence, "previous": previous,
+                    "kind": kind, "data": data, "at_ms": at}
+            previous = digest(body)
+            lines.append(canonical({**body, "sha256": previous}))
+        raw = b"\n".join(lines) + b"\n"
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        return {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                "chain_head": previous, "uncommitted_tail_bytes": 0, "ended": ended}
+
+    def cache(self, interval=60000):
+        cache = VerifiedSealedReadinessCache(original_proof_reverify_ms=interval)
+        self.addCleanup(cache.close)
+        if cache._proofs is not None:
+            cache._proofs._clock = lambda: self.clock[0]
+        return cache
+
+    def read(self, cache):
+        return cache.read_quotes(self.config, self.now, earliest_ms=self.earliest)
+
+    @contextmanager
+    def reads(self):
+        identities = {(path.stat().st_dev, path.stat().st_ino): str(path) for path in self.paths}
+        counts = {str(path): 0 for path in self.paths}
+        original = os.read
+        def counted(fd, size):
+            raw = original(fd, size)
+            version = os.fstat(fd)
+            name = identities.get((version.st_dev, version.st_ino))
+            if name is not None:
+                counts[name] += len(raw)
+            return raw
+        with patch.object(os, "read", counted):
+            yield counts
+
+    def test_cold_miss_hashes_and_parses_each_sealed_original_in_one_read(self):
+        rows, prefixes = read_quotes(self.config, self.now)
+        expected = ([row for row in rows if row["t"] >= self.earliest], prefixes)
+        for interval in (0, 60000):
+            with self.subTest(interval=interval):
+                cache = self.cache(interval)
+                with self.reads() as counts:
+                    self.assertEqual(self.read(cache), expected)
+                for path in self.paths:
+                    # The final-LF probe adds one byte to the single full pass.
+                    self.assertEqual(counts[str(path)], path.stat().st_size + 1)
+                stats = cache.counters()
+                self.assertEqual(stats["sealed_decoding_strictly_parsed"], 32)
+                self.assertEqual(stats["retired_decoded_segments"], 32)
+                if interval:
+                    self.assertEqual(stats["original_proof_full_sha256_verifications"], 32)
+                    self.assertEqual(stats["original_proof_full_sha256_bytes"], sum(p["bytes"] for p in self.pins))
+
+    def test_warm_and_expired_proof_keep_their_original_raw_read_paths(self):
+        cache = self.cache()
+        cold = self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        with self.reads() as warm:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(warm[pin["path"]], 0)
+        self.clock[0] = 160.0
+        with self.reads() as expired:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(expired[pin["path"]], pin["bytes"])
+        stats = cache.counters()
+        self.assertEqual(stats["sealed_decoding_strictly_parsed"], 32)
+        self.assertEqual(stats["original_proof_reuses"], 32)
+        self.assertEqual(stats["original_proof_full_sha256_verifications"], 64)
+
+    def test_wrong_pin_hash_wins_over_strict_parser_failure(self):
+        cache = self.cache()
+        path = self.paths[0]
+        with path.open("r+b") as stream:
+            stream.write(b"X")
+        with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_HASH_CHANGED"):
+            self.read(cache)
+        self.assertIsNone(cache._history)
+        self.assertEqual(cache._proofs._entries, {})
+
+    def test_period_and_archive_metadata_fail_closed_in_a_cold_miss(self):
+        for interval in (0, 60000):
+            for wrong_period, wrong_head in ((True, False), (False, True), (True, True)):
+                with self.subTest(interval=interval, period=wrong_period, head=wrong_head):
+                    cache = self.cache(interval)
+                    pin = self.source(self.paths[0], self.start,
+                                      period_sha="1" * 64 if wrong_period else None)
+                    if wrong_head:
+                        pin["chain_head"] = "f" * 64
+                    pins = [pin, *self.pins[1:]]
+                    # The existing sealed reader rejects a mismatched pin
+                    # before returning a header, including a doubly bad input.
+                    error = "SOURCE_ARCHIVE_PREFIX_CHANGED" if wrong_head else "CROSS_PERIOD_FEED"
+                    with patch.object(module, "inventory_index", return_value=(pins, self.pages)):
+                        with self.assertRaisesRegex(ContractError, error):
+                            self.read(cache)
+                    self.assertIsNone(cache._history)
+                    if interval:
+                        self.assertEqual(cache._proofs._entries, {})
+
+    def test_decode_eviction_preserves_proof_counters_and_deadline(self):
+        cache = self.cache()
+        self.earliest = self.start
+        with patch.object(module, "MAX_CACHED_QUOTE_RECORDS", 0):
+            cold = self.read(cache)
+            if not cache._proofs._watch.available:
+                self.skipTest("continuous file change observation unavailable")
+            self.clock[0] = 159.999
+            self.assertEqual(self.read(cache), cold)
+            stats = cache.counters()
+            self.assertEqual(stats["original_proof_reuses"], 32)
+            self.assertEqual(stats["original_proof_full_sha256_verifications"], 32)
+            self.assertEqual(cache._proofs._full_at, 100.0)
+            self.clock[0] = 160.0
+            self.assertEqual(self.read(cache), cold)
+            self.assertEqual(cache.counters()["original_proof_full_sha256_verifications"], 64)
+
+    def test_matching_hash_keeps_semantic_rejection_without_a_new_proof(self):
+        cache = self.cache()
+        pin = self.source(self.paths[0], self.start, stale=True)
+        pins = [pin, *self.pins[1:]]
+        with patch.object(module, "inventory_index", return_value=(pins, self.pages)):
+            with self.assertRaisesRegex(ValueError, "QUOTE_AUTHORITY"):
+                self.read(cache)
+        self.assertIsNone(cache._history)
+        self.assertEqual(cache._proofs._entries, {})
+
+    def test_atomic_replacement_during_cold_decode_cannot_publish_a_proof(self):
+        cache = self.cache()
+        original = shadow_source._decode_source
+        path = self.paths[0]
+        raw = path.read_bytes()
+        def replace_after_decode(lines, now):
+            result = original(lines, now)
+            replacement = path.with_name("replacement")
+            replacement.write_bytes(raw)
+            replacement.chmod(0o600)
+            replacement.replace(path)
+            return result
+        with patch.object(shadow_source, "_decode_source", replace_after_decode):
+            with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_FILE_CHANGED"):
+                self.read(cache)
+        self.assertIsNone(cache._history)
+        self.assertEqual(cache._proofs._entries, {})
+
+    def test_cold_read_still_checks_watch_and_identities_at_finish(self):
+        cache = self.cache()
+        original = cache._merge
+        path = self.paths[0]
+        raw = path.read_bytes()
+        changed = False
+        def replace_during_merge(*args):
+            nonlocal changed
+            if not changed:
+                changed = True
+                replacement = path.with_name("replacement")
+                replacement.write_bytes(raw)
+                replacement.chmod(0o600)
+                replacement.replace(path)
+            return original(*args)
+        with patch.object(cache, "_merge", replace_during_merge):
+            with self.assertRaisesRegex(ContractError, "READINESS_ORIGINAL_CHANGED_DURING_PASS"):
+                self.read(cache)
+        self.assertIsNone(cache._history)
+        self.assertEqual(cache._proofs._entries, {})
 
 
 class SharedChangeWatchTests(unittest.TestCase):
