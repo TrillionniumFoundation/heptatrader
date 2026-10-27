@@ -4,7 +4,7 @@ The evaluator has no optimizer, no write path into model tensors and no executio
 client. QUALIFIED is still not a canonical-owner admission or a trading cutover.
 """
 from __future__ import annotations
-import argparse,fcntl,json,math,os,signal,subprocess,sys,time
+import argparse,fcntl,json,math,os,re,signal,subprocess,sys,time
 from bisect import bisect_left,bisect_right
 from pathlib import Path
 from .integrity import ContractError,read_json,digest,sha_file
@@ -19,6 +19,21 @@ from . import resident_parent_calibration as parent_calibration
 
 PREDICTION_PREWARM_MS=90000
 PUBLICATION_PROFILE='FIXED_SLOT_DURABLE_PUBLICATION_V1'
+
+_WORKER_EXCEPTION_TITLE=re.compile(
+ r'^(?:[A-Za-z_][A-Za-z_0-9]*\.)*'
+ r'(?:[A-Z][A-Za-z_0-9]*(?:Error|Exception)|Exception|'
+ r'SystemExit|KeyboardInterrupt|GeneratorExit|StopIteration|StopAsyncIteration|TimeoutExpired)'
+ r':(?:[ \t]|$)')
+
+
+def worker_failure_diagnostic(stderr_tail):
+ """Prefer the final Python exception title over following runtime advice."""
+ lines=stderr_tail.strip().splitlines()
+ # Keep indentation while matching so quoted/source examples remain ordinary logs.
+ for line in reversed(stderr_tail.splitlines()):
+  if _WORKER_EXCEPTION_TITLE.match(line):return line[:240]
+ return lines[-1][:240] if lines else 'NO_PROCESS_DIAGNOSTIC'
 
 
 def progress_with_coverage(plan,results,assessment):
@@ -444,8 +459,7 @@ class Evaluator:
     diagnostic_stream.seek(0,os.SEEK_END)
     diagnostic_stream.seek(max(0,diagnostic_stream.tell()-1500))
     stderr_tail=diagnostic_stream.read(1500).decode('utf-8',errors='replace')
-   log=stderr_tail.strip().splitlines()
-   reason=log[-1][:240] if log else 'NO_PROCESS_DIAGNOSTIC'
+   reason=worker_failure_diagnostic(stderr_tail)
    if expired:reason='WORKER_BUDGET_EXCEEDED'
    elif rc<0:
     try:signal_name=signal.Signals(-rc).name
