@@ -135,6 +135,34 @@ class _SealedOriginalProofs:
         self._versions[pin["path"]] = (dict(pin), before)
         return not reused
 
+    def read_source(self, pin):
+        """Decode a miss and obtain its sealed SHA from that same raw read.
+
+        Only this proof owner invokes the verified reader; callers cannot
+        supply a prior digest or assert that another read was verified. Keep
+        the ordinary before/after identity and end-of-pass watch checks.
+        """
+        signature = digest(pin)
+        before = prefix_version(pin, sealed=True)
+        previous = self._entries.get(pin["path"])
+        reused = (not self._force and self._pass_watched and
+                  previous == (signature, before))
+        parsed = read_source(Path(pin["path"]), expected_prefix=pin)
+        if prefix_version(pin, sealed=True) != before:
+            self.close()
+            raise ContractError("READINESS_ORIGINAL_CHANGED_DURING_PASS")
+        # Keep the proof-policy counters and deadline: an evicted decoder
+        # entry can require a parse while its earlier SHA proof is reusable.
+        if reused:
+            self.reuses += 1
+        else:
+            self.full_verifications += 1
+            self.full_bytes += pin["bytes"]
+            self._full_count += 1
+        self._pending[pin["path"]] = (signature, before)
+        self._versions[pin["path"]] = (dict(pin), before)
+        return parsed
+
     def finish(self):
         changed = self._watch.changed() if self._pass_watched else False
         if len(self._versions) != self._pin_count:
@@ -231,8 +259,12 @@ class VerifiedSealedReadinessCache:
             # sealed size/END/path checks, then binds the strict parse receipt
             # to the very same pin, including any uncommitted tail.
             if pin is not None and not inventory_verified:
-                self._verify_original(pin)
-            header, records, prefix = read_source(path)
+                if self._proof_pass:
+                    header, records, prefix = self._proofs.read_source(pin)
+                else:
+                    header, records, prefix = read_source(path, expected_prefix=pin)
+            else:
+                header, records, prefix = read_source(path)
             if header["period_sha256"] != config["period_sha256"]:
                 raise ContractError("CROSS_PERIOD_FEED")
             if pin is not None and prefix != pin:

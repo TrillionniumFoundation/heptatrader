@@ -43,7 +43,9 @@ class Harness:
                 hashlib.sha256(raw).hexdigest()!=self.pin["sha256"]):
             raise ContractError("SOURCE_PREFIX_HASH_CHANGED")
         return [self.pin.copy()],self.pinned_pages.copy()
-    def read_source(self,path):
+    def read_source(self,path,*,expected_prefix=None):
+        if expected_prefix is not None:
+            module.verify_prefix(expected_prefix,sealed=True)
         self.parses.append(str(path))
         if path==self.p1:
             return self.headers.copy(),[
@@ -295,8 +297,8 @@ class RecentHarness(Harness):
                             "sha256": hashlib.sha256(self.p2.read_bytes()).hexdigest(),
                             "ended": True})
 
-    def read_source(self, path):
-        header, _, prefix = super().read_source(path)
+    def read_source(self, path, *, expected_prefix=None):
+        header, _, prefix = super().read_source(path, expected_prefix=expected_prefix)
         prefix = next((dict(pin) for pin in self.sealed if pin["path"] == str(path)), prefix)
         return header, [dict(row) for row in self.rows[path]], prefix
 
@@ -501,7 +503,9 @@ class RecentViewTests(unittest.TestCase):
         def index(config, paths):
             self.assertEqual(paths, sorted(h.rows))
             return [dict(pin) for pin in h.sealed], list(h.pinned_pages)
-        def reader(path):
+        def reader(path, *, expected_prefix=None):
+            if expected_prefix is not None:
+                module.verify_prefix(expected_prefix, sealed=True)
             h.parses.append(str(path))
             prefix = next((dict(pin) for pin in h.sealed if pin["path"] == str(path)), None)
             if prefix is None:
@@ -588,9 +592,9 @@ class RecentViewTests(unittest.TestCase):
             path.write_bytes(b"new source with an old quote\n")
             path.chmod(0o600)
             original_reader = h.read_source
-            def reader(source):
+            def reader(source, *, expected_prefix=None):
                 if source != path:
-                    return original_reader(source)
+                    return original_reader(source, expected_prefix=expected_prefix)
                 return h.headers.copy(), [{"t": 1000, "known_at_ms": 2900, "bid": "9", "ask": "10"}], {
                     "path": str(path), "bytes": path.stat().st_size,
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
