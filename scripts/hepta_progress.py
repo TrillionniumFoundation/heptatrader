@@ -2,6 +2,7 @@
 """Read-only progress from selected systemd runtimes; never grants trade authority."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import shlex
 import stat
 import subprocess
 import time
+from hepta_maintenance_latch import native_marker_origin
 
 SCHEMA = "heptatrader.progress.v1"
 CORE_UNITS = (
@@ -62,6 +64,48 @@ def presence(path):
         return False
     except OSError:
         return None
+
+
+def native_stop_observation(path, now_ms):
+    """Observe one marker without locks, writes, service calls or resume authority."""
+    path=Path(path)
+    result={"source":str(path),"checked_at_ms":now_ms,"present":None,
+            "origin":"UNREADABLE","origin_evidence":"PAYLOAD_SHAPE_ONLY",
+            "creator_verified":False,"mtime_is_creation_time":False,
+            "native_release_verified":False,"automatic_resume":False}
+    fd=None
+    def identity(info):
+        return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,
+                info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    try:
+        before=path.lstat();result["present"]=True
+        result["metadata"]={"device":before.st_dev,"inode":before.st_ino,
+            "bytes":before.st_size,"mode":oct(stat.S_IMODE(before.st_mode)),
+            "uid":before.st_uid,"mtime_ms":before.st_mtime_ns//1000000,
+            "ctime_ms":before.st_ctime_ns//1000000}
+        if not stat.S_ISREG(before.st_mode) or before.st_size>4096:
+            raise ValueError("NATIVE_MARKER_NOT_SMALL_REGULAR_FILE")
+        fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC|os.O_NOFOLLOW)
+        if identity(before)!=identity(os.fstat(fd)):
+            raise ValueError("NATIVE_MARKER_CHANGED")
+        raw=os.read(fd,before.st_size+1)
+        if (len(raw)!=before.st_size or identity(before)!=identity(os.fstat(fd))
+                or identity(before)!=identity(path.lstat())):
+            raise ValueError("NATIVE_MARKER_CHANGED")
+        result.update(origin=native_marker_origin(raw),sha256=hashlib.sha256(raw).hexdigest())
+    except FileNotFoundError:
+        if result["present"] is None:
+            result.update(present=False,origin="ABSENT")
+        else:
+            result.update(present=None,error="NATIVE_MARKER_CHANGED")
+    except (OSError,ValueError) as exc:
+        result["error"]=type(exc).__name__+":"+str(exc)
+    finally:
+        if fd is not None:os.close(fd)
+    result["resume_path"]={"INDEPENDENT_EMPTY_NATIVE":"EXPLICIT_NATIVE_HOLD_PRECHECK_AND_RELEASE",
+        "CLI_TAGGED_PAUSE":"EXISTING_CLI_PAPER_ON","ABSENT":"NATIVE_ADMISSION_STILL_REQUIRED"
+        }.get(result["origin"],"INSPECT_UNRECOGNIZED_OR_UNREADABLE_NATIVE_MARKER")
+    return result
 
 
 def pick(value, *keys):
@@ -235,7 +279,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
         root = Path(wrapper["state_root"])
         admission, info = observe(root / (role + "-admission.json"), now_ms, max_age_ms)
         result["resource_admission"] = {**info, **pick(admission, "admit_new_worker", "reasons",
-            "resource_role", "minimum_available_bytes", "memory_bytes", "full_memory_psi"),
+            "resource_role", "minimum_available_bytes", "memory_bytes", "full_memory_psi", "workload_attribution"),
             "snapshot_is_historical": not running or info["freshness"] != "FRESH"}
         error, info = observe(root / (role + "-error.json"), now_ms, max_age_ms)
         result["guard_error"] = {**info, **pick(error, "error", "active", "resolved_at_ms"),
@@ -322,7 +366,8 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
         elif not state:
             unknown.append("UNIT_STATE_UNAVAILABLE:" + name)
     switch = Path(runtime) / "control/kill-switch"
-    marker_present = presence(switch)
+    native_stop=native_stop_observation(switch,now_ms)
+    marker_present = native_stop["present"]
     if marker_present is None:
         unknown.append("NATIVE_KILL_SWITCH_UNREADABLE")
     if marker_present:
@@ -376,7 +421,9 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
     return {"permission": "BLOCKED" if blockers else "NATIVE_ADMISSION_NOT_ATTESTED",
             "current_blockers": blockers, "unknown_current_evidence": unknown,
             "native_kill_switch_present": marker_present,
-            "maintenance_hold": {**hold_meta, **pick(hold, "reason", "task", "resume_when")},
+            "native_stop": native_stop,
+            "maintenance_hold": {**hold_meta, "present":hold_present,
+                                 **pick(hold, "reason", "task", "resume_when")},
             "drivers": drivers, "services": services, "trade_authority_granted": False}
 
 

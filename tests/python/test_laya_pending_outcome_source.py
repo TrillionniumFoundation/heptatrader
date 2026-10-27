@@ -68,8 +68,11 @@ class PendingOutcomeSourceTests(unittest.TestCase):
             self.paths[2]: [q for q in rows if q['t'] > self.anchor + 150000],
         }
 
-    def read_source(self, path):
+    def read_source(self, path, *, expected_prefix=None):
         index = self.paths.index(Path(path))
+        if expected_prefix is not None:
+            self.assertEqual(expected_prefix, self.pins[index])
+            self.assertIn(expected_prefix, self.archived)
         return {'period_sha256': self.period_sha}, self.records[Path(path)], self.pins[index]
 
     def end_timestamp(self, pin):
@@ -78,20 +81,26 @@ class PendingOutcomeSourceTests(unittest.TestCase):
     @contextmanager
     def sources(self):
         with ExitStack() as stack:
-            stack.enter_context(patch('laya_cell.source_archive.inventory', return_value=(self.archived, self.pages)))
+            stack.enter_context(patch('laya_cell.source_archive.inventory_index', return_value=(self.archived, self.pages)))
             stack.enter_context(patch.object(recent, 'inventory', return_value=(self.archived, self.pages)))
             index = stack.enter_context(patch.object(recent, 'inventory_index', return_value=(self.archived, self.pages)))
             stack.enter_context(patch.object(resident_data, 'sha_file', return_value=self.period_sha))
             stack.enter_context(patch.object(recent, 'sha_file', return_value=self.period_sha))
-            stack.enter_context(patch.object(resident_data, 'read_source', side_effect=self.read_source))
+            full_reader = stack.enter_context(patch.object(resident_data, 'read_source', side_effect=self.read_source))
             reader = stack.enter_context(patch.object(recent, 'read_source', side_effect=self.read_source))
             stack.enter_context(patch.object(recent, '_sealed_end_timestamp', side_effect=self.end_timestamp))
             verify = stack.enter_context(patch.object(recent, 'verify_prefix'))
-            yield {'reader': reader, 'verify': verify, 'index': index}
+            yield {'reader': reader, 'full_reader': full_reader, 'verify': verify, 'index': index}
 
     def compare_outcome(self, now):
         with self.sources() as probes:
             full, full_pins = resident_data.read_quotes(self.config, now)
+            for index, path in enumerate(self.paths):
+                if index < len(self.archived):
+                    probes['full_reader'].assert_any_call(path, expected_prefix=self.archived[index])
+                else:
+                    probes['full_reader'].assert_any_call(path)
+            self.assertEqual(probes['full_reader'].call_count, len(self.paths))
             first, last = policy.pending_outcome_bounds(self.plan, [self.prediction], now)
             bounded, bounded_pins = recent.read_original_quote_range(self.config, now, first, last)
             self.assertEqual(full_pins, bounded_pins)

@@ -23,6 +23,50 @@ MAX_CACHED_SEGMENTS = 320
 MAX_CACHED_QUOTE_RECORDS = 180000
 
 
+class _ReadinessQuoteWindow:
+    """Keep every historical price conflict key, not every historical row.
+
+    This state lasts for one strict pass only. The current view retains its
+    original complete rows; only the latest old row can be returned when the
+    view is empty. Earlier availability and stable segment-order ties still
+    decide that row exactly as in the complete merge.
+    """
+
+    def __init__(self, earliest_ms, merge_current):
+        self.earliest_ms = earliest_ms
+        self.merge_current = merge_current
+        self.current = {}
+        self.historical_prices = {}
+        self.latest_old = None
+
+    def merge(self, records, now_ms):
+        recent = []
+        for quote in records:
+            if quote["known_at_ms"] > now_ms:
+                continue
+            stamp = quote["t"]
+            if stamp >= self.earliest_ms:
+                recent.append(quote)
+                continue
+            previous = self.historical_prices.get(stamp)
+            if previous is not None and (
+                    Decimal(str(previous[0])) != Decimal(str(quote["bid"])) or
+                    Decimal(str(previous[1])) != Decimal(str(quote["ask"]))):
+                raise ContractError("CROSS_SEGMENT_PRICE_CONFLICT")
+            if previous is None:
+                self.historical_prices[stamp] = (quote["bid"], quote["ask"])
+            old = self.latest_old
+            if (old is None or stamp > old["t"] or
+                    stamp == old["t"] and quote["known_at_ms"] < old["known_at_ms"]):
+                self.latest_old = quote
+        self.merge_current(self.current, recent, now_ms)
+
+    def rows(self):
+        if self.current:
+            return [self.current[stamp] for stamp in sorted(self.current)]
+        return [] if self.latest_old is None else [self.latest_old]
+
+
 
 class _SealedOriginalProofs:
     """Bound SHA receipts to unchanged local files and a continuously held watch.
@@ -151,6 +195,8 @@ class VerifiedSealedReadinessCache:
         self.history_reused = 0
         self.history_fallbacks = 0
         self.retired_segments_reverified = 0
+        self.last_merge_historical_keys = 0
+        self.last_merge_full_rows = 0
 
     def close(self):
         if self._proofs is not None:
@@ -359,6 +405,12 @@ class VerifiedSealedReadinessCache:
         if self._proof_pass:
             self._proofs.begin(sealed, wall_ms)
         merged = {}
+        window = _ReadinessQuoteWindow(earliest_ms, self._merge) if earliest_ms is not None else None
+        def merge(records):
+            if window is None:
+                self._merge(merged, records, now_ms)
+            else:
+                window.merge(records, now_ms)
         summaries = {}
         prefixes = list(pages)
         historical_cutoff = history["latest_t"] if history is not None else None
@@ -371,7 +423,7 @@ class VerifiedSealedReadinessCache:
                 summaries[key] = history["sources"][key]
                 boundary = summaries[key]["latest_quote"]
                 if boundary is not None and boundary["t"] == history["latest_t"]:
-                    self._merge(merged, [boundary], now_ms)
+                    merge([boundary])
                 continue
             records, prefix, accepted_at_ms = self._segment(
                 config, path, pin, index, cache_floor, wall_ms,
@@ -406,19 +458,29 @@ class VerifiedSealedReadinessCache:
                         self._history = None
                         self.history_fallbacks += 1
                         return self.read_quotes(config, now_ms, earliest_ms=earliest_ms)
-            self._merge(merged, records, now_ms)
-        times = sorted(merged)
-        if earliest_ms is not None and times:
-            times = [t for t in times if t >= earliest_ms] or times[-1:]
+                if (pin is not None and
+                        (summary["max_t"] is None or summary["max_t"] < earliest_ms) and
+                        summary["max_known_at_ms"] <= now_ms):
+                    # Cache eviction grants no historical proof. This pass
+                    # still checks every old price against every other source,
+                    # and history is committed only after the original checks.
+                    entry = self._cached.pop(key, None)
+                    if entry is not None:
+                        self._cached_records -= len(entry[1])
+            merge(records)
+        rows = window.rows() if window is not None else [merged[t] for t in sorted(merged)]
         result = [
-            {**merged[t], "bid": float(merged[t]["bid"]), "ask": float(merged[t]["ask"])}
-            for t in times
+            {**row, "bid": float(row["bid"]), "ask": float(row["ask"])}
+            for row in rows
         ]
         if self._proof_pass:
             self._proofs.finish()
         if earliest_ms is not None:
             self._commit_history(history, sealed, feed_names, summaries,
                                  now_ms, earliest_ms)
+        self.last_merge_historical_keys = len(window.historical_prices) if window is not None else 0
+        self.last_merge_full_rows = (len(window.current) + int(window.latest_old is not None)
+                                    if window is not None else len(merged))
         return result, prefixes
 
     def counters(self):
@@ -436,6 +498,8 @@ class VerifiedSealedReadinessCache:
             "retired_decoded_segments": len(self._history["retired"]) if self._history else 0,
             "cached_sealed_segments": len(self._cached),
             "cached_original_quote_records": self._cached_records,
+            "last_merge_historical_price_keys": self.last_merge_historical_keys,
+            "last_merge_complete_quote_rows": self.last_merge_full_rows,
             "cache_is_not_independent_broker_signature": True,
             "trade_authority": False,
             "broker_orders_sent": 0,

@@ -181,6 +181,72 @@ verification of unchanged running service identities; it does not require
 restarting native Execution. A subsequent restart engages the hold again.
 Neither command changes the system profile.
 
+### Reading a current stop and its recovery conditions
+
+The existing `status` progress output includes `trading.native_stop`: the observed
+path, inode, mode, byte length, modification/change times, bounded payload hash
+and payload classification. It reads one file of at most 4 KiB, takes no operator
+lock, writes no record and makes no Broker or resume call. The independent durable
+maintenance record is reported separately, including its current presence.
+
+`INDEPENDENT_EMPTY_NATIVE` identifies the zero-byte shape, not a proven writer or
+reason. The user tmpfiles initializer, `native-startup-hold`, and failed explicit
+resume recovery can all create that shape. The C++ kill-switch reader observes
+the marker; it does not identify its creator. Neither mtime nor ctime alone
+establishes creation time or cause.
+
+For Pocket4's inspected 2026-10-26 boot, `btime=1792974290` is 00:24:50 UTC.
+The original tmpfiles setup journal spans 00:24:58.409136–00:24:58.416483 UTC;
+the observed marker mtime is 00:24:58.414888 UTC, inside that interval. The user
+configuration `~/.config/user-tmpfiles.d/heptatrader.conf` contains
+`f %t/heptatrader/control/kill-switch 0440`. Execution starts at
+00:24:58.446028 UTC and `native-startup-hold` follows at 00:24:58.534220 UTC,
+preserving the existing marker. These combined observations locate this stop in
+boot initialization; the empty payload or timestamp alone would not establish it.
+An old initialization timestamp does not retire the present hold.
+
+Use the helper selected by the manager's loaded `ExecStartPre` and its matching
+public wrapper when checking recovery. On that inspected runtime the later `zz`
+drop-in selected `operator-cli/releases/postboot-3093e0de-20261021/` ahead of the
+older `95` drop-in. Checking with a superseded helper correctly reports
+`NATIVE_STARTUP_GUARD_NOT_COORDINATED`; it is not a reason to relax that check.
+
+Native resume read failures retain the fixed owner and requested method, exit code
+or timeout category, and only a reviewed exact machine code from bounded stderr.
+For example, `NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=10:DISCOVERY_LIST_REJECTED`
+locates the failure in the crypto owner's discovery catalog read before health.
+Unknown stderr is reported as `UNCLASSIFIED`; stdout, token paths and arbitrary
+exception text are not printed. A disabled driver does not exempt its owner from
+the existing authoritative resume checks, and a failed owner read preserves the hold.
+
+| Current observation | Required recovery check |
+|---|---|
+| Durable maintenance hold present | Match its original owner/task and exact hold bytes; its age never expires it. Releasing it preserves an independent empty native marker. |
+| Independent empty native marker | Existing explicit native-hold precheck: PAPER mode, active original service instances, authoritative health/orders/positions for both owners, no durable maintenance hold and stable marker/directory identity. Actual release must verify the same native instance's guard is clear; failure re-engages protection. |
+| CLI-tagged pause | Existing `paper-on` semantics apply; current native risk, identity and quote checks remain independent. |
+| Unreadable, changed or unrecognized marker | Inspect the original marker and service state. Status does not infer permission or erase it. |
+| No markers observed | Native admission is still unverified; file absence does not authorize an order. |
+
+Research resource refusals use the existing admission and per-subject denial JSON,
+now with an optional `workload_attribution` snapshot. It reads only fixed procfs and
+cgroup-v2 files: at most 2,048 proc directory entries, 512 PIDs, eight cgroups,
+640 directory opens, 1,200 file reads and 512 KiB total, with 16 KiB per file and a
+50 ms cooperative elapsed-time budget. Retries reuse the snapshot for at most
+30 seconds and retain its original timestamp and age. PID identity/start ticks,
+RSS, cgroup memory/slab, pressure, CPU and I/O counters help locate concurrent
+workloads without reading command arguments, environments or application trees.
+The current guard's cgroup and the known trainer, evaluator and source-health
+units are selected before filling the remaining cgroup slots by observed RSS.
+Fixed sibling unit paths preserve visibility when the PID sample is truncated;
+an observed related unit in another slice of the same user manager takes precedence
+over the sibling guess. `selection_reason` identifies that choice. The same eight
+cgroup limit applies, and memory swap usage and `memory.max` are retained so a
+small current working set cannot hide a constrained, swap-heavy research service.
+Limits, missing permissions and process exits explicitly mark a partial sample.
+Cumulative counters are not rates; high RSS or cgroup stalls do not prove which
+workload caused host pressure. Diagnostic errors never change admission, widen a
+threshold, extend a frozen window, interrupt a process or grant resume authority.
+
 The user tmpfiles configuration likewise creates an empty `0440` independent
 startup hold on a fresh runtime. Ordinary `paper-on` cannot remove it, and an
 explicit `--resume-native-hold --check` preserves it. Updating or reinstalling

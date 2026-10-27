@@ -22,6 +22,42 @@ import hepta_maintenance_latch as latch
 from hepta_maintenance_latch import HoldError, perform
 
 
+class NativeReadDiagnosticTests(unittest.TestCase):
+    def failure(self, cause, *, method="system.get_health"):
+        with patch.object(latch.subprocess, "run", side_effect=cause):
+            with self.assertRaises(HoldError) as failed:
+                latch._native_payload(Path("/fixture/control"), "crypto", method)
+        return str(failed.exception)
+
+    def test_only_complete_short_reviewed_stderr_code_is_visible(self):
+        for raw in ("DISCOVERY_LIST_REJECTED\n", b"DISCOVERY_LIST_REJECTED\n"):
+            with self.subTest(raw=raw):
+                result = self.failure(subprocess.CalledProcessError(10, ["SECRET_ARGV"],
+                    output="SECRET_NATIVE_STDOUT", stderr=raw))
+                self.assertEqual(result,
+                    "NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=10:DISCOVERY_LIST_REJECTED")
+                self.assertNotIn("SECRET", result)
+
+    def test_arbitrary_multiline_oversized_or_nonascii_stderr_never_leaves_diagnostic(self):
+        for raw in ("SECRET_TOKEN", "DISCOVERY_LIST_REJECTED\nSECRET_TOKEN",
+                    "SECRET_TOKEN: DISCOVERY_LIST_REJECTED", "x"*129,
+                    b"\xffSECRET_TOKEN", None):
+            with self.subTest(raw=raw):
+                result = self.failure(subprocess.CalledProcessError(10, ["SECRET_ARGV"],
+                    output="SECRET_NATIVE_STDOUT", stderr=raw), method="orders.list")
+                self.assertEqual(result, "NATIVE_RESUME_READ_FAILED:crypto:orders.list:rc=10:UNCLASSIFIED")
+                self.assertNotIn("SECRET", result)
+
+    def test_timeout_and_os_error_keep_context_without_exception_payload(self):
+        cases = [(subprocess.TimeoutExpired(["SECRET_TOKEN_PATH"], 12,
+                    output="SECRET_NATIVE_STDOUT", stderr="SECRET_STDERR"), "TIMEOUT"),
+                 (FileNotFoundError(2, "SECRET_ENDPOINT_PATH"), "OS_ERROR")]
+        for cause, code in cases:
+            with self.subTest(code=code):
+                self.assertEqual(self.failure(cause, method="portfolio.list_positions"),
+                    "NATIVE_RESUME_READ_FAILED:crypto:portfolio.list_positions:"+code)
+
+
 class HoldTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -125,6 +161,8 @@ class HoldTests(unittest.TestCase):
         status=self.run_action("maintenance-status")
         self.assertTrue(status["native_kill_switch_engaged"])
         self.assertEqual(status["native_marker_origin"], "INDEPENDENT_EMPTY_NATIVE")
+        self.assertEqual(status["native_marker_origin_evidence"], "PAYLOAD_SHAPE_ONLY")
+        self.assertFalse(status["native_marker_creator_verified"])
         self.assertFalse(status["may_stop_driver"])
         with self.assertRaisesRegex(HoldError,"INDEPENDENT_NATIVE_HOLD_NOT_REARMABLE"):
             self.run_action("paper-on")
@@ -494,6 +532,30 @@ class NativeHoldResumeTests(unittest.TestCase):
                          {"paper.token", "crypto.token"})
         self.assertEqual(result["broker_orders_sent"], 0)
         self.assertFalse(result["may_stop_driver"])
+
+    def test_crypto_discovery_failure_names_the_owner_and_preserves_original_marker(self):
+        marker = self._make_independent_empty_marker()
+        before = latch._identity(marker.stat())
+        for check_only in (True, False):
+            calls = []
+            def execute(argv, **kwargs):
+                calls.append(argv)
+                if argv[-1] == "system.get_health" and any(arg.endswith("/crypto.token") for arg in argv):
+                    raise subprocess.CalledProcessError(10, argv, output="SECRET_NATIVE_STDOUT",
+                        stderr="DISCOVERY_LIST_REJECTED\n")
+                return subprocess.CompletedProcess(argv, 0, stdout=self.command(argv), stderr="")
+            with self.subTest(check_only=check_only), \
+                    patch.object(latch.subprocess, "run", side_effect=execute), \
+                    patch.object(latch.os, "unlink", side_effect=AssertionError("NO_RELEASE_AFTER_FAILED_OWNER_READ")):
+                with self.assertRaises(HoldError) as failed:
+                    self.resume(check_only=check_only)
+            self.assertEqual(str(failed.exception),
+                "NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=10:DISCOVERY_LIST_REJECTED")
+            self.assertEqual(latch._identity(marker.stat()), before)
+            native = [argv for argv in calls if argv[0] != "systemctl"]
+            self.assertEqual(len(native), 5)
+            self.assertEqual({Path(argv[argv.index("--token-file")+1]).name for argv in native},
+                             {"paper.token", "crypto.token"})
 
     def test_post_unlink_native_failure_reengages_instead_of_claiming_release(self):
         for condition in ("uncertain", "second_owner", "missing", "epoch", "generation", "service",

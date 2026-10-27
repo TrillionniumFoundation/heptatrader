@@ -462,6 +462,13 @@ def register(service, job_id, candidate, job, *, clock=None):
             checked = now()
             if type(checked) is not int or checked < identity["policy_effective_at_ms"]:
                 raise ContractError("FORWARD_PLAN_POLICY_CLOCK_REGRESSION")
+            # A current-config rollback cannot lower a frozen V3 job's floor.
+            # Existing plans and reservations were handled above; this check
+            # applies only to a new admission decision and never reallocates them.
+            from .promotion import protocol_for_job
+            from .promotion_power import MATCHED_PARENT_PROTOCOL
+            if protocol_for_job(service.c, job) == MATCHED_PARENT_PROTOCOL:
+                service._check_power_trial_history(job)
             current = _unreserved_history(service)
             queue = inspect_queue(service.c)
             created = service.db.execute('SELECT created_ms FROM jobs WHERE id=?', (job_id,)).fetchone()[0]

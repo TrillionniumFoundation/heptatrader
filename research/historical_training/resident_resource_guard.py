@@ -14,6 +14,194 @@ SOURCE_RULE={'input_probes':24,'minimum_usable':20,'maximum_missing':4,'source_t
 RESOURCE_RULE={'profile':'ROLE_MEMORY_PSI_V2','min_available_bytes':8*GIB,
                'registration_min_available_bytes':2*GIB,'swap_free_policy':'DIAGNOSTIC_ONLY',
                'max_full_psi_avg10':1.,'max_full_psi_avg60':.1}
+ATTRIBUTION_LIMITS={'max_pids':512,'max_proc_entries':2048,'max_cgroups':8,
+    'max_directories':640,'max_files':1200,'max_bytes':512*1024,
+    'max_file_bytes':16384,'max_elapsed_ms':50,'cache_seconds':30}
+PRIORITY_CGROUP_UNITS=('heptatrader-laya-trainer.service','heptatrader-laya-evaluator.service',
+                       'heptatrader-learning-source-health.service')
+RESOURCE_DENIALS={'HOST_AVAILABLE_MEMORY_BELOW_8GIB',
+    'HOST_AVAILABLE_MEMORY_BELOW_REGISTRATION_RESERVE','HOST_FULL_MEMORY_PSI_PRESSURE',
+    'OTHER_RESEARCH_WORKER_ACTIVE'}
+
+
+def collect_resource_attribution(*,proc_root=Path('/proc'),cgroup_root=Path('/sys/fs/cgroup'),
+                                 limits=None,clock=time.monotonic,observer_pid=None):
+    """Bounded kernel telemetry, never a directory-size scan or admission rule.
+
+    The observer and known research units precede RSS-ranked cgroups: a small
+    working set can still be swap-heavy or repeatedly hit memory.max. Pressure
+    describes stalls experienced there; counters are cumulative, not rates.
+    Only fixed proc/cgroup files are read, without argv, environment or fd paths.
+    """
+    limits=dict(ATTRIBUTION_LIMITS if limits is None else limits)
+    started=clock();deadline=started+limits['max_elapsed_ms']/1000
+    scan={'proc_entries':0,'pids_attempted':0,'pids_observed':0,'directories_opened':0,
+          'files_attempted':0,'bytes_read':0,'read_errors':0,'limits_reached':[]}
+    result={'at_ms':int(time.time()*1000),'diagnostic_only':True,
+        'causality':'NOT_ESTABLISHED','counter_semantics':'CUMULATIVE_NOT_RATES',
+        'snapshot_atomic':False,
+        'ranking':'OBSERVER_AND_RESEARCH_UNITS_THEN_RSS_NOT_COMPLETE_HOST_CENSUS','limits':limits,
+        'scan':scan,'processes':[],'cgroups':[]}
+    class BudgetReached(Exception):pass
+    def stopped(reason):
+        if reason not in scan['limits_reached']:scan['limits_reached'].append(reason)
+        raise BudgetReached(reason)
+    def check():
+        if clock()>=deadline:stopped('TIME_BUDGET')
+    def directory(name,fd=None):
+        check()
+        if scan['directories_opened']>=limits['max_directories']:stopped('DIRECTORY_BUDGET')
+        scan['directories_opened']+=1
+        return os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=fd)
+    def read_file(fd,name):
+        check()
+        if scan['files_attempted']>=limits['max_files']:stopped('FILE_BUDGET')
+        remaining=limits['max_bytes']-scan['bytes_read']
+        if remaining<=0:stopped('BYTE_BUDGET')
+        scan['files_attempted']+=1;cap=min(limits['max_file_bytes'],remaining)
+        item=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=fd)
+        try:raw=os.read(item,cap)
+        finally:os.close(item)
+        scan['bytes_read']+=len(raw)
+        if len(raw)==cap:
+            if cap==remaining:stopped('BYTE_BUDGET')
+            raise ValueError('DIAGNOSTIC_FILE_TOO_LARGE')
+        return raw.decode('utf-8')
+    def optional(fd,name,parse):
+        try:return parse(read_file(fd,name))
+        except (OSError,ValueError,IndexError,KeyError,StopIteration):
+            scan['read_errors']+=1;return None
+    def integers(text,keys):
+        values={}
+        for line in text.splitlines():
+            fields=line.split()
+            if len(fields)==2 and fields[0] in keys and fields[1].isdecimal():
+                values[fields[0]]=int(fields[1])
+        return values
+    def psi(text):
+        return {**parse_full_psi(text),'full_total_us':int(next(
+            part[6:] for line in text.splitlines() if line.startswith('full ')
+            for part in line.split() if part.startswith('total=')))}
+    def memory(text):
+        keys={'MemAvailable','SwapFree','Slab','SReclaimable','SUnreclaim','Dirty','Writeback'}
+        return {fields[0].rstrip(':'):int(fields[1])*1024 for line in text.splitlines()
+            if len(fields:=line.split())==3 and fields[0].rstrip(':') in keys
+            and fields[1].isdecimal() and fields[2]=='kB'}
+    def io(text):
+        values={key:0 for key in ('rbytes','wbytes','rios','wios')}
+        for line in text.splitlines():
+            for part in line.split()[1:]:
+                key,sep,value=part.partition('=')
+                if sep and key in values and value.isdecimal():values[key]+=int(value)
+        return values
+    def unified_group(text):
+        paths=[line[3:] for line in text.splitlines() if line.startswith('0::')]
+        if len(paths)!=1:raise ValueError('CGROUP_V2_UNAVAILABLE')
+        path=paths[0];parts=path.split('/')[1:]
+        if (not path.startswith('/') or len(path)>512 or len(parts)>12
+            or any(part in ('.','..') for part in parts)
+            or any(ord(c)<32 for c in path)):raise ValueError('CGROUP_PATH_INVALID')
+        # The nearest service/scope is the useful workload, including its children.
+        last=max((i for i,p in enumerate(parts) if p.endswith(('.service','.scope'))),default=len(parts)-1)
+        return '/'.join(parts[:last+1]).strip('/')
+    proc_fd=None;cg_fd=None;processes=[];groups={}
+    def group_row(path):
+        return groups.setdefault(path,{'path':path,'observed_processes':0,'observed_process_rss_bytes':0})
+    def observe_process(pid):
+        if scan['pids_attempted']>=limits['max_pids']:stopped('PID_BUDGET')
+        scan['pids_attempted']+=1;pid_fd=None
+        try:
+            pid_fd=directory(str(pid),proc_fd)
+            raw=read_file(pid_fd,'stat');left,sep,right=raw.rpartition(')');fields=right.split()
+            if not sep or int(left.split(' ',1)[0])!=pid or len(fields)<22:
+                raise ValueError('PROCESS_STAT_INVALID')
+            row={'pid':pid,'name':left.split('(',1)[1][:64],
+                 'start_ticks':int(fields[19]),'cpu_ticks':int(fields[11])+int(fields[12]),
+                 'rss_bytes':max(0,int(fields[21]))*os.sysconf('SC_PAGE_SIZE')}
+            row['cgroup']=optional(pid_fd,'cgroup',unified_group)
+            processes.append(row);scan['pids_observed']+=1
+            if row['cgroup'] is not None:
+                group=group_row(row['cgroup'])
+                group['observed_processes']+=1;group['observed_process_rss_bytes']+=row['rss_bytes']
+            return row['cgroup']
+        except (OSError,ValueError,IndexError):scan['read_errors']+=1
+        finally:
+            if pid_fd is not None:os.close(pid_fd)
+    try:
+        proc_fd=directory(proc_root)
+        result['host_memory_bytes']=optional(proc_fd,'meminfo',memory)
+        result['host_vmstat']=optional(proc_fd,'vmstat',lambda raw:integers(raw,
+            {'pswpin','pswpout','pgmajfault','pgscan_kswapd','pgscan_direct','pgpgin','pgpgout'}))
+        observer_pid=os.getpid() if observer_pid is None else observer_pid
+        own_group=observe_process(observer_pid)
+        pids=[]
+        with os.scandir(proc_fd) as entries:
+            for entry in entries:
+                check();scan['proc_entries']+=1
+                if entry.name.isdecimal() and int(entry.name)!=observer_pid:pids.append(int(entry.name))
+                if scan['proc_entries']>=limits['max_proc_entries']:
+                    scan['limits_reached'].append('PROC_ENTRY_BUDGET');break
+        remaining_pids=max(0,limits['max_pids']-scan['pids_attempted'])
+        if len(pids)>remaining_pids:scan['limits_reached'].append('PID_BUDGET')
+        # Inspect newer PIDs first when partial; reserve time for cgroup details.
+        for pid in sorted(pids,reverse=True)[:remaining_pids]:
+            if clock()>=started+limits['max_elapsed_ms']*.0006:
+                scan['limits_reached'].append('PROCESS_TIME_SLICE');break
+            observe_process(pid)
+        result['processes']=sorted(processes,key=lambda row:(row['rss_bytes'],row['pid']),reverse=True)[:8]
+        cg_fd=directory(cgroup_root)
+        priority=[]
+        if own_group is not None:
+            group_row(own_group)['selection_reason']='OBSERVER_CGROUP';priority.append(own_group)
+            parts=own_group.split('/');parent=own_group.rpartition('/')[0]
+            manager=next(('/'.join(parts[:i+1]) for i,p in enumerate(parts)
+                          if p.startswith('user@') and p.endswith('.service')),parent)
+            for unit in PRIORITY_CGROUP_UNITS:
+                matches=[path for path in groups if path.rsplit('/',1)[-1]==unit
+                         and (not manager or path.startswith(manager+'/'))]
+                # Fixed sibling paths also cover services omitted by the PID
+                # budget. They are not discovered by traversing an app tree.
+                if not matches and parts[-1] in PRIORITY_CGROUP_UNITS:
+                    matches=[(parent+'/' if parent else '')+unit]
+                for path in matches:
+                    if path not in priority:
+                        group_row(path)['selection_reason']='RELATED_RESEARCH_UNIT';priority.append(path)
+        ordered=[groups[path] for path in priority]
+        ordered.extend(sorted((group for path,group in groups.items() if path not in priority),
+                              key=lambda row:row['observed_process_rss_bytes'],reverse=True))
+        if len(groups)>limits['max_cgroups']:scan['limits_reached'].append('CGROUP_BUDGET')
+        for group in ordered[:limits['max_cgroups']]:
+            group.setdefault('selection_reason','OBSERVED_PROCESS_RSS')
+            current=None
+            try:
+                current=directory('.',cg_fd)
+                for part in filter(None,group['path'].split('/')):
+                    child=directory(part,current);os.close(current);current=child
+                group['memory_current_bytes']=optional(current,'memory.current',lambda raw:int(raw.strip()))
+                group['memory_swap_current_bytes']=optional(current,'memory.swap.current',lambda raw:int(raw.strip()))
+                group['memory_max']=optional(current,'memory.max',lambda raw:raw.strip())
+                group['memory_stat']=optional(current,'memory.stat',lambda raw:integers(raw,
+                    {'anon','file','kernel','slab','slab_reclaimable','slab_unreclaimable'}))
+                group['memory_events']=optional(current,'memory.events',lambda raw:integers(raw,
+                    {'low','high','max','oom','oom_kill','oom_group_kill'}))
+                group['memory_full_psi']=optional(current,'memory.pressure',psi)
+                group['cpu_stat']=optional(current,'cpu.stat',lambda raw:integers(raw,
+                    {'usage_usec','user_usec','system_usec','nr_throttled','throttled_usec'}))
+                group['io_stat']=optional(current,'io.stat',io)
+            except (OSError,ValueError) as exc:
+                scan['read_errors']+=1;group['read_error_class']=type(exc).__name__
+            finally:
+                result['cgroups'].append(group)
+                if current is not None:os.close(current)
+    except BudgetReached:pass
+    except (OSError,ValueError,IndexError,StopIteration):scan['read_errors']+=1
+    finally:
+        if proc_fd is not None:os.close(proc_fd)
+        if cg_fd is not None:os.close(cg_fd)
+    result['processes']=sorted(processes,key=lambda row:(row['rss_bytes'],row['pid']),reverse=True)[:8]
+    result['elapsed_ms']=round((clock()-started)*1000,3)
+    result['partial']=bool(scan['limits_reached'] or scan['read_errors'])
+    return result
 
 
 def parse_meminfo(text):
@@ -149,6 +337,21 @@ class Gate:
         if self.c.get('value_priority') is not None and self.priority_role in ('trainer','evaluator'):
             from .value_priority_admission import verify_policy
             verify_policy(self.c['value_priority'])
+    def attach_resource_attribution(self,report):
+        """Reuse a bounded snapshot across denial retries; never affect admission."""
+        if not RESOURCE_DENIALS.intersection(report.get('reasons',[])):
+            return report
+        tick=time.monotonic();previous=getattr(self,'_resource_attribution',None)
+        if previous is None or not 0<=tick-previous[0]<ATTRIBUTION_LIMITS['cache_seconds']:
+            try:snapshot=collect_resource_attribution()
+            except Exception as exc:
+                snapshot={'at_ms':int(time.time()*1000),'diagnostic_only':True,
+                    'partial':True,'error_class':type(exc).__name__,'causality':'NOT_ESTABLISHED'}
+            previous=(tick,snapshot);self._resource_attribution=previous
+        report['workload_attribution']={**previous[1],
+            'sample_age_ms':max(0,int((tick-previous[0])*1000)),
+            'reused_sample':tick!=previous[0]}
+        return report
     def record_native_exit(self,returncode,subject):
         """Stop new heavy work after a native crash; preserve CPU closeout.
 
@@ -232,6 +435,7 @@ class Gate:
             if present:resources['reasons'].append('OPERATOR_RESOURCE_HOLD')
         reasons=list(resources['reasons'])
         if self.draining:reasons.append('SUPERVISOR_DRAIN_REQUESTED')
+        self.attach_resource_attribution(resources)
         return {'checked_at_ms':now,'manual_hold':hold,'resource_diagnostics':resources,
                 'current_resource_blockers':list(dict.fromkeys(reasons)),
                 'diagnostic_only':True,'worker_launch_authority':False,
@@ -377,6 +581,7 @@ class Gate:
                            first_prediction_resource_readiness_checked=prediction_ready,
                            future_resource_capacity_reserved=False)
             name=self.role+'-forward-admission.json'
+        self.attach_resource_attribution(report)
         atomic(self.root/name,report)
         return report
     def acquire(self,subject):
@@ -397,6 +602,7 @@ class Gate:
                 raise
             if report['admit_new_worker']:return True
             self.lease.release()
+        self.attach_resource_attribution(report)
         self.last_admission=report
         atomic(self.root/(self.role+'-admission.json'),report)
         name=digest([self.role,subject,report['reasons']]);path=self.root/'denials'/(name+'.json')

@@ -1,6 +1,9 @@
 """Synthetic integrity probes, never labeled real strategy outcomes."""
-import copy,json,os,tempfile,time,unittest
+import copy,hashlib,json,os,tempfile,time,unittest
 from pathlib import Path
+from unittest.mock import patch
+from laya_cell import shadow_source
+from laya_cell.integrity import ContractError
 from laya_cell.shadow_source import canonical,digest,read_source,valid_quote
 
 T=1791330000000
@@ -77,5 +80,87 @@ class ShadowEvidenceTests(unittest.TestCase):
     def test_failure_is_not_fabricated_quote(self):
         self.write([('HEADER',self.header,T),('FAILURE',{'reason':'QUOTE_STALE'},T+1)])
         self.assertEqual(read_source(self.path)[1],[])
+
+    def test_crlf_split_at_read_boundary_preserves_chain_and_byte_receipt(self):
+        entries=[('HEADER',self.header,T),('FAILURE',{'detail':''},T+1),
+                 ('QUOTE',quote(),T+2),('END',{},T+3)]
+        self.write(entries)
+        lines=self.path.read_bytes().splitlines()
+        entries[1][1]['detail']='x'*(65535-len(lines[0])-1-len(lines[1]))
+        self.write(entries)
+        lines=self.path.read_bytes().splitlines()
+        raw=lines[0]+b'\n'+lines[1]+b'\r\n'+b'\r'.join(lines[2:])+b'\n'
+        self.assertEqual(raw[65535:65537],b'\r\n')
+        self.path.write_bytes(raw)
+        _,quotes,prefix=read_source(self.path)
+        self.assertEqual(len(quotes),1)
+        self.assertTrue(prefix['ended'])
+        self.assertEqual(prefix['bytes'],len(raw))
+        self.assertEqual(prefix['sha256'],hashlib.sha256(raw).hexdigest())
+
+    def test_long_uncommitted_tail_is_ignored_without_changing_original_prefix(self):
+        self.write()
+        expected=read_source(self.path)
+        with self.path.open('ab') as stream:stream.write(b'x'*(3*65536+7))
+        actual=read_source(self.path)
+        self.assertEqual(actual[:2],expected[:2])
+        self.assertEqual(actual[2],{**expected[2],'uncommitted_tail_bytes':3*65536+7})
+
+    def test_oversize_committed_record_fails_before_allocation_of_whole_source(self):
+        self.write([('HEADER',self.header,T),('FAILURE',{'detail':'x'*65537},T+1)])
+        with self.assertRaisesRegex(ValueError,'SHADOW_RECORD_BOUND'):
+            read_source(self.path)
+
+    def test_sealed_pin_rejects_rehashed_chain_and_has_no_cross_call_cache(self):
+        entries=[('HEADER',self.header,T),('QUOTE',quote(),T+1),('END',{},T+2)]
+        self.write(entries)
+        expected=read_source(self.path)
+        self.assertEqual(read_source(self.path,expected_prefix=expected[2]),expected)
+        entries[1][1]['bid']='1.12499'
+        self.write(entries) # Internally valid replacement is still not the archived bytes.
+        with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
+            read_source(self.path,expected_prefix=expected[2])
+
+    def test_sealed_read_still_checks_semantics_after_matching_hash(self):
+        self.write([('HEADER',self.header,T),('QUOTE',{**quote(),'stale':True},T+1),('END',{},T+2)])
+        raw=self.path.read_bytes()
+        pin={'path':str(self.path),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
+             'ended':True,'uncommitted_tail_bytes':0,'chain_head':json.loads(raw.splitlines()[-1])['sha256']}
+        with self.assertRaisesRegex(ValueError,'QUOTE_AUTHORITY'):
+            read_source(self.path,expected_prefix=pin)
+
+    def test_sealed_source_replacement_during_decode_is_rejected(self):
+        self.write([('HEADER',self.header,T),('QUOTE',quote(),T+1),('END',{},T+2)])
+        expected=read_source(self.path)[2]
+        original=shadow_source._decode_source
+        def replace_after_read(lines,now):
+            value=original(lines,now)
+            replacement=self.path.with_name('replacement.jsonl')
+            replacement.write_bytes(self.path.read_bytes());replacement.chmod(0o600)
+            replacement.replace(self.path)
+            return value
+        with patch.object(shadow_source,'_decode_source',replace_after_read):
+            with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_FILE_CHANGED'):
+                read_source(self.path,expected_prefix=expected)
+
+    def test_sealed_same_inode_mutation_with_restored_mtime_is_rejected(self):
+        self.write([('HEADER',self.header,T),('QUOTE',quote(),T+1),('END',{},T+2)])
+        expected=read_source(self.path)[2];before=self.path.stat()
+        original=shadow_source._decode_source
+        def mutate_after_read(lines,now):
+            value=original(lines,now)
+            with self.path.open('r+b') as stream:stream.write(b'X')
+            os.utime(self.path,ns=(before.st_atime_ns,before.st_mtime_ns))
+            return value
+        with patch.object(shadow_source,'_decode_source',mutate_after_read):
+            with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_FILE_CHANGED'):
+                read_source(self.path,expected_prefix=expected)
+
+    def test_changed_archived_bytes_report_hash_before_parser_failure(self):
+        self.write([('HEADER',self.header,T),('QUOTE',quote(),T+1),('END',{},T+2)])
+        expected=read_source(self.path)[2]
+        with self.path.open('r+b') as stream:stream.write(b'X')
+        with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
+            read_source(self.path,expected_prefix=expected)
 
 if __name__=='__main__':unittest.main(verbosity=2)

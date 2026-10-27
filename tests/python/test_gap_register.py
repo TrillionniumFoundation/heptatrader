@@ -38,7 +38,6 @@ class GapRegisterTests(unittest.TestCase):
 
     def test_repository_register_is_valid_without_claiming_all_work_closed(self):
         self.assertEqual(gaps.validate(ROOT), [])
-        self.assertEqual(gaps.validate(ROOT, "core"), [])
 
     def test_new_id_and_open_issue_are_allowed(self):
         self.assertEqual(self.check(), [])

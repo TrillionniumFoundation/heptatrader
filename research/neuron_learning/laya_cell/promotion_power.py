@@ -10,6 +10,10 @@ from .integrity import ContractError
 
 PROTOCOL = 'POWER_PLANNED_SIGN_SCREEN_V2'
 SCHEMA = 'heptatrader.laya-promotion-rule.v2'
+MATCHED_PARENT_PROTOCOL = 'POWER_PLANNED_MATCHED_PARENT_SIGN_SCREEN_V3'
+MATCHED_PARENT_SCHEMA = 'heptatrader.laya-promotion-rule.v3'
+POWER_PROTOCOLS = (PROTOCOL, MATCHED_PARENT_PROTOCOL)
+MATCHED_PARENT = 'FROZEN_PARENT_SAME_CALIBRATION_BUDGET'
 MAX_SLOTS = 256
 
 
@@ -45,9 +49,11 @@ def design(trial):
     raise ContractError('PROMOTION_POWER_EXCEEDS_BOUNDED_CAPACITY')
 
 
-def planned_rule(base, trial):
+def planned_rule(base, trial, protocol=PROTOCOL):
+    if protocol not in POWER_PROTOCOLS:
+        raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
     n, k, power = design(trial)
-    return {**base, 'schema': SCHEMA, 'slots': n + 2, 'min_observed': n,
+    rule = {**base, 'schema': SCHEMA, 'slots': n + 2, 'min_observed': n,
             'min_non_ties': n, 'max_censored': 2,
             'planning_win_probability': 0.75, 'planning_minimum_power': 0.8,
             'planned_critical_wins': k, 'planned_power': power,
@@ -55,3 +61,9 @@ def planned_rule(base, trial):
             'sign_null_assumption': 'CONDITIONAL_NON_TIE_WIN_PROBABILITY_AT_MOST_HALF',
             'output_scope': 'CONDITIONAL_SIGN_SCREEN_NOT_UNCONDITIONAL_EFFICACY',
             'max_pending_evaluations': 1}
+    if protocol == MATCHED_PARENT_PROTOCOL:
+        rule.update(schema=MATCHED_PARENT_SCHEMA,
+                    primary_comparator=MATCHED_PARENT,
+                    parameter_update_isolated_required=True,
+                    same_window_simple_baselines_required=True)
+    return rule

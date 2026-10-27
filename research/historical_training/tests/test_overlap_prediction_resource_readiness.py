@@ -22,7 +22,17 @@ class PredictionReadinessTests(unittest.TestCase):
                       'manual_hold_path': str(root / 'absent-hold')}
             memory = {'MemTotal': 24 * GIB, 'MemAvailable': 7 * GIB,
                       'SwapTotal': 8 * GIB, 'SwapFree': 0}
+            original_read_text = Path.read_text
+            def telemetry(path, *args, **kwargs):
+                if str(path) == '/proc/meminfo':
+                    return ''.join(f'{key}: {value//1024} kB\n' for key, value in memory.items())
+                if str(path) == '/proc/pressure/memory':
+                    return 'full avg10=0 avg60=0 avg300=0 total=0\n'
+                return original_read_text(path, *args, **kwargs)
             with patch('historical_training.resident_resource_guard.parse_meminfo', return_value=memory), \
+                 patch.object(Path, 'read_text', new=telemetry), \
+                 patch('historical_training.resident_resource_guard.collect_resource_attribution',
+                       return_value={'diagnostic_only': True, 'partial': True}), \
                  patch('historical_training.resident_resource_guard.parse_full_psi',
                        return_value={'avg10': 0., 'avg60': 0.}), \
                  patch('historical_training.resident_live_source.refresh',

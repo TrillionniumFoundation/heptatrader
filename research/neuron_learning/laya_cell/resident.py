@@ -12,8 +12,8 @@ from .resident_data import collect
 from .resident_rewards import current as rewards_current
 from .resident_reward_cache import RewardRefreshGuard, FULL_REVERIFY_SECONDS
 from .resident_store import database,write_once,atomic,get_meta,put_meta,admit_job,complete_job
-from .promotion import RULE,rule_for_trial
-from .promotion_power import PROTOCOL
+from .promotion import RULE,rule_for_trial,check_protocol_config,protocol_for_job,validate_plan_rule
+from .promotion_power import PROTOCOL,POWER_PROTOCOLS,MATCHED_PARENT_PROTOCOL,MATCHED_PARENT_SCHEMA
 from .resident_budget import policy as budget_policy,inspect as inspect_storage
 from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,select_rows
 from . import resident_training_v2 as training_v2
@@ -139,7 +139,7 @@ def config_check(config):
  from .resident_trial_stop import check_config as check_trial_stop_config
  check_trial_stop_config(config)
  budget_policy(config)
- if config.get('promotion_protocol') not in (None,PROTOCOL):raise ContractError('UNKNOWN_PROMOTION_PROTOCOL')
+ check_protocol_config(config)
  if config.get('future_source_read_profile') is not None:
   from .resident_source_policy import RECENT,RUNTIME_PIN
   if config['future_source_read_profile']!=RECENT:raise ContractError('UNREVIEWED_FUTURE_SOURCE_PROFILE')
@@ -291,7 +291,7 @@ class Supervisor:
   return True
  def _evaluation_plan(self,job_id,candidate,job,trial,now):
   from .resident_evaluate import PUBLICATION_PROFILE
-  rule=rule_for_trial(trial,self.c.get('promotion_protocol'));start=now+FORWARD_LEAD_MS
+  rule=rule_for_trial(trial,protocol_for_job(self.c,job));start=now+FORWARD_LEAD_MS
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
    'candidate_directory':job['output_directory'],'parent_directory':job['parent_directory'],'parent_id':job['parent_id'],
    'created_at_ms':now,'start_ms':start,'outcome_end_ms':start+(rule['slots']-1)*rule['slot_spacing_ms']+rule['input_grace_ms']+rule['horizon_ms']+5000,
@@ -349,6 +349,7 @@ class Supervisor:
    plan.update(comparison)
   from .resident_hip_runtime import bind_plan
   bind_plan(self.c,plan)
+  if rule.get('schema')==MATCHED_PARENT_SCHEMA:validate_plan_rule(plan)
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):
   # This is an unadmitted handoff, not a canonical fact or owner-issued authority.
@@ -375,18 +376,26 @@ class Supervisor:
   if inspect_evaluation_queue(self.c)['pending_original_trials']:
    return
   with self.db:
-   trial=get_meta(self.db,'evaluation_trial',0)+1;put_meta(self.db,'evaluation_trial',trial)
+   if protocol_for_job(self.c,job)==MATCHED_PARENT_PROTOCOL:
+    # A configuration rollback cannot remove a frozen V3 job's history floor.
+    # Reuse the admission path's existing consistency/reservation check too.
+    self._check_power_trial_history(job)
+    from .resident_plan_admission import _unreserved_history
+    current=_unreserved_history(self)
+   else:current=get_meta(self.db,'evaluation_trial',0)
+   trial=current+1;put_meta(self.db,'evaluation_trial',trial)
   plan=self._evaluation_plan(job_id,candidate,job,trial,int(time.time()*1000))
   plan['plan_id']=digest(plan);write_once(path,plan)
   self._write_evaluation_handoff(candidate,job)
+ def _check_power_trial_history(self,config):
+  floor=config.get('promotion_legacy_trial_floor')
+  if type(floor)is not int or floor<1:raise ContractError('PROMOTION_MIGRATION_FLOOR_REQUIRED')
+  current=get_meta(self.db,'evaluation_trial',0)
+  trials=[read_json(p)['trial'] for p in Path(self.c['evaluation_directory']).glob('*/plan.json')]
+  if current<floor or not trials or max(trials)>current or max(trials)<floor or len(set(trials))!=len(trials):
+   raise ContractError('PROMOTION_TRIAL_HISTORY_RESET_OR_CONFLICT')
  def recover(self):
-  if self.c.get('promotion_protocol')==PROTOCOL:
-   floor=self.c.get('promotion_legacy_trial_floor')
-   if type(floor)is not int or floor<1:raise ContractError('PROMOTION_MIGRATION_FLOOR_REQUIRED')
-   current=get_meta(self.db,'evaluation_trial',0)
-   trials=[read_json(p)['trial'] for p in Path(self.c['evaluation_directory']).glob('*/plan.json')]
-   if current<floor or not trials or max(trials)>current or max(trials)<floor or len(set(trials))!=len(trials):
-    raise ContractError('PROMOTION_TRIAL_HISTORY_RESET_OR_CONFLICT')
+  if self.c.get('promotion_protocol') in POWER_PROTOCOLS:self._check_power_trial_history(self.c)
   for row in self.db.execute("SELECT * FROM jobs WHERE status IN ('ADMITTED','RUNNING','COMPLETED')").fetchall():
    if self.candidate_done(row):continue
    if row['status']=='COMPLETED':raise ContractError('COMMITTED_CANDIDATE_MISSING')
@@ -576,7 +585,7 @@ class Supervisor:
   rewards=self.sync_rewards()
   queue=self.reconcile_evaluation_queue()
   self._evaluation_queue_status={**queue,'evaluation_queue_checked_at_ms':int(time.time()*1000)}
-  limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
+  limit=1 if self.c.get('promotion_protocol') in POWER_PROTOCOLS else MAX_PENDING_EVALUATIONS
   if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):
    return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   if queue['viable_pending_evaluations']>=limit:
@@ -606,7 +615,7 @@ class Supervisor:
     'same_round_preflight_reused':preflight is not None}
   if queue.get('blocking_deferred_training_candidates',queue['deferred_training_candidates']):return self.write_status(storage=self.storage,state=('CANDIDATE_READY_AWAITING_FORWARD_ADMISSION' if self.c.get('future_plan_admission_profile') else 'CANDIDATE_READY_AWAITING_FROZEN_TRIAL_END'),**queue)
   pending=queue['viable_pending_evaluations']
-  pending_limit=1 if self.c.get('promotion_protocol')==PROTOCOL else MAX_PENDING_EVALUATIONS
+  pending_limit=1 if self.c.get('promotion_protocol') in POWER_PROTOCOLS else MAX_PENDING_EVALUATIONS
   if pending>=pending_limit:return self.write_status(storage=self.storage,state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',**queue)
   held=self._training_wait_preflight(now,queue)
   if held is not None:return held

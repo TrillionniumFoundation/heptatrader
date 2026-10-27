@@ -1,8 +1,9 @@
 """Prospective, same-row parent calibration comparison without another forward.
 
 The optional declaration belongs to new jobs and immutable plans. Historical
-plans retain their original outputs and qualification rules. The comparison is
-descriptive; it does not silently change selection or trading authority.
+plans retain their original outputs and qualification rules. The comparison
+record grants no selection authority. A separately selected, frozen v3 screen
+can use its scores as the primary comparison for a new forward plan.
 """
 from copy import deepcopy
 import math
@@ -194,9 +195,11 @@ def assessment(plan, observed):
                        for v in (score,child))):
             raise ContractError('PARENT_CALIBRATION_OBSERVATION_MISSING_OR_CHANGED')
         deltas.append(score-child)
+    from .promotion_power import MATCHED_PARENT_SCHEMA
+    selected = plan.get('rule', {}).get('schema') == MATCHED_PARENT_SCHEMA
     return {'comparator_id': value['comparator_id'], 'observed_pairs': len(deltas),
             'mean_brier_improvement': sum(deltas)/len(deltas) if deltas else None,
             'paired_brier': baselines.paired_brier_diagnostics(deltas),
-            'comparison_scope': value['comparison_scope'], 'selection_gate': False,
+            'comparison_scope': value['comparison_scope'], 'selection_gate': selected,
             'parameter_update_isolated': value['parameter_update_isolated'],
             'execution_profit_proven': False, 'model_or_trading_authority': False}

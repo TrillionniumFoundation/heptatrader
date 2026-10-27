@@ -1,4 +1,4 @@
-"""Verified tool scope stays bounded; unknown paths restore full CI."""
+"""Package feedback follows Python ownership; shared/native changes stay full."""
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -10,6 +10,7 @@ import tempfile
 from ci_scope import (
     docs_only, diff_paths, scope_for_paths,
     VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS, VERIFIED_HELPER_DEPENDENCIES,
+    PYTHON_LEARNING_PACKAGES,
 )
 
 
@@ -129,6 +130,8 @@ class ComponentScopeTests(unittest.TestCase):
     FULL = {"run_native": True, "run_python": True, "run_learning": True}
     PYTHON = {"run_native": False, "run_python": True, "run_learning": False}
     PYTHON_LEARNING = {"run_native": False, "run_python": True, "run_learning": True}
+    LAYA = "research/neuron_learning/laya_cell"
+    HISTORY = "research/historical_training"
 
     def setUp(self):
         box = tempfile.TemporaryDirectory()
@@ -138,262 +141,182 @@ class ComponentScopeTests(unittest.TestCase):
         fixture_paths = set(frozenset.union(*groups))
         for _, support in VERIFIED_HELPER_DEPENDENCIES.values():
             fixture_paths.update(support)
+        for support in PYTHON_LEARNING_PACKAGES.values():
+            fixture_paths.update(support)
         for path in fixture_paths:
-            target = self.root / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("pass\n")
+            self.write(path)
+        # These names are intentionally not taken from a CI module/test list.
+        for package in (self.LAYA, self.HISTORY):
+            self.write(package + "/new_readout.py", "value = 1\n")
+            self.write(package + "/tests/test_new_readout.py", "import unittest\n")
 
-    def test_verified_loader_and_installer_use_python_feedback(self):
+    def write(self, path, source="pass\n"):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source)
+        return target
+
+    def test_new_package_modules_and_tests_need_no_filename_registration(self):
+        for package in (self.LAYA, self.HISTORY):
+            source = package + "/new_readout.py"
+            test = package + "/tests/test_new_readout.py"
+            for paths in ([source], [test], [source, test, "docs/technical/new.md"]):
+                with self.subTest(paths=paths):
+                    self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON_LEARNING)
+
+    def test_actual_prediction_reuse_test_does_not_rebuild_cpp(self):
+        # A newly added regression must inherit the package's existing lanes.
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(scope_for_paths([
+            self.LAYA + "/tests/test_resident_prediction_reuse.py"], root), self.PYTHON_LEARNING)
         for path in (
-            "scripts/hepta_verified_loader.py",
-            "tests/python/test_verified_python_loader.py",
-            "scripts/install_decision_attribution.py",
-            "tests/python/test_decision_attribution_installer_readonly.py",
-            "tests/python/test_decision_attribution_prepare_upgrade.py",
+            self.LAYA + "/resident_training_v8.py", self.LAYA + "/resident_evaluate.py",
+            self.LAYA + "/resident_price_input.py", self.LAYA + "/frozen_price_numpy.py",
+            self.LAYA + "/tests/test_resident_training_v6_integration.py",
+            self.HISTORY + "/resident_live_source.py", self.HISTORY + "/value_timing_reconcile.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue((root / path).is_file())
+                self.assertEqual(scope_for_paths([path], root), self.PYTHON_LEARNING)
+
+    def test_native_shared_and_install_boundaries_still_run_every_lane(self):
+        for path in (
+            self.LAYA + "/native.py", self.LAYA + "/integrity.py",
+            self.LAYA + "/install_resident.py", self.LAYA + "/build_financial_owner.py",
+            self.LAYA + "/financial_forward_protocol.py", self.LAYA + "/resident_owner.py",
+            self.LAYA + "/tests/test_contracts.py", self.LAYA + "/__init__.py",
+            self.HISTORY + "/common.py", self.HISTORY + "/egress.py",
+            self.HISTORY + "/install_consumer.py", self.HISTORY + "/campaign_integrity.py",
+            self.LAYA + "/new_native_adapter.py", self.LAYA + "/new_schema.py",
+            "HeptaTrade/execution/new.cpp", self.LAYA + "/resident_proposal.rs",
+            "CMakeLists.txt", "systemd/heptatrader-laya-trainer.service",
+            self.LAYA + "/requirements.lock.txt", "scripts/source_json.py",
+            "scripts/ci_scope.py", "scripts/run_python_tests.py",
+            ".github/workflows/core-ci.yml", "tests/python/test_historical_training.py",
+        ):
+            self.write(path)
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+                self.assertEqual(scope_for_paths([self.LAYA + "/new_readout.py", path],
+                                                self.root), self.FULL)
+
+    def test_unknown_packages_nested_modules_and_nonpython_inputs_stay_full(self):
+        for path in (
+            "research/new_package/worker.py", self.LAYA + "/new_package/worker.py",
+            self.LAYA + "/config.json", self.HISTORY + "/data.csv",
+            self.LAYA + "/tests/fixture.py", "scripts/new_readout.py",
+            "other/research/neuron_learning/laya_cell/new_readout.py",
+        ):
+            self.write(path)
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+
+    def test_deleted_or_retyped_package_file_cannot_suppress_native_feedback(self):
+        for relative in ("new_readout.py", "tests/test_new_readout.py"):
+            path = self.LAYA + "/" + relative
+            target = self.root / path
+            target.unlink()
+            self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+            target.symlink_to(self.root / self.HISTORY / "new_readout.py")
+            self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+            target.unlink()
+            target.mkdir()
+            self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+            target.rmdir()
+            self.write(path)
+
+    def test_package_test_discovery_and_support_must_remain_available(self):
+        source = self.LAYA + "/new_readout.py"
+        test = self.root / self.LAYA / "tests/test_new_readout.py"
+        test.unlink()
+        self.assertEqual(scope_for_paths([source], self.root), self.FULL)
+        self.write(self.LAYA + "/tests/test_new_readout.py")
+        (self.root / "scripts/run_python_tests.py").unlink()
+        self.assertEqual(scope_for_paths([source], self.root), self.FULL)
+
+    def test_linked_test_directory_and_syntax_errors_restore_full(self):
+        path = self.LAYA + "/new_readout.py"
+        self.write(path, "def invalid(\n")
+        self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+        self.write(path)
+        tests = self.root / self.LAYA / "tests"
+        shutil.rmtree(tests)
+        tests.symlink_to(self.root / self.HISTORY / "tests", target_is_directory=True)
+        self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+
+    def test_verified_operators_and_mixed_package_changes_keep_existing_feedback(self):
+        for path in (
+            "scripts/hepta_nav_assurance.py", "scripts/hepta_verified_loader.py",
+            "scripts/install_decision_attribution.py", "scripts/hepta_progress.py",
+            "scripts/activate_prepared_driver.py", "tests/python/test_runtime_identity.py",
         ):
             with self.subTest(path=path):
                 self.assertEqual(scope_for_paths([path], self.root), self.PYTHON)
-        self.assertEqual(scope_for_paths([
-            "scripts/hepta_verified_loader.py", "scripts/hepta_change_watch.py",
-        ], self.root), self.PYTHON_LEARNING)
-
-    def test_helper_support_is_required_but_does_not_exempt_changes(self):
-        helpers = ["scripts/hepta_verified_loader.py", "scripts/install_decision_attribution.py"]
-        for path in (
-            "scripts/heptatrader_paper_driver.py", "scripts/hepta_decision_attribution.py",
-            "research/cost_aware/scripts/hepta_cost_driver.py", "cmake/HeptaInstall.cmake",
-        ):
+                self.assertEqual(scope_for_paths([path, self.LAYA + "/new_readout.py"], self.root),
+                                 self.PYTHON_LEARNING)
+        for path in ("scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
+                     "tests/python/test_pnl_append_ledger.py", "tests/python/test_laya_training_window.py"):
             with self.subTest(path=path):
-                self.assertEqual(scope_for_paths([path], self.root), self.FULL)
-                self.assertEqual(scope_for_paths([helpers[0], path], self.root), self.FULL)
+                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
+
+    def test_helper_support_does_not_exempt_the_production_driver(self):
+        for path in ("scripts/heptatrader_paper_driver.py", "scripts/hepta_decision_attribution.py",
+                     "research/cost_aware/scripts/hepta_cost_driver.py", "cmake/HeptaInstall.cmake",
+                     "scripts/heptatrader-user"):
+            self.assertEqual(scope_for_paths([path], self.root), self.FULL)
         support = self.root / "scripts/heptatrader_paper_driver.py"
         support.unlink()
-        for helper in helpers:
-            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
-        support.symlink_to(self.root / "scripts/hepta_maintenance_latch.py")
-        for helper in helpers:
-            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
-
-    def test_helper_import_expansion_and_invalid_source_restore_full_feedback(self):
         for helper in ("scripts/hepta_verified_loader.py", "scripts/install_decision_attribution.py"):
+            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+        (self.root / "scripts/heptatrader-user").unlink()
+        self.assertEqual(scope_for_paths(["tests/python/test_hepta_progress.py"], self.root), self.FULL)
+
+    def test_helper_new_imports_invalid_source_and_missing_tests_restore_full(self):
+        for helper in ("scripts/hepta_verified_loader.py", "scripts/install_decision_attribution.py",
+                       "scripts/hepta_progress.py"):
             for source in ("import torch\n", "import unregistered_runtime\n",
                            "from . import runtime\n", "def invalid(\n"):
+                self.write(helper, source)
                 with self.subTest(helper=helper, source=source):
-                    (self.root / helper).write_text(source)
                     self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
-            (self.root / helper).write_text("from pathlib import Path\nimport hashlib\n")
+            self.write(helper, "from pathlib import Path\nimport hashlib\n")
             self.assertEqual(scope_for_paths([helper], self.root), self.PYTHON)
-        installer = self.root / "scripts/install_decision_attribution.py"
-        installer.write_text("import hepta_verified_loader\nimport hepta_decision_attribution\n"
+        installer = "scripts/install_decision_attribution.py"
+        self.write(installer, "import hepta_verified_loader\nimport hepta_decision_attribution\n"
                              "import activate_prepared_driver\n")
-        self.assertEqual(scope_for_paths([str(installer.relative_to(self.root))], self.root), self.PYTHON)
+        self.assertEqual(scope_for_paths([installer], self.root), self.PYTHON)
+        (self.root / "tests/python/test_nav_assurance.py").unlink()
+        self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py"], self.root), self.FULL)
 
-    def test_missing_helper_restores_full_even_for_a_paired_test(self):
-        (self.root / "scripts/hepta_verified_loader.py").unlink()
-        self.assertEqual(scope_for_paths(["tests/python/test_verified_python_loader.py"], self.root), self.FULL)
+    def test_progress_marker_reader_keeps_verified_python_scope(self):
+        helper = "scripts/hepta_progress.py"
+        # Use the actual entry point so a newly integrated local import cannot
+        # silently make ordinary progress edits run unrelated native builds.
+        source = Path(__file__).resolve().parents[2] / helper
+        self.write(helper, source.read_text())
+        for path in (helper, "tests/python/test_hepta_progress.py"):
+            self.assertEqual(scope_for_paths([path], self.root), self.PYTHON)
+        for dependency in ("scripts/hepta_maintenance_latch.py",
+                           "tests/python/test_hepta_maintenance_latch.py"):
+            (self.root / dependency).unlink()
+            self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+            self.write(dependency)
 
     def test_shared_change_watcher_requires_both_consumer_test_sets(self):
-        for test_path in ("tests/python/test_pnl_journal_cache.py", "tests/python/test_source_original_proof_cache.py"):
-            target = self.root / test_path
+        for path in ("tests/python/test_pnl_journal_cache.py", "tests/python/test_source_original_proof_cache.py"):
+            target = self.root / path
             target.unlink()
             self.assertEqual(scope_for_paths(["scripts/hepta_change_watch.py"], self.root), self.FULL)
-            target.write_text("pass\n")
+            self.write(path)
 
-    def test_verified_tools_tests_and_docs_use_full_python_only(self):
-        for paths in (
-            ["scripts/hepta_nav_assurance.py"],
-            ["scripts/activate_prepared_driver.py"],
-            ["tests/python/test_activate_prepared_driver.py"],
-            ["scripts/hepta_runtime_identity.py"],
-            ["tests/python/test_runtime_identity.py"],
-            ["tests/python/test_pnl_cli.py"],
-            ["scripts/hepta_maintenance_latch.py", "scripts/hepta_pnl_report.py",
-             "tests/python/test_account_observation.py", "docs/technical/change.md"],
-        ):
+    def test_invalid_empty_and_traversing_paths_never_select_less(self):
+        for paths in (None, [], [""], [self.LAYA + "/../new_readout.py"],
+                      [self.LAYA + "/tests/../new_readout.py"], [self.LAYA + "/new_readout.py\0"],
+                      ["/" + self.LAYA + "/new_readout.py"], ["docs/../scripts/a.md"]):
             with self.subTest(paths=paths):
-                self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON)
-        self.assertEqual(scope_for_paths(["README.md", "docs/technical/a.md"], self.root),
-                         {key: False for key in self.FULL})
+                self.assertEqual(scope_for_paths(paths, self.root), self.FULL)
 
-    def test_monitors_and_baselines_keep_python_and_learning_without_native(self):
-        for path in (
-            "scripts/hepta_pnl_watch.py",
-            "scripts/hepta_change_watch.py",
-            "tests/python/test_pnl_watch_regression.py",
-            "tests/python/test_pnl_append_ledger.py",
-            "tests/python/test_pnl_bounded_view.py",
-            "tests/python/test_pnl_journal_cache.py",
-            "research/neuron_learning/laya_cell/resident.py",
-            "research/neuron_learning/laya_cell/resident_store.py",
-            "research/historical_training/resident_resource_guard.py",
-            "research/historical_training/tests/test_resident_resource_guard.py",
-            "tests/python/test_laya_training_window.py",
-            "research/historical_training/value_successor_evaluator.py",
-            "research/historical_training/value_ledger_stream.py",
-            "tests/python/test_value_successor_evaluator.py",
-            "research/neuron_learning/laya_cell/source_readiness.py",
-            "research/neuron_learning/laya_cell/verified_sealed_readiness_cache.py",
-            "research/neuron_learning/laya_cell/readiness_heartbeat.py",
-            "tests/python/test_verified_sealed_readiness_cache.py",
-            "tests/python/test_source_original_proof_cache.py",
-            "tests/python/test_fx_source_monitor_cadence.py",
-            "tests/python/test_readiness_heartbeat.py",
-            "research/neuron_learning/laya_cell/resident_price_baselines.py",
-            "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py",
-            "research/neuron_learning/laya_cell/tests/test_resident_training_v3.py",
-        ):
-            with self.subTest(path=path):
-                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
-
-    def test_mixed_verified_components_preserve_learning_feedback(self):
-        for paths in (
-            [
-                "research/neuron_learning/laya_cell/resident.py",
-                "research/historical_training/value_successor_evaluator.py",
-                "docs/technical/runtime-cost-observations.md",
-            ],
-            [
-                "scripts/hepta_pnl_watch.py",
-                "research/neuron_learning/laya_cell/resident_price_baselines.py",
-                "docs/technical/account-pnl.md",
-            ],
-            [
-                "scripts/activate_prepared_driver.py",
-                "tests/python/test_verified_sealed_readiness_cache.py",
-                "research/historical_training/RESIDENT_RESOURCE_GUARD.md",
-            ],
-        ):
-            with self.subTest(paths=paths):
-                self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON_LEARNING)
-
-    def test_learning_component_missing_or_symlinked_test_restores_full(self):
-        for implementation, test_name in (
-            ("research/neuron_learning/laya_cell/resident.py", "tests/python/test_laya_training_window.py"),
-            ("research/historical_training/value_successor_evaluator.py",
-             "research/historical_training/value_ledger_stream.py"),
-            ("scripts/hepta_pnl_watch.py", "tests/python/test_pnl_append_ledger.py"),
-            ("research/neuron_learning/laya_cell/source_readiness.py",
-             "tests/python/test_verified_sealed_readiness_cache.py"),
-            ("research/neuron_learning/laya_cell/resident_price_baselines.py",
-             "research/neuron_learning/laya_cell/tests/test_resident_price_baselines.py"),
-            ("research/neuron_learning/laya_cell/resident_training_v5.py",
-             "research/neuron_learning/laya_cell/tests/test_resident_closed_action_optimizer.py"),
-            ("research/neuron_learning/laya_cell/resident_training_v8.py",
-             "research/neuron_learning/laya_cell/tests/test_resident_price_cache.py"),
-        ):
-            with self.subTest(implementation=implementation):
-                test = self.root / test_name
-                test.unlink()
-                self.assertEqual(scope_for_paths([implementation], self.root), self.FULL)
-                test.symlink_to(self.root / implementation)
-                self.assertEqual(scope_for_paths([implementation], self.root), self.FULL)
-                test.unlink()
-                test.write_text("pass\n")
-                tool = self.root / implementation
-                tool.unlink()
-                self.assertEqual(scope_for_paths([test_name], self.root), self.FULL)
-                tool.write_text("pass\n")
-
-    def test_consumer_episode_and_value_leaves_keep_learning_without_native(self):
-        leaves = (
-            "research/historical_training/consumer_checkpoint.py",
-            "research/historical_training/install_consumer.py",
-            "research/neuron_learning/laya_cell/resident_train.py",
-            "research/neuron_learning/laya_cell/resident_training_v4.py",
-            "research/neuron_learning/laya_cell/financial_forward_source.py",
-            "research/neuron_learning/laya_cell/current100k_forward_worker.py",
-            "research/neuron_learning/laya_cell/current100k_forward.py",
-            "research/neuron_learning/laya_cell/financial_forward_evaluate.py",
-            "research/historical_training/value_timing_reconcile.py",
-            "research/historical_training/tests/test_value_predictor_resource_gate.py",
-            "research/historical_training/tests/test_resident_cache_lifecycle.py",
-        )
-        for path in leaves:
-            with self.subTest(path=path):
-                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
-        self.assertEqual(scope_for_paths(list(leaves), self.root), self.PYTHON_LEARNING)
-        self.assertEqual(scope_for_paths([leaves[0], "scripts/hepta_progress.py"],
-                                        self.root), self.PYTHON_LEARNING)
-        paired = self.root / "tests/python/test_consumer_checkpoint.py"
-        paired.unlink()
-        self.assertEqual(scope_for_paths([leaves[0]], self.root), self.FULL)
-
-    def test_current_resident_objectives_keep_learning_and_native_boundaries(self):
-        # Use the real checkout so a misspelled or absent fixture cannot pass
-        # merely because the synthetic setup copied the scope's own file list.
-        root = Path(__file__).resolve().parents[2]
-        leaves = [
-            f"research/neuron_learning/laya_cell/resident_training_v{version}.py"
-            for version in range(5, 9)
-        ] + [
-            "research/neuron_learning/laya_cell/resident_closed_action_training.py",
-            "research/neuron_learning/laya_cell/resident_price_calibration.py",
-            "research/neuron_learning/laya_cell/resident_price_calibration_v2.py",
-            "research/neuron_learning/laya_cell/resident_price_calibration_v3.py",
-            "research/neuron_learning/laya_cell/resident_parent_calibration.py",
-            "research/neuron_learning/laya_cell/resident_price_input.py",
-            "research/neuron_learning/laya_cell/tests/test_resident_training_v6_integration.py",
-            "research/neuron_learning/laya_cell/tests/test_resident_price_input_v8.py",
-        ]
-        for path in leaves:
-            with self.subTest(path=path):
-                self.assertEqual(scope_for_paths([path], root), self.PYTHON_LEARNING)
-        self.assertEqual(scope_for_paths(leaves, root), self.PYTHON_LEARNING)
-        for shared in (
-            "research/neuron_learning/laya_cell/native.py",
-            "research/neuron_learning/laya_cell/integrity.py",
-            "research/neuron_learning/laya_cell/install_resident.py",
-            "CMakeLists.txt",
-            ".github/workflows/core-ci.yml",
-        ):
-            with self.subTest(shared=shared):
-                self.assertEqual(scope_for_paths([leaves[0], shared], root), self.FULL)
-
-    def test_progress_scope_requires_installation_support_and_stdlib_imports(self):
-        observer = "scripts/hepta_progress.py"
-        paired = "tests/python/test_hepta_progress.py"
-        self.assertEqual(scope_for_paths([observer, paired], self.root), self.PYTHON)
-        source = self.root / observer
-        source.write_text("import torch\n")
-        self.assertEqual(scope_for_paths([observer], self.root), self.FULL)
-        source.write_text("import pathlib\nimport subprocess\n")
-        self.assertEqual(scope_for_paths([observer], self.root), self.PYTHON)
-        self.assertEqual(scope_for_paths([observer, "scripts/heptatrader-user"],
-                                        self.root), self.FULL)
-        (self.root / "scripts/heptatrader-user").unlink()
-        self.assertEqual(scope_for_paths([paired], self.root), self.FULL)
-
-    def test_unknown_shared_ci_and_invalid_paths_restore_full(self):
-        for extra in ("scripts/unknown.py", "scripts/hepta_account_pnl.py",
-                      "research/neuron_learning/laya_cell/integrity.py",
-                      "research/neuron_learning/laya_cell/install_resident.py",
-                      "research/neuron_learning/laya_cell/new_monitor.py",
-                      "research/neuron_learning/laya_cell/financial_forward_protocol.py",
-                      "scripts/heptatrader-user", "scripts/ci_scope.py",
-                      "scripts/run_python_tests.py", ".github/workflows/core-ci.yml",
-                      "other/hepta_nav_assurance.py", "scripts/hepta_nav_assurance.py.bak",
-                      "docs/../scripts/a.md", "requirements.txt"):
-            with self.subTest(extra=extra):
-                self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py", extra],
-                                                 self.root), self.FULL)
-                self.assertEqual(scope_for_paths(["scripts/hepta_pnl_watch.py", extra],
-                                                 self.root), self.FULL)
-        for unknown in (None, [], [""]):
-            self.assertEqual(scope_for_paths(unknown, self.root), self.FULL)
-
-    def test_missing_or_symlinked_paired_test_cannot_exempt_a_tool(self):
-        test = self.root / "tests/python/test_nav_assurance.py"
-        test.unlink()
-        self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py"], self.root), self.FULL)
-        other = self.root / "retained.py"
-        other.write_text("pass\n")
-        test.symlink_to(other)
-        self.assertEqual(scope_for_paths(["scripts/hepta_nav_assurance.py"], self.root), self.FULL)
-        tool = self.root / "scripts/hepta_pnl_report.py"
-        tool.unlink()
-        self.assertEqual(scope_for_paths(["tests/python/test_pnl_cli.py"], self.root), self.FULL)
-
-    def test_real_git_cli_emits_three_explicit_outputs_and_mixed_fallback(self):
+    def test_real_git_diff_new_module_rename_and_mixed_native_change(self):
         source = Path(__file__).resolve().parents[2] / "scripts/ci_scope.py"
         script = self.root / "scripts/ci_scope.py"
         shutil.copyfile(source, script)
@@ -416,30 +339,20 @@ class ComponentScopeTests(unittest.TestCase):
         git("add", ".")
         git("commit", "-qm", "initial fixture")
         base = git("rev-parse", "HEAD")
-        (self.root / "scripts/hepta_nav_assurance.py").write_text("value = 1\n")
+        self.write(self.LAYA + "/tests/test_added_readout.py", "import unittest\n")
         git("add", ".")
-        git("commit", "-qm", "tool change")
-        self.assertEqual(outputs(base), self.PYTHON)
-        (self.root / "research/neuron_learning/laya_cell/resident_training_v8.py").write_text(
-            "value = 2\n")
-        git("add", ".")
-        git("commit", "-qm", "resident objective change")
+        git("commit", "-qm", "add independent Python regression")
         self.assertEqual(outputs(base), self.PYTHON_LEARNING)
-        (self.root / "shared.py").write_text("value = 2\n")
+        previous = git("rev-parse", "HEAD")
+        git("mv", self.LAYA + "/new_readout.py", "outside.py")
+        git("commit", "-qm", "move out of the known package")
+        self.assertEqual(outputs(previous), self.FULL)
+        self.write("HeptaTrade/new.cpp", "int changed;\n")
         git("add", ".")
-        git("commit", "-qm", "mixed unknown")
+        git("commit", "-qm", "mixed native change")
         self.assertEqual(outputs(base), self.FULL)
         self.assertEqual(outputs("0" * 40), self.FULL)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class FrozenPriceLearningScopeTests(unittest.TestCase):
-    def test_frozen_inference_and_its_test_require_learning_feedback(self):
-        import ci_scope
-        for path in ("research/neuron_learning/laya_cell/frozen_price_numpy.py",
-                     "tests/python/test_laya_frozen_price_numpy.py"):
-            with self.subTest(path=path):
-                self.assertTrue(ci_scope.scope_for_paths([path])["run_learning"])

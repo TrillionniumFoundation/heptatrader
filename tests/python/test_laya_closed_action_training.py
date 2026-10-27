@@ -1,8 +1,12 @@
 """Original forward records, causal labels and distinct ACT pair accounting."""
 from copy import deepcopy
+from collections import Counter
 import json
+import os
+from pathlib import Path
 import stat
 import unittest
+from unittest.mock import patch
 
 import test_laya_resident_action_v2_closed_source as original
 from laya_cell import resident_closed_action_training as closed
@@ -79,6 +83,66 @@ class ClosedActionTrainingSourceTests(unittest.TestCase):
         prediction['reference_mid'] = 9
         original.save(path, prediction)
         with self.assertRaisesRegex(ContractError, 'PREDICTION_CHANGED'):
+            closed.check_source(source)
+
+    def test_original_pins_hash_each_unique_selected_file_once(self):
+        source = self.freeze()
+        calls = Counter()
+        def hashing(path):
+            calls[Path(path)] += 1
+            return sha_file(path)
+        with patch.object(closed, 'sha_file', hashing):
+            pins = closed._original_pins(self.fixture.root, source['closed_source']['rows'],
+                                         set(source['calibration_row_ids']))
+        expected = {self.fixture.dir / name for name in ('plan.json', 'qualification.json')}
+        expected.update(self.fixture.dir / ('%s-%03d.json' % (kind, slot))
+                        for kind in ('prediction', 'outcome') for slot in range(16))
+        self.assertEqual(set(calls), expected)
+        self.assertTrue(all(count == 1 for count in calls.values()))
+        self.assertEqual(pins, [{'path': str(path), 'sha256': sha_file(path)}
+                                for path in sorted(expected)])
+        self.assertEqual(pins, source['original_file_pins'])
+
+    def test_original_pin_rejects_rewrite_with_restored_mtime_during_hash(self):
+        source = self.freeze()
+        target = self.fixture.dir / 'qualification.json'
+        def hashing(path):
+            value = sha_file(path)
+            if path == target:
+                before = target.stat()
+                raw = target.read_bytes()
+                target.write_bytes(raw.replace(b'"observed":16', b'"observed":17'))
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return value
+        with patch.object(closed, 'sha_file', hashing):
+            with self.assertRaisesRegex(ContractError, 'ORIGINAL_FILE_CHANGED'):
+                closed._original_pins(self.fixture.root, source['closed_source']['rows'],
+                                      set(source['calibration_row_ids']))
+
+    def test_original_pin_rechecks_earlier_file_after_later_hash(self):
+        source = self.freeze()
+        target = self.fixture.dir / 'outcome-000.json'
+        trigger = self.fixture.dir / 'qualification.json'
+        def hashing(path):
+            value = sha_file(path)
+            if path == trigger:
+                replacement = target.with_suffix('.next')
+                replacement.write_bytes(target.read_bytes())
+                os.replace(replacement, target)
+            return value
+        with patch.object(closed, 'sha_file', hashing):
+            with self.assertRaisesRegex(ContractError, 'ORIGINAL_FILE_CHANGED'):
+                closed._original_pins(self.fixture.root, source['closed_source']['rows'],
+                                      set(source['calibration_row_ids']))
+
+    def test_next_independent_check_rehashes_qualification_bytes(self):
+        source = self.freeze()
+        self.assertEqual(closed.check_source(source), source)
+        path = self.fixture.dir / 'qualification.json'
+        # Semantic rows stay identical. Original receipt bytes must still be
+        # rehashed and compared on the next independent source verification.
+        path.write_bytes(path.read_bytes() + b'\n')
+        with self.assertRaisesRegex(ContractError, 'ORIGINAL_FILE_CHANGED'):
             closed.check_source(source)
 
     def test_relabelled_artifact_cannot_replace_actual_original_parent_correctness(self):

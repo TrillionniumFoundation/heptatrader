@@ -42,6 +42,52 @@ class ProgressTests(unittest.TestCase):
   out=self.collect()['trading'];reasons={r['reason'] for r in out['current_blockers']}
   self.assertEqual(out['permission'],'BLOCKED');self.assertIn('PERSISTENT_MAINTENANCE_HOLD',reasons)
   self.assertIn('NATIVE_KILL_SWITCH_PRESENT',reasons)
+  self.assertTrue(out['maintenance_hold']['present'])
+  self.assertEqual(out['native_stop']['origin'],'INDEPENDENT_EMPTY_NATIVE')
+  self.assertFalse(out['native_stop']['creator_verified'])
+  self.assertFalse(out['native_stop']['mtime_is_creation_time'])
+  self.assertFalse(out['native_stop']['automatic_resume'])
+ def test_native_stop_identity_is_read_only_and_does_not_claim_its_creator(self):
+  marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True)
+  for raw,origin in [(b'','INDEPENDENT_EMPTY_NATIVE'),(b'engaged\n','CLI_TAGGED_PAUSE'),
+                     (b'unknown-origin','UNRECOGNIZED_INDEPENDENT_NATIVE')]:
+   with self.subTest(origin=origin):
+    if marker.exists():marker.chmod(0o600)
+    marker.write_bytes(raw);marker.chmod(0o440);before=marker.stat()
+    with mock.patch.object(progress.subprocess,'run',side_effect=AssertionError('status cannot call resume')):
+     out=self.collect()['trading'];stop=out['native_stop']
+    self.assertEqual(stop['origin'],origin)
+    self.assertEqual(stop['metadata']['inode'],before.st_ino)
+    self.assertEqual(stop['metadata']['mtime_ms'],before.st_mtime_ns//1000000)
+    self.assertEqual(stop['origin_evidence'],'PAYLOAD_SHAPE_ONLY')
+    self.assertFalse(stop['native_release_verified']);self.assertEqual(out['permission'],'BLOCKED')
+    self.assertEqual(marker.read_bytes(),raw);self.assertEqual(marker.stat().st_ino,before.st_ino)
+  marker.unlink();out=self.collect()['trading']
+  self.assertEqual(out['native_stop']['origin'],'ABSENT')
+  self.assertEqual(out['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+  self.assertFalse((self.state/'operator-maintenance').exists())
+ def test_native_stop_never_follows_symlink_or_reads_oversized_payload(self):
+  marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True)
+  target=self.home/'unrelated-secret';target.write_bytes(b'not-a-marker')
+  marker.symlink_to(target)
+  with mock.patch.object(progress.os,'read',side_effect=AssertionError('no payload read')):
+   symlink=progress.native_stop_observation(marker,NOW)
+  self.assertTrue(symlink['present']);self.assertEqual(symlink['origin'],'UNREADABLE')
+  self.assertNotIn('sha256',symlink)
+  marker.unlink();marker.write_bytes(b'x'*4097)
+  with mock.patch.object(progress.os,'read',side_effect=AssertionError('no oversized read')):
+   oversized=progress.native_stop_observation(marker,NOW)
+  self.assertTrue(oversized['present']);self.assertIn('NOT_SMALL_REGULAR',oversized['error'])
+  self.assertEqual(target.read_bytes(),b'not-a-marker')
+ def test_marker_replacement_during_read_cannot_reuse_the_old_classification(self):
+  marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True);marker.touch()
+  original_read=progress.os.read
+  def replaced(fd,count):
+   raw=original_read(fd,count);marker.unlink();marker.write_bytes(b'engaged\n');return raw
+  with mock.patch.object(progress.os,'read',side_effect=replaced):
+   result=progress.native_stop_observation(marker,NOW)
+  self.assertEqual(result['origin'],'UNREADABLE');self.assertIn('MARKER_CHANGED',result['error'])
+  self.assertNotIn('sha256',result)
  def test_pause_needs_fresh_matching_process(self):
   p=self.state/'paper-driver/state.json'
   state={'resident_loop_progress':{'at_ms':NOW,'pid':8},'entry_inference_pause':{'checked_at_ms':NOW,'reason_code':'NATIVE_KILL_SWITCH_PRESENT'}}
@@ -161,6 +207,19 @@ class ProgressTests(unittest.TestCase):
   rendered=progress.format_text(out)
   self.assertIn('"active_prediction_workers":0',rendered);self.assertIn('"source_scan_performed":false',rendered)
   self.assertIn('"freshness":"STALE"',rendered.splitlines()[1])
+ def test_admission_attribution_keeps_its_original_sample_age_and_scope(self):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard'
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard)})
+  self.service('heptatrader-laya-trainer.service','historical_training.resident_resource_guard',
+   wrapper,active='active',extra=('--role','trainer'))
+  self.units['heptatrader-laya-trainer.service']['MainPID']='9'
+  attribution={'at_ms':NOW-20000,'sample_age_ms':20000,'diagnostic_only':True,
+   'partial':True,'causality':'NOT_ESTABLISHED','processes':[{'pid':123,'name':'du'}]}
+  self.write(guard/'trainer-admission.json',{'at_ms':NOW,'admit_new_worker':False,
+   'reasons':['HOST_FULL_MEMORY_PSI_PRESSURE'],'workload_attribution':attribution})
+  out=self.collect()['learning'][0]
+  self.assertEqual(out['resource_admission']['workload_attribution'],attribution)
+  self.assertIn('HOST_FULL_MEMORY_PSI_PRESSURE',{row['reason'] for row in out['current_blockers']})
  def test_calendar_wait_keeps_old_persistent_gpu_hold_current_without_admission_refresh(self):
   root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
   self.write(hold,{'created_ms':NOW-86400000,'reason':'RECURRENT_NATIVE_HIP_STARTUP_SIGSEGV'})

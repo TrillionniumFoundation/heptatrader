@@ -16,6 +16,20 @@ PSI={'avg10':0.0,'avg60':0.0}
 
 class ClosedMarketHoldTests(unittest.TestCase):
     def setUp(self):
+        # Synthetic policy inputs must not require host PSI support merely to
+        # reach the mocked parsers (containers may omit /proc/pressure).
+        original_read_text=Path.read_text
+        def telemetry(path,*args,**kwargs):
+            if str(path)=='/proc/meminfo':
+                return ''.join(f'{key}: {value//1024} kB\n' for key,value in MEM.items())
+            if str(path)=='/proc/pressure/memory':
+                return 'full avg10=0 avg60=0 avg300=0 total=0\n'
+            return original_read_text(path,*args,**kwargs)
+        reading=patch.object(Path,'read_text',new=telemetry)
+        reading.start();self.addCleanup(reading.stop)
+        attribution=patch('historical_training.resident_resource_guard.collect_resource_attribution',
+            return_value={'diagnostic_only':True,'at_ms':0,'partial':True})
+        attribution.start();self.addCleanup(attribution.stop)
         box=tempfile.TemporaryDirectory();self.addCleanup(box.cleanup)
         self.root=Path(box.name)
         self.original=self.root/'original.json'

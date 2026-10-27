@@ -151,6 +151,7 @@ git show 15853b2d04a933cea779897779e621adc8daecc9:research/historical_training/l
 
 The original finding still applies: the direct runtime path inside the Guard,
 not PYTHONPATH alone, determines the actual Supervisor and Evaluator source.
+Preserve original data and deny trading/model promotion through any migration.
 
 ## Future-only original archive source optimization
 

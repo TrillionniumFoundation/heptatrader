@@ -84,24 +84,59 @@ def parse_native_quote_reply(returncode,stdout,received,instrument):
     valid_quote(q,received,instrument)
     return q
 
-def read_source(path):
-    path=Path(path)
-    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
-    try:
-        st=os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size>MAX_BYTES or st.st_uid!=os.geteuid() or st.st_mode&0o077:
-            raise ValueError('SHADOW_SOURCE_FILE_BOUND')
-        remaining=st.st_size;parts=[]
-        while remaining:
-            part=os.read(fd,min(remaining,1024*1024))
-            if not part:raise ValueError('SOURCE_SHORT_READ')
-            parts.append(part);remaining-=len(part)
-    finally:os.close(fd)
-    raw=b''.join(parts);complete=raw[:raw.rfind(b'\n')+1]
+def _committed_size(fd,size):
+    """Locate the snapshot's final LF without retaining an unfinished tail."""
+    end=size
+    while end:
+        start=max(0,end-(1 if end==size else 65536))
+        os.lseek(fd,start,os.SEEK_SET)
+        chunk=os.read(fd,end-start)
+        if len(chunk)!=end-start:raise ValueError('SOURCE_SHORT_READ')
+        newline=chunk.rfind(b'\n')
+        if newline>=0:return start+newline+1
+        end=start
+    return 0
+
+
+def _source_chunks(fd,length,checksum):
+    remaining=length
+    while remaining:
+        chunk=os.read(fd,min(remaining,65536))
+        if not chunk:raise ValueError('SOURCE_SHORT_READ')
+        checksum.update(chunk);remaining-=len(chunk)
+        yield chunk
+
+
+def _source_lines(chunks):
+    """Bound scratch bytes while preserving bytes.splitlines() CR/LF rules."""
+    pending=b'';skip_lf=False
+    for chunk in chunks:
+        if skip_lf and chunk.startswith(b'\n'):chunk=chunk[1:]
+        skip_lf=False
+        if b'\r' not in chunk:
+            # Ordinary writer records use LF. split() already removes that
+            # terminator, avoiding a second copy and suffix checks per row.
+            lines=chunk.split(b'\n');lines[0]=pending+lines[0];pending=lines.pop()
+            for line in lines:
+                if len(line)>65536:raise ValueError('SHADOW_RECORD_BOUND')
+                yield line
+            if len(pending)>65536:raise ValueError('SHADOW_RECORD_BOUND')
+            continue
+        for part in chunk.splitlines(keepends=True):
+            ended=part.endswith((b'\r',b'\n'))
+            body=part[:-2] if part.endswith(b'\r\n') else part[:-1] if ended else part
+            if len(pending)+len(body)>65536:raise ValueError('SHADOW_RECORD_BOUND')
+            pending+=body
+            if ended:
+                yield pending
+                pending=b''
+        skip_lf=chunk.endswith(b'\r')
+    if pending:raise ValueError('SOURCE_UNCOMMITTED_PREFIX')
+
+
+def _decode_source(lines,now):
     previous='0'*64;header=None;quotes={};last=0;ended=False
-    now=int(time.time()*1000)
-    for i,line in enumerate(complete.splitlines()):
-        if len(line)>65536:raise ValueError('SHADOW_RECORD_BOUND')
+    for i,line in enumerate(lines):
         r=strict(line)
         if (r.get('schema')!=SCHEMA or r.get('sequence')!=i or r.get('previous')!=previous
             or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'})):
@@ -131,9 +166,58 @@ def read_source(path):
         elif kind=='END':ended=True
         elif kind!='FAILURE':raise ValueError('SHADOW_EVENT_KIND')
     if header is None:raise ValueError('SHADOW_HEADER_REQUIRED')
-    return header,[quotes[t] for t in sorted(quotes)],{'path':str(path),'bytes':len(complete),
-        'sha256':hashlib.sha256(complete).hexdigest(),'chain_head':previous,
-        'uncommitted_tail_bytes':len(raw)-len(complete),'ended':ended}
+    return header,[quotes[t] for t in sorted(quotes)],previous,ended
+
+
+def read_source(path,*,expected_prefix=None):
+    """Hash and decode one bounded snapshot; a sealed pin needs no prior read.
+
+    No parsed bytes or SHA receipt survive this call. Sealed reads check the
+    original path/size/END policy and bind the parsed bytes to the archive SHA,
+    then reject replacement or modification during the read. Open tails retain
+    the existing snapshot-at-open and uncommitted-last-line behavior.
+    """
+    path=Path(path)
+    if expected_prefix is not None:
+        from .integrity import ContractError
+        from .source_archive import _open_prefix,prefix_version
+        if type(expected_prefix) is not dict or expected_prefix.get('path')!=str(path):
+            raise ContractError('SOURCE_PREFIX_IDENTITY')
+        fd,st=_open_prefix(expected_prefix,sealed=True)
+    else:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        st=None
+    try:
+        if st is None:st=os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size>MAX_BYTES or st.st_uid!=os.geteuid() or st.st_mode&0o077:
+            raise ValueError('SHADOW_SOURCE_FILE_BOUND')
+        complete_size=_committed_size(fd,st.st_size)
+        os.lseek(fd,0,os.SEEK_SET)
+        checksum=hashlib.sha256();chunks=_source_chunks(fd,complete_size,checksum)
+        error=None
+        try:
+            decoded=_decode_source(_source_lines(chunks),int(time.time()*1000))
+        except (ValueError,TypeError,KeyError,AttributeError) as exc:
+            if expected_prefix is None:raise
+            error=exc
+            # Preserve archive integrity rejection before a parse error. The
+            # current chunk is already hashed; drain only the unread suffix.
+            for _ in chunks:pass
+        if expected_prefix is not None:
+            if complete_size!=st.st_size or checksum.hexdigest()!=expected_prefix['sha256']:
+                raise ContractError('SOURCE_PREFIX_HASH_CHANGED')
+            version=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,
+                              s.st_mode,s.st_uid,s.st_gid,s.st_nlink)
+            if version(os.fstat(fd))!=version(st) or prefix_version(expected_prefix,sealed=True)!=version(st):
+                raise ContractError('SOURCE_PREFIX_FILE_CHANGED')
+        if error is not None:raise error
+        header,quotes,previous,ended=decoded
+        prefix={'path':str(path),'bytes':complete_size,'sha256':checksum.hexdigest(),
+                'chain_head':previous,'uncommitted_tail_bytes':st.st_size-complete_size,'ended':ended}
+        if expected_prefix is not None and prefix!=expected_prefix:
+            raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        return header,quotes,prefix
+    finally:os.close(fd)
 
 
 def collect(root,seconds):
