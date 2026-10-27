@@ -1,5 +1,6 @@
 """Changed originals and lost observation invalidate local sealed SHA reuse."""
 import hashlib
+import errno
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from laya_cell.integrity import ContractError
 from laya_cell.verified_sealed_readiness_cache import VerifiedSealedReadinessCache
 from laya_cell import verified_sealed_readiness_cache as module
 from laya_cell import shadow_source
+from laya_cell import source_archive
 from laya_cell.integrity import canonical, digest, sha_file
 from laya_cell.resident_data import read_quotes
 from laya_cell.source_archive import inventory_index, seal
@@ -219,14 +221,22 @@ class ColdOriginalReadTests(unittest.TestCase):
         identities = {(path.stat().st_dev, path.stat().st_ino): str(path) for path in self.paths}
         counts = {str(path): 0 for path in self.paths}
         original = os.read
-        def counted(fd, size):
-            raw = original(fd, size)
+        original_preadv = getattr(os, "preadv", None)
+        def count_bytes(fd, size):
             version = os.fstat(fd)
             name = identities.get((version.st_dev, version.st_ino))
             if name is not None:
-                counts[name] += len(raw)
+                counts[name] += size
+        def counted(fd, size):
+            raw = original(fd, size)
+            count_bytes(fd, len(raw))
             return raw
-        with patch.object(os, "read", counted):
+        def counted_preadv(fd, buffers, offset, flags=0):
+            count = original_preadv(fd, buffers, offset, flags)
+            count_bytes(fd, count)
+            return count
+        with patch.object(os, "read", counted), patch.object(
+                os, "preadv", counted_preadv if original_preadv else None, create=True):
             yield counts
 
     def test_cold_miss_hashes_and_parses_each_sealed_original_in_one_read(self):
@@ -361,6 +371,111 @@ class ColdOriginalReadTests(unittest.TestCase):
                 self.read(cache)
         self.assertIsNone(cache._history)
         self.assertEqual(cache._proofs._entries, {})
+
+
+class UncachedSealedVerificationTests(unittest.TestCase):
+    """The cache hint must never alter the bytes checked or error policy."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "sealed"
+        self.raw = b"original sealed bytes" * 1000 + b"\n"
+        self.path.write_bytes(self.raw)
+        self.path.chmod(0o600)
+        self.pin = {"path": str(self.path), "bytes": len(self.raw), "ended": True,
+                    "sha256": hashlib.sha256(self.raw).hexdigest()}
+        self.real_read = os.read
+
+    def preadv(self, fd, buffers, offset, flags):
+        self.assertEqual(offset, -1)
+        self.assertEqual(flags, getattr(os, "RWF_DONTCACHE", 0x80))
+        data = self.real_read(fd, min(len(buffers[0]), 997))
+        buffers[0][:len(data)] = data
+        return len(data)
+
+    def verify(self, stats):
+        return source_archive.verify_prefix(
+            self.pin, sealed=True, prefer_uncached=True, read_stats=stats)
+
+    def test_default_archive_consumer_keeps_ordinary_read(self):
+        with patch.object(os, "preadv", side_effect=AssertionError("unexpected hint"), create=True):
+            self.assertIsNone(source_archive.verify_prefix(self.pin, sealed=True))
+
+    def test_successful_short_reads_hash_every_original_byte(self):
+        stats = {}
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", self.preadv, create=True):
+            self.assertIsNone(self.verify(stats))
+        self.assertEqual(stats["uncached_read_bytes"], len(self.raw))
+        self.assertGreater(stats["uncached_read_calls"], 1)
+        self.assertNotIn("fallback_read_bytes", stats)
+
+    def test_unsupported_hint_falls_back_once_and_still_verifies_sha(self):
+        for code in (errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS):
+            with self.subTest(code=code):
+                stats = {}
+                with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                        os, "preadv", side_effect=OSError(code, "unsupported"), create=True) as call:
+                    self.verify(stats)
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(stats["uncached_unsupported_files"], 1)
+                self.assertEqual(stats["fallback_read_bytes"], len(self.raw))
+        self.path.write_bytes(b"X" + self.raw[1:])
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", side_effect=OSError(errno.EOPNOTSUPP, "unsupported"), create=True):
+            with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_HASH_CHANGED"):
+                self.verify({})
+
+    def test_fallback_after_short_read_continues_same_file_offset(self):
+        calls = []
+        def changed_support(fd, buffers, offset, flags):
+            calls.append(None)
+            if len(calls) == 2:
+                raise OSError(errno.EOPNOTSUPP, "unsupported")
+            return self.preadv(fd, buffers, offset, flags)
+        stats = {}
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", changed_support, create=True):
+            self.verify(stats)
+        self.assertEqual(stats["uncached_read_bytes"], 997)
+        self.assertEqual(stats["fallback_read_bytes"], len(self.raw) - 997)
+        self.assertEqual(len(calls), 2)
+
+    def test_io_error_is_not_treated_as_unsupported_hint(self):
+        stats = {}
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", side_effect=OSError(errno.EIO, "read failed"), create=True):
+            with self.assertRaises(OSError) as failed:
+                self.verify(stats)
+        self.assertEqual(failed.exception.errno, errno.EIO)
+        self.assertFalse(stats)
+
+    def test_early_eof_remains_failure(self):
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", return_value=0, create=True):
+            with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_SHORT_READ"):
+                self.verify({})
+
+    def test_unavailable_api_uses_visible_ordinary_fallback(self):
+        stats = {}
+        with patch.object(os, "preadv", None, create=True):
+            self.verify(stats)
+        self.assertEqual(stats["uncached_unavailable_files"], 1)
+        self.assertEqual(stats["fallback_read_bytes"], len(self.raw))
+
+    def test_python_build_without_flags_uses_visible_ordinary_fallback(self):
+        stats = {}
+        with patch.object(source_archive.sys, "platform", "linux"), patch.object(
+                os, "preadv", side_effect=NotImplementedError("flags unavailable"), create=True) as call:
+            self.verify(stats)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(stats["uncached_unavailable_files"], 1)
+        self.assertEqual(stats["fallback_read_bytes"], len(self.raw))
+
+    def test_hint_is_not_accepted_for_an_unsealed_prefix(self):
+        with self.assertRaisesRegex(ContractError, "UNCACHED_READ_REQUIRES_SEALED_PREFIX"):
+            source_archive.verify_prefix(self.pin, prefer_uncached=True)
 
 
 class SharedChangeWatchTests(unittest.TestCase):

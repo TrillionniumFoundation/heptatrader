@@ -187,16 +187,26 @@ This is an internal C++ interface cleanup, not a change to HSL8, HSS1 or HEX1.
 `Put` and `Replace` share mutable-record shape validation; historical decoding
 keeps its version-specific restrictions. All prior migration tests remain.
 
-## Active user-PAPER owner resumption
+## Exact user-PAPER owner resumption
 
 `paper-resume` is an explicit user-custodian operation on an existing PAPER token
 and exact lease generation, not provisioning. Admission audit capacity is required
 before any state change. The existing lease write-ahead transaction, active owner
 locks and audit trail apply. A non-fencing owner audit precedes native fence release;
 failed audit preserves the prior lease while keeping entry blocked at Execution.
-Terminal/recovery-only lease records are excluded. An active user lease with an
-old Execution-only recovery marker may be resumed after native audit; this does
-not re-provision or revive a revoked bearer. See the
+The operation accepts an active user lease with an Execution-only recovery marker
+or an unexpired, exact user-PAPER recovery-only receiver restored by the existing
+startup path. The receiver must still exist in the host catalog. The same token,
+generation, account and domain must agree across durable records, with no pending
+or completed durable fence, conflicting owner record or finalization state.
+
+`RestoreLeases` bounds the recovery receiver by its original expiry, including a
+second expiry check after the native audit. Expired, revoked and terminal owners
+remain on their existing recovery/finalization paths; a surviving token file or
+durable row does not establish resume eligibility. Only `paper-resume` carries
+the capability to clear the accepted receiver's recovery-only flag after audit;
+ordinary `renew` and `renew-active` cannot do so. This does not re-provision or
+revive a revoked bearer. See the
 [user recovery contract](../technical/user-paper-runtime.md#audited-owner-fence-recovery).
 
 ## Held-position active lease continuation

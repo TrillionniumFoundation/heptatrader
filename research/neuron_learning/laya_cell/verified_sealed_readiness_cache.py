@@ -85,6 +85,7 @@ class _SealedOriginalProofs:
         self._signature = None
         self._full_at = self._last_clock = self._last_wall = None
         self.full_verifications = self.full_bytes = self.reuses = self.invalidations = 0
+        self.read_stats = {}
         self.last_full_wall_ms = None
 
     def close(self):
@@ -124,7 +125,10 @@ class _SealedOriginalProofs:
         if reused:
             self.reuses += 1
         else:
-            verify_prefix(pin, sealed=True)
+            # This path only rechecks the SHA; cold decode and other archive
+            # consumers keep their normal cache behavior. No extra full read.
+            verify_prefix(pin, sealed=True, prefer_uncached=True,
+                          read_stats=self.read_stats)
             self.full_verifications += 1
             self.full_bytes += pin["bytes"]
             self._full_count += 1
@@ -198,6 +202,8 @@ class _SealedOriginalProofs:
             "original_proof_reuses": self.reuses,
             "original_proof_invalidations": self.invalidations,
             "original_proof_last_full_at_ms": self.last_full_wall_ms,
+            "sealed_reverify_read_policy": "OPTIONAL_RWF_DONTCACHE",
+            "sealed_reverify_io": dict(self.read_stats),
         }
 
 

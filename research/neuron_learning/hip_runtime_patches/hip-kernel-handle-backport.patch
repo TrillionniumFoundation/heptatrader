@@ -1,0 +1,222 @@
+--- a/projects/clr/hipamd/src/hip_code_object.cpp
++++ b/projects/clr/hipamd/src/hip_code_object.cpp
+@@ -154,12 +154,6 @@
+   }
+   *count = functions_.size();
+   return hipSuccess;
+-}
+-
+-bool DynCO::isValidDynFunc(const void* hfunc) {
+-  std::scoped_lock lock(dclock_);
+-  return std::any_of(functions_.begin(), functions_.end(),
+-                     [&](auto& it) { return it.second->IsValidDynFunc(hfunc); });
+ }
+ 
+ hipError_t DynCO::initDynManagedVars(const std::string& managedVar) {
+@@ -553,7 +547,7 @@
+   // Lazy load
+   FatBinaryInfo** module = it->second->ModuleInfo();
+   if (*(module) == nullptr) {
+-    std::ignore = DigestFatBinary(module_to_hostModule_[module], *module);
++    IHIP_RETURN_ONFAIL(DigestFatBinary(module_to_hostModule_[module], *module));
+   }
+ 
+   return it->second->GetStatFuncAttr(func_attr, deviceId);
+@@ -584,7 +578,7 @@
+   // Lazy load
+   FatBinaryInfo** module = it->second->ModuleInfo();
+   if (*(module) == nullptr) {
+-    std::ignore = DigestFatBinary(module_to_hostModule_[module], *module);
++    IHIP_RETURN_ONFAIL(DigestFatBinary(module_to_hostModule_[module], *module));
+   }
+ 
+   amd::Memory* mem = nullptr;
+@@ -633,7 +627,7 @@
+         // Lazy load
+         FatBinaryInfo** module = var->ModuleInfo();
+         if (*(module) == nullptr) {
+-          std::ignore = DigestFatBinary(module_to_hostModule_[module], *module);
++          IHIP_RETURN_ONFAIL(DigestFatBinary(module_to_hostModule_[module], *module));
+         }
+         hip::Stream* stream = g_devices.at(deviceId)->NullStream();
+         if (stream == nullptr) {
+--- a/projects/clr/hipamd/src/hip_code_object.hpp
++++ b/projects/clr/hipamd/src/hip_code_object.hpp
+@@ -108,7 +108,6 @@
+   // Gets GlobalVar/Functions from a dynamically loaded code object
+   hipError_t getDynFunc(hipFunction_t* hfunc, const std::string& func_name);
+   hipError_t getFuncCount(unsigned int* count);
+-  bool isValidDynFunc(const void* hfunc);
+   hipError_t GetDeviceVar(amd::Memory** mem, const std::string& var_name);
+   hip::Var* getVar(const std::string& var_name);
+ 
+--- a/projects/clr/hipamd/src/hip_global.cpp
++++ b/projects/clr/hipamd/src/hip_global.cpp
+@@ -9,6 +9,7 @@
+ #include "hip/hip_runtime.h"
+ #include "hip_internal.hpp"
+ #include "hip_code_object.hpp"
++#include "hip_platform.hpp"
+ #include "platform/program.hpp"
+ #include <hip/hip_version.h>
+ 
+@@ -52,6 +53,7 @@
+ Function::~Function() {
+   for (auto& kernel : dFunc_) {
+     if (kernel != nullptr) {
++      PlatformState::Instance().UnregisterFuncHandle(asHipFunction(kernel));
+       kernel->release();
+     }
+   }
+@@ -62,7 +64,9 @@
+   amd::Program* program = as_amd(reinterpret_cast<cl_program>(hmod));
+   const amd::Symbol* symbol = program->findSymbol(name_.c_str());
+   guarantee(symbol != nullptr, "Cannot find Symbol with name: %s", name_.c_str());
+-  return new amd::Kernel(*program, *symbol, name_);
++  auto* kernel = new amd::Kernel(*program, *symbol, name_);
++  PlatformState::Instance().RegisterFuncHandle(asHipFunction(kernel));
++  return kernel;
+ }
+ 
+ // ================================================================================================
+@@ -74,11 +78,6 @@
+   }
+   *hfunc = asHipFunction(dFunc_[dev]);
+   return hipSuccess;
+-}
+-
+-// ================================================================================================
+-bool Function::IsValidDynFunc(const void* hfunc) {
+-  return (hfunc == asHipFunction(dFunc_[ihipGetDevice()]));
+ }
+ 
+ // ================================================================================================
+--- a/projects/clr/hipamd/src/hip_global.hpp
++++ b/projects/clr/hipamd/src/hip_global.hpp
+@@ -38,7 +38,6 @@
+   ~Function();
+ 
+   hipError_t GetDynFunc(hipFunction_t* hfunc, hipModule_t hmod);
+-  bool IsValidDynFunc(const void* hfunc);
+   hipError_t GetStatFunc(hipFunction_t* hfunc, int deviceId);
+   hipError_t GetStatFuncAttr(hipFuncAttributes* func_attr, int deviceId);
+   void ResizeDFunc(size_t size) { dFunc_.resize(size); }
+--- a/projects/clr/hipamd/src/hip_module.cpp
++++ b/projects/clr/hipamd/src/hip_module.cpp
+@@ -189,7 +189,7 @@
+ 
+   hipError_t err = PlatformState::Instance().StatCO().GetFunc(&h_func, func, ihipGetDevice());
+   if (h_func == nullptr) {
+-    if (PlatformState::Instance().IsValidDynFunc(func)) {
++    if (PlatformState::Instance().IsValidFuncHandle(func)) {
+       h_func = reinterpret_cast<hipFunction_t>(const_cast<void*>(func));
+     } else {
+       return hipErrorInvalidDeviceFunction;
+@@ -220,7 +220,7 @@
+ 
+   hipError_t err = PlatformState::Instance().StatCO().GetFunc(&h_func, func, ihipGetDevice());
+   if (h_func == nullptr) {
+-    if (PlatformState::Instance().IsValidDynFunc((func))) {
++    if (PlatformState::Instance().IsValidFuncHandle((func))) {
+       h_func = reinterpret_cast<hipFunction_t>(const_cast<void*>(func));
+     } else {
+       HIP_RETURN(hipErrorInvalidDeviceFunction);
+--- a/projects/clr/hipamd/src/hip_platform.cpp
++++ b/projects/clr/hipamd/src/hip_platform.cpp
+@@ -698,23 +698,25 @@
+   const int deviceId = hip::Stream::DeviceId(stream);
+ 
+   const auto [hip_error, func] = [&]() -> std::pair<hipError_t, hipFunction_t> {
+-    hipFunction_t f;
++    hipFunction_t f = nullptr;
+     const hipError_t err = PlatformState::Instance().StatCO().GetFunc(&f, hostFunction, deviceId);
+-    
+-    // Propagate specific invalid code object errors
+-    if (err == hipErrorInvalidKernelFile ||
+-        err == hipErrorInvalidDeviceFunction ||
+-        err == hipErrorInvalidImage) {
+-      return {err, nullptr};
+-    }
+-    
++
+     // If successful lookup with valid function, use it
+     if (err == hipSuccess && f) {
+       return {hipSuccess, f};
+     }
+-    
+-    // Fallback: assume it's a hip function type
+-    return {hipSuccess, reinterpret_cast<hipFunction_t>(const_cast<void*>(hostFunction))};
++
++    // Not in the registered table: only a hipFunction_t from a dynamically loaded
++    // module can be cast, any other pointer would fault on dereference.
++    if (err == hipErrorInvalidSymbol) {
++      if (PlatformState::Instance().IsValidFuncHandle(hostFunction)) {
++        return {hipSuccess, reinterpret_cast<hipFunction_t>(const_cast<void*>(hostFunction))};
++      }
++      return {hipErrorInvalidDeviceFunction, nullptr};
++    }
++
++    // Propagate all other errors
++    return {err, nullptr};
+   }();
+ 
+   if (hip_error != hipSuccess) {
+@@ -1110,13 +1112,6 @@
+ }
+ 
+ // ================================================================================================
+-bool PlatformState::IsValidDynFunc(const void* hfunc) {
+-  std::scoped_lock lock(lock_);
+-  return std::any_of(dynCO_map_.begin(), dynCO_map_.end(),
+-                     [hfunc](const auto& entry) { return entry.second->isValidDynFunc(hfunc); });
+-}
+-
+-// ================================================================================================
+ hipError_t PlatformState::GetDynGlobalVar(const char* hostVar, hipModule_t hmod,
+                                           hipDeviceptr_t* dev_ptr, size_t* size_ptr) {
+   std::scoped_lock lock(lock_);
+--- a/projects/clr/hipamd/src/hip_platform.hpp
++++ b/projects/clr/hipamd/src/hip_platform.hpp
+@@ -10,6 +10,8 @@
+ #include "hip_fatbin.hpp"
+ #include "device/device.hpp"
+ #include "hip_code_object.hpp"
++
++#include <unordered_set>
+ 
+ namespace hip_impl {
+ 
+@@ -26,7 +28,23 @@
+   // Dynamic Code Objects functions
+   hipError_t LoadModule(hipModule_t* module, const char* fname, const void* image = nullptr);
+   hipError_t UnloadModule(hipModule_t hmod);
+-  bool IsValidDynFunc(const void* hfunc);
++  //! Tracks kernel handles from creation to release, so IsValidFuncHandle() can
++  //! reject a pointer that never came from the runtime.
++  void RegisterFuncHandle(const void* hfunc) {
++    std::scoped_lock lock(funcHandleLock_);
++    funcHandles_.insert(hfunc);
++  }
++
++  void UnregisterFuncHandle(const void* hfunc) {
++    std::scoped_lock lock(funcHandleLock_);
++    funcHandles_.erase(hfunc);
++  }
++
++  bool IsValidFuncHandle(const void* hfunc) {
++    std::scoped_lock lock(funcHandleLock_);
++    return funcHandles_.find(hfunc) != funcHandles_.end();
++  }
++
+   hipError_t GetDynFunc(hipFunction_t* hfunc, hipModule_t hmod, const char* func_name);
+   hipError_t GetFuncCount(unsigned int* count, hipModule_t hmod);
+   hipError_t GetDynGlobalVar(const char* hostVar, hipModule_t hmod, hipDeviceptr_t* dev_ptr,
+@@ -97,6 +115,8 @@
+ 
+   //! Dynamic Code Object map, keyin module to get the corresponding object
+   std::unordered_map<hipModule_t, hip::DynCO*> dynCO_map_;
++  std::mutex funcHandleLock_;
++  std::unordered_set<const void*> funcHandles_;
+   hip::StatCO statCO_;              //!< Static Code object var
+   bool initialized_{false};         //!< Platform initialization state
+   //! Texture reference map: texRef -> (module, name)
