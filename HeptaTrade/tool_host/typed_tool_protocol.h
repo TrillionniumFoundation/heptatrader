@@ -4,7 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 struct TypedToolResultEnvelope
 {
@@ -40,6 +42,17 @@ public:
     static bool DecodeResultEnvelope(const std::string& json,
                                      TypedToolResultEnvelope& result,
                                      std::string& reason);
+
+    // Reuse the bounded result parser for native observation objects. Values
+    // remain validated JSON slices, not coerced strings/numbers. Duplicate
+    // keys at every depth and trailing input are rejected. Outputs clear on
+    // failure; callers must still validate their specific evidence schema.
+    static bool DecodeJsonObjectFields(const std::string& json,
+                                       std::map<std::string, std::string>& fields,
+                                       std::string& reason);
+    static bool DecodeJsonObjectArray(const std::string& json,
+        std::vector<std::map<std::string, std::string>>& objects,
+        std::string& reason);
 
     // Parse the full envelope and the exact approved preview payload using the
     // same bounded JSON parser. expectedTool must be risk.preview_order or

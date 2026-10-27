@@ -11,6 +11,17 @@ import stat
 import sys
 
 REQUIRE_PINNED_CLIENTS = False  # A prepared operator copy fixes this to True.
+INACTIVE_RUNTIME_SCHEMA = "heptatrader.inactive-fenced-owner-runtime.v1"
+INACTIVE_RUNTIME_SOURCES = frozenset({
+    "HeptaTrade/oms_journal.cpp",
+    "HeptaTrade/execution/execution_coordinator.cpp",
+    "HeptaTrade/execution/execution_coordinator_recovery.cpp",
+    "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp",
+    "HeptaTrade/execution/ib_paper_execution_runtime_policy.cpp",
+    "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+    "HeptaTrade/adapter_ib/ib_crypto_settlement_observation.h",
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
+})
 
 
 def _read(path: Path) -> bytes:
@@ -85,8 +96,31 @@ def load_config(root: Path):
     # Its exact bytes and file identity remain part of the existing unit proof.
     with reader.verified_binary(guard):
         pass
-    return {"native_clients": manifest["native_clients"], "native_startup_guard": guard,
-            "files": files}
+    result = {"native_clients": manifest["native_clients"], "native_startup_guard": guard,
+              "files": files}
+    runtime = manifest.get("inactive_owner_runtime")
+    if runtime is not None:
+        if (not isinstance(runtime, dict) or set(runtime) != {
+                "schema", "execution_binary", "build_receipt", "source_commit", "source_leaf_sha256"}
+                or runtime.get("schema") != INACTIVE_RUNTIME_SCHEMA
+                or "hepta_inactive_owner.py" not in files
+                or not isinstance(runtime.get("source_commit"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", runtime["source_commit"]) is None):
+            raise ValueError("INACTIVE_OWNER_RUNTIME_BINDING_INVALID")
+        reader.validate_binary_binding(runtime["execution_binary"])
+        reader.validate_binary_binding(runtime["build_receipt"])
+        leaves = runtime["source_leaf_sha256"]
+        if (not isinstance(leaves, dict) or not INACTIVE_RUNTIME_SOURCES.issubset(leaves)
+                or len(leaves) > 128 or any(not isinstance(name, str)
+                    or name.startswith("/") or ".." in Path(name).parts
+                    or not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                    for name, value in leaves.items())):
+            raise ValueError("INACTIVE_OWNER_RUNTIME_SOURCE_BINDING_INVALID")
+        # Deployment supplies the existing build evidence after comparing the
+        # compiled leaves. The explicit inactive path also verifies this
+        # receipt and the actual running image on every native proof.
+        result["inactive_owner_runtime"] = runtime
+    return result
 
 
 def exec_client(name: str, arguments: list[str], root: Path):

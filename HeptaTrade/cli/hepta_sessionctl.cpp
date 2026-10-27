@@ -1,4 +1,5 @@
 #include "hepta_sessionctl_owner_audit.h"
+#include "hepta_sessionctl_inactive_owner_audit.h"
 #include <unistd.h>
 #include "../tool_host/session_supervisor_audit_journal.h"
 #include "hepta_sessionctl_command.h"
@@ -40,6 +41,10 @@ std::string JsonEscape(const std::string& value)
 
 int main(int argc, char** argv)
 {
+    if (argc >= 2 && std::string(argv[1]) == "inactive-owner-audit")
+        return HeptaSessionCtlInactiveOwnerAudit::Run(argc, argv,
+            AgentOsRuntimeConfig::FromEnvironment(::getpid(), ::geteuid()),
+            ExecutionGatewayRuntimeConfig::FromEnvironment());
     if (argc >= 2 && std::string(argv[1]) == "owner-audit")
         return HeptaSessionCtlOwnerAudit::Run(argc, argv,
             AgentOsRuntimeConfig::FromEnvironment(::getpid(), ::geteuid()),

@@ -363,6 +363,7 @@ target_link_libraries(heptactl PRIVATE hepta_native_tool_client)
 add_executable(hepta_sessionctl
     cli/hepta_sessionctl.cpp
     cli/hepta_sessionctl_owner_audit.cpp
+    cli/hepta_sessionctl_inactive_owner_audit.cpp
     cli/hepta_sessionctl_command.cpp
     cli/hepta_sessionctl_terminal_cleanup.cpp
     tool_host/unix_session_supervisor_client.cpp

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/heptatrader-user", "scripts/hepta_maintenance_latch.py", "scripts/hepta_laya_pause.py", "scripts/hepta_progress.py", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_pnl_accounting.py", "scripts/hepta_pnl_report.py",
-    "scripts/hepta_native_reader.py", "scripts/hepta_operator_clients.py", "scripts/hepta_verified_loader.py",
+    "scripts/hepta_native_reader.py", "scripts/hepta_operator_clients.py", "scripts/hepta_verified_loader.py", "scripts/hepta_inactive_owner.py",
     "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
     "scripts/hepta_account_pnl.py", "scripts/hepta_account_observer.py", "scripts/hepta_account_activity.py",
     "scripts/hepta_nav_assurance.py",
@@ -60,6 +60,7 @@ def installed_fixture(*, readme: bool = False):
             if helper in {
                 "scripts/hepta_maintenance_latch.py",
                 "scripts/hepta_operator_clients.py",
+                "scripts/hepta_inactive_owner.py",
                 "scripts/hepta_verified_loader.py",
                 "scripts/hepta_agent_mcp_launcher.py",
                 "scripts/hepta_agent_trust_domain.py",
@@ -190,6 +191,35 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             completed = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(helpers)],
                                        capture_output=True, text=True, timeout=10)
             self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_inactive_owner_helper_is_importable_and_release_manifest_pins_installed_bytes(self) -> None:
+        with installed_fixture() as tree:
+            helpers = tree / "libexec/heptatrader"
+            installed = helpers / "hepta_inactive_owner.py"
+            self.assertEqual(installed.read_bytes(), (ROOT / "scripts/hepta_inactive_owner.py").read_bytes())
+            script = (
+                "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                "import hepta_inactive_owner, hepta_verified_loader; "
+                "assert Path(hepta_inactive_owner.__file__).resolve().parent == Path(sys.argv[1]).resolve()"
+            )
+            completed = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script, str(helpers)],
+                                       cwd=tree, capture_output=True, text=True, timeout=5)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            spec = importlib.util.spec_from_file_location("fixture_release_package", ROOT / "scripts/build_release_package.py")
+            release = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = release
+            try:
+                spec.loader.exec_module(release)
+                payload = release.collect_payload(tree)
+                try:
+                    manifest = release.build_manifest(payload, "fixture", "core", "a" * 40, 1700000000)
+                finally:
+                    release.close_payload(payload)
+            finally:
+                sys.modules.pop(spec.name, None)
+            records = [item for item in manifest["files"] if item["path"] == "libexec/heptatrader/hepta_inactive_owner.py"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["sha256"], release.sha256_file(installed))
 
     def test_private_namespace_and_mode_from_real_install(self) -> None:
         with installed_fixture() as tree:

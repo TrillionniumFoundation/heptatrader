@@ -90,5 +90,49 @@ int main() {
         }
         assert(!CanObservePhysicalCryptoPositions(true,true,9,s));
     }
+    // Ordinary configured crypto evidence may coexist with a known FX order,
+    // but cannot borrow the weaker cash-fenced settlement risk contract.
+    s=valid;s.risk.complete=true;s.risk.coherentRefreshComplete=true;
+    s.risk.accountComplete=true;s.risk.fxCashComplete=true;
+    s.risk.generation=3;s.risk.accountGeneration=4;s.risk.fxCashGeneration=5;
+    s.riskAbsorbedExposureGeneration=s.exposureGeneration;
+    s.risk.riskAbsorbedExposureGeneration=s.exposureGeneration;
+    s.terminal.exposureGeneration=s.exposureGeneration;
+    s.active.activeOrderIds.insert(77);s.active.activeOrderIdsByCorrelation["known-fx"]=77;
+    s.barrierComplete=false; // A place invalidates recovery, not this read.
+    assert(CanObserveConfiguredCryptoPositions(true,true,9,s));
+    assert(!CanObservePhysicalCryptoPositions(true,true,9,s));
+    const auto ordinary=s;
+    for(int i=0;i<22;++i) {
+        s=ordinary;
+        switch(i) {
+        case 0:s.risk.complete=false;break;
+        case 1:s.risk.coherentRefreshComplete=false;break;
+        case 2:s.risk.accountComplete=false;break;
+        case 3:s.risk.positionsComplete=false;break;
+        case 4:s.risk.fxCashComplete=false;break;
+        case 5:s.risk.generation=0;break;
+        case 6:s.risk.accountGeneration=0;break;
+        case 7:s.risk.positionsGeneration=0;break;
+        case 8:s.risk.fxCashGeneration=0;break;
+        case 9:s.risk.connectionEpoch=8;break;
+        case 10:s.active.complete=false;break;
+        case 11:s.active.connectionEpoch=8;break;
+        case 12:s.terminal.complete=false;break;
+        case 13:s.terminal.connectionEpoch=8;break;
+        case 14:s.terminalExposureGeneration=0;break;
+        case 15:s.terminal.exposureGeneration=0;break;
+        case 16:s.riskAbsorbedExposureGeneration=0;break;
+        case 17:s.risk.riskAbsorbedExposureGeneration=0;break;
+        case 18:s.postFillRiskReconciliationPending=true;break;
+        case 19:s.newConnectionEpochRequired=true;break;
+        case 20:s.callbackConflictCount=1;break;
+        case 21:s.callbackConflictMetricsSaturated=true;break;
+        }
+        assert(!CanObserveConfiguredCryptoPositions(true,true,9,s));
+    }
+    assert(!CanObserveConfiguredCryptoPositions(false,true,9,ordinary));
+    assert(!CanObserveConfiguredCryptoPositions(true,false,9,ordinary));
+    assert(!CanObserveConfiguredCryptoPositions(true,true,0,ordinary));
     std::cout<<"PASS cumulative partial-fill IDs, replay/order/correction/capacity conflicts and physical-only settlement barriers\n";
 }

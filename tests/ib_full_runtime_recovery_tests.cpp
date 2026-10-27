@@ -5,6 +5,7 @@
 #include "adapter_ib/ib_venue_correlation.h"
 #include "adapter_ib/ib_callback_economics.h"
 #include "adapter_ib/ib_admission_event_policy.h"
+#include "tool_host/typed_tool_protocol.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -912,8 +913,49 @@ static void unknownRequestErrorsStillBlockQuoteAdmission() {
               !admission.TryReserve(generation),"failed admission cannot reopen or reserve again");
     }
 }
+static void configuredCryptoPositionPayload() {
+    for (bool seeded : {false,true}) {
+        Fixture f(seeded);
+        ExecutionReadCommand read;read.context=quoteRegressionOrder(true,"configured-position-read").context;
+        read.query="portfolio.list_positions";
+        auto& policy=IbFullRuntimeRecoveryAccess::policy(*f.runtime);
+        const auto parse=[&](const std::string& json) {
+            std::map<std::string,std::string> fields;std::string reason;
+            check(TypedToolProtocol::DecodeJsonObjectFields(json,fields,reason),"native configured-position JSON: "+reason);
+            return fields;
+        };
+        const auto result=policy.ReadAuthoritativeState(read);
+        check(result.status==ExecutionCommandStatus::Accepted,"normal configured-position read accepted");
+        const auto portfolio=parse(result.detail);
+        const auto observed=parse(portfolio.at("configured_crypto_position_observation"));
+        check(portfolio.at("authoritative")=="true" && observed.at("authoritative")=="true" &&
+              observed.at("mutation_authorized")=="false" &&
+              observed.at("scope")=="\"CONFIGURED_PHYSICAL_CRYPTO\"" &&
+              observed.at("execution_service_epoch")=="\""+f.runtime->ServiceEpoch()+"\"",
+              "runtime emits explicit configured observation with current service identity");
+        std::vector<std::map<std::string,std::string>> rows;std::string reason;
+        check(TypedToolProtocol::DecodeJsonObjectArray(observed.at("positions"),rows,reason) && rows.size()==1 &&
+              rows[0].at("instrument")=="\"BTC.USD\"" &&
+              std::stod(rows[0].at("quantity"))==(seeded?.01:0.0),
+              "normal physical quantity includes explicit zero and preserves actual nonzero");
+        if(!seeded) check(portfolio.at("positions")=="[]","old portfolio legitimately omits zero BTC");
+        // A missing actual PositionEnd must remain incomplete even though a
+        // previously valid read contained an explicit zero/nonzero quantity.
+        f.shared->omitPositions=true;
+        check(f.runtime->Adapter().ReqRiskRefresh(),"start incomplete synthetic position refresh");
+        const auto incomplete=parse(policy.ReadAuthoritativeState(read).detail);
+        const auto denied=parse(incomplete.at("configured_crypto_position_observation"));
+        check(incomplete.at("authoritative")=="false" && denied.at("authoritative")=="false" &&
+              denied.at("positions")=="[]","missing end cannot masquerade as explicit zero");
+        check(f.shared->orderCalls==0,"configured observation cannot call order methods");
+    }
+}
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==1||(argc==2&&std::string(argv[1])=="--configured-crypto-observation-only")) {
+        configuredCryptoPositionPayload();
+        if(argc==2){std::cout<<"PASS actual runtime portfolio explicit zero/nonzero/incomplete crypto evidence; kernel network denied; zero order methods\n";return 0;}
+    }
     if(argc==1||(argc==2&&std::string(argv[1])=="--unquoted-control-only")) {
         unquotedControlLifecycle(true);unquotedControlLifecycle(false);
         unquotedNewEpochRejectsStillFreshOldBinding();

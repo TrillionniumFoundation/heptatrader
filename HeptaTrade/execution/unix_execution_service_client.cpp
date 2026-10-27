@@ -3,8 +3,11 @@
 #include "unix_execution_service_internal.h"
 #include <cerrno>
 #include <algorithm>
+#include <fstream>
+#include <limits>
 #include <mutex>
 #include <poll.h>
+#include <sstream>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -13,13 +16,66 @@ UnixExecutionServiceClient::UnixExecutionServiceClient(const std::string& socket
                                                        int ioTimeoutMs,
                                                        std::size_t maxResponseBytes,
                                                        const std::set<std::uint32_t>& allowedServerUids,
-                                                       int responseTimeoutMs)
-    : m_socketPath(socketPath), m_ioTimeoutMs(ioTimeoutMs),
+                                                       int responseTimeoutMs,
+                                                       std::uint32_t expectedServerPid,
+                                                       std::uint64_t expectedServerStartTicks)
+    : m_socketPath(socketPath), m_expectedServerPid(expectedServerPid),
+      m_expectedServerStartTicks(expectedServerStartTicks), m_ioTimeoutMs(ioTimeoutMs),
       m_responseTimeoutMs(responseTimeoutMs > 0 ? responseTimeoutMs : ioTimeoutMs),
       m_maxResponseBytes(maxResponseBytes), m_allowedServerUids(allowedServerUids)
 {
     if (m_allowedServerUids.empty())
         m_allowedServerUids.insert(static_cast<std::uint32_t>(::geteuid()));
+}
+
+bool UnixExecutionServiceClient::VerifyServerPeer(int fd, std::string& reason) const
+{
+    struct ucred credential;
+    socklen_t length = sizeof(credential);
+    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credential, &length) != 0 ||
+        length != sizeof(credential) || !AllowedServerPeerCredential(
+            static_cast<std::uint32_t>(credential.uid), credential.pid, m_allowedServerUids))
+    {
+        reason = "execution service peer uid rejected"; return false;
+    }
+    if (!m_expectedServerPid && !m_expectedServerStartTicks) return true;
+    if (!m_expectedServerPid || !m_expectedServerStartTicks ||
+        credential.pid <= 0 || static_cast<std::uint32_t>(credential.pid) != m_expectedServerPid)
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_MISMATCH"; return false;
+    }
+    std::ifstream input("/proc/" + std::to_string(credential.pid) + "/stat");
+    std::string line;
+    if (!std::getline(input, line) || line.size() > 8192 || line.rfind(')') == std::string::npos)
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_UNAVAILABLE"; return false;
+    }
+    std::istringstream fields(line.substr(line.rfind(')') + 1));
+    std::string token;
+    for (unsigned int i = 0; i != 20; ++i)
+        if (!(fields >> token))
+        {
+            reason = "EXECUTION_SERVICE_PEER_PROCESS_UNAVAILABLE"; return false;
+        }
+    std::uint64_t ticks = 0;
+    if (token.empty())
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_UNAVAILABLE"; return false;
+    }
+    for (char digit : token)
+    {
+        if (digit < '0' || digit > '9' || ticks >
+            (std::numeric_limits<std::uint64_t>::max() - (digit - '0')) / 10)
+        {
+            reason = "EXECUTION_SERVICE_PEER_PROCESS_UNAVAILABLE"; return false;
+        }
+        ticks = ticks * 10 + (digit - '0');
+    }
+    if (ticks != m_expectedServerStartTicks)
+    {
+        reason = "EXECUTION_SERVICE_PEER_PROCESS_MISMATCH"; return false;
+    }
+    return true;
 }
 ExecutionCommandResult UnixExecutionServiceClient::PlaceOrder(const PlaceOrderCommand& command)
 {
@@ -414,19 +470,10 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
         ::close(fd);
         return TransportFailure(commandId, "connect failed");
     }
-    if (!m_allowedServerUids.empty())
+    if (!VerifyServerPeer(fd, reason))
     {
-        struct ucred credential;
-        socklen_t credentialLength = sizeof(credential);
-        if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credential, &credentialLength) != 0 ||
-            credentialLength != sizeof(credential) ||
-            !AllowedServerPeerCredential(
-                static_cast<std::uint32_t>(credential.uid),
-                credential.pid, m_allowedServerUids))
-        {
-            ::close(fd);
-            return TransportFailure(commandId, "execution service peer uid rejected");
-        }
+        ::close(fd);
+        return TransportFailure(commandId, reason);
     }
     if (!WriteFrame(fd, requestBody, requestDeadline))
     {
@@ -496,16 +543,10 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
         ::close(fd);
         return ControlTransportFailure(commandId, "connect failed");
     }
-    struct ucred credential;
-    socklen_t credentialLength = sizeof(credential);
-    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credential, &credentialLength) != 0 ||
-        credentialLength != sizeof(credential) ||
-        !AllowedServerPeerCredential(
-            static_cast<std::uint32_t>(credential.uid),
-            credential.pid, m_allowedServerUids))
+    if (!VerifyServerPeer(fd, reason))
     {
         ::close(fd);
-        return ControlTransportFailure(commandId, "execution service peer uid rejected");
+        return ControlTransportFailure(commandId, reason);
     }
     if (!WriteFrame(fd, requestBody, requestDeadline))
     {

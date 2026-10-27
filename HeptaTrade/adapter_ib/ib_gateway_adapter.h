@@ -429,6 +429,10 @@ public:
     std::uint64_t TerminalCallbacksInFlight() const;
     std::map<std::string, double> GetAuthoritativePositionQuantities() const;
     IBPhysicalCryptoPositionObservation GetPhysicalCryptoPositionObservation() const;
+    // Complete configured contract quantities, including explicit zero rows,
+    // under one adapter lock. Requires ordinary coherent account risk; unlike
+    // settlement/recovery proof, permits known active orders in other assets.
+    IBPhysicalCryptoPositionObservation GetConfiguredCryptoPositionObservation() const;
     std::map<std::string, double>
         GetAuthoritativeFxCashPositionQuantities() const;
     std::map<std::string, IBAuthoritativeFxCashExposure>

@@ -33,7 +33,7 @@ class OperatorClientTests(unittest.TestCase):
         self.release = self.root / "release"; self.release.mkdir(mode=0o700)
         self.home = self.root / "home"; self.home.mkdir()
         self.files = ["heptatrader-user", "hepta_maintenance_latch.py", "hepta_operator_clients.py",
-                      "hepta_native_reader.py", "hepta_verified_loader.py", "hepta-user-mcp"]
+                      "hepta_native_reader.py", "hepta_verified_loader.py", "hepta_inactive_owner.py", "hepta-user-mcp"]
         for name in self.files:
             shutil.copyfile(ROOT / "scripts" / name, self.release / name)
             (self.release / name).chmod(0o500)
@@ -146,6 +146,33 @@ class OperatorClientTests(unittest.TestCase):
         result = self.invoke("session", *arguments)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["payload"]["arguments"], arguments)
+
+    def test_inactive_owner_audit_is_not_given_supervisor_arguments(self):
+        self.select()
+        arguments = ["inactive-owner-audit", "--owner", "crypto", "--phase", "held",
+                     "--execution-pid", "123", "--execution-start-ticks", "456"]
+        result = self.invoke("session", *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["payload"],
+                         {"client": "hepta-sessionctl", "arguments": arguments})
+
+    def test_optional_inactive_runtime_binding_requires_explicit_source_pins(self):
+        runtime = {"schema": clients.INACTIVE_RUNTIME_SCHEMA,
+            "execution_binary": dict(self.bindings["heptactl"]),
+            "build_receipt": {"path": str(self.guard), "sha256": sha(self.guard)},
+            "source_commit": "a" * 40,
+            "source_leaf_sha256": {name: "b" * 64 for name in clients.INACTIVE_RUNTIME_SOURCES}}
+        self.manifest["inactive_owner_runtime"] = runtime; self.write_manifest()
+        self.assertEqual(clients.load_config(self.release)["inactive_owner_runtime"], runtime)
+        for change in ("missing_source", "bad_source_hash", "unpinned_module", "incomplete_binding"):
+            candidate = copy.deepcopy(self.manifest)
+            if change == "missing_source": candidate["inactive_owner_runtime"]["source_leaf_sha256"].pop(next(iter(clients.INACTIVE_RUNTIME_SOURCES)))
+            elif change == "bad_source_hash": candidate["inactive_owner_runtime"]["source_leaf_sha256"]["wrong"] = "not-a-digest"
+            elif change == "unpinned_module": candidate["files"].pop("hepta_inactive_owner.py")
+            else: candidate["inactive_owner_runtime"].pop("build_receipt")
+            self.write_manifest(candidate)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "INACTIVE_OWNER_RUNTIME"):
+                clients.load_config(self.release)
 
     def systemd(self, argv):
         unit = argv[3]

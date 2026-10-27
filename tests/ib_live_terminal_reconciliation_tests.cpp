@@ -513,6 +513,92 @@ void TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto() {
     }
 }
 
+void TestConfiguredCryptoObservationIsExplicitAndDoesNotDrainKnownFx() {
+    // Socket-free broker callbacks exercise the actual contract resolver and
+    // adapter mutex. No order method is called by these observations.
+    for (int scenario=0;scenario<6;++scenario) {
+        Fixture f(true,true,true);
+        assert(!f.adapter.GetConfiguredCryptoPositionObservation().complete);
+        assert(f.adapter.ReqAuthoritativeOpenOrders());
+        auto active=f.Event(IBEventType::OpenOrder);active.id=77;active.brokerPermId=177;
+        active.value="Submitted";active.order.action="BUY";active.order.orderType="LMT";
+        active.order.totalQuantity=1;active.order.lmtPrice=1.18;
+        active.contract.symbol="EUR";active.contract.secType="CASH";
+        active.contract.exchange="IDEALPRO";active.contract.currency="USD";
+        std::string reason;
+        assert(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'f'),
+            active.order.orderRef,reason));
+        f.Push(active);f.Push(f.Event(IBEventType::OpenOrderEnd));
+        assert(f.adapter.GetAuthoritativeCorrelationSnapshot().activeOrderIds.count(77)==1);
+        assert(f.adapter.ReqRiskRefresh());
+        auto value=f.Event(IBEventType::AccountValue);
+        value.key="NetLiquidation:USD";value.value="1000";f.Push(value);
+        value.key="AccountReady:";value.value="true";f.Push(value);
+        value.key="CashBalance:EUR";value.value="-75000";f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        if(scenario==1 || scenario==2 || scenario==4 || scenario==5) {
+            auto position=f.Event(IBEventType::Position);
+            position.contract.symbol="BTC";position.contract.secType="CRYPTO";
+            position.contract.exchange="PAXOS";position.contract.currency="USD";
+            position.key=scenario==2 ? "BTC.alias-A" : "BTC.USD";
+            if(scenario==5) position.contract.secType="STK";
+            position.number=scenario>=4 ? 0.0 : .02;f.Push(position);
+            if(scenario==2 || scenario>=4) {
+                position.key="BTC.alias-B";position.contract.secType="CRYPTO";
+                position.number=.03;f.Push(position);
+            }
+        }
+        if(scenario!=3) f.Push(f.Event(IBEventType::PositionEnd));
+        const auto observed=f.adapter.GetConfiguredCryptoPositionObservation();
+        if(scenario==0 || scenario==1) {
+            assert(observed.complete && observed.account=="DU123" &&
+                observed.connectionEpoch==f.broker->epoch && observed.positionGeneration!=0);
+            assert(observed.positions.size()==1);
+            assert(observed.positions.at("BTC.USD")== (scenario==0 ? 0.0 : .02));
+            assert(!f.adapter.GetPhysicalCryptoPositionObservation().complete);
+            if(scenario==0) assert(!f.adapter.GetAuthoritativePositionQuantities().count("BTC.USD"));
+        } else {
+            assert(!observed.complete); // ambiguous aliases, wrong contract or absent PositionEnd
+            assert(observed.positions.empty());
+        }
+        assert(f.broker->places==0 && f.broker->cancels==0);
+    }
+}
+
+void TestConfiguredCryptoObservationCannotTurnIncompleteIdentityIntoZero() {
+    // Real position callbacks use CONID keys. A partial contract may identify
+    // the configured BTC holding even though it cannot prove an exact match.
+    // It must not become an authoritative zero, with or without a zero-valued
+    // canonical alias in the same completed Broker generation.
+    const std::vector<std::function<void(IBContractLite&)>> incomplete = {
+        [](IBContractLite& c) { c.exchange.clear(); },
+        [](IBContractLite& c) { c.exchange = "OTHER"; },
+        [](IBContractLite& c) { c.symbol.clear(); },
+        [](IBContractLite& c) { c.secType.clear(); },
+        [](IBContractLite& c) { c.currency.clear(); }};
+    for (const auto& change : incomplete) for (bool withZeroAlias : {false, true}) {
+        Fixture f(true, true, true);
+        assert(f.adapter.ReqRiskRefresh());
+        auto value = f.Event(IBEventType::AccountValue);
+        value.key = "NetLiquidation:USD"; value.value = "1000"; f.Push(value);
+        value.key = "AccountReady:"; value.value = "true"; f.Push(value);
+        value.key = "CashBalance:EUR"; value.value = "-75000"; f.Push(value);
+        f.Push(f.Event(IBEventType::AccountSummaryEnd));
+        auto position = f.Event(IBEventType::Position);
+        position.contract.symbol = "BTC"; position.contract.secType = "CRYPTO";
+        position.contract.exchange = "PAXOS"; position.contract.currency = "USD";
+        if (withZeroAlias) {
+            position.key = "BTC.USD"; position.number = 0.0; f.Push(position);
+        }
+        position.key = "CONID:12345"; position.number = .02;
+        change(position.contract); f.Push(position);
+        f.Push(f.Event(IBEventType::PositionEnd));
+        const auto observed = f.adapter.GetConfiguredCryptoPositionObservation();
+        assert(!observed.complete && observed.positions.empty());
+        assert(f.broker->places == 0 && f.broker->cancels == 0);
+    }
+}
+
 void TestCashOutsideGenerationCannotBorrowOrdinaryRiskFreshness() {
     // Reproduce the live 2026-10-09 cash epoch mismatch with a socket-free
     // synthetic Broker; this is not a live recovery, order or login.
@@ -2405,6 +2491,8 @@ int main(int argc, char** argv) {
     TestCashMonitorRedactedGenerationObservation();
     TestCashMonitorChangeRequiresFreshCoherentBrokerGeneration();
     TestDuplicateRejectedCashObservationDoesNotErasePhysicalCrypto();
+    TestConfiguredCryptoObservationIsExplicitAndDoesNotDrainKnownFx();
+    TestConfiguredCryptoObservationCannotTurnIncompleteIdentityIntoZero();
     TestCashOutsideGenerationCannotBorrowOrdinaryRiskFreshness();
     TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestExactOrderSizeParse320TerminatesOnlyCurrentBoundCashOrder();
