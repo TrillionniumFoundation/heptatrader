@@ -437,6 +437,9 @@ class VerifiedSealedReadinessCache:
                 self._cached_records -= len(records)
         sealed_indexes = {str(p): i for i, p in enumerate(feed_paths)
                           if str(p) in sealed_names}
+        # An unended v2 hole may precede later sealed originals. The number
+        # of sealed files is not necessarily their final feed index.
+        last_sealed_index = max(sealed_indexes.values(), default=-1)
         cache_floor = min((sealed_indexes[name] for name in self._cached), default=0)
         feed_names = tuple(str(p) for p in feed_paths)
         wall_ms = int(time.time() * 1000)
@@ -471,7 +474,7 @@ class VerifiedSealedReadinessCache:
             if pin is None:
                 prefixes.append(prefix)
             if earliest_ms is not None:
-                if pin is None and index == len(sealed) and history is None:
+                if pin is None and index == last_sealed_index + 1 and history is None:
                     retired = self._retired_sources(sealed, summaries, now_ms, earliest_ms)
                     historical_cutoff = max(
                         (summaries[name]["max_t"] for name in retired

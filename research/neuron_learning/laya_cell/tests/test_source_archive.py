@@ -454,4 +454,37 @@ class SourceArchiveTests(unittest.TestCase):
             cached.close()
 
 
+    def test_v2_hole_at_old_count_boundary_waits_for_later_sealed_summaries(self):
+        """A raw file at index sealed_count must not retire unseen pins."""
+        from laya_cell.verified_sealed_readiness_cache import VerifiedSealedReadinessCache
+        self._sparse_fixture()
+        hole = self.feed/'segment-00000192'/'quotes.jsonl'
+        original = hole.read_bytes().splitlines()
+        self.assertIn(b'"kind":"END"', original[-1])
+        hole.write_bytes(b'\n'.join(original[:-1]) + b'\n')
+        receipt = seal(self.c, 8)
+        self.assertEqual(receipt['sealed_segments'], 192)
+        self.assertEqual(receipt['unsealed_segments'], 7)
+        page = json.loads((directory(self.c)/'page-00000005.json').read_bytes())
+        self.assertIn(str(hole), page['skipped_paths'])
+        self.assertIn(str(self.feed/'segment-00000193'/'quotes.jsonl'),
+                      {pin['path'] for pin in page['prefixes']})
+        now = self.T + 198*30000 + 420000
+        full, fullpins = read_quotes(self.c, now)
+        earliest = now - 600000
+        cache = VerifiedSealedReadinessCache()
+        try:
+            first, firstpins = cache.read_quotes(self.c, now, earliest_ms=earliest)
+            second, secondpins = cache.read_quotes(self.c, now+1000,
+                                                  earliest_ms=earliest)
+            self.assertEqual(firstpins, fullpins)
+            self.assertEqual(secondpins, firstpins)
+            self.assertEqual(first, second)
+            self.assertTrue({q['t'] for q in full if q['t'] >= earliest}.issubset(
+                {q['t'] for q in first}))
+            verify_source_prefixes({'source_prefixes': firstpins})
+        finally:
+            cache.close()
+
+
 if __name__=='__main__':unittest.main()
