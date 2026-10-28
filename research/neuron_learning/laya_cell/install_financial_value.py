@@ -3,16 +3,13 @@ from __future__ import annotations
 import argparse,json,os,subprocess
 from pathlib import Path
 from .integrity import ContractError,read_json,sha_file,digest,canonical
+from .immutable_files import write_immutable
 from .financial_value_data import PROFILE
 
 
 def put(path,raw,mode=0o400):
  path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
- if path.exists():
-  if path.read_bytes()!=raw:raise ContractError('IMMUTABLE_FINANCIAL_RELEASE_CONFLICT')
-  return
- with path.open('xb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
- path.chmod(mode)
+ write_immutable(path,raw,mode,'IMMUTABLE_FINANCIAL_RELEASE_CONFLICT')
 
 def install(config_path,start):
  if os.geteuid()==0:raise ContractError('USER_ONLY_VALUE_SERVICE')
@@ -25,7 +22,10 @@ def install(config_path,start):
  for n in ('hepta_pnl_accounting.py','hepta_decision_attribution.py'):files['scripts/'+n]=repo/'scripts'/n
  files['bin/native']=Path(c['native_binary']);inventory={n:sha_file(p) for n,p in files.items()};identity=digest(inventory)
  root=h/'.local/share/heptatrader/financial-value/releases'/identity
- for name,path in files.items():put(root/name,path.read_bytes(),0o500 if name=='bin/native' else 0o400)
+ for name,path in files.items():
+  destination=root/name;destination.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+  write_immutable(destination,path,0o500 if name=='bin/native' else 0o400,
+   'IMMUTABLE_FINANCIAL_RELEASE_CONFLICT',inventory[name])
  c.update(value_runtime=str(root),value_runtime_sha256=inventory,financial_profile=PROFILE,financial_worker_sandbox=True,
    native_binary=str(root/'bin/native'),value_output_root=str(h/'.local/state/heptatrader/neuron-learning/financial-value-resident'/c['period_sha256']))
  config_id=digest(c);cfg=h/'.config/heptatrader-financial-value'/(config_id+'.json');put(cfg,canonical(c)+b'\n')

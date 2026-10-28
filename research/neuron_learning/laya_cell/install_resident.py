@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse,hashlib,json,os,shutil,subprocess
 from pathlib import Path
 from .integrity import ContractError,canonical,digest,read_json,sha_file
+from .immutable_files import write_immutable
 
 
 def runtime_files(source,native_binary):
@@ -34,18 +35,14 @@ def _stage(config_path):
  release=h/'.local/share/heptatrader/laya-resident/releases'/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
  for name,src in files.items():
   dst=release/name;dst.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
-  if dst.exists():
-   if sha_file(dst)!=inventory[name]:raise ContractError('IMMUTABLE_RESIDENT_RELEASE_CHANGED')
-  else:
-   with dst.open('xb') as out:out.write(src.read_bytes());out.flush();os.fsync(out.fileno())
-   dst.chmod(0o500 if name.startswith('bin/') else 0o400)
+  write_immutable(dst,src,0o500 if name.startswith('bin/') else 0o400,
+             'IMMUTABLE_RESIDENT_RELEASE_CHANGED',inventory[name])
  c.update(runtime_directory=str(release),runtime_sha256=inventory,require_worker_sandbox=True,
           native_binary=str(release/'bin/hepta-trader-neuron-native'))
  cfgdir=h/'.config/heptatrader-laya-resident';cfgdir.mkdir(mode=0o700,parents=True,exist_ok=True)
  config_id=digest({'release_id':release_id,'configuration':c})
  cfg=cfgdir/(config_id+'.json');raw=canonical(c)+b'\n'
- if cfg.exists() and cfg.read_bytes()!=raw:raise ContractError('IMMUTABLE_CONFIGURATION_CHANGED')
- if not cfg.exists():cfg.write_bytes(raw);cfg.chmod(0o400)
+ write_immutable(cfg,raw,0o400,'IMMUTABLE_CONFIGURATION_CHANGED')
  return c,release,inventory,cfg
 
 
@@ -61,8 +58,7 @@ def install(config_path,start,update_owned=False,only=None,*,stage_only=False):
    'unit_files_changed':False,'runtime_state_changed':False,'automatic_trading':False,
    'configuration_execution_validated':False}
   out=cfgdir/(config_id+'.stage.json');raw=canonical(receipt)+b'\n'
-  if out.exists() and out.read_bytes()!=raw:raise ContractError('STAGE_RECEIPT_CHANGED')
-  if not out.exists():out.write_bytes(raw);out.chmod(0o400)
+  write_immutable(out,raw,0o400,'STAGE_RECEIPT_CHANGED')
   print(json.dumps(receipt,indent=2));return receipt
  for k in ('control_directory','feed_directory','evaluation_directory','candidate_directory'):
   Path(c[k]).mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -113,7 +109,7 @@ WantedBy=default.target
    if not update_owned or '/laya-resident/releases/' not in previous or 'Description=HeptaTrader ' not in previous:
     raise ContractError('EXISTING_SERVICE_REQUIRES_EXPLICIT_UPDATE:'+name)
    backup=cfgdir/(name+'.'+sha_file(unit)+'.before')
-   if not backup.exists():backup.write_text(previous);backup.chmod(0o400)
+   write_immutable(backup,previous.encode(),0o400,'IMMUTABLE_SERVICE_BACKUP_CHANGED')
    subprocess.run(['systemctl','--user','stop',name],check=True)
    tmp=unit.with_name(unit.name+'.next');tmp.write_text(text);tmp.chmod(0o600);os.replace(tmp,unit)
   if not unit.exists():unit.write_text(text);unit.chmod(0o600)
@@ -125,8 +121,7 @@ WantedBy=default.target
   'start_requested':start,'paper_services_changed':False,'automatic_trading':False,'worker_sandbox_required':True,
   'canonical_agentd_owner_connected':False,'promotion_mode':'STATISTICAL_QUALIFICATION_THEN_WAIT_FOR_CANONICAL_OWNER'}
  out=cfgdir/(config_id+('.'+only if only else '')+'.install.json')
- if out.exists() and out.read_bytes()!=canonical(receipt)+b'\n':raise ContractError('INSTALL_RECEIPT_CHANGED')
- if not out.exists():out.write_bytes(canonical(receipt)+b'\n');out.chmod(0o400)
+ write_immutable(out,canonical(receipt)+b'\n',0o400,'INSTALL_RECEIPT_CHANGED')
  print(json.dumps(receipt,indent=2));return receipt
 
 def main():

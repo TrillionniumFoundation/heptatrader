@@ -3,12 +3,18 @@ from contextlib import ExitStack, redirect_stdout
 import io
 import json
 from pathlib import Path
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from laya_cell import install_resident as installer
 from laya_cell.integrity import ContractError, sha_file
+
+PRIVATE_PYTHON_RUN = subprocess.run
+REAL_RUNTIME_FILES = installer.runtime_files
 
 
 class ResidentStagingTests(unittest.TestCase):
@@ -111,6 +117,190 @@ class ResidentStagingTests(unittest.TestCase):
         self.run.assert_called_once_with(['systemctl', '--user', 'daemon-reload'], check=True)
         for entry in result['units'].values():
             self.assertTrue(Path(entry['path']).is_file())
+
+    def test_source_changed_after_inventory_cannot_publish_wrong_immutable_bytes(self):
+        actual = installer.sha_file
+        mutated = False
+        def changing(path):
+            nonlocal mutated
+            value = actual(path)
+            if Path(path) == self.source and not mutated:
+                self.source.write_text('VALUE = 2\n')
+                mutated = True
+            return value
+        with patch.object(installer, 'sha_file', changing):
+            with self.assertRaisesRegex(ContractError, 'IMMUTABLE_RESIDENT_RELEASE_CHANGED'):
+                self.stage()
+        self.assertTrue(mutated)
+        self.assertFalse(list(self.home.rglob('example.py')))
+        self.assertFalse(list(self.home.rglob('*.json')))
+        self.assertFalse([p for p in self.home.rglob('*') if p.is_file()])
+        self.run.assert_not_called()
+
+    def test_actual_written_bytes_are_verified_before_canonical_publication(self):
+        actual = os.fsync
+        corrupted = False
+        def corrupt(fd):
+            nonlocal corrupted
+            actual(fd)
+            path = Path(os.readlink('/proc/self/fd/' + str(fd)))
+            if path.is_relative_to(self.home) and '/releases/' in str(path) and not corrupted:
+                os.pwrite(fd, b'X', 0)
+                corrupted = True
+        with patch.object(installer.os, 'fsync', corrupt):
+            with self.assertRaisesRegex(ContractError, 'IMMUTABLE_RESIDENT_RELEASE_CHANGED'):
+                self.stage()
+        self.assertTrue(corrupted)
+        self.assertFalse([p for p in self.home.rglob('*') if p.is_file()])
+        self.run.assert_not_called()
+
+    def competing_write(self, action, target, content, mode):
+        """Inject a real competing file at either old or no-clobber publication."""
+        actual_open, actual_link = Path.open, os.link
+        actual_fd_open, actual_write = os.open, os.write
+        winner = []
+        def compete():
+            if winner:
+                return
+            fd = actual_fd_open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            try:
+                self.assertEqual(actual_write(fd, content), len(content))
+            finally:
+                os.close(fd)
+            target.chmod(mode)
+            winner.append(target.stat())
+        def open_path(path, mode='r', *args, **kwargs):
+            if path == target and any(flag in mode for flag in ('w', 'x', 'a')):
+                compete()
+            return actual_open(path, mode, *args, **kwargs)
+        def link(source, destination, *args, **kwargs):
+            if Path(destination) == target:
+                compete()
+            return actual_link(source, destination, *args, **kwargs)
+        with patch.object(Path, 'open', open_path), patch.object(installer.os, 'link', link):
+            try:
+                return action()
+            finally:
+                self.assertEqual(len(winner), 1)
+                self.assertEqual(target.read_bytes(), content)
+                self.assertEqual(target.stat().st_ino, winner[0].st_ino)
+                self.assertEqual(target.stat().st_mtime_ns, winner[0].st_mtime_ns)
+                self.assertEqual(target.stat().st_mode, winner[0].st_mode)
+
+    def receipt_target(self, kind):
+        action = self.stage if kind != 'install' else lambda: installer.install(self.config_path, False)
+        result = action()
+        config = Path(result['configuration'])
+        target = config if kind == 'configuration' else config.with_suffix('.' + kind + '.json')
+        raw = target.read_bytes()
+        target.unlink()
+        self.run.reset_mock()
+        return action, target, raw
+
+    def test_config_and_both_receipts_do_not_overwrite_concurrent_files(self):
+        reasons = {'configuration':'IMMUTABLE_CONFIGURATION_CHANGED',
+                   'stage':'STAGE_RECEIPT_CHANGED', 'install':'INSTALL_RECEIPT_CHANGED'}
+        for kind, reason in reasons.items():
+            with self.subTest(kind=kind):
+                action, target, valid = self.receipt_target(kind)
+                try:
+                    with self.assertRaisesRegex(ContractError, reason):
+                        self.competing_write(action, target, b'competing evidence\n', 0o600)
+                finally:
+                    target.unlink()
+                    target.write_bytes(valid)
+                    target.chmod(0o400)
+                self.assertEqual(len(self.run.call_args_list), int(kind == 'install'))
+
+    def test_matching_concurrent_config_and_receipts_reuse_without_touching(self):
+        for kind in ('configuration', 'stage', 'install'):
+            with self.subTest(kind=kind):
+                action, target, valid = self.receipt_target(kind)
+                self.competing_write(action, target, valid, 0o400)
+                self.assertEqual(len(self.run.call_args_list), int(kind == 'install'))
+
+    def test_existing_service_backup_collision_is_preserved_before_stop(self):
+        result = self.stage()
+        unit = self.home / '.config/systemd/user/heptatrader-laya-evaluator.service'
+        unit.parent.mkdir(parents=True)
+        unit.write_text('Description=HeptaTrader original\nExecStart=/laya-resident/releases/original/bin\n')
+        before = unit.read_bytes()
+        backup = Path(result['configuration']).parent / (unit.name + '.' + sha_file(unit) + '.before')
+        action = lambda: installer.install(self.config_path, False, True, 'evaluator')
+        with self.assertRaisesRegex(ContractError, 'IMMUTABLE_SERVICE_BACKUP_CHANGED'):
+            self.competing_write(action, backup, b'competing backup evidence\n', 0o600)
+        self.assertEqual(unit.read_bytes(), before)
+        self.run.assert_not_called()
+
+    def test_write_termination_closes_owned_descriptors_and_unpublished_temporary(self):
+        for error in (KeyboardInterrupt('operator stop'), SystemExit(7), OSError('short device')):
+            with self.subTest(error=type(error).__name__):
+                before = len(os.listdir('/proc/self/fd'))
+                with patch.object(installer.os, 'write', side_effect=error):
+                    with self.assertRaises(type(error)) as caught:
+                        self.stage()
+                self.assertIs(caught.exception, error)
+                self.assertEqual(len(os.listdir('/proc/self/fd')), before)
+                self.assertFalse([p for p in self.home.rglob('*') if p.is_file()])
+        self.run.assert_not_called()
+
+    def test_source_alias_remains_supported_but_package_is_regular_copy(self):
+        alias = self.root / 'source-alias.py'
+        alias.symlink_to(self.source)
+        self.files['learn/laya_cell/example.py'] = alias
+        result = self.stage()
+        copied = Path(result['release']) / 'learn/laya_cell/example.py'
+        self.assertFalse(copied.is_symlink())
+        self.assertEqual(copied.read_bytes(), self.source.read_bytes())
+        self.assertEqual(sha_file(copied), result['runtime_sha256']['learn/laya_cell/example.py'])
+
+    def test_actual_package_collector_includes_shared_publication_dependency(self):
+        from laya_cell import immutable_files
+        source = Path(installer.__file__).resolve().parent
+        # Leave the real collector unmocked: the future installed importer
+        # must receive both its helper and that helper's integrity dependency.
+        files = REAL_RUNTIME_FILES(source, self.binary)
+        self.assertEqual(files['learn/laya_cell/immutable_files.py'], Path(immutable_files.__file__))
+        self.assertEqual(files['learn/laya_cell/integrity.py'], source / 'integrity.py')
+        self.assertEqual(files['learn/laya_cell/install_resident.py'], Path(installer.__file__))
+        self.run.assert_not_called()
+
+    def test_source_changed_to_fifo_after_hash_is_rejected_without_blocking(self):
+        code = r'''
+import json, os, signal
+from pathlib import Path
+from unittest.mock import patch
+from laya_cell.tests.test_install_resident_staging import ResidentStagingTests
+from laya_cell import install_resident as installer
+from laya_cell.integrity import ContractError
+t=ResidentStagingTests('test_stage_creates_only_immutable_package_and_config');t.setUp()
+actual=installer.sha_file;changed=False
+def changing(path):
+ global changed
+ value=actual(path)
+ if Path(path)==t.source and not changed:
+  t.source.unlink();os.mkfifo(t.source,0o600);changed=True
+ return value
+def timeout(*_):raise TimeoutError('SOURCE_FIFO_BLOCKED')
+signal.signal(signal.SIGALRM,timeout);signal.setitimer(signal.ITIMER_REAL,1)
+try:
+ with patch.object(installer,'sha_file',changing):t.stage()
+ result={'state':'unexpected_success'}
+except ContractError as error:result={'state':'rejected','reason':str(error)}
+except TimeoutError:result={'state':'blocked'}
+finally:
+ signal.setitimer(signal.ITIMER_REAL,0);t.doCleanups()
+assert changed
+print(json.dumps(result))
+'''
+        package = Path(__file__).resolve().parents[2]
+        result = PRIVATE_PYTHON_RUN([sys.executable, '-B', '-c', code],
+            env={'PATH':'/usr/bin:/bin','PYTHONPATH':str(package),'PYTHONDONTWRITEBYTECODE':'1',
+                 'HOME':str(self.root),'TMPDIR':'/dev/shm'},
+            cwd=self.root, capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout),
+                         {'state':'rejected','reason':'IMMUTABLE_RESIDENT_RELEASE_CHANGED'})
 
 
 if __name__ == '__main__':
