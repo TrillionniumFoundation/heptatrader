@@ -24,12 +24,13 @@ def read_original_price_window(config, asof_ms):
         raise ContractError("RESIDENT_PERIOD_CHANGED")
     paths = sorted(Path(config["feed_directory"]).glob("segment-*/quotes.jsonl"))
     sealed, pages = inventory(config, paths)
+    sealed_by_path = {pin["path"]: pin for pin in sealed}
     cutoff = asof_ms-WINDOW_MS
     merged = {}
     used = []
     skipped = 0
-    for i, path in enumerate(paths):
-        pin = sealed[i] if i < len(sealed) else None
+    for path in paths:
+        pin = sealed_by_path.get(str(path))
         if pin is not None and _sealed_end_timestamp(pin) < cutoff:
             skipped += 1
             continue

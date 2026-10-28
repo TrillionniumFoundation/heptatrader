@@ -99,7 +99,8 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     archived, pages, versions = _archive_snapshot(config, paths)
     if len(archived) >= len(paths):
         raise ContractError("RECENT_SOURCE_NO_UNSEALED_TAIL")
-    unsealed = paths[len(archived):]
+    archived_by_path = {pin["path"]: pin for pin in archived}
+    unsealed = [path for path in paths if str(path) not in archived_by_path]
     quotes = {}
     prefixes = list(pages)
     for path in unsealed:
@@ -165,15 +166,17 @@ def read_original_quote_range(config, now_ms, first_ms, last_ms):
     quotes = {}
     prefixes = list(pages)
     successor_ms = None
-    for index, path in enumerate(paths):
-        if index < len(archived) and _sealed_end_timestamp(archived[index]) < first_ms:
+    archived_by_path = {pin['path']: pin for pin in archived}
+    for path in paths:
+        expected = archived_by_path.get(str(path))
+        if expected is not None and _sealed_end_timestamp(expected) < first_ms:
             continue
-        header, records, pin = (read_source(path, expected_prefix=archived[index])
-                                if index < len(archived) else read_source(path))
+        header, records, pin = (read_source(path, expected_prefix=expected)
+                                if expected is not None else read_source(path))
         if header['period_sha256'] != config['period_sha256']:
             raise ContractError('CROSS_PERIOD_FEED')
-        if index < len(archived):
-            if pin != archived[index]:
+        if expected is not None:
+            if pin != expected:
                 raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
         else:
             prefixes.append(pin)

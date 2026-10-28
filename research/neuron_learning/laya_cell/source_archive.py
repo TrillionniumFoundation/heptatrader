@@ -1,8 +1,9 @@
 """Append-only pages for complete PAPER quote segments; no source deletion.
 
 A page is an immutable hash-linked receipt for 32 original, chain-verified
-segments. Files stay at their original paths. Readers verify page links, all
-original bytes, source chains and the exact directory inventory on each read.
+END segments. Sparse pages also name skipped paths; those sources remain
+unsealed and are always read in full. Files stay at their original paths.
+Readers verify page links, original bytes and the exact covered inventory.
 Open segments are never sealed, truncated, or substituted by historical bars.
 These hashes provide tamper *evidence*; no claim of external signing.
 """
@@ -22,6 +23,7 @@ from .shadow_source import read_source, strict
 PAGE_SIZE = 32
 UNSEALED_BOUND = 128
 PAGE_SCHEMA = "heptatrader.laya-source-archive-page.v1"
+SPARSE_PAGE_SCHEMA = "heptatrader.laya-source-archive-page.v2"
 PIN_SCHEMA = "heptatrader.laya-source-archive-pin.v1"
 GENESIS = "0" * 64
 
@@ -100,6 +102,45 @@ def _append_checkpoint(root, index, page_sha):
         if fd != -1: os.close(fd)
     return item["receipt_sha256"]
 
+def _page_source_paths(doc):
+    """Every path covered by this page, including explicitly unsealed gaps."""
+    if type(doc) is not dict:
+        raise ContractError("SOURCE_ARCHIVE_PAGE_INVENTORY")
+    ordinary = {"schema", "index", "previous_sha256", "period_sha256", "prefixes"}
+    sparse = doc.get("schema") == SPARSE_PAGE_SCHEMA
+    if (set(doc) != ordinary | ({"skipped_paths"} if sparse else set())
+            or doc.get("schema") not in (PAGE_SCHEMA, SPARSE_PAGE_SCHEMA)
+            or type(doc.get("prefixes")) is not list or len(doc["prefixes"]) != PAGE_SIZE):
+        raise ContractError("SOURCE_ARCHIVE_PAGE_INVENTORY")
+    names = [pin.get("path") if isinstance(pin, dict) else None for pin in doc["prefixes"]]
+    skipped = doc.get("skipped_paths", [])
+    if (type(skipped) is not list or sparse and not 0 < len(skipped) <= UNSEALED_BOUND
+            or any(type(name) is not str for name in names + skipped)):
+        raise ContractError("SOURCE_ARCHIVE_PAGE_INVENTORY")
+    if (names != sorted(set(names)) or skipped != sorted(set(skipped))
+            or set(names).intersection(skipped) or skipped and skipped[-1] >= names[-1]):
+        raise ContractError("SOURCE_ARCHIVE_PAGE_SOURCE_ORDER")
+    return sorted(names + skipped)
+
+
+def _covered_paths(pages):
+    names = [name for page in pages for name in _page_source_paths(page)]
+    if names != sorted(set(names)):
+        raise ContractError("SOURCE_ARCHIVE_PAGE_SOURCE_ORDER")
+    return names
+
+
+def _verify_covered_inventory(config, paths, pages):
+    names = _covered_paths(pages)
+    feed = Path(config["feed_directory"])
+    if len(names) > len(paths):
+        raise ContractError("SOURCE_ARCHIVE_ORIGINAL_MISSING")
+    for i, name in enumerate(names):
+        if name != str(paths[i]) or paths[i].parent.parent != feed:
+            raise ContractError("SOURCE_ARCHIVE_REORDERED_OR_MISSING")
+    return len(names)
+
+
 def _load_pages(config):
     root = directory(config)
     if not root.exists():
@@ -119,8 +160,8 @@ def _load_pages(config):
             raise ContractError("SOURCE_ARCHIVE_PAGE_SIZE")
         raw = path.read_bytes()
         doc = read_json(path, 256 * 1024)
-        if (set(doc) != {"schema", "index", "previous_sha256", "period_sha256", "prefixes"}
-            or doc["schema"] != PAGE_SCHEMA or type(doc["index"]) is not int
+        _page_source_paths(doc)
+        if (type(doc["index"]) is not int
             or doc["index"] != i or doc["previous_sha256"] != previous
             or doc["period_sha256"] != config["period_sha256"]
             or type(doc["prefixes"]) is not list
@@ -137,6 +178,7 @@ def _load_pages(config):
         prefixes.extend(doc["prefixes"])
         pins.append(pin)
         previous = page_sha
+    _covered_paths(pages)
     return pages, prefixes, pins
 
 
@@ -259,7 +301,8 @@ def verify_page_pin(pin):
     if len(data) != pin["bytes"] or hashlib.sha256(data).hexdigest() != pin["sha256"]:
         raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
     doc = read_json(path, 256 * 1024)
-    if (data != canonical(doc) + b"\n" or doc.get("schema") != PAGE_SCHEMA
+    _page_source_paths(doc)
+    if (data != canonical(doc) + b"\n"
         or doc.get("index") != pin["index"]
         or doc.get("previous_sha256") != pin["previous_sha256"]
         or doc.get("period_sha256") != pin["period_sha256"]
@@ -300,10 +343,15 @@ def verify_archive_pin_sequence(pins):
                                    "period_sha256": period})
     if len(recorded) < len(pins):
         raise ContractError("SOURCE_ARCHIVE_PIN_NOT_CHECKPOINTED")
+    skipped = set()
     for i, pin in enumerate(pins):
         if pin != recorded[i]:
             raise ContractError("SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY")
-        verify_page_pin(pin)
+        page = verify_page_pin(pin)
+        skipped.update(page.get("skipped_paths", []))
+    # Only the frozen page prefix owns this proof. Later appended pages must
+    # not retroactively add raw-source requirements to an older dataset.
+    return skipped
 
 
 def inventory_index(config, paths):
@@ -313,13 +361,9 @@ def inventory_index(config, paths):
     The ordinary inventory() API below continues doing both checks.
     """
     pages, prefixes, pins = _load_pages(config)
-    feed = Path(config["feed_directory"])
-    if len(prefixes) > len(paths):
-        raise ContractError("SOURCE_ARCHIVE_ORIGINAL_MISSING")
-    for i, prefix in enumerate(prefixes):
-        path = paths[i]
-        if prefix.get("path") != str(path) or path.parent.parent != feed:
-            raise ContractError("SOURCE_ARCHIVE_REORDERED_OR_MISSING")
+    # v1 pages cover consecutive END sources. v2 pages explicitly retain
+    # every skipped path, preserving the same insertion/deletion fence.
+    _verify_covered_inventory(config, paths, pages)
     if len(paths) - len(prefixes) > UNSEALED_BOUND:
         raise ContractError("SOURCE_UNSEALED_SEGMENT_BOUND")
     return prefixes, pins
@@ -366,6 +410,7 @@ def _recover_complete_orphan(config, root, paths):
     if len(discovered) != len(receipts) + 1:
         raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_COUNT")
     previous = GENESIS
+    prior_pages = []
     for i, receipt in enumerate(receipts):
         path = discovered[i]
         if path.name != f"page-{i:08d}.json":
@@ -376,9 +421,9 @@ def _recover_complete_orphan(config, root, paths):
         raw = path.read_bytes()
         page = read_json(path, 256 * 1024)
         h = hashlib.sha256(raw).hexdigest()
+        _page_source_paths(page)
         if (raw != canonical(page) + b"\n" or h != receipt["page_sha256"]
             or type(page.get("index")) is not int or page["index"] != i
-            or page.get("schema") != PAGE_SCHEMA
             or page.get("previous_sha256") != previous
             or page.get("period_sha256") != config["period_sha256"]
             or type(page.get("prefixes")) is not list
@@ -386,7 +431,9 @@ def _recover_complete_orphan(config, root, paths):
             raise ContractError("SOURCE_ARCHIVE_ORPHAN_PRIOR_PROOF")
         for pin in page["prefixes"]:
             verify_prefix(pin, sealed=True)
+        prior_pages.append(page)
         previous = h
+    offset = _verify_covered_inventory(config, paths, prior_pages)
     index = len(receipts)
     path = discovered[index]
     if path.name != f"page-{index:08d}.json":
@@ -395,30 +442,34 @@ def _recover_complete_orphan(config, root, paths):
         raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
     raw = path.read_bytes()
     page = read_json(path, 256 * 1024)
+    covered = _page_source_paths(page)
     if (raw != canonical(page) + b"\n"
-        or set(page) != {"schema", "index", "previous_sha256",
-                        "period_sha256", "prefixes"}
-        or page["schema"] != PAGE_SCHEMA
         or type(page["index"]) is not int or page["index"] != index
         or page["previous_sha256"] != previous
         or page["period_sha256"] != config["period_sha256"]
         or type(page["prefixes"]) is not list
         or len(page["prefixes"]) != PAGE_SIZE):
         raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_INVALID")
-    offset = index * PAGE_SIZE
-    if len(paths) - offset < PAGE_SIZE:
+    if len(paths) - offset < len(covered):
         raise ContractError("SOURCE_ARCHIVE_ORPHAN_ORIGINAL_MISSING")
-    for j, pin in enumerate(page["prefixes"]):
-        origin = paths[offset+j]
-        if (origin.parent.name == "segment-recovery-live"
-            or pin.get("path") != str(origin)):
+    if covered != [str(path) for path in paths[offset:offset+len(covered)]]:
+        raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_REORDERED")
+    by_path = {pin["path"]: pin for pin in page["prefixes"]}
+    for name in covered:
+        origin = Path(name)
+        if origin.parent.name == "segment-recovery-live":
             raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_REORDERED")
         head, _, observed = read_source(origin)
-        if (head.get("period_sha256") != config["period_sha256"]
-            or observed != pin or observed.get("ended") is not True
-            or observed.get("uncommitted_tail_bytes") != 0):
+        if head.get("period_sha256") != config["period_sha256"]:
             raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_CHANGED")
-        verify_prefix(pin, sealed=True)
+        pin = by_path.get(name)
+        # A skipped source remains unsealed even if its writer has since
+        # completed it. Its current raw chain must still be readable.
+        if pin is not None:
+            if (observed != pin or observed.get("ended") is not True
+                    or observed.get("uncommitted_tail_bytes") != 0):
+                raise ContractError("SOURCE_ARCHIVE_ORPHAN_SOURCE_CHANGED")
+            verify_prefix(pin, sealed=True)
     _append_checkpoint(root, index, hashlib.sha256(raw).hexdigest())
     return 1
 
@@ -434,20 +485,19 @@ def _seal_locked(config, maximum_new_pages=8):
     paths = sorted(feed.glob("segment-*/quotes.jsonl"))
     recovered = _recover_complete_orphan(config, root, paths)
     pages, prior_prefixes, pins = _load_pages(config)
-    if len(prior_prefixes) > len(paths):
-        raise ContractError("SOURCE_ARCHIVE_ORIGINAL_MISSING")
-    for i, old in enumerate(prior_prefixes):
-        if old.get("path") != str(paths[i]):
-            raise ContractError("SOURCE_ARCHIVE_REORDERED_OR_MISSING")
+    offset = _verify_covered_inventory(config, paths, pages)
+    for old in prior_prefixes:
         verify_prefix(old, sealed=True)
     index = len(pages)
-    offset = len(prior_prefixes)
+    sealed_count = len(prior_prefixes)
+    skipped_count = sum(len(page.get("skipped_paths", [])) for page in pages)
     previous = pins[-1]["sha256"] if pins else GENESIS
     added = 0
     while len(paths) - offset >= PAGE_SIZE and added < maximum_new_pages:
-        subset = paths[offset:offset + PAGE_SIZE]
         current = []
-        for path in subset:
+        skipped = []
+        consumed = 0
+        for path in paths[offset:]:
             # Stable lexical inventory: recovery-live is intentionally last.
             # Never seal it, even after END, since a later numeric segment
             # would otherwise appear before the sealed recovery witness.
@@ -456,25 +506,36 @@ def _seal_locked(config, maximum_new_pages=8):
             head, _, prefix = read_source(path)
             if head["period_sha256"] != config["period_sha256"]:
                 raise ContractError("CROSS_PERIOD_FEED")
+            consumed += 1
             if not prefix["ended"] or prefix["uncommitted_tail_bytes"]:
-                break
+                skipped.append(str(path))
+                if len(skipped) > UNSEALED_BOUND:
+                    raise ContractError("SOURCE_UNSEALED_SEGMENT_BOUND")
+                continue
             verify_prefix(prefix, sealed=True)
             current.append(prefix)
+            if len(current) == PAGE_SIZE:
+                break
         if len(current) != PAGE_SIZE:
             break
         doc = {"schema": PAGE_SCHEMA, "index": index,
                "previous_sha256": previous, "period_sha256": config["period_sha256"],
                "prefixes": current}
+        if skipped:
+            doc.update(schema=SPARSE_PAGE_SCHEMA, skipped_paths=skipped)
         target = root / f"page-{index:08d}.json"
         previous = _write_once(target, doc)
         _append_checkpoint(root, index, previous)
         added += 1
         index += 1
-        offset += PAGE_SIZE
+        offset += consumed
+        sealed_count += PAGE_SIZE
+        skipped_count += len(skipped)
     return {"schema": "heptatrader.laya-archive-seal-receipt.v1",
             "period_sha256": config["period_sha256"],
             "pages_added": added, "total_pages": index,
-            "sealed_segments": offset, "unsealed_segments": len(paths) - offset,
+            "sealed_segments": sealed_count, "unsealed_segments": len(paths) - sealed_count,
+            "covered_segments": offset, "skipped_unsealed_segments": skipped_count,
             "latest_page_sha256": previous, "source_files_removed": 0,
             "recovered_fsynced_orphan_pages": recovered,
             "broker_requests_sent": 0, "orders_sent": 0}
