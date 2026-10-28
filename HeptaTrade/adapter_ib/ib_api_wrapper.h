@@ -314,6 +314,8 @@ private:
 // the sender or the SDK/EReader join path.
 enum class IBIngressFaultKind {
     None = 0,
+    // Historical label: an event blocks admission, not a callback-latency
+    // measurement. The fixed event context identifies what was observed.
     BlockingCallback,
     FarmWarningDuringAdmission,
     AuthoritativeQueueBusy,
@@ -327,6 +329,18 @@ enum class IBIngressFaultKind {
     DisconnectDuringAdmission
 };
 
+// Fixed diagnostic scalars only. Never retain an order/request id, account,
+// broker message, or other payload from the triggering callback.
+struct IBIngressFaultEvent {
+    bool known = false;
+    IBEventType type = IBEventType::None;
+    bool errorCodeKnown = false;
+    std::int32_t errorCode = 0;
+};
+
+IBIngressFaultEvent DescribeIBIngressFaultEvent(const IBEvent& event) noexcept;
+const char* IBIngressFaultEventName(IBEventType type) noexcept;
+
 // Observation only. No strings, credentials, or authorization effect.
 struct IBIngressFirstFault {
     bool pending = false;
@@ -334,6 +348,7 @@ struct IBIngressFirstFault {
     std::uint64_t monotonicNs = 0;
     std::uint64_t connectionEpoch = 0;
     std::uint64_t admissionGeneration = 0;
+    IBIngressFaultEvent event;
 };
 
 const char* IBIngressFaultKindName(IBIngressFaultKind kind);
@@ -386,6 +401,8 @@ public:
     // concurrent Begin/Reserve is still re-evaluated and blocked.
     CallbackDisposition ObserveBlockingCallback(bool faultWhileIdle = true,
         IBIngressFaultKind kind = IBIngressFaultKind::BlockingCallback);
+    CallbackDisposition ObserveBlockingCallback(bool faultWhileIdle,
+        IBIngressFaultKind kind, IBIngressFaultEvent event);
     // Records a non-callback ingress failure (for example queue contention or
     // overflow) in the same packed state word used by callback faults.
     bool MarkFault(
@@ -417,7 +434,8 @@ private:
     static std::uint64_t DecodeGeneration(std::uint64_t state);
     static bool DecodeFault(std::uint64_t state);
     void CaptureFirstFault(IBIngressFaultKind kind,
-                           std::uint64_t generation) noexcept;
+                           std::uint64_t generation,
+                           const IBIngressFaultEvent& event = IBIngressFaultEvent()) noexcept;
 
     std::atomic<std::uint64_t> m_state;
     std::atomic<std::uint64_t> m_diagnosticConnectionEpoch{0};

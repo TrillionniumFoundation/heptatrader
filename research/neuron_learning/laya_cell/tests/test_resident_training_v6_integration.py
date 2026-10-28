@@ -133,9 +133,9 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
         parent_dir.mkdir()
         torch.manual_seed(20261022)
         raw = _RawDecisionModel()
-        initial = ResidentDecisionCell(copy.deepcopy(raw), 'c' * 64)
+        initial = ResidentDecisionCell(copy.deepcopy(raw), digest({}))
         save_file(initial.trainable_state(), str(parent_dir / 'adapter.safetensors'))
-        parent = {'base_id': 'c' * 64, 'base_revision': 'tiny-cpu-fixture',
+        parent = {'base_id': digest({}), 'base_revision': 'tiny-cpu-fixture',
                   'adapter_sha256': sha_file(parent_dir / 'adapter.safetensors'),
                   'trained_until_ms': 0, 'window': {'training_end_ms': 0}}
         parent['candidate_id'] = digest(parent)
@@ -188,7 +188,7 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
             replacements = {
                 'verify_baseline': lambda *_: 'd' * 64, 'verify_source_prefixes': lambda *_: None,
                 'require_pocket4_gpu': lambda: torch.device('cpu'),
-                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), 'c' * 64),
+                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), digest({})),
                 'encode_rows': _encode, 'ResidentNative': _NativeFixture}
             for name, value in replacements.items():
                 stack.enter_context(patch.object(worker, name, value))
@@ -261,7 +261,7 @@ class ProspectiveV6IntegrationTests(unittest.TestCase):
         row = {'state': state}
         with contextlib.ExitStack() as stack:
             replacements = {
-                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), 'c' * 64),
+                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), digest({})),
                 'encode_rows': lambda tok, selected: {k: _CPUTransfer(v)
                     for k, v in _encode(tok, selected).items()},
                 'NativePorts': _NativeFixture,

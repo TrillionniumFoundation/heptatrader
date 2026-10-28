@@ -66,18 +66,20 @@ def read_quotes(config,now_ms,*,read_hints=None,training_view=None):
     # The ledger is checked here; each sealed original's SHA and strict chain
     # are checked together against that pin in its one source read below.
     sealed,pages=inventory_index(config,feed_paths)
+    sealed_by_path={pin['path']:pin for pin in sealed}
     # Completed probes remain separate immutable training sources.
     extra=[Path(x) for x in config.get('completed_history_sources',[])]
     if len(extra)>128:raise ContractError('COMPLETED_PROBE_SOURCE_BOUND')
     paths=list(dict.fromkeys(feed_paths+extra))
     if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
     quotes={};prefixes=list(pages)
-    for i,path in enumerate(paths):
-        header,records,prefix=(read_source(path,expected_prefix=sealed[i])
-                               if i<len(sealed) else read_source(path))
+    for path in paths:
+        pin=sealed_by_path.get(str(path))
+        header,records,prefix=(read_source(path,expected_prefix=pin)
+                               if pin is not None else read_source(path))
         if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
-        if i<len(sealed):
-            if prefix!=sealed[i]:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        if pin is not None:
+            if prefix!=pin:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
         else:prefixes.append(prefix)
         for q in records:
             if read_hints is not None:

@@ -4,7 +4,7 @@ Only the scheduler checks the old service; children cannot contact its bus or an
 trading endpoint. Landlock confines files and seccomp denies new network sockets.
 """
 from __future__ import annotations
-import argparse,faulthandler,json,os
+import argparse,faulthandler,json,os,time
 from pathlib import Path
 from .integrity import read_json,sha_file,ContractError
 from .resident import config_check,bootstrap_still_off
@@ -58,18 +58,21 @@ def retain_worker_locks(descriptors):
   os.set_inheritable(fd,False)
 
 
-def main():
+def _main(failure_state):
  p=argparse.ArgumentParser();p.add_argument('target',choices=['train','predict','owner-predict']);p.add_argument('--config',type=Path,required=True)
  p.add_argument('--plan',type=Path);p.add_argument('--slot',type=int)
  p.add_argument('--owner-task',type=Path);p.add_argument('--owner-task-sha256')
  p.add_argument('--held-lock-fd',type=int,action='append',default=[])
- a=p.parse_args();os.umask(0o077);retain_worker_locks(a.held_lock_fd)
+ a=p.parse_args();failure_state.update(target=a.target,phase='VALIDATE_CONFIG')
+ os.umask(0o077);retain_worker_locks(a.held_lock_fd)
  # Capture the Python call stack even when HIP fails before a JSON result.
  faulthandler.enable(all_threads=True)
  c=read_json(a.config);base=dict(c);base['schema']='heptatrader.laya-resident-config.v1';config_check(base);bootstrap_still_off()
  if c.get('require_worker_sandbox') is not True:raise ContractError('SANDBOX_REQUIRED')
  from . import resident_hip_runtime as hip_runtime
+ failure_state['phase']='PREPARE_HIP_RUNTIME'
  hip_context=hip_runtime.prepare_worker(c,a.target)
+ failure_state['hip_context']=hip_context
  if a.target=='train':
   output=Path(c['output_directory']).parent
  elif a.target=='owner-predict':
@@ -103,14 +106,29 @@ def main():
  sandbox_config={'output_dir':str(output),'period_path':c['period_path'],'legacy_capture':str(Path.home()/'.local/state/heptatrader/paper-driver/cost-observations.jsonl'),
   'oms_path':c['oms_path'],'export_dir':c['export_directory'],'read_only_paths':readonly}
  from sandbox import enter
+ failure_state['phase']='ENTER_SANDBOX'
  receipt=enter(sandbox_config);receipt['target']=a.target
  receipt_name=('sandbox-train.json' if a.target=='train' else 'sandbox-owner-predict.json'
                if a.target=='owner-predict' else f'sandbox-predict-{a.slot:03}.json')
  atomic(output/receipt_name,receipt)
+ if a.target=='predict':
+  # Confinement/setup can outlast the original input window. Reject before
+  # initializing HIP/Torch; predict still rechecks after model preparation.
+  from .integrity import digest
+  from .promotion import validate_plan_rule
+  failure_state['phase']='CHECK_FIXED_SLOT_DEADLINE'
+  rule=validate_plan_rule(plan)
+  if plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'}) or not 0<=a.slot<rule['slots']:
+   raise ContractError('PREDICT_PLAN_OR_SLOT_CHANGED')
+  if int(time.time()*1000)>plan['start_ms']+a.slot*rule['slot_spacing_ms']+rule['input_grace_ms']:
+   raise ContractError('SLOT_ALREADY_MISSED')
+ failure_state['phase']='IMPORT_TORCH'
  hip_runtime.activate(hip_context)
  import torch
  hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
+ failure_state['after_torch_proved']=True
  torch.set_num_threads(2)
+ failure_state['phase']='RUN_'+a.target.upper().replace('-','_')
  if a.target=='train':
   from .resident_train import run_job
   print(json.dumps(run_job(c,old_learner_verified=True),indent=2))
@@ -129,4 +147,21 @@ def main():
  else:
   from .resident_predict import predict
   predict(c,a.plan,a.slot)
+
+
+def main():
+ failure_state={}
+ try:
+  return _main(failure_state)
+ except Exception as error:
+  # Only a failed worker collects CPU observations. A diagnostic import or I/O
+  # failure must never replace the original exception or trigger a retry.
+  try:
+   from .resident_worker_failure_context import emit
+   emit(failure_state,error)
+  except BaseException:
+   pass
+  raise
+
+
 if __name__=='__main__':main()

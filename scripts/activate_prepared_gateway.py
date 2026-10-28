@@ -18,11 +18,13 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 
 import activate_prepared_driver as driver
+import native_execution_maintenance as native_maintenance
 from hepta_decision_attribution import read_private, strict
 
 GATEWAY = "heptatrader-gateway.service"
@@ -104,7 +106,9 @@ def unit_files(unit):
     paths += re.findall(r"(/[^\s]+) \(ignore_errors=(?:yes|no)\)", environment_files)
     files = {}
     for name in paths:
-        if Path(name).name in (POLICY, RELEASE):
+        if (Path(name).name in (POLICY, RELEASE)
+                or (unit in native_maintenance.UNITS and Path(name).name == native_maintenance.POLICY)
+                or (unit == EXECUTION and Path(name).name == native_maintenance.RELEASE)):
             continue
         path = Path(name)
         if not path.is_absolute() or re.search(r"\s", name):
@@ -347,8 +351,14 @@ def native_hold_runtime(plan, statuses):
         fail("EXECUTION_NATIVE_HOLD_SOURCE_NOT_REVIEWED")
     pid = int(statuses[EXECUTION]["MainPID"])
     actual = driver.interactive_process(pid)
+    source = plan["reviewed_execution_hold_source_sha"]
     if actual["exe"] != binary["path"] or actual["exe_sha256"] != binary["sha256"]:
-        fail("EXECUTION_NATIVE_HOLD_BINARY_MISMATCH")
+        replacement = plan.get("native_execution") or {}
+        candidate = replacement.get("binary") or {}
+        if actual["exe"] != candidate.get("path") or actual["exe_sha256"] != candidate.get("sha256"):
+            fail("EXECUTION_NATIVE_HOLD_BINARY_MISMATCH")
+        pinned(candidate)
+        source = replacement["source_sha"]
     profile = {}
     for raw in driver.proc_bytes(pid, "environ", 262144).split(b"\0"):
         key, _, value = raw.partition(b"=")
@@ -358,7 +368,7 @@ def native_hold_runtime(plan, statuses):
     if profile != {"HEPTA_IB_PAPER_USER_SCOPE": "1", "HEPTA_IB_PAPER_CONTROL_DIRECTORY": expected,
             "HEPTA_IB_EXECUTION_MODE": "PAPER"}:
         fail("EXECUTION_NATIVE_HOLD_PROFILE_MISMATCH")
-    return {"process": actual, "source_sha": plan["reviewed_execution_hold_source_sha"], "profile": profile}
+    return {"process": actual, "source_sha": source, "profile": profile}
 
 
 def controller_stop_edges(unit):
@@ -424,7 +434,7 @@ def inspect(plan, home):
     old_release = read_private(release_path, 65536).decode() if release_path.exists() else None
     if old_release is not None and old_release != "[Service]\nExecStart=\nExecStart=" + running["binary"]["path"] + "\n":
         fail("EXISTING_GATEWAY_RELEASE_OVERRIDE_CHANGED")
-    return {"packages": packages, "gateway": running, "environment": environment, "statuses": statuses,
+    snapshot = {"packages": packages, "gateway": running, "environment": environment, "statuses": statuses,
         "owners": owners, "frozen": frozen, "records": records, "deadline": deadline,
         "unit_files": unit_files(GATEWAY), "interactive": interactive, "hold_runtime": hold_runtime,
         "original_release_bytes": old_release,
@@ -434,6 +444,8 @@ def inspect(plan, home):
         "service_policy": {unit: driver.unit_properties(unit,
             ("RefuseManualStop", "SendSIGKILL", "TimeoutStopUSec", "Restart"), "ORIGINAL_SERVICE_POLICY")
             for unit in {GATEWAY, *(owner["unit"] for owner in owners)}}}
+    snapshot["native_execution"] = native_maintenance.prepare(sys.modules[__name__], plan, home, snapshot)
+    return snapshot
 
 
 def rpc(plan, environment, owner, operation, *arguments):
@@ -746,7 +758,7 @@ def check_transition_catalog(plan, snapshot, state):
             fail("RESUMED_OWNER_CHANGED_HELD")
 
 
-def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
+def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallback=False):
     home = Path(home or pwd.getpwuid(os.geteuid()).pw_dir)
     root = home / ".local/state/heptatrader"
     checkpoint = root / "operator-maintenance" / CHECKPOINT
@@ -772,6 +784,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
             if state.get("plan_sha256") != plan_sha or state.get("status") == "COMPLETE":
                 fail("RESUMABLE_MAINTENANCE_CHECKPOINT_REQUIRED")
             snapshot = state["snapshot"]
+            native_maintenance.reconcile_release(sys.modules[__name__], home, snapshot, state)
             state.update(status="RUNNING")
             state.pop("error", None)
             if state.get("gateway_stopped") and execution_dropin.exists():
@@ -814,6 +827,8 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 fail("GATEWAY_RELEASE_OVERRIDE_CHANGED")
             current = {name: driver.fence.show_unit(name) for name in driver.fence.RISK_UNITS}
             exempt = {GATEWAY, driver.BROKER_UNIT, *snapshot["frozen"], *state["stopped_controllers"]}
+            if state.get("native_execution") is not None:
+                exempt.update(native_maintenance.UNITS)
             stopping = state.get("stopping")
             if stopping is not None:
                 unit = stopping["unit"]; exempt.add(unit)
@@ -853,9 +868,17 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                         fail("STARTING_CONTROLLER_STATE_UNRESOLVED")
                 elif current[unit]["ActiveState"] != "inactive" or current[unit]["MainPID"] not in ("", "0"):
                     fail("STOPPED_CONTROLLER_RESTARTED_EXTERNALLY")
-            if not equivalent(native_hold_runtime(plan, current), snapshot["hold_runtime"]):
-                fail("NATIVE_EXECUTION_HOLD_RUNTIME_CHANGED")
-            interactive = driver.interactive_broker_snapshot(plan["interactive_broker_pid"], GATEWAY, current)
+            changing_native = native_maintenance.verify(sys.modules[__name__], plan, home, snapshot, state, current)
+            if not changing_native:
+                if not equivalent(native_hold_runtime(plan, current), snapshot["hold_runtime"]):
+                    fail("NATIVE_EXECUTION_HOLD_RUNTIME_CHANGED")
+                interactive = driver.interactive_broker_snapshot(plan["interactive_broker_pid"], GATEWAY, current)
+            elif state["native_execution"].get("accepted"):
+                interactive = driver.interactive_broker_snapshot(plan["interactive_broker_pid"], GATEWAY, current)
+                if not equivalent(interactive, state["native_execution"]["interactive"]):
+                    fail("NATIVE_HANDOFF_ACCEPTED_CONNECTION_CHANGED")
+            else:
+                interactive = None
             for unit, expected in snapshot.get("controller_topology", {}).items():
                 actual = controller_stop_edges(unit)
                 if not equivalent(actual, expected):
@@ -868,7 +891,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
             for item in snapshot["packages"].values():
                 pinned(item["binary"])
             expected = snapshot["interactive"] if expected_interactive is None else expected_interactive
-            if not equivalent(interactive, expected):
+            if not changing_native and not equivalent(interactive, expected):
                 if not allow_reconnect_refresh or expected_interactive is not None:
                     fail("INTERACTIVE_BROKER_CHANGED")
                 refresh_interactive_witness(interactive)
@@ -1083,6 +1106,8 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                 state.pop("stopping", None)
                 state["gateway_stopped"] = True; state["phase"] = "GATEWAY_STOPPED"; save()
             context()
+            native_maintenance.run(sys.modules[__name__], plan, home, snapshot, state, save, context,
+                fallback=native_fallback)
             if not state.get("gateway_started"):
                 # Old 0004 is never an automatic rollback after RecoveryQuery.
                 selected = state.get("selected_release", "candidate")
@@ -1137,6 +1162,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
                     driver.same_driver(actual, driver.running_driver(owner["unit"], owner["instrument"]))
                     context(); time.sleep(0.2)
             context()
+            native_maintenance.restore(sys.modules[__name__], home, snapshot, state)
             for name in dict.fromkeys(state.get("owned_policies", [])):
                 path = Path(name)
                 if path.exists():
@@ -1151,6 +1177,11 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
             save()
         except BaseException as error:
             state.update(status="HELD", error=type(error).__name__ + ":" + str(error))
+            if state.get("native_execution") is not None:
+                try:
+                    native_maintenance.protect(sys.modules[__name__], home, state["native_execution"])
+                except BaseException as protection_error:
+                    state["native_protection_error"] = type(protection_error).__name__ + ":" + str(protection_error)
             for name in state.get("owned_policies", []):
                 path = Path(name)
                 if path.exists() and read_private(path, 65536) == SAFE_STOP:
@@ -1161,7 +1192,8 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
             try:
                 current = driver.fence.show_unit(GATEWAY)
                 job = driver.unit_properties(GATEWAY, ("Job",), "ROLLBACK_JOB")["Job"]
-                if current["ActiveState"] in ("inactive", "failed") and current["MainPID"] in ("", "0") and not job:
+                native_ready = state.get("native_execution") is None or state["native_execution"].get("accepted") is True
+                if native_ready and current["ActiveState"] in ("inactive", "failed") and current["MainPID"] in ("", "0") and not job:
                     context()
                     item = snapshot["packages"]["fallback"]["binary"]
                     raw = ("[Service]\nExecStart=\nExecStart=" + item["path"] + "\n").encode()
@@ -1186,6 +1218,14 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False):
         result = {key: state[key] for key in ("status", "phase", "error", "rollback", "rollback_error") if key in state}
         result["selected_release"] = state.get("selected_release")
         result["gateway_binary_sha256"] = (state.get("gateway_started") or {}).get("binary", {}).get("sha256")
+        if state.get("native_execution") is not None:
+            native = state["native_execution"]
+            result["native_execution"] = {
+                "phase": native.get("phase"), "accepted": native.get("accepted") is True,
+                "fallback_selected": native.get("fallback_selected") is True,
+                "binary_sha256": (native.get("running") or {}).get("binary", {}).get("sha256"),
+                "service_epoch": ((native.get("after_audits") or [{}])[0].get("reply") or {}).get("service_epoch"),
+            }
         return result
 
 
@@ -1195,15 +1235,19 @@ def main(argv=None):
     parser.add_argument("--plan-sha256", required=True)
     parser.add_argument("--activate", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--native-fallback", action="store_true",
+        help="on resume only, restore the former native binary after the candidate has no process or job")
     args = parser.parse_args(argv)
     if args.resume and not args.activate:
         parser.error("--resume requires --activate")
+    if args.native_fallback and not (args.activate and args.resume):
+        parser.error("--native-fallback requires --activate --resume")
     raw = read_private(args.plan, 1048576)
     if digest(raw) != args.plan_sha256:
         fail("GATEWAY_PLAN_CHANGED")
     plan = strict(raw)
     if args.activate:
-        result = maintenance_upgrade(plan, args.plan_sha256, resume=args.resume)
+        result = maintenance_upgrade(plan, args.plan_sha256, resume=args.resume, native_fallback=args.native_fallback)
     else:
         value = inspect(plan, Path(pwd.getpwuid(os.geteuid()).pw_dir))
         result = {"status": "PREFLIGHT_PASSED_NO_CONTROL_ACTION", "owner_count": len(value["owners"]),
@@ -1211,6 +1255,8 @@ def main(argv=None):
             "candidate_sha256": value["packages"]["candidate"]["binary"]["sha256"],
             "fallback_sha256": value["packages"]["fallback"]["binary"]["sha256"],
             "native_gate_rpc_observed": False, "fresh_audit_consumed": False}
+        if value.get("native_execution") is not None:
+            result["native_candidate_sha256"] = value["native_execution"]["candidate"]["binary"]["sha256"]
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in ("COMPLETE", "ALREADY_COMPLETE", "PREFLIGHT_PASSED_NO_CONTROL_ACTION") else 2
 

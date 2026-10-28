@@ -191,3 +191,58 @@ The 2026-10-18T04:40:06.252000+00:00 snapshot shows 46 completed jobs,
 zero deferred candidates and the original pending trial still bound to its original
 plan. A NO_FORWARD_TRIAL result remains a calendar outcome rather than a performance
 rejection. New registration does not allocate a trial or require a new broker order.
+
+## Explicit additional evaluation of a completed candidate
+
+`laya_cell.resident_forward_attempt` prepares an immutable request for another
+future trial of one unchanged completed artifact. It binds the original job file,
+candidate manifest, previous plan bytes/id/trial, period, and previous outcome
+deadline. The request is deterministic for that previous plan; preparing or
+replaying the request does not train, debit alpha, or change the previous trial.
+The staged runtime must pin `learn/laya_cell/resident_forward_attempt.py`.
+
+```sh
+python -m laya_cell.resident_forward_attempt \
+  --config ORIGINAL_CONFIG --previous-plan PREVIOUS_PLAN --output REQUEST_FILE
+python -m historical_training.resident_resource_guard \
+  --config GUARD_CONFIG --role trainer \
+  --forward-attempt-request REQUEST_FILE \
+  --forward-attempt-request-sha256 REQUEST_SHA256 --attempt-wait-seconds 90
+```
+
+The guarded entry point takes the existing lifetime `scheduler.lock` and runs
+only registration; it does not call scheduler recovery, training steps, or a GPU
+worker. A running trainer must first leave through its existing drain procedure.
+No hold is removed by either command. If an operator separately owns a temporary
+hold, its exact marker handling must remain inside the same scheduler lock:
+restore it with create-only semantics before releasing the lock on a failed or
+deferred operation, and never overwrite a different/new fatal hold. Releasing an
+owned hold for continued evaluation requires PUBLISHED plus a visible viable
+queue entry, not merely successful request preparation or a terminal no-trial
+receipt. An already locked controller may call `run_request` with its verified
+guarded service and original `_controller_lock_fd`.
+
+New allocation requires the previous deadline to have passed and its immutable
+qualification to be REJECTED. The original statistical protocol, candidate
+validation window, calendar, storage quota, source proof, resource guard and registration
+stability samples all remain required. Waiting for the cutoff or missing final
+qualification creates no attempt record or directory. A resource/source refusal
+does not allocate a trial. The bounded command can return DEFERRED or a guard
+hold; this is not a promise that future capacity has been reserved.
+
+Accepted attempts use `evaluation/attempt-<request-id>/plan.json` and a distinct
+registration metadata key. `plan.job_id` still identifies the original completed
+job. Each attempt debits the existing global next trial exactly once, retains the
+previous alpha debit, and assesses only its own future outcomes. The original
+plan, training row receipts, candidate and optimizer state remain unchanged.
+The scheduler recovers interrupted RESERVED publication using the same immutable
+plan and debit, including after its planned time; it does not recheck resources
+or create a replacement window for an already allocated reservation.
+
+Normal supervision does not automatically create or retry additional requests.
+A newly PUBLISHED viable plan occupies the ordinary evaluation queue. Status
+keeps the original registration and separately lists additional attempts. Owner
+handoff selects the registration belonging to the exact plan/attempt, while
+queue, outcome coverage and closeout continue using their existing one-directory
+per-plan enumeration. A changed registration policy/runtime cannot silently
+redecide an unallocated DEFERRED attempt under substituted pins.

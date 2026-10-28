@@ -4,6 +4,7 @@
 #include "ib_local_cancel_notice.h"
 #include "ib_local_market_data_request.h"
 #include "ib_api_wrapper.h"
+#include "ib_deferred_observation_scope.h"
 
 #include <algorithm>
 #include "ib_market_data_farm.h"
@@ -444,6 +445,47 @@ const char* IBIngressFaultKindName(IBIngressFaultKind kind) {
     return "UNKNOWN";
 }
 
+IBIngressFaultEvent DescribeIBIngressFaultEvent(const IBEvent& event) noexcept {
+    IBIngressFaultEvent out;
+    out.known = event.type != IBEventType::None;
+    out.type = event.type;
+    if (event.type != IBEventType::Error) return out;
+    // The SDK supplies a canonical int32 decimal in key. Parse at most 11
+    // bytes, without allocation, exceptions, locale or errno side effects.
+    const auto& key = event.key;
+    if (key.empty() || key.size() > 11) return out;
+    const bool negative = key[0] == '-';
+    const std::size_t start = negative ? 1 : 0;
+    if (start == key.size() ||
+        (key.size() - start > 1 && key[start] == '0')) return out;
+    const std::uint32_t positiveLimit =
+        static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+    const std::uint32_t limit = positiveLimit + (negative ? 1U : 0U);
+    std::uint32_t value = 0;
+    for (std::size_t i = start; i != key.size(); ++i) {
+        if (key[i] < '0' || key[i] > '9') return out;
+        const std::uint32_t digit = static_cast<std::uint32_t>(key[i] - '0');
+        if (value > (limit - digit) / 10U) return out;
+        value = value * 10U + digit;
+    }
+    if (negative && value == 0) return out;
+    out.errorCodeKnown = true;
+    out.errorCode = negative ?
+        (value == positiveLimit + 1U ? std::numeric_limits<std::int32_t>::min() :
+         -static_cast<std::int32_t>(value)) : static_cast<std::int32_t>(value);
+    return out;
+}
+
+const char* IBIngressFaultEventName(IBEventType type) noexcept {
+    switch (type) {
+    case IBEventType::None: return "NONE";
+    case IBEventType::Error: return "ERROR";
+    case IBEventType::ConnectionClosed: return "CONNECTION_CLOSED";
+    case IBEventType::EventQueueOverflow: return "EVENT_QUEUE_OVERFLOW";
+    default: return "OTHER";
+    }
+}
+
 IBMarketDataAdmissionState::IBMarketDataAdmissionState()
     : IBMarketDataAdmissionState(nullptr) {
 }
@@ -463,7 +505,8 @@ void IBMarketDataAdmissionState::SetDiagnosticConnectionEpoch(
 }
 
 void IBMarketDataAdmissionState::CaptureFirstFault(
-    IBIngressFaultKind kind, std::uint64_t generation) noexcept {
+    IBIngressFaultKind kind, std::uint64_t generation,
+    const IBIngressFaultEvent& event) noexcept {
     const auto epoch = m_diagnosticConnectionEpoch.load(std::memory_order_acquire);
     std::uint64_t monotonicNs = 0;
     try {
@@ -481,6 +524,7 @@ void IBMarketDataAdmissionState::CaptureFirstFault(
     m_firstFault.monotonicNs = monotonicNs;
     m_firstFault.connectionEpoch = epoch;
     m_firstFault.admissionGeneration = generation;
+    m_firstFault.event = event;
     m_firstFaultPublished.store(true, std::memory_order_release);
 }
 
@@ -552,6 +596,12 @@ bool IBMarketDataAdmissionState::TryReserve(std::uint64_t generation) {
 IBMarketDataAdmissionState::CallbackDisposition
 IBMarketDataAdmissionState::ObserveBlockingCallback(
     bool faultWhileIdle, IBIngressFaultKind kind) {
+    return ObserveBlockingCallback(faultWhileIdle, kind, IBIngressFaultEvent());
+}
+
+IBMarketDataAdmissionState::CallbackDisposition
+IBMarketDataAdmissionState::ObserveBlockingCallback(
+    bool faultWhileIdle, IBIngressFaultKind kind, IBIngressFaultEvent event) {
     std::uint64_t observed = m_state.load(std::memory_order_acquire);
     for (;;) {
         const Phase phase = DecodePhase(observed);
@@ -578,7 +628,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
-                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation, event);
                 return CallbackBeforeReservation;
             }
             continue;
@@ -588,7 +638,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
-                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation, event);
                 return CallbackBeforeReservation;
             }
             continue;
@@ -599,7 +649,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
-                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation, event);
                 return CallbackAfterReservation;
             }
             continue;
@@ -612,7 +662,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
-                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation, event);
                 return CallbackBeforeReservation;
             }
             continue;
@@ -624,7 +674,7 @@ IBMarketDataAdmissionState::ObserveBlockingCallback(
             if (m_state.compare_exchange_weak(
                     observed, desired, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
-                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation);
+                if (!DecodeFault(observed)) CaptureFirstFault(kind, generation, event);
                 return CallbackAfterReservation;
             }
             continue;
@@ -927,7 +977,11 @@ public:
 
     void Trace(const std::string& s) {
         if (!IsTraceEnabled()) return;
-        std::ofstream f(GetTracePath(), std::ios::app);
+        const std::string path = GetTracePath();
+        // Real SDK calls share the adapter's deferred diagnostic scope. Slow
+        // trace storage must leave its trading locks before opening/writing.
+        if (IbDeferredObservationScope::DeferIfScoped(s, path)) return;
+        std::ofstream f(path.c_str(), std::ios::app);
         if (f.is_open()) {
             f << s << std::endl;
         }
@@ -1649,7 +1703,7 @@ public:
         }
         od.orderRef = o.orderRef;
 
-        Trace(BuildOrderTrace(localOrderId, ct, od));
+        if (IsTraceEnabled()) Trace(BuildOrderTrace(localOrderId, ct, od));
         m_orderQuantities.Record(localOrderId, c, o);
         m_cancelNoticeWitness.Record(localOrderId, o);
         m_client.placeOrder(localOrderId, ct, od);
@@ -2133,12 +2187,15 @@ private:
             // runtime must clean it up and fail closed.
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
                 m_eventIngressAdmissionState.ObserveBlockingCallback(
-                    !corroboratedCancel && !localMarketDataFailure);
+                    !corroboratedCancel && !localMarketDataFailure,
+                    IBIngressFaultKind::BlockingCallback,
+                    DescribeIBIngressFaultEvent(e));
             (void)disposition;
         } else if (cashFarmWarning && !staleEpoch) {
             const IBMarketDataAdmissionState::CallbackDisposition disposition =
                 m_eventIngressAdmissionState.ObserveBlockingCallback(false,
-                    IBIngressFaultKind::FarmWarningDuringAdmission);
+                    IBIngressFaultKind::FarmWarningDuringAdmission,
+                    DescribeIBIngressFaultEvent(e));
             (void)disposition;
         }
         const bool defer =

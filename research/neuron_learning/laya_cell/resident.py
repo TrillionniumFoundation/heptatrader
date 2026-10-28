@@ -224,7 +224,7 @@ class Supervisor:
    job_id=rows[0]['id'];job=json.loads(rows[0]['payload'])
    if not isinstance(job,dict):raise ContractError('LATEST_CANDIDATE_JOB_SHAPE')
    result.update(job_id=job_id,parent_id=job.get('parent_id'),training_state='COMPLETED')
-   from .resident_plan_admission import KEY_PREFIX,_identity,_check_record
+   from .resident_plan_admission import KEY_PREFIX,_identity,_check_record,registration_key
    record=get_meta(self.db,KEY_PREFIX+job_id)
    folder=Path(self.c['evaluation_directory'])/job_id
    if record is None:
@@ -249,6 +249,26 @@ class Supervisor:
    calendar=record.get('calendar')
    if isinstance(calendar,dict):
     result['calendar']={k:calendar[k] for k in ('reason','earliest_feasible_start_ms','latest_feasible_start_ms','plan_interval_ms') if k in calendar}
+   result['evaluation_role']='ORIGINAL'
+   additional=[]
+   for entry in self.db.execute('SELECT key,value FROM meta WHERE substr(key,1,?)=?',
+      (len(KEY_PREFIX+job_id+':attempt:'),KEY_PREFIX+job_id+':attempt:')).fetchall():
+    extra_record=json.loads(entry['value']);attempt=extra_record.get('evaluation_attempt')
+    if attempt is None or entry['key']!=registration_key(job_id,attempt):
+     raise ContractError('FORWARD_ATTEMPT_STATUS_KEY')
+    # Status verifies receipts without rehashing the same model for every
+    # historical attempt. Registration/owner publication checks full bindings.
+    _check_record(extra_record,{**{k:record[k] for k in
+      ('schema','job_id','candidate_id','candidate_manifest_sha256')},'evaluation_attempt':attempt})
+    summary={'evaluation_role':'ADDITIONAL','attempt_id':attempt['attempt_id'],
+      'previous_plan_id':attempt['previous_plan_id'],'state':extra_record['state'],
+      'reason':extra_record.get('reason'),'trial_allocated':extra_record['trial_allocated'],
+      'registration_id':extra_record['registration_id'],'checked_at_ms':extra_record['checked_at_ms']}
+    if extra_record['trial_allocated']:
+     summary.update(plan_id=extra_record['plan']['plan_id'],trial=extra_record['plan']['trial'],
+       plan_start_ms=extra_record['plan']['start_ms'],plan_outcome_end_ms=extra_record['plan']['outcome_end_ms'])
+    additional.append(summary)
+   if additional:result['additional_evaluation_attempts']=sorted(additional,key=lambda a:(a['checked_at_ms'],a['attempt_id']))
    return result
   except (ContractError,OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
    return {'candidate_id':candidate_id,'state':'REGISTRATION_EVIDENCE_UNAVAILABLE',
@@ -368,13 +388,14 @@ class Supervisor:
    from .resident_price_input import check_bindings
    request.update(check_bindings(candidate))
   writer(self.root/'owner-outbox'/(candidate['candidate_id']+'.json'),request)
- def register_evaluation(self,job_id,candidate,job):
-  folder=Path(self.c['evaluation_directory'])/job_id;folder.mkdir(parents=True,mode=0o700,exist_ok=True)
-  path=folder/'plan.json'
+ def register_evaluation(self,job_id,candidate,job,*,attempt=None):
   if self.c.get('future_plan_admission_profile') is not None:
    # The policy handles existing plans/reservations before checking NEW admission.
    from .resident_plan_admission import register
-   return register(self,job_id,candidate,job)
+   return register(self,job_id,candidate,job,**({'attempt':attempt} if attempt is not None else {}))
+  if attempt is not None:raise ContractError('FORWARD_ATTEMPT_ORIGINAL_POLICY_REQUIRED')
+  folder=Path(self.c['evaluation_directory'])/job_id;folder.mkdir(parents=True,mode=0o700,exist_ok=True)
+  path=folder/'plan.json'
   if path.exists():
    old=read_json(path)
    if old['candidate_id']!=candidate['candidate_id']:raise ContractError('EVALUATION_CANDIDATE_CONFLICT')

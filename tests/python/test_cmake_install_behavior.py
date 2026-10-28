@@ -42,9 +42,9 @@ def validate_fixture_helpers(source_root: Path) -> None:
 
 
 @contextmanager
-def installed_fixture(*, readme: bool = False):
+def configured_fixture(*, readme: bool = False):
     validate_fixture_helpers(ROOT)
-    with tempfile.TemporaryDirectory(prefix="hepta-cmake-install-") as folder:
+    with tempfile.TemporaryDirectory(prefix="hepta-cmake install-") as folder:
         root = Path(folder)
         source, build, stage = root / "source", root / "build", root / "stage"
         def write(relative: str, value: str):
@@ -102,17 +102,27 @@ endforeach()
 include(cmake/HeptaInstall.cmake)
 """)
         environment = dict(os.environ, DESTDIR=str(stage))
-        for command in (
-            ["cmake", "-S", str(source), "-B", str(build), "-DCMAKE_INSTALL_PREFIX=/usr",
-                "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_INSTALL_LIBEXECDIR=libexec",
-                "-DHEPTA_DOCUMENTATION_SOURCE_SHA=" + "a" * 40],
-            ["cmake", "--build", str(build), "--parallel", "2"],
-            ["cmake", "--install", str(build)],
-        ):
-            result = subprocess.run(command, cwd=source, env=environment, capture_output=True,
-                                    text=True, timeout=60)
-            if result.returncode:
-                raise AssertionError(f"{command!r}\n{result.stdout}\n{result.stderr}")
+        cmake_fixture_command(source, environment, "-S", str(source), "-B", str(build),
+                              "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib",
+                              "-DCMAKE_INSTALL_LIBEXECDIR=libexec",
+                              "-DHEPTA_DOCUMENTATION_SOURCE_SHA=" + "a" * 40)
+        yield source, build, stage, environment
+
+
+def cmake_fixture_command(source, environment, *args, check=True):
+    command = ["cmake", *args]
+    result = subprocess.run(command, cwd=source, env=environment, capture_output=True,
+                            text=True, timeout=60)
+    if check and result.returncode:
+        raise AssertionError(f"{command!r}\n{result.stdout}\n{result.stderr}")
+    return result
+
+
+@contextmanager
+def installed_fixture(*, readme: bool = False):
+    with configured_fixture(readme=readme) as (source, build, stage, environment):
+        cmake_fixture_command(source, environment, "--build", str(build), "--parallel", "2")
+        cmake_fixture_command(source, environment, "--install", str(build))
         yield stage / "usr"
 
 class CMakeInstallBehaviorTests(unittest.TestCase):
@@ -139,6 +149,59 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
                 docs = tree / "share/doc/heptatrader"
                 self.assertEqual((docs / "developer.md").read_text(), "# installed fixture documentation\n")
                 self.assertEqual((docs / "README.md").exists(), present)
+
+    def test_configure_build_and_runtime_install_do_not_render_documentation(self):
+        with configured_fixture(readme=True) as (source, build, stage, environment):
+            generated = build / "installed-documentation"
+            self.assertFalse(generated.exists())
+            # Broken prose must still fail a documentation install, but is not
+            # a dependency of ordinary runtime compilation or its component.
+            (source / "docs/developer.md").write_text("[Missing](missing.md)\n")
+            cmake_fixture_command(source, environment, "--build", str(build), "--parallel", "2")
+            self.assertFalse(generated.exists())
+            cmake_fixture_command(source, environment, "--install", str(build), "--component", "runtime")
+            self.assertFalse(generated.exists())
+            self.assertFalse((stage / "usr/share/doc/heptatrader").exists())
+            self.assertEqual((stage / "usr/libexec/heptatrader/PNL_SOURCE_SHA").read_text(), "a" * 40 + "\n")
+
+    def test_documentation_component_refreshes_inputs_and_never_copies_stale_output_on_failure(self):
+        with configured_fixture(readme=True) as (source, build, stage, environment):
+            generated = build / "installed-documentation"
+            cmake_fixture_command(source, environment, "--install", str(build), "--component", "documentation")
+            docs = stage / "usr/share/doc/heptatrader"
+            self.assertEqual((docs / "developer.md").read_text(), "# installed fixture documentation\n")
+            self.assertIn("/blob/" + "a" * 40 + "/CMakeLists.txt", (docs / "README.md").read_text())
+            self.assertFalse((stage / "usr/bin/heptactl").exists())
+            # Use a fresh prefix, as package staging does. CMake install is not
+            # an uninstaller for an independently populated existing prefix.
+            (source / "docs/developer.md").rename(source / "docs/renamed.md")
+            (source / "README.md").write_text("[Renamed](docs/renamed.md)\n")
+            refreshed = stage.parent / "refreshed"
+            environment = dict(environment, DESTDIR=str(refreshed))
+            cmake_fixture_command(source, environment, "--install", str(build), "--component", "documentation")
+            docs = refreshed / "usr/share/doc/heptatrader"
+            self.assertFalse((generated / "developer.md").exists())
+            self.assertFalse((docs / "developer.md").exists())
+            self.assertTrue((docs / "renamed.md").is_file())
+            self.assertEqual((docs / "README.md").read_text(), "[Renamed](renamed.md)\n")
+            (source / "docs/renamed.md").write_text("[Missing](missing.md)\n")
+            failed = stage.parent / "failed"
+            result = cmake_fixture_command(source, dict(environment, DESTDIR=str(failed)),
+                                           "--install", str(build), "--component", "documentation", check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Installed documentation generation failed", result.stderr)
+            self.assertFalse((failed / "usr/share/doc/heptatrader").exists())
+
+    def test_configure_still_rejects_invalid_documentation_identity(self):
+        with configured_fixture() as (source, build, stage, environment):
+            for identity in ("main", "a" * 39, "A" * 40):
+                with self.subTest(identity=identity):
+                    result = cmake_fixture_command(source, environment, "-S", str(source), "-B", str(build),
+                                                   "-DHEPTA_DOCUMENTATION_SOURCE_SHA=" + identity, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("documentation source identity must be an exact 40-hex SHA", result.stderr)
+            self.assertEqual((build / "pnl-source-sha.txt").read_text(), "a" * 40 + "\n")
+            self.assertFalse((build / "installed-documentation").exists())
 
     def test_pnl_helpers_identity_and_inert_user_unit_are_packaged(self):
         with installed_fixture() as prefix:

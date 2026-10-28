@@ -35,7 +35,10 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.original=self.root/'original.json'
         self.period=self.root/'period.json'
         self.health=self.root/'health.json'
-        for path,raw in ((self.original,b'{"automatic_trading":false}\n'),(self.period,b'{"kind":"USER_RESET"}\n')):
+        original={'automatic_trading':False,'runtime_sha256':{
+            'learn/laya_cell/resident_plan_admission.py':'b'*64}}
+        for path,raw in ((self.original,json.dumps(original,sort_keys=True).encode()+b'\n'),
+                         (self.period,b'{"kind":"USER_RESET"}\n')):
             path.write_bytes(raw)
         current=int(time.time()*1000)
         pins=[{'path':str(self.root/'segment-1'/'quotes.jsonl'),'bytes':100,'sha256':'a'*64,'ended':False}]
@@ -185,20 +188,36 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.source.update(state='READY_FOR_REVIEW_NOT_AUTHORIZATION',
                            usable=24,unusable=0,reasons=[])
         self.persist()
-        updated={**self.source,'latest_source_quote_ms':int(time.time()*1000)-500}
         proof={'schema':'synthetic-only-not-a-broker-result','broker_queries_sent':0}
-        with patch('historical_training.resident_live_source.refresh',
-                   return_value=(updated,proof)) as refresh:
-            report=self.check('trainer',forward_registration=subject)
-        self.assertTrue(report['admit_new_worker'])
-        self.assertEqual(report['original_live_source_evidence'],proof)
-        refresh.assert_called_once()
-        with patch('historical_training.resident_live_source.refresh',
-                   side_effect=ValueError('NO_CAUSAL_ORIGINAL_QUOTE')) as refresh:
-            denied=self.check('trainer',forward_registration=subject)
-        self.assertFalse(denied['admit_new_worker'])
-        self.assertIn('NO_CAUSAL_ORIGINAL_QUOTE',';'.join(denied['reasons']))
-        refresh.assert_called_once()
+        started=int(time.time()*1000);gate=Gate(self.config,'trainer')
+        def refreshed(original,source,now):
+            return {**source,'at_ms':now,'latest_source_quote_ms':now-500},proof
+        with patch('historical_training.resident_resource_guard.parse_meminfo',return_value=MEM),\
+             patch('historical_training.resident_resource_guard.parse_full_psi',return_value=PSI),\
+             patch('historical_training.resident_resource_guard.time.time') as wall,\
+             patch('historical_training.resident_resource_guard.time.monotonic') as tick:
+            with patch('historical_training.resident_live_source.refresh',side_effect=refreshed) as refresh:
+                for sample,offset in enumerate((0,30000,60000),1):
+                    wall.return_value=(started+offset)/1000;tick.return_value=offset/1000
+                    report=gate.check(forward_registration=subject)
+                    self.assertEqual(report['registration_stability']['healthy_samples'],sample)
+                    self.assertEqual(report['admit_new_worker'],sample==3)
+                    self.assertEqual(report['original_live_source_evidence'],proof)
+                self.assertEqual(refresh.call_count,3)
+            wall.return_value=(started+90000)/1000;tick.return_value=90.
+            with patch('historical_training.resident_live_source.refresh',
+                       side_effect=ValueError('NO_CAUSAL_ORIGINAL_QUOTE')) as refresh:
+                denied=gate.check(forward_registration=subject)
+            self.assertFalse(denied['admit_new_worker'])
+            self.assertIn('NO_CAUSAL_ORIGINAL_QUOTE',';'.join(denied['reasons']))
+            self.assertEqual(denied['registration_stability']['healthy_samples'],0)
+            self.assertIsNone(gate._registration_stability)
+            refresh.assert_called_once()
+            wall.return_value=(started+120000)/1000;tick.return_value=120.
+            with patch('historical_training.resident_live_source.refresh',side_effect=refreshed):
+                recovered=gate.check(forward_registration=subject)
+            self.assertFalse(recovered['admit_new_worker'])
+            self.assertEqual(recovered['registration_stability']['healthy_samples'],1)
 
 
     def test_resource_denial_never_opens_source_status_or_refreshes(self):

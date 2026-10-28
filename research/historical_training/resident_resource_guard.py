@@ -14,6 +14,9 @@ SOURCE_RULE={'input_probes':24,'minimum_usable':20,'maximum_missing':4,'source_t
 RESOURCE_RULE={'profile':'ROLE_MEMORY_PSI_V2','min_available_bytes':8*GIB,
                'registration_min_available_bytes':2*GIB,'swap_free_policy':'DIAGNOSTIC_ONLY',
                'max_full_psi_avg10':1.,'max_full_psi_avg60':.1}
+REGISTRATION_STABILITY={'profile':'CONSECUTIVE_ORIGINAL_GUARD_HEALTH_V1',
+    'required_samples':3,'minimum_sample_interval_ms':30000,'minimum_span_ms':60000,
+    'maximum_observation_gap_ms':90000}
 ATTRIBUTION_LIMITS={'max_pids':512,'max_proc_entries':2048,'max_cgroups':8,
     'max_directories':640,'max_files':1200,'max_bytes':512*1024,
     'max_file_bytes':16384,'max_elapsed_ms':50,'cache_seconds':30}
@@ -489,6 +492,50 @@ class Gate:
         self.last_admission=report
         atomic(self.root/(self.role+'-admission.json'),report)
         return report
+    def _stable_registration(self,report,subject,original):
+        """Negative-only observations; no lease, timer, trial or durable state.
+
+        The existing 30s trainer loop supplies distinct healthy samples. Two
+        checks in one registration transaction cannot shorten this wait. A
+        restart, changed subject/runtime, gap or original denial starts over.
+        """
+        policy=REGISTRATION_STABILITY
+        detail={**policy,'ready':False,'healthy_samples':0,'observed_span_ms':0,
+            'future_resource_capacity_reserved':False,'state_survives_restart':False,
+            'scope':'SAMPLED_ORIGINAL_ADMISSION_NOT_FUTURE_RESOURCE_GUARANTEE'}
+        if report.get('admit_new_worker') is not True:
+            self._registration_stability=None
+            report['registration_stability']={**detail,'reset_reason':'ORIGINAL_GUARD_DENIED'}
+            return report
+        runtime=original.get('runtime_sha256') if isinstance(original,dict) else None
+        at=report.get('at_ms');tick=int(time.monotonic()*1000)
+        if (not isinstance(runtime,dict) or not runtime or type(at) is not int or at<0
+                or type(self.c.get('original_config_sha256')) is not str):
+            self._registration_stability=None
+            raise EvidenceError('FORWARD_STABILITY_IDENTITY_OR_CLOCK')
+        binding=digest({'subject':subject,'original_config_sha256':self.c['original_config_sha256'],
+                        'runtime_sha256':runtime})
+        previous=getattr(self,'_registration_stability',None)
+        reset=(previous is None or previous['binding']!=binding
+               or at<previous['last_at_ms'] or tick<previous['last_tick_ms']
+               or tick-previous['last_tick_ms']>policy['maximum_observation_gap_ms'])
+        if reset:
+            previous={'binding':binding,'first_tick_ms':tick,'last_sample_tick_ms':tick,
+                      'healthy_samples':1}
+        elif tick-previous['last_sample_tick_ms']>=policy['minimum_sample_interval_ms']:
+            previous['healthy_samples']=min(policy['required_samples'],previous['healthy_samples']+1)
+            previous['last_sample_tick_ms']=tick
+        previous.update(last_at_ms=at,last_tick_ms=tick)
+        self._registration_stability=previous
+        span=tick-previous['first_tick_ms']
+        ready=(previous['healthy_samples']>=policy['required_samples']
+               and span>=policy['minimum_span_ms'])
+        report['registration_stability']={**detail,'binding_sha256':binding,'ready':ready,
+            'healthy_samples':previous['healthy_samples'],'observed_span_ms':span}
+        if not ready:
+            report['admit_new_worker']=False
+            report['reasons']=list(dict.fromkeys(report['reasons']+['FORWARD_REGISTRATION_STABILITY_WAIT']))
+        return report
     def check(self, *, forward_registration=None, prediction_ready=False):
         # Registration checks the same prospective source requirements as the
         # evaluator, without acquiring a worker lease or allocating a trial.
@@ -500,6 +547,7 @@ class Gate:
                 or any(type(v) is not str or not v
                        for v in forward_registration.values())):
                 raise EvidenceError('FORWARD_PREFLIGHT_SUBJECT_INVALID')
+        original=None
         try:
             if sha(self.c['original_config'])!=self.c['original_config_sha256']:raise EvidenceError('ORIGINAL_CONFIG_CHANGED')
             if sha(self.c['period_path'])!=self.c['period_sha256']:raise EvidenceError('ORIGINAL_PERIOD_CHANGED')
@@ -571,6 +619,9 @@ class Gate:
                 'admit_new_worker':False,'reasons':['RESOURCE_OR_SOURCE_UNAVAILABLE:'+str(exc)],'automatic_trading':False}
         if self.draining:
             report['admit_new_worker']=False;report['reasons'].append('SUPERVISOR_DRAIN_REQUESTED')
+        # Any actual guard refusal breaks the sampled healthy sequence, even
+        # when this invocation was a trainer/worker check between registrations.
+        if report.get('admit_new_worker') is not True:self._registration_stability=None
         report['role']=self.role
         name=self.role+'-admission.json'
         if forward_registration is not None:
@@ -580,6 +631,7 @@ class Gate:
                           actual_launch_guard_still_required=True,
                            first_prediction_resource_readiness_checked=prediction_ready,
                            future_resource_capacity_reserved=False)
+            report=self._stable_registration(report,forward_registration,original)
             name=self.role+'-forward-admission.json'
         self.attach_resource_attribution(report)
         atomic(self.root/name,report)
@@ -740,6 +792,11 @@ class _ForwardRegistrationHold(Exception):
 
 def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
+        _guarded_forward_registration=True
+
+        def _forward_attempt_stopping(self):
+            return bool(getattr(self,'stop',False) or getattr(gate,'draining',False))
+
         def _complete_worker(self,job_id,rc,state,*,failure=None):
             record=getattr(gate,'record_native_exit',None)
             try:
@@ -750,13 +807,14 @@ def guarded_trainer_class(base,gate):
                 result=super()._complete_worker(job_id,rc,state,failure=failure)
             return result
 
-        def register_evaluation(self,job_id,candidate,job):
+        def register_evaluation(self,job_id,candidate,job,*,attempt=None):
+            options={'attempt':attempt} if attempt is not None else {}
             if self.c.get('future_plan_admission_profile') is None:
-                return super().register_evaluation(job_id,candidate,job)
+                return super().register_evaluation(job_id,candidate,job,**options)
             previous=getattr(self,'_forward_registration_context',None)
             self._forward_registration_context=(job_id,candidate['candidate_id'])
             try:
-                result=super().register_evaluation(job_id,candidate,job)
+                result=super().register_evaluation(job_id,candidate,job,**options)
             except _ForwardRegistrationHold as exc:
                 if self.db.in_transaction:
                     raise EvidenceError('FORWARD_PREFLIGHT_ROLLBACK_REQUIRED') from exc
@@ -882,7 +940,16 @@ def verify_config(c):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--role',choices=['trainer','evaluator'],required=True)
-    p.add_argument('--check-only',action='store_true');a=p.parse_args();os.umask(0o077)
+    p.add_argument('--check-only',action='store_true')
+    p.add_argument('--forward-attempt-request',type=Path)
+    p.add_argument('--forward-attempt-request-sha256')
+    p.add_argument('--attempt-wait-seconds',type=int,default=90)
+    a=p.parse_args();os.umask(0o077)
+    attempt_mode=a.forward_attempt_request is not None
+    if (attempt_mode!=(a.forward_attempt_request_sha256 is not None)
+            or (attempt_mode and (a.role!='trainer' or a.check_only))
+            or not 0<=a.attempt_wait_seconds<=300):
+        p.error('forward attempt requires trainer role, exact request SHA and a 0..300 second bound')
     c=read(a.config);original=verify_config(c);gate=Gate(c,a.role)
     if a.check_only:
         fast=gate._priority_negative_preflight()
@@ -907,6 +974,12 @@ def main():
     def request_drain(*_):gate.draining=True
     signal.signal(signal.SIGUSR1,request_drain)
     try:
+        if attempt_mode:
+            from laya_cell.resident_forward_attempt import run_request
+            result=run_request(service,a.forward_attempt_request,a.forward_attempt_request_sha256,
+                               wait_seconds=a.attempt_wait_seconds)
+            print(json.dumps(result,sort_keys=True),flush=True)
+            return
         if a.role=='trainer':service.recover()
         while not service.stop:
             try:

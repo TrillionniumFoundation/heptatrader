@@ -73,6 +73,8 @@ def assess(plan,results,now_ms):
  if len({r['slot'] for r in results})!=len(results):raise ContractError('DUPLICATE_EVALUATION_SLOT')
  if any(r.get('candidate_id')!=plan['candidate_id'] or not 0<=r['slot']<rule['slots'] for r in results):
   raise ContractError('EVALUATION_CANDIDATE_OR_SLOT')
+ if plan.get('evaluation_attempt') is not None and any(r.get('plan_id')!=plan['plan_id'] for r in results):
+  raise ContractError('EVALUATION_ATTEMPT_OUTCOME_PLAN_IDENTITY')
  base={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'rule_id':digest(rule),
        'automatic_execution_selection':False,'canonical_owner_admitted':False,'promotion_performed':False}
  from . import resident_parent_calibration

@@ -572,6 +572,26 @@ struct Fixture {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         check(retainedErrorCount(requestId,prefix)==expected,"exact raw error callbacks durably retained");
     }
+    unsigned waitForObservabilityCount(const std::string& eventName,
+                                       const std::string& requiredField,unsigned expected) {
+        // OMS persistence happens inside DrainAdapterEvents. Its diagnostic
+        // scope flushes only after routing returns and the trading locks leave;
+        // seeing the raw callback does not prove that flush has finished.
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
+        const std::string eventField="\"event\":\""+eventName+"\"";
+        for(;;) {
+            std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
+            std::string row;unsigned count=0;
+            while(std::getline(obs,row)) {
+                if(obs.eof())break; // An unfinished concurrent append is not evidence.
+                if(row.find(eventField)!=std::string::npos&&
+                   row.find(requiredField)!=std::string::npos)++count;
+            }
+            if(count>=expected||runtime->HasFatalRuntimeError()||
+               std::chrono::steady_clock::now()>=deadline)return count;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
     void localCancelledCashErrorsPreserveEconomicRecovery() {
         const auto before=runtime->Adapter().GetAuthoritativeRecoveryAuditSnapshot();
         check(before.barrierComplete&&before.active.complete&&before.terminal.complete&&
@@ -628,12 +648,11 @@ struct Fixture {
               quotesAfter.contracts.at("BTC.USD").quote.HasQuote()&&
               quotesAfter.contracts.at("EUR.USD").quote.HasQuote(),
               "retired third ticker cannot replace either current quote");
-        std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
-        std::string line;unsigned localDiagnostics=0;
-        while(std::getline(obs,line))if(line.find("\"event\":\"market_data.local_request_failure\"")!=std::string::npos&&
-                                      line.find("\"request_id\":"+std::to_string(extraCashRequest))!=std::string::npos)
-            ++localDiagnostics;
+        const unsigned localDiagnostics=waitForObservabilityCount(
+            "market_data.local_request_failure",
+            "\"request_id\":"+std::to_string(extraCashRequest),4);
         check(localDiagnostics==4,"each raw local failure also emits its market-data diagnostic");
+        std::string line;
         std::ifstream raw(savedConfig.journalPath);unsigned exactRawErrors=0;
         const std::string localErrorPrefix="OFFLINE_RETIRED_CASH_REQUEST_300:";
         while(std::getline(raw,line)) {
@@ -684,10 +703,8 @@ struct Fixture {
         check(runtime->QuoteHealthForObservation().contracts.at("BTC.USD").requestId==primary &&
               originalCommands()==originals && shared->orderCalls==0,
               "unscoped farm event cannot replace quote ownership or submit orders");
-        std::ifstream obs(savedConfig.stateDirectory+"/ib-observability.jsonl");
-        std::string row;unsigned notices=0;
-        while(std::getline(obs,row))
-            notices += row.find("\"event\":\"broker.secdef_farm_unavailable_unscoped\"")!=std::string::npos;
+        const unsigned notices=waitForObservabilityCount(
+            "broker.secdef_farm_unavailable_unscoped","",1);
         check(notices==1,"raw 2157 remains visible as a scoped native diagnostic");
     }
     void uncorroboratedMarketDataErrorClosesRecovery(IBEvent event) {

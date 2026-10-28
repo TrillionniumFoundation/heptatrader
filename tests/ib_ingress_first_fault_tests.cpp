@@ -1,12 +1,18 @@
 #include "adapter_ib/ib_api_wrapper.h"
 #include "execution/ib_paper_execution_runtime_composition.h"
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <new>
+#include <limits>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
+#ifdef HEPTA_TEST_IBAPI_CALLBACK_CONTEXT
+#include "EWrapper.h"
+#endif
 
 namespace {
 thread_local bool denyAllocation = false;
@@ -29,8 +35,128 @@ struct NoAllocation {
 bool same(const IBIngressFirstFault& a, const IBIngressFirstFault& b) {
     return a.pending == b.pending && a.kind == b.kind &&
         a.monotonicNs == b.monotonicNs && a.connectionEpoch == b.connectionEpoch &&
-        a.admissionGeneration == b.admissionGeneration;
+        a.admissionGeneration == b.admissionGeneration &&
+        a.event.known == b.event.known && a.event.type == b.event.type &&
+        a.event.errorCodeKnown == b.event.errorCodeKnown &&
+        a.event.errorCode == b.event.errorCode;
 }
+void strictEventContextAndFirstWinner() {
+    static_assert(std::is_trivially_copyable<IBIngressFaultEvent>::value,
+        "diagnostic context must contain only fixed scalars");
+    IBEvent error;
+    error.type = IBEventType::Error; error.key = "1101";
+    error.account.assign(4096, 'a'); error.value.assign(16384, 'x');
+    error.id = 123; error.requestId = 456; // never part of the diagnostic
+    IBIngressFaultEvent context;
+    IBMarketDataAdmissionState state(fixedClock);
+    state.SetDiagnosticConnectionEpoch(41);
+    {
+        NoAllocation guard;
+        errno = EDOM;
+        context = DescribeIBIngressFaultEvent(error);
+        require(errno == EDOM, "diagnostic parser leaves errno unchanged");
+        state.ObserveBlockingCallback(true, IBIngressFaultKind::BlockingCallback, context);
+    }
+    const auto first = state.GetFirstFault();
+    require(first.event.known && first.event.type == IBEventType::Error &&
+        first.event.errorCodeKnown && first.event.errorCode == 1101,
+        "first blocking event retains only its type and numeric SDK code");
+    require(std::strcmp(IBIngressFaultKindName(first.kind), "BLOCKING_CALLBACK") == 0,
+        "historical kind label remains source/log compatible");
+    IBEvent closed; closed.type = IBEventType::ConnectionClosed;
+    state.ObserveBlockingCallback(true, IBIngressFaultKind::BlockingCallback,
+        DescribeIBIngressFaultEvent(closed));
+    state.Complete(); state.SetDiagnosticConnectionEpoch(42);
+    require(same(first, state.GetFirstFault()), "later event cannot relabel the first fault");
+    const auto closedContext = DescribeIBIngressFaultEvent(closed);
+    require(closedContext.known && !closedContext.errorCodeKnown && closedContext.errorCode == 0,
+        "connection closed is not an invented error code");
+    for (const auto& item : {std::string(""), std::string(" 1101"), std::string("+1101"),
+            std::string("01"), std::string("-0"), std::string("1x"),
+            std::string("2147483648"), std::string("-2147483649"),
+            std::string("999999999999"), std::string("1101\0x", 6)}) {
+        error.key = item;
+        { NoAllocation guard; context = DescribeIBIngressFaultEvent(error); }
+        require(context.known && !context.errorCodeKnown && context.errorCode == 0,
+            "malformed or out-of-range code stays explicitly unknown");
+    }
+    for (const auto& item : {std::string("0"), std::string("-1"),
+            std::string("2147483647"), std::string("-2147483648")}) {
+        error.key = item;
+        { NoAllocation guard; context = DescribeIBIngressFaultEvent(error); }
+        require(context.errorCodeKnown, "canonical int32 boundaries remain observable");
+        const std::int32_t expected = item == "0" ? 0 : item == "-1" ? -1 :
+            item == "2147483647" ? std::numeric_limits<std::int32_t>::max() :
+            std::numeric_limits<std::int32_t>::min();
+        require(context.errorCode == expected, "canonical int32 value does not overflow");
+    }
+    IBMarketDataAdmissionState unrelated(fixedClock);
+    unrelated.MarkFault(IBIngressFaultKind::SdkCallException);
+    require(!unrelated.GetFirstFault().event.known &&
+        !unrelated.GetFirstFault().event.errorCodeKnown,
+        "non-event fault does not borrow an adjacent broker event");
+}
+void pendingEventPublication() {
+    clockEntered.store(false); releaseClock.store(false);
+    IBEvent error; error.type = IBEventType::Error; error.key = "1101";
+    const auto errorContext = DescribeIBIngressFaultEvent(error);
+    IBEvent closed; closed.type = IBEventType::ConnectionClosed;
+    const auto closedContext = DescribeIBIngressFaultEvent(closed);
+    IBMarketDataAdmissionState state(pausedClock);
+    state.SetDiagnosticConnectionEpoch(47);
+    std::thread writer([&] {
+        NoAllocation guard;
+        state.ObserveBlockingCallback(true, IBIngressFaultKind::BlockingCallback, errorContext);
+    });
+    while (!clockEntered.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto pending = state.GetFirstFault();
+    require(pending.pending && !pending.event.known && pending.event.type == IBEventType::None &&
+        !pending.event.errorCodeKnown && pending.event.errorCode == 0,
+        "pending read cannot expose partially published event context");
+    state.ObserveBlockingCallback(true, IBIngressFaultKind::BlockingCallback, closedContext);
+    releaseClock.store(true, std::memory_order_release); writer.join();
+    const auto first = state.GetFirstFault();
+    require(!first.pending && first.connectionEpoch == 47 && first.event.known &&
+        first.event.type == IBEventType::Error && first.event.errorCodeKnown &&
+        first.event.errorCode == 1101, "publication retains the winning event, not a later callback");
+}
+#ifdef HEPTA_TEST_IBAPI_CALLBACK_CONTEXT
+void realSdkCallbacksWithoutConnection() {
+    // Real EWrapper -> PushEvent -> admission path. Never call Connect, send
+    // a request, start EReader, or access a production broker/account.
+    std::unique_ptr<IIBApiWrapper> api(CreateIBApiWrapper());
+    auto* callbacks = dynamic_cast<EWrapper*>(api.get());
+    require(callbacks != nullptr, "SDK-enabled test must use the actual wrapper");
+    api->SetConnectionEpoch(71);
+    callbacks->error(-1, 1101, "synthetic message never retained", "");
+    const auto first = api->GetIngressFirstFault();
+    require(first.kind == IBIngressFaultKind::BlockingCallback &&
+        first.event.type == IBEventType::Error && first.event.errorCodeKnown &&
+        first.event.errorCode == 1101, "production PushEvent forwards original error context");
+    callbacks->connectionClosed();
+    require(same(first, api->GetIngressFirstFault()), "production later close cannot overwrite error");
+    api.reset(CreateIBApiWrapper()); callbacks = dynamic_cast<EWrapper*>(api.get());
+    require(callbacks != nullptr, "fresh real wrapper for close");
+    api->SetConnectionEpoch(72); callbacks->connectionClosed();
+    const auto close = api->GetIngressFirstFault();
+    require(close.event.known && close.event.type == IBEventType::ConnectionClosed &&
+        !close.event.errorCodeKnown, "production close is distinct from a broker error");
+    api.reset(CreateIBApiWrapper()); callbacks = dynamic_cast<EWrapper*>(api.get());
+    require(callbacks != nullptr, "fresh real wrapper for admission notices");
+    api->SetConnectionEpoch(73);
+    callbacks->error(-1, 2104, "Market data farm connection is OK:cashfarm", "");
+    callbacks->error(-1, 2119, "Market data farm is inactive:cashfarm", "");
+    require(!api->EventIngressAdmissionFailed() && !api->GetIngressFirstFault().event.known,
+        "recoverable idle farm notices do not create a diagnostic fault");
+    api->BeginEventIngressAdmission();
+    callbacks->error(-1, 2119, "Market data farm is inactive:cashfarm", "");
+    const auto farm = api->GetIngressFirstFault();
+    require(farm.kind == IBIngressFaultKind::FarmWarningDuringAdmission &&
+        farm.event.type == IBEventType::Error && farm.event.errorCodeKnown &&
+        farm.event.errorCode == 2119, "production admission-only farm fault has original numeric code");
+    api->EndEventIngressAdmission(); api->CompleteEventIngressAdmission();
+}
+#endif
 void pendingIsNotASecondWritersRecord() {
     clockEntered.store(false); releaseClock.store(false);
     IBMarketDataAdmissionState state(pausedClock);
@@ -125,30 +251,40 @@ void categoriesAndAllocation() {
         fresh.GetFirstFault().kind == IBIngressFaultKind::None, "only a fresh state starts clean");
 }
 void concurrentSnapshots() {
+    IBEvent error; error.type = IBEventType::Error; error.key = "1101";
+    const auto blockingContext = DescribeIBIngressFaultEvent(error);
+    error.key = "2119";
+    const auto farmContext = DescribeIBIngressFaultEvent(error);
+    const auto completeEvent = [](const IBIngressFirstFault& value) {
+        return value.event.known && value.event.type == IBEventType::Error &&
+            value.event.errorCodeKnown &&
+            ((value.kind == IBIngressFaultKind::BlockingCallback && value.event.errorCode == 1101) ||
+             (value.kind == IBIngressFaultKind::FarmWarningDuringAdmission && value.event.errorCode == 2119));
+    };
     for (unsigned round = 0; round != 128; ++round) {
         IBMarketDataAdmissionState state(fixedClock);
         state.SetDiagnosticConnectionEpoch(23);
         std::uint64_t generation = 0; require(state.Begin(generation), "concurrent generation");
         std::atomic<bool> go{false};
-        auto write = [&](IBIngressFaultKind kind) {
+        auto write = [&](IBIngressFaultKind kind, IBIngressFaultEvent context) {
             while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
-            NoAllocation guard; state.MarkFault(kind);
+            NoAllocation guard; state.ObserveBlockingCallback(true, kind, context);
         };
-        std::thread a(write, IBIngressFaultKind::AuthoritativeQueueBusy);
-        std::thread b(write, IBIngressFaultKind::SdkCallException);
+        std::thread a(write, IBIngressFaultKind::BlockingCallback, blockingContext);
+        std::thread b(write, IBIngressFaultKind::FarmWarningDuringAdmission, farmContext);
         go.store(true, std::memory_order_release);
         for (unsigned i = 0; i != 64; ++i) {
             const auto value = state.GetFirstFault();
             if (value.kind != IBIngressFaultKind::None)
                 require(!value.pending && value.connectionEpoch == 23 &&
-                    value.admissionGeneration == generation && value.monotonicNs == fixedClock(),
+                    value.admissionGeneration == generation && value.monotonicNs == fixedClock() &&
+                    completeEvent(value),
                     "acquire reads one complete record");
         }
         a.join(); b.join();
         const auto first = state.GetFirstFault();
-        require((first.kind == IBIngressFaultKind::AuthoritativeQueueBusy ||
-            first.kind == IBIngressFaultKind::SdkCallException) && !first.pending,
-            "exactly one real fault CAS winner records its kind");
+        require(completeEvent(first) && !first.pending,
+            "exactly one real fault CAS winner records its complete kind/event/code tuple");
         state.SetDiagnosticConnectionEpoch(24); state.MarkFault();
         require(same(first, state.GetFirstFault()), "later context does not relabel published record");
     }
@@ -290,6 +426,10 @@ struct IbQuoteRecoveryFixture {
 };
 int main() {
     try {
+        strictEventContextAndFirstWinner(); pendingEventPublication();
+#ifdef HEPTA_TEST_IBAPI_CALLBACK_CONTEXT
+        realSdkCallbacksWithoutConnection();
+#endif
         pendingIsNotASecondWritersRecord(); recoverableAndReservedCallbacks();
         categoriesAndAllocation(); concurrentSnapshots();
         IbQuoteRecoveryFixture::observationCannotDiscardAConcurrentFault();

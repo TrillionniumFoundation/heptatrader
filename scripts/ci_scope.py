@@ -38,6 +38,9 @@ VERIFIED_PYTHON_GROUPS = (
     # These operators inspect/control existing release identities; they do not
     # build native code or import the learning/model runtime.
     frozenset({"scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
+    frozenset({"scripts/activate_prepared_gateway.py", "scripts/native_execution_maintenance.py",
+               "tests/python/test_activate_prepared_gateway.py",
+               "tests/python/test_native_execution_maintenance.py"}),
     frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
                "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
     frozenset({"scripts/hepta_verified_loader.py", "tests/python/test_verified_python_loader.py"}),
@@ -56,6 +59,18 @@ VERIFIED_PYTHON_GROUPS = (
 # These support files must exist, but changing one does not inherit the helper's
 # exemption. Keep import checks local to the verified Python entry points.
 VERIFIED_HELPER_DEPENDENCIES = {
+    # Gateway/native handoff controls already-built releases through the Python
+    # driver API. Keep both lifecycle suites and their shared driver fixture;
+    # native code, release builders and installation changes stay outside this
+    # group. Check both controllers even when only a lifecycle test changes.
+    "scripts/activate_prepared_gateway.py": (
+        frozenset({"activate_prepared_driver", "native_execution_maintenance",
+                   "hepta_decision_attribution"}),
+        frozenset({"scripts/activate_prepared_driver.py",
+                   "scripts/hepta_decision_attribution.py",
+                   "tests/python/test_activate_prepared_driver.py"}),
+    ),
+    "scripts/native_execution_maintenance.py": (frozenset(), frozenset()),
     "scripts/hepta_oms_report.py": (
         frozenset(),
         frozenset({"tests/python/test_oms_operational_report.py",

@@ -22,7 +22,7 @@ def verify_source_prefixes(dataset):
  sources=dataset.get('source_prefixes')
  if not isinstance(sources,list) or not sources:raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
  from .source_archive import verify_archive_pin_sequence,verify_prefix,PIN_SCHEMA
- pages=[];post_page_raw=False
+ pages=[];post_page_raw=False;raw_paths=set()
  for source in sources:
   if not isinstance(source,dict):raise ContractError('REAL_SOURCE_PREFIXES_REQUIRED')
   if source.get('schema')==PIN_SCHEMA:
@@ -31,11 +31,13 @@ def verify_source_prefixes(dataset):
   else:
    if pages:post_page_raw=True
    verify_prefix(source)
+   raw_paths.add(source['path'])
  if pages:
   # The archive is one ordered genesis-rooted range, never a selection of
   # independently valid pages. Historical seed prefixes may precede it;
   # unsealed current prefixes may follow it.
-  verify_archive_pin_sequence(pages)
+  skipped=verify_archive_pin_sequence(pages)
+  if not skipped<=raw_paths:raise ContractError('SOURCE_ARCHIVE_SKIPPED_RAW_PROOF_MISSING')
   scope=dataset.get('scope')
   if isinstance(scope,str) and len(scope)>=65 and scope[64]==':':
    if any(p['period_sha256']!=scope[:64] for p in pages):
