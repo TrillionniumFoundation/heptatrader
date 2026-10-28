@@ -326,7 +326,7 @@ class SourceArchiveTests(unittest.TestCase):
         return root, old_pages, broken, frozen_failure
 
     def test_v2_sparse_end_only_preserves_failure_and_legacy_pages(self):
-        from laya_cell.source_archive import PAGE_SCHEMA_V2, UNSEALED_BOUND
+        from laya_cell.source_archive import SPARSE_PAGE_SCHEMA, UNSEALED_BOUND
         root, old_pages, broken, failure_bytes = self._sparse_fixture()
         self.assertEqual(UNSEALED_BOUND,128)
         receipt = seal(self.c,8)
@@ -338,7 +338,7 @@ class SourceArchiveTests(unittest.TestCase):
         self.assertEqual([ (root/f'page-{i:08d}.json').read_bytes()
                           for i in range(5)],old_pages)
         page=json.loads((root/'page-00000005.json').read_bytes())
-        self.assertEqual(page['schema'],PAGE_SCHEMA_V2)
+        self.assertEqual(page['schema'],SPARSE_PAGE_SCHEMA)
         self.assertEqual(len(page['prefixes']),32)
         self.assertEqual(page['skipped_paths'],[
             str(self.feed/'segment-00000160'/'quotes.jsonl'),
@@ -358,7 +358,7 @@ class SourceArchiveTests(unittest.TestCase):
         seal(self.c,8)
         _,pins=read_quotes(self.c,int(time.time()*1000))
         omitted=[pin for pin in pins if pin.get('path')!=str(broken)]
-        with self.assertRaisesRegex(ContractError,'SKIPPED_PREFIX_MISSING'):
+        with self.assertRaisesRegex(ContractError,'SKIPPED_RAW_PROOF_MISSING'):
             verify_source_prefixes({'source_prefixes':omitted})
         verify_source_prefixes({'source_prefixes':pins})
         broken.write_bytes(broken.read_bytes().replace(

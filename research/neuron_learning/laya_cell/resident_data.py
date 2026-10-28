@@ -28,12 +28,12 @@ def read_quotes(config,now_ms,*,read_hints=None):
     if len(paths)!=len(feed_paths)+len(extra):raise ContractError('DUPLICATE_SOURCE_PATH')
     quotes={};prefixes=list(pages)
     for path in paths:
-        pinned=sealed_by_path.get(str(path))
-        header,records,prefix=(read_source(path,expected_prefix=pinned)
-                               if pinned is not None else read_source(path))
+        pin=sealed_by_path.get(str(path))
+        header,records,prefix=(read_source(path,expected_prefix=pin)
+                               if pin is not None else read_source(path))
         if header['period_sha256']!=config['period_sha256']:raise ContractError('CROSS_PERIOD_FEED')
-        if pinned is not None:
-            if prefix!=pinned:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        if pin is not None:
+            if prefix!=pin:raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
         else:prefixes.append(prefix)
         for q in records:
             if read_hints is not None:
