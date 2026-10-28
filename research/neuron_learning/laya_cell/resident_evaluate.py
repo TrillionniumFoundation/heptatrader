@@ -25,10 +25,20 @@ _WORKER_EXCEPTION_TITLE=re.compile(
  r'(?:[A-Z][A-Za-z_0-9]*(?:Error|Exception)|Exception|'
  r'SystemExit|KeyboardInterrupt|GeneratorExit|StopIteration|StopAsyncIteration|TimeoutExpired)'
  r':(?:[ \t]|$)')
+_WORKER_STARTUP_PREFIX='HEPTA_WORKER_STARTUP_TIMING '
+_WORKER_DIAGNOSTIC_BYTES=8192
+_WORKER_STARTUP_LINE_BYTES=2048
 
 
-def worker_failure_diagnostic(stderr_tail):
- """Prefer the final Python exception title over following runtime advice."""
+def worker_failure_diagnostic(stderr_tail,*,diagnostic_context=None):
+ """Apply the original reason rule to a tail without startup observations."""
+ context=stderr_tail.encode('utf-8') if diagnostic_context is None else diagnostic_context
+ rows=context.splitlines(keepends=True)
+ lines=[line for line in rows if not line.startswith(_WORKER_STARTUP_PREFIX.encode())]
+ if len(lines)!=len(rows):
+  # Rebuild the same byte-sized tail after removing identified observations.
+  # Do not expand the error search merely because more context was read.
+  stderr_tail=b''.join(lines)[-1500:].decode('utf-8',errors='replace')
  lines=stderr_tail.strip().splitlines()
  # Keep indentation while matching so quoted/source examples remain ordinary logs.
  for line in reversed(stderr_tail.splitlines()):
@@ -458,9 +468,29 @@ class Evaluator:
   inherited=inherited_worker_locks(self)
   lock_args=[part for fd in inherited for part in ('--held-lock-fd',str(fd))]
   from .resident_hip_runtime import worker_environment
-  try:p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited,env=worker_environment(self.c))
+  timing=None;environment_started={};popen_started={}
+  try:
+   try:
+    from . import resident_worker_failure_context as timing
+    environment_started=timing.startup_stamp()
+   except Exception:pass
+   environment=worker_environment(self.c)
+   if timing is not None:
+    try:popen_started=timing.startup_stamp()
+    except Exception:pass
+   p=subprocess.Popen([self.c['python'],'-B','-m','laya_cell.resident_launch','predict','--config',str(self.path),'--plan',str(path),'--slot',str(slot),*lock_args],stdout=stream,stderr=stream,pass_fds=inherited,env=environment)
   except BaseException:stream.close();raise
   self.tasks[key]=(p,stream,time.monotonic())
+  if timing is not None:
+   try:
+    popen_completed=timing.startup_stamp()
+    timing.emit_startup('PREDICTION_DISPATCHED',{
+     'plan_id':plan['plan_id'],'candidate_id':plan.get('candidate_id',''),'slot':slot,
+     'child_pid':p.pid,'child_start_ticks':timing.process_start_ticks(p.pid),
+     'admission':getattr(self,'_worker_admission_timing',None),
+     'environment_preparation':timing.startup_interval(environment_started,popen_started),
+     'popen':timing.startup_interval(popen_started,popen_completed)},stream=stream)
+   except Exception:pass
   return True
  def reap(self):
   for key,(p,stream,started) in list(self.tasks.items()):
@@ -481,9 +511,21 @@ class Evaluator:
    phase=read_json(phase_path) if phase_path.exists() else {'phase':'STARTUP'}
    with (path.parent/f'prediction-{slot:03}.log').open('rb') as diagnostic_stream:
     diagnostic_stream.seek(0,os.SEEK_END)
-    diagnostic_stream.seek(max(0,diagnostic_stream.tell()-1500))
-    stderr_tail=diagnostic_stream.read(1500).decode('utf-8',errors='replace')
-   reason=worker_failure_diagnostic(stderr_tail)
+    # A late parent dispatch observation can follow the child's exception.
+    # Keep the original raw tail, with a separate bounded context for reasons.
+    bound=_WORKER_DIAGNOSTIC_BYTES+_WORKER_STARTUP_LINE_BYTES
+    context_start=max(0,diagnostic_stream.tell()-bound)
+    diagnostic_stream.seek(context_start)
+    raw=diagnostic_stream.read(bound)
+   stderr_tail=raw[-1500:].decode('utf-8',errors='replace')
+   offset=max(0,len(raw)-_WORKER_DIAGNOSTIC_BYTES)
+   boundary=raw.rfind(b'\n',0,offset)
+   # Recover the prefix of a startup row crossing the context boundary. If
+   # no boundary fits its maximum line size, preserve the long real fragment.
+   if boundary>=0:context=raw[boundary+1:]
+   elif context_start==0:context=raw
+   else:context=raw[offset:]
+   reason=worker_failure_diagnostic(stderr_tail,diagnostic_context=context)
    if expired:reason='WORKER_BUDGET_EXCEEDED'
    elif rc<0:
     try:signal_name=signal.Signals(-rc).name

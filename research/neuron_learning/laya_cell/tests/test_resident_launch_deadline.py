@@ -101,7 +101,7 @@ class PredictionLaunchDeadlineTests(unittest.TestCase):
     def test_exact_frozen_deadline_keeps_existing_strict_greater_than_boundary(self):
         error, state, activate = self.run_launcher(now_ms=self.deadline_ms)
         self.assertIsInstance(error, ActivationReached)
-        self.assertEqual(state['phase'], 'IMPORT_TORCH')
+        self.assertEqual(state['phase'], 'ACTIVATE_HIP_RUNTIME')
         activate.assert_called_once_with(None)
 
     def test_frozen_rule_and_plan_identity_are_still_validated(self):
@@ -118,7 +118,7 @@ class PredictionLaunchDeadlineTests(unittest.TestCase):
     def test_training_has_no_prediction_deadline(self):
         error, state, activate = self.run_launcher(now_ms=self.deadline_ms + 1, target='train')
         self.assertIsInstance(error, ActivationReached)
-        self.assertEqual(state['phase'], 'IMPORT_TORCH')
+        self.assertEqual(state['phase'], 'ACTIVATE_HIP_RUNTIME')
         activate.assert_called_once_with(None)
 
 

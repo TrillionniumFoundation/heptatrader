@@ -291,7 +291,7 @@ class WorkerFailureDiagnosticTests(unittest.TestCase):
         finally:
             for _,stream,_ in engine.tasks.values():stream.close()
 
-    def test_only_last1500_bytes_are_read_and_invalid_utf8_is_replaced(self):
+    def test_reason_lookbehind_is_bounded_and_original1500_byte_tail_is_preserved(self):
         tail = b'\xff'+b'z'*1498+b'\n'
         with self.log.open('wb') as stream:
             stream.seek(4*1024*1024)
@@ -312,7 +312,7 @@ class WorkerFailureDiagnosticTests(unittest.TestCase):
             def tell(self):
                 return self.stream.tell()
             def read(self, size=-1):
-                if not 0 <= size <= 1500:
+                if not 0 <= size <= 10240:
                     raise AssertionError('Unbounded log read')
                 reads.append(size)
                 return self.stream.read(size)
@@ -323,8 +323,8 @@ class WorkerFailureDiagnosticTests(unittest.TestCase):
         with patch.object(Path, 'open', opening), \
                 patch.object(Path, 'read_text', side_effect=AssertionError('Whole log read')):
             record, _, _, _ = self.run_reap(-signal.SIGSEGV, preserve_log=True)
-        self.assertEqual(reads, [1500])
-        self.assertEqual(seeks, [(0,os.SEEK_END),(4*1024*1024,os.SEEK_SET)])
+        self.assertEqual(reads, [10240])
+        self.assertEqual(seeks, [(0,os.SEEK_END),(4*1024*1024+1500-10240,os.SEEK_SET)])
         self.assertEqual(record['stderr_tail'], tail.decode('utf-8',errors='replace'))
         self.assertEqual(len(record['stderr_tail']), 1500)
         self.assertEqual(record['reason'], 'WORKER_SIGNAL_SIGSEGV')

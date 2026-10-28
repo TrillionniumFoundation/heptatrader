@@ -18,6 +18,8 @@ import time
 SCHEMA = 'heptatrader.resident-worker-failure-context.v1'
 PREFIX = 'HEPTA_WORKER_FAILURE_CONTEXT '
 MAX_OUTPUT_BYTES = 65536
+STARTUP_PREFIX = 'HEPTA_WORKER_STARTUP_TIMING '
+MAX_STARTUP_BYTES = 2048
 ENVIRONMENT_NAMES = (
     'AMD_COMGR_CACHE_DIR', 'AMD_COMGR_EMIT_VERBOSE_LOGS', 'AMD_LOG_LEVEL',
     'AMD_LOG_MASK', 'AMD_SERIALIZE_KERNEL', 'CUDA_VISIBLE_DEVICES',
@@ -51,6 +53,72 @@ def _read(path, limit):
         return {'text': raw[:limit].decode('utf-8', 'replace'), 'truncated': len(raw) > limit}
     finally:
         os.close(fd)
+
+
+def startup_stamp():
+    """Observed boundary clocks, never admission or timeout authority."""
+    try:
+        return {'at_ms': time.time_ns() // 1_000_000,
+                'monotonic_ns': time.monotonic_ns()}
+    except Exception:
+        return {}
+
+
+def startup_interval(before, after):
+    result = {}
+    for source, name in ((before, 'started_at_ms'), (after, 'completed_at_ms')):
+        if type(source.get('at_ms')) is int:
+            result[name] = source['at_ms']
+    first, last = before.get('monotonic_ns'), after.get('monotonic_ns')
+    if type(first) is int and type(last) is int and last >= first:
+        result['elapsed_ns'] = last - first
+    return result
+
+
+def process_start_ticks(pid):
+    """Kernel process birth identity, not exec or Python entry time."""
+    try:
+        if type(pid) is not int or pid <= 0:
+            return None
+        record = _read(f'/proc/{pid}/stat', 4096)
+        if record['truncated']:
+            return None
+        text = record['text']
+        if int(text.split(' ', 1)[0]) != pid:
+            return None
+        return int(text.rsplit(')', 1)[1].split()[19])
+    except Exception:
+        return None
+
+
+def emit_startup(phase, context=None, *, stream=None):
+    """Small allowlisted event in the existing private worker log only.
+
+    Flushed phase boundaries survive failures that Python cannot catch. Do not
+    collect environment, model inputs, outputs or failure snapshots here.
+    """
+    try:
+        context = context or {}
+        value = {'schema': 'heptatrader.worker-startup-timing.v1',
+                 'phase': _text(phase, 64), 'pid': os.getpid(),
+                 **startup_stamp(), 'observational_only': True,
+                 'authorization_effect': 'NONE'}
+        for key in ('target', 'plan_id', 'candidate_id'):
+            if key in context:
+                value[key] = _text(context[key], 64)
+        for key in ('slot', 'child_pid', 'child_start_ticks'):
+            if type(context.get(key)) is int:
+                value[key] = context[key]
+        for key in ('admission', 'environment_preparation', 'popen'):
+            if isinstance(context.get(key), dict):
+                value[key] = {name: number for name, number in context[key].items()
+                              if name in ('started_at_ms', 'completed_at_ms', 'elapsed_ns')
+                              and type(number) is int}
+        raw = STARTUP_PREFIX + json.dumps(value, ensure_ascii=True, separators=(',', ':'))
+        if len(raw.encode()) + 1 <= MAX_STARTUP_BYTES:
+            print(raw, file=sys.stderr if stream is None else stream, flush=True)
+    except Exception:
+        pass
 
 
 def _attempt(call):

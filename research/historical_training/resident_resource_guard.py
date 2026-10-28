@@ -745,6 +745,9 @@ def guarded_evaluator_class(base,gate):
                 and previous['denied_at_ms']<=wall<previous['slot_start_ms']
                 and previous['checked_tick']<=tick<previous['next_tick']):
                 return
+            admission_tick=None
+            try:admission_tick=time.monotonic_ns()
+            except Exception:pass
             if not gate.acquire({'plan':str(path),'slot':slot}):
                 prior=getattr(gate,'last_admission',None)
                 reasons=prior.get('reasons') if isinstance(prior,dict) else None
@@ -765,10 +768,17 @@ def guarded_evaluator_class(base,gate):
                 return
             self._launch_retry=None
             self._worker_lease_fd=getattr(getattr(gate,'lease',None),'fd',None)
+            self._worker_admission_timing=None
             try:
+                try:
+                    from laya_cell.resident_worker_failure_context import startup_interval,startup_stamp
+                    self._worker_admission_timing=startup_interval(
+                        {'at_ms':wall,'monotonic_ns':admission_tick},startup_stamp())
+                except Exception:pass
                 super().launch(path,slot)
                 if not self.tasks:gate.release();self._worker_lease_fd=None
             except Exception:gate.release();raise
+            finally:self._worker_admission_timing=None
         def reap(self):
             record=getattr(gate,'record_native_exit',None)
             previous=([(key,task[0]) for key,task in self.tasks.items()]
