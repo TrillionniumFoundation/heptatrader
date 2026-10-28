@@ -17,12 +17,14 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import secrets
+import signal
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Any, BinaryIO, Iterable
 
 MANIFEST_SCHEMA = "heptatrader.release-manifest.v1"
@@ -37,6 +39,8 @@ MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 GENERATED_ARCHIVE_PATHS = frozenset({"manifest.json"})
 USTAR_NAME_BYTES = 100
 USTAR_PREFIX_BYTES = 155
+INSTALL_TIMEOUT_SECONDS = 300
+INSTALL_CLEANUP_SECONDS = 5
 
 
 class PackageError(ValueError):
@@ -1159,6 +1163,47 @@ def package_install_root(
     return receipt
 
 
+def _installer_group_exists(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _stop_owned_installer(process: subprocess.Popen) -> bool:
+    """Do not reap a timed-out leader before signalling its owned session.
+
+    An unreaped leader reserves its PID. Once communicate has reaped it, only
+    observe the numeric group; never signal a possibly reused identity.
+    """
+    try:
+        deadline = time.monotonic() + INSTALL_CLEANUP_SECONDS
+        if process.returncode is None:
+            # Confirm kernel child ownership without consuming its wait status;
+            # a stale Popen handle alone cannot establish a reusable PID's owner.
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if os.getpgid(process.pid) != process.pid or os.getsid(process.pid) != process.pid:
+                return False
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=max(0, deadline - time.monotonic()))
+        while _installer_group_exists(process.pid):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+        return True
+    except Exception:
+        return False
+
+
+def _installer_cleanup_notice(temporary: Path) -> None:
+    try:
+        print(f"[RELEASE] installer cleanup unconfirmed; inspect staging: {temporary}",
+              file=sys.stderr)
+    except Exception:
+        pass
+
+
 def install_from_build(build_dir: Path) -> Path:
     build_dir = build_dir.resolve(strict=True)
     if not build_dir.is_dir() or build_dir.is_symlink():
@@ -1166,24 +1211,56 @@ def install_from_build(build_dir: Path) -> Path:
     temporary = Path(tempfile.mkdtemp(prefix="heptatrader-release-stage-"))
     install_root = temporary / "usr"
     command = ["cmake", "--install", str(build_dir), "--prefix", str(install_root)]
-    result = subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=300,
-        check=False,
-    )
-    if result.returncode:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise PackageError(f"cmake install failed ({result.returncode}):\n{result.stdout[-4000:]}")
-    if not install_root.is_dir():
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise PackageError(
-            "cmake install did not create the expected staging tree:\n"
-            + result.stdout[-4000:]
+    process = None
+    failed = False
+    try:
+        process = subprocess.Popen(
+            command, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True,
         )
-    return install_root
+        output, _ = process.communicate(timeout=INSTALL_TIMEOUT_SECONDS)
+        if process.returncode:
+            raise PackageError(f"cmake install failed ({process.returncode}):\n{output[-4000:]}")
+        if _installer_group_exists(process.pid):
+            raise PackageError("cmake install left a process group after its leader exited")
+        if not install_root.is_dir():
+            raise PackageError(
+                "cmake install did not create the expected staging tree:\n" + output[-4000:]
+            )
+        return install_root
+    except BaseException as error:
+        failed = True
+        # An OS launch failure has no installer. An interrupted constructor
+        # without a returned handle does not establish that same ownership fact.
+        cleanup_safe = (isinstance(error, OSError) if process is None
+                        else _stop_owned_installer(process))
+        if cleanup_safe:
+            try:
+                shutil.rmtree(temporary, ignore_errors=True)
+                cleanup_safe = not temporary.exists()
+            except Exception:
+                cleanup_safe = False
+        if not cleanup_safe:
+            # An unknown/unreaped group is not permission to delete its files.
+            # Preserve the original exception even if the diagnostic cannot print.
+            _installer_cleanup_notice(temporary)
+        raise
+    finally:
+        if process is not None and process.stdout is not None:
+            try:
+                process.stdout.close()
+            except Exception:
+                if not failed:
+                    # A failed final close prevents ownership transfer, even
+                    # after a successful install. Preserve that close error.
+                    try:
+                        shutil.rmtree(temporary, ignore_errors=True)
+                        stage_removed = not temporary.exists()
+                    except Exception:
+                        stage_removed = False
+                    if not stage_removed:
+                        _installer_cleanup_notice(temporary)
+                    raise
 
 
 def main(argv: list[str] | None = None) -> int:
