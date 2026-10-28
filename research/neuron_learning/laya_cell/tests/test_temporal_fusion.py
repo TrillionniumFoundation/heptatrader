@@ -4,6 +4,15 @@ from laya_cell.integrity import ContractError,digest
 from laya_cell.temporal_fusion_model import PROFILE,TemporalLayaFusion,padded_sequences,training_loss,brier,entropy
 from laya_cell.temporal_fusion_shadow import RULE,assess,prob_score
 
+class MetadataCompatibilityTests(unittest.TestCase):
+ def test_legacy_exports_share_the_metadata_objects(self):
+  from laya_cell import install_temporal_fusion as installer,temporal_fusion_metadata as metadata
+  from laya_cell import temporal_fusion_model as model,temporal_fusion_shadow as shadow
+  for exported in (PROFILE,model.PROFILE,shadow.PROFILE,installer.PROFILE):self.assertIs(exported,metadata.PROFILE)
+  for exported in (RULE,shadow.RULE,installer.RULE):self.assertIs(exported,metadata.RULE)
+  self.assertEqual(model.profile_id(),digest(metadata.PROFILE))
+
+
 def sample(n=6):
  return {"native_episode":{"rows":[[0.01*(i+j) for j in range(16)] for i in range(n)]}}
 class ModelTests(unittest.TestCase):

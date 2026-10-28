@@ -7,8 +7,7 @@ import argparse,hashlib,json,os,subprocess,time
 from pathlib import Path
 from .integrity import read_json,digest,canonical,sha_file,ContractError
 from .immutable_files import write_immutable,text_snapshot,replace_snapshot
-from .temporal_fusion_model import PROFILE
-from .temporal_fusion_shadow import RULE
+from .temporal_fusion_metadata import PROFILE,RULE
 
 def write_once(path,raw,mode=0o400):
  path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)

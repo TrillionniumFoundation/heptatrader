@@ -16,11 +16,8 @@ from .dataset import encode_rows,BIN_EDGES_BPS
 from .model import load_verified_laya
 from .resident_model import ResidentDecisionCell
 from .temporal_fusion_model import PROFILE,TemporalLayaFusion,padded_sequences,output_contract
+from .temporal_fusion_metadata import RULE
 
-RULE={"schema":"heptatrader.temporal-fusion-shadow-rule.v1","slots":12,"slot_spacing_ms":360000,
- "horizon_ms":300000,"input_grace_ms":60000,"minimum_observed":10,"maximum_censored":2,
- "minimum_target_classes":2,"minimum_mean_brier_improvement":1e-5,
- "one_sided_sign_alpha_each_baseline":0.025,"automatic_selection":False,"trade_permission":False}
 
 def validate_plan(plan):
  if plan.get("rule")!=RULE or plan.get("plan_id")!=digest({k:v for k,v in plan.items() if k!="plan_id"}):raise ContractError("FUSION_PLAN_CHANGED")
