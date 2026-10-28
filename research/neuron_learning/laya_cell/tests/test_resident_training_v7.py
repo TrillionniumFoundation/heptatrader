@@ -219,7 +219,7 @@ class ProspectiveV7IntegrationTests(unittest.TestCase):
         row = {'state': state}
         with contextlib.ExitStack() as stack:
             replacements = {
-                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), 'c'*64),
+                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), digest({})),
                 'encode_rows': lambda tok, selected, **kw: {k: fixture._CPUTransfer(v)
                     for k, v in _encode(tok, selected, **kw).items()},
                 'NativePorts': fixture._NativeFixture,
@@ -233,7 +233,7 @@ class ProspectiveV7IntegrationTests(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             prediction = predictor.predict(service.c, path, 0)
         # Independently reconstruct all three model/input combinations.
-        cell = ResidentDecisionCell(copy.deepcopy(raw), 'c'*64)
+        cell = ResidentDecisionCell(copy.deepcopy(raw), digest({}))
         cell.restore_parent(load_file(str(Path(job['parent_directory'])/'adapter.safetensors')),
                             allow_scorer_only=True)
         with torch.no_grad():

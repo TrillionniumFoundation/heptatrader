@@ -156,7 +156,7 @@ class RawCenteredIntegrationTests(unittest.TestCase):
         row = {'state': state}
         with contextlib.ExitStack() as stack:
             replacements = {
-                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), 'c'*64),
+                'load_verified_laya': lambda *_: (copy.deepcopy(raw), object(), digest({})),
                 'encode_rows': lambda tok, selected, **kw: {k: fixture._CPUTransfer(v)
                     for k,v in encode_raw(tok, selected, **kw).items()},
                 'NativePorts': fixture._NativeFixture,
