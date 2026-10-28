@@ -149,7 +149,7 @@ def publish_immutable(path, value):
             os.link(temporary, path.name, src_dir_fd=directory,
                     dst_dir_fd=directory, follow_symlinks=False)
         except FileExistsError:
-            existing = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            existing = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                                dir_fd=directory)
             with os.fdopen(existing, "rb") as stream:
                 st = os.fstat(stream.fileno())
@@ -196,7 +196,7 @@ def _original_quote(config, prefixes, selected):
         consumed += length
         if consumed > MAX_RECEIPT_SEARCH_BYTES:
             raise ContractError("FORWARD_RECEIPT_SEARCH_BYTE_BOUND")
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             st = os.fstat(fd)
             if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1

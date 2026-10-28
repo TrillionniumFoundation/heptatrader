@@ -192,7 +192,7 @@ def _open_prefix(pin, *, sealed=False):
         type(size) is not int or not 0 < size <= 64 * 1024**2 or
         type(pin["sha256"]) is not str or len(pin["sha256"]) != 64):
         raise ContractError("SOURCE_PREFIX_IDENTITY")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         st = os.fstat(fd)
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or
