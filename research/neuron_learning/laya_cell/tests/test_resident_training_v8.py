@@ -102,11 +102,11 @@ class RawCenteredIntegrationTests(unittest.TestCase):
                          [r['raw_probs'] for r in candidate['initial_child_price_forward_receipts']])
         self.assertEqual(candidate['measurement']['parent_brier'],
                          candidate['initial_child_price_measurement']['brier'])
-        dataset_path=Path(job['dataset']);dataset_reads=[];read_bytes=Path.read_bytes
-        def reading(path):
-            if path==dataset_path:dataset_reads.append(path)
-            return read_bytes(path)
-        with patch.object(Path,'read_bytes',reading):
+        dataset_path=Path(job['dataset']);dataset_reads=[];parse_json=read_json
+        def reading(path,*args,**kwargs):
+            if Path(path)==dataset_path:dataset_reads.append(path)
+            return parse_json(path,*args,**kwargs)
+        with patch('laya_cell.integrity.read_json',reading):
             policy.verify_candidate(job, candidate)
         self.assertEqual(len(dataset_reads),1,'one independent verification shares its pinned rows')
         original_bytes=dataset_path.read_bytes()
