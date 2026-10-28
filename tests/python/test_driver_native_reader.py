@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -210,6 +211,42 @@ class PinnedReadBinaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'REQUIRES_STREAM'):
             transport.NativeReader(self.root, self.root, Path('/unused'),
                 persistent=False, parse_json=json.loads, binary_binding=self.binding)
+
+    def assert_fifo_refused_without_blocking(self, replace_regular):
+        # The positive regular-file identity/hash path remains usable.
+        with transport.verified_binary(self.binding) as fd:
+            self.assertEqual(os.read(fd, len(self.payload)), self.payload)
+        fifo = self.root / 'reader-fifo'
+        os.mkfifo(fifo, 0o600)
+        binding = self.binding if replace_regular else dict(self.binding, path=str(fifo))
+        child = os.fork()
+        if child == 0:
+            signal.alarm(1)  # A regressed blocking open cannot hang the suite.
+            original_open = os.open
+            def swap(path, flags, *args, **kwargs):
+                if Path(path) == self.binary:
+                    os.replace(fifo, self.binary)
+                return original_open(path, flags, *args, **kwargs)
+            try:
+                with patch.object(transport.os, 'open', side_effect=swap) if replace_regular else contextlib.nullcontext():
+                    with transport.verified_binary(binding):
+                        pass
+            except ValueError as error:
+                os._exit(0 if str(error) == 'NATIVE_READ_BINARY_IDENTITY_INVALID' else 2)
+            except BaseException:
+                os._exit(3)
+            os._exit(4)
+        _, status = os.waitpid(child, 0)
+        self.assertTrue(os.WIFEXITED(status), 'verified open blocked on the owned FIFO')
+        self.assertEqual(os.WEXITSTATUS(status), 0)
+
+    @unittest.skipUnless(hasattr(os, 'fork') and hasattr(os, 'mkfifo'), 'POSIX FIFO fixture')
+    def test_fifo_binary_is_rejected_before_open_can_block(self):
+        self.assert_fifo_refused_without_blocking(False)
+
+    @unittest.skipUnless(hasattr(os, 'fork') and hasattr(os, 'mkfifo'), 'POSIX FIFO fixture')
+    def test_regular_binary_replaced_with_fifo_cannot_block(self):
+        self.assert_fifo_refused_without_blocking(True)
 
 
 class PendingReaderCleanupTests(unittest.TestCase):

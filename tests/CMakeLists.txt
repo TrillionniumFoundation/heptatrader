@@ -80,8 +80,8 @@ add_executable(hepta_native_tool_client_tests
 target_link_libraries(hepta_native_tool_client_tests
     hepta_native_tool_client hepta_session_supervisor_core)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(hepta_native_tool_client_tests PRIVATE -Wl,--wrap=socket)
-    target_compile_definitions(hepta_native_tool_client_tests PRIVATE HEPTA_TEST_WRAP_SOCKET=1)
+    target_link_options(hepta_native_tool_client_tests PRIVATE -Wl,--wrap=socket -Wl,--wrap=open)
+    target_compile_definitions(hepta_native_tool_client_tests PRIVATE HEPTA_TEST_WRAP_SOCKET=1 HEPTA_TEST_WRAP_OPEN=1)
 endif()
 hepta_register_core_test(hepta_native_tool_client_tests)
 
