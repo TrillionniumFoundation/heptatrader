@@ -5,7 +5,6 @@ name: Core Runtime CI
     - opened
     - synchronize
     - reopened
-    - ready_for_review
   push:
     branches:
     - main
