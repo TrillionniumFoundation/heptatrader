@@ -78,6 +78,34 @@ def _prediction_outputs(cell,parent_tensors,candidate_tensors,batch,parent_batch
  return parent_probs,p,a
 
 
+def _read_fixed_slot_source(config,plan,now,stage,timing):
+ """Observe a bounded worker's source call without changing its read or result.
+
+ A process killed while blocked in a read cannot emit an exception traceback.
+ Persist the active boundary first so its original reaper can distinguish that
+ state from waiting for the slot. Diagnostic I/O must not mask a source error.
+ """
+ timing.update(phase='READ_FIXED_SLOT_SOURCE',source_read_active=True,
+  source_read_started_at_ms=int(time.time()*1000))
+ timing.pop('source_read_finished_at_ms',None)
+ timing.pop('source_read_error_class',None)
+ def observe():
+  try:atomic(stage,timing)
+  except Exception:pass
+ observe()
+ started=time.monotonic()
+ try:
+  return read_for_future_plan(config,plan,now)
+ except BaseException as exc:
+  timing['source_read_error_class']=type(exc).__name__
+  raise
+ finally:
+  timing.update(phase='WAIT_FOR_FIXED_SLOT_INPUT',source_read_active=False,
+   source_read_finished_at_ms=int(time.time()*1000),
+   last_quote_read_ms=round((time.monotonic()-started)*1000,3))
+  observe()
+
+
 def predict(config,plan_path,slot):
  plan=read_json(plan_path)
  from .resident_hip_runtime import check_plan,prove_before_publish
@@ -167,12 +195,10 @@ def predict(config,plan_path,slot):
   now=int(time.time()*1000)
   if now>late:raise ContractError('INPUT_SLOT_EXPIRED:'+str(last_input_error or 'MODEL_LOAD_OR_SCHEDULING_LATE'))
   if now<due_start:time.sleep(min(1,(due_start-now)/1000));continue
-  read_begin=time.monotonic()
-  quotes,prefixes,source_profile=read_for_future_plan(config,plan,now)
+  quotes,prefixes,source_profile=_read_fixed_slot_source(config,plan,now,stage,timing)
   if source_profile!=expected_source_profile:
    raise ContractError('FUTURE_SOURCE_PROFILE_CHANGED_DURING_READ')
   now=int(time.time()*1000)
-  timing['last_quote_read_ms']=round((time.monotonic()-read_begin)*1000,3)
   if now>late:raise ContractError('INPUT_SLOT_EXPIRED:DURING_QUOTE_READ')
   try:
    sample,row=forecast_input(config,quotes,now)
