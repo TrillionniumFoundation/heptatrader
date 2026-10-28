@@ -28,6 +28,12 @@ class RecoveryPending(RuntimeError):
         self.completed_at_ms = completed_at_ms
 
 
+class StartPending(RuntimeError):
+    """Return the retained start to its caller so ExecStartPre can take its lock."""
+    def __init__(self):
+        super().__init__("NATIVE_GROUP_START_PENDING_RELEASE_OPERATOR_LOCK")
+
+
 def require_stop_authority(api):
     # No reviewed native producer currently grants an account-wide stop permit.
     # Owner-zero observations, a marker, or a retained checkpoint cannot supply
@@ -398,22 +404,13 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
         protect(api, home, native)
         native.update(start_requested=True, phase="GROUP_START_REQUESTED"); save()
         api.driver.ctl("start", "--no-block", *SOCKETS, SERVICE)
-    elif (api.driver.fence.show_unit(SERVICE)["ActiveState"] == "inactive"
-            and api.driver.fence.show_unit(SERVICE)["MainPID"] in ("", "0")):
-        # A normal Start is idempotent; only retry an observed absent job,
-        # under the already selected exact image and retained no-kill policy.
-        if not any(api.driver.unit_properties(unit, ("Job",), "NATIVE_START_JOB")["Job"] for unit in UNITS):
-            for unit in SOCKETS:
-                status = api.driver.fence.show_unit(unit)
-                if status["ActiveState"] not in ("inactive", "active"):
-                    api.fail("NATIVE_PARTIAL_START_SOCKET_STATE_UNRESOLVED")
-                expected = native.get("started_socket_statuses", {}).get(unit)
-                if expected is not None and status["ActiveState"] == "active" and status["InvocationID"] != expected["InvocationID"]:
-                    api.fail("NATIVE_PARTIAL_START_SOCKET_IDENTITY_CHANGED")
-            api.driver.ctl("start", "--no-block", *SOCKETS, SERVICE)
+        # The original native-startup-hold ExecStartPre acquires this caller's
+        # operator lock. Never wait for it while retaining that lock, even if
+        # a fast fixture already looks ready. Resume observes this exact intent;
+        # an absent process/job cannot prove a previous start was not submitted.
+        raise StartPending()
     deadline = api.time.monotonic() + 90
     last_error = None
-    partial_start_retried = False
     while api.time.monotonic() < deadline:
         current = {unit: api.driver.fence.show_unit(unit) for unit in UNITS}
         sockets = native.setdefault("started_socket_statuses", {})
@@ -422,6 +419,14 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
                 sockets[unit] = current[unit]; save()
         if current[SERVICE]["ActiveState"] == "failed" and current[SERVICE]["MainPID"] in ("", "0"):
             api.fail("NATIVE_CANDIDATE_START_FAILED_HELD")
+        if current[SERVICE]["ActiveState"] in ("inactive", "activating") and current[SERVICE]["MainPID"] in ("", "0"):
+            if (current[SERVICE]["ActiveState"] == "activating" or any(
+                    api.driver.unit_properties(unit, ("Job",), "NATIVE_START_JOB")["Job"] for unit in UNITS)):
+                # An early resume can acquire the lock before ExecStartPre.
+                # Yield again without resubmitting or polling the same start.
+                protect(api, home, native)
+                raise StartPending()
+            api.fail("NATIVE_GROUP_START_OUTCOME_UNCONFIRMED_HELD")
         try:
             observed = image(api, current, native["selected_binary"], native["selected_source_sha"])
             if native.get("first_process") is None:
@@ -430,14 +435,10 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
             if any(current[unit]["ActiveState"] != "active"
                     or current[unit]["SubState"] not in ("listening", "running")
                     or not current[unit]["InvocationID"] for unit in SOCKETS):
-                if (not partial_start_retried
-                        and all(current[unit]["ActiveState"] in ("inactive", "active") for unit in SOCKETS)
-                        and not any(api.driver.unit_properties(unit, ("Job",), "NATIVE_PARTIAL_START_JOB")["Job"] for unit in UNITS)):
-                    partial_start_retried = True
-                    api.driver.ctl("start", "--no-block", *SOCKETS, SERVICE)
-                last_error = "NATIVE_SOCKET_GROUP_NOT_READY"
-                api.time.sleep(2)
-                continue
+                if any(api.driver.unit_properties(unit, ("Job",), "NATIVE_PARTIAL_START_JOB")["Job"] for unit in UNITS):
+                    protect(api, home, native)
+                    raise StartPending()
+                api.fail("NATIVE_SOCKET_GROUP_NOT_READY")
             statuses = {name: api.driver.fence.show_unit(name) for name in api.driver.fence.RISK_UNITS}
             interactive = api.driver.interactive_broker_snapshot(plan["interactive_broker_pid"], api.GATEWAY, statuses)
             audits = audit_all(api, plan, snapshot)

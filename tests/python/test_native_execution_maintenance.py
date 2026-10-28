@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import unittest
@@ -33,6 +35,7 @@ class NativeHandoffTests(unittest.TestCase):
         self.original_pid = h.units[native.SERVICE]["MainPID"]
         self.fail_candidate = False
         self.pending_native_stop = False
+        self.pending_native_start = False
         self.lose_stop = False
         self.lose_start = False
         self.lose_start_after_effect = False
@@ -73,7 +76,9 @@ class NativeHandoffTests(unittest.TestCase):
         if unit not in native.UNITS:
             return self.base_properties(unit, names, reason)
         if names == ("Job",):
-            return {"Job": "pending" if self.pending_native_stop and self.h.units[unit]["ActiveState"] == "deactivating" else ""}
+            pending = ((self.pending_native_stop and self.h.units[unit]["ActiveState"] == "deactivating")
+                or (self.pending_native_start and unit == native.SERVICE))
+            return {"Job": "pending" if pending else ""}
         path = self.path(unit)
         value = self.original_policy(unit)
         if path.exists():
@@ -132,6 +137,9 @@ class NativeHandoffTests(unittest.TestCase):
             if self.lose_start:
                 self.lose_start = False
                 raise RuntimeError("LOST_GROUP_START_BEFORE_SUBMIT")
+            if self.pending_native_start:
+                h.units[native.SERVICE].update(ActiveState="activating", SubState="start-pre", MainPID="0", InvocationID="pending-native-start")
+                return
             raw = self.path(native.SERVICE, native.RELEASE).read_bytes()
             self.current_binary = self.original_binary if raw == native.release_bytes(self.original_binary) else self.candidate_binary
             started_units = native.UNITS
@@ -172,9 +180,16 @@ class NativeHandoffTests(unittest.TestCase):
             value["payload"]["execution_service_epoch"] = self.native_epoch
         return subprocess.CompletedProcess(argv, response.returncode, json.dumps(value).encode(), response.stderr)
 
-    def run_upgrade(self, *, resume=False, fallback=False):
-        return gateway.maintenance_upgrade(self.h.plan, "a" * 64, home=self.h.home,
+    def run_upgrade(self, *, resume=False, fallback=False, observe_start=True):
+        result = gateway.maintenance_upgrade(self.h.plan, "a" * 64, home=self.h.home,
             resume=resume, native_fallback=fallback)
+        if observe_start and result.get("error", "").startswith("StartPending:"):
+            # Existing state-machine fixtures make the mock service ready in
+            # ctl(). Observe it in a NEW transaction, after the original lock
+            # has been released. This does not submit another start.
+            result = gateway.maintenance_upgrade(self.h.plan, "a" * 64, home=self.h.home,
+                resume=True, native_fallback=False)
+        return result
 
     def checkpoint(self):
         return json.loads((self.h.root / "operator-maintenance" / gateway.CHECKPOINT).read_text())
@@ -186,6 +201,127 @@ class NativeHandoffTests(unittest.TestCase):
         self.assertEqual(self.path(native.SERVICE).read_bytes(), gateway.HELD_STOP)
         for unit in native.SOCKETS:
             self.assertEqual(self.path(unit).read_bytes(), native.SOCKET_HELD)
+
+    def retained_stopped_group(self):
+        # The fixture's pre-existing stop was submitted before this recovery.
+        # All subsequent start tests restore the real PR494 rejection.
+        self.pending_native_stop = True
+        result = self.run_upgrade(observe_start=False)
+        self.assertIn("NORMAL_STOP_STILL_PENDING", result["error"])
+        self.pending_native_stop = False
+        self.finish_stop()
+
+    def test_retained_start_returns_held_then_accepts_only_on_separate_observation(self):
+        self.retained_stopped_group()
+        previous = self.checkpoint()
+        previous.update(rollback="INCOMPLETE_HELD", rollback_error="old failure")
+        gateway.atomic_json(self.h.root / "operator-maintenance" / gateway.CHECKPOINT, previous)
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            result = self.run_upgrade(resume=True, observe_start=False)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("NATIVE_GROUP_START_PENDING_RELEASE_OPERATOR_LOCK", result["error"])
+        self.assertEqual(result["rollback"], "NOT_ATTEMPTED_NATIVE_START_PENDING")
+        self.assertNotIn("rollback_error", self.checkpoint())
+        self.assertFalse(result["native_execution"]["accepted"])
+        self.assertEqual(self.checkpoint()["native_execution"]["phase"], "GROUP_START_REQUESTED")
+        self.assert_held()
+        self.assertFalse(gateway_tests.driver_tests._lock_busy(self.h.root / gateway.driver.latch.LOCK))
+        starts = [event for event in self.h.events if event[:2] == ("start", "--no-block")]
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            result = self.run_upgrade(resume=True, observe_start=False)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(starts, [event for event in self.h.events if event[:2] == ("start", "--no-block")])
+
+    def test_early_resume_yields_pending_start_without_waiting_or_resubmitting(self):
+        self.retained_stopped_group()
+        self.pending_native_start = True
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            first = self.run_upgrade(resume=True, observe_start=False)
+            before_clock, before_events = self.h.clock, list(self.h.events)
+            second = self.run_upgrade(resume=True, observe_start=False)
+        for result in (first, second):
+            self.assertEqual(result["status"], "HELD", result)
+            self.assertIn("StartPending:", result["error"])
+            self.assertEqual(result["rollback"], "NOT_ATTEMPTED_NATIVE_START_PENDING")
+        self.assertEqual(self.h.clock, before_clock)
+        self.assertEqual(self.h.events, before_events)
+        self.assert_held()
+
+    @unittest.skipIf(os.geteuid() == 0, "actual startup owner checks require an unprivileged test user")
+    def test_real_startup_hold_waits_for_controller_exit_and_preserves_exact_marker(self):
+        runtime = self.h.home / "fixture-runtime"
+        control = runtime / "heptatrader/control"
+        control.mkdir(parents=True, mode=0o750)
+        control.chmod(0o750)
+        runtime.chmod(0o700); control.parent.chmod(0o700)
+        self.h.kill.unlink()
+        self.h.kill = gateway_tests.put(control / "kill-switch", b"", 0o440)
+        self.h.markers = self.h.marker_identity(self.h.home)
+        identity = lambda: (gateway.driver.latch._identity(self.h.kill.stat()), self.h.kill.read_bytes())
+        before_marker = identity()
+        self.retained_stopped_group()
+        processes = []
+        code = '''import importlib.util,json,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location("fixture_actual_startup_hold",sys.argv[1])
+latch=importlib.util.module_from_spec(spec);spec.loader.exec_module(latch)
+original=latch.fcntl.flock
+def observed(fd,operation):
+ if operation==latch.fcntl.LOCK_EX: print("STARTUP_WAITING_OPERATOR_LOCK",flush=True)
+ return original(fd,operation)
+latch.fcntl.flock=observed
+print(json.dumps(latch.perform("native-startup-hold",Path(sys.argv[2]),Path(sys.argv[3]))),flush=True)
+'''
+        def clean_child(process):
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+        def start_with_real_latch(*args):
+            if args[:2] != ("start", "--no-block") or set(args[2:]) != set(native.UNITS):
+                return self.ctl(*args)
+            self.h.events.append(args)
+            retained = self.checkpoint()["native_execution"]
+            self.assertTrue(retained["stopped"] and retained["start_requested"])
+            self.assertEqual(retained["phase"], "GROUP_START_REQUESTED")
+            self.assertEqual(self.path(native.SERVICE).read_bytes(), gateway.HELD_STOP)
+            self.h.units[native.SERVICE].update(ActiveState="activating", SubState="start-pre", MainPID="0", InvocationID="fixture-pre")
+            process = subprocess.Popen([sys.executable, "-I", "-B", "-c", code,
+                str(Path(gateway.driver.latch.__file__).resolve()), str(control), str(self.h.root)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            processes.append(process); self.addCleanup(clean_child, process)
+            ready, _, _ = select.select([process.stdout], [], [], 5)
+            self.assertTrue(ready, "startup child never reached the original operator lock")
+            self.assertEqual(process.stdout.readline().strip(), "STARTUP_WAITING_OPERATOR_LOCK")
+            self.assertIsNone(process.poll())
+            self.assertTrue(gateway_tests.driver_tests._lock_busy(self.h.root / gateway.driver.latch.LOCK))
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY), \
+                mock.patch.object(gateway.driver, "ctl", start_with_real_latch):
+            before_clock = self.h.clock
+            result = self.run_upgrade(resume=True, observe_start=False)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("StartPending:", result["error"])
+        self.assertEqual(self.h.clock, before_clock)
+        self.assert_held()
+        self.assertEqual(len(processes), 1)
+        stdout, stderr = processes[0].communicate(timeout=5)
+        self.assertEqual(processes[0].returncode, 0, stderr)
+        startup = json.loads(stdout.strip())
+        self.assertFalse(startup["created_marker"])
+        self.assertEqual(startup["authorization_effect"], "BLOCK_RISK_INCREASE_ONLY")
+        self.assertEqual(identity(), before_marker)
+        self.assertFalse(gateway_tests.driver_tests._lock_busy(self.h.root / gateway.driver.latch.LOCK))
+        # The same retained start now becomes observable. No ctl/start is sent.
+        self.current_binary = self.candidate_binary
+        self.native_epoch = "native-after-real-startup-hold"
+        for index, unit in enumerate(native.UNITS):
+            pid = str(88000 + index)
+            self.h.alive[pid] = (pid, "original-group-start")
+            self.h.units[unit].update(ActiveState="active", SubState="running", MainPID=pid, InvocationID="original-" + pid)
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            result = self.run_upgrade(resume=True, observe_start=False)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(identity(), before_marker)
+        self.assertEqual(len([event for event in self.h.events if event[:2] == ("start", "--no-block")]), 1)
 
     def test_complete_handoff_stops_socket_group_then_restores_same_owners(self):
         result = self.run_upgrade()
@@ -236,14 +372,16 @@ class NativeHandoffTests(unittest.TestCase):
         self.assertGreater(self.h.audit_number, first_audit)
         self.assertEqual(self.h.events.count(("stop", "--no-block", *native.UNITS)), 2)
 
-    def test_lost_unsubmitted_start_resumes_exact_selected_binary(self):
+    def test_lost_start_without_process_or_job_is_not_resubmitted(self):
         self.lose_start = True
         result = self.run_upgrade()
         self.assertEqual(result["status"], "HELD", result)
         self.assert_held()
         result = self.run_upgrade(resume=True)
-        self.assertEqual(result["status"], "COMPLETE", result)
-        self.assertEqual(self.current_binary, self.candidate_binary)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("NATIVE_GROUP_START_OUTCOME_UNCONFIRMED_HELD", result["error"])
+        self.assertEqual(len([event for event in self.h.events if event[:2] == ("start", "--no-block")]), 1)
+        self.assert_held()
 
     def test_live_unrecognized_candidate_is_never_killed_for_fallback(self):
         self.fail_candidate = True
@@ -313,12 +451,13 @@ class NativeHandoffTests(unittest.TestCase):
         self.assertEqual(result["status"], "COMPLETE", result)
         self.assertEqual(self.current_binary, self.original_binary)
 
-    def test_partial_start_with_only_sockets_resumes_idempotently(self):
+    def test_partial_start_with_only_sockets_does_not_resubmit_missing_service(self):
         self.partial_start_mode = "sockets_only"
         self.assertEqual(self.run_upgrade()["status"], "HELD")
         result = self.run_upgrade(resume=True)
-        self.assertEqual(result["status"], "COMPLETE", result)
-        self.assertEqual(self.current_binary, self.candidate_binary)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("NATIVE_GROUP_START_OUTCOME_UNCONFIRMED_HELD", result["error"])
+        self.assertEqual(len([event for event in self.h.events if event[:2] == ("start", "--no-block")]), 1)
 
     def test_running_native_without_events_socket_is_not_accepted(self):
         self.partial_start_mode = "service_one_socket_persistent"
@@ -329,7 +468,9 @@ class NativeHandoffTests(unittest.TestCase):
         self.assertFalse(self.checkpoint()["native_execution"].get("accepted", False))
         self.partial_start_mode = None
         result = self.run_upgrade(resume=True)
-        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("NATIVE_SOCKET_GROUP_NOT_READY", result["error"])
+        self.assertEqual(len([event for event in self.h.events if event[:2] == ("start", "--no-block")]), 1)
 
     def test_missing_no_kill_policy_is_not_treated_as_a_pending_normal_stop(self):
         self.pending_native_stop = True

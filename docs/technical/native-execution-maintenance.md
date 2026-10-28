@@ -49,6 +49,19 @@ existing Gateway recovery path resume the original owners and previously active
 controller. An originally disabled controller stays disabled. No order, cancel,
 flatten, native hold release or account fence release is sent by the new phase.
 
+The native startup hold takes the same operator lock as this controller. After
+persisting `GROUP_START_REQUESTED` and submitting its one asynchronous start,
+the controller therefore returns `HELD` with
+`NATIVE_GROUP_START_PENDING_RELEASE_OPERATOR_LOCK` and exits the transaction.
+It does not wait for startup, accept the image, resume owners or attempt a
+Gateway fallback while holding the lock. The normal CLI exit status is 2.
+Resume the same checkpoint with the existing `--activate --resume` flags after
+the startup job progresses. An early resume that observes startup still pending
+yields again without resubmitting. A missing process/job or a partial group with
+no job stays held as an unresolved outcome; it never authorizes another start
+or fallback. Existing exact marker, image, socket and new-epoch audit checks
+still govern acceptance. This recovery behavior does not create stop authority.
+
 The same private Gateway checkpoint records the native phase. Lost stop/start
 submission replies are reconciled against current jobs and process identity;
 the reviewed release bytes can be adopted after a rename whose later persistence
