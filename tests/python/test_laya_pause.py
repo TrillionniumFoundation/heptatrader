@@ -20,6 +20,78 @@ ARGV = ['/runtime/bin/python', '-B', '-m', 'historical_training.resident_resourc
 
 
 class TrainerPauseTests(unittest.TestCase):
+    def test_runtime_dropin_uses_the_runtime_control_search_path(self):
+        suffix = Path('systemd/user.control') / (pause.TRAINER + '.d') / pause.DROPIN_NAME
+        with patch.dict(os.environ, {'XDG_RUNTIME_DIR': '/runtime/fixture'}):
+            self.assertEqual(pause.runtime_dropin(), Path('/runtime/fixture') / suffix)
+        with patch.dict(os.environ, {}, clear=True), patch.object(pause.os, 'getuid', return_value=1234):
+            self.assertEqual(pause.runtime_dropin(), Path('/run/user/1234') / suffix)
+
+    @unittest.skipIf(os.geteuid() == 0, 'filesystem EACCES fixture requires a non-root user')
+    def test_unwritable_runtime_unit_path_can_resume_after_partial_disable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            legacy_directory = root / 'systemd/user'
+            legacy_directory.mkdir(parents=True)
+            legacy_directory.chmod(0o555)
+            control_directory = root / 'systemd/user.control'
+            control_directory.mkdir(mode=0o755)
+            legacy_path = legacy_directory / (pause.TRAINER + '.d') / pause.DROPIN_NAME
+            expected_path = control_directory / (pause.TRAINER + '.d') / pause.DROPIN_NAME
+            timer = {'ActiveState': 'active', 'UnitFileState': 'enabled'}
+            trainer = {**RUNNING, 'UnitFileState': 'enabled', 'Restart': 'on-failure'}
+
+            def control(*args):
+                if args == ('disable', '--now', pause.TIMER):
+                    timer.update(TIMER_OFF)
+                elif args == ('disable', pause.TRAINER):
+                    trainer['UnitFileState'] = 'disabled'
+                elif args == ('daemon-reload',):
+                    self.assertEqual(expected_path.read_bytes(), pause.DROPIN_CONTENT)
+                    trainer['Restart'] = 'no'
+                else:
+                    self.fail('unexpected control operation: ' + repr(args))
+
+            def show(unit):
+                self.assertIn(unit, (pause.TIMER, pause.TRAINER))
+                return dict(timer if unit == pause.TIMER else trainer)
+
+            try:
+                with patch.dict(os.environ, {'XDG_RUNTIME_DIR': folder}), \
+                        patch.object(pause, 'control', side_effect=control) as command, \
+                        patch.object(pause, 'show', side_effect=show), \
+                        patch.object(pause, 'read_argv', return_value=ARGV), \
+                        patch.object(pause.os, 'pidfd_open', return_value=19) as opened, \
+                        patch.object(pause.os, 'close') as closed, \
+                        patch.object(pause.signal, 'pidfd_send_signal') as sent:
+                    # Reproduce the old directory failure with real filesystem permissions.
+                    with patch.object(pause, 'runtime_dropin', return_value=legacy_path):
+                        with self.assertRaises(PermissionError):
+                            pause.pause_trainer()
+                    self.assertEqual(timer, TIMER_OFF)
+                    self.assertEqual(trainer, {**RUNNING, 'Restart': 'on-failure'})
+                    opened.assert_not_called()
+                    sent.assert_not_called()
+
+                    # Retrying uses the real runtime path and the same active process.
+                    result = pause.pause_trainer()
+                    self.assertTrue(result['natural_drain_requested'])
+                    self.assertTrue(result['restart_suppressed_for_current_boot'])
+                    self.assertEqual(result['supervisor_pid'], 42)
+                    self.assertEqual(trainer, RUNNING)
+                    self.assertEqual(expected_path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(legacy_directory.stat().st_mode & 0o777, 0o555)
+                    self.assertFalse(legacy_path.parent.exists())
+                    self.assertEqual(command.call_args_list,
+                                     [unittest.mock.call('disable', '--now', pause.TIMER),
+                                      unittest.mock.call('disable', pause.TRAINER)] * 2 +
+                                     [unittest.mock.call('daemon-reload')])
+                    opened.assert_called_once_with(42)
+                    sent.assert_called_once_with(19, signal.SIGUSR1, None, 0)
+                    closed.assert_called_once_with(19)
+            finally:
+                legacy_directory.chmod(0o700)
+
     def test_idle_pause_disables_timer_across_reboot_and_is_idempotent(self):
         with patch.object(pause, 'control') as command, patch.object(pause, 'show',
                 side_effect=[TIMER_OFF, IDLE] * 2), \

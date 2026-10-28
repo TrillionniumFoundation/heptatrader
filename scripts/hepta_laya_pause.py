@@ -41,7 +41,9 @@ def runtime_dropin():
     root = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
     if not root.is_absolute():
         raise PauseError('USER_RUNTIME_DIRECTORY_NOT_ABSOLUTE')
-    return root / 'systemd/user' / (TRAINER + '.d') / DROPIN_NAME
+    # The runtime unit directory may be root-owned; systemd's per-user runtime
+    # control directory keeps this override writable and limited to this boot.
+    return root / 'systemd/user.control' / (TRAINER + '.d') / DROPIN_NAME
 
 
 def suppress_restart():
