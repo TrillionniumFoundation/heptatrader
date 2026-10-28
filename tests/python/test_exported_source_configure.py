@@ -1,8 +1,8 @@
-"""Exercise the real top-level CMake configure from a Git archive without .git.
+"""Exercise real CMake configuration and documentation install without .git.
 
 This is broker-disabled and performs no network or credential access.  It proves
-that the exported-source path used by the IB candidate builder can render the
-installed documentation when the already-verified source SHA is supplied.
+that the exported-source path used by the IB candidate builder defers rendering
+until documentation installation with the already-verified source SHA.
 """
 from __future__ import annotations
 
@@ -99,6 +99,15 @@ class ExportedSourceConfigureTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             rendered = build / "installed-documentation"
+            self.assertFalse(rendered.exists())
+            stage = root / "stage"
+            result = subprocess.run(
+                ["cmake", "--install", str(build), "--component", "documentation",
+                 "--prefix", str(stage)],
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((stage / "share/doc/heptatrader/index.md").is_file())
             self.assertTrue((rendered / "index.md").is_file())
             self.assertIn(source_sha, (rendered / "index.md").read_text(encoding="utf-8"))
 
