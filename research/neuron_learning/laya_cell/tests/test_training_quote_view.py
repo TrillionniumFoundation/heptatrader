@@ -175,6 +175,52 @@ class TrainingQuoteViewTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, 'SOURCE_PREFIX_HASH_CHANGED'):
             source.collect(self.config, NOW, include_source_quotes=False)
 
+    def sparse_population(self):
+        self.population()
+        for i in range(3, 34):
+            self.segment(f'segment-{i:08d}',
+                [(FIRST-4*86400000+i*10000, '1.08', '1.08002', 1)])
+        gap = self.feed/'segment-00000000'/'quotes.jsonl'
+        rows = gap.read_bytes().splitlines()
+        self.assertEqual(json.loads(rows[-1])['kind'], 'END')
+        gap.write_bytes(b'\n'.join(rows[:-1])+b'\n')
+        receipt = seal(self.config, 1)
+        self.assertEqual(receipt['sealed_segments'], 32)
+        self.assertEqual(receipt['skipped_unsealed_segments'], 1)
+        return gap
+
+    def test_sparse_gap_and_late_end_keep_complete_training_output_and_raw_proof(self):
+        gap = self.sparse_population()
+        self.compare()
+        rows = gap.read_bytes().splitlines(); last = json.loads(rows[-1])
+        body = {'schema': SCHEMA, 'sequence': len(rows), 'previous': last['sha256'],
+            'at_ms': last['at_ms']+1, 'kind': 'END', 'data': {}}
+        with gap.open('ab') as stream:
+            stream.write(canonical({**body, 'sha256': digest(body)})+b'\n')
+        result = self.compare()
+        raw = next(p for p in result[0]['source_prefixes'] if p['path'] == str(gap))
+        self.assertTrue(raw['ended'])
+        gap.unlink()
+        for include in (True, False):
+            with self.assertRaisesRegex(ContractError, 'SOURCE_ARCHIVE_REORDERED_OR_MISSING'):
+                source.collect(self.config, NOW, include_source_quotes=include)
+
+    def test_compact_old_keys_do_not_hide_conflicts_from_unsealed_sparse_gap(self):
+        gap = self.sparse_population()
+        rows = gap.read_bytes().splitlines(); last = json.loads(rows[-1])
+        stamp = FIRST-906000
+        body = {'schema': SCHEMA, 'sequence': len(rows), 'previous': last['sha256'],
+            'at_ms': stamp+1, 'kind': 'QUOTE', 'data': {'instrument': 'EUR.USD',
+                'source': 'IB', 'authoritative': True, 'stale': False,
+                'bid': '1.07', 'ask': '1.08002', 'observed_at_ms': stamp,
+                'stale_after_ms': stamp+5000, 'subscription_id': 'fixture',
+                'subscription_state': 'active'}}
+        with gap.open('ab') as stream:
+            stream.write(canonical({**body, 'sha256': digest(body)})+b'\n')
+        for include in (True, False):
+            with self.assertRaisesRegex(ContractError, 'CROSS_SEGMENT_PRICE_CONFLICT'):
+                source.collect(self.config, NOW, include_source_quotes=include)
+
     def test_old_cross_period_source_still_rejected(self):
         self.segment('segment-00000000', [(FIRST-900000, '1.08', '1.08002', 1)],
                      period_sha='f'*64)
