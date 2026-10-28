@@ -1175,6 +1175,15 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                     fail("ORIGINAL_STOP_PROTECTION_NOT_RESTORED")
             state.update(status="COMPLETE", phase="CONTROLLERS_RESTORED_NATIVE_HOLD_RETAINED")
             save()
+        except native_maintenance.StartPending as pending:
+            # Native ExecStartPre needs this same operator lock. The retained
+            # start is not acceptance and must not enter owner recovery or the
+            # failure fallback below. Return from this transaction to release
+            # the lock; the next invocation observes the original checkpoint.
+            state.update(status="HELD", error=type(pending).__name__ + ":" + str(pending),
+                rollback="NOT_ATTEMPTED_NATIVE_START_PENDING")
+            state.pop("rollback_error", None)
+            save()
         except BaseException as error:
             state.update(status="HELD", error=type(error).__name__ + ":" + str(error))
             if state.get("native_execution") is not None:
