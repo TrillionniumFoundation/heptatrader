@@ -86,6 +86,75 @@ class ProspectiveEvaluatorDiagnosticsTests(unittest.TestCase):
     def files(self):
         return {p.name: p.read_bytes() for p in self.folder.iterdir() if p.is_file()}
 
+    def test_late_worker_failure_preserves_prior_resource_refusal(self):
+        engine = self.engine()
+        when = self.now - evaluation.PREDICTION_PREWARM_MS
+        with patch.object(evaluation.time, 'time', return_value=when / 1000):
+            engine.record_admission_deferral(self.path, 0, ['HOST_FULL_MEMORY_PSI_PRESSURE'])
+        denial = self.folder / 'admission-denial-000.json'
+        original_denial = denial.read_bytes()
+        phase = {'phase': 'WAIT_FOR_FIXED_SLOT_INPUT',
+            'model_preparation_ms': 7951, 'input_budget_remaining_after_model_ms': -5554}
+        failure = self.folder / 'failure-000.json'
+        failure.write_text(json.dumps({'reason': 'INPUT_SLOT_EXPIRED:MODEL_LOAD_OR_SCHEDULING_LATE',
+            'phase': phase}))
+        raw = failure.read_bytes()
+        self.step(engine, self.now + self.plan['rule']['input_grace_ms'] + 9000)
+        result = read_json(self.folder / 'outcome-000.json')
+        self.assertEqual(result['reason'], 'PREDICTION_PROCESS_FAILED')
+        self.assertEqual(result['phase'], phase)
+        self.assertEqual(result['first_admission_denial_reasons'], ['HOST_FULL_MEMORY_PSI_PRESSURE'])
+        self.assertEqual(result['first_admission_denial_sha256'], sha_file(denial))
+        self.assertEqual(result['first_admission_denial_at_ms'], when)
+        self.assertTrue(result['not_proof_of_every_denial_attempt'])
+        self.assertEqual(denial.read_bytes(), original_denial)
+        self.assertEqual(failure.read_bytes(), raw)
+        coverage = read_json(self.folder / 'progress.json')['coverage_diagnostics']
+        self.assertEqual(coverage['counts']['CENSORED'], 1)
+        self.assertEqual(coverage['first_admission_denial_slots'], 1)
+        self.assertEqual(coverage['censored_reasons'], {'PREDICTION_PROCESS_FAILED': 1})
+
+    def test_admitted_success_preserves_prior_refusal_without_changing_score(self):
+        from laya_cell.promotion import assess
+        engine = self.engine()
+        with patch.object(evaluation.time, 'time', return_value=(self.now - 1000) / 1000):
+            engine.record_admission_deferral(self.path, 0, ['HOST_FULL_MEMORY_PSI_PRESSURE'])
+        prediction = self.folder / 'prediction-000.json'
+        prediction.write_text(json.dumps({'anchor_ms': self.now}))
+        measured = {'candidate_id': self.plan['candidate_id'], 'plan_id': self.plan['plan_id'],
+            'slot': 0, 'status': 'OBSERVED', 'anchor_ms': self.now,
+            'prediction_available_ms': self.now, 'trained_until_ms': self.now - 1,
+            'path_gap': False, 'target_class': 0, 'parent_brier': 0.75,
+            'candidate_brier': 0.5, 'candidate_hit': True, 'bootstrap_hit': False}
+        now = self.now + self.plan['rule']['horizon_ms']
+        with patch.object(evaluation.time, 'time', return_value=now / 1000), \
+                patch.object(evaluation, 'read_quotes', return_value=([], [])), \
+                patch.object(evaluation, 'measure', return_value=dict(measured)), \
+                patch.object(engine, 'launch', return_value=False), \
+                contextlib.redirect_stdout(io.StringIO()):
+            engine.step()
+        result = read_json(self.folder / 'outcome-000.json')
+        self.assertEqual(result['status'], 'OBSERVED')
+        self.assertEqual(result['first_admission_denial_reasons'], ['HOST_FULL_MEMORY_PSI_PRESSURE'])
+        self.assertEqual(assess(self.plan, [result], now), assess(self.plan, [measured], now))
+        coverage = read_json(self.folder / 'progress.json')['coverage_diagnostics']
+        self.assertEqual(coverage['counts']['OBSERVED'], 1)
+        self.assertEqual(coverage['counts']['CENSORED'], 0)
+        self.assertEqual(coverage['first_admission_denial_slots'], 1)
+
+    def test_wrong_denial_identity_cannot_be_attached_to_worker_failure(self):
+        engine = self.engine()
+        with patch.object(evaluation.time, 'time', return_value=self.now / 1000):
+            engine.record_admission_deferral(self.path, 0, ['RESOURCE_HOLD'])
+        denial = self.folder / 'admission-denial-000.json'
+        value = read_json(denial); value['plan_id'] = 'another-plan'
+        denial.write_text(json.dumps(value))
+        (self.folder / 'failure-000.json').write_text(json.dumps({
+            'reason': 'WORKER_SIGNAL_SIGSEGV', 'phase': {'phase': 'VALIDATE_AND_LOAD'}}))
+        with self.assertRaisesRegex(ContractError, 'PREWARM_DENIAL_OUTCOME_IDENTITY'):
+            self.step(engine)
+        self.assertFalse((self.folder / 'outcome-000.json').exists())
+
     def test_terminal_status_keeps_source_and_worker_failures_distinct_without_rereading_outcomes(self):
         from laya_cell.promotion import assess
         end=self.plan['outcome_end_ms'];statuses=[];qualification_bytes=None
