@@ -587,17 +587,12 @@ class Gate:
                 source=read(self.c['source_health_path'],2*1024*1024)
                 if type(source) is not dict:
                     raise EvidenceError('CONTINUITY_SOURCE_STATUS_NOT_OBJECT')
-                prefixes=source.get('source_prefixes')
-                if type(prefixes) is not list or not prefixes:
-                    raise EvidenceError('CONTINUITY_SOURCE_PREFIXES_MISSING')
-                if source.get('source_prefix_digest')!=digest(prefixes):
-                    raise EvidenceError('CONTINUITY_PREFIX_DIGEST_CHANGED')
                 current=int(time.time()*1000)
                 held=preflight_source_health_hold(source)
                 if held is not None:
-                    # New real quotes cannot retroactively repair already-rejected
-                    # mature quality probes. Do not confuse a closed market with
-                    # a corrupted historical archive.
+                    # A failed source read may have no prefixes to verify.
+                    # Preserve its already-denied diagnostic; no source proof
+                    # or worker authority can be obtained from this branch.
                     report=assess(memory,pressure,source,current,
                         self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']),role=resource_role)
                     report['admit_new_worker']=False
@@ -610,6 +605,11 @@ class Gate:
                         'fresh_original_live_source_proven':False,
                         'broker_queries_sent':0}
                 else:
+                    prefixes=source.get('source_prefixes')
+                    if type(prefixes) is not list or not prefixes:
+                        raise EvidenceError('CONTINUITY_SOURCE_PREFIXES_MISSING')
+                    if source.get('source_prefix_digest')!=digest(prefixes):
+                        raise EvidenceError('CONTINUITY_PREFIX_DIGEST_CHANGED')
                     source,proof=refresh(original,source,current)
                     report=assess(memory,pressure,source,int(time.time()*1000),
                         self.c['period_sha256'],os.path.lexists(self.c['manual_hold_path']),role=resource_role)

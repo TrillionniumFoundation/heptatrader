@@ -109,7 +109,13 @@ def main():
  while not stop:
   assessment_started=time.monotonic()
   try:status=heartbeat.assess(c,full_assess) if heartbeat is not None else full_assess(c)
-  except Exception as exc:status={'at_ms':int(time.time()*1000),'state':'HOLD_NEW_FUSION_WINDOW','reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],'orders_sent':0}
+  except Exception as exc:
+   # Report the same negative source contract consumed by the admission guard.
+   # Detection time is not a successful source assessment or live quote time.
+   status={'schema':'heptatrader.quote-readiness-status.v1','period_sha256':c.get('period_sha256'),
+      'at_ms':int(time.time()*1000),'source_asof_ms':None,'state':'HOLD_NEW_FUSION_WINDOW',
+      'reasons':['SOURCE_UNAVAILABLE'],'reason':'SOURCE_UNAVAILABLE:'+str(exc)[:180],
+      'cached_result_may_grant_ready':False,'trading_authority':False,'orders_sent':0}
   finished=time.monotonic();published_ms=int(time.time()*1000)
   source_asof=status.get('source_asof_ms',status.get('at_ms'))
   latest=status.get('latest_source_quote_ms')
@@ -128,6 +134,7 @@ def main():
        'assessment_kind':status.get('assessment_kind','FULL_SOURCE_ASSESSMENT'),'evaluation_asof_ms':status.get('at_ms'),
       'published_source_age_ms':(published_ms-original_ms if type(original_ms) is int else None),
       'state':status.get('state'),'usable':status.get('usable'),
+      **({'reasons':status['reasons'],'reason':status['reason']} if 'reason' in status else {}),
       'trade_authority':False,'orders_sent':0}),flush=True)
   if a.max_cycles and cycles>=a.max_cycles:break
   deadline=next_monitor_deadline(a.refresh_seconds,assessment_started,finished)
