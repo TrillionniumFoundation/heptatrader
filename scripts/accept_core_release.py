@@ -489,6 +489,7 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
                  "--profile", "core", "--source-sha", REFERENCE_SHA,
                  "--source-date-epoch", text(["git", "-C", reference, "show", "-s", "--format=%ct", "HEAD"])])
         previous_digest = digest(previous)
+        acceptance_failed = False
         try:
             # Root trust anchors come only from this exact tracked source, not
             # a loose build directory. Never chown the runner's checkout.
@@ -529,9 +530,24 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
             command(clean + ["HEPTA_DISPOSABLE_SYSTEMD_TEST=1", "python3", "tests/systemd_simulator_smoke.py",
                     "--artifact", candidate, "--expected-sha256", candidate_digest,
                     "--evidence-dir", output / "systemd-evidence"])
+        except BaseException:
+            acceptance_failed = True
+            raise
         finally:
             if host_source is not None:
-                command(["sudo", "rm", "-rf", "--", host_source])
+                try:
+                    command(["sudo", "rm", "-rf", "--", host_source])
+                except Exception as cleanup_error:
+                    # An ordinary cleanup/notice error cannot replace the
+                    # original failed phase or operator termination. A second
+                    # user termination still propagates from either operation.
+                    try:
+                        print("core artifact acceptance cleanup failed; inspect "
+                              f"temporary source {host_source}: {cleanup_error}", file=sys.stderr)
+                    except Exception:
+                        pass
+                    if not acceptance_failed:
+                        raise
 
     if text(["git", "rev-parse", "HEAD"]) != source:
         raise ValueError("checkout identity changed during acceptance")

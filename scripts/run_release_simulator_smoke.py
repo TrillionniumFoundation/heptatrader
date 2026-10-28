@@ -393,7 +393,8 @@ def _run_installed_smoke(current: Path, relative: Path) -> dict[str, Any]:
             parts[-1],
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
             dir_fd=directory_fd,
         )
         metadata = os.fstat(executable_fd)
@@ -412,6 +413,7 @@ def _run_installed_smoke(current: Path, relative: Path) -> dict[str, Any]:
         os.close(directory_fd)
         raise SmokeError("installed simulator smoke is not an executable regular file")
     try:
+        _clear_nonblocking(executable_fd)
         result = subprocess.run(
             [f"/proc/self/fd/{executable_fd}"],
             stdout=subprocess.PIPE,
