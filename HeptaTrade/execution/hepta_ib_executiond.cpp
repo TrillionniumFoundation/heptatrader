@@ -229,6 +229,12 @@ int main(int argc, char**)
                     << " monotonic_ns=" << fault.monotonicNs
                     << " connection_epoch=" << fault.connectionEpoch
                     << " admission_generation=" << fault.admissionGeneration
+                    << " event_type_known=" << (fault.event.known ? "true" : "false")
+                    << " event_type=" << (fault.event.known ?
+                        IBIngressFaultEventName(fault.event.type) : "UNKNOWN")
+                    << " event_type_code=" << static_cast<int>(fault.event.type)
+                    << " ib_error_code_known=" << (fault.event.errorCodeKnown ? "true" : "false")
+                    << " ib_error_code=" << fault.event.errorCode
                     << '\n';
             }
             return 9;
