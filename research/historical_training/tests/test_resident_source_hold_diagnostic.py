@@ -86,15 +86,18 @@ class ClosedMarketHoldTests(unittest.TestCase):
         self.assertFalse(report['admit_new_worker'])
         self.assertEqual(report['role'],'evaluator')
 
-    def test_original_cached_prefix_digest_is_still_required_during_hold(self):
+    def test_held_prefixes_are_not_claimed_verified_or_used_for_admission(self):
         self.source['source_prefixes'][0]['sha256']='b'*64
         self.persist()
         with patch('historical_training.resident_live_source.refresh',
-                   side_effect=AssertionError('NO_VERIFICATION_BYPASS')):
+                   side_effect=AssertionError('NO_SOURCE_PROOF_FOR_ALREADY_DENIED_HOLD')) as refresh:
             r=self.check()
         self.assertFalse(r['admit_new_worker'])
-        self.assertIn('CONTINUITY_PREFIX_DIGEST_CHANGED',';'.join(r['reasons']))
-        self.assertNotIn('cached_probe_diagnostic',r)
+        self.assertIn('SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY',r['reasons'])
+        self.assertEqual(r['cached_probe_diagnostic']['reported_source_reasons'],self.source['reasons'])
+        self.assertFalse(r['cached_probe_diagnostic']['fresh_original_live_source_proven'])
+        self.assertFalse(r['original_live_source_evidence']['fresh_original_live_source_proven'])
+        refresh.assert_not_called()
 
     def test_malformed_source_reason_is_denied_without_reporting_fake_quote(self):
         self.source['reasons']=['\nforged']
