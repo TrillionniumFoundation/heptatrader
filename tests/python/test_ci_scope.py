@@ -1,5 +1,7 @@
 """Package feedback follows Python ownership; shared/native changes stay full."""
 import subprocess
+from contextlib import redirect_stdout
+import io
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -8,9 +10,9 @@ import sys
 import tempfile
 
 from ci_scope import (
-    docs_only, diff_paths, scope_for_paths,
+    docs_only, diff_paths, scope_for_paths, main,
     VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS, VERIFIED_HELPER_DEPENDENCIES,
-    PYTHON_LEARNING_PACKAGES,
+    PYTHON_LEARNING_PACKAGES, RELEASE_VALIDATION_GROUP,
 )
 
 
@@ -130,6 +132,7 @@ class ComponentScopeTests(unittest.TestCase):
     FULL = {"run_native": True, "run_python": True, "run_learning": True}
     PYTHON = {"run_native": False, "run_python": True, "run_learning": False}
     PYTHON_LEARNING = {"run_native": False, "run_python": True, "run_learning": True}
+    NATIVE_PYTHON = {"run_native": True, "run_python": True, "run_learning": False}
     LAYA = "research/neuron_learning/laya_cell"
     HISTORY = "research/historical_training"
 
@@ -146,7 +149,7 @@ class ComponentScopeTests(unittest.TestCase):
         box = tempfile.TemporaryDirectory()
         self.addCleanup(box.cleanup)
         self.root = Path(box.name)
-        groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS
+        groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS + (RELEASE_VALIDATION_GROUP,)
         fixture_paths = set(frozenset.union(*groups))
         for _, support in VERIFIED_HELPER_DEPENDENCIES.values():
             fixture_paths.update(support)
@@ -164,6 +167,95 @@ class ComponentScopeTests(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source)
         return target
+
+    def test_actual_release_validation_keeps_native_package_and_python_feedback(self):
+        root = Path(__file__).resolve().parents[2]
+        paths = ["scripts/accept_core_release.py", "scripts/run_release_simulator_smoke.py",
+                 "tests/python/test_core_release_acceptance.py", "tests/python/test_release_simulator_smoke.py"]
+        self.assertEqual(set(paths), RELEASE_VALIDATION_GROUP)
+        for changed in [[path] for path in paths] + [paths, paths + ["docs/operations/release-package.md"]]:
+            with self.subTest(changed=changed):
+                self.assertEqual(scope_for_paths(changed, root), self.NATIVE_PYTHON)
+
+    def test_release_scope_text_and_github_outputs_keep_all_three_flags_honest(self):
+        for format_name, expected_return in (("text", 1), ("github", 0)):
+            output = io.StringIO()
+            with self.subTest(format=format_name), redirect_stdout(output), \
+                    patch("ci_scope.diff_paths", return_value=list(RELEASE_VALIDATION_GROUP)):
+                self.assertEqual(main(["--base", "a" * 40, "--format", format_name]), expected_return)
+            if format_name == "text":
+                self.assertEqual(output.getvalue(), "NATIVE_AND_PYTHON: native/package and all core/source tests.\n")
+            else:
+                self.assertEqual(output.getvalue().splitlines(),
+                                 ["run_native=true", "run_python=true", "run_learning=false"])
+
+    def test_release_closure_unknown_imports_and_syntax_errors_restore_full(self):
+        support = VERIFIED_HELPER_DEPENDENCIES["scripts/accept_core_release.py"][1]
+        closure = RELEASE_VALIDATION_GROUP | (support & VERIFIED_HELPER_DEPENDENCIES.keys())
+        for path in closure:
+            for source in ("import torch\n", "from laya_cell import resident\n",
+                           "from . import unknown\n", "def invalid(\n"):
+                with self.subTest(path=path, source=source):
+                    self.write(path, source)
+                    self.assertEqual(scope_for_paths(["scripts/accept_core_release.py"], self.root), self.FULL)
+            self.write(path)
+        self.assertEqual(scope_for_paths(list(RELEASE_VALIDATION_GROUP), self.root), self.NATIVE_PYTHON)
+
+    def test_missing_or_retyped_release_closure_restores_full(self):
+        needed = RELEASE_VALIDATION_GROUP | VERIFIED_HELPER_DEPENDENCIES["scripts/accept_core_release.py"][1]
+        for path in needed:
+            with self.subTest(missing=path):
+                (self.root / path).unlink()
+                self.assertEqual(scope_for_paths(["tests/python/test_release_simulator_smoke.py"], self.root), self.FULL)
+                self.write(path)
+        for path in ("scripts/accept_core_release.py", "scripts/source_json.py"):
+            target = self.root / path
+            target.unlink()
+            target.symlink_to(self.root / "scripts/run_release_simulator_smoke.py")
+            with self.subTest(link=path):
+                self.assertEqual(scope_for_paths(["scripts/run_release_simulator_smoke.py"], self.root), self.FULL)
+            target.unlink(); target.mkdir()
+            with self.subTest(directory=path):
+                self.assertEqual(scope_for_paths(["scripts/run_release_simulator_smoke.py"], self.root), self.FULL)
+            target.rmdir(); self.write(path)
+
+    def test_release_support_and_mixed_changes_are_not_exempt(self):
+        support = VERIFIED_HELPER_DEPENDENCIES["scripts/accept_core_release.py"][1]
+        others = support | {"scripts/hepta_inactive_owner.py", "scripts/hepta_oms_checkpoint.py",
+            "scripts/hepta_oms_lifecycle.py", "tests/python/test_new_release_behavior.py",
+            "scripts/new_release_helper.py", "scripts/hepta_progress.py",
+            self.LAYA + "/resident.py", "HeptaTrade/execution/new.cpp",
+            "cmake/HeptaInstall.cmake", ".github/workflows/core-ci.yml"}
+        for path in others:
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths(["scripts/accept_core_release.py", path], self.root), self.FULL)
+        for path in support:
+            with self.subTest(support_alone=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.FULL)
+
+    def test_real_git_release_diff_keeps_native_then_restores_full_for_support_edit(self):
+        source = Path(__file__).resolve().parents[2] / "scripts/ci_scope.py"
+        script = self.root / "scripts/ci_scope.py"
+        shutil.copyfile(source, script)
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Scope Test",
+                 "-c", "user.email=scope-test@example.invalid", *args],
+                cwd=self.root, stderr=subprocess.PIPE, text=True, timeout=15).strip()
+        def outputs(base):
+            result = subprocess.run([sys.executable, "-B", str(script), "--base", base, "--format", "github"],
+                                    cwd=self.root, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return {key: value == "true" for key, value in
+                    (line.split("=", 1) for line in result.stdout.splitlines())}
+        git("init", "-q"); git("add", "."); git("commit", "-qm", "initial release fixture")
+        base = git("rev-parse", "HEAD")
+        self.write("scripts/run_release_simulator_smoke.py", "# release-only edit\n")
+        git("add", "."); git("commit", "-qm", "edit installed simulator validation")
+        self.assertEqual(outputs(base), self.NATIVE_PYTHON)
+        self.write("scripts/source_json.py", "# generic source interface edit\n")
+        git("add", "."); git("commit", "-qm", "also edit shared source support")
+        self.assertEqual(outputs(base), self.FULL)
 
     def test_new_package_modules_and_tests_need_no_filename_registration(self):
         for package in (self.LAYA, self.HISTORY):

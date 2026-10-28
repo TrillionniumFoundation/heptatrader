@@ -7,6 +7,7 @@ run every core/source Python test. Ordinary Python changes in the Laya and
 historical-research packages also run the complete learning lane. Package tests
 are discovered, not registered one filename/version at a time. Native interfaces,
 shared contracts, build/install inputs and uncertain changes retain full CI.
+Verified installed-release validation keeps native/package and Python feedback.
 """
 from __future__ import annotations
 import argparse
@@ -55,6 +56,14 @@ VERIFIED_PYTHON_GROUPS = (
                "scripts/hepta_account_pnl.py", "tests/python/test_account_pnl.py",
                "scripts/hepta_pnl_accounting.py", "tests/python/test_pnl_accounting.py"}),
 )
+
+# These validate the installed native/SIM packages, not numerical research.
+# Keep native/package and all core/source behavior; only this exact group may
+# omit learning, after checking its existing first-party import closure below.
+RELEASE_VALIDATION_GROUP = frozenset({
+    "scripts/accept_core_release.py", "scripts/run_release_simulator_smoke.py",
+    "tests/python/test_core_release_acceptance.py", "tests/python/test_release_simulator_smoke.py",
+})
 
 # These support files must exist, but changing one does not inherit the helper's
 # exemption. Keep import checks local to the verified Python entry points.
@@ -129,6 +138,44 @@ VERIFIED_HELPER_DEPENDENCIES = {
             "tests/python/test_runtime_identity.py",
         }),
     ),
+    "scripts/accept_core_release.py": (
+        frozenset({"verify_build_ownership"}),
+        frozenset({
+            "scripts/verify_build_ownership.py", "scripts/source_json.py",
+            "tests/python/test_installed_runtime_processes.py",
+            "tests/python/test_oms_generation_process.py",
+            "tests/python/test_client_pair_admission.py",
+            "tests/python/runtime_acceptance_support.py",
+            "tests/research/installed_client_server_pair.py",
+            "tests/research/native_sdk_package_behavior.py",
+            "tests/research/sdk_package_behavior.py",
+            # Existing child commands/inputs stay available. Changing any of
+            # these is outside the four-path exemption and remains full CI.
+            "scripts/run_python_tests.py", "scripts/build_release_package.py",
+            "scripts/hepta_preflight.py", "docs/preflight-policy-v1.json",
+            "tests/systemd_simulator_smoke.py",
+        }),
+    ),
+    "scripts/run_release_simulator_smoke.py": (frozenset(), frozenset()),
+    "tests/python/test_core_release_acceptance.py": (
+        frozenset({"accept_core_release", "test_installed_runtime_processes",
+                   "test_oms_generation_process", "test_client_pair_admission"}), frozenset()),
+    "tests/python/test_release_simulator_smoke.py": (
+        frozenset({"run_release_simulator_smoke"}), frozenset()),
+    "scripts/verify_build_ownership.py": (frozenset({"source_json"}), frozenset()),
+    "scripts/source_json.py": (frozenset(), frozenset()),
+    "tests/python/test_installed_runtime_processes.py": (
+        frozenset({"run_release_simulator_smoke", "runtime_acceptance_support"}), frozenset()),
+    "tests/python/test_oms_generation_process.py": (
+        frozenset({"test_installed_runtime_processes", "accept_core_release"}), frozenset()),
+    "tests/python/test_client_pair_admission.py": (
+        frozenset({"accept_core_release", "installed_client_server_pair"}), frozenset()),
+    "tests/python/runtime_acceptance_support.py": (frozenset(), frozenset()),
+    "tests/research/installed_client_server_pair.py": (
+        frozenset({"test_installed_runtime_processes", "native_sdk_package_behavior"}), frozenset()),
+    "tests/research/native_sdk_package_behavior.py": (
+        frozenset({"sdk_package_behavior"}), frozenset()),
+    "tests/research/sdk_package_behavior.py": (frozenset(), frozenset()),
 }
 
 
@@ -261,7 +308,10 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
         return {key: False for key in full}
     root = root.resolve()
     changed = [path for path in paths if not docs_only([path])]
-    groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS
+    release_validation = bool(RELEASE_VALIDATION_GROUP.intersection(changed))
+    if release_validation and not set(changed) <= RELEASE_VALIDATION_GROUP:
+        return full
+    groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS + (RELEASE_VALIDATION_GROUP,)
     allowed = frozenset.union(*groups)
     packages = {learning_package(path) for path in changed}
     if any(path not in allowed and learning_package(path) is None for path in changed):
@@ -274,6 +324,10 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
     helpers = [path for path in VERIFIED_HELPER_DEPENDENCIES if path in needed]
     for path in helpers:
         needed.update(VERIFIED_HELPER_DEPENDENCIES[path][1])
+    if release_validation:
+        # The four files' support set includes the complete reviewed import
+        # closure. Validate those helpers too, without exempting their edits.
+        helpers = [path for path in VERIFIED_HELPER_DEPENDENCIES if path in needed]
     try:
         for package in packages:
             needed.update(PYTHON_LEARNING_PACKAGES[package])
@@ -294,7 +348,7 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
     except (OSError, SyntaxError, ValueError, UnicodeError, RuntimeError):
         return full
     return {
-        "run_native": False,
+        "run_native": release_validation,
         "run_python": True,
         "run_learning": bool(packages) or any(group.intersection(changed)
                                               for group in VERIFIED_PYTHON_LEARNING_GROUPS),
@@ -332,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     if not scope["run_python"]:
         print("DOCS_ONLY: preserve documentation checks.")
         return 0
-    if scope["run_native"]:
+    if scope["run_native"] and not scope["run_learning"]:
+        print("NATIVE_AND_PYTHON: native/package and all core/source tests.")
+    elif scope["run_native"]:
         print("FULL_SOURCE_TESTS: source, config, unknown or unverified diff.")
     elif scope["run_learning"]:
         print("PYTHON_AND_LEARNING: all core/source and learning tests.")
