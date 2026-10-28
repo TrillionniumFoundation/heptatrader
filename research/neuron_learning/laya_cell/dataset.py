@@ -35,7 +35,11 @@ def verify_source_prefixes(dataset):
   # The archive is one ordered genesis-rooted range, never a selection of
   # independently valid pages. Historical seed prefixes may precede it;
   # unsealed current prefixes may follow it.
-  verify_archive_pin_sequence(pages)
+  skipped_paths=verify_archive_pin_sequence(pages)
+  raw_paths={source.get('path') for source in sources
+             if isinstance(source,dict) and source.get('schema')!=PIN_SCHEMA}
+  if not skipped_paths.issubset(raw_paths):
+   raise ContractError('SOURCE_ARCHIVE_SKIPPED_PREFIX_MISSING')
   scope=dataset.get('scope')
   if isinstance(scope,str) and len(scope)>=65 and scope[64]==':':
    if any(p['period_sha256']!=scope[:64] for p in pages):

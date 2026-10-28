@@ -305,4 +305,153 @@ class SourceArchiveTests(unittest.TestCase):
             seal(self.c,8)
         self.assertFalse((directory(self.c)/'ledger.jsonl').exists())
 
+    def _sparse_fixture(self):
+        """Immutable old v1 pages, one historical FAILURE-only and one open."""
+        self.archive()
+        root = directory(self.c)
+        old_pages = [(root/f"page-{i:08d}.json").read_bytes() for i in range(5)]
+        broken = self.feed/'segment-00000160'/'quotes.jsonl'
+        first = broken.read_bytes().splitlines()[0]
+        original = json.loads(first)
+        failure = {'schema':'heptatrader.laya-shadow-quotes.v1',
+                   'sequence':1, 'previous':original['sha256'],
+                   'at_ms':self.T + 160*30000 + 200,
+                   'kind':'FAILURE','data':{'reason':'HISTORICAL_TEST_FAILURE'}}
+        broken.write_bytes(first + b'\n' + canonical({
+            **failure,'sha256':digest(failure)}) + b'\n')
+        broken.chmod(0o600)
+        frozen_failure = broken.read_bytes()
+        for i in range(166,199):
+            self.make_segment(i)
+        return root, old_pages, broken, frozen_failure
+
+    def test_v2_sparse_end_only_preserves_failure_and_legacy_pages(self):
+        from laya_cell.source_archive import PAGE_SCHEMA_V2, UNSEALED_BOUND
+        root, old_pages, broken, failure_bytes = self._sparse_fixture()
+        self.assertEqual(UNSEALED_BOUND,128)
+        receipt = seal(self.c,8)
+        self.assertEqual(receipt['pages_added'],1)
+        self.assertEqual(receipt['total_pages'],6)
+        self.assertEqual(receipt['sealed_segments'],192)
+        self.assertEqual(receipt['unsealed_segments'],7)
+        self.assertEqual(receipt['source_files_removed'],0)
+        self.assertEqual([ (root/f'page-{i:08d}.json').read_bytes()
+                          for i in range(5)],old_pages)
+        page=json.loads((root/'page-00000005.json').read_bytes())
+        self.assertEqual(page['schema'],PAGE_SCHEMA_V2)
+        self.assertEqual(len(page['prefixes']),32)
+        self.assertEqual(page['skipped_paths'],[
+            str(self.feed/'segment-00000160'/'quotes.jsonl'),
+            str(self.feed/'segment-00000165'/'quotes.jsonl')])
+        self.assertEqual(broken.read_bytes(),failure_bytes)
+        self.assertNotIn(b'"kind":"END"',broken.read_bytes())
+        quotes,pins=read_quotes(self.c,int(time.time()*1000))
+        self.assertEqual(len(quotes),198)
+        self.assertEqual(len(pins),13)
+        self.assertEqual(len(list(self.feed.glob('segment-*/quotes.jsonl'))),199)
+        self.assertEqual([p['path'] for p in pins[-7:]][0],str(broken))
+        verify_source_prefixes({'source_prefixes':pins})
+        self.assertEqual(seal(self.c,8)['pages_added'],0)
+
+    def test_v2_proof_requires_skipped_original_prefix_and_unchanged_bytes(self):
+        _,_,broken,_=self._sparse_fixture()
+        seal(self.c,8)
+        _,pins=read_quotes(self.c,int(time.time()*1000))
+        omitted=[pin for pin in pins if pin.get('path')!=str(broken)]
+        with self.assertRaisesRegex(ContractError,'SKIPPED_PREFIX_MISSING'):
+            verify_source_prefixes({'source_prefixes':omitted})
+        verify_source_prefixes({'source_prefixes':pins})
+        broken.write_bytes(broken.read_bytes().replace(
+            b'HISTORICAL_TEST_FAILURE',b'HISTORICAL_TEST_FAILURE_TAMPER'))
+        with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
+            verify_source_prefixes({'source_prefixes':pins})
+
+    def test_v2_orphan_recovery_keeps_exact_fsynced_page(self):
+        root,old_pages,broken,failure_bytes=self._sparse_fixture()
+        from laya_cell import source_archive as archive
+        append=archive._append_checkpoint
+        def crash_sparse(root,index,page_sha):
+            if index==5:raise OSError('sparse-checkpoint-interrupted')
+            return append(root,index,page_sha)
+        with patch('laya_cell.source_archive._append_checkpoint',
+                   side_effect=crash_sparse):
+            with self.assertRaisesRegex(OSError,'sparse-checkpoint-interrupted'):
+                seal(self.c,8)
+        page=root/'page-00000005.json'
+        frozen=page.read_bytes()
+        with self.assertRaisesRegex(ContractError,'PAGE_CHECKPOINT_COUNT'):
+            read_quotes(self.c,int(time.time()*1000))
+        result=seal(self.c,8)
+        self.assertEqual(result['recovered_fsynced_orphan_pages'],1)
+        self.assertEqual(page.read_bytes(),frozen)
+        self.assertEqual([ (root/f'page-{i:08d}.json').read_bytes()
+                          for i in range(5)],old_pages)
+        self.assertEqual(broken.read_bytes(),failure_bytes)
+        self.assertEqual(len(read_quotes(self.c,int(time.time()*1000))[0]),198)
+
+    def test_v2_following_page_and_original_unsealed_bound(self):
+        root,_,_,_=self._sparse_fixture()
+        seal(self.c,8)
+        for i in range(199,226):
+            self.make_segment(i)
+        result=seal(self.c,8)
+        self.assertEqual(result['pages_added'],1)
+        self.assertEqual(result['total_pages'],7)
+        self.assertEqual(result['sealed_segments'],224)
+        self.assertEqual(json.loads((root/'page-00000006.json').read_bytes())['schema'],
+                         'heptatrader.laya-source-archive-page.v1')
+        verify_source_prefixes({'source_prefixes':
+            read_quotes(self.c,int(time.time()*1000))[1]})
+        for i in range(226,354):
+            self.make_segment(i,ended=False)
+        with self.assertRaisesRegex(ContractError,'SOURCE_UNSEALED_SEGMENT_BOUND'):
+            read_quotes(self.c,int(time.time()*1000))
+
+
+    def test_v2_original_recent_outcome_and_readiness_cache_agree(self):
+        from laya_cell.original_price_source import read_original_price_window
+        from laya_cell.resident_recent_source import (
+            read_recent_original_quotes, read_original_quote_range)
+        from laya_cell.verified_sealed_readiness_cache import VerifiedSealedReadinessCache
+        self._sparse_fixture()
+        seal(self.c,8)
+        now=self.T+198*30000+420000
+        full,fullpins=read_quotes(self.c,now)
+        self.assertEqual(len(full),198)
+        recent,recentpins=read_recent_original_quotes(self.c,now)
+        self.assertEqual(len(recent),6)
+        self.assertEqual(recent,[q for q in full if q['t'] in
+                         {x['t'] for x in recent}])
+        self.assertEqual(len(recentpins),len(fullpins))
+        verify_source_prefixes({'source_prefixes':recentpins})
+        first=self.T+164*30000
+        last=self.T+198*30000+500
+        selected,selectedpins=read_original_quote_range(self.c,now,first,last)
+        self.assertEqual(selected,[q for q in full if first<=q['t']<=last])
+        self.assertEqual(len(selectedpins),len(fullpins))
+        verify_source_prefixes({'source_prefixes':selectedpins})
+        window,proof=read_original_price_window(self.c,now)
+        self.assertEqual(window,[q for q in full
+                         if now-4500000<=q['t']<=now])
+        self.assertEqual(len(proof['archive_pages']),6)
+        self.assertIn(str(self.feed/'segment-00000160'/'quotes.jsonl'),
+                      {p['path'] for p in proof['selected_original_prefixes']})
+        cached=VerifiedSealedReadinessCache()
+        try:
+            old,pins=cached.read_quotes(self.c,now)
+            self.assertEqual(old,full)
+            self.assertEqual(pins,fullpins)
+            earliest=now-600000
+            window1,pins1=cached.read_quotes(self.c,now,earliest_ms=earliest)
+            window2,pins2=cached.read_quotes(self.c,now+1000,earliest_ms=earliest)
+            self.assertEqual(window1,window2)
+            self.assertEqual(pins1,pins2)
+            self.assertEqual(len(pins1),len(fullpins))
+            verify_source_prefixes({'source_prefixes':pins1})
+            recent_ids={q['t'] for q in full if q['t']>=earliest}
+            self.assertTrue(recent_ids.issubset({q['t'] for q in window1}))
+        finally:
+            cached.close()
+
+
 if __name__=='__main__':unittest.main()

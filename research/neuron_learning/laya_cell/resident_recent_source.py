@@ -97,9 +97,10 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     feed = Path(config["feed_directory"])
     paths = sorted(feed.glob("segment-*/quotes.jsonl"))
     archived, pages, versions = _archive_snapshot(config, paths)
-    if len(archived) >= len(paths):
+    archived_names = {pin["path"] for pin in archived}
+    unsealed = [path for path in paths if str(path) not in archived_names]
+    if not unsealed:
         raise ContractError("RECENT_SOURCE_NO_UNSEALED_TAIL")
-    unsealed = paths[len(archived):]
     quotes = {}
     prefixes = list(pages)
     for path in unsealed:
@@ -162,18 +163,20 @@ def read_original_quote_range(config, now_ms, first_ms, last_ms):
     feed = Path(config['feed_directory'])
     paths = sorted(feed.glob('segment-*/quotes.jsonl'))
     archived, pages, versions = _archive_snapshot(config, paths)
+    archived_by_path = {pin["path"]: pin for pin in archived}
     quotes = {}
     prefixes = list(pages)
     successor_ms = None
-    for index, path in enumerate(paths):
-        if index < len(archived) and _sealed_end_timestamp(archived[index]) < first_ms:
+    for path in paths:
+        sealed = archived_by_path.get(str(path))
+        if sealed is not None and _sealed_end_timestamp(sealed) < first_ms:
             continue
-        header, records, pin = (read_source(path, expected_prefix=archived[index])
-                                if index < len(archived) else read_source(path))
+        header, records, pin = (read_source(path, expected_prefix=sealed)
+                                if sealed is not None else read_source(path))
         if header['period_sha256'] != config['period_sha256']:
             raise ContractError('CROSS_PERIOD_FEED')
-        if index < len(archived):
-            if pin != archived[index]:
+        if sealed is not None:
+            if pin != sealed:
                 raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
         else:
             prefixes.append(pin)
