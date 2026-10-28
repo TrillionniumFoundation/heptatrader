@@ -117,7 +117,7 @@ def _strict_records(fd: int, start: int, end: int, *, max_bytes: int,
 def _read_hot(generation_dir: Path, maximum_bytes: int, maximum_records: int,
               maximum_record_bytes: int) -> list[dict[str, Any]]:
     path = generation_dir / "hot-replay.jsonl"
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
         if not v1._private_regular(info):
@@ -164,8 +164,8 @@ def _runtime_row(line: bytes) -> tuple[tuple[str, str, str], dict[str, Any], lis
     return (fields[0], fields[1], fields[2]), record, fields
 
 
-def _iter_private_lines(path: Path) -> Iterator[bytes]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+def _iter_private_lines(path: Path, *, line_limit_error: str = "OMS_GENERATION_INDEX_LINE_LIMIT") -> Iterator[bytes]:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
         if not v1._private_regular(before):
@@ -180,8 +180,12 @@ def _iter_private_lines(path: Path) -> Iterator[bytes]:
                 newline = pending.find(b"\n")
                 if newline < 0:
                     break
+                if newline >= v1.MAX_INDEX_LINE:
+                    raise v1.GenerationError(line_limit_error)
                 yield bytes(pending[:newline + 1])
                 del pending[:newline + 1]
+            if len(pending) > v1.MAX_INDEX_LINE:
+                raise v1.GenerationError(line_limit_error)
         if pending:
             raise v1.GenerationError("OMS_GENERATION_INDEX_TORN_RECORD")
         after = os.fstat(fd)
@@ -307,8 +311,8 @@ def _write_private_lines(path: Path, rows: Iterable[bytes]) -> int:
 
 
 def _merge_sorted_send_files(left: Path, right: Path, output: Path) -> int:
-    left_iter = iter(_iter_private_lines(left))
-    right_iter = iter(_iter_private_lines(right))
+    left_iter = iter(_iter_private_lines(left, line_limit_error="OMS_GENERATION_SEND_INDEX_INVALID"))
+    right_iter = iter(_iter_private_lines(right, line_limit_error="OMS_GENERATION_SEND_INDEX_INVALID"))
     try:
         left_row = next(left_iter)
     except StopIteration:
@@ -372,7 +376,8 @@ def _external_sort_send_index(generation_dir: Path, parent_dir: Path | None,
 
     try:
         if parent_dir is not None:
-            for row in _iter_private_lines(parent_dir / "send-attempt-index.tsv"):
+            for row in _iter_private_lines(parent_dir / "send-attempt-index.tsv",
+                                           line_limit_error="OMS_GENERATION_SEND_INDEX_INVALID"):
                 _send_key(row)
                 rows.append(row)
                 count += 1
@@ -430,7 +435,8 @@ def _write_merged_send_index(generation_dir: Path, parent_dir: Path | None,
     if parent_dir is None or not _parent_send_index_sorted(parent_dir):
         return _external_sort_send_index(generation_dir, parent_dir, tail_lines, send_path)
 
-    parent_iter = iter(_iter_private_lines(parent_dir / "send-attempt-index.tsv"))
+    parent_iter = iter(_iter_private_lines(parent_dir / "send-attempt-index.tsv",
+                                          line_limit_error="OMS_GENERATION_SEND_INDEX_INVALID"))
     try:
         parent_row = next(parent_iter)
     except StopIteration:
@@ -478,7 +484,8 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
     legacy_fd = os.open(legacy_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     count = 0
     try:
-        parent_iter: Iterable[bytes] = () if parent_dir is None else _iter_private_lines(parent_dir / "runtime-command-index.tsv")
+        parent_iter: Iterable[bytes] = () if parent_dir is None else _iter_private_lines(
+            parent_dir / "runtime-command-index.tsv", line_limit_error="OMS_GENERATION_RUNTIME_INDEX_LINE_LIMIT")
         updates_index = 0
         previous: tuple[str, str, str] | None = None
         for line in parent_iter:
@@ -674,7 +681,7 @@ def _simulator_state_projection(state: dict[str, Any]) -> list[dict[str, Any]]:
 def _read_generation_segment(root: Path, max_bytes: int, max_records: int,
                              max_record_bytes: int) -> list[dict[str, Any]]:
     path = root / "segment-000001.jsonl"
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
         if not v1._private_regular(info):
@@ -1013,7 +1020,8 @@ def verify_generation(store: Path, generation: str | None = None,
 
     runtime_count = 0
     previous = None
-    for line in _iter_private_lines(root / "runtime-command-index.tsv"):
+    for line in _iter_private_lines(root / "runtime-command-index.tsv",
+                                    line_limit_error="OMS_GENERATION_RUNTIME_INDEX_LINE_LIMIT"):
         key, _, _ = _runtime_row(line)
         if previous is not None and key <= previous:
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
@@ -1024,7 +1032,8 @@ def verify_generation(store: Path, generation: str | None = None,
 
     send_count = 0
     previous_send = None
-    for line in _iter_private_lines(root / "send-attempt-index.tsv"):
+    for line in _iter_private_lines(root / "send-attempt-index.tsv",
+                                    line_limit_error="OMS_GENERATION_SEND_INDEX_INVALID"):
         key = _send_key(line)
         if sorted_send_index and previous_send is not None and key <= previous_send:
             raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
@@ -1038,9 +1047,11 @@ def verify_generation(store: Path, generation: str | None = None,
         _verify_runtime_current(store, generation, manifest_digest,
                                 manifest["runtime_manifest_sha256"])
         if journal is not None:
-            fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            fd = os.open(journal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 info = os.fstat(fd)
+                if not v1._private_regular(info):
+                    raise v1.GenerationError("OMS_GENERATION_UNSAFE_JOURNAL")
                 parsed = _parse_tail_header(fd, info.st_size)
                 if parsed is None or parsed[0] != generation or parsed[1] != len(marker):
                     raise v1.GenerationError("OMS_ACTIVE_TAIL_LINEAGE_MISMATCH")
@@ -1083,7 +1094,7 @@ def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, d
 
 
 def _copy_private_file(source: Path, destination: Path) -> None:
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     destination_fd = -1
     try:
         before = os.fstat(source_fd)
@@ -1114,7 +1125,7 @@ def _copy_private_file(source: Path, destination: Path) -> None:
 
 def _copy_generation_segment(source: Path, destination_fd: int,
                              expected_records: int) -> tuple[int, int]:
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     records = 0
     written = 0
     try:
@@ -1219,9 +1230,11 @@ def rebase_generation(journal: Path, store: Path, *, stopped: bool,
     if source_manifest.get("schema") != SCHEMA:
         raise v1.GenerationError("OMS_GENERATION_REBASE_V2_REQUIRED")
 
-    active_fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    active_fd = os.open(journal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         active_info = os.fstat(active_fd)
+        if not v1._private_regular(active_info):
+            raise v1.GenerationError("OMS_GENERATION_UNSAFE_JOURNAL")
         parsed = _parse_tail_header(active_fd, active_info.st_size)
         if parsed is None or parsed[0] != source_generation or parsed[1] != active_info.st_size:
             raise v1.GenerationError("OMS_GENERATION_REBASE_ACTIVE_TAIL_NOT_EMPTY")
@@ -1424,9 +1437,11 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
         for gen, manifest in selected:
             verify_generation(store, gen)
             segment = store / gen / "segment-000001.jsonl"
-            source = os.open(segment, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            source = os.open(segment, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 info = os.fstat(source)
+                if not v1._private_regular(info):
+                    raise v1.GenerationError("OMS_GENERATION_UNSAFE_SEGMENT")
                 offset = 0
                 while offset < info.st_size:
                     block = os.pread(source, min(1024 * 1024, info.st_size - offset), offset)
@@ -1438,9 +1453,11 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
                     offset += len(block)
             finally:
                 os.close(source)
-        active = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        active = os.open(journal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             info = os.fstat(active)
+            if not v1._private_regular(info):
+                raise v1.GenerationError("OMS_GENERATION_UNSAFE_JOURNAL")
             current_manifest = chain[-1][1]
             if current_manifest.get("schema") == SCHEMA:
                 parsed = _parse_tail_header(active, info.st_size)
@@ -1469,9 +1486,11 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
         raise
     os.close(fd)
     v1._durable_directory(output_parent)
-    check = os.open(output, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    check = os.open(output, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(check)
+        if not v1._private_regular(info):
+            raise v1.GenerationError("OMS_GENERATION_EXPORT_UNSAFE_OUTPUT")
         observed = 0
         for _raw, _event in validated_raw_records(
                 check, info.st_size, max_bytes=max(total, 1),

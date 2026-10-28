@@ -82,7 +82,7 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 def _sha256_file(path: Path) -> tuple[int, str]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
         if not _private_regular(before):
@@ -398,7 +398,7 @@ def _durable_directory(path: Path) -> None:
 
 
 def _load_json_private(path: Path) -> Any:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
         if not _private_regular(before) or before.st_size > 16 * 1024 * 1024:
@@ -417,13 +417,25 @@ def _load_json_private(path: Path) -> Any:
         os.close(fd)
 
 
-def _read_private_bytes(path: Path, maximum: int = 16 * 1024 * 1024) -> bytes:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+def _read_private_bytes(path: Path, maximum: int | None = 16 * 1024 * 1024) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
-        if not _private_regular(before) or before.st_size < 0 or before.st_size > maximum:
+        if (not _private_regular(before) or before.st_size < 0 or
+                (maximum is not None and before.st_size > maximum)):
             raise GenerationError("OMS_GENERATION_UNSAFE_METADATA")
-        raw = os.read(fd, before.st_size + 1)
+        if maximum is None:
+            chunks = []
+            remaining = before.st_size + 1
+            while remaining:
+                block = os.read(fd, min(1024 * 1024, remaining))
+                if not block:
+                    break
+                chunks.append(block)
+                remaining -= len(block)
+            raw = b"".join(chunks)
+        else:
+            raw = os.read(fd, before.st_size + 1)
         if len(raw) != before.st_size or _identity(before) != _identity(os.fstat(fd)):
             raise GenerationError("OMS_GENERATION_METADATA_CHANGED")
         return raw
@@ -658,7 +670,7 @@ def build_generation(journal: Path, store: Path, *, stopped: bool,
 
 
 def _verify_index(path: Path, expected: int) -> list[bytes]:
-    data = path.read_bytes()
+    data = _read_private_bytes(path, maximum=None)
     lines = data.splitlines(keepends=True)
     if len(lines) != expected:
         raise GenerationError("OMS_GENERATION_INDEX_COUNT_MISMATCH")
@@ -672,7 +684,7 @@ def _verify_index(path: Path, expected: int) -> list[bytes]:
 
 
 def _verify_runtime_index(path: Path, expected: int) -> None:
-    lines = path.read_bytes().splitlines(keepends=True)
+    lines = _read_private_bytes(path, maximum=None).splitlines(keepends=True)
     if len(lines) != expected:
         raise GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
     previous = None
@@ -814,7 +826,7 @@ def lookup_command(store: Path, agent_id: str, session_id: str, command_id: str,
         raise GenerationError("OMS_GENERATION_CURRENT_MISSING")
     verify_generation(store, current["generation"])
     index = store / current["generation"] / "command-index.tsv"
-    lines = index.read_bytes().splitlines(keepends=True)
+    lines = _read_private_bytes(index, maximum=None).splitlines(keepends=True)
     keys = [_index_key(line) for line in lines]
     wanted = (agent_id, session_id, command_id)
     position = bisect.bisect_left(keys, wanted)

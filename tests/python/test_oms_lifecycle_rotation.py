@@ -540,7 +540,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             def __length_hint__(self):
                 raise AssertionError("cumulative index was materialized")
 
-        lifecycle._iter_private_lines = lambda path: NoMaterialize(original(path))
+        lifecycle._iter_private_lines = lambda path, **kwargs: NoMaterialize(original(path, **kwargs))
         try:
             verified = lifecycle.verify_generation(self.store, journal=self.journal)
             self.assertEqual(verified["result"], "PASS")
