@@ -1,6 +1,8 @@
 """Real input-file admission, stopped before model loading or training."""
 from collections import Counter, defaultdict
 from copy import deepcopy
+import io
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -104,8 +106,11 @@ class JobInputValidationTests(unittest.TestCase):
 
     def test_v8_worker_uses_one_checked_source_before_model_loading(self):
         counts = defaultdict(Counter)
-        original_open = Path.open
-        tracked = {self.source_path, self.adapter}
+        original_open = io.open
+        tracked = {}
+        for path in (self.source_path, self.adapter):
+            info = path.stat()
+            tracked[info.st_dev, info.st_ino] = path
 
         class Reader:
             def __init__(self, stream, path):
@@ -122,14 +127,16 @@ class JobInputValidationTests(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.stream, name)
 
-        def opening(path, *args, **kwargs):
-            stream = original_open(path, *args, **kwargs)
-            if path not in tracked:
+        def opening(file, *args, **kwargs):
+            stream = original_open(file, *args, **kwargs)
+            info = os.fstat(stream.fileno())
+            path = tracked.get((info.st_dev, info.st_ino))
+            if path is None:
                 return stream
             counts[path]['opens'] += 1
             return Reader(stream, path)
 
-        with patch.object(Path, 'open', opening), \
+        with patch.object(io, 'open', opening), \
                 patch.object(closed, 'collect_parent_closed_train', wraps=closed.collect_parent_closed_train) as replay:
             with self.assertRaises(_InputsAccepted):
                 self.admit()

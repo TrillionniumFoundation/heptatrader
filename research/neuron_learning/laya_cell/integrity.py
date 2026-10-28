@@ -1,5 +1,6 @@
 """Pin complete upstream Laya weights; never substitute encoder-only initialization."""
 from __future__ import annotations
+from contextlib import contextmanager
 import hashlib,json,os,stat
 from pathlib import Path,PurePosixPath
 from typing import Any
@@ -14,15 +15,27 @@ MAX_MODEL_BYTES=3*1024**3
 class ContractError(ValueError):pass
 def canonical(value:Any)->bytes:return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
 def digest(value:Any)->str:return hashlib.sha256(canonical(value)).hexdigest()
+@contextmanager
+def _regular_stream(path:Path,error:str):
+ # Keep callers' existing path/symlink policies; reject streams before reading.
+ fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC)
+ try:
+  st=os.fstat(fd)
+  if not stat.S_ISREG(st.st_mode):raise ContractError(error)
+  with os.fdopen(fd,'rb',closefd=False) as stream:yield stream,st
+ finally:os.close(fd)
 def read_json(path:Path,maximum:int=1024**2)->Any:
- if path.stat().st_size>maximum:raise ContractError('JSON_SIZE_BOUND')
+ with _regular_stream(path,'JSON_FILE_TYPE') as (stream,st):
+  if st.st_size>maximum:raise ContractError('JSON_SIZE_BOUND')
+  raw=stream.read(maximum+1)
+  if len(raw)>maximum:raise ContractError('JSON_SIZE_BOUND')
  def unique(items):
   out={}
   for k,v in items:
    if k in out:raise ContractError('DUPLICATE_JSON_KEY')
    out[k]=v
   return out
- return json.loads(path.read_bytes(),object_pairs_hook=unique,parse_constant=lambda _:(_ for _ in ()).throw(ContractError('NONFINITE_JSON')))
+ return json.loads(raw,object_pairs_hook=unique,parse_constant=lambda _:(_ for _ in ()).throw(ContractError('NONFINITE_JSON')))
 def safe_child(root:Path,relative:str)->Path:
  if not isinstance(relative,str):raise ContractError('UNSAFE_ARTIFACT_PATH')
  p=PurePosixPath(relative)
@@ -34,7 +47,7 @@ def safe_child(root:Path,relative:str)->Path:
  return here
 def sha_file(path:Path)->str:
  h=hashlib.sha256()
- with path.open('rb') as s:
+ with _regular_stream(path,'HASH_FILE_TYPE') as (s,_):
   for c in iter(lambda:s.read(1024**2),b''):h.update(c)
  return h.hexdigest()
 def validate_candidate_artifact(path:Path)->dict:
