@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext, redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -181,6 +184,72 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     candidate = target
             return subprocess.CompletedProcess(argv, 0, stdout, "")
         return run, calls
+
+    def cleanup_outcome(self, *, primary=None, cleanup_error=None, notice_error=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "VERSION").write_text("0.3.0\n")
+            seam, _ = self.fixture(root)
+            calls = []
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if (primary is not None and "scripts/run_python_tests.py" in argv
+                        and argv[-2:] == ["--lane", "process"]):
+                    raise primary
+                if argv[:3] == ["sudo", "rm", "-rf"] and cleanup_error is not None:
+                    raise cleanup_error
+                return seam(argv, **kwargs)
+            errors = io.StringIO()
+            notice = (mock.patch.object(acceptance, "print", side_effect=notice_error, create=True)
+                      if notice_error is not None else nullcontext())
+            with redirect_stderr(errors), notice:
+                try:
+                    acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
+                except BaseException as error:
+                    outcome = error
+                else:
+                    self.fail("failing acceptance or cleanup must not return success")
+            self.assertFalse((root / "dist/core-acceptance.json").exists())
+            cleanup_calls = [c for c in calls if c[:3] == ["sudo", "rm", "-rf"]]
+            self.assertEqual(cleanup_calls, [["sudo", "rm", "-rf", "--", "/tmp/hepta-accept-source.ABCDef12"]])
+            return outcome, errors.getvalue()
+
+    def test_cleanup_error_preserves_original_phase_error_or_user_termination(self):
+        for primary in (subprocess.CalledProcessError(29, ["original-phase"]),
+                        KeyboardInterrupt("operator stop"), SystemExit(7)):
+            for cleanup_error in (OSError("cleanup refused"), ValueError("cleanup failed"), MemoryError()):
+                with self.subTest(primary=type(primary).__name__, cleanup=type(cleanup_error).__name__):
+                    error, notice = self.cleanup_outcome(primary=primary, cleanup_error=cleanup_error)
+                    self.assertIs(error, primary)
+                    self.assertIn("temporary source /tmp/hepta-accept-source.ABCDef12", notice)
+
+    def test_cleanup_notice_error_cannot_replace_original_failure(self):
+        for notice_error in (OSError("stderr unavailable"), MemoryError(), TypeError()):
+            primary = subprocess.CalledProcessError(29, ["original-phase"])
+            with self.subTest(notice=type(notice_error).__name__):
+                error, _ = self.cleanup_outcome(primary=primary, cleanup_error=OSError("cleanup refused"),
+                                                notice_error=notice_error)
+                self.assertIs(error, primary)
+
+    def test_cleanup_failure_after_success_is_still_failure(self):
+        for notice_error in (None, OSError("stderr unavailable"), MemoryError(), TypeError()):
+            cleanup_error = OSError("cleanup refused")
+            with self.subTest(notice=type(notice_error).__name__):
+                error, notice = self.cleanup_outcome(cleanup_error=cleanup_error, notice_error=notice_error)
+                self.assertIs(error, cleanup_error)
+                if notice_error is None:
+                    self.assertIn("temporary source /tmp/hepta-accept-source.ABCDef12", notice)
+
+    def test_second_user_termination_during_cleanup_or_notice_propagates(self):
+        for kind in (KeyboardInterrupt, SystemExit):
+            for location in ("cleanup", "notice"):
+                primary = subprocess.CalledProcessError(29, ["original-phase"])
+                interrupted = kind("second operator termination")
+                with self.subTest(kind=kind.__name__, location=location):
+                    error, _ = self.cleanup_outcome(primary=primary,
+                        cleanup_error=interrupted if location == "cleanup" else OSError("cleanup refused"),
+                        notice_error=interrupted if location == "notice" else None)
+                    self.assertIs(error, interrupted)
 
     def test_one_digest_flows_through_both_installed_acceptances(self):
         with tempfile.TemporaryDirectory() as directory:

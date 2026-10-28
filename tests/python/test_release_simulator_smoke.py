@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -63,6 +64,54 @@ def admitted_receipt(digest: str) -> dict:
 
 
 class ReleaseSimulatorSmokeTests(unittest.TestCase):
+    def assert_installed_fifo_refused(self, *, replace_regular):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            slot = root / "slot"
+            slot.mkdir()
+            (root / "current").symlink_to("slot")
+            leaf = slot / "smoke"
+            if replace_regular:
+                leaf.write_bytes(b"not executed\n")
+                leaf.chmod(0o500)
+            else:
+                os.mkfifo(leaf, 0o600)
+            child = os.fork()
+            if child == 0:
+                signal.alarm(1)  # Bound only this test's FIFO-open regression.
+                original_open = os.open
+                before = len(os.listdir("/proc/self/fd"))
+                def swap(path, flags, *args, **kwargs):
+                    if replace_regular and path == "smoke":
+                        os.unlink(path, dir_fd=kwargs["dir_fd"])
+                        os.mkfifo(path, 0o600, dir_fd=kwargs["dir_fd"])
+                    return original_open(path, flags, *args, **kwargs)
+                try:
+                    with mock.patch.object(smoke.os, "open", side_effect=swap), \
+                         mock.patch.object(smoke.subprocess, "run", side_effect=AssertionError("NO_DISPATCH")) as dispatch:
+                        try:
+                            smoke._run_installed_smoke(root / "current", Path("smoke"))
+                        except smoke.SmokeError as error:
+                            valid = (str(error) == "installed simulator smoke is not an executable regular file"
+                                     and not dispatch.called
+                                     and len(os.listdir("/proc/self/fd")) == before)
+                            os._exit(0 if valid else 2)
+                except BaseException:
+                    os._exit(3)
+                os._exit(4)
+            waited, status = os.waitpid(child, 0)
+            self.assertEqual(waited, child)
+            self.assertTrue(os.WIFEXITED(status), "installed open blocked before its execution timeout")
+            self.assertEqual(os.WEXITSTATUS(status), 0)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "fork"), "Linux owned FIFO fixture")
+    def test_installed_smoke_rejects_fifo_before_dispatch_or_timeout(self):
+        self.assert_installed_fifo_refused(replace_regular=False)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "fork"), "Linux owned FIFO fixture")
+    def test_installed_smoke_rejects_regular_file_replaced_by_fifo_at_open(self):
+        self.assert_installed_fifo_refused(replace_regular=True)
+
     def test_smoke_relative_path_rejects_absolute_and_parent_escape(self) -> None:
         for value in ("/bin/true", "../bin/true", "lib/../bin/true", ""):
             with self.subTest(value=value):
@@ -100,8 +149,16 @@ class ReleaseSimulatorSmokeTests(unittest.TestCase):
             executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             executable.chmod(0o755)
             completed = subprocess.CompletedProcess([], 0, stdout="ok\n")
+            def dispatch(argv, **kwargs):
+                import fcntl
+                fd, = kwargs["pass_fds"]
+                self.assertEqual(argv, [f"/proc/self/fd/{fd}"])
+                self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode))
+                self.assertFalse(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_NONBLOCK)
+                self.assertEqual(kwargs["timeout"], 180)
+                return completed
             with mock.patch.object(
-                smoke.subprocess, "run", return_value=completed
+                smoke.subprocess, "run", side_effect=dispatch
             ) as run:
                 smoke._run_installed_smoke(current, Path("smoke"))
             environment = run.call_args.kwargs["env"]
