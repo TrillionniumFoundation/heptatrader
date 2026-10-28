@@ -163,10 +163,21 @@ def main(argv: list[str] | None = None) -> int:
     configure_import_paths()
     loader = unittest.TestLoader()
     modules = {Path(name).stem for name in selected} | nested
-    suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in sorted(modules))
+    suite = unittest.TestSuite()
+    for name in sorted(modules):
+        try:
+            suite.addTests(loader.loadTestsFromName(name))
+        except Exception as error:
+            # unittest wraps ImportError, but syntax and ordinary import-time
+            # errors otherwise abort collection before valid modules can run.
+            def failed_import(error=error):
+                raise error
+            failed_import.__name__ = name
+            suite.addTest(unittest.FunctionTestCase(failed_import))
     if args.lane == "learning":
         suite = unittest.TestSuite(learning_cases(suite))
-    # Import failures are represented by unittest._FailedTest instances.
+    # Import failures remain visible failing cases, including ordinary errors
+    # raised before unittest can wrap them in a _FailedTest instance.
     # Run them with the valid modules so a broken import cannot hide the rest
     # of the lane, while the aggregate result still fails.
     if not suite.countTestCases():

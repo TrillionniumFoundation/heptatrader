@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import contextlib
+import importlib.util
 import io
 import os
 import subprocess
@@ -12,6 +13,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import run_python_tests as runner
+historical_spec = importlib.util.spec_from_file_location(
+    "hepta_historical_loader_fixture", ROOT / "tests/python/test_historical_training.py")
+historical = importlib.util.module_from_spec(historical_spec)
+historical_spec.loader.exec_module(historical)
 
 
 class PythonTestPartitionTests(unittest.TestCase):
@@ -196,28 +201,87 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertEqual(set(loaded), runner.NESTED_EXTERNAL_TESTS)
 
     def test_import_failure_does_not_suppress_valid_modules_in_the_lane(self):
+        for lane in ("core", "source", "learning"):
+            for kind, code in (("ImportError", "raise ImportError('fixture missing dependency')\n"),
+                               ("SyntaxError", "def broken(:\n"),
+                               ("ValueError", "raise ValueError('fixture import failed')\n")):
+                with self.subTest(lane=lane, kind=kind):
+                    self.check_broken_and_valid_import(lane, kind, code)
+
+    def check_broken_and_valid_import(self, lane, kind, code):
         with tempfile.TemporaryDirectory(prefix="hepta-import-lane-") as directory:
             root = Path(directory)
             marker = root / "valid-ran"
             broken, valid = "a_hepta_fixture_broken", "z_hepta_fixture_valid"
-            (root / (broken + ".py")).write_text("raise ImportError('fixture missing dependency')\n")
+            (root / (broken + ".py")).write_text(code)
             (root / (valid + ".py")).write_text(
                 "import unittest\nfrom pathlib import Path\n"
                 "class Valid(unittest.TestCase):\n"
                 "    def test_runs(self):\n"
                 f"        Path({str(marker)!r}).write_text('ran')\n")
-            groups = {"core": {broken + ".py", valid + ".py"}}
+            groups = {lane: {broken + ".py", valid + ".py"}}
             with mock.patch.object(runner, "partitions", return_value=groups), \
                  mock.patch.object(runner, "configure_import_paths"), \
+                 mock.patch.object(runner, "NESTED_LEARNING_MODULES", frozenset()), \
+                 mock.patch.object(runner.shutil, "which", return_value="/fixture/tool"), \
                  mock.patch.object(sys, "path", [str(root), *sys.path]), \
                  mock.patch.dict(sys.modules), \
                  contextlib.redirect_stderr(io.StringIO()) as stderr, \
                  contextlib.redirect_stdout(io.StringIO()):
-                result = runner.main(["--lane", "core"])
+                result = runner.main(["--lane", lane])
             self.assertEqual(result, 1)
             self.assertEqual(marker.read_text(), "ran")
-            self.assertIn("fixture missing dependency", stderr.getvalue())
+            self.assertIn(kind, stderr.getvalue())
+            self.assertIn(broken, stderr.getvalue())
+            self.assertIn("errors=1", stderr.getvalue())
             self.assertIn("Ran 2 tests", stderr.getvalue())
+
+    def test_import_does_not_swallow_user_termination(self):
+        for termination in (KeyboardInterrupt, SystemExit):
+            with self.subTest(termination=termination), \
+                 mock.patch.object(runner, "partitions", return_value={"core": {"fixture.py"}}), \
+                 mock.patch.object(runner, "configure_import_paths"), \
+                 mock.patch.object(unittest.TestLoader, "loadTestsFromName", side_effect=termination):
+                with self.assertRaises(termination):
+                    runner.main(["--lane", "core"])
+
+    def test_historical_bad_import_retains_failure_and_later_valid_fixture(self):
+        for kind, code in (("ImportError", "raise ImportError('fixture dependency')\n"),
+                           ("SyntaxError", "def broken(:\n"),
+                           ("ValueError", "raise ValueError('fixture import failed')\n")):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tests = root / "research/historical_training/tests"
+                tests.mkdir(parents=True)
+                marker = root / "valid-ran"
+                (tests / "test_a_bad.py").write_text(code)
+                (tests / "test_z_valid.py").write_text(
+                    "import unittest\nfrom pathlib import Path\nclass Valid(unittest.TestCase):\n"
+                    f" def test_runs(self): Path({str(marker)!r}).write_text('ran')\n")
+                with mock.patch.object(historical, "ROOT", root), mock.patch.dict(sys.modules), \
+                     mock.patch.object(sys, "path", list(sys.path)), \
+                     contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    suite = historical.load_tests(unittest.defaultTestLoader, unittest.TestSuite(), None)
+                    result = unittest.TextTestRunner(verbosity=2).run(suite)
+                    self.assertNotIn("hepta_historical_ci_test_a_bad", sys.modules)
+                self.assertFalse(result.wasSuccessful())
+                self.assertEqual(result.testsRun, 2)
+                self.assertEqual(len(result.errors), 1)
+                self.assertFalse(result.skipped)
+                self.assertEqual(marker.read_text(), "ran")
+                self.assertIn(kind, stderr.getvalue())
+
+    def test_historical_import_does_not_swallow_user_termination(self):
+        for termination in ("KeyboardInterrupt", "SystemExit"):
+            with self.subTest(termination=termination), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tests = root / "research/historical_training/tests"
+                tests.mkdir(parents=True)
+                (tests / "test_a_stop.py").write_text(f"raise {termination}('operator stop')\n")
+                with mock.patch.object(historical, "ROOT", root), mock.patch.dict(sys.modules), \
+                     mock.patch.object(sys, "path", list(sys.path)):
+                    with self.assertRaises(KeyboardInterrupt if termination == "KeyboardInterrupt" else SystemExit):
+                        historical.load_tests(unittest.defaultTestLoader, unittest.TestSuite(), None)
 
     def test_nested_learning_runs_in_same_suite_after_an_ordinary_failure(self):
         seen=[]
