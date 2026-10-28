@@ -184,7 +184,23 @@ fn selected_bundle_cannot_replace_real_current_or_lifecycle(){
  let mut f=Fixture::new();let (publish,head)=f.publication("fixture-laya",&payload());laya_dispatch(&publish,30).unwrap();f.head=head;
  let request=f.selected_request(&publish);
  let service=existing_owner(&f.owner,30).unwrap();
- assert!(laya_dispatch(&request,30).unwrap_err().contains("WriterFenceBusy"));drop(service);
+ // The live owner keeps publication fenced while readonly load/final-use work.
+ let loaded=laya_dispatch(&request,30).unwrap();
+ assert_eq!(loaded["status"],"CANONICAL_LAYA_SELECTED_BYTES_LOADED");
+ assert!(existing_owner(&f.owner,30).unwrap_err().contains("WriterFenceBusy"));
+ let mut final_request=request.clone();final_request["operation"]=json!("revalidate_laya_output");
+ final_request["loaded_registry"]=loaded["loaded_registry"].clone();
+ final_request["loaded_lifecycle"]=loaded["loaded_lifecycle"].clone();
+ final_request["request_digest"]=json!(d("actual-request").to_string());
+ final_request["output_digest"]=json!(d("actual-output").to_string());
+ // Reader credentials do not include a writer lease or withdrawal publication state.
+ final_request["owner"].as_object_mut().unwrap().remove("writer_lease");
+ final_request["owner"].as_object_mut().unwrap().remove("withdrawal_snapshot_path");
+ let finalized=laya_dispatch(&final_request,30).unwrap();
+ assert_eq!(finalized["status"],"CANONICAL_LAYA_OUTPUT_REVALIDATED");
+ assert_eq!(finalized["product_consumed"],false);
+ assert_eq!(finalized["canonical_agentd_admitted"],false);
+ drop(service);
  let mut bad=request.clone();bad["selection_bundle"]["signed_selection"]["signature"]=json!("00".repeat(64));
  assert!(laya_dispatch(&bad,30).is_err());
  let mut bad=request.clone();bad["lifecycle"]["receipt"]["head_digest"]=json!(d("not-accepted").to_string());

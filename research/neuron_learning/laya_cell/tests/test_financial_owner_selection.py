@@ -11,10 +11,11 @@ import unittest
 from unittest.mock import patch
 
 from laya_cell import financial_forward_select as selection
+from laya_cell import native as neuron_native
 from laya_cell.integrity import ContractError, digest, sha_file
 
 
-PIN = '78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+PIN = '108bc534d33c7f9e48caa569c254253f6c356271'
 MANIFEST_DIGEST = '1' * 64
 CONTENT_DIGEST = '2' * 64
 
@@ -107,10 +108,13 @@ class NativeReceiptContractTests(unittest.TestCase):
             self.call(selected_receipt('5' * 64))
 
     def test_wrong_pin_failed_process_and_nonobject_are_rejected(self):
-        receipt = selected_receipt()
-        receipt['native_source_sha'] = '0' * 40
-        with self.assertRaisesRegex(ContractError, 'VERIFIER_REJECTED'):
-            self.call(receipt)
+        for source_pin in ('78fdb0cf8537e3a84fc6e0a849707559c80881e8',
+                           'f8c9419df6ddeb36ff8b522a50219981fb8d9345', '0' * 40):
+            receipt = selected_receipt()
+            receipt['native_source_sha'] = source_pin
+            with self.subTest(source_pin=source_pin), self.assertRaisesRegex(
+                    ContractError, 'VERIFIER_REJECTED'):
+                self.call(receipt)
         with self.assertRaisesRegex(ContractError, 'VERIFIER_REJECTED'):
             self.call(selected_receipt(), returncode=2)
         with self.assertRaisesRegex(ContractError, 'VERIFIER_REJECTED'):
@@ -122,6 +126,21 @@ class NativeReceiptContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractError, 'VERIFIER_CHANGED'):
                 selection.native(self.config, {'operation': 'validate_candidate_manifest'})
         run.assert_not_called()
+
+    def test_owner_sdk_update_preserves_the_existing_neuron_evaluator_contract(self):
+        legacy_pin = '78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+        evaluator = neuron_native.NativePorts(self.binary, self.config['canonical_verifier_sha256'])
+        for source_pin in (legacy_pin, PIN):
+            receipt = {'native_source_sha': source_pin, 'authorization_effect': 'NONE'}
+            response = subprocess.CompletedProcess(
+                ['synthetic'], 0, json.dumps(receipt).encode(), b'')
+            with self.subTest(source_pin=source_pin), \
+                 patch.object(neuron_native.subprocess, 'run', return_value=response):
+                if source_pin == legacy_pin:
+                    self.assertEqual(evaluator.call({'op': 'neuron'}), receipt)
+                else:
+                    with self.assertRaisesRegex(ContractError, 'NATIVE_SOURCE_OR_AUTHORITY_MISMATCH'):
+                        evaluator.call({'op': 'neuron'})
 
 
 class CanonicalSupportBindingTests(unittest.TestCase):
