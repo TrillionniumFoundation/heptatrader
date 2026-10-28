@@ -119,6 +119,57 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(entry['action']['optimizer_steps_applied'],0);self.assertFalse(entry['action']['head_trained'])
   self.assertEqual(entry['latest_forward']['state'],'REJECTED');self.assertEqual(entry['latest_forward']['observed'],94)
   self.assertFalse(entry['price']['future_value_proven'])
+ def test_additional_forward_is_latest_while_original_result_stays_visible(self):
+  root,_=self.fixture_learning()
+  self.write(root/'evaluation/j1/qualification.json',{'candidate_id':'c1','plan_id':'p1','state':'REJECTED','observed':24,'censored':73})
+  path=root/'control/status.json';status=json.loads(path.read_text())
+  status['latest_candidate_registration'].update(trial=56,additional_evaluation_attempts=[
+   {'evaluation_role':'ADDITIONAL','attempt_id':'a'*64,'plan_id':'b'*64,
+    'trial':57,'trial_allocated':True,'state':'PUBLISHED'}])
+  self.write(path,status)
+  self.write(root/('evaluation/attempt-'+'a'*64)/'progress.json',
+   {'at_ms':NOW,'candidate_id':'c1','plan_id':'b'*64,'state':'PENDING','observed':18,'censored':0})
+  entry=self.collect()['learning'][0]
+  self.assertEqual(entry['latest_forward']['evaluation_role'],'ADDITIONAL')
+  self.assertEqual(entry['latest_forward']['trial'],57)
+  self.assertEqual(entry['latest_forward']['state'],'PENDING')
+  self.assertEqual(entry['latest_forward']['observed'],18)
+  self.assertEqual(entry['original_forward']['evaluation_role'],'ORIGINAL')
+  self.assertEqual(entry['original_forward']['state'],'REJECTED')
+  self.assertEqual(entry['original_forward']['observed'],24)
+ def test_deferred_request_cannot_hide_highest_allocated_forward_trial(self):
+  root,_=self.fixture_learning();path=root/'control/status.json';status=json.loads(path.read_text())
+  latest={'attempt_id':'c'*64,'plan_id':'d'*64,'trial':59,'trial_allocated':True,'state':'PUBLISHED'}
+  older={'attempt_id':'a'*64,'plan_id':'b'*64,'trial':57,'trial_allocated':True,'state':'PUBLISHED'}
+  deferred={'attempt_id':'e'*64,'trial_allocated':False,'state':'DEFERRED','checked_at_ms':NOW+1000}
+  status['latest_candidate_registration'].update(trial=56,additional_evaluation_attempts=[latest,deferred,older])
+  self.write(path,status)
+  self.write(root/('evaluation/attempt-'+'a'*64)/'progress.json',
+   {'at_ms':NOW,'candidate_id':'c1','plan_id':'b'*64,'state':'PENDING','observed':30})
+  self.write(root/('evaluation/attempt-'+'c'*64)/'qualification.json',
+   {'candidate_id':'c1','plan_id':'d'*64,'state':'REJECTED','observed':91})
+  entry=self.collect()['learning'][0]
+  self.assertEqual(entry['latest_forward']['trial'],59)
+  self.assertEqual(entry['latest_forward']['plan_id'],'d'*64)
+  self.assertEqual(entry['latest_forward']['state'],'REJECTED')
+  status['latest_candidate_registration']['additional_evaluation_attempts']=[deferred]
+  self.write(path,status);entry=self.collect()['learning'][0]
+  self.assertEqual(entry['latest_forward']['evaluation_role'],'ORIGINAL')
+  self.assertEqual(entry['latest_forward']['plan_id'],'p1')
+ def test_additional_forward_identity_mismatch_cannot_display_original_as_latest(self):
+  root,_=self.fixture_learning();path=root/'control/status.json';status=json.loads(path.read_text())
+  status['latest_candidate_registration'].update(trial=56,additional_evaluation_attempts=[
+   {'attempt_id':'a'*64,'plan_id':'b'*64,'trial':57,'trial_allocated':True,'state':'PUBLISHED'}])
+  self.write(path,status)
+  output=root/('evaluation/attempt-'+'a'*64)/'progress.json'
+  for candidate,plan in [('c1','p1'),('another-candidate','b'*64)]:
+   with self.subTest(candidate=candidate,plan=plan):
+    self.write(output,{'at_ms':NOW,'candidate_id':candidate,'plan_id':plan,'state':'PENDING','observed':99})
+    entry=self.collect()['learning'][0]
+    self.assertFalse(entry['latest_forward']['available'])
+    self.assertEqual(entry['latest_forward']['error'],'FORWARD_IDENTITY_MISMATCH')
+    self.assertEqual(entry['latest_forward']['evaluation_role'],'ADDITIONAL')
+    self.assertEqual(entry['original_forward']['plan_id'],'p1')
  def test_idle_current_consumer_and_disabled_old_config(self):
   root=self.home/'inventory';cfg=self.write(self.home/'consumer.json',{'output_root':str(root)})
   self.write(root/'status.json',{'at_ms':NOW-900000,'input_checked_at_ms':NOW,'last_full_evaluation_at_ms':NOW-900000,

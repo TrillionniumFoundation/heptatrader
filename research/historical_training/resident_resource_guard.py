@@ -792,6 +792,11 @@ class _ForwardRegistrationHold(Exception):
 
 def guarded_trainer_class(base,gate):
     class GuardedTrainer(base):
+        _guarded_forward_registration=True
+
+        def _forward_attempt_stopping(self):
+            return bool(getattr(self,'stop',False) or getattr(gate,'draining',False))
+
         def _complete_worker(self,job_id,rc,state,*,failure=None):
             record=getattr(gate,'record_native_exit',None)
             try:
@@ -802,13 +807,14 @@ def guarded_trainer_class(base,gate):
                 result=super()._complete_worker(job_id,rc,state,failure=failure)
             return result
 
-        def register_evaluation(self,job_id,candidate,job):
+        def register_evaluation(self,job_id,candidate,job,*,attempt=None):
+            options={'attempt':attempt} if attempt is not None else {}
             if self.c.get('future_plan_admission_profile') is None:
-                return super().register_evaluation(job_id,candidate,job)
+                return super().register_evaluation(job_id,candidate,job,**options)
             previous=getattr(self,'_forward_registration_context',None)
             self._forward_registration_context=(job_id,candidate['candidate_id'])
             try:
-                result=super().register_evaluation(job_id,candidate,job)
+                result=super().register_evaluation(job_id,candidate,job,**options)
             except _ForwardRegistrationHold as exc:
                 if self.db.in_transaction:
                     raise EvidenceError('FORWARD_PREFLIGHT_ROLLBACK_REQUIRED') from exc
@@ -934,7 +940,16 @@ def verify_config(c):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--role',choices=['trainer','evaluator'],required=True)
-    p.add_argument('--check-only',action='store_true');a=p.parse_args();os.umask(0o077)
+    p.add_argument('--check-only',action='store_true')
+    p.add_argument('--forward-attempt-request',type=Path)
+    p.add_argument('--forward-attempt-request-sha256')
+    p.add_argument('--attempt-wait-seconds',type=int,default=90)
+    a=p.parse_args();os.umask(0o077)
+    attempt_mode=a.forward_attempt_request is not None
+    if (attempt_mode!=(a.forward_attempt_request_sha256 is not None)
+            or (attempt_mode and (a.role!='trainer' or a.check_only))
+            or not 0<=a.attempt_wait_seconds<=300):
+        p.error('forward attempt requires trainer role, exact request SHA and a 0..300 second bound')
     c=read(a.config);original=verify_config(c);gate=Gate(c,a.role)
     if a.check_only:
         fast=gate._priority_negative_preflight()
@@ -959,6 +974,12 @@ def main():
     def request_drain(*_):gate.draining=True
     signal.signal(signal.SIGUSR1,request_drain)
     try:
+        if attempt_mode:
+            from laya_cell.resident_forward_attempt import run_request
+            result=run_request(service,a.forward_attempt_request,a.forward_attempt_request_sha256,
+                               wait_seconds=a.attempt_wait_seconds)
+            print(json.dumps(result,sort_keys=True),flush=True)
+            return
         if a.role=='trainer':service.recover()
         while not service.stop:
             try:

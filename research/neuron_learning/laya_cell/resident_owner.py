@@ -272,15 +272,16 @@ def manifest_for(payload, raw, producer_id):
 
 
 def _registration(config, plan, candidate, job):
-    from .resident_plan_admission import KEY_PREFIX, _identity, _check_record
+    from .resident_plan_admission import registration_key, _identity, _check_record
     from .resident_store import get_meta
     path = Path(config['control_directory']) / 'scheduler.sqlite'
     _need(path.is_file(), 'LAYA_OWNER_REGISTERED_SOURCE_REQUIRED')
     with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         service = SimpleNamespace(c=config, db=connection)
-        record = get_meta(connection, KEY_PREFIX + plan['job_id'])
-        _check_record(record, _identity(service, plan['job_id'], candidate, job))
+        attempt = plan.get('evaluation_attempt')
+        record = get_meta(connection, registration_key(plan['job_id'], attempt))
+        _check_record(record, _identity(service, plan['job_id'], candidate, job, attempt=attempt))
         _need(record['state'] == 'PUBLISHED' and record['plan'] == plan
               and get_meta(connection, 'evaluation_trial', 0) >= plan['trial'],
               'LAYA_OWNER_PLAN_NOT_ORIGINALLY_PUBLISHED')
