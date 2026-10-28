@@ -36,6 +36,30 @@ def worker_failure_diagnostic(stderr_tail):
  return lines[-1][:240] if lines else 'NO_PROCESS_DIAGNOSTIC'
 
 
+def first_admission_provenance(path,plan,slot):
+ """Keep an actual earlier refusal even when a later worker starts.
+
+ This is contextual evidence, not a replacement for the terminal outcome.
+ An admitted worker can succeed or fail after a prior refusal; neither case
+ proves that every intervening dispatch attempt was denied for that reason.
+ """
+ first=Path(path).parent/f'admission-denial-{slot:03}.json'
+ if not first.exists():return {}
+ denial=read_json(first)
+ if (denial.get('schema')!='heptatrader.laya-evaluator-first-admission-denial.v1'
+     or denial.get('plan_id')!=plan['plan_id']
+     or denial.get('candidate_id')!=plan['candidate_id']
+     or denial.get('slot')!=slot
+     or denial.get('automatic_trading') is not False):
+  raise ContractError('PREWARM_DENIAL_OUTCOME_IDENTITY')
+ provenance={'first_admission_denial_sha256':sha_file(first),
+  'first_admission_denial_reasons':denial['reason_codes'],
+  'not_proof_of_every_denial_attempt':True}
+ if type(denial.get('at_ms')) is int:
+  provenance['first_admission_denial_at_ms']=denial['at_ms']
+ return provenance
+
+
 def progress_with_coverage(plan,results,assessment):
  """Annotate a copy using already assessed outcomes, with no further file reads.
 
@@ -555,29 +579,18 @@ class Evaluator:
      if failure.exists():
       failed=read_json(failure);reason=failed['reason'];worker_errors[reason]=worker_errors.get(reason,0)+1
       record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
-       'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now}
+       'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now,
+       **first_admission_provenance(path,plan,slot)}
       write_once(output,record);recorded.append(record);continue
      if now>end:
-      first=path.parent/f'admission-denial-{slot:03}.json'
-      provenance={}
-      if first.exists():
-       denial=read_json(first)
-       if (denial.get('schema')!='heptatrader.laya-evaluator-first-admission-denial.v1'
-           or denial.get('plan_id')!=plan['plan_id']
-           or denial.get('candidate_id')!=plan['candidate_id']
-           or denial.get('slot')!=slot
-           or denial.get('automatic_trading') is not False):
-        raise ContractError('PREWARM_DENIAL_OUTCOME_IDENTITY')
-       provenance={'first_admission_denial_sha256':sha_file(first),
-        'first_admission_denial_reasons':denial['reason_codes'],
-        'not_proof_of_every_denial_attempt':True}
+      provenance=first_admission_provenance(path,plan,slot)
       suppression=_futility_suppression_receipt(path,plan,slot)
       if suppression is not None:
        provenance.update(no_prediction_disposition='FUTILITY_SUPPRESSED',
         futility_suppression_sha256=suppression['sha256'],
         futility_suppressed_at_ms=suppression['at_ms'])
       else:
-       provenance['no_prediction_disposition']=('ADMISSION_DENIAL_OBSERVED' if first.exists()
+       provenance['no_prediction_disposition']=('ADMISSION_DENIAL_OBSERVED' if provenance
         else 'NO_LOCAL_ADMISSION_OR_FUTILITY_RECEIPT')
       record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance}
@@ -646,6 +659,7 @@ class Evaluator:
     result=measure(plan,slot,pred,quotes,quote_clock,**measurement_options)
     if result is not None:
      result['source_prefixes']=prefixes;result['prediction_file_sha256']=sha_file(prediction)
+     result.update(first_admission_provenance(path,plan,slot))
      write_once(output,result);recorded.append(result)
    assessed_at=int(time.time()*1000)
    # The controller is the sole outcome writer. Reuse its same-round records
