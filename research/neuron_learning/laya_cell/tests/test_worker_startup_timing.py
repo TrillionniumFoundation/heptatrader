@@ -16,6 +16,7 @@ from laya_cell import resident_worker_failure_context as timing
 from laya_cell.integrity import ContractError, digest
 from laya_cell.promotion import RULE
 from laya_cell.tests import test_resident_launch_deadline as deadline_fixture
+from laya_cell.tests import test_resident_worker_failure_diagnostics as failure_fixture
 
 
 def events(text):
@@ -354,6 +355,134 @@ class LauncherStartupTimingTests(unittest.TestCase):
         prove.assert_called_once_with(None, 'AFTER_TORCH_BEFORE_MODEL')
         torch.set_num_threads.assert_called_once_with(2)
         predictor.predict.assert_called_once()
+
+
+class StartupFailureReasonTests(unittest.TestCase):
+    def reaper(self):
+        case = failure_fixture.WorkerFailureDiagnosticTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        return case
+
+    def startup(self, context=None):
+        output = io.StringIO()
+        timing.emit_startup('PREDICTION_DISPATCHED', context, stream=output)
+        self.assertTrue(output.getvalue().startswith(timing.STARTUP_PREFIX))
+        return output.getvalue()
+
+    def test_only_startup_keeps_original_missing_diagnostic_and_phase(self):
+        log = self.startup().encode()
+        record, _, _, _ = self.reaper().run_reap(2, log)
+        self.assertEqual(record['reason'], 'NO_PROCESS_DIAGNOSTIC')
+        self.assertEqual(record['stderr_tail'], log.decode())
+        self.assertEqual(record['phase'], {'phase': 'VALIDATE_AND_LOAD'})
+
+    def test_startup_does_not_hide_a_real_exception_before_or_after_it(self):
+        title = 'laya_cell.integrity.ContractError: original worker error'
+        for log in (self.startup() + title + '\n',
+                    'Traceback (most recent call last):\n' + title + '\n' + self.startup(),
+                    title + '\nRuntime advice.\n' + self.startup()):
+            with self.subTest(log=log):
+                record, _, _, _ = self.reaper().run_reap(1, log.encode())
+                self.assertEqual(record['reason'], title)
+                self.assertEqual(record['stderr_tail'], log)
+
+    def test_mixed_legacy_messages_keep_last_nonstartup_fallback(self):
+        log = ('INFO RuntimeError: ordinary mention\n'
+               '  RuntimeError: indented source example\n' + self.startup() +
+               'legacy process warning\n' + self.startup())
+        record, _, _, _ = self.reaper().run_reap(2, log.encode())
+        self.assertEqual(record['reason'], 'legacy process warning')
+        title = 'RuntimeError: mentions ' + timing.STARTUP_PREFIX + 'as text'
+        self.assertEqual(evaluate.worker_failure_diagnostic(title + '\n' + self.startup()), title)
+
+    def test_bounded_tail_of_many_startup_rows_is_not_a_failure(self):
+        log = (self.startup() * 10).encode()
+        self.assertGreater(len(log), 1500)
+        record, _, _, _ = self.reaper().run_reap(2, log)
+        self.assertEqual(record['reason'], 'NO_PROCESS_DIAGNOSTIC')
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_single_observation_larger_than_tail_cannot_become_a_fragment_reason(self):
+        # Within the emitter's fixed2KiB output bound, but larger than the
+        # reaper's original1500-byte tail. No whole-log or extra byte read.
+        interval = {name: 10**130 for name in ('started_at_ms', 'completed_at_ms', 'elapsed_ns')}
+        log = self.startup({name: interval for name in
+            ('admission', 'environment_preparation', 'popen')}).encode()
+        self.assertGreater(len(log), 1500)
+        self.assertLessEqual(len(log), timing.MAX_STARTUP_BYTES)
+        record, _, _, _ = self.reaper().run_reap(2, log)
+        self.assertEqual(record['reason'], 'NO_PROCESS_DIAGNOSTIC')
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_truncated_mixed_tail_retains_complete_error_and_termination_titles(self):
+        for title in ('RuntimeError: real failure', 'KeyboardInterrupt: operator stop', 'SystemExit: 2'):
+            log = (self.startup() * 10 + title + '\n' + self.startup()).encode()
+            with self.subTest(title=title):
+                record, _, _, _ = self.reaper().run_reap(1, log)
+                self.assertEqual(record['reason'], title)
+                self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+                # Also retain an exception title if the bounded tail happens
+                # to begin at the exact start of a complete error line.
+                self.assertEqual(evaluate.worker_failure_diagnostic(
+                    title + '\n' + self.startup()), title)
+
+    def test_long_real_single_line_keeps_original_available_tail_detail(self):
+        log = ('RuntimeError: ' + 'real-error-coordinate-' * 1000 + '\n').encode()
+        record, _, _, _ = self.reaper().run_reap(1, log)
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+        self.assertEqual(record['reason'], log[-1500:].decode().strip()[:240])
+
+    def test_no_startup_never_expands_exception_search_beyond_original_tail(self):
+        log = ('ValueError: earlier exception must stay outside reason scope\n' +
+               'loader.CustomFailure: ' + 'x' * 2400 + '\n').encode()
+        record, _, _, _ = self.reaper().run_reap(1, log)
+        expected = log[-1500:].decode().strip()[:240]
+        self.assertEqual(record['reason'], expected)
+        self.assertNotIn('ValueError', record['reason'])
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_startup_keeps_the_same_nonstartup_tail_not_an_older_exception(self):
+        earlier = 'ValueError: earlier exception must stay outside reason scope\n'
+        last = 'loader.CustomFailure: ' + 'x' * 2400 + '\n'
+        plain = (earlier + last).encode()
+        log = (earlier + self.startup() * 3 + last + self.startup() * 10).encode()
+        record, _, _, _ = self.reaper().run_reap(1, log)
+        self.assertEqual(record['reason'], plain[-1500:].decode().strip()[:240])
+        self.assertNotIn('ValueError', record['reason'])
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_virtual_nonstartup_tail_keeps_byte_cutoff_and_utf8_replacement(self):
+        plain = (b'ValueError: older than byte cutoff\n' + b'failure-' * 300 +
+                 b'\xff' + '\u20ac'.encode() * 300 + b'\xfe\n')
+        log = plain + (self.startup() * 10).encode()
+        record, _, _, _ = self.reaper().run_reap(1, log)
+        self.assertEqual(record['reason'], plain[-1500:].decode('utf-8',errors='replace').strip()[:240])
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode('utf-8',errors='replace'))
+
+    def test_unidentified_long_real_fragment_before_startup_is_not_discarded(self):
+        log = ('RuntimeError: ' + 'E' * 20000 + '\n' + self.startup() * 10).encode()
+        record, _, _, _ = self.reaper().run_reap(1, log)
+        self.assertEqual(record['reason'], 'E' * 240)
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_late_parent_startup_rows_do_not_displace_real_error(self):
+        title = 'RuntimeError: child failed before parent finished dispatch observation'
+        for suffix in (self.startup() * 10, self.startup() * 20):
+            log = (self.startup() * 5 + title + '\n' + suffix).encode()
+            with self.subTest(suffix_bytes=len(suffix)):
+                self.assertNotIn(title.encode(), log[-1500:])
+                record, _, _, _ = self.reaper().run_reap(1, log)
+                self.assertEqual(record['reason'], title)
+                self.assertEqual(record['stderr_tail'], log[-1500:].decode())
+
+    def test_reason_context_boundary_recovers_partial_startup_identity(self):
+        self.assertEqual(evaluate._WORKER_STARTUP_LINE_BYTES, timing.MAX_STARTUP_BYTES)
+        log = (self.startup() * 100).encode()
+        self.assertGreater(len(log), evaluate._WORKER_DIAGNOSTIC_BYTES + timing.MAX_STARTUP_BYTES)
+        record, _, _, _ = self.reaper().run_reap(2, log)
+        self.assertEqual(record['reason'], 'NO_PROCESS_DIAGNOSTIC')
+        self.assertEqual(record['stderr_tail'], log[-1500:].decode())
 
 
 if __name__ == '__main__':
