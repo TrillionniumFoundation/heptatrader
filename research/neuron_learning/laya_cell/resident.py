@@ -633,7 +633,7 @@ class Supervisor:
    self._training_input_wait=_input_wait
   _input_before=_input_wait.begin(self.c,reserved,now) if (training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')) or training_v8.enabled(self.c.get('objective'))) else None
   if training_v3.enabled(self.c.get('objective')) or training_v4.enabled(self.c.get('objective')) or training_v5.enabled(self.c.get('objective')) or training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')) or training_v8.enabled(self.c.get('objective')):
-   dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved)
+   dataset,rows,quality,_=collect(self.c,now,reserved_row_ids=reserved,include_source_quotes=False)
   else:dataset,rows,quality,_=collect(self.c,now)
   if training_v6.enabled(self.c.get('objective')) or training_v7.enabled(self.c.get('objective')) or training_v8.enabled(self.c.get('objective')):rows=training_v6.timed_rows(rows,dataset)
   new=[]

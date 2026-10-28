@@ -10,7 +10,53 @@ from .shadow_source import read_source
 from .dataset import rows_for_training
 
 
-def read_quotes(config,now_ms,*,read_hints=None):
+class _TrainingQuoteView:
+    """One strict pass: compact old conflict keys, retain full causal input.
+
+    The parser bounds availability to event time + 5s. A selected history
+    has at most 24 points and each selected gap is at most 30s, so retaining
+    24 * 30s before the first eligible anchor covers every possible input.
+    One older boundary row preserves the original history-reset flag.
+    All old timestamps remain available for the original global 10s thinning.
+    """
+    def __init__(self,first_anchor_ms):
+        self.first_anchor_ms=first_anchor_ms
+        self.full_after_ms=first_anchor_ms-24*30000
+        self.old_prices={};self.latest_old=None
+
+    def add_old(self,q):
+        old=self.old_prices.get(q['t'])
+        if old and (Decimal(str(old[0]))!=Decimal(str(q['bid']))
+                    or Decimal(str(old[1]))!=Decimal(str(q['ask']))):
+            raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
+        if old is None:self.old_prices[q['t']]=(q['bid'],q['ask'])
+        old=self.latest_old
+        if (old is None or q['t']>old['t']
+            or q['t']==old['t'] and q['known_at_ms']<old['known_at_ms']):
+            self.latest_old=q
+
+    def finish(self,quotes):
+        from itertools import chain
+        current_times=sorted(quotes)
+        self.source_count=len(self.old_prices)+len(quotes)
+        selected=set();last=None;self.excluded_old_anchors=0
+        for stamp in chain(sorted(self.old_prices),current_times):
+            if last is None or stamp-last>=10000:
+                last=stamp
+                if stamp<self.first_anchor_ms:self.excluded_old_anchors+=1
+                else:selected.add(stamp)
+        ordered=[{**quotes[t],'bid':float(quotes[t]['bid']),
+                  'ask':float(quotes[t]['ask'])} for t in current_times]
+        self.sampled=[q for q in ordered if q['t'] in selected]
+        if self.latest_old is not None:
+            q=self.latest_old
+            ordered.insert(0,{**q,'bid':float(q['bid']),'ask':float(q['ask'])})
+        # Conflict keys are no longer needed after the complete merge.
+        self.old_prices.clear();self.latest_old=None
+        return ordered
+
+
+def read_quotes(config,now_ms,*,read_hints=None,training_view=None):
     if read_hints is not None:
         read_hints.clear()
     if sha_file(Path(config['period_path']))!=config['period_sha256']:
@@ -40,16 +86,19 @@ def read_quotes(config,now_ms,*,read_hints=None):
                         old_stamp=read_hints.get('next_input_ms')
                         read_hints['next_input_ms']=stamp if old_stamp is None else min(old_stamp,stamp)
             if q['known_at_ms']>now_ms:continue
+            if training_view is not None and q['t']<training_view.full_after_ms:
+                training_view.add_old(q);continue
             old=quotes.get(q['t'])
             if old and (Decimal(str(old['bid']))!=Decimal(str(q['bid'])) or Decimal(str(old['ask']))!=Decimal(str(q['ask']))):raise ContractError('CROSS_SEGMENT_PRICE_CONFLICT')
             if old is None or q['known_at_ms']<old['known_at_ms']:quotes[q['t']]=q
-    ordered=[{**quotes[t],'bid':float(quotes[t]['bid']),'ask':float(quotes[t]['ask'])} for t in sorted(quotes)]
+    ordered=(training_view.finish(quotes) if training_view is not None else
+             [{**quotes[t],'bid':float(quotes[t]['bid']),'ask':float(quotes[t]['ask'])} for t in sorted(quotes)])
     if read_hints is not None:
         read_hints['complete']=True
     return ordered,prefixes
 
 
-def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,objective=None):
+def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,objective=None,excluded_old_anchors=0):
  """Choose before feature construction; every selected row is checked again below."""
  from data import sample_identity,observed_receipt,MAX_GAP_MS,TTL_MS
  from . import resident_training_v3 as v3
@@ -63,6 +112,7 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
  for a,b in zip(ordered,ordered[1:]):
   gap_prefix.append(gap_prefix[-1]+int(b['t']-a['t']>MAX_GAP_MS))
  rejected=Counter();candidates=[];mature=0
+ if excluded_old_anchors:rejected['ANCHOR_OLDER_THAN_RECENCY_PROFILE']=excluded_old_anchors
  for i,anchor in enumerate(sampled):
   if recent and anchor['t']<now_ms-v6.MAX_ROW_AGE_MS:
    rejected['ANCHOR_OLDER_THAN_RECENCY_PROFILE']+=1;continue
@@ -107,7 +157,7 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
  return {i:key for i,_,key in selected},stats
 
 
-def collect(config,now_ms,*,reserved_row_ids=()):
+def collect(config,now_ms,*,reserved_row_ids=(),include_source_quotes=True):
  from data import make_sample,label
  from . import resident_training_v3 as v3
  from . import resident_training_v4 as v4
@@ -126,14 +176,19 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  if any(not isinstance(key,str) or len(key)!=64 or any(c not in '0123456789abcdef' for c in key) for key in reserved):
   raise ContractError('TRAINING_RESERVED_ROW_IDENTITY')
  clock_hints={}
- ordered,prefixes=(read_quotes(config,now_ms,read_hints=clock_hints) if use_v3 else read_quotes(config,now_ms))
+ recent=v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
+ view=_TrainingQuoteView(now_ms-v6.MAX_ROW_AGE_MS) if recent and not include_source_quotes else None
+ if view is not None:ordered,prefixes=read_quotes(config,now_ms,read_hints=clock_hints,training_view=view)
+ else:ordered,prefixes=(read_quotes(config,now_ms,read_hints=clock_hints) if use_v3 else read_quotes(config,now_ms))
  times=[q['t'] for q in ordered];exclusions=[];scope=config['period_sha256']+':EUR.USD'
- sampled=[]
- for q in ordered:
-  if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
+ sampled=view.sampled if view is not None else []
+ if view is None:
+  for q in ordered:
+   if not sampled or q['t']-sampled[-1]['t']>=10000:sampled.append(q)
  pool=None
  if use_v3:
   options={'objective':config['objective']} if (v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))) else {}
+  if view is not None:options['excluded_old_anchors']=view.excluded_old_anchors
   selected,pool=mature_anchor_indices(ordered,sampled,now_ms,scope,reserved,**options)
   indices=list(selected)
  else:
@@ -169,7 +224,6 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  window={'training_end_ms':now_ms,'validation_start_ms':now_ms+1,'validation_end_ms':now_ms+86400000}
  if use_v3:
   eligible,_=rows_for_training(dataset,window)
-  recent=v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
   allowed={r['sample_id'] for r in eligible if r['horizon_sec']==300 and row_id(r) not in reserved
            and (not recent or r['anchor_ms']>=now_ms-v6.MAX_ROW_AGE_MS)}
   supported=[s for s in all_samples if s['sample_id'] in allowed]
@@ -180,7 +234,7 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  rows,invalid=rows_for_training(dataset,window)
  if use_v3:rows=v3.primary_rows(rows)
  fingerprint=digest([{'sample':r['sample_id'],'horizon':r['horizon_sec'],'outcome':r['outcome_receipt_digest']} for r in rows])
- quality={'fingerprint':fingerprint,'mature_rows':len(rows),'new_source_quotes':len(ordered),
+ quality={'fingerprint':fingerprint,'mature_rows':len(rows),'new_source_quotes':view.source_count if view is not None else len(ordered),
   'latest_quote_ms':times[-1] if times else None,'exclusion_counts':dict(Counter(x['reason'] for x in invalid)),
   'window':window}
  if use_v3:quality['training_pool']=pool
@@ -189,7 +243,7 @@ def collect(config,now_ms,*,reserved_row_ids=()):
  future_times=[stamp for stamp in (clock_hints.get('next_input_ms'),seed_next) if stamp is not None]
  quality['training_input_clock_complete']=bool(use_v3 and clock_hints.get('complete'))
  quality['next_training_input_ms']=min(future_times) if future_times else None
- return dataset,rows,quality,ordered
+ return dataset,rows,quality,ordered if include_source_quotes else None
 
 
 def contiguous_history(quotes,now_ms,*,end=None):
