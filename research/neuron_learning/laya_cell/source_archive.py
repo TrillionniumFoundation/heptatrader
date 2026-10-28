@@ -12,15 +12,17 @@ from __future__ import annotations
 import hashlib
 import fcntl
 import errno
+import json
 import os
 import stat
 import sys
 from pathlib import Path
 
-from .integrity import ContractError, canonical, read_json
+from .integrity import ContractError, canonical
 from .shadow_source import read_source, strict
 
 PAGE_SIZE = 32
+MAX_PAGE_BYTES = 256 * 1024
 UNSEALED_BOUND = 128
 PAGE_SCHEMA = "heptatrader.laya-source-archive-page.v1"
 SPARSE_PAGE_SCHEMA = "heptatrader.laya-source-archive-page.v2"
@@ -46,6 +48,50 @@ def _private(path, want_dir=False):
     if not want_dir and not stat.S_ISREG(st.st_mode):
         raise ContractError("SOURCE_ARCHIVE_FILE_INVALID")
     return st
+
+
+def _read_page(path, *, size_error, expected=None):
+    """Hash and parse one bounded private page snapshot, not two path opens."""
+    _private(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != os.geteuid() or st.st_mode & 0o077:
+            raise ContractError("SOURCE_ARCHIVE_OWNER_OR_MODE")
+        if not stat.S_ISREG(st.st_mode):
+            raise ContractError("SOURCE_ARCHIVE_FILE_INVALID")
+        if expected is not None and st.st_size != expected["bytes"]:
+            raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
+        if st.st_size > MAX_PAGE_BYTES:
+            raise ContractError(size_error)
+        chunks = []
+        length = 0
+        while length <= MAX_PAGE_BYTES:
+            chunk = os.read(fd, min(65536, MAX_PAGE_BYTES + 1 - length))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            length += len(chunk)
+        if length > MAX_PAGE_BYTES:
+            raise ContractError("SOURCE_ARCHIVE_PIN_HASH" if expected is not None else "JSON_SIZE_BOUND")
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if expected is not None and (len(raw) != expected["bytes"] or
+                                hashlib.sha256(raw).hexdigest() != expected["sha256"]):
+        raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
+    # Match integrity.read_json's duplicate/nonfinite rules, using the exact
+    # same raw bytes for canonical comparison and the page SHA below.
+    def unique(items):
+        out = {}
+        for key, value in items:
+            if key in out:
+                raise ContractError("DUPLICATE_JSON_KEY")
+            out[key] = value
+        return out
+    doc = json.loads(raw, object_pairs_hook=unique,
+                     parse_constant=lambda _: (_ for _ in ()).throw(ContractError("NONFINITE_JSON")))
+    return raw, doc
 
 
 
@@ -155,11 +201,7 @@ def _load_pages(config):
     for i, path in enumerate(discovered):
         if path.name != f"page-{i:08d}.json":
             raise ContractError("SOURCE_ARCHIVE_PAGE_SEQUENCE")
-        size = _private(path).st_size
-        if size > 256 * 1024:
-            raise ContractError("SOURCE_ARCHIVE_PAGE_SIZE")
-        raw = path.read_bytes()
-        doc = read_json(path, 256 * 1024)
+        raw, doc = _read_page(path, size_error="SOURCE_ARCHIVE_PAGE_SIZE")
         _page_source_paths(doc)
         if (type(doc["index"]) is not int
             or doc["index"] != i or doc["previous_sha256"] != previous
@@ -296,11 +338,7 @@ def verify_page_pin(pin):
         type(pin["sha256"]) is not str or len(pin["sha256"]) != 64):
         raise ContractError("SOURCE_ARCHIVE_PIN_PATH")
     _private(path.parent, want_dir=True)
-    _private(path)
-    data = path.read_bytes()
-    if len(data) != pin["bytes"] or hashlib.sha256(data).hexdigest() != pin["sha256"]:
-        raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
-    doc = read_json(path, 256 * 1024)
+    data, doc = _read_page(path, size_error="JSON_SIZE_BOUND", expected=pin)
     _page_source_paths(doc)
     if (data != canonical(doc) + b"\n"
         or doc.get("index") != pin["index"]
@@ -415,11 +453,7 @@ def _recover_complete_orphan(config, root, paths):
         path = discovered[i]
         if path.name != f"page-{i:08d}.json":
             raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SEQUENCE")
-        size = _private(path).st_size
-        if size > 256 * 1024:
-            raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
-        raw = path.read_bytes()
-        page = read_json(path, 256 * 1024)
+        raw, page = _read_page(path, size_error="SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
         h = hashlib.sha256(raw).hexdigest()
         _page_source_paths(page)
         if (raw != canonical(page) + b"\n" or h != receipt["page_sha256"]
@@ -438,10 +472,7 @@ def _recover_complete_orphan(config, root, paths):
     path = discovered[index]
     if path.name != f"page-{index:08d}.json":
         raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SEQUENCE")
-    if _private(path).st_size > 256 * 1024:
-        raise ContractError("SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
-    raw = path.read_bytes()
-    page = read_json(path, 256 * 1024)
+    raw, page = _read_page(path, size_error="SOURCE_ARCHIVE_ORPHAN_PAGE_SIZE")
     covered = _page_source_paths(page)
     if (raw != canonical(page) + b"\n"
         or type(page["index"]) is not int or page["index"] != index

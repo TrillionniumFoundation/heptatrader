@@ -185,7 +185,7 @@ def read_source(path,*,expected_prefix=None):
             raise ContractError('SOURCE_PREFIX_IDENTITY')
         fd,st=_open_prefix(expected_prefix,sealed=True)
     else:
-        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
         st=None
     try:
         if st is None:st=os.fstat(fd)
