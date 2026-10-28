@@ -32,6 +32,22 @@ MAX_RECEIPT_SEARCH_BYTES = 64 * 1024 * 1024
 POLICY_KEYS = ('profile', 'policy_effective_at_ms', 'policy_runtime_sha256')
 
 
+def registration_key(job_id, attempt=None):
+    if attempt is None:
+        return KEY_PREFIX + job_id
+    from .resident_forward_attempt import validate_shape
+    validate_shape(attempt)
+    if attempt['job_id'] != job_id:
+        raise ContractError('FORWARD_ATTEMPT_JOB_BINDING')
+    return KEY_PREFIX + job_id + ':attempt:' + attempt['attempt_id']
+
+
+def registration_folder(config, job_id, attempt=None):
+    registration_key(job_id, attempt)
+    name = job_id if attempt is None else 'attempt-' + attempt['attempt_id']
+    return Path(config['evaluation_directory']) / name
+
+
 def policy_identity(config):
     return {'profile': config.get('future_plan_admission_profile'),
             'policy_effective_at_ms': config.get('future_plan_admission_effective_at_ms'),
@@ -49,13 +65,18 @@ def retained_config(service, record):
         if any(old.get(k) != service.c.get(k) for k in
                ('period_sha256', 'evaluation_directory', 'control_directory')):
             raise ContractError('RETAINED_REGISTRATION_SCOPE_CHANGED')
-        if all(record.get(k) == policy_identity(old)[k] for k in POLICY_KEYS):
+        if not original_policy_required(old, record):
             return entry, old
     raise ContractError('FROZEN_REGISTRATION_POLICY_CONFIG_REQUIRED')
 
 
 def original_policy_required(config, record):
-    return any(record.get(k) != policy_identity(config)[k] for k in POLICY_KEYS)
+    if any(record.get(k) != policy_identity(config)[k] for k in POLICY_KEYS):
+        return True
+    if record.get('evaluation_attempt') is not None:
+        from .resident_forward_attempt import RUNTIME_PIN as ATTEMPT_RUNTIME_PIN
+        return record.get('attempt_runtime_sha256') != config['runtime_sha256'].get(ATTEMPT_RUNTIME_PIN)
+    return False
 
 
 def resume_retained_deferred(service, job_id, candidate, job, operation):
@@ -252,7 +273,7 @@ def check_source(config, proof, now_ms):
         raise ContractError("FORWARD_QUOTE_SUBSCRIPTION_OR_CLOCK")
 
 
-def _identity(service, job_id, candidate, job):
+def _identity(service, job_id, candidate, job, *, attempt=None):
     check_config(service.c)
     if service.c.get("future_plan_admission_profile") != PROFILE:
         raise ContractError("FORWARD_PLAN_POLICY_NOT_ENROLLED")
@@ -278,15 +299,24 @@ def _identity(service, job_id, candidate, job):
         "training_state": "COMPLETED", "performance_assessment": False,
         "broker_orders_sent": 0,
     }
+    if attempt is not None:
+        from .resident_forward_attempt import check_request,RUNTIME_PIN as ATTEMPT_RUNTIME_PIN
+        original_candidate, original_job, _ = check_request(service, attempt)
+        if original_candidate != candidate or original_job != job or attempt['job_id'] != job_id:
+            raise ContractError('FORWARD_ATTEMPT_ORIGINAL_ARTIFACT_BINDING')
+        identity['evaluation_attempt'] = attempt
+        identity['attempt_runtime_sha256'] = service.c['runtime_sha256'][ATTEMPT_RUNTIME_PIN]
     # Reading an old receipt preserves its policy identity. A DEFERRED record
     # can receive a new decision only through resume_retained_deferred, which
     # executes the actual original runtime instead of impersonating its pins.
-    previous = get_meta(service.db, KEY_PREFIX + job_id)
+    previous = get_meta(service.db, registration_key(job_id, attempt))
     if (isinstance(previous, dict)
             and previous.get('state') in ('DEFERRED', 'RESERVED', 'PUBLISHED', 'NO_FORWARD_TRIAL')
             and original_policy_required(service.c, previous)):
         _, old = retained_config(service, previous)
         identity.update(policy_identity(old))
+        if attempt is not None:
+            identity['attempt_runtime_sha256'] = old['runtime_sha256'][ATTEMPT_RUNTIME_PIN]
     from . import resident_training_v5 as training_v5
     from . import resident_training_v6 as training_v6
     from . import resident_training_v7 as training_v7
@@ -332,15 +362,26 @@ def _check_record(record, identity):
             or record.get("state") not in
                 ("DEFERRED", "NO_FORWARD_TRIAL", "RESERVED", "PUBLISHED")
             or record.get("trial_allocated") is not
-                (record.get("state") in ("RESERVED", "PUBLISHED"))):
+                (record.get("state") in ("RESERVED", "PUBLISHED"))
+            or record.get('evaluation_attempt') != identity.get('evaluation_attempt')):
         raise ContractError("FORWARD_REGISTRATION_RECEIPT_BINDING")
+    if record.get('evaluation_attempt') is not None:
+        from .resident_forward_attempt import validate_shape
+        validate_shape(record['evaluation_attempt'])
+        pin = record.get('attempt_runtime_sha256')
+        if not isinstance(pin, str) or len(pin) != 64 or any(c not in '0123456789abcdef' for c in pin):
+            raise ContractError('FORWARD_ATTEMPT_RUNTIME_RECEIPT')
+    elif record.get('attempt_runtime_sha256') is not None:
+        raise ContractError('FORWARD_ATTEMPT_RUNTIME_RECEIPT')
     if record["trial_allocated"]:
         plan = record.get("plan", {})
         if (plan.get("plan_id") != digest(
                 {k: v for k, v in plan.items() if k != "plan_id"})
                 or plan.get("job_id") != identity["job_id"]
                 or plan.get("candidate_id") != identity["candidate_id"]
-                or plan.get("candidate_manifest_sha256") != identity["candidate_manifest_sha256"]):
+                or plan.get("candidate_manifest_sha256") != identity["candidate_manifest_sha256"]
+                or plan.get('evaluation_attempt') != identity.get('evaluation_attempt')
+                or plan.get('attempt_runtime_sha256') != record.get('attempt_runtime_sha256')):
             raise ContractError("FORWARD_RESERVED_PLAN_BINDING")
         for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec", "parent_calibration_comparator_profile", "parent_calibration_comparator"):
             if name in identity and plan.get(name) != identity[name]:
@@ -367,8 +408,12 @@ def _unreserved_history(service):
 
 
 def _publish(service, key, record, candidate, job, folder):
-    identity = _identity(service, record["job_id"], candidate, job)
+    attempt = record.get('evaluation_attempt')
+    identity = _identity(service, record["job_id"], candidate, job, attempt=attempt)
     _check_record(record, identity)
+    if (key != registration_key(record['job_id'], attempt)
+            or folder != registration_folder(service.c, record['job_id'], attempt)):
+        raise ContractError('FORWARD_REGISTRATION_PUBLICATION_SCOPE')
     if record["state"] in ("RESERVED", "PUBLISHED"):
         if get_meta(service.db, "evaluation_trial", 0) < record["plan"]["trial"]:
             raise ContractError("FORWARD_RESERVED_COUNTER_REGRESSION")
@@ -394,6 +439,7 @@ def _publish(service, key, record, candidate, job, folder):
     elif record["state"] == "NO_FORWARD_TRIAL":
         publish_immutable(folder / "no-forward-trial.json", record)
     else:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic(folder / "registration-status.json", record)
     return record
 
@@ -421,14 +467,16 @@ def _exact_required_prior(candidate):
             and baselines.VALUE_RULE['minimum_mean_improvement'] > 0)
 
 
-def register(service, job_id, candidate, job, *, clock=None):
+def register(service, job_id, candidate, job, *, clock=None, attempt=None):
     """Allocate once; replay a reserved original plan even after its time passes."""
     now = (lambda: int(time.time() * 1000)) if clock is None else clock
-    folder = Path(service.c["evaluation_directory"]) / job_id
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder = registration_folder(service.c, job_id, attempt)
+    if attempt is None:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = folder / "plan.json"
-    key = KEY_PREFIX + job_id
-    retained = resume_retained_deferred(service, job_id, candidate, job, 'register')
+    key = registration_key(job_id, attempt)
+    retained = (resume_retained_deferred(service, job_id, candidate, job, 'register')
+                if attempt is None else None)
     if retained is not None:
         return (retained if retained['state'] == 'DEFERRED'
                 else _publish(service, key, retained, candidate, job, folder))
@@ -436,7 +484,7 @@ def register(service, job_id, candidate, job, *, clock=None):
         raise ContractError("FORWARD_REGISTRATION_TRANSACTION_SCOPE")
     service.db.execute("BEGIN IMMEDIATE")
     try:
-        identity = _identity(service, job_id, candidate, job)
+        identity = _identity(service, job_id, candidate, job, attempt=attempt)
         previous = get_meta(service.db, key)
         if path.exists():
             old = read_json(path)
@@ -448,6 +496,8 @@ def register(service, job_id, candidate, job, *, clock=None):
                     raise ContractError("FORWARD_RESERVED_PLAN_CONFLICT")
                 service.db.commit()
                 return _publish(service, key, previous, candidate, job, folder)
+            if attempt is not None:
+                raise ContractError('FORWARD_ATTEMPT_UNBOUND_PLAN')
             service.db.commit()
             return {"state": "EXISTING_IMMUTABLE_PLAN", "plan_id": old["plan_id"]}
         if previous is not None:
@@ -462,6 +512,26 @@ def register(service, job_id, candidate, job, *, clock=None):
             checked = now()
             if type(checked) is not int or checked < identity["policy_effective_at_ms"]:
                 raise ContractError("FORWARD_PLAN_POLICY_CLOCK_REGRESSION")
+            additional = None
+            if attempt is not None:
+                if previous is not None and original_policy_required(service.c, previous):
+                    raise ContractError('FORWARD_ATTEMPT_FROZEN_REGISTRAR_REQUIRED')
+                from .resident_forward_attempt import readiness
+                additional = readiness(service, attempt, checked, job=job)
+                if not additional['ready']:
+                    # A prepared request is not a scheduled attempt. Before the
+                    # prior cutoff/closeout, create no directory, record or debit.
+                    service.db.commit()
+                    return {'state': 'DEFERRED', 'trial_allocated': False, **additional}
+                if getattr(service, '_guarded_forward_registration', False) is not True:
+                    raise ContractError('FORWARD_ATTEMPT_ORIGINAL_GUARD_REQUIRED')
+                from .resident_budget import inspect as inspect_storage
+                storage = inspect_storage(service.c)
+                service.storage = storage
+                if not storage['admission_ready']:
+                    service.db.commit()
+                    return {'state': 'DEFERRED', 'trial_allocated': False,
+                            'reason': storage['blocked_reason'], 'storage': storage}
             # A current-config rollback cannot lower a frozen V3 job's floor.
             # Existing plans and reservations were handled above; this check
             # applies only to a new admission decision and never reallocates them.
@@ -482,6 +552,9 @@ def register(service, job_id, candidate, job, *, clock=None):
             else:
                 proposal = service._evaluation_plan(
                     job_id, candidate, job, current + 1, checked)
+                if attempt is not None:
+                    proposal['evaluation_attempt'] = attempt
+                    proposal['attempt_runtime_sha256'] = identity['attempt_runtime_sha256']
                 decision = calendar_admission(candidate, proposal, checked)
                 source = None
                 if decision["ready"]:
@@ -500,6 +573,9 @@ def register(service, job_id, candidate, job, *, clock=None):
                     checked = after_read
                     proposal = service._evaluation_plan(
                         job_id, candidate, job, current + 1, checked)
+                    if attempt is not None:
+                        proposal['evaluation_attempt'] = attempt
+                        proposal['attempt_runtime_sha256'] = identity['attempt_runtime_sha256']
                     fresh_decision = calendar_admission(candidate, proposal, checked)
                     if not fresh_decision["ready"]:
                         decision = fresh_decision
@@ -514,7 +590,7 @@ def register(service, job_id, candidate, job, *, clock=None):
                 if decision["ready"]:
                     if source is None:
                         raise ContractError("FORWARD_ORIGINAL_SOURCE_PROOF_MISSING")
-                    if _identity(service, job_id, candidate, job) != identity:
+                    if _identity(service, job_id, candidate, job, attempt=attempt) != identity:
                         raise ContractError("FORWARD_CANDIDATE_CHANGED_DURING_REGISTRATION")
                     proposal["registration_admission"] = {
                         "profile": PROFILE, "policy_effective_at_ms": identity["policy_effective_at_ms"],
@@ -525,6 +601,8 @@ def register(service, job_id, candidate, job, *, clock=None):
                     }
                     if admission_queue['profile'] == OVERLAP_PROFILE:
                         proposal['registration_admission']['trial_queue'] = admission_queue
+                    if additional is not None:
+                        proposal['registration_admission']['additional_attempt'] = additional
                     proposal["plan_id"] = digest(proposal)
                     record = _sealed(identity, "RESERVED", checked, plan=proposal)
                     put_meta(service.db, "evaluation_trial", current + 1)
@@ -550,7 +628,7 @@ def resume_reservations(service):
             raise ContractError("FORWARD_REGISTRATION_RECORD_TYPE")
         if record.get("state") != "RESERVED":
             continue
-        if row["key"] != KEY_PREFIX + str(record.get("job_id")):
+        if row["key"] != registration_key(str(record.get("job_id")), record.get('evaluation_attempt')):
             raise ContractError("FORWARD_RESERVATION_KEY_BINDING")
         records.append(record)
     if len(records) > 1:
@@ -559,8 +637,16 @@ def resume_reservations(service):
         row = service.db.execute(
             "SELECT * FROM jobs WHERE id=? AND status='COMPLETED'",
             (record["job_id"],)).fetchone()
-        if row is None or not service.candidate_done(row):
+        if row is None:
             raise ContractError("FORWARD_RESERVED_CANDIDATE_MISSING")
+        attempt = record.get('evaluation_attempt')
+        if attempt is None:
+            if not service.candidate_done(row):
+                raise ContractError("FORWARD_RESERVED_CANDIDATE_MISSING")
+        else:
+            from .resident_forward_attempt import check_request
+            candidate, job, _ = check_request(service, attempt)
+            service.register_evaluation(record['job_id'], candidate, job, attempt=attempt)
     return len(records)
 
 

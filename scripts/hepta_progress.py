@@ -238,18 +238,47 @@ def candidate_progress(config, status, now_ms, max_age_ms):
                                                   diagnostics.get("action_optimizer_steps_applied")),
         "support": diagnostics.get("action_support_diagnostic"),
     }
-    folder = _child(config["evaluation_directory"], job)
-    terminal = folder / "qualification.json"
-    path = terminal if terminal.exists() else folder / "progress.json"
-    forward, evidence = observe(path, now_ms, max_age_ms, timestamps=("as_of_ms", "at_ms"))
-    if (evidence["available"] and
-            (forward.get("candidate_id") != expected or
-             (registration.get("plan_id") and forward.get("plan_id") != registration["plan_id"]))):
-        result["latest_forward"] = {**evidence, "available": False, "error": "FORWARD_IDENTITY_MISMATCH"}
-    else:
-        result["latest_forward"] = {**evidence, **pick(forward, "state", "reason", "results",
+    def forward_view(folder, binding, role):
+        terminal = folder / "qualification.json"
+        path = terminal if terminal.exists() else folder / "progress.json"
+        forward, evidence = observe(path, now_ms, max_age_ms, timestamps=("as_of_ms", "at_ms"))
+        identity = {"evaluation_role": role, **pick(binding, "plan_id", "trial", "attempt_id")}
+        if (evidence["available"] and
+                (forward.get("candidate_id") != expected or
+                 (binding.get("plan_id") and forward.get("plan_id") != binding["plan_id"]))):
+            return {**evidence, **identity, "available": False, "error": "FORWARD_IDENTITY_MISMATCH"}
+        return {**evidence, **identity, **pick(forward, "state", "reason", "results",
             "observed", "censored", "same_window_price_baselines", "promotion_performed",
             "canonical_owner_admitted", "future_value_proven", "same_budget_calibrated_parent")}
+
+    folder = _child(config["evaluation_directory"], job)
+    result["original_forward"] = forward_view(folder, registration, "ORIGINAL")
+    result["latest_forward"] = result["original_forward"]
+    additional = registration.get("additional_evaluation_attempts", [])
+    if not isinstance(additional, list) or len(additional) > 512:
+        result["latest_forward"] = {"available": False, "error": "FORWARD_ATTEMPT_STATUS_INVALID"}
+        return result
+    latest = None
+    original_trial = registration.get("trial")
+    latest_trial = original_trial if type(original_trial) is int else 0
+    for entry in additional:
+        if not isinstance(entry, dict):
+            result["latest_forward"] = {"available": False, "error": "FORWARD_ATTEMPT_STATUS_INVALID"}
+            return result
+        # An unallocated deferred request is not a more recent experiment.
+        if entry.get("trial_allocated") is not True:
+            continue
+        if (type(entry.get("trial")) is not int or entry["trial"] <= 0
+                or entry.get("state") not in ("RESERVED", "PUBLISHED")
+                or any(not isinstance(entry.get(key), str) or re.fullmatch("[0-9a-f]{64}", entry[key]) is None
+                       for key in ("attempt_id", "plan_id"))):
+            result["latest_forward"] = {"available": False, "error": "FORWARD_ATTEMPT_STATUS_INVALID"}
+            return result
+        if entry["trial"] > latest_trial:
+            latest, latest_trial = entry, entry["trial"]
+    if latest is not None:
+        folder = _child(config["evaluation_directory"], "attempt-" + latest["attempt_id"])
+        result["latest_forward"] = forward_view(folder, latest, "ADDITIONAL")
     return result
 
 
@@ -532,6 +561,8 @@ def format_text(value):
                     "training_only", "optimizer_reset_between_epochs", "checkpoints")))
             lines.append("ACTION " + show(entry["action"]))
             lines.append("FORWARD " + show(entry["latest_forward"]))
+            if entry["latest_forward"].get("evaluation_role") == "ADDITIONAL":
+                lines.append("FORWARD original " + show(entry["original_forward"]))
         admission = entry.get("resource_admission", {})
         if admission.get("admit_new_worker") is False:
             label = "ADMISSION historical" if admission["snapshot_is_historical"] else "ADMISSION"
