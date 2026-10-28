@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -201,6 +202,58 @@ class InactiveOwnerTests(unittest.TestCase):
         held = self.prove(); self.unit_path.write_text("[Unit]\nRefuseManualStop=no\n")
         with self.assertRaisesRegex(inactive.InactiveOwnerError, "BINDING_CHANGED_AFTER_RELEASE"): self.prove("released", held)
         self.assertEqual(len(self.calls), 1)
+
+    def test_unit_definition_replaced_with_fifo_rejects_without_waiting_for_writer(self):
+        original_open = os.open
+        opening = threading.Event(); finished = threading.Event()
+        errors = []; descriptors = []
+        def swap_before_open(path, flags, *args, **kwargs):
+            if Path(path) == self.unit_path:
+                self.unit_path.unlink(); os.mkfifo(self.unit_path, 0o600)
+                opening.set()
+            fd = original_open(path, flags, *args, **kwargs)
+            if Path(path) == self.unit_path: descriptors.append(fd)
+            return fd
+        def read_definition():
+            try: inactive.definitions(self.policy)
+            except Exception as error: errors.append(error)
+            finally: finished.set()
+        reader = threading.Thread(target=read_definition, daemon=True)
+        with patch.object(inactive.os, "open", side_effect=swap_before_open):
+            reader.start()
+            try:
+                self.assertTrue(opening.wait(1), "the real unit-file open was not reached")
+                without_writer = finished.wait(1)
+            finally:
+                # Bound the old-code failure too, without signals or a stuck reader.
+                if not finished.is_set():
+                    writer = original_open(self.unit_path, os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+                    os.close(writer)
+                reader.join(1)
+        self.assertFalse(reader.is_alive())
+        self.assertTrue(without_writer, "a replacement FIFO blocked before the identity check")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], inactive.InactiveOwnerError)
+        self.assertEqual(str(errors[0]), "INACTIVE_OWNER_FILE_CHANGED")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError): os.fstat(descriptors[0])
+
+    def test_replacement_regular_file_still_fails_original_descriptor_identity_check(self):
+        replacement = self.home / "replacement.service"
+        replacement.write_bytes(self.unit_path.read_bytes()); replacement.chmod(0o600)
+        original_open = os.open; descriptors = []
+        def replace_before_open(path, flags, *args, **kwargs):
+            if Path(path) == self.unit_path: os.replace(replacement, self.unit_path)
+            fd = original_open(path, flags, *args, **kwargs)
+            if Path(path) == self.unit_path: descriptors.append(fd)
+            return fd
+        with patch.object(inactive.os, "open", side_effect=replace_before_open),\
+             self.assertRaisesRegex(inactive.InactiveOwnerError, "INACTIVE_OWNER_FILE_CHANGED"):
+            inactive.definitions(self.policy)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError): os.fstat(descriptors[0])
 
     def test_epoch_and_guard_postconditions_are_not_satisfied_by_precheck(self):
         held = self.prove()

@@ -85,7 +85,7 @@ def regular_file(path, *, content=False, limit=2 * 1024 * 1024, private=False, a
     result = {"path": str(path), "identity": list(identity(before))}
     raw = None
     if content:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
         with os.fdopen(fd, "rb") as stream:
             require(identity(os.fstat(stream.fileno())) == identity(before), "INACTIVE_OWNER_FILE_CHANGED")
             raw = stream.read(limit + 1)
