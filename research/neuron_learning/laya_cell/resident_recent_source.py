@@ -55,7 +55,7 @@ def _sealed_end_timestamp(pin):
             or pin.get("uncommitted_tail_bytes") != 0
             or not isinstance(pin.get("chain_head"), str)):
         raise ContractError("RECENT_SEALED_SOURCE_END_UNPROVEN")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         st = os.fstat(fd)
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
