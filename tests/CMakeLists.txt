@@ -375,6 +375,10 @@ target_link_libraries(hepta_ib_ingress_first_fault_tests PRIVATE
     hepta_authoritative_state hepta_risk_engine)
 hepta_register_core_test(hepta_ib_ingress_first_fault_tests)
 set_tests_properties(hepta_ib_ingress_first_fault_tests PROPERTIES TIMEOUT 15)
+if(HEPTA_ENABLE_IBAPI)
+    target_compile_definitions(hepta_ib_ingress_first_fault_tests PRIVATE
+        HEPTA_TEST_IBAPI_CALLBACK_CONTEXT)
+endif()
 
 # The same production runtime source list and adapter/subscription/admission
 # objects; an injected wrapper has no socket and throws on every order method.
