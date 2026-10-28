@@ -215,6 +215,56 @@ class ComponentScopeTests(unittest.TestCase):
         for report in reports:
             self.assertEqual(scope_for_paths([report], self.root), self.FULL)
 
+    def test_actual_gateway_maintenance_changes_keep_python_lifecycle_feedback(self):
+        root = Path(__file__).resolve().parents[2]
+        controllers = ("scripts/activate_prepared_gateway.py",
+                       "scripts/native_execution_maintenance.py")
+        fixtures = ("tests/python/test_activate_prepared_gateway.py",
+                    "tests/python/test_native_execution_maintenance.py")
+        # The actual #483 change set: two controllers, the new lifecycle suite,
+        # and documentation. The entire core/source lane remains enabled.
+        changes = [*controllers, fixtures[1],
+                   "docs/technical/native-execution-maintenance.md"]
+        for paths in ([path] for path in (*controllers, *fixtures)):
+            with self.subTest(paths=paths):
+                self.assertEqual(scope_for_paths(paths, root), self.PYTHON)
+        self.assertEqual(scope_for_paths(changes, root), self.PYTHON)
+
+    def test_maintenance_unknown_imports_or_missing_lifecycle_support_restore_full(self):
+        controllers = ("scripts/activate_prepared_gateway.py",
+                       "scripts/native_execution_maintenance.py")
+        fixtures = ("tests/python/test_activate_prepared_gateway.py",
+                    "tests/python/test_native_execution_maintenance.py")
+        for controller in controllers:
+            for source in ("import torch\n", "import new_native_adapter\n",
+                           "from . import runtime\n", "def invalid(\n"):
+                self.write(controller, source)
+                for changed in (*controllers, *fixtures):
+                    with self.subTest(controller=controller, source=source, changed=changed):
+                        self.assertEqual(scope_for_paths([changed], self.root), self.FULL)
+            self.write(controller)
+        for missing in (*controllers, *fixtures, "scripts/activate_prepared_driver.py",
+                        "scripts/hepta_decision_attribution.py",
+                        "tests/python/test_activate_prepared_driver.py"):
+            (self.root / missing).unlink()
+            for changed in (*controllers, *fixtures):
+                with self.subTest(missing=missing, changed=changed):
+                    self.assertEqual(scope_for_paths([changed], self.root), self.FULL)
+            self.write(missing)
+        for changed in (*controllers, *fixtures):
+            self.assertEqual(scope_for_paths([changed], self.root), self.PYTHON)
+
+    def test_maintenance_mixed_native_build_install_and_unknown_changes_stay_full(self):
+        for path in (
+            "HeptaTrade/execution/execution_service_protocol.h",
+            "scripts/build_ib_candidate_artifact.sh", "cmake/HeptaInstall.cmake",
+            "scripts/hepta_decision_attribution.py", "scripts/unreviewed_maintenance.py",
+            "systemd/user/heptatrader-execution.service", ".github/workflows/core-ci.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([
+                    "scripts/activate_prepared_gateway.py", path], self.root), self.FULL)
+
     def test_native_shared_and_install_boundaries_still_run_every_lane(self):
         for path in (
             self.LAYA + "/native.py", self.LAYA + "/integrity.py",
