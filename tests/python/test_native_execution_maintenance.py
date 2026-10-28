@@ -14,6 +14,9 @@ import native_execution_maintenance as native
 import test_activate_prepared_gateway as gateway_tests
 
 
+REQUIRE_STOP_AUTHORITY = native.require_stop_authority
+
+
 class NativeHandoffTests(unittest.TestCase):
     def setUp(self):
         self.h = gateway_tests.GatewayUpgradeTests(methodName="runTest")
@@ -21,6 +24,9 @@ class NativeHandoffTests(unittest.TestCase):
         self.addCleanup(self.h.doCleanups)
         self.addCleanup(self.h.tearDown)
         h = self.h
+        # Exercise the retained internal recovery state machine only. This mock
+        # is not a native stop-permit producer and grants no production scope.
+        h.patches.enter_context(mock.patch.object(native, "require_stop_authority", return_value=None))
         self.original_binary = {"path": "/fixture/native-original", "sha256": "1" * 64}
         self.candidate_binary = {"path": "/fixture/native-candidate", "sha256": "2" * 64}
         self.current_binary = self.original_binary
@@ -208,9 +214,15 @@ class NativeHandoffTests(unittest.TestCase):
         self.assertEqual(result["status"], "HELD", result)
         self.assert_held()
         self.assertIn("NORMAL_STOP_STILL_PENDING", result["error"])
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            pending = self.run_upgrade(resume=True)
+        self.assertEqual(pending["status"], "HELD", pending)
+        self.assertIn("NORMAL_STOP_STILL_PENDING", pending["error"])
+        self.assertEqual(self.h.events.count(("stop", "--no-block", *native.UNITS)), 1)
         self.pending_native_stop = False
         self.finish_stop()
-        result = self.run_upgrade(resume=True)
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            result = self.run_upgrade(resume=True)
         self.assertEqual(result["status"], "COMPLETE", result)
         self.assertEqual(self.h.events.count(("stop", "--no-block", *native.UNITS)), 1)
 
@@ -350,6 +362,91 @@ class NativeHandoffTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_UNIT_PATH_INVALID"):
                     native.release_bytes({"path": "/fixture/native" + suffix})
         self.assertIn(b"ExecStart=/fixture/native-original\n", native.release_bytes(self.original_binary))
+
+    def test_preflight_refuses_native_before_any_artifact_or_runtime_read(self):
+        for self_reported in ({}, {"maintenance_stop_permitted": True}):
+            with self.subTest(self_reported=self_reported):
+                api = mock.Mock()
+                api.fail.side_effect = gateway.fail
+                with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+                    with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED"):
+                        native.prepare(api, {"native_execution": self_reported}, None,
+                            {"hold_runtime": {"maintenance_stop_permitted": True}})
+                self.assertEqual(api.mock_calls, [mock.call.fail("NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED")])
+
+    def test_gateway_only_has_no_native_stop_authority_requirement(self):
+        api = mock.Mock()
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            self.assertIsNone(native.prepare(api, {}, None, None))
+            native.run(api, {}, None, {}, {}, mock.Mock(), mock.Mock())
+        self.assertEqual(api.mock_calls, [])
+
+    def test_new_or_fallback_stop_refuses_before_context_audit_or_checkpoint(self):
+        states = [({}, False), ({"native_execution": {"phase": "PREPARED"}}, False),
+            ({"native_execution": {"stop_requested": True, "start_requested": True}}, True)]
+        for state, fallback in states:
+            with self.subTest(state=state, fallback=fallback):
+                before = copy.deepcopy(state)
+                save, context = mock.Mock(), mock.Mock()
+                with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY), \
+                        mock.patch.object(native, "audit_all") as audit:
+                    with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED"):
+                        native.run(gateway, self.h.plan, self.h.home, self.h.snapshot,
+                            state, save, context, fallback=fallback)
+                self.assertEqual(state, before)
+                save.assert_not_called(); context.assert_not_called(); audit.assert_not_called()
+        self.assertEqual(self.h.events, [])
+
+    def test_unsubmitted_old_stop_intent_cannot_be_reset_or_reaudited(self):
+        state = {"native_execution": {"stop_requested": True, "owned_policies": [], "phase": "GROUP_STOP_REQUESTED"}}
+        before = copy.deepcopy(state)
+        save, context = mock.Mock(), mock.Mock()
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY), \
+                mock.patch.object(gateway, "check_transition_catalog"), mock.patch.object(native, "audit_all") as audit:
+            with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED"):
+                native.run(gateway, self.h.plan, self.h.home, self.h.snapshot, state, save, context)
+        self.assertEqual(state, before)
+        save.assert_not_called(); audit.assert_not_called()
+        self.assertEqual(self.h.events, [])
+
+    def test_empty_group_resubmission_cannot_open_policies_or_submit_stop(self):
+        self.h.alive.pop(self.original_pid)
+        native_state = {"stop_requested": True, "owned_policies": []}
+        for active_state in ("inactive", "failed"):
+            with self.subTest(active_state=active_state):
+                self.h.units[native.SERVICE].update(ActiveState=active_state, MainPID="0", InvocationID="")
+                before = copy.deepcopy(native_state)
+                save = mock.Mock()
+                with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+                    with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED"):
+                        native.resume_empty_stop(gateway, self.h.home, self.h.snapshot, native_state, save)
+                self.assertEqual(native_state, before)
+                save.assert_not_called()
+        self.assertEqual(self.h.events, [])
+        self.assertFalse(any(self.path(unit).exists() for unit in native.UNITS))
+
+    def test_direct_stop_policy_open_cannot_treat_checkpoint_as_authority(self):
+        state = {"stop_requested": True, "accepted": True, "owned_policies": []}
+        before = copy.deepcopy(state)
+        save = mock.Mock()
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            with self.assertRaisesRegex(RuntimeError, "NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED"):
+                native.open_stop_policies(gateway, self.h.home, state, save)
+        self.assertEqual(state, before)
+        save.assert_not_called()
+        self.assertEqual(self.h.events, [])
+        self.assertFalse(any(self.path(unit).exists() for unit in native.UNITS))
+
+    def test_already_accepted_native_retains_existing_gateway_recovery(self):
+        state = {"native_execution": {"accepted": True}}
+        before = copy.deepcopy(state)
+        save, context = mock.Mock(), mock.Mock()
+        with mock.patch.object(native, "require_stop_authority", REQUIRE_STOP_AUTHORITY):
+            native.run(gateway, self.h.plan, self.h.home, self.h.snapshot, state, save, context)
+        self.assertEqual(state, before)
+        self.assertEqual(context.call_count, 2)
+        save.assert_not_called()
+        self.assertEqual(self.h.events, [])
 
 
 if __name__ == "__main__":
