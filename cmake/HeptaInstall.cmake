@@ -170,25 +170,33 @@ if(HEPTA_DOCUMENTATION_SOURCE_SHA STREQUAL "")
 else()
     set(_hepta_doc_sha "${HEPTA_DOCUMENTATION_SOURCE_SHA}")
 endif()
+# Retain configure-time identity validation without rendering package docs.
+string(LENGTH "${_hepta_doc_sha}" _hepta_doc_sha_length)
+if(NOT _hepta_doc_sha_length EQUAL 40 OR NOT _hepta_doc_sha MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "documentation source identity must be an exact 40-hex SHA")
+endif()
 # Reuse the existing exact source identity for the read-only PnL producer.
 file(WRITE "${PROJECT_BINARY_DIR}/pnl-source-sha.txt" "${_hepta_doc_sha}\n")
 install(FILES "${PROJECT_BINARY_DIR}/pnl-source-sha.txt"
     DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"
     RENAME PNL_SOURCE_SHA COMPONENT runtime)
-file(GLOB_RECURSE _hepta_doc_inputs CONFIGURE_DEPENDS
-    "${PROJECT_SOURCE_DIR}/docs/*.md" "${PROJECT_SOURCE_DIR}/docs/*.json")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    ${_hepta_doc_inputs}
-    "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py")
-execute_process(COMMAND "${Python3_EXECUTABLE}"
-    "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py"
-    --source "${PROJECT_SOURCE_DIR}"
-    --output "${PROJECT_BINARY_DIR}/installed-documentation"
-    --source-sha "${_hepta_doc_sha}"
+# Ordinary configure/build and runtime-only installs do not consume package
+# documentation. Render at install time so added, renamed and removed inputs
+# are reflected without rerunning CMake or retaining a stale generated tree.
+# Bind the same source SHA selected above, including source-archive builds.
+string(CONFIGURE [==[
+execute_process(COMMAND [=[@Python3_EXECUTABLE@]=]
+    [=[@PROJECT_SOURCE_DIR@/cmake/render_installed_documentation.py]=]
+    --source [=[@PROJECT_SOURCE_DIR@]=]
+    --output [=[@PROJECT_BINARY_DIR@/installed-documentation]=]
+    --source-sha [=[@_hepta_doc_sha@]=]
     RESULT_VARIABLE _hepta_doc_result)
 if(NOT _hepta_doc_result EQUAL 0)
     message(FATAL_ERROR "Installed documentation generation failed")
 endif()
+]==] _hepta_doc_install @ONLY)
+install(CODE "${_hepta_doc_install}" COMPONENT documentation)
+unset(_hepta_doc_install)
 install(DIRECTORY "${PROJECT_BINARY_DIR}/installed-documentation/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
     COMPONENT documentation)
