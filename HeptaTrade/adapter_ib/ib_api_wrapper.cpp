@@ -4,6 +4,7 @@
 #include "ib_local_cancel_notice.h"
 #include "ib_local_market_data_request.h"
 #include "ib_api_wrapper.h"
+#include "ib_deferred_observation_scope.h"
 
 #include <algorithm>
 #include "ib_market_data_farm.h"
@@ -927,7 +928,11 @@ public:
 
     void Trace(const std::string& s) {
         if (!IsTraceEnabled()) return;
-        std::ofstream f(GetTracePath(), std::ios::app);
+        const std::string path = GetTracePath();
+        // Real SDK calls share the adapter's deferred diagnostic scope. Slow
+        // trace storage must leave its trading locks before opening/writing.
+        if (IbDeferredObservationScope::DeferIfScoped(s, path)) return;
+        std::ofstream f(path.c_str(), std::ios::app);
         if (f.is_open()) {
             f << s << std::endl;
         }
@@ -1649,7 +1654,7 @@ public:
         }
         od.orderRef = o.orderRef;
 
-        Trace(BuildOrderTrace(localOrderId, ct, od));
+        if (IsTraceEnabled()) Trace(BuildOrderTrace(localOrderId, ct, od));
         m_orderQuantities.Record(localOrderId, c, o);
         m_cancelNoticeWitness.Record(localOrderId, o);
         m_client.placeOrder(localOrderId, ct, od);
