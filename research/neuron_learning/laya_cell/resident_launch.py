@@ -4,7 +4,7 @@ Only the scheduler checks the old service; children cannot contact its bus or an
 trading endpoint. Landlock confines files and seccomp denies new network sockets.
 """
 from __future__ import annotations
-import argparse,faulthandler,json,os
+import argparse,faulthandler,json,os,time
 from pathlib import Path
 from .integrity import read_json,sha_file,ContractError
 from .resident import config_check,bootstrap_still_off
@@ -111,6 +111,17 @@ def _main(failure_state):
  receipt_name=('sandbox-train.json' if a.target=='train' else 'sandbox-owner-predict.json'
                if a.target=='owner-predict' else f'sandbox-predict-{a.slot:03}.json')
  atomic(output/receipt_name,receipt)
+ if a.target=='predict':
+  # Confinement/setup can outlast the original input window. Reject before
+  # initializing HIP/Torch; predict still rechecks after model preparation.
+  from .integrity import digest
+  from .promotion import validate_plan_rule
+  failure_state['phase']='CHECK_FIXED_SLOT_DEADLINE'
+  rule=validate_plan_rule(plan)
+  if plan.get('plan_id')!=digest({k:v for k,v in plan.items() if k!='plan_id'}) or not 0<=a.slot<rule['slots']:
+   raise ContractError('PREDICT_PLAN_OR_SLOT_CHANGED')
+  if int(time.time()*1000)>plan['start_ms']+a.slot*rule['slot_spacing_ms']+rule['input_grace_ms']:
+   raise ContractError('SLOT_ALREADY_MISSED')
  failure_state['phase']='IMPORT_TORCH'
  hip_runtime.activate(hip_context)
  import torch
