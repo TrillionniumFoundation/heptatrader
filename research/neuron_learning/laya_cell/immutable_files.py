@@ -5,9 +5,71 @@ leaves are ordinary single-link files in the requested mode; unknown competing f
 preserved. This module has no service, runtime-selection or trading authority.
 """
 from __future__ import annotations
-import errno,hashlib,os,stat,sys,tempfile
+import errno,hashlib,io,os,stat,sys,tempfile
 from pathlib import Path
 from .integrity import ContractError
+
+
+def _version(s):
+ return (s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+
+
+def text_snapshot(path,reason):
+ """Read an ordinary file once, retaining leaf and followed-target identity."""
+ leaf=path.lstat()
+ try:
+  target=path.stat()
+  raw=b''.join(_chunks(path,reason,follow_symlinks=True))
+  after=(path.lstat(),path.stat())
+ except FileNotFoundError as exc:raise ContractError(reason) from exc
+ versions=(_version(leaf),_version(target))
+ if versions!=tuple(_version(s) for s in after):raise ContractError(reason)
+ with io.TextIOWrapper(io.BytesIO(raw)) as stream:text=stream.read()
+ return text,raw,versions
+
+
+def replace_snapshot(path,raw,mode,reason,previous):
+ """Replace a checked file using only an owned unique temporary.
+
+ The final snapshot check rejects observed target changes. POSIX rename does
+ not provide compare-and-swap: a change after that check can still race it.
+ """
+ fd,name=tempfile.mkstemp(prefix='.'+path.name+'.',dir=path.parent)
+ temporary=Path(name)
+ try:
+  offset=0
+  while offset<len(raw):
+   written=os.write(fd,raw[offset:])
+   if written<=0:raise OSError('UNIT_SHORT_WRITE')
+   offset+=written
+  os.fchmod(fd,mode);os.fsync(fd)
+  staged=_version(os.fstat(fd))
+  if not _matches(temporary,hashlib.sha256(raw).hexdigest(),reason,raw,mode):raise ContractError(reason)
+  try:current=text_snapshot(path,reason)
+  except FileNotFoundError as exc:raise ContractError(reason) from exc
+  if current!=previous:raise ContractError(reason)
+  if staged!=_version(os.fstat(fd)) or staged!=_version(temporary.lstat()):raise ContractError(reason)
+  os.replace(temporary,path)
+  directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+  try:os.fsync(directory)
+  finally:
+   primary=sys.exc_info()[0] is not None
+   try:os.close(directory)
+   except Exception:
+    if not primary:raise
+ finally:
+  primary=sys.exc_info()[0] is not None;cleanup=[]
+  try:
+   found=temporary.lstat();opened=os.fstat(fd)
+   if (found.st_dev,found.st_ino)==(opened.st_dev,opened.st_ino):temporary.unlink()
+   else:cleanup.append(ContractError(reason))
+  except FileNotFoundError:pass
+  except BaseException as exc:cleanup.append(exc)
+  try:os.close(fd)
+  except BaseException as exc:cleanup.append(exc)
+  for exc in cleanup:
+   if not isinstance(exc,Exception):raise exc
+  if cleanup and not primary:raise cleanup[0]
 
 
 def _chunks(path,reason,*,follow_symlinks,mode=None):
@@ -99,10 +161,16 @@ def write_immutable(path,content,mode,reason,expected=None):
     temporary.unlink()
    else:cleanup.append(ContractError(reason))
   except FileNotFoundError:pass
-  except Exception as exc:cleanup.append(exc)
+  except BaseException as exc:cleanup.append(exc)
   try:os.close(fd)
-  except Exception as exc:cleanup.append(exc)
+  except BaseException as exc:cleanup.append(exc)
+  for exc in cleanup:
+   if not isinstance(exc,Exception):raise exc
   if cleanup and not primary:raise cleanup[0]
  directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
  try:os.fsync(directory)
- finally:os.close(directory)
+ finally:
+  primary=sys.exc_info()[0] is not None
+  try:os.close(directory)
+  except Exception:
+   if not primary:raise

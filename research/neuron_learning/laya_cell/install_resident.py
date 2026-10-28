@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse,hashlib,json,os,shutil,subprocess
 from pathlib import Path
 from .integrity import ContractError,canonical,digest,read_json,sha_file
-from .immutable_files import write_immutable
+from .immutable_files import write_immutable,text_snapshot,replace_snapshot
 
 
 def runtime_files(source,native_binary):
@@ -104,15 +104,18 @@ TimeoutStopSec=20
 [Install]
 WantedBy=default.target
 '''
-  if unit.exists() and unit.read_text()!=text:
-   previous=unit.read_text()
+  reason='EXISTING_SERVICE_REQUIRES_EXPLICIT_UPDATE:'+name
+  try:snapshot=text_snapshot(unit,reason)
+  except FileNotFoundError:snapshot=None
+  if snapshot is not None and snapshot[0]!=text:
+   previous,previous_raw,_=snapshot
    if not update_owned or '/laya-resident/releases/' not in previous or 'Description=HeptaTrader ' not in previous:
-    raise ContractError('EXISTING_SERVICE_REQUIRES_EXPLICIT_UPDATE:'+name)
-   backup=cfgdir/(name+'.'+sha_file(unit)+'.before')
-   write_immutable(backup,previous.encode(),0o400,'IMMUTABLE_SERVICE_BACKUP_CHANGED')
+    raise ContractError(reason)
+   backup=cfgdir/(name+'.'+hashlib.sha256(previous_raw).hexdigest()+'.before')
+   write_immutable(backup,previous_raw,0o400,'IMMUTABLE_SERVICE_BACKUP_CHANGED')
    subprocess.run(['systemctl','--user','stop',name],check=True)
-   tmp=unit.with_name(unit.name+'.next');tmp.write_text(text);tmp.chmod(0o600);os.replace(tmp,unit)
-  if not unit.exists():unit.write_text(text);unit.chmod(0o600)
+   replace_snapshot(unit,text.encode(),0o600,reason,snapshot)
+  elif snapshot is None:write_immutable(unit,text.encode(),0o600,reason)
   units[name]={'path':str(unit),'sha256':sha_file(unit)}
  subprocess.run(['systemctl','--user','daemon-reload'],check=True)
  if start:subprocess.run(['systemctl','--user','enable','--now',*units],check=True)

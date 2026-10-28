@@ -130,16 +130,16 @@ class SpecialInstallerArtifactTests(unittest.TestCase):
                 changed.append(True)
             return value
         module.sha_file = hash_then_change
-        def install():
+        def install(update_owned=False):
             with (patch.object(Path, 'home', return_value=home),
                   patch('subprocess.Popen', side_effect=AssertionError('No real subprocess')),
                   redirect_stdout(io.StringIO())):
                 if name == 'install_financial_forward':
-                    return module.install(config_path, native, start=False)
+                    return module.install(config_path, native, start=False, update_owned=update_owned)
                 if name == 'install_financial_value':
                     return module.install(config_path, start=False)
-                return module.install(config_path, fusion, start=False)
-        return SimpleNamespace(module=module, install=install, inventory=inventory, release=release,
+                return module.install(config_path, fusion, start=False, update_owned=update_owned)
+        return SimpleNamespace(module=module, install=install, inventory=inventory, release=release, home=home,
                                destination=destination, calls=calls, changed=changed, native=native)
 
     def reason(self, name):
