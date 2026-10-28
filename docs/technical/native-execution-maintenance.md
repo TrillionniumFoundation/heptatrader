@@ -1,12 +1,16 @@
 # Native Execution replacement within the existing maintenance transaction
 
-The prepared Gateway controller can optionally replace the native Execution
-binary while its original owners and Gateway are already held and stopped.
-The default Gateway-only path is unchanged. This does not create a second
-owner store, a reusable stop permit, or a new Broker connection alongside the
-original Execution owner.
+Native Execution replacement is currently unavailable. A plan containing
+`native_execution` is refused during preflight with
+`NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED`, before any controller or Gateway
+is stopped. The current runtime reports no maintenance-stop permission and no
+complete external/manual writer universe. Its owner-zero observations, native
+kill marker, operator hold and authenticated Gateway catalog do not supply that
+missing account-wide stop authority. A plan or checkpoint boolean cannot grant
+it. The default Gateway-only path is unchanged.
 
-Add a `native_execution` member to the existing, hash-pinned Gateway plan:
+The retained artifact fields describe a prepared binary, not activation
+permission:
 
 ```json
 {
@@ -20,25 +24,25 @@ Add a `native_execution` member to the existing, hash-pinned Gateway plan:
 
 The existing SDK acceptance receipt must identify the same source and binary,
 have status `ACTUAL_SDK_BUILD_AND_OFFLINE_EXITS_ACCEPTED`, and retain successful
-build/test exits. This is artifact evidence; activation additionally consumes
-fresh original-owner audits under the existing operator lock and native hold.
+build/test exits. This is artifact evidence, not a stop permit.
 Use an immutable extracted release for the binary, not a mutable build target.
 
-Preflight still performs no native control RPC. Activation performs the
-existing owner RecoveryQuery and normal controller/Gateway drain first. It
-checks the final authenticated catalog, then obtains fresh, complete, same-epoch
-whole-account zero observations from the original owner audits. These audits
-can reconcile OMS and request normal Broker recovery; they are not pure reads.
-An active fixed forward-evaluation window must finish before this transaction
-can interrupt its original quote source.
+Preflight performs no native control RPC. Owner audits can reconcile OMS and
+request normal Broker recovery; they are not pure reads. Their per-owner zero
+and observed Broker-global zero values do not exclude another account writer
+or prove that independent risk protection survives stopping Execution.
 
-Execution has two socket activators. The controller therefore stops the service
-and both original sockets in one systemd transaction. Stopping the service alone
-could allow a queued connection to restart the former image during replacement.
-Forced killing is disabled. A pending stop retains that policy and is observed
-on resume; it is never converted into a successful drain by a timeout.
+All new stop-policy openings, stop submissions and resubmissions, and fallback
+selection that would require another stop are refused, including when resuming
+an old checkpoint. Execution's two socket activators cannot be stopped merely
+because the checkpoint recorded a previous intent.
 
-The candidate starts with the same configuration and native hold. Acceptance
+Existing recovery obligations remain: a previously submitted stop may still be
+observed without issuing another one; a completely stopped group may use its
+retained controlled start; an already accepted native phase may continue the
+original Gateway/owner recovery. Protection and preference restoration retain
+their original checks. Forced killing stays disabled while a stop is pending.
+No timeout is treated as a successful drain. Retained start acceptance
 requires a distinct native service epoch, the exact running image, unchanged
 Broker process/listener, and new complete zero-owner audits. Only then does the
 existing Gateway recovery path resume the original owners and previously active
@@ -51,13 +55,11 @@ the reviewed release bytes can be adopted after a rename whose later persistence
 reply was lost. An unknown process or another writer's third file version is
 never stopped or overwritten.
 
-If candidate startup fails without a remaining process or systemd job, resume
-with the existing `--activate --resume` flags plus `--native-fallback`. This
-selects the exact former binary retained in the same checkpoint. A live or
-unidentified candidate cannot be forced down through this option. Until a native
-image is accepted, Gateway and controllers remain held, and automatic forced
-shutdown is not restored. Original stop policies are restored after the normal
-owner recovery completes.
+`--native-fallback` is unavailable because its retained path requires another
+group stop. A failed or unidentified candidate is never forced down. Until a
+native image is accepted, Gateway and controllers remain held, and automatic
+forced shutdown is not restored. Original stop policies are restored only after
+the existing verified recovery completes.
 
 The independent native risk marker remains engaged after success or rollback.
 The source change does not prove production continuity: actual original-window

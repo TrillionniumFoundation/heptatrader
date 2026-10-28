@@ -28,6 +28,13 @@ class RecoveryPending(RuntimeError):
         self.completed_at_ms = completed_at_ms
 
 
+def require_stop_authority(api):
+    # No reviewed native producer currently grants an account-wide stop permit.
+    # Owner-zero observations, a marker, or a retained checkpoint cannot supply
+    # one. Do not accept a plan/snapshot boolean as a replacement for that API.
+    api.fail("NATIVE_EXECUTION_STOP_AUTHORITY_UNSUPPORTED")
+
+
 def image(api, statuses, binary, source):
     status = statuses[SERVICE]
     if (status["ActiveState"] != "active" or status["SubState"] != "running"
@@ -77,6 +84,7 @@ def prepare(api, plan, home, snapshot):
     requested = plan.get("native_execution")
     if requested is None:
         return None
+    require_stop_authority(api)
     if not isinstance(requested, dict) or re.fullmatch(r"[0-9a-f]{40}", requested.get("source_sha", "")) is None:
         api.fail("NATIVE_EXECUTION_SOURCE_PIN_REQUIRED")
     binary = requested["binary"]
@@ -251,6 +259,7 @@ def reconcile_release(api, home, snapshot, state):
 
 
 def open_stop_policies(api, home, native, save):
+    require_stop_authority(api)
     root = home / ".config/systemd/user"
     for unit in UNITS:
         path = root / (unit + ".d") / POLICY
@@ -292,6 +301,7 @@ def resume_empty_stop(api, home, snapshot, native, save):
             api.fail("NATIVE_GROUP_STOP_SOCKET_IDENTITY_CHANGED")
         active.append(unit)
     if active or service["ActiveState"] == "failed":
+        require_stop_authority(api)
         open_stop_policies(api, home, native, save)
         native["phase"] = "EMPTY_GROUP_STOP_RESUBMITTED"; save()
         api.driver.ctl("stop", "--no-block", *UNITS)
@@ -301,6 +311,9 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
     prepared = snapshot.get("native_execution")
     if prepared is None:
         return
+    native = state.get("native_execution")
+    if fallback or native is None or (not native.get("stop_requested") and not native.get("accepted")):
+        require_stop_authority(api)
     context()
     native = state.setdefault("native_execution", {"phase": "PREPARED", "owned_policies": []})
     root = home / ".config/systemd/user"
@@ -344,6 +357,7 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
         job = api.driver.unit_properties(SERVICE, ("Job",), "NATIVE_STOP_JOB")["Job"]
         if status["ActiveState"] == "active" and not job and all(
                 api.driver.fence.show_unit(unit)["ActiveState"] == "active" for unit in SOCKETS):
+            require_stop_authority(api)
             # A durable stop intent without an actual job is not completion.
             # Re-observe the old image and consume a new audit before retrying.
             observed = image(api, {SERVICE: status}, prepared["original"]["binary"], prepared["original"]["source_sha"])
@@ -353,6 +367,7 @@ def run(api, plan, home, snapshot, state, save, context, *, fallback=False):
     if native.get("stop_requested") and not native.get("stopped") and not native.get("start_requested"):
         resume_empty_stop(api, home, snapshot, native, save)
     if not native.get("stop_requested"):
+        require_stop_authority(api)
         audits = audit_all(api, plan, snapshot)
         native["before_audits"] = audits; save()
         open_stop_policies(api, home, native, save)
