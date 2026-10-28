@@ -6,16 +6,13 @@ from __future__ import annotations
 import argparse,hashlib,json,os,subprocess,time
 from pathlib import Path
 from .integrity import read_json,digest,canonical,sha_file,ContractError
+from .immutable_files import write_immutable
 from .temporal_fusion_model import PROFILE
 from .temporal_fusion_shadow import RULE
 
 def write_once(path,raw,mode=0o400):
  path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
- if path.exists():
-  if path.read_bytes()!=raw:raise ContractError("IMMUTABLE_INSTALL_CONFLICT:"+str(path))
-  return
- with path.open("xb") as f:f.write(raw);f.flush();os.fsync(f.fileno())
- path.chmod(mode)
+ write_immutable(path,raw,mode,"IMMUTABLE_INSTALL_CONFLICT:"+str(path))
 
 def show(name):
  raw=subprocess.check_output(["systemctl","--user","show",name,"-p","MainPID","-p","ActiveState","-p","NRestarts"],text=True)
@@ -39,7 +36,9 @@ def install(laya_config_path,fusion_candidate,start=False,update_owned=False):
  for name in ("data.py","sandbox.py"):files["learn/"+name]=learn/name
  hashes={name:sha_file(path) for name,path in files.items()};release_id=digest(hashes)
  release=h/".local/share/heptatrader/temporal-fusion/releases"/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
- for name,path in files.items():write_once(release/name,path.read_bytes())
+ for name,path in files.items():
+  destination=release/name;destination.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+  write_immutable(destination,path,0o400,"IMMUTABLE_INSTALL_CONFLICT:"+str(destination),hashes[name])
  shadow=h/".local/state/heptatrader/neuron-learning/temporal-fusion"/c["period_sha256"]/candidate["candidate_id"]/release_id
  shadow.mkdir(mode=0o700,parents=True,exist_ok=True)
  plan_path=shadow/"plan.json"
