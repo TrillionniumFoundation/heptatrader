@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse,hashlib,json,os,re,subprocess,time
 from pathlib import Path
 from .integrity import read_json,digest,canonical,sha_file,ContractError
-from .immutable_files import write_immutable
+from .immutable_files import write_immutable,text_snapshot,replace_snapshot
 _original_sha_file=sha_file
 def sha_file(path):return _original_sha_file(Path(path))
 
@@ -100,12 +100,14 @@ TimeoutStopSec=20
 [Install]
 WantedBy=default.target
 '''
-  if unit.exists() and unit.read_text()!=text:
-   if not update_owned or 'independent financial forward' not in unit.read_text():raise ContractError('EXISTING_UNIT_NOT_OWNED')
-   write_once(cfgdir/(name+'.'+sha_file(unit)+'.before'),unit.read_bytes())
+  try:snapshot=text_snapshot(unit,'EXISTING_UNIT_NOT_OWNED')
+  except FileNotFoundError:snapshot=None
+  if snapshot is not None and snapshot[0]!=text:
+   if not update_owned or 'independent financial forward' not in snapshot[0]:raise ContractError('EXISTING_UNIT_NOT_OWNED')
+   write_once(cfgdir/(name+'.'+hashlib.sha256(snapshot[1]).hexdigest()+'.before'),snapshot[1])
    subprocess.run(['systemctl','--user','stop',name],check=True)
-   temp=unit.with_suffix('.next');temp.write_text(text);temp.chmod(0o600);os.replace(temp,unit)
-  elif not unit.exists():write_once(unit,text.encode(),0o600)
+   replace_snapshot(unit,text.encode(),0o600,'EXISTING_UNIT_NOT_OWNED',snapshot)
+  elif snapshot is None:write_once(unit,text.encode(),0o600)
   services[role]=name
  subprocess.run(['systemctl','--user','daemon-reload'],check=True)
  if start:subprocess.run(['systemctl','--user','enable','--now',*services.values()],check=True)

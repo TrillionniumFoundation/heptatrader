@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse,hashlib,json,os,subprocess,time
 from pathlib import Path
 from .integrity import read_json,digest,canonical,sha_file,ContractError
-from .immutable_files import write_immutable
+from .immutable_files import write_immutable,text_snapshot,replace_snapshot
 from .temporal_fusion_model import PROFILE
 from .temporal_fusion_shadow import RULE
 
@@ -95,12 +95,14 @@ TimeoutStopSec=20
 [Install]
 WantedBy=default.target
 """
-  if unit.exists() and unit.read_text()!=text:
-   if not update_owned or "temporal+Laya fusion" not in unit.read_text():raise ContractError("EXISTING_FUSION_UNIT_DIFFERS")
+  try:snapshot=text_snapshot(unit,"EXISTING_FUSION_UNIT_DIFFERS")
+  except FileNotFoundError:snapshot=None
+  if snapshot is not None and snapshot[0]!=text:
+   if not update_owned or "temporal+Laya fusion" not in snapshot[0]:raise ContractError("EXISTING_FUSION_UNIT_DIFFERS")
    subprocess.run(["systemctl","--user","stop",name],check=True)
-   backup=cfgdir/(name+"."+sha_file(unit)+".before");write_once(backup,unit.read_bytes())
-   tmp=unit.with_suffix(".next");tmp.write_text(text);tmp.chmod(0o600);os.replace(tmp,unit)
-  elif not unit.exists():write_once(unit,text.encode(),0o600)
+   backup=cfgdir/(name+"."+hashlib.sha256(snapshot[1]).hexdigest()+".before");write_once(backup,snapshot[1])
+   replace_snapshot(unit,text.encode(),0o600,"EXISTING_FUSION_UNIT_DIFFERS",snapshot)
+  elif snapshot is None:write_once(unit,text.encode(),0o600)
   units[mode]=name
  subprocess.run(["systemctl","--user","daemon-reload"],check=True)
  if start:subprocess.run(["systemctl","--user","enable","--now",*units.values()],check=True)
