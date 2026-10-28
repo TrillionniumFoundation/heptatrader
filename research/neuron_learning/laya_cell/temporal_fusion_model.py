@@ -6,16 +6,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .integrity import ContractError,digest
+from .temporal_fusion_metadata import PROFILE
 
-PROFILE={
- "schema":"heptatrader.temporal-laya-fusion-profile.v1","instrument":"EUR.USD","horizon_sec":300,
- "feature_version":"causal-fixed-scale-features16-v1","feature_width":16,"max_sequence":24,
- "embedding_dim":32,"classes":7,"laya_projection_seed":2026100802,"temporal_hidden":32,
- "temporal_layers":1,"dropout":0.0,"objective":"FUSION_CE_PLUS_0.25_NUMERIC_CE",
- "optimizer":"AdamW","learning_rate":0.001,"weight_decay":0.0001,"epochs":48,
- "batch_size":32,"gradient_norm_cap":1.0,"max_training_rows":192,"internal_holdout_rows":32,
- "automatic_trading":False,"actor_update":False,"financial_reward_used":False,
-}
 def profile_id():return digest(PROFILE)
 def entropy(probs):
  if probs.ndim!=2 or probs.shape[-1]!=PROFILE["classes"]:raise ContractError("FUSION_PROBABILITY_SHAPE")

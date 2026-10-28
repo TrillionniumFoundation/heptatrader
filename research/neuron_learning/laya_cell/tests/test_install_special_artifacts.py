@@ -1,9 +1,9 @@
 """CPU-only real installer entry points with temporary HOME and fake commands.
 
-Temporal PROFILE/RULE imports use exact source literals so metadata installation
-does not load Torch. No model/native executable or real service is started.
+Temporal metadata uses the real pure module; installer model imports are
+forbidden. No model/native executable or real service is started.
 """
-import ast
+import builtins
 from contextlib import redirect_stdout
 import io
 import json
@@ -11,22 +11,17 @@ import os
 from pathlib import Path
 import re
 import stat
-import sys
 import tempfile
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 from laya_cell import immutable_files
 from laya_cell.integrity import ContractError, canonical, digest, sha_file
+from laya_cell.temporal_fusion_metadata import PROFILE, RULE
 
 CELL = Path(__file__).resolve().parents[1]
 INSTALLERS = ('install_financial_forward', 'install_financial_value', 'install_temporal_fusion')
 
-
-def source_literal(filename, name):
-    tree = ast.parse((CELL / filename).read_bytes())
-    return ast.literal_eval(next(node.value for node in tree.body if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)))
 
 
 class SpecialInstallerArtifactTests(unittest.TestCase):
@@ -42,7 +37,7 @@ class SpecialInstallerArtifactTests(unittest.TestCase):
         source = (CELL / (name + '.py')).read_bytes()
         module_path = src / (name + '.py')
         module_path.write_bytes(source)
-        for filename in ('integrity.py', 'immutable_files.py'):
+        for filename in ('integrity.py', 'immutable_files.py', 'temporal_fusion_metadata.py'):
             (src / filename).write_bytes((CELL / filename).read_bytes())
         payload = src / 'zz_source_fixture.py'
         payload.write_bytes(b'ORIGINAL_SOURCE_FIXTURE\n')
@@ -71,9 +66,7 @@ class SpecialInstallerArtifactTests(unittest.TestCase):
         fusion.mkdir(mode=0o700)
         tensor = fusion / 'fusion.safetensors'
         tensor.write_bytes(b'ORDINARY_TENSOR_BYTES_NOT_LOADED\n')
-        profile = source_literal('temporal_fusion_model.py', 'PROFILE')
-        rule = source_literal('temporal_fusion_shadow.py', 'RULE')
-        (fusion / 'candidate.json').write_bytes(canonical({'profile': profile, 'fusion_sha256': sha_file(tensor),
+        (fusion / 'candidate.json').write_bytes(canonical({'profile': PROFILE, 'fusion_sha256': sha_file(tensor),
             'period_sha256': config['period_sha256'], 'candidate_id': 'fixture-fusion', 'laya_candidate_id': 'fixture-laya',
             'train_row_ids': [], 'internal_holdout_row_ids': []}) + b'\n')
         candidates = base / 'candidates'
@@ -83,15 +76,15 @@ class SpecialInstallerArtifactTests(unittest.TestCase):
         config['candidate_directory'] = str(candidates)
         config_path = base / 'config.json'
         config_path.write_bytes(canonical(config) + b'\n')
-        stubs = {}
-        for dependency, key, value in (('temporal_fusion_model', 'PROFILE', profile), ('temporal_fusion_shadow', 'RULE', rule)):
-            stub = ModuleType('laya_cell.' + dependency)
-            setattr(stub, key, value)
-            stubs[stub.__name__] = stub
         module = ModuleType('laya_cell.private_' + name)
         module.__package__ = 'laya_cell'
         module.__file__ = str(module_path)
-        with patch.dict(sys.modules, stubs):
+        original_import = builtins.__import__
+        def light_import(module_name, *args, **kwargs):
+            if module_name.split('.')[0] in ('torch', 'transformers', 'safetensors') or module_name.rsplit('.', 1)[-1] in ('temporal_fusion_model', 'temporal_fusion_shadow'):
+                raise AssertionError('Installer must not import models: ' + module_name)
+            return original_import(module_name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=light_import):
             exec(compile(source, module.__file__, 'exec'), module.__dict__)
         files = {'learn/laya_cell/' + path.name: path for path in sorted(src.glob('*.py'))}
         files.update({'learn/' + filename: src.parent / filename for filename in ('data.py', 'sandbox.py')})
@@ -154,6 +147,11 @@ class SpecialInstallerArtifactTests(unittest.TestCase):
                 self.assertEqual(first['runtime_sha256'], fixture.inventory)
                 self.assertEqual(second['runtime_sha256'], fixture.inventory)
                 self.assertIn('learn/laya_cell/immutable_files.py', first['runtime_sha256'])
+                self.assertIn('learn/laya_cell/temporal_fusion_metadata.py', first['runtime_sha256'])
+                if name == 'install_temporal_fusion':
+                    self.assertEqual(first['plan']['rule'], RULE)
+                    self.assertIs(fixture.module.PROFILE, PROFILE)
+                    self.assertIs(fixture.module.RULE, RULE)
                 for relative, expected in first['runtime_sha256'].items():
                     path = fixture.release / relative
                     self.assertEqual(sha_file(path), expected)
