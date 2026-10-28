@@ -63,7 +63,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
         reason = "TOKEN_FILE_UNSAFE";
         return false;
     }
-    const int fd = ::open(capturedPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int fd = ::open(capturedPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0)
     {
         reason = "TOKEN_FILE_OPEN_FAILED";

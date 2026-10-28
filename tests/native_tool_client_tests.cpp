@@ -7,11 +7,13 @@
 #include <cassert>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -33,6 +35,52 @@ extern "C" int __wrap_socket(int domain, int type, int protocol)
         assert(::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) == 0);
     }
     return fd;
+}
+#endif
+
+#ifdef HEPTA_TEST_WRAP_OPEN
+namespace { const char* replaceTokenPathWithFifo = nullptr; }
+extern "C" int __real_open(const char* path, int flags, ...);
+extern "C" int __wrap_open(const char* path, int flags, ...)
+{
+    mode_t mode = 0;
+    if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE)
+    {
+        va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args);
+    }
+    if (replaceTokenPathWithFifo && std::strcmp(path, replaceTokenPathWithFifo) == 0)
+    {
+        replaceTokenPathWithFifo = nullptr;
+        assert(::unlink(path) == 0);
+        assert(::mkfifo(path, 0600) == 0);
+    }
+    return __real_open(path, flags, mode);
+}
+
+static void TestTokenPathReplacedWithFifoBeforeOpen()
+{
+    char path[] = "/tmp/hepta-native-client-token-race-XXXXXX";
+    const int fd = ::mkstemp(path);
+    assert(fd >= 0);
+    const char token[] = "synthetic-token\n";
+    assert(::write(fd, token, sizeof(token) - 1) == sizeof(token) - 1);
+    assert(::fchmod(fd, 0600) == 0);
+    assert(::close(fd) == 0);
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0)
+    {
+        ::alarm(1);  // Bound a regression to blocking open on this owned FIFO.
+        replaceTokenPathWithFifo = path;
+        std::string loaded, reason;
+        const bool accepted = NativeToolClient::ReadSessionToken(path, loaded, reason);
+        _exit(!accepted && loaded.empty() &&
+            reason == "TOKEN_FILE_CHANGED_OR_UNREADABLE" ? 0 : 1);
+    }
+    int status = 0;
+    assert(::waitpid(child, &status, 0) == child);
+    assert(::unlink(path) == 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 #endif
 
@@ -880,6 +928,9 @@ int main()
 
     std::remove(link.c_str());
     std::remove(path);
+#ifdef HEPTA_TEST_WRAP_OPEN
+    TestTokenPathReplacedWithFifoBeforeOpen();
+#endif
     TestAutomaticSchemaDiscoveryAndInjection();
     TestBoundDiscoveryReuseAndCredentialRotation();
     TestCredentialPinnedAcrossDiscoveryRotation();

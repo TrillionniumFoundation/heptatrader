@@ -42,7 +42,7 @@ def validate_client_bindings(bindings):
 def verified_binary(binding):
     """Keep the verified executable open through spawn; do not resolve a new path."""
     validate_binary_binding(binding)
-    fd = os.open(binding["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(binding["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
