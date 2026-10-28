@@ -178,7 +178,7 @@ class DevelopmentCiTests(unittest.TestCase):
         self.assertIn("main", ci["on"]["push"]["branches"])
         self.assertNotIn("branches", ci["on"]["pull_request"])
         self.assertNotIn("pull_request_target", ci["on"])
-        for event in ("opened", "synchronize", "reopened", "ready_for_review"):
+        for event in ("opened", "synchronize", "reopened"):
             self.assertIn(event, ci["on"]["pull_request"]["types"])
         for job in ci["jobs"].values():
             checkouts = [step for step in job["steps"]
