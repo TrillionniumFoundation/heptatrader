@@ -224,6 +224,10 @@ class BoundedControllerTests(unittest.TestCase):
         from historical_training import resident_resource_guard as module
         from contextlib import ExitStack
         with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
+            # main() establishes the CLI process mask; restore it when this
+            # in-process fixture returns, including its deliberate error path.
+            original_umask=module.os.umask(0o077)
+            stack.callback(module.os.umask,original_umask)
             root=Path(td);config={'original_config':str(root/'original.json')}
             original={'control_directory':str(root),'runtime_directory':str(root/'runtime')}
             gate=Mock();gate.root=root;gate.draining=False
