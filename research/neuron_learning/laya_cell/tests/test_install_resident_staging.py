@@ -311,6 +311,7 @@ class ResidentStagingTests(unittest.TestCase):
         self.assertEqual(files['learn/laya_cell/immutable_files.py'], Path(immutable_files.__file__))
         self.assertEqual(files['learn/laya_cell/integrity.py'], source / 'integrity.py')
         self.assertEqual(files['learn/laya_cell/install_resident.py'], Path(installer.__file__))
+        self.assertEqual(files['learn/laya_cell/tokenizer.py'], source / 'tokenizer.py')
         self.run.assert_not_called()
 
     def test_source_changed_to_fifo_after_hash_is_rejected_without_blocking(self):
