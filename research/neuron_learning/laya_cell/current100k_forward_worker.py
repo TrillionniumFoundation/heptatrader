@@ -5,7 +5,7 @@ lock through tensor destruction. Missing/late requests remain missed. Evaluation
 uses the original authoritative replay and independently signed role receipts.
 """
 from __future__ import annotations
-import argparse, fcntl, gc, json, os, sys, time
+import argparse, fcntl, gc, json, os, sys, time, traceback
 from pathlib import Path
 from .integrity import ContractError, read_json, sha_file, digest
 from .resident_store import atomic
@@ -66,7 +66,8 @@ def run(c,mode):
   atomic(status_path,status);return status
  if now<plan['input_start_ms']:return wait_status('WAIT_FIXED_FUTURE_START')
  if mode=='predict' and now>=plan['input_end_ms']:return wait_status('FIXED_INPUT_WINDOW_CLOSED_NO_MODEL_LOAD')
- gate=None;worker=None;hip_context=None
+ gate=None;worker=None;hip_context=None;torch=None
+ gpu_import_attempted=False;gpu_runtime_ready=False
  try:
   if mode=='predict':
    from .financial_forward_source import VerifiedIngressSnapshot
@@ -96,8 +97,10 @@ def run(c,mode):
                      +(hip_context['readonly'] if hip_context is not None else [])})
   if mode=='predict':
    hip_runtime.activate(hip_context)
+   gpu_import_attempted=True
    import torch
    hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
+   gpu_runtime_ready=True
    torch.set_num_threads(2)
    torch.cuda.set_per_process_memory_fraction(min(1.,4*1024**3/torch.cuda.get_device_properties(0).total_memory))
    from .financial_forward_predict import Predictor
@@ -107,15 +110,26 @@ def run(c,mode):
    from .financial_forward_evaluate import Evaluator
    worker=Evaluator(c)
   return worker.step()
+ except BaseException as exc:
+  # A status/publication failure can keep step.self and tensors alive through
+  # chained errors even after dropping this frame's worker reference.
+  pending=[exc];seen=set()
+  while pending:
+   error=pending.pop()
+   if id(error) in seen:continue
+   seen.add(id(error));traceback.clear_frames(error.__traceback__)
+   pending.extend(e for e in (error.__cause__,error.__context__) if e is not None)
+  raise
  finally:
-  try:
-   if mode=='predict' and worker is not None:
-    del worker;gc.collect()
-    if 'torch' in sys.modules:
-     import torch
+  if mode=='predict':
+   worker=None
+   if gpu_import_attempted:
+    gc.collect()
+    if gpu_runtime_ready and torch.cuda.is_initialized():
      torch.cuda.synchronize();torch.cuda.empty_cache()
-  finally:
-   if gate is not None:gate.release()
+  # Failed cleanup or an imported but unproven runtime retains the original
+  # lease FD until this finite worker exits. Cleanup never initializes CUDA.
+  if gate is not None and (not gpu_import_attempted or gpu_runtime_ready):gate.release()
 
 
 def main():
