@@ -150,6 +150,44 @@ def worker_environment(config, inherited=None):
     return env
 
 
+def check_guard_selection(config, original):
+    """Financial workers retain the runtime already accepted by their guard.
+
+    A code-only worker package may have a new directory/inventory. Its selected
+    HIP manifest and Python environment must remain those of the original owner.
+    This CPU-only check grants no resource admission and imports no GPU package.
+    """
+    need(config.get('hip_runtime') == original.get('hip_runtime'), 'GUARD_SELECTION_CHANGED_OR_DROPPED')
+    if config.get('hip_runtime') is not None:
+        need(config.get('python') == original.get('python'), 'GUARD_PYTHON_CHANGED')
+
+
+def check_publication_proof(proof, manifest_sha, target):
+    """Check the proof carried by a frozen/signed financial publication."""
+    if manifest_sha is None:
+        need(proof is None, 'UNSELECTED_PUBLICATION_PROOF')
+        return
+    need(isinstance(manifest_sha, str) and re.fullmatch('[0-9a-f]{64}', manifest_sha)
+         and isinstance(proof, dict) and proof.get('schema') == 'heptatrader.resident-hip-runtime-proof.v1'
+         and proof.get('phase') == 'BEFORE_PUBLISH' and proof.get('target') == target
+         and proof.get('manifest_sha256') == manifest_sha, 'PUBLICATION_PROOF_BINDING')
+    libraries = proof.get('libraries')
+    need(isinstance(proof.get('candidate_sha256'), str)
+         and re.fullmatch('[0-9a-f]{64}', proof['candidate_sha256'])
+         and type(proof.get('pid')) is int and proof['pid'] > 0
+         and proof.get('worker_admission_granted') is False and proof.get('extra_gpu_probe_performed') is False
+         and isinstance(libraries, dict) and set(libraries) == set(LIBRARIES), 'PUBLICATION_PROOF_LIBRARIES')
+    for name, library in libraries.items():
+        need(isinstance(library, dict) and type(library.get('loaded')) is bool, 'PUBLICATION_PROOF_LIBRARIES')
+        if not library['loaded']:
+            need(name == 'libamd_comgr.so' and set(library) == {'loaded'}, 'PUBLICATION_PROOF_LIBRARIES')
+            continue
+        need(isinstance(library.get('sha256'), str) and re.fullmatch('[0-9a-f]{64}', library['sha256'])
+             and all(type(library.get(key)) is int and library[key] >= 0 for key in ('device_major', 'device_minor'))
+             and type(library.get('inode')) is int and library['inode'] > 0, 'PUBLICATION_PROOF_LIBRARIES')
+    need(libraries['libamdhip64.so']['sha256'] == proof['candidate_sha256'], 'PUBLICATION_PROOF_CANDIDATE')
+
+
 def prepare_worker(config, target):
     value = check_config(config)
     if value is None: return None

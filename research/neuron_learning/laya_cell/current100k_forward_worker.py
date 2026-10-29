@@ -39,9 +39,11 @@ def run(c,mode):
  from .financial_forward_evaluate import validate_registration
  from .financial_forward_witness import verify_trust
  from .current100k_forward import PLAN_SCHEMA
+ from . import resident_hip_runtime as hip_runtime
  verify_trust(c);root=Path(c['forward_root']);plans=list((root/'plans').glob('*/plan.json'))
  if len(plans)!=1:raise ContractError('EXACTLY_ONE_CURRENT100K_FORWARD_PLAN')
  plan=read_json(plans[0]);clock.mark('trust_and_plan_read')
+ hip_runtime.check_plan(c,plan)
  prepared=RegisteredPlanSnapshot(c,plans[0],plan) if mode=='predict' else None
  if prepared is None:validate_registration(c,plans[0],plan)
  clock.mark('registration_validation')
@@ -64,7 +66,7 @@ def run(c,mode):
   atomic(status_path,status);return status
  if now<plan['input_start_ms']:return wait_status('WAIT_FIXED_FUTURE_START')
  if mode=='predict' and now>=plan['input_end_ms']:return wait_status('FIXED_INPUT_WINDOW_CLOSED_NO_MODEL_LOAD')
- gate=None;worker=None
+ gate=None;worker=None;hip_context=None
  try:
   if mode=='predict':
    from .financial_forward_source import VerifiedIngressSnapshot
@@ -81,16 +83,21 @@ def run(c,mode):
    if not fresh:
     return wait_status('WAIT_FRESH_ORIGINAL_REQUEST',sealed_predictions=len(list((root/'plans'/plan['plan_id']/'predictions').glob('*/commit.json'))))
    from historical_training.resident_resource_guard import Gate,verify_config
-   guard=read_json(Path(c['guard_config']));verify_config(guard);gate=Gate(guard,'value-predictor')
+   guard=read_json(Path(c['guard_config']));original=verify_config(guard)
+   hip_runtime.check_guard_selection(c,original);gate=Gate(guard,'value-predictor')
    admitted=acquire_value_resources(gate,{'plan_id':plan['plan_id'],'requests':fresh})
    clock.mark('resource_admission')
    if not admitted:return wait_status('HOLD_SHARED_RESOURCE_OR_SOURCE')
+   hip_context=hip_runtime.prepare_worker(c,'predict')
   from sandbox import enter
   enter({'output_dir':str(root),'period_path':c['period_path'],'legacy_capture':plan['training_dataset_path'],
    'oms_path':c['oms_path'],'export_dir':c['attribution_directory'],
-   'read_only_paths':c['worker_read_only_paths']+[c['worker_source_root'],sys.prefix,c['role_key_path'],c['witness_trust_path']]})
+   'read_only_paths':c['worker_read_only_paths']+[c['worker_source_root'],sys.prefix,c['role_key_path'],c['witness_trust_path']]
+                     +(hip_context['readonly'] if hip_context is not None else [])})
   if mode=='predict':
+   hip_runtime.activate(hip_context)
    import torch
+   hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
    torch.set_num_threads(2)
    torch.cuda.set_per_process_memory_fraction(min(1.,4*1024**3/torch.cuda.get_device_properties(0).total_memory))
    from .financial_forward_predict import Predictor

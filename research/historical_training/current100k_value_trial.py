@@ -3,7 +3,7 @@ Shares resident heavy-worker admission; revalidates real labels before/after fit
 The frozen pretrained backbone, original datasets and live strategies are read-only.
 """
 from __future__ import annotations
-import argparse,copy,hashlib,json,os,sys,time
+import argparse,copy,gc,hashlib,json,os,sys,time,traceback
 from decimal import Decimal
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,write_once
@@ -53,27 +53,40 @@ def run(c):
     frozen=read(c['dataset_path']);out=Path(c['output_root'])
     if out.exists():raise EvidenceError('TRIAL_OUTPUT_ALREADY_EXISTS_NO_REPLAY')
     from .resident_resource_guard import Gate,verify_config
-    guard=read(c['guard_config']);verify_config(guard);gate=Gate(guard,'trainer')
-    if not gate.acquire({'trial':'current100k-value','dataset_sha256':c['dataset_sha256']}):
+    guard=read(c['guard_config']);original=verify_config(guard)
+    from laya_cell import resident_hip_runtime as hip_runtime
+    hip_runtime.check_guard_selection(c,original)
+    gate=Gate(guard,'trainer')
+    # The original source guard may prepend its own runtime for CPU freshness
+    # checks. Keep subsequent model/sandbox imports in this pinned package.
+    source_paths=list(sys.path)
+    try:admitted=gate.acquire({'trial':'current100k-value','dataset_sha256':c['dataset_sha256']})
+    finally:sys.path[:]=source_paths
+    if not admitted:
         raise EvidenceError('RESIDENT_ADMISSION_DENIED_NO_MODEL_LOADED')
-    started=time.monotonic()
+    started=time.monotonic();gpu_runtime_ready=False;torch=None
+    raw=tok=head=x=y=features=feature=None
     try:
+        hip_context=hip_runtime.prepare_worker(c,'train')
         out.mkdir(mode=0o700,parents=True,exist_ok=False)
         write_once(out/'plan.json',c)
         from sandbox import enter
-        original=read(guard['original_config'])
         restrictions=enter({'output_dir':str(out),'period_path':consumer['period_path'],
             'legacy_capture':c['dataset_path'],'oms_path':consumer['reward_config']['oms_path'],
             'export_dir':manifest['journal_directory'],'read_only_paths':[
                 c['consumer_config'],consumer['runtime_root'],consumer['registration']['manifest'],
                 c['base_directory'],str(Path(c['base_directory']).parent),c['source_root'],
-                original['runtime_directory'],c['native_binary'],sys.prefix]})
+                original['runtime_directory'],c['native_binary'],sys.prefix]
+                +(hip_context['readonly'] if hip_context is not None else [])})
         write_once(out/'sandbox.json',restrictions)
+        hip_runtime.activate(hip_context)
         from .export_current100k import export
         before=copy.deepcopy(consumer);before['output_root']=str(out/'replay-before')
         before_status=export(before);rows=selected_rows(frozen,read(before_status['dataset_path']))
         # Only after sandbox and shared admission may a GPU package/model be loaded.
         import torch
+        hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
+        gpu_runtime_ready=True
         from laya_cell.model import load_verified_laya,require_pocket4_gpu,tensor_hash
         from laya_cell.financial_value_train import features_from_laya,train_head
         device=require_pocket4_gpu();torch.set_num_threads(2);torch.manual_seed(20261009)
@@ -109,10 +122,23 @@ def run(c):
             'broker_orders_sent':0,'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),
             'max_gpu_allocated_bytes':torch.cuda.max_memory_allocated(),'wall_seconds':time.monotonic()-started,
             'training_fit_is_not_efficacy':True,'source_files_sha256':c['source_files_sha256']}
+        hip_proof=hip_runtime.prove_before_publish(c)
+        if hip_proof is not None:
+            record.update(hip_runtime_manifest_sha256=hip_proof['manifest_sha256'],hip_runtime_proof=hip_proof)
         record['candidate_id']=digest(record);write_once(out/'candidate.json',record)
         print(json.dumps({k:record[k] for k in ('status','candidate_id','rows','pnl_reward_used','scorer_or_actor_updated','max_gpu_allocated_bytes','wall_seconds')}),flush=True)
         return record
-    finally:gate.release()
+    except BaseException as exc:
+        # Failed encoder/optimizer frames can otherwise retain tensors while
+        # this frame unwinds. Clear only their finished traceback frames.
+        traceback.clear_frames(exc.__traceback__)
+        raise
+    finally:
+        try:
+            raw=tok=head=x=y=features=feature=None
+            if gpu_runtime_ready:
+                gc.collect();torch.cuda.synchronize();torch.cuda.empty_cache()
+        finally:gate.release()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);a=p.parse_args();run(read(a.config))
