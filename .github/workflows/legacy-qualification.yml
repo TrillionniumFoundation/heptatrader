@@ -1,7 +1,7 @@
 name: Archived qualification contracts
 'on':
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened]
     paths:
     - .github/retired-workflows/**
     - .github/workflows/legacy-qualification.yml
@@ -16,6 +16,10 @@ name: Archived qualification contracts
     - docs/technical/heptadll-source-disposition.json
     - tests/python/test_python_test_partition.py
     - tests/python/test_development_ci.py
+    - research/train_v2/__init__.py
+    - research/train_v2/fx_original_health_*.py
+    - tests/python/test_fx_original_health_*.py
+    - tests/python/portable_archive_fixtures.py
   push:
     branches: [main]
     paths:
@@ -32,6 +36,10 @@ name: Archived qualification contracts
     - docs/technical/heptadll-source-disposition.json
     - tests/python/test_python_test_partition.py
     - tests/python/test_development_ci.py
+    - research/train_v2/__init__.py
+    - research/train_v2/fx_original_health_*.py
+    - tests/python/test_fx_original_health_*.py
+    - tests/python/portable_archive_fixtures.py
   workflow_dispatch: null
 permissions:
   contents: read

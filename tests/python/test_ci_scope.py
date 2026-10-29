@@ -31,6 +31,10 @@ class DocsOnlyScope(unittest.TestCase):
             "research/historical_training/POCKET4_LAYA_CONVERGENCE_20261015.md",
             "research/train_v2/INPUT_LATENCY_OBSERVATIONS_20261025.md",
             "research/future_component/EXPERIMENT_REPORT_20261026.md",
+            "research/train_v2/FX_RIDGE_FINITE_CAMPAIGN_20261012.md",
+            "research/train_v2/FX_SOURCE_CACHE_COLD_PREWARM_20261014.md",
+            "research/train_v2/FX_ORIGINAL_MULTI_HORIZON_ENVELOPE_20261012.md",
+            "research/future_component/notes-without-a-category-or-date.md",
         ):
             with self.subTest(path=path):
                 self.assertTrue(docs_only([path]))
@@ -46,7 +50,6 @@ class DocsOnlyScope(unittest.TestCase):
             "research/train_v2/INPUT_SCHEMA_AUDIT_20261025.md",
             "research/train_v2/CONFIG_OBSERVATIONS_20261025.md",
             "research/train_v2/PROTOCOL_CONVERGENCE_20261025.md",
-            "research/train_v2/UNKNOWN_20261025.md",
             "research/train_v2/EXPERIMENT_REPORT_20261025.py",
             "research/train_v2/EXPERIMENT_REPORT_20261025.json",
             "research/train_v2/EXPERIMENT_REPORT_20261025.yaml",
@@ -65,11 +68,12 @@ class DocsOnlyScope(unittest.TestCase):
 
     def test_research_contracts_and_configuration_keep_full_feedback(self):
         for path in ("research/MODELS.md", "research/CLIENT_PACKAGE.md",
-                     "research/other/RESIDENT_RESOURCE_GUARD.md",
                      "research/historical_training/RESIDENT_RESOURCE_GUARD.json",
                      "research/train_v2/contract.md",
                      "research/train_v2/SOURCE_CONTRACT_20261013.md",
                      "research/train_v2/CONFIG_20261013.md",
+                     "research/contracts/ordinary-note.md",
+                     "research/train_v2/source-contract.md",
                      "research/train_v2/plan.json",
                      "research/train_v2/config.yaml",
                      "research/train_v2/source.py"):
@@ -101,6 +105,51 @@ class DocsOnlyScope(unittest.TestCase):
                        "docs\\evil.md", "docs/.hidden/../report.md"]:
             with self.subTest(path=sample):
                 self.assertFalse(docs_only([sample]))
+
+    def test_source_consumed_notes_keep_feedback_independent_of_report_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            research = root / "research/example"
+            research.mkdir(parents=True)
+            plain = "research/example/observations.md"
+            renamed = "research/example/window_32.md"
+            (root / plain).write_text("# prose or machine input depending on its consumer\n")
+            (root / renamed).write_text("# dynamically selected machine input\n")
+            (root / "README.md").write_text("[Observations](" + plain + ")\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            self.assertTrue(docs_only([plain, renamed], root))
+            consumer = root / "read_input.py"
+            consumer.write_text("from pathlib import Path\nPath('" + plain + "').read_text()\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            self.assertFalse(docs_only([plain], root))
+            self.assertTrue(docs_only([renamed], root))
+            consumer.write_text('from pathlib import Path\nPath(f"window_{count}.md").read_text()\n')
+            self.assertFalse(docs_only([renamed], root))
+            # Deleted data inputs are still dependencies of their consumer.
+            (root / renamed).unlink()
+            self.assertEqual(scope_for_paths([renamed], root),
+                             {"run_native": True, "run_python": True, "run_learning": True})
+            consumer.write_text('from pathlib import Path\nlist(Path("research").rglob("*.md"))\n')
+            self.assertFalse(docs_only([plain], root))
+
+    def test_missing_dependency_index_or_retyped_note_keeps_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "research/example/notes.md"
+            target = root / path
+            target.parent.mkdir(parents=True)
+            target.write_text("# notes\n")
+            self.assertFalse(docs_only([path], root))
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            self.assertTrue(docs_only([path], root))
+            target.unlink()
+            target.mkdir()
+            self.assertFalse(docs_only([path], root))
+            target.rmdir()
+            target.symlink_to(root / "consumer.py")
+            self.assertFalse(docs_only([path], root))
 
     def test_git_diff_checks_both_sides_of_rename(self):
         base = "a" * 40

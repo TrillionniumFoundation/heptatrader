@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Scope routine CI to the changed components; uncertain changes run every lane.
 
-Repository docs, research READMEs and identified observation reports are prose.
-Other research contracts/configuration keep full feedback. Verified operator tools
+Repository docs and unconsumed research notes are prose. Research contracts,
+configuration and documents consumed by source/build inputs keep full feedback. Verified operator tools
 run every core/source Python test. Ordinary Python changes in the Laya and
 historical-research packages also run the complete learning lane. Package tests
 are discovered, not registered one filename/version at a time. Native interfaces,
@@ -12,6 +12,7 @@ Verified installed-release validation keeps native/package and Python feedback.
 from __future__ import annotations
 import argparse
 import ast
+import fnmatch
 import re
 import subprocess
 import sys
@@ -19,15 +20,12 @@ from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
-# Observation reports use stable document categories, not a per-experiment
-# allowlist. Contract/configuration names retain full feedback even when a
-# report suffix is appended; unknown research Markdown does too.
-RESEARCH_REPORT = re.compile(
-    r"[A-Z0-9][A-Z0-9_-]*_(?:PHYSICAL|AUDIT|CLOSEOUT|FORENSICS|"
-    r"CONVERGENCE|OBSERVATIONS|REPORT)_20[0-9]{6}\.md")
+# Contract/interface names retain full feedback regardless of a report suffix.
+# Other notes do not need a category word or a date in their filename. Before
+# omitting their lanes, check actual tracked source/build references as well.
 RESEARCH_CONTRACT = re.compile(
-    r"(?:^|_)(?:CONTRACT|CONFIG|CONFIGURATION|SCHEMA|PROTOCOL|"
-    r"SPEC|SPECIFICATION|MANIFEST|REQUIREMENTS)(?:_|\.)")
+    r"(?:^|[_-])(?:CONTRACTS?|CONFIGS?|CONFIGURATION|SCHEMAS?|PROTOCOLS?|"
+    r"SPECS?|SPECIFICATION|MANIFESTS?|REQUIREMENTS)(?:[_-]|\.|$)", re.IGNORECASE)
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIED_PYTHON_GROUPS = (
@@ -274,28 +272,80 @@ def regular_source(root: Path, path: str) -> bool:
     return candidate.resolve() == candidate and candidate.is_file()
 
 
-def docs_only(paths: list[str]) -> bool:
+def research_document_inputs(paths: set[str], root: Path) -> set[str]:
+    """Keep referenced notes in CI, including deleted inputs and formatted names.
+
+    Git supplies the same tracked source set that CI checks out. References in
+    Markdown are prose links, not executable dependencies. The scope classifier
+    and its synthetic fixtures are excluded so a regression test does not turn
+    its sample report into a product input. Unavailable Git/source reads keep
+    full feedback; exported source without its index is deliberately uncertain.
+    """
     if not paths:
-        return False
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "grep", "-Ilz", "-F", ".md", "--", ":!*.md",
+             ":!scripts/ci_scope.py", ":!tests/python/test_ci_scope.py"],
+            cwd=root, capture_output=True, timeout=15, check=False)
+        if result.returncode not in (0, 1):
+            return paths
+        inputs = set()
+        for relative in result.stdout.decode("utf-8").split("\0"):
+            if not relative:
+                continue
+            if not regular_source(root, relative):
+                return paths
+            source = (root / relative).read_text(encoding="utf-8")
+            # Match literal paths/basenames and names made with f-strings or
+            # build substitutions, e.g. window_{count}.md. Basename matching
+            # is conservative when two packages use the same document name.
+            patterns = []
+            for token in re.findall(r"['\"]([^'\"\r\n]*\.md)['\"]", source):
+                pattern = re.sub(r"\$?\{[^}]*\}|%[0-9]*[sd]", "*", token)
+                leaf = pattern.rsplit("/", 1)[-1]
+                if leaf == "*.md":
+                    if "research" in source:
+                        return paths
+                elif leaf != ".md":
+                    patterns.append(leaf)
+            for path in paths:
+                name = Path(path).name
+                if name in source or any(fnmatch.fnmatchcase(name, p) for p in patterns):
+                    inputs.add(path)
+        return inputs
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        return paths
+
+
+def prose_paths(paths: list[str], root: Path) -> set[str]:
+    prose, research = set(), set()
     for path in paths:
         components = path.split("/")
-        if (path.startswith("/") or "\\" in path or
+        if (path.startswith("/") or "\\" in path or "\0" in path or
                 any(not p or p in (".", "..") for p in components)):
-            return False
-        if path in (
-                "README.md",
-                "research/historical_training/RESIDENT_RESOURCE_GUARD.md"):
+            return set()
+        candidate = root / path
+        if (candidate.is_symlink() or candidate.resolve() != candidate or
+                candidate.exists() and not candidate.is_file()):
+            continue
+        if path == "README.md":
+            prose.add(path)
             continue
         if len(components) >= 2 and components[0] == "research":
             name = components[-1]
-            if name == "README.md" or (
-                    RESEARCH_REPORT.fullmatch(name) and
-                    not RESEARCH_CONTRACT.search(name)):
-                continue
-            return False
-        if len(components) < 2 or components[0] != "docs" or not path.endswith(".md"):
-            return False
-    return True
+            if name == "README.md":
+                prose.add(path)
+            elif (len(components) >= 3 and path.endswith(".md") and
+                  not any(RESEARCH_CONTRACT.search(part) for part in components[1:])):
+                research.add(path)
+        elif len(components) >= 2 and components[0] == "docs" and path.endswith(".md"):
+            prose.add(path)
+    return prose | (research - research_document_inputs(research, root))
+
+
+def docs_only(paths: list[str], root: Path = ROOT) -> bool:
+    return bool(paths) and set(paths) == prose_paths(paths, root.resolve())
 
 
 def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, bool]:
@@ -304,10 +354,11 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
                         any(part in {"", ".", ".."} for part in path.split("/"))
                         for path in paths):
         return full
-    if docs_only(paths):
-        return {key: False for key in full}
     root = root.resolve()
-    changed = [path for path in paths if not docs_only([path])]
+    prose = prose_paths(paths, root)
+    if set(paths) == prose:
+        return {key: False for key in full}
+    changed = [path for path in paths if path not in prose]
     release_validation = bool(RELEASE_VALIDATION_GROUP.intersection(changed))
     if release_validation and not set(changed) <= RELEASE_VALIDATION_GROUP:
         return full

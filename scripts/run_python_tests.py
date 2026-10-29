@@ -52,11 +52,16 @@ EXTERNAL_TESTS = frozenset({
 
 # Retired qualification fixtures and fixed historical migration inventories run
 # when their inputs change; current ABI/recovery behavior stays in its own lanes.
+# The shared first-32 archive security/parser suite and direct CLI/provenance
+# checks stay in core. Only repeated long, frozen receipt chains move to legacy.
 LEGACY_TESTS = frozenset({
     "test_ib_workflow_interfaces.py",
     "test_qualification_trust_boundary.py",
     "test_heptadll_migration_state.py",
     "test_heptadll_source_disposition.py",
+    "test_fx_original_health_portable_160_verify.py",
+    "test_fx_original_health_portable_240_verify.py",
+    "test_fx_original_health_portable_320_verify.py",
 })
 
 # These numerical research suites require Torch or safetensors.
