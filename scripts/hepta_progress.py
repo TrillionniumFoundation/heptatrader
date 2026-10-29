@@ -328,6 +328,76 @@ def candidate_progress(config, status, now_ms, max_age_ms):
     return result
 
 
+def learning_hold_recovery(role, status, meta, running, admission, manual):
+    """Explain an original refusal; never evaluate or replace its admission rule."""
+    unknown = {"next_action": "READ_ORIGINAL_CONTROLLER_AND_GUARD_STATUS_THEN_RECONCILE_HOLD",
+               "automatic_resume_expected": False, "recovery_conditions_known": False}
+    if manual.get("source") and manual.get("present") is None:
+        return {**unknown, "next_action": "READ_ORIGINAL_MANUAL_HOLD_AND_RECONCILE_OWNER_STATE"}
+    if not running or meta["freshness"] != "FRESH":
+        return unknown
+    state = status.get("state")
+    if role == "trainer" and status.get("schema") == "heptatrader.laya-resident-status.v1":
+        if (state == "WORKER_TERMINATION_PENDING" and status.get("reason") == "TRAINING_WORKER_NOT_REAPED"
+                and status.get("new_worker_allowed") is False
+                and type(status.get("worker_pid")) is int and status["worker_pid"] > 0):
+            return {**unknown, "next_action": "WAIT_FOR_ORIGINAL_CONTROLLER_TO_REAP_RECORDED_WORKER",
+                "recovery_conditions_known": True, "recovery_conditions": {
+                    "worker_pid": status["worker_pid"],
+                    "original_worker_must_be_reaped_without_replacing_its_locks": True,
+                    "original_guard_recheck_required": True}}
+        if state == "HOLD_NEW_TRAINING_STORAGE" and status.get("reason") in (
+                "STATE_BUDGET_FULL_NO_EVIDENCE_PRUNING", "FILESYSTEM_RESERVE_NO_NEW_LEARNING",
+                "STATE_HEADROOM_NO_NEW_LEARNING"):
+            return {**unknown, "next_action": "REVIEW_ORIGINAL_STORAGE_BUDGET_WITH_EVIDENCE_RETAINED",
+                "recovery_conditions_known": True, "recovery_conditions": {
+                    "original_storage_admission_must_pass": True, "existing_evidence_must_be_preserved": True,
+                    "original_guard_recheck_required": True}}
+        if state != "HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE":
+            return unknown
+        reported = status.get("current_blockers", [])
+        if not isinstance(reported, list) or any(not isinstance(code, str) for code in reported):
+            return unknown
+        codes = set(reported) - {state}
+    elif role == "evaluator" and status.get("schema") == "heptatrader.laya-resident-evaluation-status.v2":
+        counts = status.get("counts"); futile = status.get("futile_pending_plans")
+        # A recent denial cannot revive a closed or entirely futile queue.
+        if (not isinstance(counts, dict) or type(counts.get("PENDING")) is not int
+                or type(futile) is not int or not 0 <= futile < counts["PENDING"]
+                or type(status.get("active_prediction_workers")) is not int
+                or status["active_prediction_workers"] != 0):
+            return unknown
+        codes = set()
+    else:
+        return unknown
+    reasons = admission.get("reasons")
+    checked = admission.get("at_ms")
+    if (admission.get("schema") == "heptatrader.resident-resource-admission.v1"
+            and admission.get("role") == role and admission.get("admit_new_worker") is False
+            and admission.get("freshness") == "FRESH" and not admission.get("snapshot_is_historical", True)
+            and type(checked) is int and checked <= meta["at_ms"]
+            and isinstance(reasons, list) and all(isinstance(code, str) for code in reasons)):
+        codes.update(reasons)
+    memory = {"HOST_AVAILABLE_MEMORY_BELOW_8GIB", "HOST_AVAILABLE_MEMORY_BELOW_REGISTRATION_RESERVE",
+              "HOST_FULL_MEMORY_PSI_PRESSURE"}
+    source = {"SOURCE_PERIOD_OR_SCHEMA_UNBOUND", "SOURCE_RULE_CHANGED", "SOURCE_STATUS_STALE_OR_FUTURE",
+              "LATEST_SOURCE_QUOTE_NOT_FRESH", "SOURCE_CONTINUITY_NOT_READY", "SOURCE_READINESS_INVALID",
+              "SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY"}
+    lease = {"OTHER_RESEARCH_WORKER_ACTIVE", "PRIOR_EVALUATOR_CHILD_ACTIVE"}
+    priority = {"VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST", "VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION",
+                "VALUE_PRIORITY_DEFER_NEW_LONG_TRAINING"}
+    if not codes or codes - (memory | source | lease | priority):
+        return unknown
+    conditions = {"original_guard_recheck_required": True, "same_heavy_worker_lease_required": True,
+                  "original_candidate_and_fixed_window_checks_required": True}
+    if codes & memory: conditions["memory_and_psi_must_satisfy_original_guard"] = True
+    if codes & source: conditions["original_source_identity_freshness_and_continuity_required"] = True
+    if codes & lease: conditions["existing_worker_must_finish_under_original_owner"] = True
+    if codes & priority: conditions["original_value_priority_reservation_must_clear"] = True
+    return {**unknown, "next_action": "ORIGINAL_CONTROLLER_RECHECKS_RESOURCE_SOURCE_AND_SHARED_LEASE",
+            "recovery_conditions_known": True, "recovery_conditions": conditions}
+
+
 def learning_progress(name, item, config, original_path, wrapper, role, now_ms, max_age_ms):
     directory = config["control_directory" if role == "trainer" else "evaluation_directory"]
     status, meta = observe(Path(directory) / "status.json", now_ms, max_age_ms)
@@ -356,9 +426,27 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
     if wrapper.get("state_root"):
         root = Path(wrapper["state_root"])
         admission, info = observe(root / (role + "-admission.json"), now_ms, max_age_ms)
-        result["resource_admission"] = {**info, **pick(admission, "admit_new_worker", "reasons",
+        role_matches = (admission.get("schema") == "heptatrader.resident-resource-admission.v1"
+                        and admission.get("role") == role)
+        counts = status.get("counts")
+        # The evaluator stops asking for heavy work after closeout or futility.
+        # Only its complete, newer snapshot can retire an earlier refusal.
+        no_viable_work = (role == "evaluator" and running and meta["freshness"] == "FRESH"
+            and status.get("schema") == "heptatrader.laya-resident-evaluation-status.v2"
+            and status.get("counts_include_closed_plans") is True
+            and type(status.get("plans")) is int and status["plans"] >= 0
+            and isinstance(counts, dict) and not set(counts) - {"PENDING", "REJECTED", "QUALIFIED_AWAITING_CANONICAL_OWNER"}
+            and all(type(count) is int and count >= 0 for count in counts.values())
+            and sum(counts.values()) == status["plans"]
+            and type(status.get("active_prediction_workers")) is int and status["active_prediction_workers"] == 0
+            and type(status.get("futile_pending_plans")) is int
+            and status["futile_pending_plans"] == counts.get("PENDING", 0))
+        superseded = (role_matches and no_viable_work and type(info["at_ms"]) is int
+                      and info["at_ms"] < meta["at_ms"])
+        result["resource_admission"] = {**info, **pick(admission, "schema", "role", "admit_new_worker", "reasons",
             "resource_role", "minimum_available_bytes", "memory_bytes", "full_memory_psi", "workload_attribution"),
-            "snapshot_is_historical": not running or info["freshness"] != "FRESH"}
+            "role_matches": role_matches, "superseded_by_no_viable_heavy_work": superseded,
+            "snapshot_is_historical": not running or info["freshness"] != "FRESH" or not role_matches or superseded}
         error, info = observe(root / (role + "-error.json"), now_ms, max_age_ms)
         result["guard_error"] = {**info, **pick(error, "error", "active", "resolved_at_ms"),
             "current_failure": running and error.get("active") is True and info["freshness"] == "FRESH"}
@@ -451,6 +539,14 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
             "original_manual_hold_and_worker_cleanup_checks_required":True}
     if running and meta["freshness"]=="FRESH" and isinstance(status.get("forward_registration_resume_conditions"),dict):
         result["resume"]["forward_registration_conditions"]=status["forward_registration_resume_conditions"]
+    state=status.get("state")
+    manual=result.get("manual_hold",{})
+    if (manual.get("source") and manual.get("present") is None
+            or not result["resume"]["next_action"] and (blockers or isinstance(state,str)
+            and (state.startswith(("HOLD_","WAITING_","CANDIDATE_READY_AWAITING_","EVALUATING_"))
+                 or state in ("WORKER_TERMINATION_PENDING", "LEARNING_UNAVAILABLE_NO_TRADE_EFFECT",
+                              "INDEPENDENT_EVALUATION_UNAVAILABLE")))):
+        result["resume"].update(learning_hold_recovery(role,status,meta,running,admission,manual))
     return result
 
 
