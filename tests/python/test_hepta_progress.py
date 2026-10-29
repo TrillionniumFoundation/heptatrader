@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -98,6 +99,73 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(len(self.collect()['trading']['drivers']['paper']['current_pauses']),1)
   state['entry_inference_pause']['checked_at_ms']=NOW-300001;self.write(p,state)
   self.assertEqual(self.collect()['trading']['drivers']['paper']['current_pauses'],[])
+ def loop_error_fixture(self):
+  return {'resident_loop_progress':{'schema':'heptatrader.driver-loop-progress.v1',
+    'at_ms':NOW-1000,'pid':7,'iteration':19637},
+   'loop_observation':{'schema':'heptatrader.driver-loop-observation.v1','iteration':19637,
+    'checked_at_ms':NOW-995,'phase':'ERROR','reason_code':'DriverError'},
+   'last_error':'EXECUTION_EVENT_CONNECT_FAILED',
+   'last_error_observation':{'message':'EXECUTION_EVENT_CONNECT_FAILED',
+    'at_ms':NOW-995,'scope':'LAST_OBSERVED_LOOP_ERROR'}}
+ def test_same_iteration_execution_error_is_current_without_creating_a_pause_or_permission(self):
+  path=self.write(self.state/'paper-driver/state.json',self.loop_error_fixture());raw=path.read_bytes()
+  trade=self.collect()['trading'];driver=trade['drivers']['paper']
+  self.assertTrue(driver['last_error_is_current_fault']);self.assertIsNone(driver['historical_last_error'])
+  failure=driver['loop_failure'];self.assertEqual(failure['state'],'LATEST_DRIVER_LOOP_FAILED')
+  self.assertEqual(failure['iteration'],19637);self.assertEqual(failure['message'],'EXECUTION_EVENT_CONNECT_FAILED')
+  self.assertEqual(failure['next_action'],'READ_ORIGINAL_EXECUTION_SERVICE_AND_BROKER_CONNECTION')
+  self.assertTrue(failure['recovery_conditions']['fresh_later_non_error_loop_required'])
+  self.assertFalse(failure['trade_authority_granted']);self.assertEqual(driver['current_pauses'],[])
+  self.assertEqual(trade['current_blockers'],[]);self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+  marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True);marker.touch();identity=marker.stat()
+  out=self.collect();self.assertEqual(out['trading']['permission'],'BLOCKED')
+  self.assertIn('DRIVER paper ',progress.format_text(out));self.assertEqual(path.read_bytes(),raw)
+  self.assertEqual(marker.stat().st_ino,identity.st_ino);self.assertEqual(marker.read_bytes(),b'')
+ def test_retained_error_after_new_iteration_or_non_error_progress_is_historical(self):
+  for change in ('new_iteration','same_iteration_progress','cleared','undated','stale'):
+   with self.subTest(change=change):
+    state=self.loop_error_fixture()
+    if change=='new_iteration':
+     state['resident_loop_progress'].update(at_ms=NOW-100,iteration=19638)
+     state['loop_observation'].update(checked_at_ms=NOW-95,iteration=19638,phase='OBSERVING')
+    elif change=='same_iteration_progress':state['loop_observation'].update(checked_at_ms=NOW-900,phase='OWNER_SNAPSHOT_OBSERVED')
+    elif change=='cleared':state['last_error']=''
+    elif change=='undated':state['last_error_observation'].update(at_ms=None,scope='LEGACY_UNDATED_DIAGNOSTIC')
+    else:
+     state['resident_loop_progress']['at_ms']=NOW-300010
+     state['last_error_observation']['at_ms']=NOW-300005
+     state['loop_observation']['checked_at_ms']=NOW-300005
+    self.write(self.state/'paper-driver/state.json',state);driver=self.collect()['trading']['drivers']['paper']
+    self.assertFalse(driver['last_error_is_current_fault']);self.assertNotIn('loop_failure',driver)
+ def test_loop_error_needs_current_process_same_iteration_and_causal_observations(self):
+  for change in ('pid','iteration','bool_iteration','heartbeat_schema','observation_schema','future','before_error','stale_heartbeat'):
+   with self.subTest(change=change):
+    state=self.loop_error_fixture()
+    if change=='pid':state['resident_loop_progress']['pid']=8
+    elif change=='iteration':state['loop_observation']['iteration']=19636
+    elif change=='bool_iteration':
+     state['resident_loop_progress']['iteration']=True;state['loop_observation']['iteration']=True
+    elif change=='heartbeat_schema':state['resident_loop_progress']['schema']='unbound'
+    elif change=='observation_schema':state['loop_observation']['schema']='unbound'
+    elif change=='future':
+     state['last_error_observation']['at_ms']=NOW+1;state['loop_observation']['checked_at_ms']=NOW+1
+    elif change=='before_error':state['loop_observation']['checked_at_ms']=NOW-996
+    else:state['resident_loop_progress']['at_ms']=NOW-300001
+    self.write(self.state/'paper-driver/state.json',state);trade=self.collect()['trading'];driver=trade['drivers']['paper']
+    self.assertIsNone(driver['last_error_is_current_fault']);self.assertIsNone(driver['historical_last_error'])
+    self.assertEqual(driver['loop_failure']['state'],'CURRENT_DRIVER_LOOP_FAILURE_UNCONFIRMED')
+    self.assertEqual(driver['loop_failure']['next_action'],'READ_ORIGINAL_DRIVER_HEARTBEAT_AND_LOOP_ERROR')
+    self.assertEqual(trade['current_blockers'],[]);self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+ def test_error_text_alone_never_becomes_a_current_loop_failure(self):
+  for change in ('message','scope','observation_missing','arbitrary_fresh_error'):
+   with self.subTest(change=change):
+    state=self.loop_error_fixture()
+    if change=='message':state['last_error_observation']['message']='other error'
+    elif change=='scope':state['last_error_observation']['scope']='OTHER_SCOPE'
+    elif change=='observation_missing':state.pop('loop_observation')
+    else:state['loop_observation'].update(phase='OBSERVING')
+    self.write(self.state/'paper-driver/state.json',state);driver=self.collect()['trading']['drivers']['paper']
+    self.assertFalse(driver['last_error_is_current_fault']);self.assertNotIn('loop_failure',driver)
  def fixture_learning(self):
   root=self.home/'resident';cfg={'candidate_directory':str(root/'candidates'),'evaluation_directory':str(root/'evaluation'),
    'control_directory':str(root/'control'),'runtime_directory':'frozen-runtime','objective':{'schema':'v4'}}
@@ -621,6 +689,52 @@ class ProgressTests(unittest.TestCase):
    self.assertEqual(len(self.collect()[key]),1)
    self.units[name]['_argv']=[self.units[name]['_argv'][0],'-B','-m','laya_cell.current100k_forward_worker','--config',str(path),'--mode',mode]
    self.assertEqual(len(self.collect()[key]),1)
+
+ def discover_running_service(self,name,configured,actual):
+  listing=subprocess.CompletedProcess([],0,name+' static\n','')
+  output=('Id='+name+'\nMainPID=321\nActiveState=activating\nSubState=start\n'
+   'ExecStart={ path='+configured[0]+' ; argv[]='+shlex.join(configured)+' ; ignore_errors=no ; }\n')
+  details=subprocess.CompletedProcess([],0,output,'')
+  raw=b'\0'.join(arg.encode() for arg in actual)+b'\0'
+  with mock.patch.object(progress.subprocess,'run',side_effect=[listing,details]),mock.patch.object(Path,'read_bytes',return_value=raw):
+   self.units[name]=progress.discover_units()[name]
+
+ def test_selected_pinned_launcher_exec_matches_the_same_worker_config_and_mode(self):
+  for mode,key in [('predict','value_prediction'),('evaluate','value_forward')]:
+   name,path,launcher=self.launcher_fixture(mode);configured=list(self.units[name]['_argv'])
+   actual=[configured[0],'-B','-m','laya_cell.current100k_forward_worker','--config',str(path),'--mode',mode]
+   before={p:p.read_bytes() for p in (path,launcher)}
+   self.discover_running_service(name,configured,actual)
+   with mock.patch.object(progress.subprocess,'run',side_effect=AssertionError('observation must not execute')):
+    entry=self.collect()[key][0]
+   service=entry['service'];self.assertTrue(service['configuration_matches_process'])
+   self.assertEqual(service['configuration_match_basis'],'PINNED_FORWARD_LAUNCHER_EXEC_ARGV')
+   self.assertEqual(service['config_source'],'RUNNING_PROCESS_ARGV')
+   self.assertEqual(service['configured_config_path'],str(path));self.assertEqual(service['running_config_path'],str(path))
+   self.assertEqual(before,{p:p.read_bytes() for p in before})
+
+ def test_same_config_name_cannot_hide_changed_exec_mode_python_hash_or_launcher(self):
+  name,path,launcher=self.launcher_fixture('predict');original=list(self.units[name]['_argv'])
+  raw_config=path.read_bytes();raw_launcher=launcher.read_bytes()
+  for change in ('mode','python','extra_arg','module','config_sha','config_bytes','launcher_bytes','config_path'):
+   with self.subTest(change=change):
+    configured=list(original)
+    actual=[configured[0],'-B','-m','laya_cell.current100k_forward_worker','--config',str(path),'--mode','predict']
+    if change=='mode':actual[-1]='evaluate'
+    elif change=='python':actual[0]='/other/python'
+    elif change=='extra_arg':actual.extend(['--unknown','value'])
+    elif change=='module':actual[3]='laya_cell.financial_forward_predict'
+    elif change=='config_sha':configured[6]='0'*64
+    elif change=='config_bytes':path.write_bytes(raw_config+b' ')
+    elif change=='launcher_bytes':launcher.write_bytes(b'changed launcher')
+    else:
+     other=self.home/'other-config.json';other.write_bytes(raw_config);actual[5]=str(other)
+    self.discover_running_service(name,configured,actual);out=self.collect()
+    entry=(out['value_forward'] if change=='mode' else out['value_prediction'])[0]
+    self.assertFalse(entry['service']['configuration_matches_process'])
+    self.assertNotIn('configuration_match_basis',entry['service'])
+    self.assertEqual(entry['service']['running_config_path'],actual[5])
+    path.write_bytes(raw_config);launcher.write_bytes(raw_launcher)
 
  def test_launcher_name_alone_or_changed_config_inventory_bytes_cannot_create_value_progress(self):
   name,path,launcher=self.launcher_fixture('predict');original=list(self.units[name]['_argv'])
