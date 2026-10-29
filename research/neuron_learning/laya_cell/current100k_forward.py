@@ -11,6 +11,8 @@ from .resident_store import write_once
 
 PLAN_SCHEMA='heptatrader.current100k-value-forward-plan.v1'
 CANDIDATE_SCHEMA='heptatrader.current100k-value-candidate.v1'
+SAME_PRODUCER_REFIT='SAME_PRODUCER_REFIT'
+NEW_PRODUCER_SCOPE='NEW_PRODUCER_SCOPE'
 
 def validate_value_candidate(directory,c=None):
  from historical_training.current100k import BEHAVIOR
@@ -77,14 +79,69 @@ def verify_scored_row(plan,binding,prediction,reward,request_item):
   hashes={side:hashlib.sha256(x['feature_text'].encode()).hexdigest() for side,x in zip(('BUY','SELL'),text)}
   if prediction.get('feature_text_sha256')!=hashes:raise ContractError('CURRENT100K_FORWARD_FEATURE_IDENTITY')
 
-def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy_plans_root):
+def _new_producer_lineage(config,data,prior,prior_directory,history,prior_plan_path):
+ """A changed producer starts a fresh fit, retaining the original trial budget.
+
+ Validate historical evidence once at registration. New prediction workers do
+ not acquire an ongoing dependency on an old producer's retired runtime.
+ """
+ from .financial_forward_protocol import validate_plan
+ from historical_training.current100k import validate_config
+ if (prior_plan_path is None or config.get('automatic_trading') is not False
+     or config.get('actor_update') is not False):
+  raise ContractError('NEW_PRODUCER_SCOPE_REQUIRES_PRIOR_PLAN_NO_ACTOR')
+ prior_plan_path=Path(prior_plan_path);previous=read_json(prior_plan_path)
+ for plan in history:
+  validate_plan(plan,int(time.time()*1000))
+  if (plan.get('schema') not in (PLAN_SCHEMA,'heptatrader.financial-forward-plan.v1')
+      or any(not isinstance(plan.get(key),list) for key in ('training_input_ids','training_reward_ids'))):
+   raise ContractError('NEW_PRODUCER_SCOPE_COMPLETE_TRIAL_HISTORY_REQUIRED')
+ trials=[plan['trial'] for plan in history]
+ if (not trials or len({p['plan_id'] for p in history})!=len(history)
+     or sorted(trials)!=list(range(1,len(trials)+1))
+     or previous not in history or previous['trial']!=max(trials)):
+  raise ContractError('NEW_PRODUCER_SCOPE_COMPLETE_TRIAL_HISTORY_REQUIRED')
+ if (previous.get('schema')!=PLAN_SCHEMA or previous.get('candidate_id')!=prior['candidate_id']
+     or previous.get('candidate_manifest_sha256')!=sha_file(prior_directory/'candidate.json')):
+  raise ContractError('NEW_PRODUCER_SCOPE_PRIOR_CANDIDATE_BINDING')
+ validate_bound_plan(previous,prior)
+ old_scope=previous['behavior_scope']
+ if (data['period_sha256']!=previous['period_sha256'] or config['period_sha256']!=previous['period_sha256']
+     or {r['behavior_scope']['model_id'] for r in data['rows']}!={old_scope['behavior_model_id']}):
+  raise ContractError('NEW_PRODUCER_SCOPE_BEHAVIOR_OR_PERIOD_CHANGED')
+ manifest=validate_config({'automatic_trading':False,'automatic_training':False,
+  'period_path':config['period_path'],'period_sha256':config['period_sha256'],
+  'registration':config['producer_registration']})
+ producer=data['producer_manifest_sha256']
+ if (manifest.get('schema')!='heptatrader.attribution-producer.v1'
+     or producer!=config['producer_registration']['sha256']
+     or producer==old_scope['producer_manifest_sha256']):
+  raise ContractError('NEW_PRODUCER_SCOPE_REQUIRES_CHANGED_REGISTERED_PRODUCER')
+ if (set(prior['row_ids']) & {r['row_id'] for r in data['rows']}
+     or {rid for p in history for rid in p['training_input_ids']} & {r['input_id'] for r in data['rows']}
+     or {rid for p in history for rid in p['training_reward_ids']} & {r['reward_id'] for r in data['rows']}):
+  raise ContractError('NEW_PRODUCER_SCOPE_HISTORICAL_TRAINING_OVERLAP')
+ return {'registration_scope':NEW_PRODUCER_SCOPE,'prior_plan_id':previous['plan_id'],
+  'prior_plan_sha256':sha_file(prior_plan_path),'prior_trial':previous['trial'],
+  'prior_producer_manifest_sha256':old_scope['producer_manifest_sha256'],
+  'previous_rows_reused_in_refit':0,'fit_relation':'FRESH_PRODUCER_SCOPE_FRESH_HEAD_NO_HISTORICAL_ROWS'}
+
+def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy_plans_root,
+             *,registration_scope=SAME_PRODUCER_REFIT,prior_plan_path=None):
  from .financial_forward_protocol import RULE
  from .financial_forward_witness import sign_record
  from historical_training.current100k_value_trial import selected_rows
  c=validate_value_candidate(candidate_directory);data=read_json(Path(dataset_path),32*1024**2);selected_rows(data,data)
- prior=validate_value_candidate(Path(prior_candidate_path).parent)
- if not set(prior['row_ids'])<=set(c['row_ids']):raise ContractError('PRIOR_ELEVEN_ROWS_NOT_PRESERVED')
- legacy=[read_json(x) for x in Path(legacy_plans_root).glob('*/plan.json')]
+ prior_directory=Path(prior_candidate_path).parent;prior=validate_value_candidate(prior_directory)
+ roots=[legacy_plans_root] if isinstance(legacy_plans_root,(str,Path)) else list(legacy_plans_root)
+ legacy=[read_json(x) for root in roots for x in Path(root).glob('*/plan.json')]
+ lineage={'previous_rows_reused_in_refit':len(prior['row_ids']),
+          'fit_relation':'FRESH_HEAD_REFIT_NOT_INCREMENTAL_ACTOR_UPDATES'}
+ if registration_scope==SAME_PRODUCER_REFIT:
+  if not set(prior['row_ids'])<=set(c['row_ids']):raise ContractError('PRIOR_ELEVEN_ROWS_NOT_PRESERVED')
+ elif registration_scope==NEW_PRODUCER_SCOPE:
+  lineage=_new_producer_lineage(config,data,prior,prior_directory,legacy,prior_plan_path)
+ else:raise ContractError('CURRENT100K_REGISTRATION_SCOPE_UNKNOWN')
  existing=list((Path(config['forward_root'])/'plans').glob('*/plan.json'))
  if existing:raise ContractError('CURRENT100K_FORWARD_ALREADY_REGISTERED_NO_REPLAY')
  trial=max([x['trial'] for x in legacy]+[0])+1
@@ -98,8 +155,7 @@ def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy
   'training_dataset_sha256':sha_file(Path(dataset_path)),'training_dataset_path':str(dataset_path),
   'training_reward_ids':[x['reward_id'] for x in rows],'training_input_ids':[x['input_id'] for x in rows],
   'training_mean_usd':sum(float(x['net_usd']) for x in rows)/len(rows),'prior_candidate_id':prior['candidate_id'],
-  'prior_fit_rows':prior['rows'],'current_fit_rows':len(rows),'previous_rows_reused_in_refit':len(prior['row_ids']),
-  'fit_relation':'FRESH_HEAD_REFIT_NOT_INCREMENTAL_ACTOR_UPDATES',
+  'prior_fit_rows':prior['rows'],'current_fit_rows':len(rows),**lineage,
   'behavior_scope':{'behavior_profile':data['behavior_profile'],'reference_notional_usd':100000,'instrument':'EUR.USD','currency':'USD',
                     'behavior_model_id':next(iter(models)),'producer_manifest_sha256':data['producer_manifest_sha256']},
   'producer_registration':config['producer_registration'],'period_sha256':config['period_sha256'],'rule':dict(RULE),'trial':trial,'synthetic':False,
