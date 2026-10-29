@@ -5,7 +5,7 @@ immutable candidate outputs survive restart. The bootstrap trainer stays off.
 """
 from __future__ import annotations
 import sqlite3
-import argparse,fcntl,json,os,signal,subprocess,sys,time
+import argparse,fcntl,json,os,signal,stat,subprocess,sys,time
 from pathlib import Path
 from .integrity import ContractError,read_json,digest,sha_file,canonical
 from .resident_data import collect
@@ -273,6 +273,41 @@ class Supervisor:
   except (ContractError,OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
    return {'candidate_id':candidate_id,'state':'REGISTRATION_EVIDENCE_UNAVAILABLE',
      'reason':str(exc),'registration_is_performance_result':False}
+
+ def refresh_status(self):
+  """Refresh the existing control projection without recovery or new work.
+
+  An operator can run this under the original scheduler lock while the trainer
+  is paused. Queue inspection and receipt reads are deliberately distinct from
+  reconcile_evaluation_queue(), which may publish a registration.
+  """
+  fd=getattr(self,'_controller_lock_fd',None)
+  if type(fd) is not int or fd<3:raise ContractError('STATUS_REFRESH_SCHEDULER_LOCK_REQUIRED')
+  actual=os.fstat(fd);expected=(self.root/'scheduler.lock').lstat()
+  if (not stat.S_ISREG(actual.st_mode) or not stat.S_ISREG(expected.st_mode)
+      or actual.st_uid!=os.geteuid() or actual.st_mode&0o077
+      or (actual.st_dev,actual.st_ino)!=(expected.st_dev,expected.st_ino)):
+   raise ContractError('STATUS_REFRESH_SCHEDULER_LOCK_IDENTITY')
+  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  if (getattr(self,'child',None) is not None or self.db.execute(
+      "SELECT count(*) FROM jobs WHERE status IN ('ADMITTED','RUNNING')").fetchone()[0]):
+   raise ContractError('STATUS_REFRESH_ACTIVE_TRAINING_JOB')
+  queue=inspect_evaluation_queue(self.c)
+  waiting,registration=self._waiting_evaluations()
+  queue.update(registration,deferred_training_candidates=len(waiting))
+  if queue['pending_original_trials']:
+   state='EVALUATING_ORIGINAL_FORWARD_WORK'
+   action='WAIT_FOR_ORIGINAL_EVALUATOR_CLOSEOUT'
+  elif waiting:
+   state='CANDIDATE_READY_AWAITING_FORWARD_REGISTRATION'
+   action='RESUME_ORIGINAL_REGISTRAR_AFTER_ADMISSION'
+  else:
+   state='FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE'
+   action='NEW_CANDIDATE_AFTER_TRAINING_ADMISSION'
+  return self.write_status(state=state,**queue,next_action=action,
+    status_refresh_only=True,training_data_refresh_performed=False,
+    worker_lease_acquired=False,worker_launch_authority=False,
+    registration_performed=False,training_performed=False)
 
  def write_status(self,*,storage=None,**extra):
   self.storage=inspect_storage(self.c) if storage is None else storage

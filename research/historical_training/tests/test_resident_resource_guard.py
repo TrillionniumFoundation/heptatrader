@@ -185,6 +185,26 @@ class StatusDiagnosticTests(unittest.TestCase):
             self.assertEqual(set(status['current_resource_blockers']),
                 {'OPERATOR_RESOURCE_HOLD','RESOURCE_DIAGNOSTICS_UNAVAILABLE'})
             self.assertTrue(status['manual_hold']['present'])
+    def test_terminal_forward_wait_preserves_hold_but_identifies_owner_next_action(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);hold=root/'manual.json'
+            hold.write_text(json.dumps({'created_ms':NOW-86400000,'owner':'original-owner',
+                'reason':'PAUSE_NEW_BUDGET_PENDING_SAME_CANDIDATE_FORWARD',
+                'release_conditions':'Finite diagnosis and original guard healthy; exact marker only'}))
+            before=hold.read_bytes()
+            gate=Gate({'state_root':str(root/'guard'),'manual_hold_path':str(hold)},'trainer')
+            class Base:
+                def write_status(self,**kw):return kw
+            with patch('historical_training.resident_live_source.refresh',side_effect=AssertionError('no source refresh')):
+                status=guarded_trainer_class(Base,gate)().write_status(
+                    state='FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE',pending_original_trials=0)
+            current=status['resource_diagnostics']['manual_hold']
+            self.assertEqual(current['waiting_condition_state'],'NO_PENDING_FORWARD_TRIAL')
+            self.assertEqual(current['owner'],'original-owner')
+            self.assertIn('exact marker',current['release_conditions'])
+            self.assertEqual(current['next_action'],'OWNER_CLOSE_TERMINAL_FORWARD_WAIT_THEN_RECHECK_TRAINING_ADMISSION')
+            self.assertIn('OPERATOR_RESOURCE_HOLD',status['current_blockers'])
+            self.assertFalse(status['automatic_resume_expected']);self.assertEqual(hold.read_bytes(),before)
     def test_calendar_and_transient_pressure_do_not_claim_operator_resume_is_required(self):
         class Base:
             def write_status(self,**kw):return kw
@@ -197,6 +217,44 @@ class StatusDiagnosticTests(unittest.TestCase):
         self.assertIsNone(result['automatic_resume_expected'])
         self.assertEqual(result['resume_conditions_to_recheck'],
             ['HOST_FULL_MEMORY_PSI_PRESSURE','TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'])
+
+
+class BoundedControllerTests(unittest.TestCase):
+    def run_controller(self,flag,*,failure=None):
+        from historical_training import resident_resource_guard as module
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
+            root=Path(td);config={'original_config':str(root/'original.json')}
+            original={'control_directory':str(root),'runtime_directory':str(root/'runtime')}
+            gate=Mock();gate.root=root;gate.draining=False
+            service=Mock();service.stop=False;service.child=None
+            service.step.side_effect=failure
+            stack.enter_context(patch.object(module,'read',return_value=config))
+            stack.enter_context(patch.object(module,'verify_config',return_value=original))
+            stack.enter_context(patch.object(module,'Gate',return_value=gate))
+            stack.enter_context(patch.object(module,'guarded_trainer_class',return_value=lambda path:service))
+            stack.enter_context(patch.object(module.signal,'signal'))
+            stack.enter_context(patch.object(module.time,'sleep',side_effect=AssertionError('bounded mode cannot poll')))
+            stack.enter_context(patch.object(sys,'argv',['guard','--config',str(root/'wrapper.json'),'--role','trainer',flag]))
+            if failure is None:module.main()
+            else:
+                with self.assertRaisesRegex(RuntimeError,'step failed'):module.main()
+            service.db.close.assert_called_once();gate.release.assert_called_once()
+            return service
+
+    def test_once_finishes_one_normal_step_before_cleanup_and_never_polls(self):
+        service=self.run_controller('--once')
+        service.recover.assert_called_once();service.step.assert_called_once()
+        service.refresh_status.assert_not_called()
+        self.assertLess(service.mock_calls.index(('step',(),{})),service.mock_calls.index(('db.close',(),{})))
+
+    def test_refresh_only_never_recovers_or_dispatches(self):
+        service=self.run_controller('--refresh-status')
+        service.refresh_status.assert_called_once();service.recover.assert_not_called();service.step.assert_not_called()
+
+    def test_once_failure_has_failing_exit_after_original_error_status(self):
+        service=self.run_controller('--once',failure=RuntimeError('step failed'))
+        service.step.assert_called_once();service.write_status.assert_called_once()
 
 
 class ResourceAttributionTests(unittest.TestCase):

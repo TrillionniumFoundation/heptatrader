@@ -422,6 +422,53 @@ class ForwardAttemptControllerTests(ForwardAttemptFixture):
         self.assertEqual(result['reason'],'FORWARD_ATTEMPT_CONTROLLER_STOPPING')
         self.assertEqual(marker.read_bytes(),raw);self.assert_unallocated()
 
+    def test_terminal_unallocated_attempt_refreshes_paused_status_and_replays(self):
+        path,pin=self.request_file();self.owned_lock();gate=self.wrap([])
+        self.clock.return_value=(self.candidate['window']['validation_end_ms']+1)/1000
+        write_once(self.service.root/'status.json',{'state':'HOLD_OLD_WAIT',
+            'pending_original_trials':1,'futile_pending_trials':1})
+        self.capture.side_effect=AssertionError('expired window cannot read source')
+        result=attempts.run_request(self.service,path,pin,wait_seconds=0)
+        self.assertEqual(result['state'],'NO_FORWARD_TRIAL')
+        self.assertTrue(result['trainer_status_updated'])
+        status=read_json(self.service.root/'status.json')
+        self.assertEqual(status['state'],'FORWARD_EVALUATION_ATTEMPT_TERMINAL')
+        self.assertEqual(status['pending_original_trials'],0)
+        self.assertEqual(status['futile_pending_trials'],0)
+        self.assertEqual(status['next_action'],'NEW_CANDIDATE_AFTER_TRAINING_ADMISSION')
+        self.assertFalse(status['forward_attempt_registration']['trial_allocated'])
+        receipt=self.path().parent/'no-forward-trial.json';before=receipt.read_bytes()
+        again=attempts.run_request(self.service,path,pin,wait_seconds=0)
+        self.assertTrue(again['trainer_status_updated']);self.assertEqual(receipt.read_bytes(),before)
+        self.assertEqual(gate.calls,[]);self.assert_unallocated()
+
+    def test_status_refresh_uses_owner_lock_and_changes_only_control_projection(self):
+        self.owned_lock();gate=self.wrap([])
+        before=self.service.db.total_changes
+        with patch.object(self.service,'recover',side_effect=AssertionError('no recovery')), \
+             patch.object(self.service,'step',side_effect=AssertionError('no training')), \
+             patch('laya_cell.resident.inspect_storage',return_value={'admission_ready':True}), \
+             patch.object(self.service,'reconcile_evaluation_queue',side_effect=AssertionError('no registration')):
+            result=self.service.refresh_status()
+        self.assertEqual(result['state'],'FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE')
+        self.assertEqual(result['pending_original_trials'],0)
+        self.assertFalse(result['registration_performed']);self.assertFalse(result['training_performed'])
+        self.assertFalse(result['worker_launch_authority'])
+        self.assertEqual(self.service.db.total_changes,before)
+        self.assertEqual(gate.calls,[]);self.assert_original()
+        with self.service.db:self.service.db.execute("UPDATE jobs SET status='RUNNING'")
+        with self.assertRaisesRegex(ContractError,'STATUS_REFRESH_ACTIVE_TRAINING_JOB'):
+            self.service.refresh_status()
+
+    def test_status_refresh_refuses_absent_or_unowned_scheduler_lock(self):
+        self.wrap([])
+        with self.assertRaisesRegex(ContractError,'STATUS_REFRESH_SCHEDULER_LOCK_REQUIRED'):
+            self.service.refresh_status()
+        lock=self.owned_lock()
+        fd=os.open(lock,os.O_WRONLY|os.O_CLOEXEC);self.addCleanup(os.close,fd)
+        self.service._controller_lock_fd=fd
+        with self.assertRaises(BlockingIOError):self.service.refresh_status()
+
     def test_request_file_is_exact_private_regular_bytes(self):
         path,pin=self.request_file()
         self.assertEqual(attempts.load_request(path,pin),self.request)

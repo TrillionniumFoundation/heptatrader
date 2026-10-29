@@ -425,7 +425,10 @@ class Gate:
                 if len(raw)>16384:raise ValueError('HOLD_TOO_LARGE')
                 value=json.loads(raw)
                 if not isinstance(value,dict):raise ValueError('HOLD_NOT_OBJECT')
-                hold.update({key:value[key] for key in ('reason','created_at_ms','created_ms','resume_when') if key in value})
+                hold.update({key:value[key] for key in ('reason','created_at_ms','created_ms',
+                    'owner','task','resume_when','release_conditions') if key in value})
+                hold['sha256']=hashlib.sha256(raw).hexdigest()
+                hold['next_action']='OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS'
             except (OSError,ValueError,TypeError) as exc:
                 hold['reason_unavailable']=type(exc).__name__
         try:
@@ -874,6 +877,11 @@ def guarded_trainer_class(base,gate):
             diagnostics=getattr(gate,'status_diagnostics',None)
             if callable(diagnostics):
                 current=diagnostics();reasons=list(current['current_resource_blockers'])
+                hold=current.get('manual_hold',{})
+                if (hold.get('present') and hold.get('reason')=='PAUSE_NEW_BUDGET_PENDING_SAME_CANDIDATE_FORWARD'
+                        and extra.get('pending_original_trials')==0):
+                    hold.update(waiting_condition_state='NO_PENDING_FORWARD_TRIAL',
+                        next_action='OWNER_CLOSE_TERMINAL_FORWARD_WAIT_THEN_RECHECK_TRAINING_ADMISSION')
                 state=extra.get('state','')
                 if (isinstance(state,str) and state.startswith(('HOLD_','WAITING_','CANDIDATE_READY_AWAITING_','EVALUATING_'))
                         or state=='WORKER_TERMINATION_PENDING'):
@@ -951,13 +959,18 @@ def verify_config(c):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--role',choices=['trainer','evaluator'],required=True)
     p.add_argument('--check-only',action='store_true')
+    p.add_argument('--refresh-status',action='store_true',
+                   help='refresh the paused trainer projection under its lock; no recovery or new work')
+    p.add_argument('--once',action='store_true',help='one original guarded trainer step, then exit')
     p.add_argument('--forward-attempt-request',type=Path)
     p.add_argument('--forward-attempt-request-sha256')
     p.add_argument('--attempt-wait-seconds',type=int,default=90)
     a=p.parse_args();os.umask(0o077)
     attempt_mode=a.forward_attempt_request is not None
     if (attempt_mode!=(a.forward_attempt_request_sha256 is not None)
-            or (attempt_mode and (a.role!='trainer' or a.check_only))
+            or (attempt_mode and (a.role!='trainer' or a.check_only or a.refresh_status or a.once))
+            or (a.refresh_status and (a.role!='trainer' or a.check_only or a.once))
+            or (a.once and (a.role!='trainer' or a.check_only))
             or not 0<=a.attempt_wait_seconds<=300):
         p.error('forward attempt requires trainer role, exact request SHA and a 0..300 second bound')
     c=read(a.config);original=verify_config(c);gate=Gate(c,a.role)
@@ -984,6 +997,9 @@ def main():
     def request_drain(*_):gate.draining=True
     signal.signal(signal.SIGUSR1,request_drain)
     try:
+        if a.refresh_status:
+            service.refresh_status()
+            return
         if attempt_mode:
             from laya_cell.resident_forward_attempt import run_request
             result=run_request(service,a.forward_attempt_request,a.forward_attempt_request_sha256,
@@ -1007,7 +1023,12 @@ def main():
                 else:
                     atomic(service.root/'status.json',{'at_ms':failed_at,'state':'INDEPENDENT_EVALUATION_UNAVAILABLE',
                         'reason':str(exc),'promotion_performed':False,'broker_orders_sent':0})
-            if gate.draining and (a.role=='trainer' or not service.tasks):break
+                if a.once:raise
+            # Trainer step waits for its bounded child and commits completion;
+            # --once never interrupts it to dispatch another candidate. The
+            # existing finally block still reaps a failed/pending child, while
+            # inherited locks fence recovery if an unkillable child survives.
+            if a.once or (gate.draining and (a.role=='trainer' or not service.tasks)):break
             poll_seconds=30 if a.role=='trainer' else evaluator_idle_poll_seconds(gate,service.tasks)
             for _ in range(poll_seconds):
                 if service.stop:break

@@ -462,6 +462,35 @@ def native_marker_origin(marker: bytes | None) -> str:
             "UNRECOGNIZED_INDEPENDENT_NATIVE")
 
 
+def resume_guidance(origin: str, persistent_hold: bool) -> dict:
+    """Explain the existing owner workflow; this is never resume permission."""
+    if persistent_hold:
+        action = "REVIEW_AND_RELEASE_EXACT_PERSISTENT_MAINTENANCE_HOLD"
+        conditions = ["ORIGINAL_HOLD_RESUME_CONDITIONS", "EXACT_HOLD_SHA256",
+                      "NATIVE_SERVICES_AND_DRIVER_STATE_READY"]
+        command = None
+    elif origin == "INDEPENDENT_EMPTY_NATIVE":
+        action = "EXPLICIT_NATIVE_RESUME_PRECHECK"
+        conditions = ["NO_PERSISTENT_MAINTENANCE_HOLD", "NATIVE_OWNER_EXPOSURE_RECONCILED",
+                      "NATIVE_SERVICE_IDENTITIES_UNCHANGED", "POST_RELEASE_NATIVE_GUARD_VERIFIED"]
+        command = "heptatrader paper-on --resume-native-hold --check"
+    elif origin == "CLI_TAGGED_PAUSE":
+        action = "PAPER_ON_AFTER_NATIVE_READINESS"
+        conditions = ["NO_PERSISTENT_MAINTENANCE_HOLD", "NATIVE_READINESS"]
+        command = "heptatrader paper-on"
+    elif origin == "ABSENT":
+        action = "CONTINUE_NATIVE_ADMISSION_CHECKS"
+        conditions = ["NATIVE_READINESS"]
+        command = None
+    else:
+        action = "RECONCILE_UNRECOGNIZED_NATIVE_MARKER"
+        conditions = ["MARKER_IDENTITY_AND_OWNER_RESOLVED"]
+        command = None
+    return {"next_action": action, "conditions_to_recheck": conditions,
+            "check_command": command, "automatic_resume": False,
+            "resume_authority_granted": False}
+
+
 def _status(action: str, marker: bytes | None, record: dict | None, hold_raw: bytes | None = None) -> dict:
     origin = native_marker_origin(marker)
     blockers = (["PERSISTENT_OPERATOR_HOLD"] if record is not None else [])
@@ -478,6 +507,7 @@ def _status(action: str, marker: bytes | None, record: dict | None, hold_raw: by
             "native_marker_origin_evidence": "PAYLOAD_SHAPE_ONLY", "native_marker_creator_verified": False,
             "hold_sha256": None if hold_raw is None else hashlib.sha256(hold_raw).hexdigest(),
             "new_paper_risk_blocked": bool(blockers), "blockers": blockers,
+            "resume": resume_guidance(origin, record is not None),
             "may_stop_driver": False, "broker_orders_sent": 0}
 
 
