@@ -8,7 +8,7 @@ and enforces all original 60-second and signing/market-source checks.
 from __future__ import annotations
 import hashlib,json,os,re,stat,time
 from pathlib import Path
-from .common import EvidenceError
+from .common import EvidenceError,digest
 
 EXPECTED_INTERVAL_MS=120000
 VALUE_DEADLINE_MS=60000
@@ -85,7 +85,45 @@ def _load_pinned(config):
         raise EvidenceError('VALUE_PRIORITY_JOURNAL_DIR_SCOPE')
     return plan,folder
 
-def _recent_requests(folder):
+def _strict_record(raw):
+    def pairs(items):
+        out={}
+        for key,value in items:
+            if key in out:raise ValueError('DUPLICATE_JSON_KEY')
+            out[key]=value
+        return out
+    return json.loads(raw,object_pairs_hook=pairs,
+        parse_constant=lambda _:(_ for _ in ()).throw(ValueError('NONFINITE_JSON')))
+
+def _completed_failure(request,response,now_ms,period_sha256):
+    """An adjacent same-segment original record pair, not full-chain authorization."""
+    try:
+        request_segment,q=request;response_segment,p=response
+        for segment,event in (request,response):
+            owner=segment[:32]
+            if (event['schema']!='heptatrader.exact-decision-attribution.v1'
+                or event['producer_id']!=owner or not _ID.fullmatch(owner)
+                or type(event['sequence']) is not int or event['sequence']<1
+                or type(event['dropped_total']) is not int or event['dropped_total']!=0
+                or event['sha256']!=digest({k:v for k,v in event.items() if k!='sha256'})):
+                return False
+        d=q['data'];r=p['data'];started=d['started_at_ms'];available=r['available_at_ms']
+        if (request_segment!=response_segment or q['kind']!='REQUEST' or p['kind']!='RESPONSE'
+            or p['sequence']!=q['sequence']+1 or p['previous']!=q['sha256']
+            or not isinstance(q['previous'],str) or not re.fullmatch('[0-9a-f]{64}',q['previous'])
+            or d['instrument']!='EUR.USD' or d['period_sha256']!=period_sha256
+            or hashlib.sha256(d['prompt'].encode()).hexdigest()!=d['prompt_sha256']
+            or r['request_id']!=d['request_id'] or r['request_sha256']!=digest(d)
+            or type(r['returncode']) is not int or r['returncode']==0 or not isinstance(r['stdout'],str)):
+            return False
+        stamps=(started,available,q['captured_at_ms'],q['written_at_ms'],p['captured_at_ms'],p['written_at_ms'])
+        return (all(type(stamp) is int for stamp in stamps)
+            and 0<=started<=q['captured_at_ms']<=available<=p['captured_at_ms']<=p['written_at_ms']<=now_ms
+            and q['captured_at_ms']<=q['written_at_ms']<=p['written_at_ms'])
+    except (KeyError,TypeError,ValueError,AttributeError,UnicodeError):
+        return False
+
+def _recent_requests(folder,*,failed_requests=None,now_ms=None,period_sha256=None):
     files=[]
     for file in folder.iterdir():
         if not _FILE.fullmatch(file.name):continue
@@ -95,11 +133,27 @@ def _recent_requests(folder):
         if st.st_size>MAX_FILE_BYTES:raise EvidenceError('VALUE_PRIORITY_JOURNAL_BOUND')
         files.append((st.st_mtime_ns,file))
     if not files:return []
-    samples={}
+    samples={};requests={};responses={};strict_records=True
     for _,file in sorted(files,reverse=True)[:3]:
         for line in _private_file(file,MAX_FILE_BYTES,tail=True).splitlines():
-            try:e=json.loads(line)
-            except (ValueError,UnicodeError):continue
+            try:e=json.loads(line) if failed_requests is None else _strict_record(line)
+            except (ValueError,UnicodeError):
+                if failed_requests is None:continue
+                strict_records=False
+                # Keep the old conservative REQUEST observation if only its
+                # stricter release proof is malformed. Never release from it.
+                try:e=json.loads(line)
+                except (ValueError,UnicodeError):continue
+            if failed_requests is not None:
+                # Reuse these same bounded tails. Invalid or ambiguous response
+                # evidence can never turn a negative reservation into admission.
+                if not isinstance(e,dict):raise EvidenceError('VALUE_PRIORITY_RECORD_SHAPE')
+                if e.get('kind') in ('REQUEST','RESPONSE'):
+                    d=e.get('data');rid=d.get('request_id') if isinstance(d,dict) else None
+                    if not isinstance(rid,str):strict_records=False
+                    else:
+                        target=requests if e['kind']=='REQUEST' else responses
+                        target.setdefault(rid,[]).append((file.name,e))
             if e.get('kind')!='REQUEST' or not isinstance(e.get('data'),dict):continue
             d=e['data'];rid=d.get('request_id')
             started=d.get('started_at_ms');written=e.get('written_at_ms')
@@ -114,6 +168,12 @@ def _recent_requests(folder):
             if old is not None and old!=(rid,position==0):
                 raise EvidenceError('VALUE_PRIORITY_DUPLICATE_SLOT')
             samples[started]=(rid,position==0)
+    if failed_requests is not None and strict_records:
+        for started,(rid,flat) in samples.items():
+            original=requests.get(rid,[]);completed=responses.get(rid,[])
+            if (flat and 0<=now_ms-started<=VALUE_DEADLINE_MS and len(original)==len(completed)==1
+                and _completed_failure(original[0],completed[0],now_ms,period_sha256)):
+                failed_requests.add(started)
     return sorted((t,flat) for t,(_,flat) in samples.items())
 
 def decision(config,role,now_ms):
@@ -124,7 +184,9 @@ def decision(config,role,now_ms):
     plan,folder=_load_pinned(config)
     if not plan['input_start_ms']<=now_ms<plan['input_end_ms']:
         return False,'VALUE_TRIAL_OUTSIDE_WINDOW',{'source':'PINNED_ORIGINAL'}
-    readings=_recent_requests(folder)
+    failed=set()
+    readings=(_recent_requests(folder,failed_requests=failed,now_ms=now_ms,period_sha256=plan.get('period_sha256'))
+              if config['schema']==ACTUAL_POLICY_SCHEMA else _recent_requests(folder))
     if not readings:
         return False,'VALUE_PRODUCER_NO_RECENT_REQUEST',{'source':'PINNED_ORIGINAL'}
     t,flat=readings[-1]
@@ -153,9 +215,10 @@ def decision(config,role,now_ms):
         # policy does not claim a hard latency guarantee for future requests
         # waiting on the same, unmodified non-preemptive heavy-worker lease.
         fresh_flat=[when for when,is_flat in readings
-                    if is_flat and 0<=now_ms-when<=VALUE_DEADLINE_MS]
+                    if is_flat and 0<=now_ms-when<=VALUE_DEADLINE_MS and when not in failed]
         proof.update({'reservation_basis':'OBSERVED_UNEXPIRED_FLAT_REQUESTS_ONLY',
                       'pending_reservation_count':len(fresh_flat),
+                      'completed_failed_original_reservations_released':len(failed),
                       'future_request_deadline_guaranteed':False,
                       'estimated_future_reservations':0})
         if fresh_flat:

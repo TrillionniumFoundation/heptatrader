@@ -92,4 +92,3 @@ class PublicationOrderingTests(TrustFixture):
 if __name__ == '__main__':
     import unittest
     unittest.main(verbosity=2)
-

@@ -39,11 +39,8 @@ class VerifiedIngressSnapshot:
   self.registration=copy.deepcopy(registration);self.period_sha256=period_sha256
   self.full_scans=0;self.reuses=0;self._capture()
  def _capture(self):
-  before=ingress_identity(self.registration,self.period_sha256)
-  value=ingress(self.registration,self.period_sha256)
-  after=ingress_identity(self.registration,self.period_sha256)
-  if before!=after:raise ContractError('VALUE_SOURCE_CHANGED_DURING_INGRESS')
-  self._identity=after;self._value=value;self.full_scans+=1
+  self._identity,self._value=_capture_ingress(self.registration,self.period_sha256)
+  self.full_scans+=1
   self.captured_at_ms=int(time.time()*1000)
  def read(self,registration,period_sha256):
   if digest(registration)!=digest(self.registration) or period_sha256!=self.period_sha256:
@@ -53,57 +50,54 @@ class VerifiedIngressSnapshot:
   return copy.deepcopy(self._value)
 
 
+def _capture_ingress(registration,period_sha256):
+ # Shared by direct readers and the bounded-turn snapshot. Reusing the verified
+ # graph must not conceal a journal append/rewrite or business-health change.
+ before=ingress_identity(registration,period_sha256)
+ value=_ingress(registration,period_sha256)
+ after=ingress_identity(registration,period_sha256)
+ if before!=after:raise ContractError('VALUE_SOURCE_CHANGED_DURING_INGRESS')
+ return after,value
+
+
 def ingress(registration,period_sha256):
- from hepta_decision_attribution import read_private,strict,digest as provenance_digest
+ return _capture_ingress(registration,period_sha256)[1]
+
+
+def _ingress(registration,period_sha256):
+ from hepta_decision_attribution import read_private,strict,digest as provenance_digest,_verified_producer_graphs,verified_bindings
  raw=read_private(registration['manifest'],65536)
  if hashlib.sha256(raw).hexdigest()!=registration['sha256']:raise ContractError('REGISTERED_PRODUCER_CHANGED')
  m=strict(raw)
  if m.get('instrument')!='EUR.USD' or m.get('execution_domain')!='PAPER' or m.get('period_sha256')!=period_sha256:
   raise ContractError('FORWARD_PRODUCER_SCOPE')
- paths=sorted(Path(m['journal_directory']).glob('*.jsonl'))
- if len(paths)>128:raise ContractError('ATTRIBUTION_STORAGE_BOUND')
- records={};prefixes={}
- for p in paths:
-  data=read_private(p);data=data[:data.rfind(b'\n')+1];h=hashlib.sha256();offset=0
-  for line in data.splitlines(keepends=True):
-   r=strict(line);h.update(line);offset+=len(line)
-   if r.get('schema')!='heptatrader.exact-decision-attribution.v1' or provenance_digest({k:v for k,v in r.items() if k!='sha256'})!=r.get('sha256'):
-    raise ContractError('FORWARD_SOURCE_HASH')
-   producer=r['producer_id'];records.setdefault(producer,[]).append(r)
-   if r['kind']=='REQUEST':prefixes[(producer,r['sequence'])]={'path':str(p),'bytes':offset,'sha256':h.hexdigest()}
+ directory=Path(m['journal_directory']);request_records={}
+ try:graphs,witnesses=_verified_producer_graphs(directory,'EUR.USD',period_sha256,request_records=request_records)
+ except ValueError as exc:
+  # Preserve the forward reader's existing diagnostics for shared checks.
+  errors={'ATTRIBUTION_HASH':'FORWARD_SOURCE_HASH','ATTRIBUTION_CHAIN_GAP':'FORWARD_CHAIN_DISCONTINUITY',
+   'PRODUCER_MANIFEST_MIXED_OR_MISSING':'FORWARD_PRODUCER_MANIFEST_MIXED',
+   'ATTRIBUTION_HEADER_SCOPE':'FORWARD_SOURCE_HEADER','MISSING_ATTRIBUTION_HEADER':'FORWARD_SOURCE_HEADER_MISSING'}
+  if str(exc) in errors:raise ContractError(errors[str(exc)]) from exc
+  raise
  requests={};bindings=[];issues=[]
- for producer,rs in records.items():
-  rs.sort(key=lambda x:x['sequence']);previous='0'*64;invalid=False
-  health=Path(m['journal_directory'])/(producer+'.health.json')
-  if health.exists():
-   status=strict(read_private(health,65536));invalid=bool(status.get('dropped') or status.get('error'))
-  headers=[x['data'] for x in rs if x.get('kind')=='HEADER'];owners={x.get('manifest_sha256') for x in headers}
-  if len(owners)!=1 or not headers or any(not isinstance(x,str) or len(x)!=64 for x in owners):raise ContractError('FORWARD_PRODUCER_MANIFEST_MIXED')
-  producer_manifest=next(iter(owners))
-  for i,r in enumerate(rs):
-   if r['sequence']!=i or r['previous']!=previous:raise ContractError('FORWARD_CHAIN_DISCONTINUITY')
-   previous=r['sha256'];invalid|=bool(r.get('dropped_total'));v=r['data']
-   if r['kind']=='HEADER':
-    if (v.get('manifest_sha256')!=producer_manifest or v.get('period_sha256')!=period_sha256 or v.get('trading_authority') is not False
-        or v.get('instrument')!='EUR.USD' or v.get('execution_domain')!='PAPER' or v.get('source_kind')!='PINNED_DRIVER_CALLSITE'):
-     raise ContractError('FORWARD_SOURCE_HEADER')
-   elif i==0:raise ContractError('FORWARD_SOURCE_HEADER_MISSING')
+ for producer,producer_manifest,_,_,_,commands,invalid,_ in graphs:
   if producer_manifest!=registration['sha256']:continue
   if invalid:issues.append({'producer_id':producer,'reason':'PRODUCER_GAP_OR_LOSS'});continue
-  for r in rs:
+  for r,prefix in sorted(request_records.get(producer,[]),key=lambda item:item[0]['sequence']):
    v=r['data']
-   if r['kind']=='REQUEST':
-    if (v.get('period_sha256')!=period_sha256 or v.get('instrument')!='EUR.USD'
-        or hashlib.sha256(v['prompt'].encode()).hexdigest()!=v['prompt_sha256']):raise ContractError('FORWARD_REQUEST_SCOPE')
-    item={'request':v,'request_sha256':provenance_digest(v),'producer_manifest_sha256':registration['sha256'],
-     'source_record_sha256':r['sha256'],'source_written_at_ms':r['written_at_ms'],'source_prefix':prefixes[(producer,r['sequence'])]}
-    rid=v['request_id']
-    if rid in requests and requests[rid]!=item:raise ContractError('FORWARD_REQUEST_COLLISION')
-    requests[rid]=item
-   elif r['kind']=='COMMAND_BINDING':bindings.append(v)
- # Commands get attributed only by the original independently hardened importer.
- from hepta_decision_attribution import verified_bindings
- verified,problems=verified_bindings(registration,'EUR.USD',period_sha256);issues+=problems
+   if (v.get('period_sha256')!=period_sha256 or v.get('instrument')!='EUR.USD'
+       or hashlib.sha256(v['prompt'].encode()).hexdigest()!=v['prompt_sha256']):raise ContractError('FORWARD_REQUEST_SCOPE')
+   item={'request':v,'request_sha256':provenance_digest(v),'producer_manifest_sha256':registration['sha256'],
+    'source_record_sha256':r['sha256'],'source_written_at_ms':r['written_at_ms'],'source_prefix':prefix}
+   rid=v['request_id']
+   if rid in requests and requests[rid]!=item:raise ContractError('FORWARD_REQUEST_COLLISION')
+   requests[rid]=item
+  bindings.extend(value for value,_ in commands)
+ # Reuse only this call's complete, hardened graph. The importer still pins the
+ # manifest and checks all original REQUEST/RESPONSE/DECISION/COMMAND links.
+ cache={(str(directory),'EUR.USD',period_sha256):(graphs,witnesses)}
+ verified,problems=verified_bindings(registration,'EUR.USD',period_sha256,directory_cache=cache);issues+=problems
  normalized=[]
  for b in bindings:
   cmd=b['command'];cid=cmd.get('command_id');rid=b['request_id']
