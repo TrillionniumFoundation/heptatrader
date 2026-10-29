@@ -11,7 +11,7 @@ import shlex
 import stat
 import subprocess
 import time
-from hepta_maintenance_latch import native_marker_origin
+from hepta_maintenance_latch import native_marker_origin, resume_guidance
 
 SCHEMA = "heptatrader.progress.v1"
 CORE_UNITS = (
@@ -22,7 +22,7 @@ PATTERNS = ("heptatrader-laya-*", "heptatrader-current100k-*", "heptatrader-valu
 MAX_JSON_BYTES = 4 * 1024 * 1024
 
 
-def _object(path):
+def _object(path, *, with_sha=False):
     path = Path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as stream:
@@ -34,7 +34,7 @@ def _object(path):
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("STATUS_NOT_OBJECT")
-    return value
+    return (value, hashlib.sha256(raw).hexdigest()) if with_sha else value
 
 
 def freshness(at_ms, now_ms, max_age_ms):
@@ -48,12 +48,13 @@ def freshness(at_ms, now_ms, max_age_ms):
 def observe(path, now_ms, max_age_ms, *, timestamps=("at_ms",)):
     meta = {"source": str(path), "available": False}
     try:
-        value = _object(path)
+        value, content_sha256 = _object(path, with_sha=True)
     except (OSError, ValueError, TypeError) as exc:
         return {}, {**meta, "error": type(exc).__name__ + ":" + str(exc),
                     **freshness(None, now_ms, max_age_ms)}
     at = next((value[k] for k in timestamps if type(value.get(k)) is int), None)
-    return value, {**meta, "available": True, **freshness(at, now_ms, max_age_ms)}
+    return value, {**meta, "available": True, "sha256": content_sha256,
+                   **freshness(at, now_ms, max_age_ms)}
 
 
 def presence(path):
@@ -301,6 +302,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
                   "worker_failure_details", "automatic_trading", "canonical_owner_connected",
                   "current_blockers", "current_blockers_checked_at_ms", "resource_diagnostics",
                   "next_training_at_ms", "next_calendar_eligible_at_ms", "waiting_stage",
+                  "next_action", "status_refresh_only", "forward_attempt_registration",
                   "automatic_resume_expected", "calendar_time_is_not_worker_admission")}}
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
@@ -333,7 +335,21 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
               "scope":"NEW_HEAVY_GPU_WORK_ONLY","has_expiration":False}
         if hold_present:
             value,observed=observe(manual,now_ms,max_age_ms,timestamps=("created_at_ms","created_ms"))
-            hold.update(creation_record=observed,**pick(value,"reason","created_at_ms","created_ms","resume_when"))
+            hold.update(creation_record=observed,**pick(value,"reason","created_at_ms","created_ms",
+                "owner","task","resume_when","release_conditions"),
+                next_action="OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS")
+            diagnostics=status.get("resource_diagnostics")
+            projection=diagnostics.get("manual_hold",{}) if isinstance(diagnostics,dict) else {}
+            if not isinstance(projection,dict):projection={}
+            if (meta["freshness"]=="FRESH" and projection.get("reason")==value.get("reason")
+                    and projection.get("sha256") is not None
+                    and projection.get("sha256")==observed.get("sha256")
+                    and projection.get("owner") is not None and projection.get("owner")==value.get("owner")
+                    and projection.get("created_ms",projection.get("created_at_ms")) is not None
+                    and projection.get("created_ms",projection.get("created_at_ms"))==value.get("created_ms",value.get("created_at_ms"))
+                    and projection.get("waiting_condition_state")=="NO_PENDING_FORWARD_TRIAL"):
+                hold.update(waiting_condition_state=projection["waiting_condition_state"],
+                    next_action=projection.get("next_action"),projection_at_ms=meta["at_ms"])
             blockers=[row for row in blockers if row["reason"]!="OPERATOR_RESOURCE_HOLD"]
             blockers.append({"reason":"OPERATOR_RESOURCE_HOLD","source":str(manual),
                              "description":value.get("reason"),"persistent":True})
@@ -353,6 +369,8 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
     persistent=any(row["reason"] in ("OPERATOR_RESOURCE_HOLD","OPERATOR_RESOURCE_HOLD_UNREADABLE",
         "TRAINING_WORKER_NOT_REAPED","WORKER_TERMINATION_PENDING") for row in blockers)
     result["resume"]={"automatic_resume_expected":False if persistent or not running else None,
+        "next_action":result.get("manual_hold",{}).get("next_action")
+            or (status.get("next_action") if meta["freshness"]=="FRESH" else "REFRESH_ORIGINAL_TRAINER_STATUS"),
         "conditions_to_recheck":list(dict.fromkeys(row["reason"] for row in blockers)),
         "next_calendar_eligible_at_ms":status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms")),
         "calendar_time_is_not_worker_admission":True,"worker_launch_authority":False,
@@ -451,6 +469,7 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
             "current_blockers": blockers, "unknown_current_evidence": unknown,
             "native_kill_switch_present": marker_present,
             "native_stop": native_stop,
+            "resume": resume_guidance(native_stop["origin"],hold_present is not False),
             "maintenance_hold": {**hold_meta, "present":hold_present,
                                  **pick(hold, "reason", "task", "resume_when")},
             "drivers": drivers, "services": services, "trade_authority_granted": False}

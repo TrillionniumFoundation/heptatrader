@@ -5,6 +5,8 @@ interpolates gaps, starts a trading service, or changes trade authorization.
 """
 from __future__ import annotations
 import argparse
+from collections import OrderedDict
+import copy
 from decimal import Decimal,InvalidOperation
 import hashlib
 import json
@@ -17,6 +19,7 @@ import subprocess
 import time
 import uuid
 from .feed_health import CaptureHealth, QuoteProbeBackoff, atomic_status, UPDATE_SECONDS
+from .source_read_budget import check_source_budget, SourceReadDeadline
 
 SCHEMA='heptatrader.laya-shadow-quotes.v1'
 MAX_BYTES=64*1024*1024
@@ -88,6 +91,7 @@ def _committed_size(fd,size):
     """Locate the snapshot's final LF without retaining an unfinished tail."""
     end=size
     while end:
+        check_source_budget()
         start=max(0,end-(1 if end==size else 65536))
         os.lseek(fd,start,os.SEEK_SET)
         chunk=os.read(fd,end-start)
@@ -101,6 +105,7 @@ def _committed_size(fd,size):
 def _source_chunks(fd,length,checksum):
     remaining=length
     while remaining:
+        check_source_budget()
         chunk=os.read(fd,min(remaining,65536))
         if not chunk:raise ValueError('SOURCE_SHORT_READ')
         checksum.update(chunk);remaining-=len(chunk)
@@ -134,9 +139,15 @@ def _source_lines(chunks):
     if pending:raise ValueError('SOURCE_UNCOMMITTED_PREFIX')
 
 
-def _decode_source(lines,now):
-    previous='0'*64;header=None;quotes={};last=0;ended=False
-    for i,line in enumerate(lines):
+def _decode_source_state(lines,now,seed=None):
+    if seed is None:
+        previous='0'*64;header=None;quotes={};last=0;ended=False;sequence=0
+    else:
+        previous=seed['previous'];header=seed['header'];quotes=dict(seed['quotes'])
+        last=seed['last'];ended=seed['ended'];sequence=seed['sequence']
+        if last>now:raise ValueError('SHADOW_SOURCE_CLOCK')
+    for i,line in enumerate(lines,start=sequence):
+        if i%128==0:check_source_budget()
         r=strict(line)
         if (r.get('schema')!=SCHEMA or r.get('sequence')!=i or r.get('previous')!=previous
             or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'})):
@@ -165,19 +176,32 @@ def _decode_source(lines,now):
             quotes.setdefault(t,current)
         elif kind=='END':ended=True
         elif kind!='FAILURE':raise ValueError('SHADOW_EVENT_KIND')
+        sequence=i+1
     if header is None:raise ValueError('SHADOW_HEADER_REQUIRED')
-    return header,[quotes[t] for t in sorted(quotes)],previous,ended
+    return {'header':header,'quotes':quotes,'previous':previous,'ended':ended,
+            'last':last,'sequence':sequence}
 
 
-def read_source(path,*,expected_prefix=None):
+def _decoded(state):
+    return state['header'],[state['quotes'][t] for t in sorted(state['quotes'])],state['previous'],state['ended']
+
+
+def _decode_source(lines,now):
+    return _decoded(_decode_source_state(lines,now))
+
+
+def read_source(path,*,expected_prefix=None,decode_cache=None):
     """Hash and decode one bounded snapshot; a sealed pin needs no prior read.
 
-    No parsed bytes or SHA receipt survive this call. Sealed reads check the
+    An optional worker-local cache reuses decoding only after a fresh full
+    prefix SHA pass; it never substitutes a stat/watch for original bytes.
+    Sealed reads check the
     original path/size/END policy and bind the parsed bytes to the archive SHA,
     then reject replacement or modification during the read. Open tails retain
     the existing snapshot-at-open and uncommitted-last-line behavior.
     """
     path=Path(path)
+    check_source_budget()
     if expected_prefix is not None:
         from .integrity import ContractError
         from .source_archive import _open_prefix,prefix_version
@@ -193,12 +217,19 @@ def read_source(path,*,expected_prefix=None):
             raise ValueError('SHADOW_SOURCE_FILE_BOUND')
         complete_size=_committed_size(fd,st.st_size)
         os.lseek(fd,0,os.SEEK_SET)
-        checksum=hashlib.sha256();chunks=_source_chunks(fd,complete_size,checksum)
+        checksum=hashlib.sha256();chunks=None;cache_state=None
         error=None
         try:
-            decoded=_decode_source(_source_lines(chunks),int(time.time()*1000))
+            if decode_cache is None:
+                chunks=_source_chunks(fd,complete_size,checksum)
+                decoded=_decode_source(_source_lines(chunks),int(time.time()*1000))
+            else:
+                cache_state=decode_cache.decode(path,st,fd,complete_size,checksum,int(time.time()*1000))
+                decoded=_decoded(cache_state)
+        except SourceReadDeadline:
+            raise
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
-            if expected_prefix is None:raise
+            if expected_prefix is None or decode_cache is not None:raise
             error=exc
             # Preserve archive integrity rejection before a parse error. The
             # current chunk is already hashed; drain only the unread suffix.
@@ -216,8 +247,72 @@ def read_source(path,*,expected_prefix=None):
                 'chain_head':previous,'uncommitted_tail_bytes':st.st_size-complete_size,'ended':ended}
         if expected_prefix is not None and prefix!=expected_prefix:
             raise ContractError('SOURCE_ARCHIVE_PREFIX_CHANGED')
+        check_source_budget()
+        if decode_cache is not None:
+            decode_cache.commit(path,st,prefix,cache_state)
+            # Consumers must not mutate the state reused by a later read.
+            header=copy.deepcopy(header);quotes=[dict(q) for q in quotes]
         return header,quotes,prefix
     finally:os.close(fd)
+
+
+class SourceDecodeCache:
+    """Bounded decoded prefixes owned by one prediction worker, never a ledger.
+
+    Every cache hit rehashes all retained original bytes from the fresh file
+    descriptor. Only newly appended complete records need JSON/chain parsing.
+    A replacement, truncation, clock regression or changed prefix cannot reuse
+    a prior parse. Original sealed readers keep their final full SHA checks.
+    """
+    def __init__(self,*,max_entries=128,max_source_bytes=128*1024**2,max_records=100000):
+        if any(type(x) is not int or x<=0 for x in (max_entries,max_source_bytes,max_records)):
+            raise ValueError('SOURCE_DECODE_CACHE_BOUND')
+        self.max_entries,self.max_source_bytes,self.max_records=max_entries,max_source_bytes,max_records
+        self._entries=OrderedDict();self._bytes=0;self._records=0
+        self.hits=self.misses=self.rehashed_bytes=self.parsed_records=0
+
+    @staticmethod
+    def _identity(st):
+        return (st.st_dev,st.st_ino,st.st_mode,st.st_uid,st.st_gid,st.st_nlink)
+
+    def _drop(self,key):
+        old=self._entries.pop(key,None)
+        if old is not None:
+            self._bytes-=old['prefix']['bytes'];self._records-=len(old['state']['quotes'])
+
+    def decode(self,path,st,fd,size,checksum,now):
+        key=str(path);entry=self._entries.get(key);seed=None;retained=0
+        if entry is not None:
+            if (entry['identity']!=self._identity(st) or size<entry['prefix']['bytes']):
+                self._drop(key);entry=None
+        if entry is not None:
+            retained=entry['prefix']['bytes']
+            for _ in _source_chunks(fd,retained,checksum):pass
+            self.rehashed_bytes+=retained
+            if checksum.hexdigest()!=entry['prefix']['sha256']:
+                self._drop(key)
+                raise ValueError('SOURCE_DECODE_CACHE_PREFIX_CHANGED')
+            seed=entry['state'];self.hits+=1
+        else:self.misses+=1
+        result=_decode_source_state(_source_lines(_source_chunks(fd,size-retained,checksum)),now,seed)
+        self.parsed_records+=result['sequence']-(seed['sequence'] if seed else 0)
+        return result
+
+    def commit(self,path,st,prefix,state):
+        key=str(path);self._drop(key)
+        count=len(state['quotes'])
+        if prefix['bytes']>self.max_source_bytes or count>self.max_records:return
+        self._entries[key]={'identity':self._identity(st),'prefix':dict(prefix),'state':state}
+        self._bytes+=prefix['bytes'];self._records+=count
+        while (len(self._entries)>self.max_entries or self._bytes>self.max_source_bytes
+               or self._records>self.max_records):
+            self._drop(next(iter(self._entries)))
+
+    def counters(self):
+        return {'policy':'FRESH_FULL_PREFIX_SHA256_INCREMENTAL_DECODE',
+                'entries':len(self._entries),'retained_source_bytes':self._bytes,
+                'retained_quote_records':self._records,'hits':self.hits,'misses':self.misses,
+                'rehashed_prefix_bytes':self.rehashed_bytes,'parsed_records':self.parsed_records}
 
 
 def collect(root,seconds):

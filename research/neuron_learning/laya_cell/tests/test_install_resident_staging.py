@@ -68,6 +68,54 @@ class ResidentStagingTests(unittest.TestCase):
         self.assertEqual(sha_file(config), result['configuration_sha256'])
         self.assertEqual(json.loads(config.read_text())['runtime_directory'], str(runtime))
 
+    def hip_fixture(self):
+        from laya_cell.resident_hip_runtime import MANIFEST,PROFILE
+        runtime=self.root/'original-runtime';manifest=runtime/MANIFEST
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({'schema':'heptatrader.resident-hip-runtime.v1',
+            'overlay':{'original_core':'/unchanged/core','candidate_sha256':'a'*64}})+'\n')
+        manifest.chmod(0o400)
+        self.config.update(runtime_directory=str(runtime),runtime_sha256={MANIFEST:sha_file(manifest)},
+            hip_runtime={'profile':PROFILE,'manifest':MANIFEST,'sha256':sha_file(manifest)})
+        self.config_path.write_text(json.dumps(self.config))
+        return manifest
+
+    def test_code_upgrade_retains_exact_selected_hip_manifest_and_config(self):
+        original=self.hip_fixture();before=original.read_bytes();selection=dict(self.config['hip_runtime'])
+        result=self.stage();new=Path(result['release'])/selection['manifest']
+        self.assertEqual(new.read_bytes(),before);self.assertEqual(original.read_bytes(),before)
+        self.assertEqual(result['runtime_sha256'][selection['manifest']],selection['sha256'])
+        self.assertEqual(json.loads(Path(result['configuration']).read_text())['hip_runtime'],selection)
+        self.assertEqual(self.stage(),result);self.run.assert_not_called()
+
+    def test_changed_selected_hip_bytes_fail_before_staging(self):
+        original=self.hip_fixture();original.chmod(0o600);original.write_text('{}\n')
+        with self.assertRaisesRegex(ContractError,'RETAINED_HIP_MANIFEST_CHANGED'):self.stage()
+        self.assertEqual(list(self.home.iterdir()),[]);self.run.assert_not_called()
+
+    def test_unbound_or_redirected_hip_manifest_cannot_be_carried_forward(self):
+        original=self.hip_fixture();self.config['runtime_sha256']['gpu/hip-runtime.json']='b'*64
+        self.config_path.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ContractError,'RETAINED_HIP_MANIFEST_SELECTION_CHANGED'):self.stage()
+        self.config['runtime_sha256']['gpu/hip-runtime.json']=self.config['hip_runtime']['sha256']
+        self.config_path.write_text(json.dumps(self.config))
+        target=self.root/'redirected.json';original.rename(target);original.symlink_to(target)
+        with self.assertRaisesRegex(ContractError,'RETAINED_HIP_MANIFEST_SOURCE_UNSAFE'):self.stage()
+        self.assertEqual(list(self.home.iterdir()),[]);self.run.assert_not_called()
+
+    def test_hip_change_between_inventory_and_copy_cannot_publish_configuration(self):
+        original=self.hip_fixture();actual=installer.sha_file;mutated=False
+        def changing(path):
+            nonlocal mutated
+            result=actual(path)
+            if Path(path)==original and not mutated:
+                original.chmod(0o600);original.write_bytes(b'changed after inventory\n');mutated=True
+            return result
+        with patch.object(installer,'sha_file',side_effect=changing):
+            with self.assertRaisesRegex(ContractError,'IMMUTABLE_RESIDENT_RELEASE_CHANGED'):self.stage()
+        self.assertTrue(mutated);self.assertFalse(list((self.home/'.config').rglob('*.json')))
+        self.run.assert_not_called()
+
     def test_stage_preserves_existing_units_and_spool_bytes(self):
         unit = self.home / '.config/systemd/user/heptatrader-laya-evaluator.service'
         unit.parent.mkdir(parents=True)

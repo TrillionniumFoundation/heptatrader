@@ -19,6 +19,10 @@ import time
 INSTRUMENTS = frozenset({"EUR.USD", "BTC.USD"})
 READ_TOOLS = frozenset({"system.get_health", "orders.list", "portfolio.list_positions", "market.get_quote"})
 NATIVE_CLIENT_NAMES = frozenset({"heptactl", "hepta-paper-command", "hepta-sessionctl"})
+# The native CLI rejects discovery before it can emit a JSON envelope. Keep
+# this reviewed machine code distinguishable from a transient pipe EOF; never
+# expose arbitrary stderr, credentials, argv, or a general uppercase token.
+STREAM_STDERR_CODES = frozenset({b"DISCOVERY_LIST_REJECTED\n"})
 
 
 def validate_binary_binding(binding):
@@ -122,7 +126,11 @@ class NativeReader:
         try:
             process.stdin.close()
         finally:
-            process.stdout.close()
+            try:
+                process.stdout.close()
+            finally:
+                if process.stderr is not None:
+                    process.stderr.close()
 
     def close(self):
         failure = None
@@ -139,7 +147,7 @@ class NativeReader:
         binary = self.prefix / "bin/heptactl" if self.binary_binding is None else self.binary_binding["path"]
         args = [str(binary), "--socket", str(self.socket), "--token-file", str(token),
                 "--io-timeout-ms", str(self.io_timeout_ms), "pnl-read-stream"]
-        options = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        options = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         if self.binary_binding is None:
             return subprocess.Popen(args, **options)
         try:
@@ -151,6 +159,20 @@ class NativeReader:
         except (OSError, ValueError) as error:
             raise self.error_type(str(error)) from error
 
+    @staticmethod
+    def _closed_stream_reason(process):
+        """Inspect at most 257 immediately available bytes, without waiting."""
+        try:
+            if process.stderr is not None:
+                descriptor = process.stderr.fileno()
+                os.set_blocking(descriptor, False)
+                raw = os.read(descriptor, 257)
+                if raw in STREAM_STDERR_CODES:
+                    return raw[:-1].decode("ascii")
+        except (OSError, ValueError):
+            pass
+        return "PNL_READ_STREAM_CLOSED"
+
     def _stream_read(self, instrument, tool, token):
         if instrument in self._closing:
             self._close_process(instrument)
@@ -161,7 +183,7 @@ class NativeReader:
         request = tool + (" " + instrument if tool == "market.get_quote" else "") + "\n"
         try:
             if process.poll() is not None:
-                raise self.error_type("PNL_READ_STREAM_CLOSED")
+                raise self.error_type(self._closed_stream_reason(process))
             process.stdin.write(request.encode("ascii"))
             deadline = time.monotonic() + self.timeout_seconds
             data = bytearray()
@@ -173,7 +195,7 @@ class NativeReader:
                         raise self.error_type("PNL_READ_STREAM_TIMEOUT")
                     chunk = os.read(process.stdout.fileno(), min(65536, 1048578 - len(data)))
                     if not chunk:
-                        raise self.error_type("PNL_READ_STREAM_CLOSED")
+                        raise self.error_type(self._closed_stream_reason(process))
                     data.extend(chunk)
                     if len(data) > 1048577:
                         raise self.error_type("PNL_READ_STREAM_RESPONSE_TOO_LARGE")

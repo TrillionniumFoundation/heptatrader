@@ -5,6 +5,7 @@ its anchor is never moved to manufacture an outcome. No additional remote spend.
 """
 from __future__ import annotations
 import argparse,json,os,time
+from contextlib import contextmanager
 from pathlib import Path
 import numpy as np
 import torch
@@ -78,8 +79,21 @@ def _prediction_outputs(cell,parent_tensors,candidate_tensors,batch,parent_batch
  return parent_probs,p,a
 
 
-def _read_fixed_slot_source(config,plan,now,stage,timing):
- """Observe a bounded worker's source call without changing its read or result.
+@contextmanager
+def _timed_phase(stage,timing,phase,metric):
+ """Retain the last active boundary even if a native worker dies in this phase."""
+ timing['phase']=phase;started=time.monotonic()
+ try:atomic(stage,timing)
+ except Exception:pass
+ try:yield
+ finally:
+  timing[metric]=round((time.monotonic()-started)*1000,3)
+  try:atomic(stage,timing)
+  except Exception:pass
+
+
+def _read_fixed_slot_source(config,plan,now,stage,timing,decode_cache=None):
+ """Observe the source call and propagate the original fixed input deadline.
 
  A process killed while blocked in a read cannot emit an exception traceback.
  Persist the active boundary first so its original reaper can distinguish that
@@ -95,7 +109,9 @@ def _read_fixed_slot_source(config,plan,now,stage,timing):
  observe()
  started=time.monotonic()
  try:
-  return read_for_future_plan(config,plan,now)
+  options={'deadline_ms':timing['fixed_input_deadline_ms']}
+  if decode_cache is not None:options['decode_cache']=decode_cache
+  return read_for_future_plan(config,plan,now,**options)
  except BaseException as exc:
   timing['source_read_error_class']=type(exc).__name__
   raise
@@ -103,7 +119,41 @@ def _read_fixed_slot_source(config,plan,now,stage,timing):
   timing.update(phase='WAIT_FOR_FIXED_SLOT_INPUT',source_read_active=False,
    source_read_finished_at_ms=int(time.time()*1000),
    last_quote_read_ms=round((time.monotonic()-started)*1000,3))
+  timing['source_read_attempts']=timing.get('source_read_attempts',0)+1
+  timing['total_quote_read_ms']=round(timing.get('total_quote_read_ms',0)+timing['last_quote_read_ms'],3)
+  if decode_cache is not None:timing['source_decode_cache']=decode_cache.counters()
   observe()
+
+
+def _prewarm_fixed_slot_source(config,decode_cache,due_start,stage,timing):
+ """Optional preparation cannot decide whether the future slot has input.
+
+ A segment may still be publishing its HEADER before the slot. A failed
+ prewarm therefore discards decoder state and leaves the original fixed-slot
+ read responsible for source authority. Deadline exhaustion can retain only
+ already committed decoder entries, which are rehashed before every reuse.
+ """
+ from .resident_recent_source import prewarm_recent_decoding
+ from .shadow_source import SourceDecodeCache
+ from .source_read_budget import SourceReadDeadline
+ timing.pop('source_prewarm_error_class',None);timing.pop('source_prewarm_error',None)
+ with _timed_phase(stage,timing,'PREWARM_SOURCE_DECODE','source_decode_prewarm_ms'):
+  try:
+   prewarm_recent_decoding(config,decode_cache,deadline_ms=due_start)
+   timing['source_prewarm_status']='DECODE_PRIMED_ORIGINAL_BYTES_REHASHED_AT_USE'
+   timing['source_prewarm_cache_policy']='FRESH_PREFIX_SHA_REQUIRED_AT_USE'
+  except SourceReadDeadline:
+   timing['source_prewarm_status']='PRE_SLOT_BUDGET_EXHAUSTED_NO_INPUT_SELECTED'
+   timing['source_prewarm_cache_policy']='PARTIAL_DECODE_ONLY_FRESH_PREFIX_SHA_REQUIRED_AT_USE'
+  except (OSError,ValueError) as error:
+   timing['source_prewarm_status']='UNAVAILABLE_RECHECK_AT_FIXED_SLOT'
+   timing['source_prewarm_error_class']=type(error).__name__[:64]
+   timing['source_prewarm_error']=str(error)[:256]
+   decode_cache=SourceDecodeCache(max_entries=decode_cache.max_entries,
+    max_source_bytes=decode_cache.max_source_bytes,max_records=decode_cache.max_records)
+   timing['source_prewarm_cache_policy']='DISCARDED_AFTER_SOURCE_ERROR'
+  timing['source_decode_cache']=decode_cache.counters()
+ return decode_cache
 
 
 def predict(config,plan_path,slot):
@@ -127,7 +177,9 @@ def predict(config,plan_path,slot):
   'slot_start_ms':due_start,'fixed_input_deadline_ms':late,
   'prewarm_start_ms':due_start-PREDICTION_PREWARM_MS}
  stage=plan_path.parent/f'phase-{slot:03}.json'
+ timing['dispatch_lag_vs_prewarm_ms']=timing['process_started_at_ms']-timing['prewarm_start_ms']
  atomic(stage,timing)
+ validation_started=time.monotonic()
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
@@ -176,26 +228,38 @@ def predict(config,plan_path,slot):
   if (input_binding!=price_input.bindings(parent,objective_schema=training_policy.SCHEMA) or price_input.check_bindings(plan)!=input_binding):
    raise ContractError('V7_PREDICT_INPUT_PROFILE_CHANGED')
  parent_calibration.verify_plan(plan,candidate,parent,sha_file(parent_dir/'candidate.json'))
+ timing['candidate_validation_ms']=round((time.monotonic()-validation_started)*1000,3)
  if int(time.time()*1000)>late:raise ContractError('SLOT_ALREADY_MISSED')
  base_manifest=read_json(Path(config['base_directory'])/'base-manifest.json')
  if candidate['base_id']!=digest(base_manifest):raise ContractError('BASE_CHANGED')
- raw,tok,base_id=load_verified_laya(Path(config['base_directory']),base_manifest)
+ with _timed_phase(stage,timing,'LOAD_VERIFIED_BASE','base_load_and_verify_ms'):
+  raw,tok,base_id=load_verified_laya(Path(config['base_directory']),base_manifest)
  if candidate['base_id']!=base_id:raise ContractError('BASE_CHANGED')
- cell=ResidentDecisionCell(raw,base_id)
- cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True);parent_tensors=cell.trainable_state()
- candidate_tensors=load_file(str(candidate_dir/'adapter.safetensors'))
+ with _timed_phase(stage,timing,'BIND_FROZEN_PARAMETERS','frozen_binding_ms'):
+  cell=ResidentDecisionCell(raw,base_id)
+ with _timed_phase(stage,timing,'LOAD_ADAPTERS','adapter_load_ms'):
+  cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True);parent_tensors=cell.trainable_state()
+  candidate_tensors=load_file(str(candidate_dir/'adapter.safetensors'))
  cell.eval()
  ready=int(time.time()*1000)
  timing.update(model_ready_at_ms=ready,phase='WAIT_FOR_FIXED_SLOT_INPUT',
   model_preparation_ms=ready-timing['process_started_at_ms'],
+  model_ready_before_slot_ms=due_start-ready,
   input_budget_remaining_after_model_ms=late-ready)
  atomic(stage,timing)
+ from .resident_source_policy import RECENT
+ from .shadow_source import SourceDecodeCache
+ decode_cache=SourceDecodeCache() if expected_source_profile==RECENT else None
+ timing['source_prewarm_status']='SKIPPED_NO_PRE_SLOT_BUDGET'
+ if decode_cache is not None and ready<due_start:
+  decode_cache=_prewarm_fixed_slot_source(config,decode_cache,due_start,stage,timing)
+ timing['phase']='WAIT_FOR_FIXED_SLOT_INPUT';atomic(stage,timing)
  last_input_error=None
  while True:
   now=int(time.time()*1000)
   if now>late:raise ContractError('INPUT_SLOT_EXPIRED:'+str(last_input_error or 'MODEL_LOAD_OR_SCHEDULING_LATE'))
   if now<due_start:time.sleep(min(1,(due_start-now)/1000));continue
-  quotes,prefixes,source_profile=_read_fixed_slot_source(config,plan,now,stage,timing)
+  quotes,prefixes,source_profile=_read_fixed_slot_source(config,plan,now,stage,timing,decode_cache)
   if source_profile!=expected_source_profile:
    raise ContractError('FUTURE_SOURCE_PROFILE_CHANGED_DURING_READ')
   now=int(time.time()*1000)
@@ -228,8 +292,9 @@ def predict(config,plan_path,slot):
  if sha_file(bootstrap_root/'model.json')!=freeze['inventory_sha256']['model.json']:raise ContractError('BOOTSTRAP_CHANGED')
  bootstrap=read_json(bootstrap_root/'model.json')
  if bootstrap['trained_until_ms']>anchor:raise ContractError('BOOTSTRAP_LOOKAHEAD')
- batch,parent_batch,price_batch=_prediction_batches(tok,row,input_binding)
- with torch.no_grad():
+ with _timed_phase(stage,timing,'ENCODE_FIXED_INPUT','input_encoding_ms'):
+  batch,parent_batch,price_batch=_prediction_batches(tok,row,input_binding)
+ with _timed_phase(stage,timing,'MODEL_FORWARD','model_forward_ms'),torch.no_grad():
   parent_probs,p,a=_prediction_outputs(cell,parent_tensors,candidate_tensors,
    batch,parent_batch,price_batch,input_binding)
   probs=p.softmax(-1)[0].cpu().tolist();action=a.softmax(-1)[0].cpu().tolist()
@@ -240,7 +305,8 @@ def predict(config,plan_path,slot):
    correct=action_report['action_correct_probs']
    value=correct[0] if correct is not None else None
    action=[value,1-value] if value is not None else None
- cell.assert_frozen()
+ with _timed_phase(stage,timing,'VERIFY_FROZEN_AFTER_FORWARD','frozen_validation_ms'):
+  cell.assert_frozen()
  if v2:price_reference_forecast=price_refs.forecast(price_reference_profile,row['state'])
  native=NativePorts(Path(config['native_binary']),config['native_binary_sha256'])
  features=native.call({'op':'neuron','episodes':[sample['native_episode']]})
@@ -273,7 +339,8 @@ def predict(config,plan_path,slot):
  result['resource_usage']=worker_resource_usage()
  # Keep the original final deadline check after the runtime proof. A present
  # prediction is authoritative for CPU closeout regardless of worker exit code.
- hip_proof=prove_before_publish(config)
+ with _timed_phase(stage,timing,'PROVE_RUNTIME_BEFORE_PUBLISH','runtime_proof_ms'):
+  hip_proof=prove_before_publish(config)
  if hip_proof is not None:result['hip_runtime_proof']=hip_proof
  available=int(time.time()*1000)
  if available>=anchor+rule['horizon_ms']:raise ContractError('PREDICTION_AFTER_OUTCOME')

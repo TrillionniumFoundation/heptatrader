@@ -253,7 +253,7 @@ class PendingReaderCleanupTests(unittest.TestCase):
     def test_unreaped_original_blocks_replacement_and_keeps_its_handles(self):
         class Process:
             released = False
-            stdin, stdout = io.BytesIO(), io.BytesIO()
+            stdin, stdout, stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
             def poll(self):
                 return 0 if self.released else None
             def terminate(self):
@@ -275,6 +275,7 @@ class PendingReaderCleanupTests(unittest.TestCase):
                 self.assertIs(reader._processes['EUR.USD'], process)
                 self.assertFalse(process.stdin.closed)
                 self.assertFalse(process.stdout.closed)
+                self.assertFalse(process.stderr.closed)
                 with self.assertRaisesRegex(ValueError, 'CLEANUP_PENDING'):
                     reader('EUR.USD', 'orders.list')
                 start.assert_not_called()
@@ -284,6 +285,7 @@ class PendingReaderCleanupTests(unittest.TestCase):
         self.assertEqual(reader._processes, {})
         self.assertTrue(process.stdin.closed)
         self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
 
 
 if __name__ == '__main__':

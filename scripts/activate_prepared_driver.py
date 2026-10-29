@@ -706,6 +706,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         or new.get("native_read_binary") != old.get("native_read_binary")
         or new.get("native_clients") != old.get("native_clients")
     )
+    base_binding_changed = new.get("btc_base_binding") != old.get("btc_base_binding")
     expected = dict(old)
     expected.pop("created_at_ms", None)
     expected.update(
@@ -713,7 +714,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         prepared_from_manifest_sha256=installed["manifest_sha256"],
         runtime_bytes_changed=changed,
         trading_behavior_changed=(
-            old.get("trading_behavior_changed") is not False or changed or read_transport_changed
+            old.get("trading_behavior_changed") is not False or changed or read_transport_changed or base_binding_changed
         ),
         behavior_equivalence_assessed=False,
     )
@@ -723,6 +724,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("runtime_loader", None)
     if "runtime_loader" in new:
         expected["runtime_loader"] = new["runtime_loader"]
+    expected.pop("btc_base_binding", None)
+    if "btc_base_binding" in new:
+        expected["btc_base_binding"] = new["btc_base_binding"]
     expected.pop("native_read_stream", None)
     if "native_read_stream" in new:
         expected["native_read_stream"] = new["native_read_stream"]

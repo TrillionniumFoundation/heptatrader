@@ -191,16 +191,27 @@ def run_request(service,request_path,request_sha256,*,wait_seconds=90):
         if result['state'] in ('PUBLISHED','NO_FORWARD_TRIAL','EXISTING_IMMUTABLE_PLAN'):
             from .resident_queue import inspect
             result['queue_after_registration']=inspect(service.c)
-            if result['state']=='PUBLISHED':
+            if result['state'] in ('PUBLISHED','NO_FORWARD_TRIAL'):
                 # A paused trainer may never refresh status via step(). Use its
                 # existing writer, without changing the DB's latest candidate.
-                # Failure here leaves the published plan/debit recoverable.
+                # A terminal unallocated attempt must refresh this projection
+                # too: its paused owner will not run another step(). Failure
+                # here leaves the immutable receipt/debit recoverable.
                 summary={'attempt_id':request['attempt_id'],'job_id':request['job_id'],
-                    'candidate_id':request['candidate_id'],'plan_id':result['plan']['plan_id'],
-                    'trial':result['plan']['trial'],'state':'PUBLISHED','training_performed':False}
+                    'candidate_id':request['candidate_id'],'state':result['state'],
+                    'training_performed':False,'trial_allocated':result['state']=='PUBLISHED'}
+                if result['state']=='PUBLISHED':
+                    summary.update(plan_id=result['plan']['plan_id'],trial=result['plan']['trial'])
+                    state='FORWARD_EVALUATION_ATTEMPT_PUBLISHED'
+                    action='WAIT_FOR_ORIGINAL_EVALUATOR_CLOSEOUT'
+                else:
+                    summary.update(reason=result.get('reason'),future_observations=0,
+                        registration_retryable=False)
+                    state='FORWARD_EVALUATION_ATTEMPT_TERMINAL'
+                    action='NEW_CANDIDATE_AFTER_TRAINING_ADMISSION'
                 with redirect_stdout(io.StringIO()):
                     service.write_status(storage=getattr(service,'storage',None),
-                        state='FORWARD_EVALUATION_ATTEMPT_PUBLISHED',
+                        state=state,next_action=action,
                         forward_attempt_registration=summary,**result['queue_after_registration'])
                 result['trainer_status_updated']=True
             return result

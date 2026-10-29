@@ -206,7 +206,18 @@ class DevelopmentCiTests(unittest.TestCase):
                   "docs/technical/heptadll-consumer-migrations.json",
                   "docs/technical/heptadll-lifecycle-status.json",
                   "docs/technical/heptadll-source-disposition.json",
-                  "tests/python/test_python_test_partition.py")
+                  "tests/python/test_python_test_partition.py",
+                  "research/train_v2/__init__.py",
+                  "research/train_v2/fx_original_health_portable_prefix_verify.py",
+                  "research/train_v2/fx_original_health_portable_160_verify.py",
+                  "research/train_v2/fx_original_health_portable_240_verify.py",
+                  "research/train_v2/fx_original_health_portable_320_verify.py",
+                  "research/train_v2/fx_original_health_sustained_frontier.py",
+                  "research/train_v2/fx_original_health_sustained_audit.py",
+                  "research/train_v2/fx_original_health_fullcycle_audit.py",
+                  "tests/python/test_fx_original_health_sustained_frontier.py",
+                  "tests/python/test_fx_original_health_portable_320_verify.py",
+                  "tests/python/portable_archive_fixtures.py")
         for event in ("pull_request", "push"):
             patterns = ci["on"][event]["paths"]
             for path in inputs:

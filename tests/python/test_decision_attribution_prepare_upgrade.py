@@ -221,9 +221,10 @@ class PrepareUpgradeTests(unittest.TestCase):
      self.assertFalse(result['trade_authority']);self.assertEqual(result['forced_orders'],0)
      release=Path(result['release']);prepared=json.loads((release/'manifest.json').read_bytes())
      for key,value in installed.items():
-      if key not in ('source_sha','runtime_sha256','created_at_ms'):
+      if key not in ('source_sha','runtime_sha256','created_at_ms','trading_behavior_changed'):
        self.assertEqual(prepared[key],value,key)
      self.assertFalse(prepared['runtime_bytes_changed'])
+     self.assertIs(prepared['trading_behavior_changed'],instrument=='BTC.USD')
      self.assertIs(prepared['behavior_equivalence_assessed'],False)
      self.assertEqual(prepared['source_sha'],self.source_sha)
      self.assertEqual(prepared['prepared_from_manifest_sha256'],installer.sha(resident/'manifest.json'))
@@ -300,13 +301,25 @@ class PrepareUpgradeTests(unittest.TestCase):
     self.assertIs(prepared['behavior_equivalence_assessed'],False)
     self.assertEqual((resident/'manifest.json').read_bytes(),parent_raw)
 
- def test_btc_base_binding_is_not_automatically_bypassed(self):
-  service,_,_=self._resident('BTC.USD')
+ def test_btc_base_binding_is_generated_from_prepared_bytes_without_activation(self):
+  service,old,resident=self._resident('BTC.USD')
+  old_manifest=(resident/'manifest.json').read_bytes()
   base=self.source/'heptatrader_paper_driver.py'
-  self._put(base,base.read_bytes()+b'\n# A changed base requires the wrapper to bind it explicitly.\n')
-  with self.assertRaisesRegex(RuntimeError,'ATTRIBUTION_PREPARED_BTC_BASE_HASH_MISMATCH'):
-   self._prepare('BTC.USD',service)
-  self.assertFalse((self.home/'.local/share/heptatrader/decision-attribution/releases').exists())
+  self._put(base,base.read_bytes()+b'\n# A new source revision is bound at preparation.\n')
+  prepared=self._prepare('BTC.USD',service)
+  path=Path(prepared['manifest']);manifest=json.loads(path.read_bytes())
+  self.assertEqual(manifest['btc_base_binding'],'RUNTIME_MANIFEST_V1')
+  self.assertEqual(manifest['runtime_sha256']['heptatrader_paper_driver.py'],installer.sha(base))
+  self.assertNotEqual(manifest['runtime_sha256']['heptatrader_paper_driver.py'],old['runtime_sha256']['heptatrader_paper_driver.py'])
+  self.assertTrue(manifest['runtime_bytes_changed']);self.assertTrue(manifest['trading_behavior_changed'])
+  self.assertFalse(manifest['behavior_equivalence_assessed']);self.assertFalse(prepared['activated'])
+  installed={'manifest':str(resident/'manifest.json'),'manifest_sha256':installer.sha(resident/'manifest.json')}
+  activation.verify_prepared(path,prepared['manifest_sha256'],'BTC.USD',installed)
+  candidate=path.parent/base.name
+  self._put(candidate,candidate.read_bytes()+b'\n# changed after preparation\n')
+  with self.assertRaisesRegex(RuntimeError,'RUNTIME_CHANGED'):
+   activation.verify_prepared(path,prepared['manifest_sha256'],'BTC.USD',installed)
+  self.assertEqual((resident/'manifest.json').read_bytes(),old_manifest)
   self._unchanged()
 
  def test_write_failure_does_not_reserve_an_unusable_candidate(self):

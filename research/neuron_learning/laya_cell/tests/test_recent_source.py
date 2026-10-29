@@ -55,6 +55,31 @@ class RecentSourceStrictParityTests(unittest.TestCase):
   self.assertEqual(fr,sr)
   self.assertEqual(fp,sp)
 
+ def test_prewarmed_decode_preserves_full_original_input_and_pins(self):
+  from laya_cell.shadow_source import SourceDecodeCache
+  from laya_cell.resident_recent_source import prewarm_recent_decoding
+  import time
+  cache=SourceDecodeCache()
+  before=prewarm_recent_decoding(self.config,cache,deadline_ms=int(time.time()*1000)+10000)
+  self.assertGreater(before['entries'],0)
+  fast,pins=read_recent_original_quotes(self.config,self.now,decode_cache=cache)
+  full,original_pins=read_quotes(self.config,self.now)
+  self.assertEqual(pins,original_pins)
+  self.assertEqual(forecast_input(self.config,fast,self.now),forecast_input(self.config,full,self.now))
+  self.assertGreater(cache.hits,0)
+  self.assertGreater(cache.rehashed_bytes,0)
+
+ def test_prewarmed_cache_does_not_skip_archive_corruption(self):
+  from laya_cell.shadow_source import SourceDecodeCache
+  from laya_cell.resident_recent_source import prewarm_recent_decoding
+  import time
+  cache=SourceDecodeCache()
+  prewarm_recent_decoding(self.config,cache,deadline_ms=int(time.time()*1000)+10000)
+  file=self.source.feed/'segment-00000000'/'quotes.jsonl'
+  file.write_bytes(file.read_bytes().replace(b'1.125',b'1.124'))
+  with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'):
+   read_recent_original_quotes(self.config,self.now,decode_cache=cache)
+
  def test_archive_historical_price_modified_fails_closed(self):
   file=self.source.feed/'segment-00000000'/'quotes.jsonl'
   file.write_bytes(file.read_bytes().replace(b'1.125',b'1.124'))

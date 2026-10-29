@@ -1,6 +1,7 @@
 """Run predict's metadata checks without importing or constructing a model."""
 import ast
 import builtins
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -81,11 +82,13 @@ class PredictBasePreflightTests(unittest.TestCase):
 
         # Compile the complete production function, without executing its
         # module-level Torch/model imports. All metadata validators stay real.
-        function = next(node for node in ast.parse(SOURCE.read_text()).body
-                        if isinstance(node, ast.FunctionDef) and node.name == 'predict')
+        functions = [node for node in ast.parse(SOURCE.read_text()).body
+                     if isinstance(node, ast.FunctionDef)
+                     and node.name in {'_timed_phase', 'predict'}]
         namespace = {
             '__name__': 'laya_cell.predict_base_fixture', '__package__': 'laya_cell',
             'Path': Path, 'time': time, 'os': os, 'json': json,
+            'contextmanager': contextmanager,
             'ContractError': integrity.ContractError, 'read_json': read,
             'sha_file': integrity.sha_file, 'digest': integrity.digest,
             'atomic': resident_store.atomic, 'write_once': resident_store.write_once,
@@ -97,7 +100,7 @@ class PredictBasePreflightTests(unittest.TestCase):
             'price_refs': resident_price_baselines, 'parent_calibration': resident_parent_calibration,
             'load_verified_laya': loader, 'ResidentDecisionCell': cell,
         }
-        exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(SOURCE), 'exec'), namespace)
         self.predict = namespace['predict']
 
     def artifact(self, name, parent_id, base_id):

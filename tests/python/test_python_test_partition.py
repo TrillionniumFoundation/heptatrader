@@ -33,8 +33,13 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertFalse(groups["learning"] & groups["core"])
         self.assertEqual(groups["legacy"], {
             "test_ib_workflow_interfaces.py", "test_qualification_trust_boundary.py",
-            "test_heptadll_migration_state.py", "test_heptadll_source_disposition.py"})
+            "test_heptadll_migration_state.py", "test_heptadll_source_disposition.py",
+            "test_fx_original_health_portable_160_verify.py",
+            "test_fx_original_health_portable_240_verify.py",
+            "test_fx_original_health_portable_320_verify.py"})
         self.assertFalse(groups["legacy"] & groups["core"])
+        self.assertTrue({"test_fx_original_health_portable_prefix_verify.py",
+                         "test_fx_original_health_verifier_entries.py"} <= groups["core"])
         self.assertEqual(groups["packaging"], {"test_ib_candidate_builder.py"})
         self.assertFalse(groups["packaging"] & groups["core"])
         self.assertTrue({

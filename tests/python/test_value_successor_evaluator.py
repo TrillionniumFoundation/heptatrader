@@ -11,6 +11,10 @@ from historical_training import value_successor_evaluator as successor
 
 class SuccessorCadenceTests(unittest.TestCase):
     def setUp(self):
+        # run() sets a private CLI mask; keep that side effect inside this
+        # fixture even when a test fails before its temporary tree is removed.
+        original_umask = os.umask(0o077)
+        self.addCleanup(os.umask, original_umask)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

@@ -1,5 +1,6 @@
 """Progress describes live authority and evidence without modifying either."""
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -304,6 +305,46 @@ class ProgressTests(unittest.TestCase):
   env=dict(os.environ,HOME=str(self.home),PATH=str(target)+':'+os.environ.get('PATH',''),XDG_RUNTIME_DIR=str(self.home/'run'))
   result=subprocess.run(['bash',str(target/'heptatrader-user'),'status'],env=env,text=True,capture_output=True,timeout=10)
   self.assertEqual(result.returncode,3);self.assertIn('PROGRESS_SEEN',result.stdout)
+
+ def test_terminal_hold_projection_keeps_owner_conditions_and_current_marker(self):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
+  value={'created_ms':NOW-86400000,'owner':'original-owner',
+   'reason':'PAUSE_NEW_BUDGET_PENDING_SAME_CANDIDATE_FORWARD','release_conditions':'exact marker after finite validation'}
+  self.write(hold,value)
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard),'manual_hold_path':str(hold)})
+  self.service('heptatrader-laya-trainer.service','historical_training.resident_resource_guard',wrapper,extra=('--role','trainer'))
+  path=root/'control/status.json';status=json.loads(path.read_text())
+  status.update(state='FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE',next_action='NEW_CANDIDATE_AFTER_TRAINING_ADMISSION',
+   status_refresh_only=True,resource_diagnostics={'manual_hold':{**value,
+    'sha256':hashlib.sha256(hold.read_bytes()).hexdigest(),
+    'waiting_condition_state':'NO_PENDING_FORWARD_TRIAL',
+    'next_action':'OWNER_CLOSE_TERMINAL_FORWARD_WAIT_THEN_RECHECK_TRAINING_ADMISSION'}})
+  self.write(path,status);before=hold.read_bytes();entry=self.collect()['learning'][0]
+  self.assertEqual(entry['manual_hold']['release_conditions'],value['release_conditions'])
+  self.assertEqual(entry['manual_hold']['waiting_condition_state'],'NO_PENDING_FORWARD_TRIAL')
+  self.assertEqual(entry['resume']['next_action'],'OWNER_CLOSE_TERMINAL_FORWARD_WAIT_THEN_RECHECK_TRAINING_ADMISSION')
+  self.assertFalse(entry['resume']['automatic_resume_expected']);self.assertEqual(hold.read_bytes(),before)
+  self.write(hold,{**value,'owner':'different-owner'})
+  entry=self.collect()['learning'][0]
+  self.assertNotIn('waiting_condition_state',entry['manual_hold'])
+  self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+  # A replacement may retain owner/time/reason while changing its conditions.
+  # Only the exact observed bytes can inherit the old terminal-wait projection.
+  self.write(hold,{**value,'release_conditions':'new independent condition'})
+  entry=self.collect()['learning'][0]
+  self.assertNotIn('waiting_condition_state',entry['manual_hold'])
+  self.assertEqual(entry['manual_hold']['release_conditions'],'new independent condition')
+  self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+
+ def test_native_hold_resume_is_explicit_workflow_guidance_not_permission(self):
+  marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True);marker.touch()
+  trade=self.collect()['trading'];resume=trade['resume']
+  self.assertEqual(resume['check_command'],'heptatrader paper-on --resume-native-hold --check')
+  self.assertFalse(resume['automatic_resume']);self.assertFalse(resume['resume_authority_granted'])
+  self.write(self.state/'operator-maintenance/maintenance-hold.json',{'created_at_ms':NOW,'reason':'maintenance'})
+  trade=self.collect()['trading']
+  self.assertEqual(trade['resume']['next_action'],'REVIEW_AND_RELEASE_EXACT_PERSISTENT_MAINTENANCE_HOLD')
+  self.assertIsNone(trade['resume']['check_command']);self.assertTrue(marker.exists())
 
  def test_next_value_evaluator_is_visible_in_both_launch_modes(self):
   root=self.home/'next-value';cfg=self.write(self.home/'next-value.json',{'forward_root':str(root)})

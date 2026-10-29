@@ -6,11 +6,15 @@ reader and pin the source module SHA at plan registration time.
 from __future__ import annotations
 from pathlib import Path
 from .integrity import ContractError, digest, sha_file
+from .source_read_budget import source_read_budget
 
 RECENT = "ARCHIVE_VERIFIED_RECENT_ORIGINAL_V2"
 RUNTIME_PIN = (
     "learn/laya_cell/resident_recent_source.py",
     "learn/laya_cell/resident_source_policy.py",
+    "learn/laya_cell/shadow_source.py",
+    "learn/laya_cell/source_archive.py",
+    "learn/laya_cell/source_read_budget.py",
 )
 
 
@@ -47,13 +51,15 @@ def declared_profile(config, plan):
     return RECENT
 
 
-def read_for_future_plan(config, plan, now_ms):
-    mode = declared_profile(config, plan)
-    if mode == RECENT:
-        from .resident_recent_source import read_recent_original_quotes
-        return (*read_recent_original_quotes(config, now_ms), mode)
-    from .resident_data import read_quotes
-    return (*read_quotes(config, now_ms), mode)
+def read_for_future_plan(config, plan, now_ms, *, deadline_ms=None, decode_cache=None):
+    with source_read_budget(deadline_ms):
+        mode = declared_profile(config, plan)
+        if mode == RECENT:
+            from .resident_recent_source import read_recent_original_quotes
+            options={'decode_cache':decode_cache} if decode_cache is not None else {}
+            return (*read_recent_original_quotes(config, now_ms,**options), mode)
+        from .resident_data import read_quotes
+        return (*read_quotes(config, now_ms), mode)
 
 
 PENDING_OUTCOMES = 'ARCHIVE_VERIFIED_PENDING_OUTCOME_V1'

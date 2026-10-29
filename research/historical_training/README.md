@@ -348,6 +348,45 @@ The current100k consumer is independent; BTC missing terminal evidence, broker
 valuation timestamps, account-period opening NAV/flows, legacy numeric parity,
 and future unseen efficacy remain separate acceptance requirements.
 
+### Current100k after a producer release changes
+
+Each attributed producer manifest identifies a separate dataset scope. Prepare
+the consumer from the currently selected manifest and use a fresh output root:
+an existing incremental episode store retains its original producer identity.
+`install_consumer.runtime_inventory(repo)` generates the consumer's dependency
+hashes and the installer derives its immutable release/configuration identity;
+individual source hashes do not need to be copied into several files manually.
+
+After real closed, fee-complete observations exist, `current100k_value_trial`
+fits the fresh dataset through the existing resident resource guard and checks
+those rewards again before and after fitting. A changed producer cannot satisfy
+the older same-scope requirement to preserve all prior row IDs, because the
+producer identity is part of each row. Register that transition explicitly:
+
+```python
+from laya_cell.current100k_forward import NEW_PRODUCER_SCOPE, register
+
+plan = register(
+    registrar_config, new_candidate_directory, frozen_dataset_path,
+    prior_candidate_manifest, [retired_plans_root, latest_plans_root],
+    registration_scope=NEW_PRODUCER_SCOPE,
+    prior_plan_path=latest_frozen_plan_path,
+)
+```
+
+The historical roots contain the complete trial sequence, including retired
+trials. Registration validates the latest current100k plan/candidate, retains
+the same PAPER period, behavior model and USD100k profile, and rejects reuse of
+historical training inputs or rewards. It spends the next trial number and
+records zero reused rows. The existing future 14-day window, one-day closure
+grace, zero/mean baselines, fee stresses and role signer still apply. The default
+registration call continues to enforce the original same-scope refit rule.
+
+Generate any new finite timer dates from this new plan's timestamps. The old
+`value_timer_admission` constants describe the retired trial3 calendar and are
+not a template for a new trial. The guarded worker remains the execution path;
+registration alone makes no claim about achieved prediction coverage or value.
+
 
 ## Follow-through verification (2026-10-08)
 
