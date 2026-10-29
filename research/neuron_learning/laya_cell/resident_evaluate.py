@@ -12,6 +12,7 @@ from .resident_store import write_once,atomic
 from .resident_data import read_quotes
 from .dataset import BIN_EDGES_BPS
 from .promotion import RULE,assess,validate_plan_rule
+from .promotion_power import MATCHED_PARENT_SCHEMA
 from . import resident_training_v2 as training_v2
 from . import resident_price_baselines as price_refs
 from . import resident_price_calibration as price_calibration
@@ -113,6 +114,7 @@ def progress_with_coverage(plan,results,assessment):
    'remaining':max(0,rule['max_censored']-censored),
    'excess':max(0,censored-rule['max_censored']),
    'maximum_possible_observed':rule['slots']-censored},
+  'non_tie_budget':_non_tie_budget(plan,results),
   'censored_reasons':dict(sorted(reasons.items())),
   'censored_reason_unrecorded':reason_missing,
   'no_prediction_dispositions':dict(sorted(dispositions.items())),
@@ -219,8 +221,53 @@ def _plan_dispatch_priority(path,plan,rule,now_ms,declared,cycle_records):
  return (1,0,str(path))
 
 
+def _primary_score(plan):
+ return ('calibrated_parent_brier' if plan['rule'].get('schema')==MATCHED_PARENT_SCHEMA
+  else 'parent_brier')
+
+
+def _primary_improvement(plan,result):
+ """A missing/invalid score is unknown, never evidence of an irreversible tie."""
+ if result.get('status')!='OBSERVED':return None
+ primary=_primary_score(plan)
+ if (primary=='calibrated_parent_brier'
+     and result.get('parent_calibration_comparator_id')
+         !=plan.get(parent_calibration.RECORD,{}).get('comparator_id')):
+  return None
+ scores=[result.get(primary),result.get('candidate_brier')]
+ if any(type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=2
+        for value in scores):return None
+ return scores[0]-scores[1]
+
+
+def _non_tie_budget(plan,results):
+ """An upper bound only: every pending/unknown observation may still be a win.
+
+ The 1e-12 tie tolerance and primary comparator match assess(). This does not
+ stop on an estimated effect, a loss, or interim significance. It proves only
+ that the frozen minimum number of non-tied observations is no longer possible.
+ """
+ ties=0;non_ties=0;unknown=0;censored=0
+ for result in results:
+  if result['status']=='CENSORED':censored+=1
+  elif result['status']=='OBSERVED':
+   improvement=_primary_improvement(plan,result)
+   if improvement is None:unknown+=1
+   elif abs(improvement)<=1e-12:ties+=1
+   else:non_ties+=1
+ maximum=plan['rule']['slots']-censored-ties
+ required=plan['rule'].get('min_non_ties')
+ return {'scope':'FROZEN_PRIMARY_COMPARATOR_SCORES_ONLY',
+  'primary_score':_primary_score(plan),'tie_tolerance':1e-12,
+  'known_non_ties':non_ties,'known_ties':ties,
+  'observed_without_valid_primary_scores':unknown,
+  'unknown_scores_assumed_non_ties_for_upper_bound':True,
+  'minimum_required':required,'maximum_possible_non_ties':maximum,
+  'impossible_from_recorded_outcomes':required is not None and maximum<required}
+
+
 def suppress_new_work_for_frozen_failure(plan, results):
- """Scheduling only: immutable failed slots can never be made successful.
+ """Scheduling only: immutable censored/tied slots cannot satisfy sample gates.
 
  Keep the original trial open until its registered deadline and continue
  recording real outcomes; never relax thresholds, promote, or rewrite history.
@@ -235,7 +282,8 @@ def suppress_new_work_for_frozen_failure(plan, results):
       or result.get('status') not in ('OBSERVED','CENSORED')):
    raise ContractError('FUTILITY_OUTCOME_IDENTITY_OR_STATUS')
   seen.add(slot);censored+=result['status']=='CENSORED'
- return censored>rule['max_censored'] or rule['slots']-censored<rule['min_observed']
+ return (censored>rule['max_censored'] or rule['slots']-censored<rule['min_observed']
+  or _non_tie_budget(plan,results)['impossible_from_recorded_outcomes'])
 
 
 def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
@@ -256,7 +304,7 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
   records=[read_json(p) for p in files]
   if not suppress_new_work_for_frozen_failure(plan,records):
    raise ContractError('FUTILITY_SUPPRESSION_NOT_IRREVERSIBLE')
-  basis=[]
+  basis=[];schema='heptatrader.laya-futility-suppression.v1'
   needed_censors=min(rule['max_censored']+1,rule['slots']-rule['min_observed']+1)
   for source,record in zip(files,records):
    if source.name!=f"outcome-{record['slot']:03}.json":
@@ -264,15 +312,30 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
    if (record['status']=='CENSORED' and len(basis)<needed_censors
        and record.get('no_prediction_disposition')!='FUTILITY_SUPPRESSED'):
     basis.append({'slot':record['slot'],'sha256':sha_file(source)})
-  value={'schema':'heptatrader.laya-futility-suppression.v1',
+  # Keep historical censor-only receipts unchanged. The new schema can also
+  # bind observed ties, using the original primary comparator and minimum.
+  if len(basis)<needed_censors and rule.get('min_non_ties') is not None:
+   schema='heptatrader.laya-futility-suppression.v2';basis=[]
+   needed_losses=rule['slots']-rule['min_non_ties']+1
+   for source,record in zip(files,records):
+    improvement=_primary_improvement(plan,record)
+    if (len(basis)<needed_losses
+        and record.get('no_prediction_disposition')!='FUTILITY_SUPPRESSED'
+        and (record['status']=='CENSORED'
+             or improvement is not None and abs(improvement)<=1e-12)):
+     basis.append({'slot':record['slot'],'sha256':sha_file(source)})
+  value={'schema':schema,
    'plan_id':plan['plan_id'],'candidate_id':plan['candidate_id'],'slot':slot,
    'at_ms':at_ms,'basis_outcomes':basis,
    'resource_admission_attempted_at_suppression':False}
+  if schema=='heptatrader.laya-futility-suppression.v2':
+   value['reason']='INSUFFICIENT_POSSIBLE_NON_TIE_POWER_SAMPLE'
   value['receipt_id']=digest(value)
  else:value=read_json(receipt)
  start=plan['start_ms']+slot*rule['slot_spacing_ms']
  if (not isinstance(value,dict)
-     or value.get('schema')!='heptatrader.laya-futility-suppression.v1'
+     or value.get('schema') not in ('heptatrader.laya-futility-suppression.v1',
+                                   'heptatrader.laya-futility-suppression.v2')
      or value.get('plan_id')!=plan['plan_id'] or value.get('candidate_id')!=plan['candidate_id']
      or value.get('slot')!=slot or type(value.get('slot')) is not int
      or type(value.get('at_ms')) is not int
@@ -292,13 +355,21 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
   if not source.exists() or sha_file(source)!=entry['sha256']:
    raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
   record=read_json(source)
-  if (record.get('slot')!=entry['slot'] or record.get('status')!='CENSORED'
+  improvement=_primary_improvement(plan,record)
+  if (record.get('slot')!=entry['slot']
+      or (record.get('status')!='CENSORED'
+          and (value['schema']!='heptatrader.laya-futility-suppression.v2'
+               or improvement is None or abs(improvement)>1e-12))
       or record.get('no_prediction_disposition')=='FUTILITY_SUPPRESSED'
       or type(record.get('evaluated_at_ms')) is not int
       or record['evaluated_at_ms']>value['at_ms']):
    raise ContractError('FUTILITY_SUPPRESSION_BASIS_CHANGED')
   records.append(record)
  if not suppress_new_work_for_frozen_failure(plan,records):
+  raise ContractError('FUTILITY_SUPPRESSION_NOT_IRREVERSIBLE')
+ if (value['schema']=='heptatrader.laya-futility-suppression.v2'
+     and (value.get('reason')!='INSUFFICIENT_POSSIBLE_NON_TIE_POWER_SAMPLE'
+          or not _non_tie_budget(plan,records)['impossible_from_recorded_outcomes'])):
   raise ContractError('FUTILITY_SUPPRESSION_NOT_IRREVERSIBLE')
  if create:write_once(receipt,value)
  return {'sha256':sha_file(receipt),'at_ms':value['at_ms']}
