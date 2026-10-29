@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 from datetime import datetime, timezone
+from decimal import InvalidOperation, localcontext
 import fcntl
 import hashlib
 import json
@@ -132,6 +133,55 @@ def health_identity(health: dict) -> tuple:
             health.get("tool_gateway_epoch"))
 
 
+def _configured_crypto_flat_observation(period: dict, identity: tuple, orders: dict,
+                                       positions: dict, at_ms: int) -> dict:
+    """Value an explicit account BTC zero; confer no BTC order-owner authority.
+
+    Called only inside an otherwise validated, unchanged EUR owner read. The
+    native configured-position block is account scoped, and its generations
+    must match that same position/global-order snapshot. An omitted row, a
+    baseline delta or a different owner's order projection is not a zero proof.
+    """
+    physical = positions.get("configured_crypto_position_observation")
+    if (not isinstance(physical, dict) or physical.get("source") != "IB_REQ_POSITIONS" or
+            physical.get("authoritative") is not True or
+            physical.get("scope") != "CONFIGURED_PHYSICAL_CRYPTO" or
+            physical.get("mutation_authorized") is not False or
+            physical.get("account") != period["account"] or
+            physical.get("execution_service_epoch") != identity[0]):
+        raise EvidenceError("PNL_ACCOUNT_CRYPTO_POSITION_PROOF_UNAVAILABLE")
+    if (not positive_int(physical.get("connection_epoch")) or
+            physical["connection_epoch"] != orders.get("active_orders_connection_epoch") or
+            not positive_int(physical.get("position_generation")) or
+            physical["position_generation"] != positions.get("position_generation") or
+            not positive_int(physical.get("active_orders_generation")) or
+            physical["active_orders_generation"] != orders.get("active_orders_generation") or
+            not positive_int(physical.get("terminal_generation"))):
+        raise EvidenceError("PNL_ACCOUNT_CRYPTO_SNAPSHOT_GENERATION_MISMATCH")
+    if (orders.get("source") != "IB" or orders.get("authoritative") is not True or
+            orders.get("active_orders_source") != "IB_OPEN_ORDERS" or
+            orders.get("global_active_orders_complete") is not True or
+            orders.get("active_order_ids") != []):
+        raise EvidenceError("PNL_ACCOUNT_GLOBAL_ORDERS_NOT_PROVEN_EMPTY")
+    sampled = physical.get("sampled_at_ms")
+    if not positive_int(sampled) or not 0 <= at_ms - sampled <= 10000:
+        raise EvidenceError("PNL_ACCOUNT_CRYPTO_POSITION_STALE_OR_FUTURE")
+    rows = physical.get("positions")
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict) or
+            rows[0].get("instrument") != "BTC.USD" or number(rows[0].get("quantity")) != 0):
+        raise EvidenceError("PNL_ACCOUNT_CRYPTO_POSITION_NOT_EXPLICIT_ZERO")
+    return {"schema": "heptatrader.pnl-account-flat-crypto-observation.v1",
+            "authoritative": True, "quantity": "0", "sampled_at_ms": sampled,
+            "connection_epoch": physical["connection_epoch"], "service_identity": identity,
+            "position_scope": "CONFIGURED_PHYSICAL_CRYPTO", "quote": None, "quote_error": None,
+            "source_read_instrument": "EUR.USD", "valuation_scope": "ACCOUNT_PHYSICAL_ZERO_ONLY",
+            "owner_scope_proven": False, "mutation_authorized": False,
+            "position_evidence": copy.deepcopy(physical),
+            "global_order_evidence": {"source": "IB_OPEN_ORDERS", "complete": True,
+                "connection_epoch": orders["active_orders_connection_epoch"],
+                "generation": orders["active_orders_generation"], "active_order_ids": []}}
+
+
 def observe(reader: Callable, period: dict, instrument: str) -> dict:
     first_health = reader(instrument, "system.get_health")
     identity = health_identity(first_health)
@@ -199,6 +249,14 @@ def observe(reader: Callable, period: dict, instrument: str) -> dict:
               "active_order_ids": orders.get("active_order_ids"),
               "unsettled_native_command_ids": sorted({r.get("command_id") for r in orders.get("recent_orders", [])
                   if r.get("economic_fill") is True and r.get("economic_evidence_complete") is not True and r.get("command_id")})}
+    if instrument == "EUR.USD":
+        try:
+            result["account_crypto_flat_observation"] = _configured_crypto_flat_observation(
+                period, identity, orders, after_positions, result["sampled_at_ms"])
+        except EvidenceError as error:
+            # This optional account evidence cannot invalidate the EUR sample
+            # or replace a failed BTC owner read unless all its checks pass.
+            result["account_crypto_flat_observation_reason_code"] = str(error)
     return result
 
 
@@ -389,12 +447,47 @@ def collect(reader: Callable, period_path: Path, state_root: Path,
         raise EvidenceError("CROSS_INSTRUMENT_SERVICE_EPOCH_CHANGED")
     if journal_fingerprint != fingerprint(journal) or period_fingerprint != fingerprint(period_path):
         raise EvidenceError("PNL_COLLECTION_LEDGER_OR_PERIOD_CHANGED")
+    after_states = {}
     for instrument in INSTRUMENTS:
         path = state_root / ("crypto-driver" if instrument == "BTC.USD" else "paper-driver") / "state.json"
-        if load_private(path).get("day_one_started_at_ms") != period["started_at_ms"]:
+        after_states[instrument] = load_private(path)
+        if after_states[instrument].get("day_one_started_at_ms") != period["started_at_ms"]:
             raise EvidenceError("DRIVER_ACCOUNTING_PERIOD_CHANGED")
     if journal_parser is not None:
         journal_parser.verify(journal)
+    if observations["BTC.USD"].get("reason_code") == "DISCOVERY_LIST_REJECTED":
+        # The disabled lane remains disabled. Only its current zero valuation
+        # may use explicit account evidence from the existing permitted read.
+        try:
+            source = observations["EUR.USD"]
+            flat = source.get("account_crypto_flat_observation")
+            if source.get("authoritative") is not True or not isinstance(flat, dict):
+                raise EvidenceError(source.get("account_crypto_flat_observation_reason_code") or
+                                    "PNL_ACCOUNT_CRYPTO_POSITION_PROOF_UNAVAILABLE")
+            at_ms = now_ms()
+            if not 0 <= at_ms - flat["sampled_at_ms"] <= 10000:
+                raise EvidenceError("PNL_ACCOUNT_CRYPTO_POSITION_STALE_OR_FUTURE")
+            state = states["BTC.USD"]
+            if state != after_states["BTC.USD"]:
+                raise EvidenceError("PNL_ACCOUNT_FLAT_DRIVER_STATE_CHANGED")
+            if (number(state.get("position")) != 0 or "pending" not in state or
+                    state["pending"] is not None or state.get("lease_uncertain") is not False):
+                raise EvidenceError("PNL_ACCOUNT_FLAT_DRIVER_UNSETTLED_OR_NONZERO")
+            provider = journal_parser._cached_ledger if journal_parser is not None else replay_ledger
+            # Keep the same arithmetic context as instrument_report, including
+            # when this proof is the first read that populates its ledger cache.
+            with localcontext() as context:
+                context.prec = 40
+                ledger = provider(events, period, "BTC.USD", at_ms)
+            if ledger["book"].quantity != 0 or ledger["settlement_pending_command_ids"]:
+                raise EvidenceError("PNL_ACCOUNT_FLAT_LEDGER_UNSETTLED_OR_NONZERO")
+            observations["BTC.USD"] = {**copy.deepcopy(flat),
+                "owner_read_failure_reason_code": "DISCOVERY_LIST_REJECTED",
+                "fallback": "ACCOUNT_ZERO_POSITION_VALUATION_ONLY",
+                "ledger_flat_and_settled": True}
+        except (EvidenceError, InvalidOperation, OverflowError, TypeError, KeyError) as error:
+            observations["BTC.USD"]["account_flat_fallback_reason_code"] = (
+                str(error) if isinstance(error, EvidenceError) else "MALFORMED_PNL_EVIDENCE")
     report = build_report(events, period, observations, now_ms(), states,
                           ledger_provider=journal_parser._cached_ledger if journal_parser is not None else None)
     journal_sha256 = journal_parser.journal_sha256 if journal_parser is not None else hashlib.sha256(raw_journal).hexdigest()
