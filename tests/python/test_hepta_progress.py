@@ -396,4 +396,84 @@ class ProgressTests(unittest.TestCase):
   entry=self.collect()['value_forward'][0]
   self.assertEqual(entry['state'],'WAIT_INPUT_WINDOW');self.assertEqual(entry['reason'],'BEFORE_INPUT_START')
 
+ def launcher_fixture(self,mode):
+  role='predictor' if mode=='predict' else 'evaluator';root=self.home/('forward-'+role)
+  release=self.home/('release-'+role);launcher=release/'bin/current100k-forward-launch.py'
+  launcher.parent.mkdir(parents=True);launcher.write_bytes(b'raise AssertionError("progress must never execute the launcher")\n')
+  canonical=lambda value:json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+  inventory={'bin/current100k-forward-launch.py':hashlib.sha256(launcher.read_bytes()).hexdigest()}
+  config={'schema':'heptatrader.current100k-forward-worker-config.v1','signing_role':role,
+   'automatic_trading':False,'actor_update':False,'python':'/original/pinned/python','forward_root':str(root),
+   'worker_source_root':str(release),'worker_runtime_sha256':inventory,
+   'worker_runtime_inventory_digest':hashlib.sha256(canonical(inventory)).hexdigest()}
+  path=self.write(self.home/(role+'-'+hashlib.sha256(canonical(config)).hexdigest()+'.json'),config)
+  name='heptatrader-current100k-forward-'+role+'.service'
+  argv=[config['python'] if mode=='predict' else '/usr/bin/python3','-B',str(launcher),'--config',str(path),
+        '--sha256',hashlib.sha256(path.read_bytes()).hexdigest(),'--mode',mode]
+  self.units[name]={'Id':name,'ActiveState':'inactive','SubState':'dead','MainPID':'0','UnitFileState':'static',
+                    'config_source':'CONFIGURED_NEXT_INVOCATION','_argv':argv}
+  self.units[name.removesuffix('.service')+'.timer']={'ActiveState':'active','UnitFileState':'enabled'}
+  self.write(root/('predictor-status.json' if mode=='predict' else 'evaluator-status.json'),
+   {'at_ms':NOW,'state':'WAIT_INPUT_WINDOW','reason':'BEFORE_INPUT_START','plans':1,'new_predictions':0})
+  return name,path,launcher
+
+ def test_pinned_preexec_launcher_is_visible_before_first_tick_and_after_exec(self):
+  for mode,key in [('predict','value_prediction'),('evaluate','value_forward')]:
+   name,path,launcher=self.launcher_fixture(mode);before={p:p.read_bytes() for p in (path,launcher)}
+   with mock.patch.object(progress.subprocess,'run',side_effect=AssertionError('read-only progress must not launch')):
+    out=self.collect()
+   self.assertEqual(out['source_errors'],[]);self.assertEqual(len(out[key]),1)
+   self.assertEqual(out[key][0]['state'],'WAIT_INPUT_WINDOW');self.assertEqual(out[key][0]['plans'],1)
+   self.assertEqual(before,{p:p.read_bytes() for p in before})
+   self.units[name].update(ActiveState='active',MainPID='7',config_source='RUNNING_PROCESS_ARGV')
+   self.assertEqual(len(self.collect()[key]),1)
+   self.units[name]['_argv']=[self.units[name]['_argv'][0],'-B','-m','laya_cell.current100k_forward_worker','--config',str(path),'--mode',mode]
+   self.assertEqual(len(self.collect()[key]),1)
+
+ def test_launcher_name_alone_or_changed_config_inventory_bytes_cannot_create_value_progress(self):
+  name,path,launcher=self.launcher_fixture('predict');original=list(self.units[name]['_argv'])
+  for change in ('config_sha','role','arbitrary_path','bytes','inventory'):
+   with self.subTest(change=change):
+    argv=list(original);config_raw=path.read_bytes();launcher_raw=launcher.read_bytes()
+    if change=='config_sha':argv[6]='0'*64
+    elif change=='role':argv[8]='evaluate'
+    elif change=='arbitrary_path':
+     other=self.home/'arbitrary/current100k-forward-launch.py';other.parent.mkdir();other.write_bytes(launcher_raw);argv[2]=str(other)
+    elif change=='bytes':launcher.write_bytes(b'changed launcher')
+    else:
+     config=json.loads(config_raw);config['worker_runtime_inventory_digest']='0'*64
+     path.write_text(json.dumps(config));argv[6]=hashlib.sha256(path.read_bytes()).hexdigest()
+    self.units[name]['_argv']=argv;out=self.collect()
+    self.assertEqual(out['value_prediction'],[]);self.assertEqual(out['value_forward'],[])
+    self.assertEqual(len(out['source_errors']),1);self.assertIn('FORWARD_LAUNCHER_',out['source_errors'][0]['error'])
+    path.write_bytes(config_raw);launcher.write_bytes(launcher_raw)
+
+ def test_fresh_bounded_queue_wait_has_action_and_terminal_evidence_or_zero_pending_ends_wait(self):
+  root,cfgpath=self.fixture_learning();name='heptatrader-laya-trainer.service';self.units[name]['MainPID']='9'
+  path=root/'control/status.json';status=json.loads(path.read_text())
+  status.update(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',pending_original_trials=1)
+  self.write(path,status)
+  waiting='WAIT_FOR_ORIGINAL_EVALUATOR_CLOSEOUT_THEN_TRAINER_QUEUE_RECHECK'
+  closed='ORIGINAL_TRAINER_RECHECKS_QUEUE_AFTER_FORWARD_CLOSEOUT'
+  self.assertEqual(self.collect()['learning'][0]['resume']['next_action'],waiting)
+  self.write(path,{**status,'pending_original_trials':0})
+  self.assertEqual(self.collect()['learning'][0]['resume']['next_action'],closed)
+  self.write(path,status)
+  self.write(root/'evaluation/j1/qualification.json',{'candidate_id':'c1','plan_id':'p1','state':'REJECTED'})
+  self.assertEqual(self.collect()['learning'][0]['resume']['next_action'],closed)
+  hold=self.write(self.home/'manual-hold.json',{'owner':'original','reason':'NATIVE_WORKER_FATAL_SIGNAL'})
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'manual_hold_path':str(hold)})
+  self.units[name]['_argv']=['python','-m','historical_training.resident_resource_guard','--config',str(wrapper),'--role','trainer']
+  self.assertEqual(self.collect()['learning'][0]['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+  hold.unlink();self.write(path,{**status,'at_ms':NOW-300001})
+  self.assertEqual(self.collect()['learning'][0]['resume']['next_action'],'REFRESH_ORIGINAL_TRAINER_STATUS')
+
+ def test_inactive_crypto_blocker_is_scoped_without_claiming_paper_admission(self):
+  self.units['heptatrader-crypto-driver.service'].update(ActiveState='inactive',SubState='dead',MainPID='0',UnitFileState='disabled')
+  out=self.collect();trade=out['trading']
+  self.assertEqual(trade['permission'],'BLOCKED');self.assertEqual(trade['permission_scope'],'AGGREGATE_OF_CONFIGURED_LANES')
+  self.assertEqual(trade['current_blockers'],[{'reason':'SERVICE_NOT_ACTIVE','unit':'heptatrader-crypto-driver.service',
+   'state':'inactive','scope':'CRYPTO_DRIVER'}])
+  self.assertFalse(trade['trade_authority_granted']);self.assertIn('CRYPTO_DRIVER',progress.format_text(out))
+
 if __name__=='__main__':unittest.main()

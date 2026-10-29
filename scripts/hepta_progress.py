@@ -120,6 +120,50 @@ def argument(argv, flag):
         return None
 
 
+def forward_launcher_mode(argv, config_path, config, config_sha256):
+    """Recognize the selected CPU pre-exec entry through its pinned inventory.
+
+    This reads the launcher; it never imports or executes runtime code. Idle
+    timer entries use configured argv, while discover_units supplies actual
+    process argv whenever it can read the running process.
+    """
+    member = "bin/current100k-forward-launch.py"
+    if len(argv) < 3 or Path(argv[2]).name != Path(member).name:
+        return None
+    if (len(argv) != 9 or argv[1] != "-B" or argv[3::2] != ["--config", "--sha256", "--mode"]
+            or argv[4] != config_path or argv[6] != config_sha256 or argv[8] not in ("predict", "evaluate")):
+        raise ValueError("FORWARD_LAUNCHER_ARGV_OR_CONFIG_SHA_CHANGED")
+    role = "predictor" if argv[8] == "predict" else "evaluator"
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    inventory = config.get("worker_runtime_sha256")
+    if (config.get("schema") != "heptatrader.current100k-forward-worker-config.v1"
+            or config.get("signing_role") != role or config.get("automatic_trading") is not False
+            or config.get("actor_update") is not False
+            or argv[0] != (config.get("python") if role == "predictor" else "/usr/bin/python3")
+            or not isinstance(inventory, dict) or not inventory
+            or any(not isinstance(name, str) or Path(name).is_absolute() or ".." in Path(name).parts
+                   or not isinstance(sha, str) or re.fullmatch("[0-9a-f]{64}", sha) is None for name, sha in inventory.items())
+            or hashlib.sha256(canonical(inventory)).hexdigest() != config.get("worker_runtime_inventory_digest")):
+        raise ValueError("FORWARD_LAUNCHER_ROLE_OR_INVENTORY_CHANGED")
+    root, path, selected = Path(config["worker_source_root"]), Path(argv[2]), Path(config_path)
+    if (not root.is_absolute() or root.resolve() != root or path != root / member or path.resolve() != path
+            or not selected.is_absolute() or selected.resolve() != selected
+            or selected.name != role + "-" + hashlib.sha256(canonical(config)).hexdigest() + ".json"):
+        raise ValueError("FORWARD_LAUNCHER_PATH_NOT_BOUND")
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_JSON_BYTES:
+            raise ValueError("FORWARD_LAUNCHER_NOT_SMALL_REGULAR_FILE")
+        raw = stream.read(MAX_JSON_BYTES + 1)
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if (len(raw) != before.st_size or identity(before) != identity(os.fstat(stream.fileno()))
+                or identity(before) != identity(path.lstat())
+                or hashlib.sha256(raw).hexdigest() != inventory.get(member)):
+            raise ValueError("FORWARD_LAUNCHER_BYTES_NOT_BOUND")
+    return argv[8]
+
+
 def exec_argv(text):
     if "argv[]=" not in text:
         return []
@@ -304,6 +348,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
                   "next_training_at_ms", "next_calendar_eligible_at_ms", "waiting_stage",
                   "next_action", "status_refresh_only", "forward_attempt_registration",
                   "forward_registration_resume_conditions", "resume_conditions_to_recheck",
+                  "pending_original_trials", "viable_pending_evaluations",
                   "automatic_resume_expected", "calendar_time_is_not_worker_admission")}}
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
@@ -369,9 +414,21 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
     result["current_blockers"]=blockers
     persistent=any(row["reason"] in ("OPERATOR_RESOURCE_HOLD","OPERATOR_RESOURCE_HOLD_UNREADABLE",
         "TRAINING_WORKER_NOT_REAPED","WORKER_TERMINATION_PENDING") for row in blockers)
+    next_action=status.get("next_action") if meta["freshness"]=="FRESH" else "REFRESH_ORIGINAL_TRAINER_STATUS"
+    if (role=="trainer" and running and meta["freshness"]=="FRESH"
+            and status.get("state")=="EVALUATING_BOUNDED_CANDIDATE_QUEUE"):
+        pending=status.get("pending_original_trials")
+        forward=result.get("latest_forward",{})
+        closed=forward.get("available") is True and forward.get("state") in ("REJECTED","QUALIFIED_AWAITING_CANONICAL_OWNER")
+        if closed or type(pending) is int and pending==0:
+            next_action="ORIGINAL_TRAINER_RECHECKS_QUEUE_AFTER_FORWARD_CLOSEOUT"
+        elif type(pending) is int and pending>0:
+            next_action="WAIT_FOR_ORIGINAL_EVALUATOR_CLOSEOUT_THEN_TRAINER_QUEUE_RECHECK"
+        else:
+            next_action="REFRESH_ORIGINAL_TRAINER_QUEUE_STATUS"
     result["resume"]={"automatic_resume_expected":False if persistent or not running else None,
         "next_action":result.get("manual_hold",{}).get("next_action")
-            or (status.get("next_action") if meta["freshness"]=="FRESH" else "REFRESH_ORIGINAL_TRAINER_STATUS"),
+            or next_action,
         "conditions_to_recheck":list(dict.fromkeys(row["reason"] for row in blockers)),
         "next_calendar_eligible_at_ms":status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms")),
         "calendar_time_is_not_worker_admission":True,"worker_launch_authority":False,
@@ -412,7 +469,9 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
     for name in CORE_UNITS:
         state = units.get(name, {}).get("ActiveState")
         if state and state != "active":
-            blockers.append({"reason": "SERVICE_NOT_ACTIVE", "unit": name, "state": state})
+            scope = ("CRYPTO_DRIVER" if name == "heptatrader-crypto-driver.service" else
+                     "PAPER_DRIVER" if name == "heptatrader-paper-driver.service" else "SHARED_EXECUTION")
+            blockers.append({"reason": "SERVICE_NOT_ACTIVE", "unit": name, "state": state, "scope": scope})
         elif not state:
             unknown.append("UNIT_STATE_UNAVAILABLE:" + name)
     switch = Path(runtime) / "control/kill-switch"
@@ -469,6 +528,7 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
                     blockers.append({"reason": field.upper(), "driver": lane})
         drivers[lane] = item
     return {"permission": "BLOCKED" if blockers else "NATIVE_ADMISSION_NOT_ATTESTED",
+            "permission_scope": "AGGREGATE_OF_CONFIGURED_LANES",
             "current_blockers": blockers, "unknown_current_evidence": unknown,
             "native_kill_switch_present": marker_present,
             "native_stop": native_stop,
@@ -498,7 +558,9 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
         if not config_path:
             continue
         try:
-            config = _object(config_path)
+            config, config_sha256 = _object(config_path, with_sha=True)
+            if not module and forward_launcher_mode(argv, config_path, config, config_sha256) is not None:
+                module = "laya_cell.current100k_forward_worker"
             if module == "historical_training.resident_resource_guard":
                 original_path = config["original_config"]
                 original = _object(original_path)
@@ -609,7 +671,7 @@ def format_text(value):
         lines.append("VALUE OPEN timing " + show(pick(entry, "source", "freshness", "available",
             "open_coverage", "not_preopen_reason_counts", "groups", "error")))
     trade = value["trading"]
-    lines.append("TRADING " + show(pick(trade, "permission", "current_blockers", "unknown_current_evidence")))
+    lines.append("TRADING " + show(pick(trade, "permission", "permission_scope", "current_blockers", "unknown_current_evidence")))
     history = {lane: item["historical_last_error"] for lane, item in trade["drivers"].items()
                if item["historical_last_error"]}
     if history:
