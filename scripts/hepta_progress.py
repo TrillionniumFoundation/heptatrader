@@ -561,7 +561,7 @@ def driver_model_progress(data, current_loop, now_ms, max_age_ms):
               "last_error_is_current_fault": False}
     live_error = (isinstance(message, str) and message.startswith("model HOLD:")
                   and error.get("scope") == "LAST_OBSERVED_LOOP_ERROR"
-                  and data.get("last_error") == message and recent["freshness"] == "FRESH")
+                  and data.get("last_error") == message and recent["freshness"] in ("FRESH", "FUTURE"))
     if not live_error:
         return result
     last_success = data.get("last_decision_ms")
@@ -578,7 +578,7 @@ def driver_model_progress(data, current_loop, now_ms, max_age_ms):
                 "record_has_process_identity": False, "current_process_heartbeat": current_loop,
                 "native_permission_independent": True, "trade_authority_granted": False}
     result.update(historical_last_error=None, historical_last_error_at_ms=None)
-    if not current_loop or not correlated:
+    if recent["freshness"] == "FUTURE" or not current_loop or not correlated:
         result.update(last_error_is_current_fault=None, model_availability={**observed,
             "state": "CURRENT_MODEL_AVAILABILITY_UNCONFIRMED",
             "next_action": "READ_ORIGINAL_DRIVER_HEARTBEAT_AND_MODEL_COMPLETION"})

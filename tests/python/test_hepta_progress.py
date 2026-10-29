@@ -606,4 +606,13 @@ class ProgressTests(unittest.TestCase):
    self.assertEqual(model['failure_kind'],'MODEL_RESULT_DISCARDED')
    self.assertFalse(model['recovery_conditions']['existing_provider_usage_limit_must_clear'])
 
+ def test_clock_rollback_cannot_turn_a_future_dated_model_failure_into_history(self):
+  state=self.model_failure_fixture();state['last_error_observation']['at_ms']=NOW+1000
+  self.write(self.state/'paper-driver/state.json',state)
+  trade=self.collect()['trading'];driver=trade['drivers']['paper'];model=driver['model_availability']
+  self.assertIsNone(driver['last_error_is_current_fault']);self.assertIsNone(driver['historical_last_error'])
+  self.assertEqual(model['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
+  self.assertEqual(model['freshness'],'FUTURE');self.assertEqual(model['age_ms'],-1000)
+  self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(trade['current_blockers'],[])
+
 if __name__=='__main__':unittest.main()
