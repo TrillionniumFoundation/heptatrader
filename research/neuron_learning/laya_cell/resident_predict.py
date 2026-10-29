@@ -125,6 +125,37 @@ def _read_fixed_slot_source(config,plan,now,stage,timing,decode_cache=None):
   observe()
 
 
+def _prewarm_fixed_slot_source(config,decode_cache,due_start,stage,timing):
+ """Optional preparation cannot decide whether the future slot has input.
+
+ A segment may still be publishing its HEADER before the slot. A failed
+ prewarm therefore discards decoder state and leaves the original fixed-slot
+ read responsible for source authority. Deadline exhaustion can retain only
+ already committed decoder entries, which are rehashed before every reuse.
+ """
+ from .resident_recent_source import prewarm_recent_decoding
+ from .shadow_source import SourceDecodeCache
+ from .source_read_budget import SourceReadDeadline
+ timing.pop('source_prewarm_error_class',None);timing.pop('source_prewarm_error',None)
+ with _timed_phase(stage,timing,'PREWARM_SOURCE_DECODE','source_decode_prewarm_ms'):
+  try:
+   prewarm_recent_decoding(config,decode_cache,deadline_ms=due_start)
+   timing['source_prewarm_status']='DECODE_PRIMED_ORIGINAL_BYTES_REHASHED_AT_USE'
+   timing['source_prewarm_cache_policy']='FRESH_PREFIX_SHA_REQUIRED_AT_USE'
+  except SourceReadDeadline:
+   timing['source_prewarm_status']='PRE_SLOT_BUDGET_EXHAUSTED_NO_INPUT_SELECTED'
+   timing['source_prewarm_cache_policy']='PARTIAL_DECODE_ONLY_FRESH_PREFIX_SHA_REQUIRED_AT_USE'
+  except (OSError,ValueError) as error:
+   timing['source_prewarm_status']='UNAVAILABLE_RECHECK_AT_FIXED_SLOT'
+   timing['source_prewarm_error_class']=type(error).__name__[:64]
+   timing['source_prewarm_error']=str(error)[:256]
+   decode_cache=SourceDecodeCache(max_entries=decode_cache.max_entries,
+    max_source_bytes=decode_cache.max_source_bytes,max_records=decode_cache.max_records)
+   timing['source_prewarm_cache_policy']='DISCARDED_AFTER_SOURCE_ERROR'
+  timing['source_decode_cache']=decode_cache.counters()
+ return decode_cache
+
+
 def predict(config,plan_path,slot):
  plan=read_json(plan_path)
  from .resident_hip_runtime import check_plan,prove_before_publish
@@ -218,17 +249,10 @@ def predict(config,plan_path,slot):
  atomic(stage,timing)
  from .resident_source_policy import RECENT
  from .shadow_source import SourceDecodeCache
- from .source_read_budget import SourceReadDeadline
  decode_cache=SourceDecodeCache() if expected_source_profile==RECENT else None
  timing['source_prewarm_status']='SKIPPED_NO_PRE_SLOT_BUDGET'
  if decode_cache is not None and ready<due_start:
-  from .resident_recent_source import prewarm_recent_decoding
-  with _timed_phase(stage,timing,'PREWARM_SOURCE_DECODE','source_decode_prewarm_ms'):
-   try:
-    timing['source_decode_cache']=prewarm_recent_decoding(config,decode_cache,deadline_ms=due_start)
-    timing['source_prewarm_status']='DECODE_PRIMED_ORIGINAL_BYTES_REHASHED_AT_USE'
-   except SourceReadDeadline:
-    timing['source_prewarm_status']='PRE_SLOT_BUDGET_EXHAUSTED_NO_INPUT_SELECTED'
+  decode_cache=_prewarm_fixed_slot_source(config,decode_cache,due_start,stage,timing)
  timing['phase']='WAIT_FOR_FIXED_SLOT_INPUT';atomic(stage,timing)
  last_input_error=None
  while True:
