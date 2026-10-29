@@ -64,7 +64,7 @@ def run(c):
     finally:sys.path[:]=source_paths
     if not admitted:
         raise EvidenceError('RESIDENT_ADMISSION_DENIED_NO_MODEL_LOADED')
-    started=time.monotonic();gpu_runtime_ready=False;torch=None
+    started=time.monotonic();gpu_import_attempted=False;gpu_runtime_ready=False;torch=None
     raw=tok=head=x=y=features=feature=None
     try:
         hip_context=hip_runtime.prepare_worker(c,'train')
@@ -84,6 +84,7 @@ def run(c):
         before=copy.deepcopy(consumer);before['output_root']=str(out/'replay-before')
         before_status=export(before);rows=selected_rows(frozen,read(before_status['dataset_path']))
         # Only after sandbox and shared admission may a GPU package/model be loaded.
+        gpu_import_attempted=True
         import torch
         hip_runtime.prove(hip_context,'AFTER_TORCH_BEFORE_MODEL')
         gpu_runtime_ready=True
@@ -129,16 +130,24 @@ def run(c):
         print(json.dumps({k:record[k] for k in ('status','candidate_id','rows','pnl_reward_used','scorer_or_actor_updated','max_gpu_allocated_bytes','wall_seconds')}),flush=True)
         return record
     except BaseException as exc:
-        # Failed encoder/optimizer frames can otherwise retain tensors while
-        # this frame unwinds. Clear only their finished traceback frames.
-        traceback.clear_frames(exc.__traceback__)
+        # Chained encoder/optimizer errors can retain tensors outside the
+        # outer traceback. Clear finished frames throughout the error chain.
+        pending=[exc];seen=set()
+        while pending:
+            error=pending.pop()
+            if id(error) in seen:continue
+            seen.add(id(error));traceback.clear_frames(error.__traceback__)
+            pending.extend(e for e in (error.__cause__,error.__context__) if e is not None)
         raise
     finally:
-        try:
-            raw=tok=head=x=y=features=feature=None
-            if gpu_runtime_ready:
-                gc.collect();torch.cuda.synchronize();torch.cuda.empty_cache()
-        finally:gate.release()
+        raw=tok=head=x=y=features=feature=None
+        if gpu_import_attempted:
+            gc.collect()
+            if gpu_runtime_ready and torch.cuda.is_initialized():
+                torch.cuda.synchronize();torch.cuda.empty_cache()
+        # No handoff after failed cleanup or an imported, unproven runtime.
+        # The original lease FD then stays open until the finite process exits.
+        if not gpu_import_attempted or gpu_runtime_ready:gate.release()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);a=p.parse_args();run(read(a.config))

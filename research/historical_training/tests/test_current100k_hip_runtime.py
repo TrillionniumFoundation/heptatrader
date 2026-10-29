@@ -130,7 +130,8 @@ class FinancialHipTests(unittest.TestCase):
         self.install_gate()
         with self.assertRaisesRegex(ContractError, 'FIXTURE_UNVERIFIED_ACTUAL_HIP'):
             trial.run(c)
-        self.assertEqual(self.trace, ['gate', 'prepare', 'sandbox', 'activate', 'torch', 'prove', 'release'])
+        self.assertEqual(self.trace, ['gate', 'prepare', 'sandbox', 'activate', 'torch', 'prove'])
+        self.gate.release.assert_not_called()
         self.assertIn(self.context['readonly'][0], self.sandbox.call_args.args[0]['read_only_paths'])
         self.prove.assert_called_once_with(self.context, 'AFTER_TORCH_BEFORE_MODEL')
         self.assertFalse((Path(c['output_root']) / 'candidate.json').exists())
@@ -172,8 +173,10 @@ class FinancialHipTests(unittest.TestCase):
     def cleanup_trial(self, *, synchronize_error=None):
         c = self.trial_config()
         self.install_gate()
+        self.original_lease = self.install_real_lease()
         self.prove.side_effect = self.trace_call('prove', proof('train'))
-        cuda = SimpleNamespace(synchronize=Mock(side_effect=synchronize_error or self.trace_call('synchronize')),
+        cuda = SimpleNamespace(is_initialized=Mock(return_value=True),
+                               synchronize=Mock(side_effect=synchronize_error or self.trace_call('synchronize')),
                                empty_cache=Mock(side_effect=self.trace_call('empty_cache')))
         self.enter(patch.object(trial.gc, 'collect', side_effect=self.trace_call('collect')))
         importer = builtins.__import__
@@ -196,15 +199,53 @@ class FinancialHipTests(unittest.TestCase):
         cuda.synchronize.assert_called_once_with()
         cuda.empty_cache.assert_called_once_with()
 
-    def test_trial_cleanup_failure_still_releases_original_lease(self):
+    def test_trial_cleanup_failure_keeps_original_lease(self):
         c, cuda = self.cleanup_trial(synchronize_error=RuntimeError('FIXTURE_SYNCHRONIZE_FAILED'))
         with self.assertRaisesRegex(RuntimeError, 'FIXTURE_SYNCHRONIZE_FAILED'):
             trial.run(c)
-        self.assertEqual(self.trace[-2:], ['collect', 'release'])
+        self.assertEqual(self.trace[-1], 'collect')
         cuda.empty_cache.assert_not_called()
-        self.gate.release.assert_called_once_with()
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(self.original_lease)
 
-    def test_trial_drops_model_and_failed_optimizer_frames_before_releasing_lease(self):
+    def test_trial_failed_empty_cache_keeps_original_lease(self):
+        c, cuda = self.cleanup_trial()
+        cuda.empty_cache.side_effect = RuntimeError('FIXTURE_EMPTY_CACHE_FAILED')
+        with self.assertRaisesRegex(RuntimeError, 'FIXTURE_EMPTY_CACHE_FAILED'):
+            trial.run(c)
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(self.original_lease)
+
+    def test_trial_failed_gc_keeps_original_lease(self):
+        c, cuda = self.cleanup_trial()
+        self.enter(patch.object(trial.gc, 'collect', side_effect=RuntimeError('FIXTURE_GC_FAILED')))
+        with self.assertRaisesRegex(RuntimeError, 'FIXTURE_GC_FAILED'):
+            trial.run(c)
+        cuda.synchronize.assert_not_called()
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(self.original_lease)
+
+    def test_trial_unproven_torch_never_calls_cuda_or_releases_lease(self):
+        c, cuda = self.cleanup_trial()
+        self.prove.side_effect = ContractError('FIXTURE_UNVERIFIED_ACTUAL_HIP')
+        with self.assertRaisesRegex(ContractError, 'FIXTURE_UNVERIFIED_ACTUAL_HIP'):
+            trial.run(c)
+        cuda.is_initialized.assert_not_called()
+        cuda.synchronize.assert_not_called()
+        cuda.empty_cache.assert_not_called()
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(self.original_lease)
+
+    def test_trial_cleanup_never_initializes_uninitialized_runtime(self):
+        c, cuda = self.cleanup_trial()
+        cuda.is_initialized.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'FIXTURE_MODEL_IMPORT_FAILURE'):
+            trial.run(c)
+        cuda.synchronize.assert_not_called()
+        cuda.empty_cache.assert_not_called()
+        self.assertIsNone(self.original_lease.fd)
+
+    def assert_trial_failed_frames_released(self, chain=None):
         c, cuda = self.cleanup_trial()
         references = {}
         class Allocation:
@@ -212,7 +253,16 @@ class FinancialHipTests(unittest.TestCase):
             def requires_grad_(self, value): return self
             def eval(self): return self
             def named_parameters(self): return []
+        def inner_failure(features):
+            raise ValueError('INNER_OPTIMIZER_FRAME')
         def failed_optimizer(features, targets):
+            if chain:
+                try:
+                    inner_failure(features)
+                except ValueError as exc:
+                    if chain == 'cause':
+                        raise RuntimeError('FIXTURE_OPTIMIZER_FAILURE_WITH_LIVE_TENSORS') from exc
+                    raise RuntimeError('FIXTURE_OPTIMIZER_FAILURE_WITH_LIVE_TENSORS')
             raise RuntimeError('FIXTURE_OPTIMIZER_FAILURE_WITH_LIVE_TENSORS')
         cuda.get_device_properties = lambda unused: SimpleNamespace(total_memory=8 * 1024**3)
         cuda.set_per_process_memory_fraction = lambda fraction: None
@@ -237,21 +287,33 @@ class FinancialHipTests(unittest.TestCase):
         self.enter(patch.object(trial, 'read', side_effect=lambda path:
             {} if str(path).endswith('/base-manifest.json') else original_read(path)))
         self.enter(patch.object(trial, 'selected_rows', return_value=[{'net_usd': '1'}]))
-        def released():
+        def synchronized():
             self.assertEqual(set(references), {'raw', 'feature', 'x', 'y'})
             self.assertTrue(all(reference() is None for reference in references.values()))
-            self.trace.append('release')
-        self.gate.release.side_effect = released
+            self.assert_lease_held(self.original_lease)
+            self.trace.append('synchronize')
+        cuda.synchronize.side_effect = synchronized
         with self.assertRaisesRegex(RuntimeError, 'FIXTURE_OPTIMIZER_FAILURE_WITH_LIVE_TENSORS'):
             trial.run(c)
         self.assertEqual(self.trace[-4:], ['collect', 'synchronize', 'empty_cache', 'release'])
+        self.assertIsNone(self.original_lease.fd)
+
+    def test_trial_drops_model_and_failed_optimizer_frames_before_releasing_lease(self):
+        self.assert_trial_failed_frames_released()
+
+    def test_trial_chained_cause_drops_inner_optimizer_frame(self):
+        self.assert_trial_failed_frames_released('cause')
+
+    def test_trial_chained_context_drops_inner_optimizer_frame(self):
+        self.assert_trial_failed_frames_released('context')
 
     def test_forward_proves_actual_hip_after_gate_and_sandbox_before_model(self):
         c = self.worker_config()
         self.install_gate()
         with self.assertRaisesRegex(ContractError, 'FIXTURE_UNVERIFIED_ACTUAL_HIP'):
             worker.run(c, 'predict')
-        self.assertEqual(self.trace, ['gate', 'prepare', 'sandbox', 'activate', 'torch', 'prove', 'release'])
+        self.assertEqual(self.trace, ['gate', 'prepare', 'sandbox', 'activate', 'torch', 'prove'])
+        self.gate.release.assert_not_called()
         self.assertIn(self.context['readonly'][0], self.sandbox.call_args.args[0]['read_only_paths'])
         self.prove.assert_called_once_with(self.context, 'AFTER_TORCH_BEFORE_MODEL')
 
@@ -271,6 +333,158 @@ class FinancialHipTests(unittest.TestCase):
             worker.run(c, 'predict')
         self.gate_type.assert_not_called()
         self.assertEqual(self.trace, [])
+
+    def forward_lifecycle(self, failure=None):
+        c = self.worker_config()
+        self.install_gate()
+        self.prove.side_effect = self.trace_call('prove', proof())
+        references = {}
+        class Allocation:
+            def __init__(self, name):
+                references[name] = weakref.ref(self)
+                self.cycle = self
+        def inner_failure(value):
+            raise RuntimeError('INNER_MODEL_FRAME')
+        class Predictor:
+            def __init__(self, *args, **kwargs):
+                self.raw = Allocation('raw')
+                self.heads = {'candidate': Allocation('head')}
+                references['predictor'] = weakref.ref(self)
+                if failure == 'constructor':
+                    raise RuntimeError('PREDICTOR_CONSTRUCTOR_FAILED')
+            def step(self):
+                if failure in ('cause', 'context'):
+                    try:
+                        inner_failure(self.raw)
+                    except RuntimeError as exc:
+                        if failure == 'cause':
+                            raise OSError('PREDICTOR_STATUS_WRITE_FAILED') from exc
+                        raise OSError('PREDICTOR_STATUS_WRITE_FAILED')
+                if failure == 'status':
+                    raise OSError('PREDICTOR_STATUS_WRITE_FAILED')
+                return {'state': 'ONE_COMPLETED_PREDICTION'}
+        self.enter(patch.object(prediction, 'Predictor', Predictor))
+        lease = self.install_real_lease()
+        collect = worker.gc.collect
+        def collected():
+            self.trace.append('collect')
+            if failure == 'collect':
+                raise RuntimeError('CLEANUP_COLLECT_FAILED')
+            return collect()
+        self.enter(patch.object(worker.gc, 'collect', side_effect=collected))
+        def cleaned(phase):
+            self.trace.append(phase)
+            self.assertTrue(all(ref() is None for ref in references.values()), references)
+            self.assert_lease_held(lease)
+            if failure == phase:
+                raise RuntimeError('CLEANUP_' + phase.upper() + '_FAILED')
+        cuda = SimpleNamespace(is_initialized=Mock(return_value=failure != 'uninitialized_setup'),
+            synchronize=Mock(side_effect=lambda: cleaned('synchronize')),
+            empty_cache=Mock(side_effect=lambda: cleaned('empty_cache')),
+            get_device_properties=lambda index: SimpleNamespace(total_memory=8 * 1024**3),
+            set_per_process_memory_fraction=lambda fraction: None)
+        def threads(count):
+            if failure in ('setup', 'uninitialized_setup'):
+                raise RuntimeError('TORCH_SETUP_FAILED')
+        fake_torch = SimpleNamespace(cuda=cuda, set_num_threads=threads)
+        self.enter(patch.dict(sys.modules, {'torch': fake_torch}))
+        importer = builtins.__import__
+        def imports(name, *args, **kwargs):
+            if name == 'torch':
+                self.trace.append('torch')
+                return fake_torch
+            return importer(name, *args, **kwargs)
+        self.enter(patch('builtins.__import__', side_effect=imports))
+        return c, cuda, references, lease
+
+    def install_real_lease(self):
+        lease = guard.Lease(self.root / 'heavy-worker.lock')
+        self.addCleanup(lease.release)
+        def acquire(*args):
+            self.trace.append('gate')
+            return lease.acquire()
+        def release():
+            self.trace.append('release')
+            lease.release()
+        self.gate.acquire.side_effect = acquire
+        self.gate.release.side_effect = release
+        return lease
+
+    def assert_lease_held(self, lease):
+        contender = guard.Lease(lease.path)
+        try:
+            self.assertFalse(contender.acquire(), 'another worker acquired the original heavy lease')
+        finally:
+            contender.release()
+
+    def test_forward_success_destroys_models_before_sync_and_lease_release(self):
+        c, cuda, references, lease = self.forward_lifecycle()
+        self.assertEqual(worker.run(c, 'predict'), {'state': 'ONE_COMPLETED_PREDICTION'})
+        self.assertEqual(self.trace[-4:], ['collect', 'synchronize', 'empty_cache', 'release'])
+        self.assertIsNone(lease.fd)
+        self.assertTrue(all(ref() is None for ref in references.values()))
+
+    def assert_forward_escaping_frames_released(self, failure):
+        c, cuda, references, lease = self.forward_lifecycle(failure)
+        with self.assertRaisesRegex((RuntimeError, OSError), 'PREDICTOR_'):
+            worker.run(c, 'predict')
+        self.assertEqual(self.trace[-4:], ['collect', 'synchronize', 'empty_cache', 'release'])
+        self.assertTrue(all(ref() is None for ref in references.values()))
+        self.assertIsNone(lease.fd)
+
+    def test_forward_status_failure_drops_predictor_traceback(self):
+        self.assert_forward_escaping_frames_released('status')
+
+    def test_forward_chained_cause_drops_inner_model_frame(self):
+        self.assert_forward_escaping_frames_released('cause')
+
+    def test_forward_chained_context_drops_inner_model_frame(self):
+        self.assert_forward_escaping_frames_released('context')
+
+    def test_forward_failed_constructor_drops_partial_model(self):
+        self.assert_forward_escaping_frames_released('constructor')
+
+    def assert_forward_cleanup_failure_keeps_lease(self, phase):
+        c, cuda, references, lease = self.forward_lifecycle(phase)
+        with self.assertRaisesRegex(RuntimeError, 'CLEANUP_'):
+            worker.run(c, 'predict')
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(lease)
+
+    def test_forward_failed_gc_keeps_original_lease(self):
+        self.assert_forward_cleanup_failure_keeps_lease('collect')
+
+    def test_forward_failed_sync_keeps_original_lease(self):
+        self.assert_forward_cleanup_failure_keeps_lease('synchronize')
+
+    def test_forward_failed_empty_cache_keeps_original_lease(self):
+        self.assert_forward_cleanup_failure_keeps_lease('empty_cache')
+
+    def test_forward_failed_torch_setup_cleans_initialized_runtime_without_worker(self):
+        c, cuda, references, lease = self.forward_lifecycle('setup')
+        with self.assertRaisesRegex(RuntimeError, 'TORCH_SETUP_FAILED'):
+            worker.run(c, 'predict')
+        self.assertFalse(references)
+        self.assertEqual(self.trace[-4:], ['collect', 'synchronize', 'empty_cache', 'release'])
+
+    def test_forward_cleanup_never_initializes_uninitialized_runtime(self):
+        c, cuda, references, lease = self.forward_lifecycle('uninitialized_setup')
+        with self.assertRaisesRegex(RuntimeError, 'TORCH_SETUP_FAILED'):
+            worker.run(c, 'predict')
+        cuda.synchronize.assert_not_called()
+        cuda.empty_cache.assert_not_called()
+        self.assertEqual(self.trace[-2:], ['collect', 'release'])
+
+    def test_forward_unproven_torch_never_calls_cuda_or_releases_lease(self):
+        c, cuda, references, lease = self.forward_lifecycle()
+        self.prove.side_effect = ContractError('FIXTURE_UNVERIFIED_ACTUAL_HIP')
+        with self.assertRaisesRegex(ContractError, 'FIXTURE_UNVERIFIED_ACTUAL_HIP'):
+            worker.run(c, 'predict')
+        cuda.is_initialized.assert_not_called()
+        cuda.synchronize.assert_not_called()
+        cuda.empty_cache.assert_not_called()
+        self.gate.release.assert_not_called()
+        self.assert_lease_held(lease)
 
     def publication(self):
         p = {'plan_id': 'p', 'candidate_id': 'c', 'input_end_ms': T + 60000,
