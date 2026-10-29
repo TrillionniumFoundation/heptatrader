@@ -291,11 +291,144 @@ class ProgressTests(unittest.TestCase):
   self.units['heptatrader-laya-trainer.service']['MainPID']='9'
   attribution={'at_ms':NOW-20000,'sample_age_ms':20000,'diagnostic_only':True,
    'partial':True,'causality':'NOT_ESTABLISHED','processes':[{'pid':123,'name':'du'}]}
-  self.write(guard/'trainer-admission.json',{'at_ms':NOW,'admit_new_worker':False,
+  self.write(guard/'trainer-admission.json',{'schema':'heptatrader.resident-resource-admission.v1',
+   'role':'trainer','at_ms':NOW,'admit_new_worker':False,
    'reasons':['HOST_FULL_MEMORY_PSI_PRESSURE'],'workload_attribution':attribution})
   out=self.collect()['learning'][0]
   self.assertEqual(out['resource_admission']['workload_attribution'],attribution)
   self.assertIn('HOST_FULL_MEMORY_PSI_PRESSURE',{row['reason'] for row in out['current_blockers']})
+ def learning_guard_hold_fixture(self,role='trainer',reasons=('HOST_FULL_MEMORY_PSI_PRESSURE',)):
+  root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
+  self.units.pop('heptatrader-laya-trainer.service')
+  wrapper=self.write(self.home/'wrapper.json',{'original_config':str(cfgpath),'state_root':str(guard),'manual_hold_path':str(hold)})
+  name='heptatrader-laya-'+role+'.service'
+  self.service(name,'historical_training.resident_resource_guard',wrapper,active='active',extra=('--role',role))
+  self.units[name]['MainPID']='9'
+  if role=='trainer':
+   status={'schema':'heptatrader.laya-resident-status.v1','at_ms':NOW,
+    'state':'HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE','current_blockers':list(reasons)+['HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE']}
+   path=root/'control/status.json'
+  else:
+   status={'schema':'heptatrader.laya-resident-evaluation-status.v2','at_ms':NOW,'plans':1,
+    'counts':{'PENDING':1},'counts_include_closed_plans':True,'active_prediction_workers':0,'futile_pending_plans':0}
+   path=root/'evaluation/status.json'
+  self.write(path,status)
+  admission=self.write(guard/(role+'-admission.json'),{'schema':'heptatrader.resident-resource-admission.v1',
+   'role':role,'resource_role':role,'at_ms':NOW-100,'admit_new_worker':False,'reasons':list(reasons)})
+  return name,path,admission,hold
+ def test_learning_resource_refusal_has_explicit_recheck_without_launch_or_policy_copy(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture()
+  for reason in ('HOST_FULL_MEMORY_PSI_PRESSURE','HOST_AVAILABLE_MEMORY_BELOW_8GIB','OTHER_RESEARCH_WORKER_ACTIVE'):
+   with self.subTest(reason=reason):
+    status=json.loads(path.read_text());status['current_blockers']=[reason,'HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE'];self.write(path,status)
+    report=json.loads(admission.read_text());report['reasons']=[reason];self.write(admission,report)
+    before={p:p.read_bytes() for p in (path,admission)};out=self.collect();resume=out['learning'][0]['resume']
+    self.assertEqual(resume['next_action'],'ORIGINAL_CONTROLLER_RECHECKS_RESOURCE_SOURCE_AND_SHARED_LEASE')
+    self.assertFalse(resume['automatic_resume_expected']);self.assertFalse(resume['worker_launch_authority'])
+    self.assertTrue(resume['recovery_conditions_known']);self.assertTrue(resume['recovery_conditions']['original_guard_recheck_required'])
+    self.assertTrue(resume['recovery_conditions']['same_heavy_worker_lease_required'])
+    condition='existing_worker_must_finish_under_original_owner' if reason=='OTHER_RESEARCH_WORKER_ACTIVE' else 'memory_and_psi_must_satisfy_original_guard'
+    self.assertTrue(resume['recovery_conditions'][condition]);self.assertEqual(before,{p:p.read_bytes() for p in before})
+    self.assertIn(resume['next_action'],progress.format_text(out))
+  self.write(hold,{'owner':'original-owner','reason':'manual','release_conditions':'original signed closeout'})
+  resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+  self.assertFalse(resume['automatic_resume_expected'])
+  # A trainer may apply the registration/evaluator budget under its same owner role.
+  hold.unlink();status=json.loads(path.read_text());status.update(state='CANDIDATE_READY_AWAITING_FORWARD_ADMISSION',
+   next_action='ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION');self.write(path,status)
+  for resource_role in ('forward_registration','evaluator'):
+   report=json.loads(admission.read_text());report['resource_role']=resource_role;self.write(admission,report)
+   entry=self.collect()['learning'][0]
+   self.assertFalse(entry['resource_admission']['snapshot_is_historical'])
+   self.assertEqual(entry['resume']['next_action'],'ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION')
+ def test_learning_source_refusal_needs_current_role_admission_and_viable_original_work(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture('evaluator',('SOURCE_CONTINUITY_NOT_READY',))
+  original=json.loads(admission.read_text());resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'ORIGINAL_CONTROLLER_RECHECKS_RESOURCE_SOURCE_AND_SHARED_LEASE')
+  self.assertTrue(resume['recovery_conditions']['original_source_identity_freshness_and_continuity_required'])
+  for changes in ({'at_ms':NOW-300001},{'at_ms':NOW+1},{'role':'value-predictor'},{'schema':'unbound'}):
+   with self.subTest(changes=changes):
+    self.write(admission,{**original,**changes});resume=self.collect()['learning'][0]['resume']
+    self.assertNotIn('recovery_conditions',resume)
+    self.assertNotEqual(resume.get('next_action'),'ORIGINAL_CONTROLLER_RECHECKS_RESOURCE_SOURCE_AND_SHARED_LEASE')
+    self.assertNotIn('SOURCE_CONTINUITY_NOT_READY',{row['reason'] for row in self.collect()['learning'][0]['current_blockers']})
+  self.write(admission,original);status=json.loads(path.read_text())
+  for changes in ({'counts':{'REJECTED':1}},{'futile_pending_plans':1}):
+   with self.subTest(closed_or_futile=changes):
+    self.write(path,{**status,**changes});entry=self.collect()['learning'][0];resume=entry['resume']
+    self.assertNotIn('recovery_conditions',resume)
+    self.assertNotEqual(resume.get('next_action'),'ORIGINAL_CONTROLLER_RECHECKS_RESOURCE_SOURCE_AND_SHARED_LEASE')
+    self.assertTrue(entry['resource_admission']['snapshot_is_historical'])
+    self.assertTrue(entry['resource_admission']['superseded_by_no_viable_heavy_work'])
+    self.assertNotIn('SOURCE_CONTINUITY_NOT_READY',{row['reason'] for row in entry['current_blockers']})
+    self.assertNotIn('SOURCE_CONTINUITY_NOT_READY',resume['conditions_to_recheck'])
+    self.write(hold,{'owner':'original-owner','reason':'manual','release_conditions':'original signed closeout'})
+    entry=self.collect()['learning'][0]
+    self.assertIn('OPERATOR_RESOURCE_HOLD',{row['reason'] for row in entry['current_blockers']})
+    self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS');hold.unlink()
+  # A newer/equal refusal or an incomplete closeout snapshot cannot erase a blocker.
+  for changes,checked in (({},NOW-1),({},NOW),({'plans':2},NOW-100),
+                         ({'active_prediction_workers':1},NOW-100),
+                         ({'counts_include_closed_plans':False},NOW-100)):
+   with self.subTest(unproven_closeout=changes,admission_at=checked):
+    self.write(path,{**status,'at_ms':NOW-1,'futile_pending_plans':1,**changes})
+    self.write(admission,{**original,'at_ms':checked})
+    entry=self.collect()['learning'][0]
+    self.assertFalse(entry['resource_admission']['snapshot_is_historical'])
+    self.assertIn('SOURCE_CONTINUITY_NOT_READY',{row['reason'] for row in entry['current_blockers']})
+ def test_learning_cleanup_hold_uses_original_reap_and_terminal_status_does_not_revive_it(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture()
+  status={'schema':'heptatrader.laya-resident-status.v1','at_ms':NOW,
+   'state':'WORKER_TERMINATION_PENDING','reason':'TRAINING_WORKER_NOT_REAPED','worker_pid':123,'new_worker_allowed':False}
+  self.write(path,status);resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'WAIT_FOR_ORIGINAL_CONTROLLER_TO_REAP_RECORDED_WORKER')
+  self.assertFalse(resume['automatic_resume_expected']);self.assertEqual(resume['recovery_conditions']['worker_pid'],123)
+  self.assertTrue(resume['recovery_conditions']['original_worker_must_be_reaped_without_replacing_its_locks'])
+  self.write(path,{**status,'state':'FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE','reason':None,
+   'next_action':'NEW_CANDIDATE_AFTER_TRAINING_ADMISSION'})
+  resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'NEW_CANDIDATE_AFTER_TRAINING_ADMISSION');self.assertNotIn('recovery_conditions',resume)
+ def test_learning_unknown_or_unproven_hold_has_read_reconcile_action_without_invented_conditions(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture(reasons=('UNRECOGNIZED_ADMISSION_REFUSAL',))
+  original=json.loads(path.read_text());resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'READ_ORIGINAL_CONTROLLER_AND_GUARD_STATUS_THEN_RECONCILE_HOLD')
+  self.assertFalse(resume['recovery_conditions_known']);self.assertNotIn('recovery_conditions',resume)
+  for changes in ({'at_ms':NOW-300001},{'at_ms':NOW+1}):
+   self.write(path,{**original,**changes});resume=self.collect()['learning'][0]['resume']
+   self.assertEqual(resume['next_action'],'REFRESH_ORIGINAL_TRAINER_STATUS');self.assertNotIn('recovery_conditions',resume)
+  self.write(path,original);self.units[name].update(ActiveState='inactive',MainPID='0')
+  resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'READ_ORIGINAL_CONTROLLER_AND_GUARD_STATUS_THEN_RECONCILE_HOLD')
+  self.assertFalse(resume['automatic_resume_expected']);self.assertNotIn('recovery_conditions',resume)
+  self.units[name].update(ActiveState='active',MainPID='9')
+  self.write(path,{'schema':'heptatrader.laya-resident-status.v1','at_ms':NOW,
+   'state':'LEARNING_UNAVAILABLE_NO_TRADE_EFFECT','reason':'ORIGINAL_CONFIG_CHANGED'})
+  admission.unlink();resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'READ_ORIGINAL_CONTROLLER_AND_GUARD_STATUS_THEN_RECONCILE_HOLD')
+  self.assertFalse(resume['recovery_conditions_known']);self.assertNotIn('recovery_conditions',resume)
+ def test_learning_storage_hold_keeps_original_budget_and_evidence(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture()
+  self.write(path,{'schema':'heptatrader.laya-resident-status.v1','at_ms':NOW,
+   'state':'HOLD_NEW_TRAINING_STORAGE','reason':'STATE_BUDGET_FULL_NO_EVIDENCE_PRUNING'})
+  resume=self.collect()['learning'][0]['resume']
+  self.assertEqual(resume['next_action'],'REVIEW_ORIGINAL_STORAGE_BUDGET_WITH_EVIDENCE_RETAINED')
+  self.assertTrue(resume['recovery_conditions']['original_storage_admission_must_pass'])
+  self.assertTrue(resume['recovery_conditions']['existing_evidence_must_be_preserved'])
+  self.assertFalse(resume['automatic_resume_expected'])
+ def test_learning_unreadable_manual_hold_takes_precedence_over_resource_wait(self):
+  name,path,admission,hold=self.learning_guard_hold_fixture()
+  observed=progress.presence
+  original=json.loads(path.read_text())
+  for changes in ({},{'state':'HOLD_NEW_TRAINING_FORWARD_WINDOW','reason':'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT',
+                      'next_calendar_eligible_at_ms':NOW+10000}):
+   with self.subTest(changes=changes):
+    self.write(path,{**original,**changes})
+    with mock.patch.object(progress,'presence',side_effect=lambda path:None if str(path)==str(hold) else observed(path)):
+     resume=self.collect()['learning'][0]['resume']
+    self.assertEqual(resume['next_action'],'READ_ORIGINAL_MANUAL_HOLD_AND_RECONCILE_OWNER_STATE')
+    self.assertFalse(resume['recovery_conditions_known']);self.assertNotIn('recovery_conditions',resume)
+    self.assertFalse(resume['automatic_resume_expected'])
  def test_calendar_wait_keeps_old_persistent_gpu_hold_current_without_admission_refresh(self):
   root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
   self.write(hold,{'created_ms':NOW-86400000,'reason':'RECURRENT_NATIVE_HIP_STARTUP_SIGSEGV'})
@@ -572,6 +705,21 @@ class ProgressTests(unittest.TestCase):
   self.assertFalse(entry['resume']['worker_launch_authority'])
   self.assertIn('SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY',progress.format_text(out))
   self.assertEqual(before,{path:path.read_bytes() for path in before});self.assertFalse(hold.exists())
+
+ def test_financial_psi_hold_without_counts_is_explained_only_by_this_worker_admission(self):
+  name,status,admission,health,wrapper,hold=self.financial_hold_fixture()
+  row=json.loads(admission.read_text());row['reasons']=['HOST_FULL_MEMORY_PSI_PRESSURE'];self.write(admission,row)
+  source=json.loads(health.read_text());source.update(state='READY_FOR_REVIEW_NOT_AUTHORIZATION',usable=24,unusable=0,reasons=[])
+  self.write(health,source);before={p:p.read_bytes() for p in (status,admission,health,wrapper)}
+  entry=self.collect()['value_prediction'][0]
+  self.assertEqual(entry['resume']['next_action'],'ORIGINAL_FINITE_PREDICTOR_RECHECKS_SHARED_RESOURCE_ADMISSION')
+  self.assertTrue(entry['guard_admission']['current_denial_observed']);self.assertNotIn('sealed_predictions',entry)
+  self.assertTrue(entry['resume']['recovery_conditions']['same_heavy_lease_required'])
+  self.assertFalse(entry['resume']['worker_launch_authority']);self.assertEqual(before,{p:p.read_bytes() for p in before})
+  # Still globally fresh, but from a worker before the current interval.
+  self.write(admission,{**row,'at_ms':NOW-2000});entry=self.collect()['value_prediction'][0]
+  self.assertFalse(entry['guard_admission']['current_denial_observed'])
+  self.assertEqual(entry['resume']['next_action'],'REFRESH_SELECTED_PREDICTOR_AND_ORIGINAL_GUARD_STATUS')
 
  def test_financial_old_or_other_role_denial_cannot_claim_current_worker_hold(self):
   name,status,admission,health,wrapper,hold=self.financial_hold_fixture()
