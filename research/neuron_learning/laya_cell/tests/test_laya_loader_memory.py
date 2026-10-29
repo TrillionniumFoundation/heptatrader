@@ -278,6 +278,33 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.assertIsNone(actual.to_calls[0]['dtype'])
         self.assertTrue(all(actual.to_calls[0]['old_parameters_alive']))
 
+    def test_owned_tokenizer_is_used_only_after_verified_gpu_checkpoint(self):
+        def tokenizer(directory):
+            self.assertEqual(directory, self.base / 'tokenizer')
+            self.verify.assert_called_once_with(self.base, self.manifest)
+            self.assertEqual(self.created[-1].load_calls, [{'strict': True, 'assign': True}])
+            self.assertEqual(self.created[-1].apply_calls, [])
+            return self.tokenizer
+
+        with patch.object(model, 'load_local_tokenizer', side_effect=tokenizer) as load:
+            self.assertIs(self.load(gpu=True)[1], self.tokenizer)
+            load.assert_called_once()
+            load.reset_mock()
+            self.assertIs(self.load(gpu=False)[1], self.tokenizer)
+            load.assert_not_called()
+
+    def test_owned_tokenizer_still_rejects_embedding_mismatch_before_transfer(self):
+        for vocab in ({'high_id': 8}, {str(i): i for i in range(9)}):
+            with self.subTest(vocabulary=vocab):
+                tokenizer = Mock()
+                tokenizer.get_vocab.return_value = vocab
+                tokenizer.__len__ = Mock(return_value=len(vocab))
+                with patch.object(model, 'load_local_tokenizer', return_value=tokenizer):
+                    with self.assertRaisesRegex(ContractError, 'TOKENIZER_EMBEDDING_MISMATCH'):
+                        self.load(gpu=True)
+                self.assertEqual(self.created[-1].apply_calls, [])
+                self.assertEqual(self.transfer.staging_refs, [])
+
     def test_strict_missing_unexpected_and_shape_errors_precede_transfer(self):
         original = self.checkpoint
         mutations = []

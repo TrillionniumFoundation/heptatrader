@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .integrity import ContractError,CODE_BLOBS,LAYA_VERSION,canonical,digest,git_blob,read_json,verify_snapshot
+from .tokenizer import load_local_tokenizer
 PROFILE={'schema':'heptatrader.laya-cell-profile.v1','max_len':1024,'dtype':'float32','precision_policy':'EXPLICIT_FP32_RUNTIME_PROFILE','organ_adapter':'FROZEN_IDENTITY','targets':{'scorer.1':{'rows':[0,1,2,3],'rank':2},'scorer.3':{'rows':[0],'rank':1}},'action_head_trainable':False,'native_max_effective_deltas':4096,'per_layer_relative_limit':.005,'global_relative_limit':.0025}
 _TENSOR_HASH_CHUNK_BYTES=16*1024*1024
 _PRETRAINED_FP32_STAGING_BYTES=16*1024*1024
@@ -155,7 +156,8 @@ def load_verified_laya(directory:Path,manifest:dict,*,enforce_gpu=True):
   model.load_state_dict(checkpoint,strict=True,assign=True)
  else:model.load_state_dict(checkpoint,strict=True)
  del checkpoint
- tokenizer=AutoTokenizer.from_pretrained(str(directory/'tokenizer'),local_files_only=True,trust_remote_code=False,use_fast=True)
+ if gpu_load:tokenizer=load_local_tokenizer(directory/'tokenizer')
+ else:tokenizer=AutoTokenizer.from_pretrained(str(directory/'tokenizer'),local_files_only=True,trust_remote_code=False,use_fast=True)
  embedding_rows=model.encoder.get_input_embeddings().num_embeddings
  if len(tokenizer)>embedding_rows or max(tokenizer.get_vocab().values())>=embedding_rows:raise ContractError('TOKENIZER_EMBEDDING_MISMATCH')
  if gpu_load:
