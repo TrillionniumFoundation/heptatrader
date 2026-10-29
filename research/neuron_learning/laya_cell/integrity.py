@@ -24,11 +24,13 @@ def _regular_stream(path:Path,error:str):
   if not stat.S_ISREG(st.st_mode):raise ContractError(error)
   with os.fdopen(fd,'rb',closefd=False) as stream:yield stream,st
  finally:os.close(fd)
-def read_json(path:Path,maximum:int=1024**2)->Any:
+def _read_json_bytes(path:Path,maximum:int)->bytes:
  with _regular_stream(path,'JSON_FILE_TYPE') as (stream,st):
   if st.st_size>maximum:raise ContractError('JSON_SIZE_BOUND')
   raw=stream.read(maximum+1)
   if len(raw)>maximum:raise ContractError('JSON_SIZE_BOUND')
+ return raw
+def _parse_json(raw:bytes)->Any:
  def unique(items):
   out={}
   for k,v in items:
@@ -36,6 +38,12 @@ def read_json(path:Path,maximum:int=1024**2)->Any:
    out[k]=v
   return out
  return json.loads(raw,object_pairs_hook=unique,parse_constant=lambda _:(_ for _ in ()).throw(ContractError('NONFINITE_JSON')))
+def read_json(path:Path,maximum:int=1024**2)->Any:
+ return _parse_json(_read_json_bytes(path,maximum))
+def read_json_snapshot(path:Path,maximum:int=1024**2)->tuple[Any,str]:
+ """Parse and hash the same bounded bytes, without reopening the pathname."""
+ raw=_read_json_bytes(path,maximum)
+ return _parse_json(raw),hashlib.sha256(raw).hexdigest()
 def safe_child(root:Path,relative:str)->Path:
  if not isinstance(relative,str):raise ContractError('UNSAFE_ARTIFACT_PATH')
  p=PurePosixPath(relative)

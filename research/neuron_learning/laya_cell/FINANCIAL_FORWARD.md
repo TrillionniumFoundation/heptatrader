@@ -24,8 +24,14 @@ truncation is forbidden. No market/commission/outcome values from the future ent
 features. Pretrained and readout parameters remain in eval/no-grad mode.
 
 A prediction payload is fsynced first, then a separate role-signed commit witness
-is emitted. The conservative later signing timestamp must precede the original
-PREPARED command and the first actual fill. A prompt arriving too late, context
+is emitted. Its `signed_at_ms` is sampled after the payload fsync and digest,
+before running the signing helper. This bounds when the exact prediction bytes
+were frozen; it does not timestamp signature completion or commit-file fsync.
+The evaluator requires the signed commit to be present, verifies its signature
+and the prediction bytes, and compares this payload-freeze bound with the
+original PREPARED command and first actual fill. The legacy timing fields
+`committed_at_ms` and `request_to_seal_ms` retain this meaning. A prompt arriving
+too late, context
 failure, missing commit or late computation remains explicit rather than getting
 backdated. Predictions for HOLD/non-trade requests remain visible and do not
 inflate trade sample count. Runtime hashes and immutable producer manifests bind
