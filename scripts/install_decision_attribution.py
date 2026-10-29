@@ -66,6 +66,10 @@ def inspect_resident(command,instrument):
   raise RuntimeError('ATTRIBUTION_INSTALLED_PERIOD_CHANGED')
  hashes=m.get('runtime_sha256')
  loader=m.get('runtime_loader')
+ binding=m.get('btc_base_binding')
+ if (binding not in (None,'RUNTIME_MANIFEST_V1') or binding is not None and
+     (instrument!='BTC.USD' or loader!='verified-bytes.v1')):
+  raise RuntimeError('ATTRIBUTION_INSTALLED_BASE_BINDING_INVALID')
  stream=m.get('native_read_stream',False)
  if 'native_clients' in m:
   try:
@@ -198,8 +202,6 @@ def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None
       profile.get('period_sha256')!=installed['period_sha256'] or
       profile.get('profile')!=_source_literal(files['hepta_btc_entry_policy.py'],'PROFILE')):
    raise RuntimeError('ATTRIBUTION_PREPARED_BTC_PROFILE_INCOMPATIBLE')
-  if _source_literal(files['heptatrader_btc_economics_driver.py'],'BASE_SHA256')!=hashes['heptatrader_paper_driver.py']:
-   raise RuntimeError('ATTRIBUTION_PREPARED_BTC_BASE_HASH_MISMATCH')
   files['profile.json']=profile_raw
  # Git records provenance; the manifest binds the exact copied runtime bytes.
  # Unrelated checkout changes are not a candidate-preparation requirement.
@@ -212,12 +214,14 @@ def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None
  read_transport_changed=(native_read_stream!=installed.get('native_read_stream',False)
                          or native_read_binary!=installed.get('native_read_binary')
                          or native_clients!=installed.get('native_clients'))
+ base_binding_changed=(instrument=='BTC.USD' and installed.get('btc_base_binding')!='RUNTIME_MANIFEST_V1')
  manifest.update(source_sha=source_sha,runtime_sha256=hashes,runtime_loader='verified-bytes.v1',
                  native_read_stream=native_read_stream,
                  prepared_from_manifest_sha256=observed['manifest_sha256'],
                  runtime_bytes_changed=runtime_bytes_changed,
-                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed or read_transport_changed),
+                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed or read_transport_changed or base_binding_changed),
                  behavior_equivalence_assessed=False)
+ if instrument=='BTC.USD':manifest['btc_base_binding']='RUNTIME_MANIFEST_V1'
  if native_clients is not None:
   manifest['native_clients']={name:dict(binding) for name,binding in native_clients.items()}
   manifest.pop('native_read_binary',None)
@@ -314,6 +318,7 @@ def install(instrument,evidence):
   'actor_scope':'EXISTING_LOCAL_DRIVER','created_at_ms':int(time.time()*1000),
   'trading_behavior_changed': instrument=='EUR.USD',
   'behavior_profile':('EURUSD_ORIGINAL_ENTRY_CONF_0.62_USD100K_REFERENCE_NOTIONAL' if instrument=='EUR.USD' else 'BTC_EXISTING_POLICY_UNCHANGED')}
+ if instrument=='BTC.USD':manifest['btc_base_binding']='RUNTIME_MANIFEST_V1'
  manifest_path=release/'manifest.json';private_write(manifest_path,(canonical(manifest)+'\n').encode())
  drop=h/'.config/systemd/user'/(unit+'.d')/'70-exact-attribution.conf'
  if drop.exists():raise RuntimeError('EXISTING_DROPIN_NO_OVERWRITE')

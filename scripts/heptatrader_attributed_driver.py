@@ -11,6 +11,12 @@ def load_manifest(path):
  raw=read_private(path,65536);m=strict(raw)
  if (m.get('schema')!='heptatrader.attribution-producer.v1' or m.get('execution_domain')!='PAPER'
      or m.get('instrument') not in ('EUR.USD','BTC.USD')):raise ValueError('ATTRIBUTION_LAUNCH_SCOPE')
+ binding=m.get('btc_base_binding')
+ if (binding not in (None,'RUNTIME_MANIFEST_V1') or binding is not None and
+     (m['instrument']!='BTC.USD' or m.get('runtime_loader')!='verified-bytes.v1'
+      or not {'heptatrader_paper_driver.py','heptatrader_btc_economics_driver.py',
+              'hepta_btc_entry_policy.py','hepta_verified_loader.py'}<=set(m['runtime_sha256']))):
+  raise ValueError('BTC_BASE_BINDING_MANIFEST_INVALID')
  # The optional FX opening limiter has been retired. Reject old manifests
  # rather than silently running a legacy restricted or mismatched profile.
  if m.get('fx_churn_profile_sha256'):raise ValueError('FX_CHURN_RETIRED')
@@ -53,7 +59,12 @@ def main():
  driver.INSTRUMENT=m['instrument'];close_economics=None
  if m['instrument']=='BTC.USD' and not (a.reconcile_only or a.recover_owner):
   import heptatrader_btc_economics_driver as btc
-  if m['runtime_sha256']['heptatrader_paper_driver.py']!=btc.BASE_SHA256:raise ValueError('BTC_BASE_BINDING')
+  # Prepared releases already bind the exact base and adapter bytes together.
+  # Keep the historical constant only for old manifests/standalone launchers;
+  # a new source revision needs a new prepared manifest and owner activation,
+  # not a manually copied second hash inside the adapter.
+  if (m.get('btc_base_binding')!='RUNTIME_MANIFEST_V1' and
+      m['runtime_sha256']['heptatrader_paper_driver.py']!=btc.BASE_SHA256):raise ValueError('BTC_BASE_BINDING')
   profile=root/'profile.json'
   if hashlib.sha256(read_private(profile,65536)).hexdigest()!=m['btc_profile_sha256']:raise ValueError('BTC_PROFILE_CHANGED')
   close_economics=btc.attach(driver,btc.load_profile(profile))
