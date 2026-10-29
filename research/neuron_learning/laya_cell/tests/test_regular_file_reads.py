@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from laya_cell.integrity import ContractError, read_json, sha_file
+from laya_cell.integrity import ContractError, read_json, read_json_snapshot, sha_file
 
 
 ROOT = Path(__file__).resolve().parents[4]
 LEAF = r'''
 import os, sys
 from pathlib import Path
-from laya_cell.integrity import ContractError, read_json, sha_file
+from laya_cell.integrity import ContractError, read_json, read_json_snapshot, sha_file
 from laya_cell import source_archive, resident_plan_admission
 root = Path(sys.argv[2])
 path = root / 'pipe'
@@ -24,6 +24,9 @@ os.mkfifo(path, 0o600)
 kind = sys.argv[1]
 if kind == 'json':
     action = lambda: read_json(path)
+    expected = 'JSON_FILE_TYPE'
+elif kind == 'snapshot':
+    action = lambda: read_json_snapshot(path)
     expected = 'JSON_FILE_TYPE'
 elif kind == 'hash':
     action = lambda: sha_file(path)
@@ -73,7 +76,7 @@ class RegularFileReadTests(unittest.TestCase):
     def test_metadata_and_receipt_readers_reject_fifo(self):
         # Each leaf touches only a private temporary path. A regression is
         # bounded by the parent; it cannot hang the test runner on open().
-        for kind in ('json', 'hash', 'prefix', 'publication', 'quote'):
+        for kind in ('json', 'snapshot', 'hash', 'prefix', 'publication', 'quote'):
             with self.subTest(kind=kind):
                 directory = self.root / kind
                 directory.mkdir()
@@ -100,6 +103,7 @@ class RegularFileReadTests(unittest.TestCase):
         for source in (path, link):
             self.assertEqual(read_json(source), json.loads(raw))
             self.assertEqual(sha_file(source), hashlib.sha256(raw).hexdigest())
+            self.assertEqual(read_json_snapshot(source), (json.loads(raw), hashlib.sha256(raw).hexdigest()))
 
     def test_json_limits_and_parser_rejections_remain(self):
         path = self.root / 'value.json'
@@ -107,10 +111,11 @@ class RegularFileReadTests(unittest.TestCase):
                 (b'{"x":1}', 6, 'JSON_SIZE_BOUND'),
                 (b'{"x":1,"x":2}', 100, 'DUPLICATE_JSON_KEY'),
                 (b'{"x":NaN}', 100, 'NONFINITE_JSON')):
-            with self.subTest(error=error):
-                path.write_bytes(raw)
-                with self.assertRaisesRegex(ContractError, error):
-                    read_json(path, maximum)
+            for reader in (read_json, read_json_snapshot):
+                with self.subTest(error=error, reader=reader.__name__):
+                    path.write_bytes(raw)
+                    with self.assertRaisesRegex(ContractError, error):
+                        reader(path, maximum)
 
     def test_json_growth_after_size_observation_stays_bounded(self):
         path = self.root / 'growing.json'

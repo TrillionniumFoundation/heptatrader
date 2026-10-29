@@ -2,6 +2,7 @@
 import hashlib,json,os,sys,tempfile,time,types,unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
+import hepta_decision_attribution as attribution
 from laya_cell import financial_forward_source as source
 from laya_cell.financial_forward_predict import Predictor,RegisteredPlanSnapshot
 from laya_cell.integrity import ContractError,digest,sha_file
@@ -30,14 +31,14 @@ class SourceFixture(unittest.TestCase):
   record['sha256']=digest(record);self.records.append(record)
   put(self.segment,b''.join(json.dumps(x,sort_keys=True,separators=(',',':')).encode()+b'\n' for x in self.records))
  def request(self,rid,started):
-  self.append('REQUEST',{'request_id':rid,'period_sha256':self.period_sha,'instrument':'EUR.USD','prompt':'quote','prompt_sha256':hashlib.sha256(b'quote').hexdigest(),'model_id':'model-A','position_at_request':0,'started_at_ms':started})
+  self.append('REQUEST',{'request_id':rid,'period_sha256':self.period_sha,'instrument':'EUR.USD','prompt':'quote','prompt_sha256':hashlib.sha256(b'quote').hexdigest(),'model_id':'model-A','position_at_request':0,'started_at_ms':started,'input_scope':'FIXTURE'})
  def snapshot(self):return source.VerifiedIngressSnapshot(self.registration,self.period_sha)
  def worker(self,snapshot):
   root=self.root/'forward';plan={'plan_id':'plan','input_end_ms':2**62,'producer_registration':self.registration}
   put(root/'plans/plan/plan.json',plan)
   return Predictor({'forward_root':str(root),'period_path':str(self.period),'period_sha256':self.period_sha},ingress_snapshots={'plan':snapshot})
  def test_unchanged_predictor_handoff_uses_one_ingress(self):
-  with patch.object(source,'ingress',wraps=source.ingress) as scan:
+  with patch.object(source,'_ingress',wraps=source._ingress) as scan:
    snap=self.snapshot();worker=self.worker(snap)
    with patch('laya_cell.financial_forward_predict.ingress',side_effect=AssertionError('DUPLICATE_INGRESS')),patch.object(worker,'predict',return_value=None):worker.step()
    self.assertEqual(scan.call_count,1);self.assertEqual(snap.full_scans,1)
@@ -68,6 +69,49 @@ class SourceFixture(unittest.TestCase):
  def test_other_registration_cannot_borrow_snapshot(self):
   snap=self.snapshot()
   with self.assertRaisesRegex(ContractError,'SCOPE'):snap.read({**self.registration,'sha256':'a'*64},self.period_sha)
+ def test_ingress_reads_one_journal_with_exact_request_and_binding_provenance(self):
+  record=self.records[-1];request=record['data'];started=request['started_at_ms'];raw=self.segment.read_bytes()
+  decision={'action':'BUY'}
+  response={'request_id':'fresh','request_sha256':digest(request),'returncode':0,'available_at_ms':started+1,
+   'stdout':json.dumps({'ok':True,'outputs':[{'text':json.dumps(decision)}]})}
+  selected={'request_id':'fresh','request_sha256':digest(request),'response_sha256':digest(response),
+   'decision':decision,'decision_sha256':digest(decision),'available_at_ms':started+2}
+  command={'command_id':'command','created_at_ms':started+3,'instrument':'EUR.USD','kind':'OPEN','side':'BUY'}
+  binding={'request_id':'fresh','request_sha256':digest(request),'response_sha256':digest(response),
+   'decision_sha256':digest(decision),'state_write_succeeded':True,
+   'basis':'IDENTICAL_RETURNED_OBJECT_AT_ORIGINAL_DURABLE_PREPARED','command':command}
+  for kind,value in (('RESPONSE',response),('DECISION',selected),('COMMAND_BINDING',binding)):self.append(kind,value)
+  # A trailing write is not yet an original source record or part of its prefix.
+  with self.segment.open('ab') as stream:stream.write(b'{"incomplete')
+  expected=(json.loads(Path(self.registration['manifest']).read_bytes()),
+   {'fresh':{'request':request,'request_sha256':digest(request),'producer_manifest_sha256':self.registration['sha256'],
+    'source_record_sha256':record['sha256'],'source_written_at_ms':record['written_at_ms'],
+    'source_prefix':{'path':str(self.segment),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}}},
+   [{'command':command,'request_id':'fresh','request_sha256':digest(request),'request_started_at_ms':started,
+     'producer_manifest_sha256':self.registration['sha256'],'decision_sha256':digest(decision)}],[])
+  with patch.object(attribution,'read_private',wraps=attribution.read_private) as read:
+   self.assertEqual(source.ingress(self.registration,self.period_sha),expected)
+  journal_reads=[call for call in read.call_args_list if Path(call.args[0]).suffix=='.jsonl']
+  self.assertEqual(len(journal_reads),1)
+  collected={};graphs=attribution._verified_producer_graphs(self.journal,'EUR.USD',self.period_sha,request_records=collected)
+  self.assertEqual(graphs,attribution._verified_producer_graphs(self.journal,'EUR.USD',self.period_sha))
+  self.assertEqual(collected['producer'],[(record,expected[1]['fresh']['source_prefix'])])
+ def change_during_ingress(self,change):
+  verify=attribution._verified_producer_graphs
+  def scan(*args,**kwargs):
+   result=verify(*args,**kwargs);change();return result
+  with patch.object(attribution,'_verified_producer_graphs',side_effect=scan):
+   with self.assertRaisesRegex(ContractError,'VALUE_SOURCE_CHANGED_DURING_INGRESS'):
+    source.ingress(self.registration,self.period_sha)
+ def test_append_during_single_scan_is_rejected(self):
+  self.change_during_ingress(lambda:self.request('next',int(time.time()*1000)-10))
+ def test_health_change_during_single_scan_is_rejected(self):
+  self.change_during_ingress(lambda:put(self.health,{'at_ms':999,'dropped':1,'error':None}))
+ def test_rewrite_with_restored_mtime_during_single_scan_is_rejected(self):
+  def rewrite():
+   st=self.segment.stat();self.segment.write_bytes(self.segment.read_bytes().replace(b'model-A',b'model-B'))
+   os.utime(self.segment,ns=(st.st_atime_ns,st.st_mtime_ns))
+  self.change_during_ingress(rewrite)
 
 
 class RegisteredTurnTests(unittest.TestCase):

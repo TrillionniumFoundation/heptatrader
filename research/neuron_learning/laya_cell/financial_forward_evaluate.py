@@ -6,7 +6,7 @@ training labels cannot remove bad cases or retain a stale qualification.
 from __future__ import annotations
 import argparse,fcntl,hashlib,json,os,signal,time
 from pathlib import Path
-from .integrity import ContractError,read_json,sha_file,digest
+from .integrity import ContractError,read_json,read_json_snapshot,sha_file,digest
 _original_sha_file=sha_file
 def sha_file(path):return _original_sha_file(Path(path))
 from .resident_store import write_once,atomic
@@ -45,17 +45,19 @@ def first_execution_times(source):return execution_index(source)[0]
 def read_prediction(root,plan,request_id,config=None):
  folder=root/'plans'/plan['plan_id']/'predictions'/request_id
  if not (folder/'commit.json').exists():return None
- commit=read_json(folder/'commit.json');payload=read_json(folder/'prediction.json')
+ commit,commit_sha256=read_json_snapshot(folder/'commit.json')
+ payload,prediction_sha256=read_json_snapshot(folder/'prediction.json')
  if config is None:raise ContractError('SIGNED_PREDICTOR_TRUST_REQUIRED')
  verify_record(config,'predictor',commit)
- if (sha_file(folder/'prediction.json')!=commit['prediction_sha256'] or commit['plan_id']!=plan['plan_id']
+ if (prediction_sha256!=commit['prediction_sha256'] or commit['plan_id']!=plan['plan_id']
      or commit['request_id']!=request_id or payload['request_id']!=request_id
      or commit['candidate_id']!=plan['candidate_id'] or payload['candidate_id']!=plan['candidate_id']
      or commit['role_witness']['signed_at_ms']<commit['committed_at_ms']):raise ContractError('PREDICTION_COMMIT_WITNESS')
- # Conservative persistence witness: use the signature's later actual timestamp,
- # not a claimed earlier computed timestamp, to compare with PREPARED and fills.
+ # The witness timestamp follows the payload fsync and digest. It bounds when
+ # these exact prediction bytes were frozen, not completion of the signing
+ # helper or the later commit-file fsync. Retain the registered timing meaning.
  return {**payload,'committed_at_ms':commit['role_witness']['signed_at_ms'],
-         'prediction_sha256':commit['prediction_sha256'],'commit_sha256':sha_file(folder/'commit.json')}
+         'prediction_sha256':prediction_sha256,'commit_sha256':commit_sha256}
 
 
 def validate_registration(config,path,plan):

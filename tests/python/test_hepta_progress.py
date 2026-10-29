@@ -113,13 +113,35 @@ class ProgressTests(unittest.TestCase):
   return root,cfgpath
  def test_terminal_forward_and_real_updates_are_separate_from_job_count(self):
   root,_=self.fixture_learning()
-  self.write(root/'evaluation/j1/qualification.json',{'candidate_id':'c1','plan_id':'p1','state':'REJECTED','observed':94,'censored':0})
+  self.write(root/'evaluation/j1/qualification.json',{'candidate_id':'c1','plan_id':'p1','state':'REJECTED',
+   'reasons':['INSUFFICIENT_POSSIBLE_NON_TIE_POWER_SAMPLE'],'observed':94,'censored':0})
   entry=self.collect()['learning'][0]
   self.assertEqual(entry['status']['job_counts']['COMPLETED'],57)
   self.assertEqual(entry['price']['optimizer_steps']['applied'],3);self.assertTrue(entry['price']['actual_update_proven'])
   self.assertEqual(entry['action']['optimizer_steps_applied'],0);self.assertFalse(entry['action']['head_trained'])
   self.assertEqual(entry['latest_forward']['state'],'REJECTED');self.assertEqual(entry['latest_forward']['observed'],94)
+  self.assertEqual(entry['latest_forward']['reasons'],['INSUFFICIENT_POSSIBLE_NON_TIE_POWER_SAMPLE'])
   self.assertFalse(entry['price']['future_value_proven'])
+ def test_pending_forward_exposes_original_futility_coverage_without_early_closeout_or_causal_inference(self):
+  root,_=self.fixture_learning();path=root/'evaluation/j1/progress.json'
+  coverage={'schema':'heptatrader.laya-coverage-diagnostics.v1','observational_only':True,
+   'frozen_rule':{'slots':24,'min_observed':22,'min_non_ties':22,'max_censored':2},
+   'counts':{'OBSERVED':17,'CENSORED':6,'pending':1},
+   'censor_budget':{'scope':'RECORDED_CENSORED_OUTCOMES_ONLY','remaining':0,'excess':4,'maximum_possible_observed':18},
+   'non_tie_budget':{'minimum_required':22,'maximum_possible_non_ties':18,'impossible_from_recorded_outcomes':True},
+   'censored_reasons':{'NO_PREDICTION_IN_FIXED_SLOT':6},
+   'no_prediction_dispositions':{'FUTILITY_SUPPRESSED':3,'ADMISSION_DENIED':3},
+   'first_admission_denial_reasons':{'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST':2,
+    'HOST_AVAILABLE_MEMORY_BELOW_8GIB':1,'HOST_FULL_MEMORY_PSI_PRESSURE':1},
+   'first_admission_denial_scope':'FIRST_DENIAL_RECORDED_IN_OUTCOME_PER_SLOT_NOT_EVERY_ATTEMPT_OR_COMPLETE_CAUSAL_ATTRIBUTION'}
+  self.write(path,{'at_ms':NOW,'candidate_id':'c1','plan_id':'p1','state':'PENDING',
+   'reason':'FIXED_FUTURE_WINDOW_NOT_COMPLETE','observed':17,'censored':6,'coverage_diagnostics':coverage})
+  before=path.read_bytes();out=self.collect();forward=out['learning'][0]['latest_forward']
+  self.assertEqual(forward['state'],'PENDING');self.assertEqual(forward['reason'],'FIXED_FUTURE_WINDOW_NOT_COMPLETE')
+  self.assertEqual(forward['coverage_diagnostics'],coverage);self.assertEqual(path.read_bytes(),before)
+  rendered=progress.format_text(out)
+  self.assertIn('"impossible_from_recorded_outcomes":true',rendered)
+  self.assertIn(coverage['first_admission_denial_scope'],rendered)
  def test_additional_forward_is_latest_while_original_result_stays_visible(self):
   root,_=self.fixture_learning()
   self.write(root/'evaluation/j1/qualification.json',{'candidate_id':'c1','plan_id':'p1','state':'REJECTED','observed':24,'censored':73})
@@ -165,10 +187,12 @@ class ProgressTests(unittest.TestCase):
   output=root/('evaluation/attempt-'+'a'*64)/'progress.json'
   for candidate,plan in [('c1','p1'),('another-candidate','b'*64)]:
    with self.subTest(candidate=candidate,plan=plan):
-    self.write(output,{'at_ms':NOW,'candidate_id':candidate,'plan_id':plan,'state':'PENDING','observed':99})
+    self.write(output,{'at_ms':NOW,'candidate_id':candidate,'plan_id':plan,'state':'PENDING','observed':99,
+     'coverage_diagnostics':{'non_tie_budget':{'impossible_from_recorded_outcomes':True}}})
     entry=self.collect()['learning'][0]
     self.assertFalse(entry['latest_forward']['available'])
     self.assertEqual(entry['latest_forward']['error'],'FORWARD_IDENTITY_MISMATCH')
+    self.assertNotIn('coverage_diagnostics',entry['latest_forward'])
     self.assertEqual(entry['latest_forward']['evaluation_role'],'ADDITIONAL')
     self.assertEqual(entry['original_forward']['plan_id'],'p1')
  def test_idle_current_consumer_and_disabled_old_config(self):
@@ -290,14 +314,49 @@ class ProgressTests(unittest.TestCase):
    {'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT','OPERATOR_RESOURCE_HOLD'})
   self.assertFalse(entry['resume']['automatic_resume_expected'])
   self.assertEqual(entry['resume']['next_calendar_eligible_at_ms'],NOW+10000)
+  self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
   self.assertTrue(entry['manual_hold']['present'])
   self.assertEqual(before,{p:p.read_bytes() for p in before})
   self.assertIn('RECURRENT_NATIVE_HIP_STARTUP_SIGSEGV',progress.format_text(out))
   hold.unlink()
   resumed=self.collect()['learning'][0]
   self.assertNotIn('OPERATOR_RESOURCE_HOLD',{r['reason'] for r in resumed['current_blockers']})
-  self.assertIsNone(resumed['resume']['automatic_resume_expected'])
+  self.assertFalse(resumed['resume']['automatic_resume_expected'])
+  self.assertEqual(resumed['resume']['next_action'],'WAIT_FOR_ORIGINAL_CALENDAR_THEN_TRAINER_RECHECKS_WINDOW_AND_GUARDS')
   self.assertEqual(resumed['resume']['conditions_to_recheck'],['TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'])
+ def test_calendar_wait_explains_next_original_recheck_without_promising_launch(self):
+  root,_=self.fixture_learning();path=root/'control/status.json'
+  self.units['heptatrader-laya-trainer.service']['MainPID']='9'
+  status={'at_ms':NOW,'state':'HOLD_NEW_TRAINING_FORWARD_WINDOW',
+   'reason':'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT','next_calendar_eligible_at_ms':NOW+10000}
+  self.write(path,status);before=path.read_bytes();out=self.collect();resume=out['learning'][0]['resume']
+  action='WAIT_FOR_ORIGINAL_CALENDAR_THEN_TRAINER_RECHECKS_WINDOW_AND_GUARDS'
+  self.assertEqual(resume['next_action'],action);self.assertFalse(resume['automatic_resume_expected'])
+  self.assertEqual(resume['next_calendar_eligible_at_ms'],NOW+10000)
+  self.assertTrue(resume['calendar_time_is_not_worker_admission']);self.assertFalse(resume['worker_launch_authority'])
+  self.assertEqual(resume['calendar_recheck_conditions'],{'original_trainer_recheck_expected':True,
+   'full_training_and_forward_window_must_fit':True,'original_resource_and_fresh_source_checks_required':True,
+   'original_manual_hold_and_worker_cleanup_checks_required':True})
+  self.assertIn(action,progress.format_text(out));self.assertEqual(path.read_bytes(),before)
+  for at in (NOW,NOW-1,None):
+   with self.subTest(calendar_at=at):
+    self.write(path,{**status,'next_calendar_eligible_at_ms':at})
+    resume=self.collect()['learning'][0]['resume']
+    self.assertEqual(resume['next_action'],'ORIGINAL_TRAINER_RECHECKS_CALENDAR_WINDOW_AND_GUARDS')
+    self.assertFalse(resume['automatic_resume_expected']);self.assertFalse(resume['worker_launch_authority'])
+ def test_calendar_recheck_projection_requires_fresh_running_original_wait(self):
+  root,_=self.fixture_learning();path=root/'control/status.json';name='heptatrader-laya-trainer.service'
+  self.units[name]['MainPID']='9'
+  status={'at_ms':NOW,'state':'HOLD_NEW_TRAINING_FORWARD_WINDOW',
+   'reason':'TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT','next_calendar_eligible_at_ms':NOW+10000}
+  for at in (NOW-300001,NOW+1):
+   with self.subTest(status_at=at):
+    self.write(path,{**status,'at_ms':at});resume=self.collect()['learning'][0]['resume']
+    self.assertNotIn('calendar_recheck_conditions',resume)
+    self.assertEqual(resume['next_action'],'REFRESH_ORIGINAL_TRAINER_STATUS')
+  self.write(path,status);self.units[name].update(ActiveState='inactive',MainPID='0')
+  resume=self.collect()['learning'][0]['resume']
+  self.assertNotIn('calendar_recheck_conditions',resume);self.assertFalse(resume['automatic_resume_expected'])
  def test_status_still_displays_progress_when_service_check_fails(self):
   target=self.home/'cli';target.mkdir();shutil.copyfile(ROOT/'scripts/heptatrader-user',target/'heptatrader-user')
   (target/'hepta_progress.py').write_text('print("PROGRESS_SEEN")\n')

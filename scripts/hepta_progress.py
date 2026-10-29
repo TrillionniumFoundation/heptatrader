@@ -292,9 +292,10 @@ def candidate_progress(config, status, now_ms, max_age_ms):
                 (forward.get("candidate_id") != expected or
                  (binding.get("plan_id") and forward.get("plan_id") != binding["plan_id"]))):
             return {**evidence, **identity, "available": False, "error": "FORWARD_IDENTITY_MISMATCH"}
-        return {**evidence, **identity, **pick(forward, "state", "reason", "results",
+        return {**evidence, **identity, **pick(forward, "state", "reason", "reasons", "results",
             "observed", "censored", "same_window_price_baselines", "promotion_performed",
-            "canonical_owner_admitted", "future_value_proven", "same_budget_calibrated_parent")}
+            "canonical_owner_admitted", "future_value_proven", "same_budget_calibrated_parent",
+            "coverage_diagnostics")}
 
     folder = _child(config["evaluation_directory"], job)
     result["original_forward"] = forward_view(folder, registration, "ORIGINAL")
@@ -415,6 +416,14 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
     persistent=any(row["reason"] in ("OPERATOR_RESOURCE_HOLD","OPERATOR_RESOURCE_HOLD_UNREADABLE",
         "TRAINING_WORKER_NOT_REAPED","WORKER_TERMINATION_PENDING") for row in blockers)
     next_action=status.get("next_action") if meta["freshness"]=="FRESH" else "REFRESH_ORIGINAL_TRAINER_STATUS"
+    calendar_at=status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms"))
+    calendar_wait=(role=="trainer" and running and meta["freshness"]=="FRESH"
+        and status.get("state")=="HOLD_NEW_TRAINING_FORWARD_WINDOW"
+        and status.get("reason")=="TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT")
+    if calendar_wait and not next_action:
+        next_action=("WAIT_FOR_ORIGINAL_CALENDAR_THEN_TRAINER_RECHECKS_WINDOW_AND_GUARDS"
+            if type(calendar_at) is int and calendar_at>now_ms
+            else "ORIGINAL_TRAINER_RECHECKS_CALENDAR_WINDOW_AND_GUARDS")
     if (role=="trainer" and running and meta["freshness"]=="FRESH"
             and status.get("state")=="EVALUATING_BOUNDED_CANDIDATE_QUEUE"):
         pending=status.get("pending_original_trials")
@@ -426,13 +435,20 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
             next_action="WAIT_FOR_ORIGINAL_EVALUATOR_CLOSEOUT_THEN_TRAINER_QUEUE_RECHECK"
         else:
             next_action="REFRESH_ORIGINAL_TRAINER_QUEUE_STATUS"
-    result["resume"]={"automatic_resume_expected":False if persistent or not running else None,
+    # Calendar eligibility schedules another original check, not a worker launch.
+    result["resume"]={"automatic_resume_expected":False if persistent or not running or calendar_wait else None,
         "next_action":result.get("manual_hold",{}).get("next_action")
             or next_action,
         "conditions_to_recheck":list(dict.fromkeys(row["reason"] for row in blockers)),
-        "next_calendar_eligible_at_ms":status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms")),
+        "next_calendar_eligible_at_ms":calendar_at,
         "calendar_time_is_not_worker_admission":True,"worker_launch_authority":False,
         "resource_admission_snapshot_is_historical":admission.get("snapshot_is_historical",True)}
+    if calendar_wait:
+        result["resume"]["calendar_recheck_conditions"]={
+            "original_trainer_recheck_expected":True,
+            "full_training_and_forward_window_must_fit":True,
+            "original_resource_and_fresh_source_checks_required":True,
+            "original_manual_hold_and_worker_cleanup_checks_required":True}
     if running and meta["freshness"]=="FRESH" and isinstance(status.get("forward_registration_resume_conditions"),dict):
         result["resume"]["forward_registration_conditions"]=status["forward_registration_resume_conditions"]
     return result

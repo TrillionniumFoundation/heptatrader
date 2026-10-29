@@ -197,7 +197,7 @@ class Capture:
    self.journal.close()
   return close
 
-def _verified_producer_graphs(directory,instrument,period_sha256):
+def _verified_producer_graphs(directory,instrument,period_sha256,*,request_records=None):
  """Validate a complete directory snapshot before selecting registered producers."""
  files=sorted(Path(directory).glob('*.jsonl'))
  if len(files)>128:raise ValueError('PRODUCER_FILE_BOUND')
@@ -213,6 +213,10 @@ def _verified_producer_graphs(directory,instrument,period_sha256):
    producer=r['producer_id']
    if file_producer is not None and file_producer!=producer:raise ValueError('MIXED_PRODUCERS_IN_SEGMENT')
    file_producer=producer
+   if request_records is not None and r.get('kind')=='REQUEST':
+    # Optional same-call output, populated from the exact bytes checked above.
+    # It grants no credit until this function validates every producer chain.
+    request_records.setdefault(producer,[]).append((r,{'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}))
    if r.get('kind')=='COMMAND_BINDING':
     witnesses[(producer,r['sequence'])]=list(completed_prefixes.get(producer,[]))+[
        {'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}]
