@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-import test_value_priority_admission as fixtures
+from historical_training.tests import test_value_priority_admission as fixtures
 from historical_training import value_priority_admission as priority
 from historical_training.common import EvidenceError, canonical, digest
 
