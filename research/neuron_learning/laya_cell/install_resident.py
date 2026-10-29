@@ -25,13 +25,46 @@ def runtime_files(source,native_binary):
  return files
 
 
+def retained_hip_manifest(config):
+ """Carry an already selected HIP manifest into a new code-only release.
+
+ Preserve its exact bytes and selection. Staging does not accept another HIP
+ build: execution still validates the original overlay, dependencies and proof.
+ """
+ selection=config.get('hip_runtime')
+ if selection is None:return None
+ from .resident_hip_runtime import PROFILE,MANIFEST
+ pins=config.get('runtime_sha256')
+ if (not isinstance(selection,dict) or set(selection)!={'profile','manifest','sha256'}
+     or selection.get('profile')!=PROFILE or selection.get('manifest')!=MANIFEST
+     or not isinstance(selection.get('sha256'),str) or len(selection['sha256'])!=64
+     or any(c not in '0123456789abcdef' for c in selection['sha256'])
+     or not isinstance(pins,dict) or pins.get(MANIFEST)!=selection['sha256']):
+  raise ContractError('RETAINED_HIP_MANIFEST_SELECTION_CHANGED')
+ runtime=Path(config.get('runtime_directory',''));path=runtime/MANIFEST
+ if (not runtime.is_absolute() or runtime.resolve()!=runtime or not runtime.is_dir()
+     or path.resolve()!=path or path.is_symlink() or not path.is_file()
+     or not 0<path.stat().st_size<=256*1024):
+  raise ContractError('RETAINED_HIP_MANIFEST_SOURCE_UNSAFE')
+ _,raw,_=text_snapshot(path,'RETAINED_HIP_MANIFEST_CHANGED')
+ document=json.loads(raw)
+ if (hashlib.sha256(raw).hexdigest()!=selection['sha256']
+     or not isinstance(document,dict) or document.get('schema')!='heptatrader.resident-hip-runtime.v1'):
+  raise ContractError('RETAINED_HIP_MANIFEST_CHANGED')
+ return MANIFEST,path,selection['sha256']
+
+
 def _stage(config_path):
  """Write the immutable package and config, without touching runtime state."""
  h=Path.home();source=Path(__file__).resolve().parent
  c=read_json(config_path)
  if os.geteuid()==0 or c.get('automatic_trading') is not False:raise ContractError('USER_ONLY_NO_TRADE_AUTHORITY')
  files=runtime_files(source,c['native_binary'])
- inventory={name:sha_file(path) for name,path in files.items()};release_id=digest(inventory)
+ hip=retained_hip_manifest(c)
+ if hip is not None:files[hip[0]]=hip[1]
+ inventory={name:sha_file(path) for name,path in files.items()}
+ if hip is not None and inventory[hip[0]]!=hip[2]:raise ContractError('RETAINED_HIP_MANIFEST_CHANGED')
+ release_id=digest(inventory)
  release=h/'.local/share/heptatrader/laya-resident/releases'/release_id;release.mkdir(mode=0o700,parents=True,exist_ok=True)
  for name,src in files.items():
   dst=release/name;dst.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
