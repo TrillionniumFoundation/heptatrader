@@ -41,6 +41,9 @@ for line in sys.stdin:
     with (root/'calls').open('a') as f:f.write(json.dumps(['CALL',os.getpid(),line.strip()])+'\n')
     mode=(root/'mode').read_text() if (root/'mode').exists() else ''
     if mode=='eof':sys.exit(3)
+    if mode=='discovery':sys.stderr.write('DISCOVERY_LIST_REJECTED\n');sys.exit(10)
+    if mode=='private_error':sys.stderr.write('PRIVATE_DIAGNOSTIC_MUST_NOT_ESCAPE\n');sys.exit(10)
+    if mode=='mixed_error':sys.stderr.write('DISCOVERY_LIST_REJECTED\nPRIVATE_DIAGNOSTIC_MUST_NOT_ESCAPE\n');sys.exit(10)
     if mode=='delay':time.sleep(.2)
     if mode=='oversize':sys.stdout.write('x'*1048578);sys.stdout.flush();continue
     counts[tool]=counts.get(tool,0)+1
@@ -131,6 +134,21 @@ for line in sys.stdin:
         self.mode('')
         self.reader('EUR.USD','orders.list')
         self.assertNotEqual(self.reader._processes['EUR.USD'].pid, original.pid)
+
+    def test_discovery_refusal_survives_eof_without_observer_retry(self):
+        self.mode('discovery')
+        with self.assertRaisesRegex(report.EvidenceError, '^DISCOVERY_LIST_REJECTED$'):
+            report.observe_with_recovery(self.reader, fixtures.period(), 'BTC.USD')
+        self.assertEqual(self.reader._processes, {})
+        self.assertEqual(len([call for call in self.calls() if call[0] == 'START']), 1)
+
+    def test_arbitrary_or_mixed_stderr_is_never_exposed(self):
+        for mode in ('private_error', 'mixed_error'):
+            with self.subTest(mode=mode):
+                self.mode(mode)
+                with self.assertRaisesRegex(report.EvidenceError, '^PNL_READ_STREAM_CLOSED$'):
+                    self.reader('BTC.USD', 'orders.list')
+                self.assertEqual(self.reader._processes, {})
 
     def test_default_retains_single_call_cli_compatibility(self):
         reader=report.NativeReader(self.root,self.root,Path('/unused-socket'))
