@@ -160,7 +160,7 @@ class RawCenteredIntegrationTests(unittest.TestCase):
                 'encode_rows': lambda tok, selected, **kw: {k: fixture._CPUTransfer(v)
                     for k,v in encode_raw(tok, selected, **kw).items()},
                 'NativePorts': fixture._NativeFixture,
-                'read_for_future_plan': lambda *_: ([], [], 'ORIGINAL_FULL_HISTORY_V1'),
+                'read_for_future_plan': lambda *_, **kwargs: ([], [], 'ORIGINAL_FULL_HISTORY_V1'),
                 'forecast_input': lambda *_: (sample, row)}
             for key, value in replacements.items():
                 stack.enter_context(patch.object(predictor, key, value))
