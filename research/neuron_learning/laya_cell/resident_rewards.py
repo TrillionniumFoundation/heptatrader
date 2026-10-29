@@ -12,7 +12,8 @@ from .integrity import ContractError,digest,read_json,sha_file
 
 def financial_episodes(report,bindings,period_id,instrument):
  position=Decimal(0);cash=Decimal(0);fees=Decimal(0);cycle=[];seen=set();out=[];blocked=[]
- pending=set(report['settlement_pending_command_ids']);fee_missing=False
+ pending=set(report['settlement_pending_command_ids']);fee_missing=False;fee_conflict=False
+ conflicting_fees=set(report.get('fee_conflicting_execution_ids',[]))
  for execution in report['executions']:
   eid=execution['execution_id']
   if eid in seen:raise ContractError('DUPLICATE_REWARD_EXECUTION')
@@ -23,6 +24,7 @@ def financial_episodes(report,bindings,period_id,instrument):
   signed=qty if side=='BUY' else -qty
   if position and position*(position+signed)<0:raise ContractError('CROSS_ZERO_EXECUTION_NEEDS_EXACT_LOT_SPLIT')
   fee=execution.get('commission')
+  if eid in conflicting_fees:fee_conflict=True
   if fee is None or execution.get('commission_currency')!='USD':fee_missing=True
   else:
    value=Decimal(fee)
@@ -33,17 +35,19 @@ def financial_episodes(report,bindings,period_id,instrument):
   commands=list(dict.fromkeys(x['command_id'] for x in cycle));opening=commands[0];binding=bindings.get(opening)
   reasons=[]
   if fee_missing:reasons.append('MISSING_ACTUAL_EXECUTION_COMMISSION')
+  if fee_conflict:reasons.append('CONFLICTING_EXECUTION_COMMISSION')
   if len(commands)<2:reasons.append('NO_DISTINCT_CLOSE_COMMAND')
   unresolved=sorted(set(commands)&pending)
   if unresolved:reasons.append('ORIGINAL_COMMAND_SETTLEMENT_UNCONFIRMED')
   if binding is None:reasons.append('ORIGINAL_OPEN_COMMAND_INPUT_UNBOUND')
   if binding is not None and (binding.get('instrument',instrument)!=instrument or binding.get('side',cycle[0]['side'])!=cycle[0]['side']):
    reasons.append('ORIGINAL_COMMAND_INPUT_SUBJECT_CONFLICT');binding=None
+  fees_complete=not fee_missing and not fee_conflict
   payload={'schema':'heptatrader.observed-execution-reward.v2','period_id':period_id,'instrument':instrument,'currency':'USD',
    'open_command_id':opening,'command_ids':commands,'execution_ids':[x['execution_id'] for x in cycle],
    'executions':cycle,'flat_to_flat_executed_quantity':True,'realized_gross_usd':str(cash),
-   'actual_commissions_usd':None if fee_missing else str(fees),'realized_net_usd':None if fee_missing else str(cash-fees),
-   'fees_complete':not fee_missing,'settlement_complete':not unresolved,'unsettled_commands':unresolved,
+   'actual_commissions_usd':str(fees) if fees_complete else None,'realized_net_usd':str(cash-fees) if fees_complete else None,
+   'fees_complete':fees_complete,'settlement_complete':not unresolved,'unsettled_commands':unresolved,
    'input_id':binding['input_id'] if binding else None,'forecast_id':binding['forecast_id'] if binding else None,
    'behavior_model_id':binding['model_id'] if binding else None,'exact_input_bound':binding is not None,
    'learning_eligible':not reasons,'learning_exclusion_reasons':reasons,
@@ -55,7 +59,7 @@ def financial_episodes(report,bindings,period_id,instrument):
    payload['input_attribution']={k:binding[k] for k in ('binding_basis','request_id','prompt_sha256','producer_manifest_sha256','source_prefixes','attribution_scope') if k in binding}
   payload['episode_id']=digest({'period':period_id,'instrument':instrument,'commands':commands})
   payload['reward_id']=digest(payload);out.append(payload)
-  cash=Decimal(0);fees=Decimal(0);cycle=[];fee_missing=False
+  cash=Decimal(0);fees=Decimal(0);cycle=[];fee_missing=False;fee_conflict=False
  if cycle:blocked.append({'reason':'OPEN_RESIDUAL_POSITION','instrument':instrument,'quantity':str(position),'execution_ids':[x['execution_id'] for x in cycle]})
  return out,blocked
 

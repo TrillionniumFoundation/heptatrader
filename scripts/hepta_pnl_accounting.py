@@ -534,6 +534,10 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
     opening = period["instruments"][instrument]
     book = Book(quantity=number(opening["opening_quantity"]),
                 cost=number(opening["opening_mark"]) if number(opening["opening_quantity"]) else ZERO)
+    # Diagnostic only: the legacy driver settles whole commands at IB's
+    # rounded cumulative average, while this ledger uses individual fills.
+    # Never substitute this reconstruction for the canonical execution book.
+    average_book = Book(quantity=book.quantity, cost=book.cost)
     unsettled: list[str] = []
     broker_cancel_witnesses = []
     owner_terminal_witnesses = []
@@ -576,6 +580,8 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                                "price": amount(price), "cumulative_quantity": amount(fill.cumulative),
                                "commission": amount(fee[0]) if fee else None, "commission_currency": fee[1] if fee else None})
             previous_quantity, previous_notional = fill.cumulative, notional
+        if points:
+            average_book.apply(points[-1].direction, previous_quantity, points[-1].average, ZERO)
         terminal = [e for e in statuses[sent["req_id"]] if e.get("status") in TERMINALS]
         if not points:
             if not terminal or any(e.get("status") == "Filled" or number(e.get("qty")) != 0 or number(e.get("price")) != 0 for e in terminal):
@@ -649,7 +655,10 @@ def replay(events: list[dict], period: dict, instrument: str, now_ms: int) -> di
                         "completed_order_numeric_id": 0,
                         "zero_fill_imputed": False,
                         "broker_orders_sent": 0})
-    return {"book": book, "fees_complete": fees_complete, "fee_missing_execution_ids": fee_missing,
+    return {"book": book,
+            "cumulative_average_realized_gross_pnl": amount(average_book.realized),
+            "cumulative_average_vs_execution_realized_difference": amount(average_book.realized - book.realized),
+            "fees_complete": fees_complete, "fee_missing_execution_ids": fee_missing,
             "fee_conflicting_execution_ids": sorted(fee_conflicts),
             "fees_known_by_currency": {c: amount(v) for c, v in sorted(fee_currencies.items())},
             "settlement_pending_command_ids": unsettled, "executions": executions,
@@ -701,8 +710,22 @@ def instrument_report(events: list[dict], period: dict, instrument: str, observa
                           realized_gross_pnl=amount(book.realized), fees_paid=amount(book.paid_fees) if ledger["fees_complete"] else None,
                           remaining_entry_fees=amount(book.open_fees) if ledger["fees_complete"] else None)
             if driver_state is not None:
-                result["driver_realized_gross_difference"] = amount(number(driver_state.get("gross_pnl")) - book.realized)
-                if abs(number(result["driver_realized_gross_difference"])) > Decimal("0.00001"):
+                difference = number(driver_state.get("gross_pnl")) - book.realized
+                average = number(source_ledger["cumulative_average_realized_gross_pnl"])
+                average_difference = number(driver_state.get("gross_pnl")) - average
+                tolerance = Decimal("0.00001")
+                status = ("MATCHES_EXECUTION_LEDGER" if abs(difference) <= tolerance else
+                          "EXPLAINED_BY_CUMULATIVE_AVERAGE_PRICE" if abs(average_difference) <= tolerance else
+                          "UNEXPLAINED_DRIVER_LEDGER_DIFFERENCE")
+                result["driver_realized_gross_difference"] = amount(difference)
+                result["driver_reconciliation"] = {
+                    "status": status, "authoritative_basis": "VALIDATED_INDIVIDUAL_EXECUTION_LEDGER",
+                    "comparison_basis": "VALIDATED_COMMAND_CUMULATIVE_AVERAGE_PRICE",
+                    "cumulative_average_realized_gross_pnl": amount(average),
+                    "driver_vs_cumulative_average_difference": amount(average_difference),
+                    "comparison_tolerance_usd": amount(tolerance), "ledger_adjusted": False,
+                }
+                if abs(difference) > tolerance:
                     result["reason_codes"].append("DRIVER_REALIZED_GROSS_DIFFERS_FROM_EXECUTION_LEDGER")
             if ledger["fees_complete"]:
                 result["realized_net_pnl"] = amount(book.realized - (book.paid_fees - book.open_fees))

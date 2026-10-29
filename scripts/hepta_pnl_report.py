@@ -150,9 +150,13 @@ def observe(reader: Callable, period: dict, instrument: str) -> dict:
     # Ignore read-time-only timestamps, never position/owner/generation changes.
     def stable_positions(value):
         value = dict(value)
-        if isinstance(value.get("settlement_observation"), dict):
-            value["settlement_observation"] = dict(value["settlement_observation"])
-            value["settlement_observation"].pop("sampled_at_ms", None)
+        # Both native observations stamp each read, even when all broker
+        # positions and generations are unchanged. Retain every other field,
+        # including any future/unknown identity or economic field.
+        for name in ("settlement_observation", "configured_crypto_position_observation"):
+            if isinstance(value.get(name), dict):
+                value[name] = dict(value[name])
+                value[name].pop("sampled_at_ms", None)
         return value
     if orders != after_orders or stable_positions(positions) != stable_positions(after_positions):
         raise EvidenceError("PNL_COLLECTION_BROKER_SNAPSHOT_CHANGED")
@@ -196,6 +200,40 @@ def observe(reader: Callable, period: dict, instrument: str) -> dict:
               "unsettled_native_command_ids": sorted({r.get("command_id") for r in orders.get("recent_orders", [])
                   if r.get("economic_fill") is True and r.get("economic_evidence_complete") is not True and r.get("command_id")})}
     return result
+
+
+TRANSIENT_OBSERVATION_ERRORS = frozenset({
+    "PNL_READ_STREAM_CLOSED", "PNL_READ_STREAM_TIMEOUT",
+    "PNL_COLLECTION_SERVICE_EPOCH_CHANGED", "PNL_COLLECTION_BROKER_SNAPSHOT_CHANGED",
+})
+
+
+def observe_with_recovery(reader: Callable, period: dict, instrument: str) -> dict:
+    """At most two *whole* observations; never combine a failed sample's reads.
+
+    Recovery is confined to this read-only observer. NativeReader and trading
+    clients keep their fail-fast behavior. Schema, ownership, authorization and
+    cleanup errors are not retried. A second failure remains unavailable.
+    """
+    failures = []
+    for attempt in range(2):
+        try:
+            value = observe(reader, period, instrument)
+            value["collection_attempts"] = attempt + 1
+            value["discarded_observation_reasons"] = failures
+            return value
+        except (EvidenceError, BrokenPipeError, ConnectionResetError,
+                subprocess.TimeoutExpired) as error:
+            if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+                reason = "PNL_READ_STREAM_CLOSED"
+            elif isinstance(error, subprocess.TimeoutExpired):
+                reason = "PNL_READ_STREAM_TIMEOUT"
+            else:
+                reason = str(error)
+            if reason not in TRANSIENT_OBSERVATION_ERRORS or attempt:
+                raise EvidenceError(reason) from error
+            failures.append(reason)
+    raise AssertionError("unreachable")
 
 
 class IncrementalOMSParser:
@@ -343,7 +381,7 @@ def collect(reader: Callable, period_path: Path, state_root: Path,
             raise EvidenceError("DRIVER_ACCOUNTING_PERIOD_CHANGED")
         states[instrument] = state
         try:
-            observations[instrument] = observe(reader, period, instrument)
+            observations[instrument] = observe_with_recovery(reader, period, instrument)
         except EvidenceError as error:
             observations[instrument] = {"authoritative": False, "reason_code": str(error)}
     identities = {tuple(v["service_identity"]) for v in observations.values() if v.get("authoritative")}
