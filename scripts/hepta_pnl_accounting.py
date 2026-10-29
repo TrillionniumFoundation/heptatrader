@@ -779,9 +779,13 @@ def build_report(events: list[dict], period: dict, observations: dict, now_ms: i
     rows = [instrument_report(events, period, i, observations.get(i, {}), now_ms,
                               (driver_states or {}).get(i), ledger_provider=ledger_provider) for i in INSTRUMENTS]
     totals: dict[str, Any] = {"currency": "USD"}
-    for name in ("realized_gross_pnl", "unrealized_gross_pnl", "gross_total_pnl", "fees_paid",
-                 "realized_net_pnl", "unrealized_net_pnl", "net_total_pnl"):
-        totals[name] = amount(sum((number(r[name]) for r in rows), ZERO)) if all(r[name] is not None for r in rows) else None
+    # Components are computed at precision 40. Do not silently round their
+    # aggregate back to the caller's default Decimal context (normally 28).
+    with localcontext() as context:
+        context.prec = 40
+        for name in ("realized_gross_pnl", "unrealized_gross_pnl", "gross_total_pnl", "fees_paid",
+                     "realized_net_pnl", "unrealized_net_pnl", "net_total_pnl"):
+            totals[name] = amount(sum((number(r[name]) for r in rows), ZERO)) if all(r[name] is not None for r in rows) else None
     totals["fees_complete"] = all(r["fees_complete"] for r in rows)
     totals["all_in_account_net_pnl"] = None
     deadlines = [r["mark_valid_until_ms"] for r in rows if r["mark_valid_until_ms"] is not None]

@@ -1,5 +1,6 @@
 """An explicit account zero values a disabled lane without minting owner scope."""
 import json
+from decimal import Decimal, localcontext
 from pathlib import Path
 import tempfile
 import unittest
@@ -242,6 +243,38 @@ class AccountFlatCryptoTests(unittest.TestCase):
         self.addCleanup(parser.close)
         for result in (self.collect(), self.collect(parser), self.collect(parser)):
             self.assertEqual(result['totals'], expected['totals'])
+
+    def test_repeating_cost_basis_keeps_exact_component_totals_in_cold_and_warm_reads(self):
+        # Ordinary finite-price fills can create a repeating weighted entry
+        # cost. Preserve the component's 40-digit Decimal result in totals;
+        # summing at Python's default 28 digits silently drops the last places.
+        rows = list(self.rows)
+        for index, (direction, quantity, price) in enumerate((
+                ('BUY', 10000, '1.1'), ('BUY', 20000, '1.101'), ('SELL', 30000, '1.1'))):
+            sent = fixture.send('eur-' + str(index), instrument='EUR.USD', direction=direction,
+                                at=110000 + index * 10000, oid=100 + index)
+            fill = fixture.fill(sent, 'eur-' + str(index) + '.1', qty=quantity, price=price)
+            rows.extend([sent, fill, fixture.terminal(fill), fixture.commission(fill)])
+        self.write_journal(rows)
+        parser = report.IncrementalOMSParser()
+        self.addCleanup(parser.close)
+        results = [self.collect(), self.collect(parser), self.collect(parser)]
+        self.assertTrue(all(result['complete'] for result in results))
+        self.assertEqual(results[0]['totals'], results[1]['totals'])
+        self.assertEqual(results[1]['totals'], results[2]['totals'])
+        fields = ('realized_gross_pnl', 'unrealized_gross_pnl', 'gross_total_pnl',
+                  'fees_paid', 'realized_net_pnl', 'unrealized_net_pnl', 'net_total_pnl')
+        for result in results:
+            with localcontext() as context:
+                context.prec = 40
+                for field in fields:
+                    expected = sum((Decimal(row[field]) for row in result['components']), Decimal(0))
+                    self.assertEqual(Decimal(result['totals'][field]), expected, field)
+                full = Decimal(result['totals']['realized_gross_pnl'])
+            with localcontext() as context:
+                context.prec = 28
+                # Ensure this fixture actually exercises the lost precision.
+                self.assertNotEqual(full, +full)
 
 
 if __name__ == '__main__':
