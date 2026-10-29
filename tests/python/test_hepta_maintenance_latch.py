@@ -23,6 +23,14 @@ from hepta_maintenance_latch import HoldError, perform
 
 
 class NativeReadDiagnosticTests(unittest.TestCase):
+    def envelope(self, **changes):
+        value = {"status": "error", "tool": "system.get_health",
+                 "reason_code": "EXECUTION_EVENT_RESPONSE_READ_FAILED",
+                 "detail": "SECRET_DETAIL", "order_id": -1,
+                 "payload": {"account": "SECRET_ACCOUNT"}}
+        value.update(changes)
+        return value
+
     def failure(self, cause, *, method="system.get_health"):
         with patch.object(latch.subprocess, "run", side_effect=cause):
             with self.assertRaises(HoldError) as failed:
@@ -37,6 +45,75 @@ class NativeReadDiagnosticTests(unittest.TestCase):
                 self.assertEqual(result,
                     "NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=10:DISCOVERY_LIST_REJECTED")
                 self.assertNotIn("SECRET", result)
+
+    def test_server_error_projects_only_matching_envelope_reason(self):
+        for method in ("system.get_health", "orders.list", "portfolio.list_positions"):
+            for payload in (None, {"account": "SECRET_ACCOUNT"}):
+                text = json.dumps(self.envelope(tool=method, payload=payload)) + "\n"
+                for raw in (text, text.encode("utf-8")):
+                    with self.subTest(method=method, payload=payload, encoded=type(raw) is bytes):
+                        result = self.failure(subprocess.CalledProcessError(9, ["SECRET_ARGV"],
+                            output=raw, stderr="SECRET_STDERR"), method=method)
+                        self.assertEqual(result, "NATIVE_RESUME_READ_FAILED:crypto:" + method
+                            + ":rc=9:EXECUTION_EVENT_RESPONSE_READ_FAILED")
+                        self.assertNotIn("SECRET", result)
+
+    def test_other_exit_codes_do_not_use_stdout_reason(self):
+        for rc in (0, 2, 4, 6, 8, 10, 9.0):
+            with self.subTest(rc=rc):
+                result = self.failure(subprocess.CalledProcessError(rc, ["SECRET_ARGV"],
+                    output=json.dumps(self.envelope()), stderr=""))
+                self.assertTrue(result.endswith(":UNCLASSIFIED"))
+
+    def test_malformed_mismatched_or_noncanonical_server_errors_are_unclassified(self):
+        cases = [self.envelope(**change) for change in (
+            {"tool": "orders.list"}, {"status": "ok"}, {"status": "rejected"},
+            {"detail": {"secret": "SECRET_DETAIL"}}, {"detail": "bad\0detail"},
+            {"payload": []}, {"order_id": True}, {"order_id": -2}, {"order_id": 2**63},
+            {"reason_code": ""}, {"reason_code": None}, {"reason_code": "a_REASON"},
+            {"reason_code": "1_REASON"}, {"reason_code": "BAD_REASON\nSECRET"},
+            {"reason_code": "BAD_REASON:SECRET"}, {"reason_code": "BAD_REAS\u039fN"},
+            {"reason_code": "A" * 129}, {"extra": "SECRET_ACCOUNT"})]
+        cases.extend([None, [], "SECRET_STDOUT"])
+        for field in self.envelope():
+            missing = self.envelope()
+            del missing[field]
+            cases.append(missing)
+        for value in cases:
+            with self.subTest(value=value):
+                result = self.failure(subprocess.CalledProcessError(9, ["SECRET_ARGV"],
+                    output=json.dumps(value), stderr=""))
+                self.assertEqual(result, "NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=9:UNCLASSIFIED")
+                self.assertNotIn("SECRET", result)
+
+    def test_duplicate_invalid_or_nonfinite_json_is_not_projected(self):
+        text = json.dumps(self.envelope())
+        cases = [text + "SECRET_TRAILER", text[:-1],
+                 text.replace('"status": "error"', '"status": "ok", "status": "error"'),
+                 text.replace('"SECRET_ACCOUNT"', '{"same": 1, "same": 2}'),
+                 text.replace('"SECRET_ACCOUNT"', 'NaN'),
+                 text.replace('"SECRET_ACCOUNT"', 'Infinity'), b"\xffSECRET_STDOUT",
+                 "[" * 1100 + "]" * 1100, None]
+        for raw in cases:
+            with self.subTest(raw_type=type(raw).__name__):
+                result = self.failure(subprocess.CalledProcessError(9, ["SECRET_ARGV"],
+                    output=raw, stderr=""))
+                self.assertEqual(result, "NATIVE_RESUME_READ_FAILED:crypto:system.get_health:rc=9:UNCLASSIFIED")
+
+    def test_stdout_byte_bound_precedes_json_parse_and_reason_bound_is_exact(self):
+        oversized = json.dumps(self.envelope(detail="x" * 4096))
+        multibyte = json.dumps(self.envelope(detail="\u00e9" * 2048), ensure_ascii=False)
+        self.assertLess(len(multibyte), 4096)
+        for raw in (oversized, oversized.encode("utf-8"), multibyte):
+            with self.subTest(raw_type=type(raw).__name__), \
+                    patch.object(latch.json, "loads", side_effect=AssertionError("UNBOUNDED_PARSE")):
+                result = self.failure(subprocess.CalledProcessError(9, ["SECRET_ARGV"], output=raw))
+                self.assertTrue(result.endswith(":UNCLASSIFIED"))
+        reason = "A" + "_0" * 63 + "Z"
+        self.assertEqual(len(reason), 128)
+        result = self.failure(subprocess.CalledProcessError(9, ["SECRET_ARGV"],
+            output=json.dumps(self.envelope(reason_code=reason))))
+        self.assertTrue(result.endswith(":rc=9:" + reason))
 
     def test_arbitrary_multiline_oversized_or_nonascii_stderr_never_leaves_diagnostic(self):
         for raw in ("SECRET_TOKEN", "DISCOVERY_LIST_REJECTED\nSECRET_TOKEN",
@@ -556,6 +633,32 @@ class NativeHoldResumeTests(unittest.TestCase):
             self.assertEqual(len(native), 5)
             self.assertEqual({Path(argv[argv.index("--token-file")+1]).name for argv in native},
                              {"paper.token", "crypto.token"})
+
+    def test_server_read_error_is_diagnostic_only_and_preserves_original_marker(self):
+        marker = self._make_independent_empty_marker()
+        before = latch._identity(marker.stat())
+        for check_only in (True, False):
+            calls = []
+            def execute(argv, **kwargs):
+                calls.append(argv)
+                if argv[-1] == "system.get_health":
+                    reply = {"status": "error", "tool": "system.get_health",
+                             "reason_code": "EXECUTION_EVENT_RESPONSE_READ_FAILED",
+                             "detail": "SECRET_DETAIL", "order_id": -1,
+                             "payload": {"account": "SECRET_ACCOUNT"}}
+                    raise subprocess.CalledProcessError(9, argv, output=json.dumps(reply), stderr="")
+                return subprocess.CompletedProcess(argv, 0, stdout=self.command(argv), stderr="")
+            with self.subTest(check_only=check_only), \
+                    patch.object(latch.subprocess, "run", side_effect=execute), \
+                    patch.object(latch.os, "unlink", side_effect=AssertionError("NO_RELEASE_AFTER_FAILED_READ")):
+                with self.assertRaises(HoldError) as failed:
+                    self.resume(check_only=check_only)
+            self.assertEqual(str(failed.exception),
+                "NATIVE_RESUME_READ_FAILED:paper:system.get_health:rc=9:EXECUTION_EVENT_RESPONSE_READ_FAILED")
+            self.assertEqual(latch._identity(marker.stat()), before)
+            native = [argv for argv in calls if argv[0] != "systemctl"]
+            self.assertEqual(len(native), 1)  # No retry or later owner read was introduced.
+            self.assertEqual(native[0][-2:], ["call", "system.get_health"])
 
     def test_post_unlink_native_failure_reengages_instead_of_claiming_release(self):
         for condition in ("uncertain", "second_owner", "missing", "epoch", "generation", "service",

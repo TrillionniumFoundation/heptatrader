@@ -461,6 +461,150 @@ def timing_progress(path, now_ms, max_age_ms):
         "signed_outcome_set_verified", "trade_authority")}
 
 
+def forward_hold_progress(name, config_path, config, value, meta, units, now_ms, max_age_ms):
+    """Explain a frozen worker's denial using its original selected guard files."""
+    timer_name = name.removesuffix(".service") + ".timer"
+    timer = units.get(timer_name, {})
+    result = {"resume": {"owner": name, "timer": timer_name,
+        "next_action": "REFRESH_SELECTED_PREDICTOR_AND_ORIGINAL_GUARD_STATUS",
+        "current_admission_granted": False, "worker_launch_authority": False},
+        "guard_admission": {"available": False}, "timer": unit_view(timer)}
+    try:
+        canonical = json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        selected = Path(config_path)
+        if (config.get("schema") != "heptatrader.current100k-forward-worker-config.v1"
+                or config.get("signing_role") != "predictor"
+                or config.get("automatic_trading") is not False or config.get("actor_update") is not False
+                or not isinstance(config.get("period_sha256"), str)
+                or re.fullmatch("[0-9a-f]{64}", config["period_sha256"]) is None
+                or not selected.is_absolute() or selected.resolve() != selected
+                or selected.name != "predictor-" + hashlib.sha256(canonical).hexdigest() + ".json"):
+            raise ValueError("FORWARD_HOLD_CONFIG_NOT_BOUND")
+        guard_path = Path(config["guard_config"])
+        guard, guard_sha = _object(guard_path, with_sha=True)
+        if (not guard_path.is_absolute() or guard_path.resolve() != guard_path
+                or guard_sha != config.get("guard_config_sha256")
+                or guard.get("schema") != "heptatrader.resident-admission-wrapper-config.v1"
+                or guard.get("period_sha256") != config.get("period_sha256")):
+            raise ValueError("FORWARD_HOLD_GUARD_NOT_BOUND")
+        admission, info = observe(Path(guard["state_root"]) / "value-predictor-admission.json", now_ms, max_age_ms)
+        reasons = admission.get("reasons")
+        role_matches = (admission.get("role") == "value-predictor"
+                        and admission.get("resource_role") in (None, "value-predictor"))
+        if (not info["available"] or not role_matches or admission.get("admit_new_worker") is not False
+                or not isinstance(reasons, list) or not reasons or any(not isinstance(x, str) for x in reasons)):
+            raise ValueError("FORWARD_NEGATIVE_ADMISSION_NOT_AVAILABLE_FOR_ROLE")
+        front = value.get("front_timing") or {}
+        started, checked, ended = front.get("worker_started_at_ms"), admission.get("at_ms"), value.get("at_ms")
+        interval_matches = (all(type(t) is int for t in (started, checked, ended))
+                            and 0 < started <= checked <= ended
+                            and isinstance(value.get("plan_id"), str) and value["plan_id"] == front.get("plan_id"))
+        current = (meta["freshness"] == info["freshness"] == "FRESH" and interval_matches)
+        result["guard_admission"] = {**info, **pick(admission, "reasons", "role", "resource_role",
+            "admit_new_worker", "minimum_available_bytes", "memory_bytes", "full_memory_psi",
+            "cached_probe_diagnostic", "original_live_source_evidence"),
+            "guard_config": str(guard_path), "guard_config_sha256": guard_sha,
+            "within_last_worker_interval": interval_matches, "current_denial_observed": current,
+            "subject_bound": False, "scope": "ORIGINAL_GUARD_LATEST_ROLE_DECISION",
+            "worker_launch_authority": False}
+        source, source_meta = observe(Path(guard["source_health_path"]), now_ms, max_age_ms)
+        source_matches = (source.get("schema") == "heptatrader.quote-readiness-status.v1"
+                          and source.get("period_sha256") == config["period_sha256"])
+        result["source_health"] = {**source_meta, "period_matches": source_matches,
+            **pick(source, "state", "reasons", "usable", "unusable", "counts", "assessment_kind",
+                   "source_assessed_at_ms", "published_at_ms", "latest_quote_age_at_publish_ms")}
+        resume = result["resume"]
+        resume["recovery_conditions"] = {
+            "original_resource_rule": guard.get("resource_rule"), "same_heavy_lease_required": True,
+            "source_health_target": "READY_FOR_REVIEW_NOT_AUTHORIZATION",
+            "fresh_original_live_source_check_required": True,
+            "source_health_owner": "heptatrader-learning-source-health.service",
+            "original_feed_owner": "heptatrader-laya-feed.service",
+            "fresh_original_request_within_fixed_input_window_required": True,
+            "input_end_ms": value.get("input_end_ms"), "missed_requests_remain_missed": True}
+        if source_matches:
+            resume["recovery_conditions"]["observed_source_rule"] = source.get("rule")
+        manual, manual_meta = observe(Path(guard["manual_hold_path"]), now_ms, max_age_ms,
+                                      timestamps=("at_ms", "created_at_ms"))
+        held = presence(guard["manual_hold_path"])
+        result["manual_hold"] = {**manual_meta, "present": held,
+                                 **pick(manual, "owner", "reason", "release_conditions")}
+        deadline = value.get("input_end_ms")
+        if held is not False:
+            resume["next_action"] = "ORIGINAL_OWNER_REVIEW_EXACT_MANUAL_HOLD"
+        elif type(deadline) is int and now_ms >= deadline:
+            resume["next_action"] = "ORIGINAL_EVALUATOR_CLOSES_FIXED_WINDOW_NO_PREDICTION_RETRY"
+            result["guard_admission"]["current_denial_observed"] = False
+        elif current and timer.get("ActiveState") not in ("active", "activating"):
+            resume["next_action"] = "REVIEW_SELECTED_FINITE_PREDICTOR_TIMER_BEFORE_RETRY"
+        elif current:
+            source_denied = any(code.startswith(("SOURCE_", "LATEST_SOURCE_")) for code in reasons)
+            source_ready = (source_matches and source_meta["freshness"] == "FRESH"
+                            and source.get("state") == "READY_FOR_REVIEW_NOT_AUTHORIZATION")
+            resume["next_action"] = ("WAIT_FOR_ORIGINAL_SOURCE_HEALTH_THEN_FINITE_PREDICTOR_RECHECK"
+                if source_denied and not source_ready else "ORIGINAL_FINITE_PREDICTOR_RECHECKS_SHARED_RESOURCE_ADMISSION")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        result["guard_admission"]["error"] = type(exc).__name__ + ":" + str(exc)
+    return result
+
+
+def driver_model_progress(data, current_loop, now_ms, max_age_ms):
+    """A dated failed model attempt is separate from native trade permission."""
+    error = data.get("last_error_observation") or {}
+    completion = data.get("model_completion_observation") or {}
+    error = error if isinstance(error, dict) else {}
+    completion = completion if isinstance(completion, dict) else {}
+    message, at = error.get("message"), error.get("at_ms")
+    recent = freshness(at, now_ms, max_age_ms)
+    result = {"historical_last_error": data.get("last_error") or message,
+              "historical_last_error_at_ms": at if type(at) is int else data.get("last_error_at_ms"),
+              "last_error_is_current_fault": False}
+    live_error = (isinstance(message, str) and message.startswith("model HOLD:")
+                  and error.get("scope") == "LAST_OBSERVED_LOOP_ERROR"
+                  and data.get("last_error") == message and recent["freshness"] == "FRESH")
+    if not live_error:
+        return result
+    last_success = data.get("last_decision_ms")
+    times = [completion.get(key) for key in ("input_observed_at_ms", "completed_at_ms", "consumed_at_ms")]
+    completion_valid = (completion.get("schema") == "heptatrader.model-completion-observation.v1"
+                        and all(type(t) is int for t in times) and 0 < times[0] <= times[1] <= times[2] <= now_ms)
+    correlated = (completion_valid and completion.get("outcome") == "DISCARDED" and times[2] <= at
+                  and type(last_success) is int and 0 <= last_success < at)
+    if (type(last_success) is int and at <= last_success <= now_ms
+            or completion_valid and completion.get("outcome") == "USED" and at <= times[2]):
+        return result
+    observed = {**recent, "message": message, "completion": completion,
+                "last_successful_decision_at_ms": last_success,
+                "record_has_process_identity": False, "current_process_heartbeat": current_loop,
+                "native_permission_independent": True, "trade_authority_granted": False}
+    result.update(historical_last_error=None, historical_last_error_at_ms=None)
+    if not current_loop or not correlated:
+        result.update(last_error_is_current_fault=None, model_availability={**observed,
+            "state": "CURRENT_MODEL_AVAILABILITY_UNCONFIRMED",
+            "next_action": "READ_ORIGINAL_DRIVER_HEARTBEAT_AND_MODEL_COMPLETION"})
+        return result
+    quota = (re.search(r"(?<!\d)429(?!\d)", message) is not None
+             and "usage limit has been reached" in message.lower())
+    discarded = any(text in message for text in ("discarded after inference hold",
+        "discarded after authoritative position change", "discarded after market snapshot expiry"))
+    loop = data.get("loop_observation") or {}
+    inflight = (isinstance(loop, dict) and loop.get("phase") == "MODEL_INFLIGHT"
+                and freshness(loop.get("checked_at_ms"), now_ms, max_age_ms)["freshness"] == "FRESH")
+    attempted = data.get("last_decision_attempt_ms")
+    result.update(last_error_is_current_fault=True, model_availability={**observed,
+        "state": "LATEST_DATED_MODEL_ATTEMPT_FAILED_NO_LATER_SUCCESS",
+        "failure_kind": "PROVIDER_USAGE_LIMIT" if quota else "MODEL_RESULT_DISCARDED" if discarded else "MODEL_ATTEMPT_FAILED",
+        "next_action": "RESTORE_EXISTING_PROVIDER_CAPACITY_THEN_ORIGINAL_DRIVER_RETRIES" if quota
+                       else "ORIGINAL_DRIVER_RECHECKS_MODEL_INFERENCE_ELIGIBILITY",
+        "retry_in_flight": inflight, "original_retry_interval_ms": 120000,
+        "retry_not_before_ms": attempted + 120000 if type(attempted) is int and 0 < attempted <= now_ms else None,
+        "recovery_conditions": {"existing_provider_usage_limit_must_clear": quota,
+            "subsequent_successful_model_completion_required": True,
+            "original_inference_and_native_gates_still_required": True,
+            "retry_time_is_not_admission": True}})
+    return result
+
+
 def trading_progress(home, runtime, units, now_ms, max_age_ms):
     root = Path(home) / ".local/state/heptatrader"
     blockers = []
@@ -503,9 +647,8 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
         current_loop = heartbeat["freshness"] == "FRESH" and process_match is True
         item = {"source": str(path), "available": meta["available"], "heartbeat": heartbeat,
                 "process_matches_heartbeat": process_match,
-                "current_pauses": [], "stale_pauses": [], "historical_last_error": data.get("last_error"),
-                "historical_last_error_at_ms": data.get("last_error_at_ms"),
-                "last_error_is_current_fault": False,
+                "current_pauses": [], "stale_pauses": [],
+                **driver_model_progress(data, current_loop, now_ms, max_age_ms),
                 **pick(data, "halt_new_entries", "lease_uncertain")}
         if not meta["available"]:
             item["error"] = meta.get("error")
@@ -599,10 +742,14 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
                   module == "laya_cell.current100k_forward_worker" and argument(argv, "--mode") == "predict"):
                 root = Path(config["forward_root"])
                 value, meta = observe(root / "predictor-status.json", now_ms, max_age_ms)
-                result["value_prediction"].append({"unit": name, "service": unit_view(item),
+                entry = {"unit": name, "service": unit_view(item),
                     "config_path": config_path, **meta, **pick(value, "state", "reason",
                     "current_issues", "current_prediction_failures", "historical_failed_or_missed_requests", "front_timing",
-                    "publication_timings_ms", "new_predictions", "sealed_predictions", "plans")})
+                    "plan_id", "input_start_ms", "input_end_ms", "publication_timings_ms",
+                    "new_predictions", "sealed_predictions", "plans")}
+                if module == "laya_cell.current100k_forward_worker" and value.get("state") == "HOLD_SHARED_RESOURCE_OR_SOURCE":
+                    entry.update(forward_hold_progress(name, config_path, config, value, meta, units, now_ms, max_age_ms))
+                result["value_prediction"].append(entry)
                 timing_paths.add(str(root / "value-timing-status.json"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             result["source_errors"].append({"unit": name, "config_path": config_path,
@@ -666,12 +813,16 @@ def format_text(value):
             "assessment_as_of_ms", "evaluation_skipped")))
     for entry in value["value_prediction"]:
         lines.append("VALUE prediction " + show(pick(entry, "unit", "service", "state", "freshness",
-            "current_issues", "current_prediction_failures", "historical_failed_or_missed_requests", "front_timing")))
+            "current_issues", "current_prediction_failures", "historical_failed_or_missed_requests", "front_timing",
+            "guard_admission", "source_health", "manual_hold", "resume")))
     for entry in value["value_timing"]:
         lines.append("VALUE OPEN timing " + show(pick(entry, "source", "freshness", "available",
             "open_coverage", "not_preopen_reason_counts", "groups", "error")))
     trade = value["trading"]
     lines.append("TRADING " + show(pick(trade, "permission", "permission_scope", "current_blockers", "unknown_current_evidence")))
+    for lane, item in trade["drivers"].items():
+        if item.get("model_availability"):
+            lines.append("MODEL " + lane + " " + show(item["model_availability"]))
     history = {lane: item["historical_last_error"] for lane, item in trade["drivers"].items()
                if item["historical_last_error"]}
     if history:
