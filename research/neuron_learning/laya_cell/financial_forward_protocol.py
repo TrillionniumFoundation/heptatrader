@@ -78,6 +78,9 @@ def score_case(plan,binding,prediction,reward,first_fill_ms,observed_at_ms):
  if not plan['input_start_ms']<=binding['request_started_at_ms']<plan['input_end_ms']:
   return {**result,'reason':'INPUT_OUTSIDE_REGISTERED_WINDOW'}
  if prediction is None:return {**result,'reason':'NO_PREDICTION_FOR_ORIGINAL_REQUEST'}
+ from .resident_hip_runtime import check_publication_proof
+ try:check_publication_proof(prediction.get('hip_runtime_proof'),plan.get('hip_runtime_manifest_sha256'),'predict')
+ except ContractError:return {**result,'reason':'PREDICTION_HIP_RUNTIME_PROOF_MISMATCH'}
  if (prediction.get('plan_id')!=plan['plan_id'] or prediction.get('candidate_id')!=candidate_id
      or prediction.get('request_id')!=rid or prediction.get('request_sha256')!=binding['request_sha256']
      or prediction.get('producer_manifest_sha256')!=plan['behavior_scope']['producer_manifest_sha256']):

@@ -28,6 +28,8 @@ def validate_value_candidate(directory,c=None):
  if (type(c.get('rows'))is not int or not 1<=c['rows']<=64 or len(c['row_ids'])!=c['rows']
      or len(set(c['row_ids']))!=c['rows'] or sha_file(directory/'value-head.safetensors')!=c['head_sha256']):
   raise ContractError('CURRENT100K_FORWARD_HEAD_OR_ROWS')
+ from .resident_hip_runtime import check_publication_proof
+ check_publication_proof(c.get('hip_runtime_proof'),c.get('hip_runtime_manifest_sha256'),'train')
  return c
 
 def validate_bound_plan(plan,c):
@@ -40,7 +42,8 @@ def validate_bound_plan(plan,c):
  if (scope.get('behavior_profile')!=BEHAVIOR or scope.get('reference_notional_usd')!=100000
      or scope.get('quantity') is not None or plan.get('producer_registration',{}).get('sha256')!=scope.get('producer_manifest_sha256') or scope.get('instrument')!='EUR.USD' or scope.get('currency')!='USD'
      or plan.get('candidate_id')!=c['candidate_id'] or plan.get('candidate_created_at_ms')!=c['created_at_ms']
-     or plan.get('head_tensor_sha256')!=c['head_sha256'] or plan.get('training_dataset_sha256')!=c['dataset_sha256']):
+     or plan.get('head_tensor_sha256')!=c['head_sha256'] or plan.get('training_dataset_sha256')!=c['dataset_sha256']
+     or plan.get('hip_runtime_manifest_sha256')!=c.get('hip_runtime_manifest_sha256')):
   raise ContractError('CURRENT100K_FORWARD_PLAN_SCOPE')
  path=Path(plan['training_dataset_path'])
  if sha_file(path)!=c['dataset_sha256']:raise ContractError('CURRENT100K_FORWARD_DATASET_PIN')
@@ -164,6 +167,8 @@ def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy
   'witness_trust_digest':config['witness_trust_digest'],'registry_root':config['forward_root'],
   'worker_runtime_inventory_digest':config['worker_runtime_inventory_digest'],
   'automatic_effect_authority':False,'candidate_refit_allowed':False,'old_trial_ids_retained':[x['plan_id'] for x in legacy]}
+ if config.get('hip_runtime') is not None:
+  plan['hip_runtime_manifest_sha256']=config['hip_runtime']['sha256']
  plan['plan_id']=digest(plan);validate_bound_plan(plan,c)
  folder=Path(config['forward_root'])/'plans'/plan['plan_id'];write_once(folder/'plan.json',plan)
  seal=sign_record(config,'registrar',{'plan_id':plan['plan_id'],'plan_file_sha256':sha_file(folder/'plan.json'),'at_ms':int(time.time()*1000)})

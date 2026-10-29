@@ -17,6 +17,8 @@ from .financial_forward_source import ingress,file_identity
 
 def pin(config,plan):
  validate_plan(plan,int(time.time()*1000))
+ from .resident_hip_runtime import check_plan
+ check_plan(config,plan)
  if plan['period_sha256']!=config['period_sha256']:raise ContractError('PREDICT_PERIOD_SCOPE')
  for name,expected in plan['runtime_sha256'].items():
   if sha_file(Path(__file__).parent/name)!=expected:raise ContractError('FROZEN_FORWARD_RUNTIME_CHANGED')
@@ -143,6 +145,12 @@ def publish_prediction(config, plan, request, folder, payload, budget=None):
  now=int(time.time()*1000)
  if budget is None:budget=PublicationBudget(plan,request,now)
  budget.check(plan,request,now,payload['computed_at_ms'])
+ from .resident_hip_runtime import check_plan,prove_before_publish
+ check_plan(config,plan)
+ hip_proof=prove_before_publish(config)
+ if hip_proof is not None:
+  payload={**payload,'hip_runtime_proof':hip_proof}
+  budget.check(plan,request,int(time.time()*1000),payload['computed_at_ms'])
  write_once(folder/'prediction.json',payload)
  commit_at=budget.check(plan,request,int(time.time()*1000),payload['computed_at_ms'])
  commit={'schema':'heptatrader.financial-forward-commit.v1','prediction_sha256':sha_file(folder/'prediction.json'),

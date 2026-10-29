@@ -29,6 +29,15 @@ class ValueScopeTests(unittest.TestCase):
  def test_tensor_substitution_refused(self):
   self.write();(self.root/'value-head.safetensors').write_bytes(b'changed')
   with self.assertRaises(ContractError):validate_value_candidate(self.root)
+ def test_selected_candidate_cannot_omit_or_change_train_runtime_proof(self):
+  from historical_training.tests.test_current100k_hip_runtime import proof,HIP_SHA
+  for evidence in (None,proof('predict'),{**proof('train'),'manifest_sha256':'2'*64}):
+   self.write({**self.c,'hip_runtime_manifest_sha256':HIP_SHA,'hip_runtime_proof':evidence})
+   with self.assertRaisesRegex(ContractError,'PUBLICATION_PROOF_BINDING'):validate_value_candidate(self.root)
+ def test_selected_candidate_preserves_complete_train_runtime_proof(self):
+  from historical_training.tests.test_current100k_hip_runtime import proof,HIP_SHA
+  evidence=proof('train');self.write({**self.c,'hip_runtime_manifest_sha256':HIP_SHA,'hip_runtime_proof':evidence})
+  self.assertEqual(validate_value_candidate(self.root)['hip_runtime_proof'],evidence)
  def test_unrevalidated_or_changed_backbone_refused(self):
   for k in ['reward_revalidated_before_and_after','pretrained_backbone_unchanged','pnl_reward_used']:
    c=copy.deepcopy(self.c);c[k]=False;self.write(c)
@@ -124,6 +133,16 @@ class ForwardScopeFixture:
   self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
 
 class BoundPlanEvidenceReuseTests(ForwardScopeFixture,unittest.TestCase):
+ def test_candidate_runtime_selection_cannot_be_dropped_or_changed_by_plan(self):
+  from laya_cell.current100k_forward import validate_bound_plan
+  self.candidate['hip_runtime_manifest_sha256']='1'*64
+  for selected in (None,'2'*64):
+   self.plan['hip_runtime_manifest_sha256']=selected
+   self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
+   with self.assertRaisesRegex(ContractError,'CURRENT100K_FORWARD_PLAN_SCOPE'):validate_bound_plan(self.plan,self.candidate)
+  self.plan['hip_runtime_manifest_sha256']='1'*64
+  self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
+  self.assertEqual(validate_bound_plan(self.plan,self.candidate),self.plan)
  def test_shared_source_read_once(self):
   from unittest import mock
   import hepta_decision_attribution as attribution
