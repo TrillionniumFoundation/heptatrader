@@ -304,6 +304,8 @@ def verify_prefix(pin, *, sealed=False, prefer_uncached=False, read_stats=None):
     """Verify exact prefix bytes with O_NOFOLLOW; sealed files cannot grow."""
     if type(prefer_uncached) is not bool or prefer_uncached and not sealed:
         raise ContractError("UNCACHED_READ_REQUIRES_SEALED_PREFIX")
+    from .source_read_budget import check_source_budget
+    check_source_budget()
     fd, _ = _open_prefix(pin, sealed=sealed)
     try:
         reader = _UncachedPrefixRead(fd, read_stats) if prefer_uncached else None
@@ -311,6 +313,7 @@ def verify_prefix(pin, *, sealed=False, prefer_uncached=False, read_stats=None):
         remaining = pin["bytes"]
         final_byte = b""
         while remaining:
+            check_source_budget()
             count = min(1024 * 1024, remaining)
             chunk = reader.read(count) if reader is not None else os.read(fd, count)
             if not chunk:

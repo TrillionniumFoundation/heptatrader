@@ -6,13 +6,16 @@ import argparse
 import hashlib
 import json
 import os
+import statistics
 import time
 from pathlib import Path
 
 from laya_cell.integrity import ContractError,read_json,sha_file,digest
 from laya_cell.resident_data import read_quotes,forecast_input
 from laya_cell.resident_recent_source import (
-    read_recent_original_quotes,MIN_CAUSAL_SPAN_MS)
+    read_recent_original_quotes,MIN_CAUSAL_SPAN_MS,prewarm_recent_decoding)
+from laya_cell.shadow_source import SourceDecodeCache
+from laya_cell.source_read_budget import source_read_budget
 
 
 def audit(config):
@@ -67,12 +70,50 @@ def audit(config):
     }
 
 
+def audit_decoding(config):
+    """Alternate existing/cached readers on the live source at the same as-of.
+
+    Fresh original byte verification is retained in both paths. Concurrent
+    appends can change pins; exact as-of quotes and model input must agree.
+    This CPU measurement cannot register a trial or claim forward efficacy.
+    """
+    cache=SourceDecodeCache();prepared=time.monotonic()
+    prewarm_recent_decoding(config,cache,deadline_ms=int(time.time()*1000)+30000)
+    prewarm_ms=round((time.monotonic()-prepared)*1000,3)
+    pairs=[]
+    for index in range(3):
+        at=int(time.time()*1000);results={};elapsed={}
+        order=('ordinary','cached') if index%2==0 else ('cached','ordinary')
+        for name in order:
+            started=time.monotonic()
+            with source_read_budget(int(time.time()*1000)+30000):
+                results[name]=read_recent_original_quotes(
+                    config,at,**({'decode_cache':cache} if name=='cached' else {}))
+            elapsed[name]=round((time.monotonic()-started)*1000,3)
+        if results['ordinary'][0]!=results['cached'][0]:
+            raise ContractError('DECODE_CACHE_ASOF_QUOTE_PARITY_FAILED')
+        plain=forecast_input(config,results['ordinary'][0],at)
+        reused=forecast_input(config,results['cached'][0],at)
+        if plain!=reused:raise ContractError('DECODE_CACHE_MODEL_INPUT_PARITY_FAILED')
+        pairs.append({'asof_ms':at,'order':list(order),'elapsed_ms':elapsed,
+                      'quote_count':len(results['ordinary'][0]),'input_sha256':digest(plain[1]),
+                      'same_asof_quotes':True,'same_model_input':True,
+                      'same_live_prefix_snapshot':results['ordinary'][1]==results['cached'][1]})
+    return {'schema':'heptatrader.source-decode-cache-parity.v1','pairs':pairs,
+            'prewarm_ms':prewarm_ms,'median_ordinary_ms':statistics.median(p['elapsed_ms']['ordinary'] for p in pairs),
+            'median_cached_ms':statistics.median(p['elapsed_ms']['cached'] for p in pairs),
+            'cache':cache.counters(),'all_archived_originals_fully_rehashed_each_use':True,
+            'live_source_concurrent_append_possible':True,'native_model_loaded':False,
+            'new_forward_observations':0,'broker_orders_sent':0,'economic_effectiveness_claimed':False}
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--config",type=Path,required=True)
     parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument('--decode-cache',action='store_true')
     args=parser.parse_args();os.umask(0o077)
-    record=audit(read_json(args.config))
+    record=(audit_decoding if args.decode_cache else audit)(read_json(args.config))
     path=args.output
     path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     if path.exists() or path.is_symlink():
@@ -84,6 +125,10 @@ def main():
     directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
     try:os.fsync(directory)
     finally:os.close(directory)
+    if args.decode_cache:
+        print(json.dumps({'status':'DECODE_CACHE_ORIGINAL_INPUT_PARITY_READONLY',
+                         'output':str(path),'sha256':hashlib.sha256(raw).hexdigest(),**record},sort_keys=True))
+        return
     print(json.dumps({
        "status":"ORIGINAL_RECENT_MODEL_FEATURE_PARITY_READONLY",
        "full_seconds":record["original_full_reader_seconds"],

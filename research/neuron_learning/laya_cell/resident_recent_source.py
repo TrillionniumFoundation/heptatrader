@@ -13,6 +13,7 @@ from pathlib import Path
 from .integrity import ContractError, sha_file
 from .shadow_source import read_source, strict, digest as source_digest
 from .source_archive import inventory_index, prefix_version, verify_prefix
+from .source_read_budget import check_source_budget, source_read_budget
 
 MAX_FOOTER_BYTES = 65536
 MIN_CAUSAL_SPAN_MS = 360000
@@ -37,6 +38,7 @@ def _archive_unchanged(config, paths, archived, pages, versions, reason):
     if paths != after_paths or archived != after_archived or pages != after_pages:
         raise ContractError(reason)
     for pin, version in zip(archived, versions):
+        check_source_budget()
         if prefix_version(pin, sealed=True) != version:
             raise ContractError("RECENT_SOURCE_ORIGINAL_CHANGED_DURING_READ")
         # Keep the full final byte check: an already writable mmap can alter
@@ -78,7 +80,28 @@ def _sealed_end_timestamp(pin):
     return end["at_ms"]
 
 
-def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_MS):
+def prewarm_recent_decoding(config, decode_cache, *, deadline_ms):
+    """Prime only decoder state before the slot; this is never a source proof.
+
+    The actual slot still rehashes every reused prefix and every sealed archive.
+    No quote, input anchor or model output is selected by this preparation.
+    """
+    with source_read_budget(deadline_ms):
+        if sha_file(Path(config['period_path'])) != config['period_sha256']:
+            raise ContractError('RESIDENT_PERIOD_CHANGED')
+        paths=sorted(Path(config['feed_directory']).glob('segment-*/quotes.jsonl'))
+        archived,_=inventory_index(config,paths)
+        sealed={pin['path'] for pin in archived}
+        for path in paths:
+            check_source_budget()
+            if str(path) in sealed:continue
+            header,_,_=read_source(path,decode_cache=decode_cache)
+            if header.get('period_sha256')!=config['period_sha256']:
+                raise ContractError('CROSS_PERIOD_FEED')
+    return decode_cache.counters()
+
+
+def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_MS, decode_cache=None):
     """Return a recent contiguous source population with COMPLETE archive pins.
 
     Every sealed source END must precede the entire relevant recent
@@ -104,7 +127,9 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     quotes = {}
     prefixes = list(pages)
     for path in unsealed:
-        header, records, prefix = read_source(path)
+        check_source_budget()
+        header, records, prefix = (read_source(path,decode_cache=decode_cache)
+                                   if decode_cache is not None else read_source(path))
         if header.get("period_sha256") != config["period_sha256"]:
             raise ContractError("CROSS_PERIOD_FEED")
         prefixes.append(prefix)
@@ -132,6 +157,7 @@ def read_recent_original_quotes(config, now_ms, *, min_span_ms=MIN_CAUSAL_SPAN_M
     # The recovery-live unsealed segment may span earlier dates and overlap
     # archived input. Only a RECENT as-of window is eligible here.
     for pin in archived:
+        check_source_budget()
         if _sealed_end_timestamp(pin) >= cutoff:
             raise ContractError("RECENT_SOURCE_CANNOT_SKIP_RECENT_ARCHIVE")
     # A concurrent archive rotation cannot silently change the pin

@@ -43,7 +43,8 @@ class SourceReadPhaseTests(unittest.TestCase):
         self.observe = self.namespace['_read_fixed_slot_source']
         self.response = (['quotes'], ['prefixes'], 'same-source-profile')
 
-    def read(self, config, plan, now):
+    def read(self, config, plan, now, *, deadline_ms):
+        self.assertEqual(deadline_ms, self.timing['fixed_input_deadline_ms'])
         self.calls.append((config, plan, now))
         active = integrity.read_json(self.stage)
         self.assertEqual(active['phase'], 'READ_FIXED_SLOT_SOURCE')
@@ -69,8 +70,8 @@ class SourceReadPhaseTests(unittest.TestCase):
 
     def test_original_source_exception_and_elapsed_time_are_preserved(self):
         original = TimeoutError('original source read timeout')
-        def read(*args):
-            self.read(*args)
+        def read(*args, **kwargs):
+            self.read(*args, **kwargs)
             raise original
         self.namespace['read_for_future_plan'] = read
         with self.assertRaises(TimeoutError) as raised:
@@ -85,7 +86,7 @@ class SourceReadPhaseTests(unittest.TestCase):
     def test_phase_write_failure_does_not_mask_source_failure_or_success(self):
         original = OSError('original source failure')
         calls = []
-        def failed(*args):
+        def failed(*args, **kwargs):
             calls.append(args)
             raise original
         self.namespace['atomic'] = lambda *_: (_ for _ in ()).throw(PermissionError('phase read-only'))
@@ -94,7 +95,7 @@ class SourceReadPhaseTests(unittest.TestCase):
             self.call()
         self.assertIs(raised.exception, original)
         self.assertEqual(len(calls), 1)
-        self.namespace['read_for_future_plan'] = lambda *args: self.response
+        self.namespace['read_for_future_plan'] = lambda *args, **kwargs: self.response
         self.assertIs(self.call(), self.response)
 
     def test_next_read_clears_prior_failure_and_completion_without_changing_deadline(self):
@@ -130,8 +131,8 @@ class SourceReadPhaseTests(unittest.TestCase):
         child.kill = lambda: self.fail('unexpected second kill')
         evaluator = SimpleNamespace(tasks={(str(plan_path), 0): (child, stream, time.monotonic()-241)})
         original = RuntimeError('synthetic child gone; no retry')
-        def blocked(*args):
-            self.read(*args)
+        def blocked(*args, **kwargs):
+            self.read(*args, **kwargs)
             namespace['reap'](evaluator)
             failure = integrity.read_json(self.root / 'failure-000.json')
             self.assertEqual(failure['reason'], 'WORKER_BUDGET_EXCEEDED')
