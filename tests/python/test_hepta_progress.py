@@ -1,5 +1,6 @@
 """Progress describes live authority and evidence without modifying either."""
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -315,6 +316,7 @@ class ProgressTests(unittest.TestCase):
   path=root/'control/status.json';status=json.loads(path.read_text())
   status.update(state='FORWARD_WORK_COMPLETE_AWAITING_NEW_CANDIDATE',next_action='NEW_CANDIDATE_AFTER_TRAINING_ADMISSION',
    status_refresh_only=True,resource_diagnostics={'manual_hold':{**value,
+    'sha256':hashlib.sha256(hold.read_bytes()).hexdigest(),
     'waiting_condition_state':'NO_PENDING_FORWARD_TRIAL',
     'next_action':'OWNER_CLOSE_TERMINAL_FORWARD_WAIT_THEN_RECHECK_TRAINING_ADMISSION'}})
   self.write(path,status);before=hold.read_bytes();entry=self.collect()['learning'][0]
@@ -325,6 +327,13 @@ class ProgressTests(unittest.TestCase):
   self.write(hold,{**value,'owner':'different-owner'})
   entry=self.collect()['learning'][0]
   self.assertNotIn('waiting_condition_state',entry['manual_hold'])
+  self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+  # A replacement may retain owner/time/reason while changing its conditions.
+  # Only the exact observed bytes can inherit the old terminal-wait projection.
+  self.write(hold,{**value,'release_conditions':'new independent condition'})
+  entry=self.collect()['learning'][0]
+  self.assertNotIn('waiting_condition_state',entry['manual_hold'])
+  self.assertEqual(entry['manual_hold']['release_conditions'],'new independent condition')
   self.assertEqual(entry['resume']['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
 
  def test_native_hold_resume_is_explicit_workflow_guidance_not_permission(self):

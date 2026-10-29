@@ -22,7 +22,7 @@ PATTERNS = ("heptatrader-laya-*", "heptatrader-current100k-*", "heptatrader-valu
 MAX_JSON_BYTES = 4 * 1024 * 1024
 
 
-def _object(path):
+def _object(path, *, with_sha=False):
     path = Path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as stream:
@@ -34,7 +34,7 @@ def _object(path):
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("STATUS_NOT_OBJECT")
-    return value
+    return (value, hashlib.sha256(raw).hexdigest()) if with_sha else value
 
 
 def freshness(at_ms, now_ms, max_age_ms):
@@ -48,12 +48,13 @@ def freshness(at_ms, now_ms, max_age_ms):
 def observe(path, now_ms, max_age_ms, *, timestamps=("at_ms",)):
     meta = {"source": str(path), "available": False}
     try:
-        value = _object(path)
+        value, content_sha256 = _object(path, with_sha=True)
     except (OSError, ValueError, TypeError) as exc:
         return {}, {**meta, "error": type(exc).__name__ + ":" + str(exc),
                     **freshness(None, now_ms, max_age_ms)}
     at = next((value[k] for k in timestamps if type(value.get(k)) is int), None)
-    return value, {**meta, "available": True, **freshness(at, now_ms, max_age_ms)}
+    return value, {**meta, "available": True, "sha256": content_sha256,
+                   **freshness(at, now_ms, max_age_ms)}
 
 
 def presence(path):
@@ -341,6 +342,8 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
             projection=diagnostics.get("manual_hold",{}) if isinstance(diagnostics,dict) else {}
             if not isinstance(projection,dict):projection={}
             if (meta["freshness"]=="FRESH" and projection.get("reason")==value.get("reason")
+                    and projection.get("sha256") is not None
+                    and projection.get("sha256")==observed.get("sha256")
                     and projection.get("owner") is not None and projection.get("owner")==value.get("owner")
                     and projection.get("created_ms",projection.get("created_at_ms")) is not None
                     and projection.get("created_ms",projection.get("created_at_ms"))==value.get("created_ms",value.get("created_at_ms"))
