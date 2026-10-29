@@ -130,10 +130,14 @@ def _new_producer_lineage(config,data,prior,prior_directory,history,prior_plan_p
   'previous_rows_reused_in_refit':0,'fit_relation':'FRESH_PRODUCER_SCOPE_FRESH_HEAD_NO_HISTORICAL_ROWS'}
 
 def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy_plans_root,
-             *,registration_scope=SAME_PRODUCER_REFIT,prior_plan_path=None):
+             *,registration_scope=SAME_PRODUCER_REFIT,prior_plan_path=None,input_start_delay_ms=300000):
  from .financial_forward_protocol import RULE
  from .financial_forward_witness import sign_record
  from historical_training.current100k_value_trial import selected_rows
+ # Preparation may need a longer prospective lead time; it must never backdate
+ # an input window or change the frozen observation and outcome durations.
+ if type(input_start_delay_ms)is not int or not 300000<=input_start_delay_ms<=900000:
+  raise ContractError('CURRENT100K_FORWARD_PREPARATION_DELAY_BOUND')
  c=validate_value_candidate(candidate_directory);data=read_json(Path(dataset_path),32*1024**2);selected_rows(data,data)
  prior_directory=Path(prior_candidate_path).parent;prior=validate_value_candidate(prior_directory)
  roots=[legacy_plans_root] if isinstance(legacy_plans_root,(str,Path)) else list(legacy_plans_root)
@@ -148,7 +152,7 @@ def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy
  existing=list((Path(config['forward_root'])/'plans').glob('*/plan.json'))
  if existing:raise ContractError('CURRENT100K_FORWARD_ALREADY_REGISTERED_NO_REPLAY')
  trial=max([x['trial'] for x in legacy]+[0])+1
- now=int(time.time()*1000);start=now+300000;rows=data['rows'];models={x['behavior_scope']['model_id'] for x in rows}
+ now=int(time.time()*1000);start=now+input_start_delay_ms;rows=data['rows'];models={x['behavior_scope']['model_id'] for x in rows}
  if len(models)!=1:raise ContractError('MIXED_BEHAVIOR_MODELS')
  source=Path(__file__).parent
  plan={'schema':PLAN_SCHEMA,'candidate_id':c['candidate_id'],'candidate_directory':str(candidate_directory),

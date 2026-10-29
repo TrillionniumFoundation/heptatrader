@@ -306,6 +306,33 @@ class ProgressTests(unittest.TestCase):
   result=subprocess.run(['bash',str(target/'heptatrader-user'),'status'],env=env,text=True,capture_output=True,timeout=10)
   self.assertEqual(result.returncode,3);self.assertIn('PROGRESS_SEEN',result.stdout)
 
+ def test_same_candidate_wait_action_and_conditions_are_visible_without_claiming_admission(self):
+  root,cfgpath=self.fixture_learning();name='heptatrader-laya-trainer.service'
+  self.units[name]['MainPID']='9'
+  action='ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION'
+  conditions={'same_candidate_retry':True,'blocking_original_trials':0,
+   'original_calendar_and_fresh_source_checks_required':True,
+   'original_registration_stability':{'required_samples':3,'minimum_span_ms':60000},
+   'waiting_reasons':['HOST_FULL_MEMORY_PSI_PRESSURE'],'current_admission_granted':False,'worker_launch_authority':False}
+  status={'at_ms':NOW,'state':'CANDIDATE_READY_AWAITING_FORWARD_ADMISSION','next_action':action,
+   'current_blockers':['HOST_FULL_MEMORY_PSI_PRESSURE'],
+   'forward_registration_resume_conditions':conditions,'resume_conditions_to_recheck':['HOST_FULL_MEMORY_PSI_PRESSURE']}
+  path=self.write(root/'control/status.json',status);before=path.read_bytes()
+  out=self.collect();entry=out['learning'][0]
+  self.assertEqual(entry['resume']['next_action'],action)
+  self.assertEqual(entry['resume']['forward_registration_conditions'],conditions)
+  self.assertFalse(entry['resume']['worker_launch_authority'])
+  self.assertIn(action,progress.format_text(out));self.assertIn('minimum_span_ms',progress.format_text(out))
+  self.assertEqual(path.read_bytes(),before)
+  self.units[name].update(ActiveState='inactive',MainPID='0')
+  stopped=self.collect()['learning'][0]
+  self.assertNotIn('forward_registration_conditions',stopped['resume'])
+  self.assertFalse(stopped['resume']['automatic_resume_expected'])
+  self.units[name].update(ActiveState='active',MainPID='9');self.write(path,{**status,'at_ms':NOW-300001})
+  stale=self.collect()['learning'][0]
+  self.assertNotIn('forward_registration_conditions',stale['resume'])
+  self.assertEqual(stale['resume']['next_action'],'REFRESH_ORIGINAL_TRAINER_STATUS')
+
  def test_terminal_hold_projection_keeps_owner_conditions_and_current_marker(self):
   root,cfgpath=self.fixture_learning();guard=self.home/'guard';hold=guard/'manual-hold.json'
   value={'created_ms':NOW-86400000,'owner':'original-owner',

@@ -223,7 +223,21 @@ class NewProducerScopeRegistrationTests(ForwardScopeFixture,unittest.TestCase):
   self.assertEqual(plan['prior_producer_manifest_sha256'],self.prior['plan']['behavior_scope']['producer_manifest_sha256'])
   self.assertEqual(plan['old_trial_ids_retained'],[self.prior['plan']['plan_id']])
   self.assertEqual(plan['rule'],RULE);self.assertFalse(plan['automatic_effect_authority'])
+  self.assertEqual(plan['input_start_ms']-plan['registered_at_ms'],300000)
   self.assertEqual(self.prior_path.read_bytes(),old)
+ def test_longer_preparation_margin_keeps_original_future_windows_and_old_plans(self):
+  from laya_cell.financial_forward_protocol import RULE
+  old=self.prior_path.read_bytes();plan=self.register(input_start_delay_ms=900000)
+  self.assertEqual(plan['input_start_ms']-plan['registered_at_ms'],900000)
+  self.assertEqual(plan['input_end_ms']-plan['input_start_ms'],RULE['window_ms'])
+  self.assertEqual(plan['outcome_end_ms']-plan['input_end_ms'],RULE['closure_grace_ms'])
+  self.assertEqual(plan['rule'],RULE);self.assertEqual(self.prior_path.read_bytes(),old)
+  self.assertEqual(plan['plan_id'],digest({k:v for k,v in plan.items() if k!='plan_id'}))
+ def test_invalid_or_unbounded_preparation_margin_cannot_register(self):
+  for delay in (None,True,300000.,'900000',-1,0,299999,900001):
+   with self.subTest(delay=delay),self.assertRaisesRegex(ContractError,'PREPARATION_DELAY_BOUND'):
+    self.register(input_start_delay_ms=delay)
+   self.assertFalse(Path(self.config['forward_root']).exists())
  def test_default_path_still_requires_original_rows(self):
   with self.assertRaisesRegex(ContractError,'PRIOR_ELEVEN_ROWS_NOT_PRESERVED'):
    self.register(registration_scope='SAME_PRODUCER_REFIT')

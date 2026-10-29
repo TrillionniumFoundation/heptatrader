@@ -193,16 +193,22 @@ class ForwardRegistrationTests(unittest.TestCase):
     def test_real_queue_preflight_retries_hold_and_stops_new_training(self):
         gate = self.wrap([False, False])
         self.service.sync_rewards = Mock()
-        self.service.write_status = lambda **extra: extra
         queue = {"pending_original_trials": 0, "viable_pending_evaluations": 0}
         with patch.object(resident_module, "config_check"), \
              patch.object(resident_module, "inspect_storage",
                           return_value={"admission_ready": True}), \
+             patch.object(Supervisor, "write_status", lambda self, **extra: extra), \
              patch.object(resident_module, "inspect_evaluation_queue", return_value=queue):
             for _ in range(2):
                 status = self.service.step()
                 self.assertEqual(status["state"], "CANDIDATE_READY_AWAITING_FORWARD_ADMISSION")
                 self.assertEqual(status["deferred_training_candidates"], 1)
+                self.assertEqual(status["next_action"], "ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION")
+                resume = status["forward_registration_resume_conditions"]
+                self.assertEqual(resume["last_preflight"]["subject"], {"job_id": "job", "candidate_id": self.candidate["candidate_id"]})
+                self.assertEqual(resume["waiting_reasons"], ["SOURCE_CONTINUITY_NOT_READY"])
+                self.assertFalse(resume["current_admission_granted"])
+                self.assertFalse(resume["worker_launch_authority"])
         self.assertEqual(len(gate.calls), 2)
         self.assert_unallocated()
         gate.acquire.assert_not_called()

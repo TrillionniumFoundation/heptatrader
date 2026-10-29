@@ -5,7 +5,7 @@ from unittest.mock import Mock,patch
 from historical_training.common import EvidenceError
 from historical_training.resident_resource_guard import (GIB,SOURCE_RULE,RESOURCE_RULE,assess,
     parse_meminfo,parse_full_psi,Lease,Gate,guarded_evaluator_class,guarded_trainer_class,assess_resources,
-    collect_resource_attribution,ATTRIBUTION_LIMITS)
+    collect_resource_attribution,ATTRIBUTION_LIMITS,REGISTRATION_STABILITY)
 
 NOW=1791470000000
 
@@ -217,6 +217,40 @@ class StatusDiagnosticTests(unittest.TestCase):
         self.assertIsNone(result['automatic_resume_expected'])
         self.assertEqual(result['resume_conditions_to_recheck'],
             ['HOST_FULL_MEMORY_PSI_PRESSURE','TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT'])
+
+    def test_completed_candidate_resource_wait_names_existing_owner_and_preserves_every_guard(self):
+        class Base:
+            def write_status(self,**kw):return kw
+        class DiagnosticGate:
+            held=False
+            def status_diagnostics(self):
+                return {'current_resource_blockers':['OPERATOR_RESOURCE_HOLD'] if self.held else [],
+                    'checked_at_ms':NOW,'manual_hold':{'present':self.held,
+                        'next_action':'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS'}}
+        gate=DiagnosticGate();engine=guarded_trainer_class(Base,gate)()
+        report={'at_ms':NOW-1000,'subject':{'job_id':'completed-job','candidate_id':'same-candidate'},
+            'reasons':['HOST_FULL_MEMORY_PSI_PRESSURE'],'minimum_available_bytes':2*GIB,
+            'registration_stability':{**REGISTRATION_STABILITY,'healthy_samples':0,'ready':False}}
+        engine._forward_registration_preflight=report;before=copy.deepcopy(report)
+        kwargs={'state':'CANDIDATE_READY_AWAITING_FORWARD_ADMISSION','pending_original_trials':0,
+            'forward_registration_blocking_trials':0,'deferred_training_candidates':1}
+        status=engine.write_status(**kwargs);conditions=status['forward_registration_resume_conditions']
+        self.assertEqual(status['next_action'],'ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION')
+        self.assertIn('HOST_FULL_MEMORY_PSI_PRESSURE',status['resume_conditions_to_recheck'])
+        self.assertEqual(conditions['original_resource_rule'],RESOURCE_RULE)
+        self.assertEqual(conditions['original_registration_stability'],REGISTRATION_STABILITY)
+        self.assertEqual(conditions['last_preflight']['subject'],report['subject'])
+        self.assertEqual(conditions['last_preflight']['at_ms'],NOW-1000)
+        self.assertTrue(conditions['original_calendar_and_fresh_source_checks_required'])
+        self.assertFalse(conditions['current_admission_granted']);self.assertFalse(conditions['worker_launch_authority'])
+        self.assertIsNone(status['automatic_resume_expected']);self.assertEqual(report,before)
+        gate.held=True;status=engine.write_status(**kwargs)
+        self.assertEqual(status['next_action'],'OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
+        self.assertFalse(status['automatic_resume_expected'])
+        engine._forward_registration_preflight=None;gate.held=False
+        ready=engine.write_status(state='EVALUATING_BOUNDED_CANDIDATE_QUEUE',pending_original_trials=1)
+        self.assertNotIn('forward_registration_resume_conditions',ready)
+        self.assertNotIn('next_action',ready)
 
 
 class BoundedControllerTests(unittest.TestCase):
