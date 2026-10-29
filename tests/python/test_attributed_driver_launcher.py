@@ -100,6 +100,7 @@ class ManifestBaseBindingTests(unittest.TestCase):
     def launch(self):
         close = mock.Mock()
         with mock.patch.object(attributed, '__file__', str(self.root / 'launcher.py')), \
+             mock.patch.object(attributed.os, 'umask'), \
              mock.patch.object(sys, 'argv', ['launcher', '--manifest', str(self.path)]), \
              mock.patch.object(btc, 'load_profile', return_value={}), \
              mock.patch.object(btc, 'attach', return_value=close), \
