@@ -396,7 +396,7 @@ class ProgressTests(unittest.TestCase):
   entry=self.collect()['value_forward'][0]
   self.assertEqual(entry['state'],'WAIT_INPUT_WINDOW');self.assertEqual(entry['reason'],'BEFORE_INPUT_START')
 
- def launcher_fixture(self,mode):
+ def launcher_fixture(self,mode,**extra):
   role='predictor' if mode=='predict' else 'evaluator';root=self.home/('forward-'+role)
   release=self.home/('release-'+role);launcher=release/'bin/current100k-forward-launch.py'
   launcher.parent.mkdir(parents=True);launcher.write_bytes(b'raise AssertionError("progress must never execute the launcher")\n')
@@ -405,7 +405,7 @@ class ProgressTests(unittest.TestCase):
   config={'schema':'heptatrader.current100k-forward-worker-config.v1','signing_role':role,
    'automatic_trading':False,'actor_update':False,'python':'/original/pinned/python','forward_root':str(root),
    'worker_source_root':str(release),'worker_runtime_sha256':inventory,
-   'worker_runtime_inventory_digest':hashlib.sha256(canonical(inventory)).hexdigest()}
+   'worker_runtime_inventory_digest':hashlib.sha256(canonical(inventory)).hexdigest(),**extra}
   path=self.write(self.home/(role+'-'+hashlib.sha256(canonical(config)).hexdigest()+'.json'),config)
   name='heptatrader-current100k-forward-'+role+'.service'
   argv=[config['python'] if mode=='predict' else '/usr/bin/python3','-B',str(launcher),'--config',str(path),
@@ -475,5 +475,144 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(trade['current_blockers'],[{'reason':'SERVICE_NOT_ACTIVE','unit':'heptatrader-crypto-driver.service',
    'state':'inactive','scope':'CRYPTO_DRIVER'}])
   self.assertFalse(trade['trade_authority_granted']);self.assertIn('CRYPTO_DRIVER',progress.format_text(out))
+
+ def financial_hold_fixture(self):
+  guard_root=self.home/'shared-guard';health=self.home/'source-health.json';hold=guard_root/'manual-hold.json'
+  wrapper=self.write(self.home/'guard.json',{'schema':'heptatrader.resident-admission-wrapper-config.v1',
+   'period_sha256':'a'*64,'state_root':str(guard_root),'source_health_path':str(health),
+   'manual_hold_path':str(hold),'resource_rule':{'min_available_bytes':8589934592}})
+  name,path,launcher=self.launcher_fixture('predict',guard_config=str(wrapper),
+   guard_config_sha256=hashlib.sha256(wrapper.read_bytes()).hexdigest(),period_sha256='a'*64)
+  config=json.loads(path.read_text());status=Path(config['forward_root'])/'predictor-status.json'
+  self.write(status,{'state':'HOLD_SHARED_RESOURCE_OR_SOURCE','at_ms':NOW,'plan_id':'p4',
+   'input_start_ms':NOW-10000,'input_end_ms':NOW+86400000,
+   'front_timing':{'worker_started_at_ms':NOW-1000,'plan_id':'p4'}})
+  admission=self.write(guard_root/'value-predictor-admission.json',{'at_ms':NOW-100,
+   'role':'value-predictor','resource_role':'value-predictor','admit_new_worker':False,
+   'reasons':['LATEST_SOURCE_QUOTE_NOT_FRESH','SOURCE_CONTINUITY_NOT_READY','SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY'],
+   'cached_probe_diagnostic':{'cached_probe_usable':1,'cached_probe_unusable':23},
+   'original_live_source_evidence':{'status':'NOT_COLLECTED_WHILE_SOURCE_PROBES_HELD','source_ttl_ms':5000}})
+  self.write(health,{'schema':'heptatrader.quote-readiness-status.v1','period_sha256':'a'*64,
+   'at_ms':NOW-200,'state':'HOLD_NEW_FUSION_WINDOW','usable':1,'unusable':23,
+   'reasons':['INSUFFICIENT_ENDPOINT_AND_PATH_COVERAGE'],'rule':{'minimum_usable':20,'input_probes':24}})
+  return name,status,admission,health,wrapper,hold
+
+ def test_financial_hold_uses_selected_guard_and_exposes_original_owner_recovery_without_writes(self):
+  name,status,admission,health,wrapper,hold=self.financial_hold_fixture()
+  before={path:path.read_bytes() for path in (status,admission,health,wrapper)}
+  with mock.patch.object(progress.subprocess,'run',side_effect=AssertionError('progress must not dispatch')):
+   out=self.collect()
+  self.assertEqual(out['source_errors'],[]);entry=out['value_prediction'][0]
+  self.assertTrue(entry['guard_admission']['current_denial_observed'])
+  self.assertFalse(entry['guard_admission']['subject_bound'])
+  self.assertEqual(entry['guard_admission']['cached_probe_diagnostic']['cached_probe_usable'],1)
+  self.assertEqual(entry['resume']['next_action'],'WAIT_FOR_ORIGINAL_SOURCE_HEALTH_THEN_FINITE_PREDICTOR_RECHECK')
+  conditions=entry['resume']['recovery_conditions']
+  self.assertEqual(conditions['source_health_owner'],'heptatrader-learning-source-health.service')
+  self.assertEqual(conditions['observed_source_rule']['minimum_usable'],20)
+  self.assertFalse(entry['resume']['worker_launch_authority'])
+  self.assertIn('SOURCE_QUALITY_HOLD_NO_REFRESH_AUTHORITY',progress.format_text(out))
+  self.assertEqual(before,{path:path.read_bytes() for path in before});self.assertFalse(hold.exists())
+
+ def test_financial_old_or_other_role_denial_cannot_claim_current_worker_hold(self):
+  name,status,admission,health,wrapper,hold=self.financial_hold_fixture()
+  original=json.loads(admission.read_text());original_status=json.loads(status.read_text())
+  for change in ('old','future_turn','other_role','unbound_front','stale_status','guard_changed'):
+   with self.subTest(change=change):
+    row=dict(original);state=copy.deepcopy(original_status);raw=wrapper.read_bytes()
+    if change=='old':row['at_ms']=NOW-300001
+    elif change=='future_turn':row['at_ms']=NOW+1
+    elif change=='other_role':row['role']='trainer'
+    elif change=='unbound_front':state['front_timing']['plan_id']='other-plan'
+    elif change=='stale_status':state['at_ms']=NOW-300001
+    else:wrapper.write_bytes(raw+b' ')
+    self.write(admission,row);self.write(status,state)
+    entry=self.collect()['value_prediction'][0]
+    self.assertIsNot(entry['guard_admission'].get('current_denial_observed'),True)
+    self.assertEqual(entry['resume']['next_action'],'REFRESH_SELECTED_PREDICTOR_AND_ORIGINAL_GUARD_STATUS')
+    wrapper.write_bytes(raw)
+
+ def test_financial_source_recovery_closed_window_and_persistent_hold_have_distinct_actions(self):
+  name,status,admission,health,wrapper,hold=self.financial_hold_fixture()
+  source=json.loads(health.read_text());source.update(state='READY_FOR_REVIEW_NOT_AUTHORIZATION',usable=24,unusable=0,reasons=[])
+  self.write(health,source)
+  self.assertEqual(self.collect()['value_prediction'][0]['resume']['next_action'],
+   'ORIGINAL_FINITE_PREDICTOR_RECHECKS_SHARED_RESOURCE_ADMISSION')
+  value=json.loads(status.read_text());self.write(status,{**value,'input_end_ms':NOW})
+  entry=self.collect()['value_prediction'][0]
+  self.assertEqual(entry['resume']['next_action'],'ORIGINAL_EVALUATOR_CLOSES_FIXED_WINDOW_NO_PREDICTION_RETRY')
+  self.assertFalse(entry['guard_admission']['current_denial_observed'])
+  self.write(hold,{'owner':'original-guard','reason':'NATIVE_WORKER_FATAL_SIGNAL','release_conditions':'inspect exact failure'})
+  self.assertEqual(self.collect()['value_prediction'][0]['resume']['next_action'],'ORIGINAL_OWNER_REVIEW_EXACT_MANUAL_HOLD')
+
+ def model_failure_fixture(self):
+  message='model HOLD: model decision failed: 429 The usage limit has been reached provider openai model original-model'
+  return {'resident_loop_progress':{'at_ms':NOW,'pid':7},
+   'last_error':message,'last_error_observation':{'message':message,'at_ms':NOW-5000,'scope':'LAST_OBSERVED_LOOP_ERROR'},
+   'last_decision_ms':NOW-86400000,'last_decision_attempt_ms':NOW-9000,
+   'model_completion_observation':{'schema':'heptatrader.model-completion-observation.v1',
+    'input_observed_at_ms':NOW-9200,'completed_at_ms':NOW-5004,'consumed_at_ms':NOW-5000,'outcome':'DISCARDED'},
+   'loop_observation':{'checked_at_ms':NOW,'phase':'OBSERVING'}}
+
+ def test_fresh_correlated_429_is_model_unavailability_independent_of_native_permission(self):
+  path=self.write(self.state/'paper-driver/state.json',self.model_failure_fixture());raw=path.read_bytes()
+  out=self.collect();trade=out['trading'];driver=trade['drivers']['paper'];model=driver['model_availability']
+  self.assertTrue(driver['last_error_is_current_fault']);self.assertIsNone(driver['historical_last_error'])
+  self.assertEqual(model['state'],'LATEST_DATED_MODEL_ATTEMPT_FAILED_NO_LATER_SUCCESS')
+  self.assertEqual(model['failure_kind'],'PROVIDER_USAGE_LIMIT');self.assertFalse(model['record_has_process_identity'])
+  self.assertEqual(model['retry_not_before_ms'],NOW-9000+120000)
+  self.assertEqual(model['next_action'],'RESTORE_EXISTING_PROVIDER_CAPACITY_THEN_ORIGINAL_DRIVER_RETRIES')
+  self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(trade['current_blockers'],[])
+  self.assertIn('MODEL paper ',progress.format_text(out));self.assertEqual(path.read_bytes(),raw)
+
+ def test_later_success_and_retained_or_undated_error_stay_historical(self):
+  path=self.state/'paper-driver/state.json'
+  for change in ('used','decision','cleared','stale','undated','message_changed'):
+   with self.subTest(change=change):
+    state=self.model_failure_fixture()
+    if change=='used':state['model_completion_observation'].update(outcome='USED',consumed_at_ms=NOW-1000)
+    elif change=='decision':state['last_decision_ms']=NOW-1000
+    elif change=='cleared':state['last_error']=''
+    elif change=='stale':state['last_error_observation']['at_ms']=NOW-300001
+    elif change=='undated':state['last_error_observation'].update(at_ms=None,scope='LEGACY_UNDATED_DIAGNOSTIC')
+    else:state['last_error']='another error'
+    self.write(path,state);driver=self.collect()['trading']['drivers']['paper']
+    self.assertFalse(driver['last_error_is_current_fault']);self.assertNotIn('model_availability',driver)
+
+ def test_unmatched_process_or_uncorrelated_completion_is_unknown_and_inflight_is_not_success(self):
+  path=self.state/'paper-driver/state.json'
+  for change in ('pid','heartbeat','completion_time','completion_missing','malformed_used'):
+   with self.subTest(change=change):
+    state=self.model_failure_fixture()
+    if change=='pid':state['resident_loop_progress']['pid']=8
+    elif change=='heartbeat':state['resident_loop_progress']['at_ms']=NOW-300001
+    elif change=='completion_time':state['model_completion_observation']['consumed_at_ms']=NOW-4000
+    elif change=='completion_missing':state.pop('model_completion_observation')
+    else:state['model_completion_observation']={'outcome':'USED','consumed_at_ms':NOW}
+    self.write(path,state);driver=self.collect()['trading']['drivers']['paper']
+    self.assertIsNone(driver['last_error_is_current_fault'])
+    self.assertEqual(driver['model_availability']['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
+  state=self.model_failure_fixture();state['loop_observation']['phase']='MODEL_INFLIGHT'
+  state['last_decision_attempt_ms']=NOW-100;self.write(path,state)
+  model=self.collect()['trading']['drivers']['paper']['model_availability']
+  self.assertTrue(model['retry_in_flight']);self.assertEqual(model['failure_kind'],'PROVIDER_USAGE_LIMIT')
+
+ def test_expected_discards_are_not_provider_quota_failures(self):
+  path=self.state/'paper-driver/state.json'
+  for cause in ('inference hold','authoritative position change','market snapshot expiry'):
+   state=self.model_failure_fixture();message='model HOLD: model decision discarded after '+cause
+   state['last_error']=message;state['last_error_observation']['message']=message;self.write(path,state)
+   model=self.collect()['trading']['drivers']['paper']['model_availability']
+   self.assertEqual(model['failure_kind'],'MODEL_RESULT_DISCARDED')
+   self.assertFalse(model['recovery_conditions']['existing_provider_usage_limit_must_clear'])
+
+ def test_clock_rollback_cannot_turn_a_future_dated_model_failure_into_history(self):
+  state=self.model_failure_fixture();state['last_error_observation']['at_ms']=NOW+1000
+  self.write(self.state/'paper-driver/state.json',state)
+  trade=self.collect()['trading'];driver=trade['drivers']['paper'];model=driver['model_availability']
+  self.assertIsNone(driver['last_error_is_current_fault']);self.assertIsNone(driver['historical_last_error'])
+  self.assertEqual(model['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
+  self.assertEqual(model['freshness'],'FUTURE');self.assertEqual(model['age_ms'],-1000)
+  self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(trade['current_blockers'],[])
 
 if __name__=='__main__':unittest.main()

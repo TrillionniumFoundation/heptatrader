@@ -15,6 +15,7 @@ import math
 import os
 import pwd
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -27,9 +28,10 @@ HOLD = "maintenance-hold.json"
 LOCK = "operator-maintenance.lock"
 ACTIONS = {"pause", "paper-on", "maintenance-hold", "maintenance-release",
            "maintenance-status", "native-startup-hold"}
-# Only reviewed, exact CLI machine codes may leave captured stderr. Never echo
-# a general uppercase token, arbitrary line, argv, token path or native stdout.
+# Only reviewed, exact CLI machine codes may leave captured stderr. Native
+# stdout contributes only a validated error-envelope reason, never its payload.
 NATIVE_READ_STDERR_CODES = frozenset({"DISCOVERY_LIST_REJECTED"})
+NATIVE_READ_ERROR_MAX_BYTES = 4096
 OPERATOR_CLIENT_HELPER_SHA256 = "9b96f650b581dc82a2668eb9e67743a2826d6728731853a96800ffb653850889"
 OPERATOR_CLIENTS_REQUIRED = False  # A prepared operator copy fixes this to True.
 
@@ -209,6 +211,43 @@ def _command(argv: list[str]) -> str:
     return result.stdout
 
 
+def _native_error_reason(raw, method: str) -> str | None:
+    """Project one bounded rc=9 envelope; diagnostics grant no read or resume authority."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise ValueError("non-finite JSON constant")
+
+    try:
+        if type(raw) is bytes:
+            if len(raw) > NATIVE_READ_ERROR_MAX_BYTES:
+                return None
+            raw = raw.decode("utf-8")
+        if (type(raw) is not str or not raw or len(raw) > NATIVE_READ_ERROR_MAX_BYTES
+                or len(raw.encode("utf-8")) > NATIVE_READ_ERROR_MAX_BYTES):
+            return None
+        value = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+    if (type(value) is not dict
+            or set(value) != {"status", "tool", "reason_code", "detail", "order_id", "payload"}
+            or value["status"] != "error" or value["tool"] != method
+            or type(value["detail"]) is not str or "\0" in value["detail"]
+            or type(value["order_id"]) is not int or not -1 <= value["order_id"] < 2**63
+            or (value["payload"] is not None and type(value["payload"]) is not dict)):
+        return None
+    code = value["reason_code"]
+    if type(code) is not str or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code) is None:
+        return None
+    return code
+
+
 def _native_read_failure(owner: str, method: str, cause: BaseException | None) -> str:
     detail = "READ_FAILED"
     if isinstance(cause, subprocess.TimeoutExpired):
@@ -224,6 +263,8 @@ def _native_read_failure(owner: str, method: str, cause: BaseException | None) -
         if type(raw) is str and len(raw) <= 128 and raw.strip() in NATIVE_READ_STDERR_CODES:
             code = raw.strip()
         rc = cause.returncode
+        if type(rc) is int and rc == 9:
+            code = _native_error_reason(cause.stdout, method) or code
         bounded_rc = str(rc) if type(rc) is int and -255 <= rc <= 255 else "UNKNOWN"
         detail = "rc=" + bounded_rc + ":" + code
     elif isinstance(cause, OSError):
