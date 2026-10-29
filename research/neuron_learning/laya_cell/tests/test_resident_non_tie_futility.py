@@ -7,6 +7,7 @@ import unittest
 
 from laya_cell import promotion, resident_evaluate as evaluation, resident_queue
 from laya_cell import promotion_power as power
+from laya_cell import resident_parent_calibration as parent_calibration
 from laya_cell.integrity import ContractError, digest, read_json, sha_file
 from laya_cell.tests import test_evaluator_prospective_diagnostics as dispatch_fixture
 from laya_cell.tests import test_matched_parent_screen as matched_fixture
@@ -88,6 +89,19 @@ class NonTieFutilityTests(unittest.TestCase):
         self.assertFalse(evaluation.suppress_new_work_for_frozen_failure(plan, rows[:3]))
         verdict = promotion.assess(plan, rows, plan['outcome_end_ms'])
         self.assertEqual(verdict['non_ties'], plan['rule']['min_non_ties'])
+
+    def test_incomplete_diagnostic_comparator_is_unknown_even_if_both_ids_are_missing(self):
+        plan = self.plan(power.MATCHED_PARENT_PROTOCOL)
+        rows = self.results(plan, ties=3)[:3]
+        for row in rows:
+            row.pop('parent_calibration_comparator_id')
+        for comparator in ({}, None, {'comparator_id': ''}):
+            with self.subTest(comparator=comparator):
+                plan[parent_calibration.RECORD] = comparator
+                budget = evaluation._non_tie_budget(plan, rows)
+                self.assertEqual(budget['known_ties'], 0)
+                self.assertEqual(budget['observed_without_valid_primary_scores'], 3)
+                self.assertFalse(budget['impossible_from_recorded_outcomes'])
 
     def test_legacy_rule_does_not_gain_a_new_minimum_non_tie_gate(self):
         plan = self.plan(None)

@@ -230,10 +230,11 @@ def _primary_improvement(plan,result):
  """A missing/invalid score is unknown, never evidence of an irreversible tie."""
  if result.get('status')!='OBSERVED':return None
  primary=_primary_score(plan)
- if (primary=='calibrated_parent_brier'
-     and result.get('parent_calibration_comparator_id')
-         !=plan.get(parent_calibration.RECORD,{}).get('comparator_id')):
-  return None
+ if primary=='calibrated_parent_brier':
+  comparator=plan.get(parent_calibration.RECORD,{})
+  expected=comparator.get('comparator_id') if isinstance(comparator,dict) else None
+  if (not isinstance(expected,str) or not expected
+      or result.get('parent_calibration_comparator_id')!=expected):return None
  scores=[result.get(primary),result.get('candidate_brier')]
  if any(type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=2
         for value in scores):return None
