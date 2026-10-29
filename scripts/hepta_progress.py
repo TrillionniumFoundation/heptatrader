@@ -223,7 +223,7 @@ def unit_view(item):
     return pick(item, "Id", "LoadState", "ActiveState", "SubState", "Result",
                 "MainPID", "UnitFileState", "config_source",
                 "configured_config_path", "running_config_path",
-                "configuration_matches_process", "process_read_error")
+                "configuration_matches_process", "configuration_match_basis", "process_read_error")
 
 
 def selected_unit(name, item, units):
@@ -660,8 +660,44 @@ def forward_hold_progress(name, config_path, config, value, meta, units, now_ms,
     return result
 
 
-def driver_model_progress(data, current_loop, now_ms, max_age_ms):
-    """A dated failed model attempt is separate from native trade permission."""
+def driver_loop_error_progress(data, current_loop, now_ms, max_age_ms):
+    """Bind a loop error to its heartbeat, not just a retained error string."""
+    error, loop, heartbeat = (data.get(key) for key in
+        ("last_error_observation", "loop_observation", "resident_loop_progress"))
+    if not all(isinstance(value, dict) for value in (error, loop, heartbeat)):
+        return {}
+    message, at = error.get("message"), error.get("at_ms")
+    recent = freshness(at, now_ms, max_age_ms)
+    if (not isinstance(message, str) or not message or data.get("last_error") != message
+            or error.get("scope") != "LAST_OBSERVED_LOOP_ERROR" or loop.get("phase") != "ERROR"
+            or recent["freshness"] not in ("FRESH", "FUTURE")):
+        return {}
+    started, checked, iteration = heartbeat.get("at_ms"), loop.get("checked_at_ms"), heartbeat.get("iteration")
+    correlated = (current_loop and heartbeat.get("schema") == "heptatrader.driver-loop-progress.v1"
+        and loop.get("schema") == "heptatrader.driver-loop-observation.v1"
+        and type(iteration) is int and iteration > 0 and type(loop.get("iteration")) is int
+        and loop["iteration"] == iteration and type(started) is int and type(checked) is int
+        and 0 < started <= at <= checked <= now_ms)
+    observed = {**recent, "message": message, "iteration": loop.get("iteration"),
+        "heartbeat_at_ms": started, "checked_at_ms": checked, "reason_code": loop.get("reason_code"),
+        "current_process_heartbeat": current_loop, "native_permission_independent": True,
+        "trade_authority_granted": False}
+    if correlated:
+        observed.update(state="LATEST_DRIVER_LOOP_FAILED",
+            next_action="READ_ORIGINAL_EXECUTION_SERVICE_AND_BROKER_CONNECTION"
+                if message.startswith("EXECUTION_EVENT_") else "READ_ORIGINAL_DRIVER_LOOP_ERROR",
+            recovery_conditions={"fresh_later_non_error_loop_required": True,
+                "original_execution_and_native_gates_still_required": True,
+                "read_does_not_resume_or_restart": True})
+    else:
+        observed.update(state="CURRENT_DRIVER_LOOP_FAILURE_UNCONFIRMED",
+            next_action="READ_ORIGINAL_DRIVER_HEARTBEAT_AND_LOOP_ERROR")
+    return {"historical_last_error": None, "historical_last_error_at_ms": None,
+            "last_error_is_current_fault": True if correlated else None, "loop_failure": observed}
+
+
+def driver_error_progress(data, current_loop, now_ms, max_age_ms):
+    """Dated driver and model failures are separate from native trade permission."""
     error = data.get("last_error_observation") or {}
     completion = data.get("model_completion_observation") or {}
     error = error if isinstance(error, dict) else {}
@@ -675,6 +711,7 @@ def driver_model_progress(data, current_loop, now_ms, max_age_ms):
                   and error.get("scope") == "LAST_OBSERVED_LOOP_ERROR"
                   and data.get("last_error") == message and recent["freshness"] in ("FRESH", "FUTURE"))
     if not live_error:
+        result.update(driver_loop_error_progress(data, current_loop, now_ms, max_age_ms))
         return result
     last_success = data.get("last_decision_ms")
     times = [completion.get(key) for key in ("input_observed_at_ms", "completed_at_ms", "consumed_at_ms")]
@@ -760,7 +797,7 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
         item = {"source": str(path), "available": meta["available"], "heartbeat": heartbeat,
                 "process_matches_heartbeat": process_match,
                 "current_pauses": [], "stale_pauses": [],
-                **driver_model_progress(data, current_loop, now_ms, max_age_ms),
+                **driver_error_progress(data, current_loop, now_ms, max_age_ms),
                 **pick(data, "halt_new_entries", "lease_uncertain")}
         if not meta["available"]:
             item["error"] = meta.get("error")
@@ -816,6 +853,18 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
             config, config_sha256 = _object(config_path, with_sha=True)
             if not module and forward_launcher_mode(argv, config_path, config, config_sha256) is not None:
                 module = "laya_cell.current100k_forward_worker"
+            if (module == "laya_cell.current100k_forward_worker"
+                    and item.get("config_source") == "RUNNING_PROCESS_ARGV"
+                    and item.get("configuration_matches_process") is False):
+                configured = exec_argv(item.get("ExecStart", ""))
+                try:
+                    mode = forward_launcher_mode(configured, config_path, config, config_sha256)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    mode = None
+                if mode is not None and argv == [configured[0], "-B", "-m", module,
+                                                 "--config", config_path, "--mode", mode]:
+                    item = {**item, "configuration_matches_process": True,
+                            "configuration_match_basis": "PINNED_FORWARD_LAUNCHER_EXEC_ARGV"}
             if module == "historical_training.resident_resource_guard":
                 original_path = config["original_config"]
                 original = _object(original_path)
@@ -933,6 +982,8 @@ def format_text(value):
     trade = value["trading"]
     lines.append("TRADING " + show(pick(trade, "permission", "permission_scope", "current_blockers", "unknown_current_evidence")))
     for lane, item in trade["drivers"].items():
+        if item.get("loop_failure"):
+            lines.append("DRIVER " + lane + " " + show(item["loop_failure"]))
         if item.get("model_availability"):
             lines.append("MODEL " + lane + " " + show(item["model_availability"]))
     history = {lane: item["historical_last_error"] for lane, item in trade["drivers"].items()
