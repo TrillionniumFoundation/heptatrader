@@ -874,6 +874,25 @@ def guarded_trainer_class(base,gate):
                 if extra.get('forward_registration_blocking_trials',extra.get('pending_original_trials'))==0 and extra.get('deferred_training_candidates',0)>0:
                     extra['forward_registration_wait_reasons']=list(preflight.get('reasons',[]))
                     extra['forward_registration_wait_checked_at_ms']=preflight.get('at_ms')
+            registration_wait=extra.get('state')=='CANDIDATE_READY_AWAITING_FORWARD_ADMISSION'
+            if registration_wait:
+                # The ordinary owner's queue preflight retries this completed
+                # candidate before it can acquire a new training-worker lease.
+                # Describe that continuation without turning an old denial or
+                # a stability sample into current admission.
+                extra['next_action']='ORIGINAL_TRAINER_RECHECKS_SAME_CANDIDATE_FORWARD_ADMISSION'
+                extra['forward_registration_resume_conditions']={
+                    'same_candidate_retry':True,
+                    'blocking_original_trials':extra.get('forward_registration_blocking_trials',extra.get('pending_original_trials')),
+                    'original_calendar_and_fresh_source_checks_required':True,
+                    'original_resource_rule':dict(RESOURCE_RULE),
+                    'original_registration_stability':dict(REGISTRATION_STABILITY),
+                    'waiting_reasons':list(extra.get('forward_registration_wait_reasons',[])),
+                    'current_admission_granted':False,'worker_launch_authority':False}
+                if preflight is not None:
+                    extra['forward_registration_resume_conditions']['last_preflight']={
+                        key:preflight[key] for key in ('at_ms','subject','reasons',
+                            'minimum_available_bytes','registration_stability') if key in preflight}
             diagnostics=getattr(gate,'status_diagnostics',None)
             if callable(diagnostics):
                 current=diagnostics();reasons=list(current['current_resource_blockers'])
@@ -886,6 +905,10 @@ def guarded_trainer_class(base,gate):
                 if (isinstance(state,str) and state.startswith(('HOLD_','WAITING_','CANDIDATE_READY_AWAITING_','EVALUATING_'))
                         or state=='WORKER_TERMINATION_PENDING'):
                     reasons.append(extra.get('reason') or state)
+                if registration_wait:
+                    reasons.extend(extra.get('forward_registration_wait_reasons',[]))
+                    if hold.get('present'):
+                        extra['next_action']=hold.get('next_action','OWNER_REVIEW_EXACT_HOLD_RELEASE_CONDITIONS')
                 extra.update(current_blockers=list(dict.fromkeys(reasons)),
                     current_blockers_checked_at_ms=current['checked_at_ms'],
                     resource_diagnostics=current,

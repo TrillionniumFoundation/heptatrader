@@ -303,6 +303,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
                   "current_blockers", "current_blockers_checked_at_ms", "resource_diagnostics",
                   "next_training_at_ms", "next_calendar_eligible_at_ms", "waiting_stage",
                   "next_action", "status_refresh_only", "forward_attempt_registration",
+                  "forward_registration_resume_conditions", "resume_conditions_to_recheck",
                   "automatic_resume_expected", "calendar_time_is_not_worker_admission")}}
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
@@ -375,6 +376,8 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
         "next_calendar_eligible_at_ms":status.get("next_calendar_eligible_at_ms",status.get("next_training_at_ms")),
         "calendar_time_is_not_worker_admission":True,"worker_launch_authority":False,
         "resource_admission_snapshot_is_historical":admission.get("snapshot_is_historical",True)}
+    if running and meta["freshness"]=="FRESH" and isinstance(status.get("forward_registration_resume_conditions"),dict):
+        result["resume"]["forward_registration_conditions"]=status["forward_registration_resume_conditions"]
     return result
 
 
