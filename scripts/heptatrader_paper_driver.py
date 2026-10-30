@@ -16,6 +16,12 @@ NATIVE_BINARY_VERIFIER=None  # Supplied by the verified native-reader module.
 CLOSE_RECEIPT_ROOT=None  # Set only by actual, owner-scoped Driver main().
 RESIDENT_LOOP_PROGRESS_SCHEMA="heptatrader.driver-loop-progress.v1"
 LOOP_OBSERVATION_SCHEMA="heptatrader.driver-loop-observation.v1"
+OBSERVATION_STATE_SCHEMA="heptatrader.driver-observation-state.v1"
+# These fields cannot authorize or recover a trade. Unknown fields remain durable.
+OBSERVATION_STATE_FIELDS=frozenset({"resident_loop_progress","loop_observation",
+    "entry_inference_pause","model_inference_pause","last_error","last_error_observation",
+    "last_transient_error","model_completion_observation","history"})
+_DURABLE_STATE_CACHE=None
 QUANTITY_TOLERANCE=1e-9
 MODEL_SIGNAL_TTL_MS=60000
 _MODEL_RUN_CONTEXT=threading.local()
@@ -194,7 +200,16 @@ def private_dir(path):
     if not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid() or stat.S_IMODE(st.st_mode)!=0o700:
         raise DriverError("unsafe driver directory")
 
+def state_file_identity(path):
+    item=path.lstat()
+    return (item.st_dev,item.st_ino,item.st_size,item.st_mtime_ns,item.st_ctime_ns,item.st_mode)
+
+def durable_state_signature(value):
+    business={key:item for key,item in value.items() if key not in OBSERVATION_STATE_FIELDS}
+    return json.dumps(business,sort_keys=True,separators=(",",":"))
+
 def atomic_json(path,value):
+    global _DURABLE_STATE_CACHE
     private_dir(path.parent); raw=(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n").encode()
     fd,tmp=tempfile.mkstemp(prefix=".state-",dir=path.parent)
     try:
@@ -208,10 +223,50 @@ def atomic_json(path,value):
         os.replace(tmp,path); d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try: os.fsync(d)
         finally: os.close(d)
+        # Cache only a successful complete durable write, including directory sync.
+        _DURABLE_STATE_CACHE=(str(path),state_file_identity(path),
+            durable_state_signature(value),hashlib.sha256(raw).hexdigest())
     finally:
         if fd>=0: os.close(fd)
         try: os.unlink(tmp)
         except FileNotFoundError: pass
+
+def publish_loop_observation(path,state,state_sha256):
+    """A replaceable diagnostic; never overwrite the recovery file without fsync."""
+    observation={"schema":OBSERVATION_STATE_SCHEMA,"instrument":state["instrument"],
+        "state_sha256":state_sha256,"fields":{
+            key:state[key] for key in OBSERVATION_STATE_FIELDS if key in state}}
+    raw=(json.dumps(observation,sort_keys=True,separators=(",",":"))+"\n").encode()
+    target=path.with_suffix(".observation.json")
+    fd,tmp=tempfile.mkstemp(prefix=".observation-",dir=path.parent)
+    try:
+        os.fchmod(fd,0o600)
+        remaining=memoryview(raw)
+        while remaining:
+            written=os.write(fd,remaining)
+            if written<=0:raise DriverError("driver observation write made no progress")
+            remaining=remaining[written:]
+        os.close(fd);fd=-1
+        os.replace(tmp,target)
+    finally:
+        if fd>=0:os.close(fd)
+        try:os.unlink(tmp)
+        except FileNotFoundError:pass
+
+def checkpoint_loop_state(path,state):
+    """Persist changed business state; publish only diagnostics for an idle tick."""
+    cached=_DURABLE_STATE_CACHE
+    try:identity=state_file_identity(path)
+    except OSError:identity=None
+    if (cached is None or cached[:3]!=(str(path),identity,durable_state_signature(state))):
+        atomic_json(path,state)
+        cached=_DURABLE_STATE_CACHE
+    try:
+        publish_loop_observation(path,state,cached[3])
+    except (OSError,DriverError):
+        # Optional observation failure keeps the existing fully durable path.
+        # It must not suppress an exit or leave a new business state uncommitted.
+        atomic_json(path,state)
 
 def load_state(path):
     if not path.exists():
@@ -1370,6 +1425,8 @@ def main():
     if crypto and not crypto_roundtrip_qualified(state):
         raise DriverError("crypto resident driver requires a correlation-bound completed round trip")
     process_identity=resident_process_identity();loop_iteration=0
+    # One-shot operator commands retain their existing complete state receipt.
+    persist_loop_state=atomic_json if args.once else checkpoint_loop_state
     try:
         if args.native_read_stream:
             reader_class=NATIVE_READER_CLASS
@@ -1435,7 +1492,7 @@ def main():
                         "scope":"ENTRY_INFERENCE_ONLY"}
                     model_worker,model_worker_discarded=sync_model_inference(
                         state,model_worker,model_worker_discarded,pause_reason)
-                    atomic_json(state_path,state)
+                    persist_loop_state(state_path,state)
                     if args.once: break
                     wait_for_next_sample(started,model_worker); continue
                 state.pop("entry_inference_pause",None)
@@ -1528,7 +1585,7 @@ def main():
                     "INFERENCE_PAUSED" if inference_reason is not None else
                     ("MODEL_INFLIGHT" if model_worker is not None else "OBSERVING"),
                     inference_reason or "")
-                atomic_json(state_path,state)
+                persist_loop_state(state_path,state)
             except Exception as e:
                 if state.get("owner_fence_recovery_required"):
                     state["last_transient_error"]=str(e)[:500]
@@ -1537,7 +1594,7 @@ def main():
                     state["last_error"]=str(e)[:500]
                 record_loop_error(state)
                 record_loop_observation(state,"ERROR",type(e).__name__)
-                atomic_json(state_path,state)
+                persist_loop_state(state_path,state)
             if args.once: break
             wait_for_next_sample(started,model_worker)
     finally:

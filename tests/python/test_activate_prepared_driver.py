@@ -1485,6 +1485,29 @@ class InteractiveBrokerCliTests(unittest.TestCase):
 
 
 class ResidentLoopProgressTests(unittest.TestCase):
+    def test_bound_diagnostic_progress_does_not_replace_business_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            state = {"schema": "heptatrader.paper-driver.v1", "instrument": "EUR.USD",
+                     "pending": None, "position": 0, "entries": 7, "exits": 7}
+            raw = _json_bytes(state)
+            _put(path, raw)
+            driver = {"pid_key": ("42002", "42103")}
+            progress = {"schema": "heptatrader.driver-loop-progress.v1",
+                        "pid": 42002, "start_ticks": "42103", "iteration": 1, "at_ms": 1001}
+            observation = {"schema": "heptatrader.driver-observation-state.v1", "instrument": "EUR.USD",
+                           "state_sha256": _sha(raw), "fields": {"resident_loop_progress": progress}}
+            sidecar = path.with_suffix(".observation.json")
+            _put(sidecar, _json_bytes(observation))
+            self.assertEqual(activation.resident_loop_progress(raw, driver, 1000, 1010,
+                             state_path=path), progress)
+            self.assertEqual(activation.read_flat_state(path, "EUR.USD")[0], raw)
+            observation["fields"]["pending"] = {"command_id": "untrusted"}
+            _put(sidecar, _json_bytes(observation))
+            self.assertIsNone(activation.resident_loop_progress(raw, driver, 1000, 1010,
+                              state_path=path))
+            self.assertEqual(activation.read_flat_state(path, "EUR.USD")[0], raw)
+
     def test_only_current_process_after_start_can_prove_loop_progress(self):
         driver = {"pid_key": ("42002", "42103")}
         progress = {"schema": "heptatrader.driver-loop-progress.v1",

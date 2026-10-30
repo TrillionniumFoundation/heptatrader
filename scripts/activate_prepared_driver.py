@@ -25,7 +25,7 @@ from pathlib import Path
 import hepta_maintenance_latch as latch
 import install_decision_attribution as attribution
 import install_risk_stop_fence as fence
-from hepta_decision_attribution import read_private, strict
+from hepta_decision_attribution import read_private, strict, merge_driver_observation
 
 GUARD_YES = fence.GUARD_TEXT.encode()
 GUARD_NO = b"[Unit]\nRefuseManualStop=no\n"
@@ -543,13 +543,16 @@ def read_flat_state(path, instrument):
     return raw, correlation
 
 
-def resident_loop_progress(raw, driver, started_ms, checked_ms):
+def resident_loop_progress(raw, driver, started_ms, checked_ms, *, state_path=None):
     """Recognize progress emitted after driver startup for this exact process.
 
     The field is diagnostic only. Release identity, holds, owner audit and
     unchanged business correlations are still checked independently.
     """
-    value = strict(raw).get("resident_loop_progress")
+    state = strict(raw)
+    if state_path is not None:
+        state = merge_driver_observation(state_path, state, hashlib.sha256(raw).hexdigest())
+    value = state.get("resident_loop_progress")
     if (not isinstance(value, dict)
             or value.get("schema") != "heptatrader.driver-loop-progress.v1"
             or type(value.get("pid")) is not int
@@ -1028,7 +1031,8 @@ def maintenance_upgrade(
                     else:
                         same_driver(first, actual)
                     raw = state_unchanged()
-                    progress = resident_loop_progress(raw, actual, started_ms, int(time.time() * 1000))
+                    progress = resident_loop_progress(raw, actual, started_ms,
+                        int(time.time() * 1000), state_path=state_path)
                     version = state_version(state_path)
                     if version != baseline:
                         writes.add(version)
