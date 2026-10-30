@@ -979,4 +979,80 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(model['freshness'],'FUTURE');self.assertEqual(model['age_ms'],-1000)
   self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(trade['current_blockers'],[])
 
+ def test_live_cli_uses_each_completed_read_for_status_and_driver_chronology(self):
+  root,_=self.fixture_learning();self.units['heptatrader-laya-trainer.service']['MainPID']='9'
+  status_path=root/'control/status.json';status=json.loads(status_path.read_text())
+  self.write(status_path,{**status,'at_ms':NOW+16})
+  state=self.model_failure_fixture();state['resident_loop_progress']['at_ms']=NOW+32
+  state['last_error_observation']['at_ms']=NOW+30;state['last_decision_attempt_ms']=NOW+9
+  state['model_completion_observation'].update(input_observed_at_ms=NOW+10,
+   completed_at_ms=NOW+28,consumed_at_ms=NOW+30)
+  state['loop_observation'].update(checked_at_ms=NOW+32,phase='MODEL_INFLIGHT')
+  paper=self.write(self.state/'paper-driver/state.json',state)
+  crypto=self.state/'crypto-driver/state.json';before={p:p.read_bytes() for p in (status_path,paper,crypto)}
+  clock=[NOW];original=progress._object
+  def read(path,**kwargs):
+   value=original(path,**kwargs)
+   completed={status_path:NOW+20,paper:NOW+40,crypto:NOW+50}.get(Path(path))
+   if completed is not None:clock[0]=completed
+   return value
+  with mock.patch.object(progress,'_object',side_effect=read), \
+    mock.patch.object(progress.time,'time',side_effect=lambda:clock[0]/1000), \
+    mock.patch.object(progress,'discover_units',return_value=self.units), \
+    mock.patch.object(progress.Path,'home',return_value=self.home), \
+    mock.patch.dict(os.environ,{'XDG_RUNTIME_DIR':str(self.runtime.parent)}), \
+    mock.patch('builtins.print') as printed:
+   self.assertEqual(progress.main(['--format','json']),0)
+  out=json.loads(printed.call_args.args[0]);observed=out['learning'][0]['status']
+  self.assertEqual(observed['freshness'],'FRESH');self.assertEqual(observed['age_ms'],4)
+  self.assertEqual(observed['freshness_as_of_ms'],NOW+20)
+  trade=out['trading'];driver=trade['drivers']['paper'];model=driver['model_availability']
+  self.assertTrue(driver['process_matches_heartbeat']);self.assertTrue(driver['last_error_is_current_fault'])
+  self.assertEqual(driver['heartbeat']['age_ms'],8);self.assertEqual(driver['heartbeat']['freshness'],'FRESH')
+  self.assertEqual(driver['heartbeat']['freshness_as_of_ms'],NOW+40)
+  self.assertEqual(model['freshness_as_of_ms'],NOW+40);self.assertEqual(model['age_ms'],10)
+  self.assertEqual(model['failure_kind'],'PROVIDER_USAGE_LIMIT');self.assertTrue(model['retry_in_flight'])
+  self.assertEqual(model['retry_not_before_ms'],NOW+9+120000)
+  self.assertEqual(out['observed_at_ms'],NOW+50);self.assertEqual(out['source_errors'],[])
+  self.assertEqual(trade['lanes']['paper']['unknown_current_evidence'],[])
+  self.assertEqual(trade['lanes']['paper']['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+  self.assertFalse(trade['trade_authority_granted']);self.assertFalse(model['trade_authority_granted'])
+  self.assertEqual(before,{p:p.read_bytes() for p in before})
+
+ def test_live_read_preserves_future_stale_rollback_and_process_mismatch(self):
+  for case in ('future','stale_on_read','clock_rollback','pid'):
+   with self.subTest(case=case):
+    state=self.model_failure_fixture();read_at=NOW+40
+    state['resident_loop_progress']['at_ms']=NOW+32
+    expected='FRESH'
+    if case=='future':state['resident_loop_progress']['at_ms']=NOW+41;expected='FUTURE'
+    elif case=='stale_on_read':state['resident_loop_progress']['at_ms']=NOW-300000;expected='STALE'
+    elif case=='clock_rollback':
+     state['resident_loop_progress']['at_ms']=NOW;read_at=NOW-1;expected='FUTURE'
+    else:state['resident_loop_progress']['pid']=8
+    self.write(self.state/'paper-driver/state.json',state)
+    with mock.patch.object(progress.time,'time',return_value=read_at/1000):
+     trade=progress.collect(self.home,self.runtime,self.units)['trading']
+    driver=trade['drivers']['paper'];heartbeat=driver['heartbeat']
+    self.assertEqual(heartbeat['freshness'],expected)
+    self.assertEqual(heartbeat['freshness_as_of_ms'],read_at)
+    self.assertEqual(heartbeat['age_ms'],read_at-state['resident_loop_progress']['at_ms'])
+    self.assertEqual(driver['process_matches_heartbeat'],case!='pid')
+    self.assertEqual(driver['model_availability']['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
+    self.assertIn('DRIVER_HEARTBEAT_NOT_CURRENT_PROCESS:paper',trade['lanes']['paper']['unknown_current_evidence'])
+    self.assertFalse(trade['trade_authority_granted'])
+
+ def test_explicit_as_of_never_reads_or_advances_the_wallclock(self):
+  state=self.model_failure_fixture();state['resident_loop_progress']['at_ms']=NOW+32
+  self.write(self.state/'paper-driver/state.json',state)
+  with mock.patch.object(progress.time,'time',side_effect=AssertionError('explicit as-of is fixed')):
+   out=self.collect()
+   self.assertEqual(progress.freshness(1,0,300000)['freshness'],'FUTURE')
+  driver=out['trading']['drivers']['paper']
+  self.assertEqual(out['observed_at_ms'],NOW)
+  self.assertEqual(driver['heartbeat']['freshness_as_of_ms'],NOW)
+  self.assertEqual(driver['heartbeat']['freshness'],'FUTURE');self.assertEqual(driver['heartbeat']['age_ms'],-32)
+  self.assertEqual(driver['model_availability']['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
+  self.assertFalse(out['trading']['trade_authority_granted'])
+
 if __name__=='__main__':unittest.main()

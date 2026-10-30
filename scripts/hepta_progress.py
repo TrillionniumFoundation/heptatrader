@@ -37,15 +37,23 @@ def _object(path, *, with_sha=False):
     return (value, hashlib.sha256(raw).hexdigest()) if with_sha else value
 
 
+def observation_time(now_ms):
+    """None selects the live read boundary; an explicit as-of stays fixed."""
+    return int(time.time() * 1000) if now_ms is None else now_ms
+
+
 def freshness(at_ms, now_ms, max_age_ms):
+    now_ms = observation_time(now_ms)
+    observed = {"freshness_as_of_ms": now_ms}
     if type(at_ms) is not int or at_ms <= 0:
-        return {"at_ms": None, "age_ms": None, "freshness": "UNKNOWN"}
+        return {**observed, "at_ms": None, "age_ms": None, "freshness": "UNKNOWN"}
     age = now_ms - at_ms
-    return {"at_ms": at_ms, "age_ms": age,
+    return {**observed, "at_ms": at_ms, "age_ms": age,
             "freshness": "FUTURE" if age < 0 else "FRESH" if age <= max_age_ms else "STALE"}
 
 
 def observe(path, now_ms, max_age_ms, *, timestamps=("at_ms",)):
+    # Resolve a live freshness clock only after these exact bytes were read.
     meta = {"source": str(path), "available": False}
     try:
         value, content_sha256 = _object(path, with_sha=True)
@@ -70,7 +78,7 @@ def presence(path):
 def native_stop_observation(path, now_ms):
     """Observe one marker without locks, writes, service calls or resume authority."""
     path=Path(path)
-    result={"source":str(path),"checked_at_ms":now_ms,"present":None,
+    result={"source":str(path),"present":None,
             "origin":"UNREADABLE","origin_evidence":"PAYLOAD_SHAPE_ONLY",
             "creator_verified":False,"mtime_is_creation_time":False,
             "native_release_verified":False,"automatic_resume":False}
@@ -103,6 +111,7 @@ def native_stop_observation(path, now_ms):
         result["error"]=type(exc).__name__+":"+str(exc)
     finally:
         if fd is not None:os.close(fd)
+    result["checked_at_ms"]=observation_time(now_ms)
     result["resume_path"]={"INDEPENDENT_EMPTY_NATIVE":"EXPLICIT_NATIVE_HOLD_PRECHECK_AND_RELEASE",
         "CLI_TAGGED_PAUSE":"EXISTING_CLI_PAPER_ON","ABSENT":"NATIVE_ADMISSION_STILL_REQUIRED"
         }.get(result["origin"],"INSPECT_UNRECOGNIZED_OR_UNREADABLE_NATIVE_MARKER")
@@ -466,7 +475,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
     manual=wrapper.get("manual_hold_path")
     if manual:
         hold_present=presence(manual)
-        hold={"source":str(manual),"present":hold_present,"checked_at_ms":now_ms,
+        hold={"source":str(manual),"present":hold_present,"checked_at_ms":observation_time(now_ms),
               "scope":"NEW_HEAVY_GPU_WORK_ONLY","has_expiration":False}
         if hold_present:
             value,observed=observe(manual,now_ms,max_age_ms,timestamps=("created_at_ms","created_ms"))
@@ -510,7 +519,7 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
         and status.get("reason")=="TRAINING_AND_FORWARD_WINDOW_DO_NOT_FIT")
     if calendar_wait and not next_action:
         next_action=("WAIT_FOR_ORIGINAL_CALENDAR_THEN_TRAINER_RECHECKS_WINDOW_AND_GUARDS"
-            if type(calendar_at) is int and calendar_at>now_ms
+            if type(calendar_at) is int and calendar_at>observation_time(now_ms)
             else "ORIGINAL_TRAINER_RECHECKS_CALENDAR_WINDOW_AND_GUARDS")
     if (role=="trainer" and running and meta["freshness"]=="FRESH"
             and status.get("state")=="EVALUATING_BOUNDED_CANDIDATE_QUEUE"):
@@ -556,7 +565,7 @@ def inventory_progress(config, now_ms, max_age_ms):
     incremental = value.get("incremental") or {}
     if not isinstance(incremental, dict):
         incremental = {}
-    growth = freshness(value.get("last_inventory_growth_at_ms"), now_ms, max_age_ms)
+    growth = freshness(value.get("last_inventory_growth_at_ms"), meta["freshness_as_of_ms"], max_age_ms)
     return {**meta, **pick(value, "state", "reason", "row_count", "bound_opens",
         "observed_original_requests", "input_checked_at_ms", "last_full_evaluation_at_ms",
         "evaluation_skipped", "last_inventory_growth_at_ms", "model_promoted",
@@ -644,7 +653,7 @@ def forward_hold_progress(name, config_path, config, value, meta, units, now_ms,
         deadline = value.get("input_end_ms")
         if held is not False:
             resume["next_action"] = "ORIGINAL_OWNER_REVIEW_EXACT_MANUAL_HOLD"
-        elif type(deadline) is int and now_ms >= deadline:
+        elif type(deadline) is int and observation_time(now_ms) >= deadline:
             resume["next_action"] = "ORIGINAL_EVALUATOR_CLOSES_FIXED_WINDOW_NO_PREDICTION_RETRY"
             result["guard_admission"]["current_denial_observed"] = False
         elif current and timer.get("ActiveState") not in ("active", "activating"):
@@ -787,17 +796,19 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
     for lane in ("paper", "crypto"):
         path = root / (lane + "-driver") / "state.json"
         data, meta = observe(path, now_ms, max_age_ms)
+        # Heartbeat, pauses and model chronology share this one file's read time.
+        driver_observed_ms = meta["freshness_as_of_ms"]
         loop = data.get("resident_loop_progress") or {}
         if not isinstance(loop, dict):
             loop = {}
-        heartbeat = freshness(loop.get("at_ms"), now_ms, max_age_ms)
+        heartbeat = freshness(loop.get("at_ms"), driver_observed_ms, max_age_ms)
         main_pid = int(units.get("heptatrader-" + lane + "-driver.service", {}).get("MainPID", "0") or "0")
         process_match = loop.get("pid") == main_pid if main_pid and type(loop.get("pid")) is int else None
         current_loop = heartbeat["freshness"] == "FRESH" and process_match is True
         item = {"source": str(path), "available": meta["available"], "heartbeat": heartbeat,
                 "process_matches_heartbeat": process_match,
                 "current_pauses": [], "stale_pauses": [],
-                **driver_error_progress(data, current_loop, now_ms, max_age_ms),
+                **driver_error_progress(data, current_loop, driver_observed_ms, max_age_ms),
                 **pick(data, "halt_new_entries", "lease_uncertain")}
         if not meta["available"]:
             item["error"] = meta.get("error")
@@ -807,7 +818,7 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
             pause = data.get(field)
             if not isinstance(pause, dict) or not pause.get("reason_code"):
                 continue
-            check = freshness(pause.get("checked_at_ms"), now_ms, max_age_ms)
+            check = freshness(pause.get("checked_at_ms"), driver_observed_ms, max_age_ms)
             record = {"field": field, **pause, **check}
             if check["freshness"] == "FRESH" and current_loop:
                 item["current_pauses"].append(record)
@@ -845,8 +856,8 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
             "drivers": drivers, "services": services, "trade_authority_granted": False}
 
 
-def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
-    result = {"schema": SCHEMA, "observed_at_ms": now_ms, "read_only": True,
+def collect(home, runtime, units, now_ms=None, max_age_ms=300000, timing_reports=()):
+    result = {"schema": SCHEMA, "read_only": True,
               "learning": [], "value_inventory": [], "value_forward": [],
               "value_prediction": [], "value_timing": [], "source_errors": []}
     rollout_path = Path(home) / ".local/state/heptatrader/operator-maintenance/training-episode-rollout/status.json"
@@ -933,6 +944,7 @@ def collect(home, runtime, units, now_ms, max_age_ms=300000, timing_reports=()):
     result["value_timing"] = [timing_progress(path, now_ms, max_age_ms)
                               for path in sorted(timing_paths)]
     result["trading"] = trading_progress(home, runtime, units, now_ms, max_age_ms)
+    result["observed_at_ms"] = observation_time(now_ms)
     return result
 
 
@@ -1023,7 +1035,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.max_age_seconds < 1:
         parser.error("--max-age-seconds must be positive")
-    now = int(time.time() * 1000)
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/" + str(os.getuid()))) / "heptatrader"
     try:
         units = discover_units()
@@ -1031,7 +1042,7 @@ def main(argv=None):
     except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
         units = {}
         discovery_error = str(exc)
-    result = collect(Path.home(), runtime, units, now, args.max_age_seconds * 1000,
+    result = collect(Path.home(), runtime, units, None, args.max_age_seconds * 1000,
                      args.value_timing_report)
     if discovery_error:
         result["source_errors"].append({"unit": "systemd", "error": discovery_error})
