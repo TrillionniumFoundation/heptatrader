@@ -235,8 +235,11 @@ def predict(config,plan_path,slot):
  with _timed_phase(stage,timing,'LOAD_VERIFIED_BASE','base_load_and_verify_ms'):
   raw,tok,base_id=load_verified_laya(Path(config['base_directory']),base_manifest)
  if candidate['base_id']!=base_id:raise ContractError('BASE_CHANGED')
+ # Keep completed phase timings, but do no further loading after the fixed window.
+ if int(time.time()*1000)>late:raise ContractError('INPUT_SLOT_EXPIRED:MODEL_LOAD_OR_SCHEDULING_LATE')
  with _timed_phase(stage,timing,'BIND_FROZEN_PARAMETERS','frozen_binding_ms'):
   cell=ResidentDecisionCell(raw,base_id)
+ if int(time.time()*1000)>late:raise ContractError('INPUT_SLOT_EXPIRED:MODEL_LOAD_OR_SCHEDULING_LATE')
  with _timed_phase(stage,timing,'LOAD_ADAPTERS','adapter_load_ms'):
   cell.restore_parent(load_file(str(parent_dir/'adapter.safetensors')),allow_scorer_only=True);parent_tensors=cell.trainable_state()
   candidate_tensors=load_file(str(candidate_dir/'adapter.safetensors'))

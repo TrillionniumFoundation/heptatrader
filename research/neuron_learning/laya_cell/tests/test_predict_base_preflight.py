@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -119,14 +119,14 @@ class PredictBasePreflightTests(unittest.TestCase):
         self.plan['plan_id'] = integrity.digest({k: v for k, v in self.plan.items() if k != 'plan_id'})
         self.plan_path.write_text(json.dumps(self.plan))
 
-    def call_predict(self):
+    def call_predict(self, *, adapter_loader=None):
         safe = ModuleType('safetensors')
         safe_torch = ModuleType('safetensors.torch')
 
         def no_weights(*args, **kwargs):
             self.fail('adapter or model weights must not be loaded')
 
-        safe_torch.load_file = no_weights
+        safe_torch.load_file = no_weights if adapter_loader is None else adapter_loader
         safe.torch = safe_torch
         original_import = builtins.__import__
 
@@ -180,6 +180,62 @@ class PredictBasePreflightTests(unittest.TestCase):
             self.call_predict()
         self.assertEqual(len(self.loads), 1)
         self.assertEqual(self.cells, [])
+
+    def test_model_phase_deadlines_skip_only_already_expired_work(self):
+        self.plan['start_ms'] = 1_000_000
+        self.seal_plan()
+        original_plan = self.plan_path.read_bytes()
+        deadline = self.plan['start_ms'] + self.plan['rule']['input_grace_ms']
+        original_loader = self.predict.__globals__['load_verified_laya']
+        for phase in ('LOAD_VERIFIED_BASE', 'BIND_FROZEN_PARAMETERS'):
+            for offset in (-1, 0, 1):
+                with self.subTest(phase=phase, deadline_offset_ms=offset):
+                    self.loads.clear(); self.cells.clear()
+                    clock, adapter_calls = [deadline - 2], []
+
+                    def loader(*args):
+                        result = original_loader(*args)
+                        if phase == 'LOAD_VERIFIED_BASE':
+                            clock[0] = deadline + offset
+                        return result
+
+                    def cell(*args):
+                        self.cells.append(args)
+                        clock[0] = deadline + offset
+                        return SimpleNamespace(restore_parent=lambda *_args, **_kwargs: None)
+
+                    def adapter_loader(*args):
+                        adapter_calls.append(args)
+                        raise ModelBoundary('stop before adapter bytes are loaded')
+
+                    expected = integrity.ContractError if offset > 0 else ModelBoundary
+                    with patch.dict(self.predict.__globals__,
+                                    load_verified_laya=loader, ResidentDecisionCell=cell), \
+                            patch('time.time', side_effect=lambda: clock[0] / 1000):
+                        with self.assertRaises(expected) as raised:
+                            self.call_predict(adapter_loader=adapter_loader)
+                    after = integrity.read_json(self.plan_path.parent / 'phase-000.json')
+                    self.assertEqual(len(self.loads), 1)
+                    self.assertEqual(after['fixed_input_deadline_ms'], deadline)
+                    self.assertIn('base_load_and_verify_ms', after)
+                    self.assertNotIn('model_ready_at_ms', after)
+                    if offset > 0:
+                        self.assertEqual(str(raised.exception),
+                                         'INPUT_SLOT_EXPIRED:MODEL_LOAD_OR_SCHEDULING_LATE')
+                        self.assertEqual(after['phase'], phase)
+                        self.assertEqual(adapter_calls, [])
+                        self.assertNotIn('adapter_load_ms', after)
+                        self.assertEqual(len(self.cells), int(phase == 'BIND_FROZEN_PARAMETERS'))
+                        self.assertEqual('frozen_binding_ms' in after,
+                                         phase == 'BIND_FROZEN_PARAMETERS')
+                    else:
+                        self.assertEqual(len(self.cells), 1)
+                        self.assertEqual(len(adapter_calls), 1)
+                        self.assertEqual(after['phase'], 'LOAD_ADAPTERS')
+                        self.assertIn('frozen_binding_ms', after)
+                    self.assertEqual(self.plan_path.read_bytes(), original_plan)
+                    for name in ('input-000.json', 'prediction-000.json'):
+                        self.assertFalse((self.plan_path.parent / name).exists())
 
 
 if __name__ == '__main__':
