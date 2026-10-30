@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from .common import EvidenceError,read,sha,digest,write_once
 from .current100k import BEHAVIOR,to_row,validate_config
+from laya_cell.financial_value_profile import check_readout_profile
 
 SCALE_USD=100.0
 
@@ -41,8 +42,14 @@ def validate_trial(c):
         raise EvidenceError('VALUE_ONLY_NO_ACTOR_OR_SELECTION')
     if c.get('max_rows')!=64 or c.get('steps')!=16 or c.get('scale_usd')!=SCALE_USD:
         raise EvidenceError('FIXED_VALUE_OBJECTIVE')
+    check_readout_profile(c.get('readout_profile'))
     if sha(c['dataset_path'])!=c['dataset_sha256']:raise EvidenceError('DATASET_PIN_CHANGED')
-    if not c.get('source_files_sha256') or str(Path(__file__).resolve()) not in c['source_files_sha256']:
+    required_sources={str(Path(__file__).resolve())}
+    if c.get('readout_profile') is not None:
+        from laya_cell import financial_value_profile
+        profile_source=Path(financial_value_profile.__file__).resolve()
+        required_sources.update((str(profile_source),str(profile_source.with_name('financial_value_train.py'))))
+    if not c.get('source_files_sha256') or not required_sources<=set(c['source_files_sha256']):
         raise EvidenceError('COMPLETE_TRIAL_SOURCE_INVENTORY_REQUIRED')
     for p,want in c['source_files_sha256'].items():
         if sha(p)!=want:raise EvidenceError('TRIAL_SOURCE_CHANGED')
@@ -100,7 +107,7 @@ def run(c):
         for row in rows:
             feature,receipt=features_from_laya(raw,tok,[row]);features.append(feature);receipts.append(receipt)
         x=torch.cat(features);y=torch.tensor([float(Decimal(r['net_usd'])/Decimal(100)) for r in rows],device=device,dtype=torch.float32)
-        head,diagnostic=train_head(x,y)
+        head,diagnostic=train_head(x,y,readout_profile=c.get('readout_profile'))
         if any(p.grad is not None or p.requires_grad for p in raw.parameters()):raise EvidenceError('FROZEN_BACKBONE_GRADIENT')
         if original_hashes!={n:tensor_hash(p) for n,p in raw.named_parameters()}:raise EvidenceError('FROZEN_BACKBONE_CHANGED')
         after=copy.deepcopy(consumer);after['output_root']=str(out/'replay-after')
@@ -123,6 +130,8 @@ def run(c):
             'broker_orders_sent':0,'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),
             'max_gpu_allocated_bytes':torch.cuda.max_memory_allocated(),'wall_seconds':time.monotonic()-started,
             'training_fit_is_not_efficacy':True,'source_files_sha256':c['source_files_sha256']}
+        if c.get('readout_profile') is not None:
+            record['readout_profile']=copy.deepcopy(c['readout_profile'])
         hip_proof=hip_runtime.prove_before_publish(c)
         if hip_proof is not None:
             record.update(hip_runtime_manifest_sha256=hip_proof['manifest_sha256'],hip_runtime_proof=hip_proof)

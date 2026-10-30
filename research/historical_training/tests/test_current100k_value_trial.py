@@ -40,3 +40,24 @@ class ValueTrialTests(unittest.TestCase):
    with self.assertRaises(ValueError):selected_rows(a,b)
  def test_actor_update_flag_refused(self):
   with self.assertRaises(ValueError):validate_trial({'schema':'heptatrader.current100k-value-trial-config.v1','actor_update':True,'automatic_selection':False,'trade_authority':False})
+ def test_centered_profile_requires_its_frozen_source_inventory(self):
+  from historical_training import current100k_value_trial
+  from laya_cell import financial_value_profile
+  from laya_cell.financial_value_profile import CENTERED_RESIDUAL_PROFILE
+  from historical_training.common import sha
+  with tempfile.TemporaryDirectory() as folder:
+   dataset=Path(folder)/'dataset.json';dataset.write_text('{}')
+   trial_source=str(Path(current100k_value_trial.__file__).resolve())
+   profile_source=Path(financial_value_profile.__file__).resolve()
+   config={'schema':'heptatrader.current100k-value-trial-config.v1','actor_update':False,
+    'automatic_selection':False,'trade_authority':False,'max_rows':64,'steps':16,'scale_usd':100.,
+    'dataset_path':str(dataset),'dataset_sha256':sha(dataset),
+    'source_files_sha256':{trial_source:sha(trial_source)}}
+   validate_trial(config)
+   config['readout_profile']=dict(CENTERED_RESIDUAL_PROFILE)
+   with self.assertRaisesRegex(ValueError,'COMPLETE_TRIAL_SOURCE_INVENTORY'):validate_trial(config)
+   for source in (profile_source,profile_source.with_name('financial_value_train.py')):
+    config['source_files_sha256'][str(source)]=sha(source)
+   validate_trial(config)
+   config['readout_profile']['max_abs_prediction_usd']=16.
+   with self.assertRaisesRegex(ValueError,'READOUT_PROFILE_CHANGED'):validate_trial(config)
