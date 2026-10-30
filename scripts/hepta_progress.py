@@ -197,7 +197,8 @@ def discover_units():
         fields = line.split()
         if fields and re.fullmatch(r"heptatrader-[a-zA-Z0-9_.@-]+\.(service|timer)", fields[0]):
             names.add(fields[0])
-    properties = "Id,LoadState,ActiveState,SubState,Result,MainPID,UnitFileState,ExecStart"
+    properties = ("Id,LoadState,ActiveState,SubState,Result,MainPID,UnitFileState,ExecStart,"
+                  "NeedDaemonReload,Restart,DropInPaths,ConditionResult,Conditions")
     output = run(["show", "--property=" + properties, *sorted(names)])
     units = {}
     for block in output.strip().split("\n\n"):
@@ -230,7 +231,8 @@ def discover_units():
 
 def unit_view(item):
     return pick(item, "Id", "LoadState", "ActiveState", "SubState", "Result",
-                "MainPID", "UnitFileState", "config_source",
+                "MainPID", "UnitFileState", "NeedDaemonReload", "Restart", "DropInPaths",
+                "ConditionResult", "Conditions", "config_source",
                 "configured_config_path", "running_config_path",
                 "configuration_matches_process", "configuration_match_basis", "process_read_error")
 
@@ -407,7 +409,42 @@ def learning_hold_recovery(role, status, meta, running, admission, manual):
             "recovery_conditions_known": True, "recovery_conditions": conditions}
 
 
-def learning_progress(name, item, config, original_path, wrapper, role, now_ms, max_age_ms):
+def trainer_future_activation(item, units, running):
+    """Raw manager state cannot attest a later activation or stop current work."""
+    configuration = {key: item.get(key) for key in
+        ("NeedDaemonReload", "Restart", "DropInPaths", "ConditionResult", "Conditions")}
+    timer_name = "heptatrader-laya-trainer-readmission.timer"
+    timer = (units or {}).get(timer_name, {})
+    timer_state = {key: timer.get(key) for key in
+        ("LoadState", "ActiveState", "SubState", "UnitFileState", "NeedDaemonReload")}
+    unknown = ["service_configuration." + key for key, value in configuration.items()
+               if not isinstance(value, str) or value == "[unprintable]"
+               or not value and key not in ("DropInPaths", "Conditions")]
+    unknown += ["readmission_timer." + key for key, value in timer_state.items()
+                if not isinstance(value, str) or not value or value == "[unprintable]"]
+    restricted = (configuration["Restart"] == "no" or configuration["NeedDaemonReload"] == "yes"
+        or timer_state["NeedDaemonReload"] == "yes"
+        or timer_state["UnitFileState"] in ("disabled", "masked", "masked-runtime")
+        or timer_state["ActiveState"] in ("inactive", "failed"))
+    required = {"service_configuration.Restart", "service_configuration.NeedDaemonReload",
+        "readmission_timer.LoadState", "readmission_timer.ActiveState",
+        "readmission_timer.UnitFileState", "readmission_timer.NeedDaemonReload"}
+    missing_required = bool(required.intersection(unknown))
+    return {"scope": "FUTURE_SERVICE_ACTIVATION_ONLY", "current_supervisor_running": running,
+        "service_configuration": {"source": "SYSTEMD_MANAGER_REPORTED", **configuration},
+        "readmission_timer": {"unit": timer_name, **timer_state}, "unknown_metadata": unknown,
+        "condition_result_scope": "LAST_ACTIVATION_RESULT_ONLY",
+        "next_action": ("OWNER_REVIEW_ORIGINAL_TRAINER_AND_READMISSION_CONFIGURATION" if restricted
+            else "READ_ORIGINAL_TRAINER_AND_READMISSION_METADATA" if missing_required
+            else "OBSERVE_ORIGINAL_TRAINER_LIFECYCLE"),
+        "recovery_conditions": {"original_owner_and_change_provenance_required": True,
+            "original_service_conditions_restart_and_timer_review_required": True,
+            "fresh_manager_configuration_and_reload_state_required": True} if restricted else
+            {"fresh_manager_configuration_and_reload_state_required": True} if missing_required else {},
+        "worker_launch_authority": False}
+
+
+def learning_progress(name, item, config, original_path, wrapper, role, now_ms, max_age_ms, *, units=None):
     directory = config["control_directory" if role == "trainer" else "evaluation_directory"]
     status, meta = observe(Path(directory) / "status.json", now_ms, max_age_ms)
     running = (item.get("ActiveState") in ("active", "reloading")
@@ -430,6 +467,8 @@ def learning_progress(name, item, config, original_path, wrapper, role, now_ms, 
                   "forward_registration_resume_conditions", "resume_conditions_to_recheck",
                   "pending_original_trials", "viable_pending_evaluations",
                   "automatic_resume_expected", "calendar_time_is_not_worker_admission")}}
+    if role == "trainer" and name == "heptatrader-laya-trainer.service":
+        result["future_activation"] = trainer_future_activation(item, units, running)
     if role == "trainer" and meta["available"]:
         result.update(candidate_progress(config, status, now_ms, max_age_ms))
     if wrapper.get("state_root"):
@@ -898,11 +937,11 @@ def collect(home, runtime, units, now_ms=None, max_age_ms=300000, timing_reports
                 if role not in ("trainer", "evaluator"):
                     raise ValueError("UNKNOWN_RESIDENT_ROLE")
                 result["learning"].append(learning_progress(
-                    name, item, original, original_path, config, role, now_ms, max_age_ms))
+                    name, item, original, original_path, config, role, now_ms, max_age_ms, units=units))
             elif module in ("laya_cell.resident", "laya_cell.resident_evaluate"):
                 role = "trainer" if module == "laya_cell.resident" else "evaluator"
                 result["learning"].append(learning_progress(
-                    name, item, config, config_path, {}, role, now_ms, max_age_ms))
+                    name, item, config, config_path, {}, role, now_ms, max_age_ms, units=units))
             elif module == "historical_training.consumer_launch":
                 result["value_inventory"].append({"unit": name, "service": unit_view(item),
                     "config_path": config_path, **inventory_progress(config, now_ms, max_age_ms)})
@@ -970,6 +1009,8 @@ def format_text(value):
                    "configured_config_path", "running_config_path", "configuration_matches_process")}))
         lines.append("BLOCKERS current " + show({"blockers":entry.get("current_blockers",[]),
             "resume":entry.get("resume",{}),"manual_hold":entry.get("manual_hold")}))
+        if "future_activation" in entry:
+            lines.append("TRAINER future activation " + show(entry["future_activation"]))
         if "price" in entry:
             price = entry["price"]
             lines.append("PRICE " + show(pick(price, "candidate_id", "optimizer_steps",
