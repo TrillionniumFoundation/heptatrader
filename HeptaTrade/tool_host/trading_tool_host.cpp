@@ -19,6 +19,19 @@ bool IsDiscoveryToolName(const std::string& toolName)
         toolName == "system.tools.describe";
 }
 
+// Only observations with no permit or mutation effect may run outside the
+// dispatch lock. New read tools remain serialized until explicitly reviewed.
+const char* ConcurrentObservationCapability(const std::string& name)
+{
+    if (name == "events.wait") return "events.read";
+    if (name == "system.get_health") return "system.read";
+    if (name == "orders.list") return "orders.read";
+    if (name == "portfolio.list_positions") return "portfolio.read";
+    if (name == "market.get_quote") return "market.read";
+    if (name == "risk.get_limits") return "risk.read";
+    return nullptr;
+}
+
 const std::uint32_t kMaximumCancelCallsPerMinute = 4;
 const std::uint32_t kMaximumFlattenCallsPerMinute = 2;
 
@@ -66,9 +79,19 @@ bool SameExecutionContext(const TradingToolSession& left,
             right.executionContext.executionDomain;
 }
 
-bool SameEventWaitScope(const TradingToolHostSessionBinding& left,
+bool SameObservationScope(const TradingToolHostSessionBinding& left,
                         const TradingToolHostSessionBinding& right)
 {
+    if (left.allowedInstruments != right.allowedInstruments ||
+        left.instrumentContracts.size() != right.instrumentContracts.size())
+        return false;
+    for (const auto& contract : left.instrumentContracts)
+    {
+        const auto found = right.instrumentContracts.find(contract.first);
+        if (found == right.instrumentContracts.end() ||
+            !SameContract(contract.second, found->second))
+            return false;
+    }
     return left.token == right.token && left.peerUid == right.peerUid &&
         left.executionDomain == right.executionDomain &&
         left.session.environment == right.session.environment &&
@@ -494,7 +517,7 @@ TradingToolResult TradingToolHost::DispatchRead(
 	const TradingToolCall& call)
 {
     std::unique_lock<std::mutex> dispatchLock(m_mutationDispatchMutex);
-    const bool eventWait = call.name == "events.wait";
+    const char* observationCapability = ConcurrentObservationCapability(call.name);
     std::shared_ptr<const char> incarnation;
 	bool recoveryOnly = false;
 	{
@@ -519,16 +542,16 @@ TradingToolResult TradingToolHost::DispatchRead(
 		if (current->second.expiresAtMs <= EpochNowMs())
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SESSION_EXPIRED", "Agent session expired before read dispatch");
-        if (eventWait)
+        if (observationCapability)
         {
             const auto registration = m_sessionIncarnations.find(request.sessionToken);
             if (registration == m_sessionIncarnations.end() ||
                 !registration->second ||
-                !SameEventWaitScope(current->second, binding) ||
-                current->second.session.capabilities.count("events.read") == 0)
+                !SameObservationScope(current->second, binding) ||
+                current->second.session.capabilities.count(observationCapability) == 0)
                 return Reject(call.name, TradingToolCallStatus::PermissionDenied,
                     "SESSION_BINDING_CHANGED",
-                    "Agent session binding changed before event wait dispatch");
+                    "Agent session binding changed before observation dispatch");
             incarnation = registration->second;
         }
 		recoveryOnly = current->second.recoveryOnly;
@@ -537,39 +560,41 @@ TradingToolResult TradingToolHost::DispatchRead(
 		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 			"SESSION_RECOVERY_ONLY",
 			"root custodian disabled new entry while command recovery is pending");
-    if (!eventWait) return m_registry.Invoke(session, call);
+    if (!observationCapability) return m_registry.Invoke(session, call);
 
-    // The owner-scoped event poll creates no permit or trading authority. It
-    // may finish after revoke/rotation/fence, but its result must not cross that
-    // boundary. Other reads and every mutation retain whole-call ordering.
+    // Ordinary observations and event polling cannot create a permit or trade.
+    // Release the host-wide lock across the callback/IPC so a slow reader does
+    // not hold another owner's cancel, flatten or revocation. The return must
+    // still belong to this exact authorization incarnation. Preview and every
+    // mutation retain whole-call ordering with revoke and lease rotation.
     dispatchLock.unlock();
     const TradingToolResult result = m_registry.Invoke(session, call);
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto current = m_sessions.find(request.sessionToken);
     if (current == m_sessions.end())
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
-            "SESSION_REVOKED", "Agent session was revoked during event wait");
+            "SESSION_REVOKED", "Agent session was revoked during observation read");
     if (current->second.leaseGeneration != binding.leaseGeneration)
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
             "SESSION_LEASE_GENERATION_CHANGED",
-            "Agent session generation changed during event wait");
+            "Agent session generation changed during observation read");
     const auto registration = m_sessionIncarnations.find(request.sessionToken);
     if (registration == m_sessionIncarnations.end() ||
         registration->second != incarnation ||
-        !SameEventWaitScope(current->second, binding) ||
-        current->second.session.capabilities.count("events.read") == 0)
+        !SameObservationScope(current->second, binding) ||
+        current->second.session.capabilities.count(observationCapability) == 0)
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
             "SESSION_BINDING_CHANGED",
-            "Agent session binding changed during event wait");
+            "Agent session binding changed during observation read");
     if (!current->second.enabled ||
         m_pendingOwnerFences.count(SessionOwnerKey(current->second)) != 0 ||
         WatchTransactionPendingLocked(current->second))
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
             "SESSION_OWNER_FENCE_PENDING",
-            "Agent session owner was disabled during event wait");
+            "Agent session owner was disabled during observation read");
     if (current->second.expiresAtMs <= EpochNowMs())
         return Reject(call.name, TradingToolCallStatus::PermissionDenied,
-            "SESSION_EXPIRED", "Agent session expired during event wait");
+            "SESSION_EXPIRED", "Agent session expired during observation read");
     // Revalidate every callback outcome, including errors carrying a partial
     // payload or exception detail. Reject() above constructs an empty result.
     return result;
