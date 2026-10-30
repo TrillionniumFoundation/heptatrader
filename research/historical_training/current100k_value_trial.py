@@ -156,7 +156,9 @@ def run(c):
                 torch.cuda.synchronize();torch.cuda.empty_cache()
         # No handoff after failed cleanup or an imported, unproven runtime.
         # The original lease FD then stays open until the finite process exits.
-        if not gpu_import_attempted or gpu_runtime_ready:gate.release()
+        # This sandboxed finite worker owns only its heavy lease. Cross-task
+        # cache maintenance belongs to the unconfined resident Guard parent.
+        if not gpu_import_attempted or gpu_runtime_ready:gate.lease.release()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);a=p.parse_args();run(read(a.config))

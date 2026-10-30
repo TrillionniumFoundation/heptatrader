@@ -61,7 +61,8 @@ class FinancialHipTests(unittest.TestCase):
 
     def install_gate(self, admitted=True):
         self.gate = SimpleNamespace(acquire=Mock(side_effect=self.trace_call('gate', admitted)),
-                                    release=Mock(side_effect=self.trace_call('release')))
+                                    release=Mock(side_effect=self.trace_call('release')),
+                                    lease=SimpleNamespace(release=Mock(side_effect=self.trace_call('release'))))
         self.gate_type = self.enter(patch.object(guard, 'Gate', return_value=self.gate))
         self.enter(patch.object(guard, 'verify_config', return_value=self.original))
         self.enter(patch.object(hip, 'prepare_worker', side_effect=self.trace_call('prepare', self.context)))
@@ -144,6 +145,26 @@ class FinancialHipTests(unittest.TestCase):
         self.assertEqual(self.trace, ['gate'])
         self.assertFalse(Path(c['output_root']).exists())
 
+    def test_trial_denied_before_output_can_retry_same_config_only_until_output_exists(self):
+        c = self.trial_config()
+        frozen = copy.deepcopy(c)
+        self.install_gate(False)
+        with self.assertRaisesRegex(ValueError, 'RESIDENT_ADMISSION_DENIED_NO_MODEL_LOADED'):
+            trial.run(c)
+        self.assertFalse(Path(c['output_root']).exists())
+        self.assertEqual(c, frozen)
+        self.gate.acquire.side_effect = self.trace_call('gate', True)
+        with self.assertRaisesRegex(ContractError, 'FIXTURE_UNVERIFIED_ACTUAL_HIP'):
+            trial.run(c)
+        plan = Path(c['output_root']) / 'plan.json'
+        self.assertTrue(plan.exists())
+        before = plan.read_bytes()
+        self.gate.acquire.reset_mock()
+        with self.assertRaisesRegex(ValueError, 'TRIAL_OUTPUT_ALREADY_EXISTS_NO_REPLAY'):
+            trial.run(c)
+        self.gate.acquire.assert_not_called()
+        self.assertEqual(plan.read_bytes(), before)
+
     def test_trial_cannot_drop_runtime_already_selected_by_guard(self):
         c = self.trial_config()
         c.pop('hip_runtime')
@@ -198,6 +219,23 @@ class FinancialHipTests(unittest.TestCase):
                                      'collect', 'synchronize', 'empty_cache', 'release'])
         cuda.synchronize.assert_called_once_with()
         cuda.empty_cache.assert_called_once_with()
+
+    def test_trial_releases_only_lease_without_cross_task_sandbox_maintenance(self):
+        c, cuda = self.cleanup_trial()
+        self.gate.maintain_caches = Mock(side_effect=PermissionError('ORIGINAL_CONFIG_OUTSIDE_SANDBOX'))
+        self.gate.release.side_effect = lambda: guard.Gate.release(self.gate)
+        with self.assertRaisesRegex(RuntimeError, 'FIXTURE_MODEL_IMPORT_FAILURE'):
+            trial.run(c)
+        self.gate.maintain_caches.assert_not_called()
+        self.gate.release.assert_not_called()
+        self.gate.lease.release.assert_called_once_with()
+        self.assertEqual(self.trace[-4:], ['collect', 'synchronize', 'empty_cache', 'release'])
+        self.assertIsNone(self.original_lease.fd)
+        contender = guard.Lease(self.original_lease.path)
+        try:
+            self.assertTrue(contender.acquire())
+        finally:
+            contender.release()
 
     def test_trial_cleanup_failure_keeps_original_lease(self):
         c, cuda = self.cleanup_trial(synchronize_error=RuntimeError('FIXTURE_SYNCHRONIZE_FAILED'))
@@ -409,6 +447,7 @@ class FinancialHipTests(unittest.TestCase):
             lease.release()
         self.gate.acquire.side_effect = acquire
         self.gate.release.side_effect = release
+        self.gate.lease = SimpleNamespace(release=Mock(side_effect=release))
         return lease
 
     def assert_lease_held(self, lease):
