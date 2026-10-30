@@ -819,9 +819,24 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
                 if data.get(field) is True:
                     blockers.append({"reason": field.upper(), "driver": lane})
         drivers[lane] = item
+    lanes = {}
+    for lane in drivers:
+        other_lane = "crypto" if lane == "paper" else "paper"
+        # Only the other driver's evidence is excluded. Shared and unfamiliar
+        # evidence remains visible; a clear lane still does not attest admission.
+        lane_blockers = [item for item in blockers
+                         if item.get("driver") != other_lane
+                         and item.get("scope") != other_lane.upper() + "_DRIVER"]
+        other_unknown = {"UNIT_STATE_UNAVAILABLE:heptatrader-" + other_lane + "-driver.service",
+                         "DRIVER_HEARTBEAT_NOT_CURRENT_PROCESS:" + other_lane}
+        lanes[lane] = {"permission": "BLOCKED" if lane_blockers else "NATIVE_ADMISSION_NOT_ATTESTED",
+                       "current_blockers": lane_blockers,
+                       "unknown_current_evidence": [item for item in unknown if item not in other_unknown],
+                       "trade_authority_granted": False}
     return {"permission": "BLOCKED" if blockers else "NATIVE_ADMISSION_NOT_ATTESTED",
             "permission_scope": "AGGREGATE_OF_CONFIGURED_LANES",
             "current_blockers": blockers, "unknown_current_evidence": unknown,
+            "lanes": lanes,
             "native_kill_switch_present": marker_present,
             "native_stop": native_stop,
             "resume": resume_guidance(native_stop["origin"],hold_present is not False),
@@ -981,6 +996,8 @@ def format_text(value):
             "open_coverage", "not_preopen_reason_counts", "groups", "error")))
     trade = value["trading"]
     lines.append("TRADING " + show(pick(trade, "permission", "permission_scope", "current_blockers", "unknown_current_evidence")))
+    for lane, item in trade.get("lanes", {}).items():
+        lines.append("TRADING lane " + lane + " " + show(item))
     for lane, item in trade["drivers"].items():
         if item.get("loop_failure"):
             lines.append("DRIVER " + lane + " " + show(item["loop_failure"]))

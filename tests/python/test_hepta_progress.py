@@ -37,13 +37,21 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(trade['current_blockers'],[]);self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
   for d in trade['drivers'].values():
    self.assertEqual(d['historical_last_error'],'OLD_EXECUTION_ERROR');self.assertFalse(d['last_error_is_current_fault'])
+  for lane in trade['lanes'].values():
+   self.assertEqual(lane['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+   self.assertEqual(lane['current_blockers'],[]);self.assertEqual(lane['unknown_current_evidence'],[])
+   self.assertFalse(lane['trade_authority_granted'])
   self.assertEqual(before,{p:p.read_bytes() for p in paths})
  def test_old_persistent_hold_and_native_marker_remain_blocking(self):
+  self.units['heptatrader-execution.service']['ActiveState']='failed'
   self.write(self.state/'operator-maintenance/maintenance-hold.json',{'created_at_ms':NOW-86400000,'reason':'operator'})
   marker=self.runtime/'control/kill-switch';marker.parent.mkdir(parents=True);marker.touch()
   out=self.collect()['trading'];reasons={r['reason'] for r in out['current_blockers']}
   self.assertEqual(out['permission'],'BLOCKED');self.assertIn('PERSISTENT_MAINTENANCE_HOLD',reasons)
-  self.assertIn('NATIVE_KILL_SWITCH_PRESENT',reasons)
+  self.assertIn('NATIVE_KILL_SWITCH_PRESENT',reasons);self.assertIn('SERVICE_NOT_ACTIVE',reasons)
+  for lane in out['lanes'].values():
+   self.assertEqual(lane['permission'],'BLOCKED');self.assertEqual(lane['current_blockers'],out['current_blockers'])
+   self.assertFalse(lane['trade_authority_granted'])
   self.assertTrue(out['maintenance_hold']['present'])
   self.assertEqual(out['native_stop']['origin'],'INDEPENDENT_EMPTY_NATIVE')
   self.assertFalse(out['native_stop']['creator_verified'])
@@ -95,8 +103,12 @@ class ProgressTests(unittest.TestCase):
   state={'resident_loop_progress':{'at_ms':NOW,'pid':8},'entry_inference_pause':{'checked_at_ms':NOW,'reason_code':'NATIVE_KILL_SWITCH_PRESENT'}}
   self.write(p,state);out=self.collect()['trading'];self.assertEqual(out['drivers']['paper']['current_pauses'],[])
   self.assertEqual(len(out['drivers']['paper']['stale_pauses']),1)
-  state['resident_loop_progress']['pid']=7;self.write(p,state)
-  self.assertEqual(len(self.collect()['trading']['drivers']['paper']['current_pauses']),1)
+  state['resident_loop_progress']['pid']=7;state.update(halt_new_entries=True,lease_uncertain=True);self.write(p,state)
+  out=self.collect()['trading'];self.assertEqual(len(out['drivers']['paper']['current_pauses']),1)
+  self.assertEqual({r['reason'] for r in out['lanes']['paper']['current_blockers']},
+   {'NATIVE_KILL_SWITCH_PRESENT','HALT_NEW_ENTRIES','LEASE_UNCERTAIN'})
+  self.assertEqual(out['lanes']['crypto']['current_blockers'],[])
+  self.assertEqual(out['lanes']['crypto']['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
   state['entry_inference_pause']['checked_at_ms']=NOW-300001;self.write(p,state)
   self.assertEqual(self.collect()['trading']['drivers']['paper']['current_pauses'],[])
  def loop_error_fixture(self):
@@ -780,7 +792,35 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(trade['permission'],'BLOCKED');self.assertEqual(trade['permission_scope'],'AGGREGATE_OF_CONFIGURED_LANES')
   self.assertEqual(trade['current_blockers'],[{'reason':'SERVICE_NOT_ACTIVE','unit':'heptatrader-crypto-driver.service',
    'state':'inactive','scope':'CRYPTO_DRIVER'}])
-  self.assertFalse(trade['trade_authority_granted']);self.assertIn('CRYPTO_DRIVER',progress.format_text(out))
+  self.assertFalse(trade['trade_authority_granted'])
+  paper,crypto=trade['lanes']['paper'],trade['lanes']['crypto']
+  self.assertEqual(paper['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(paper['current_blockers'],[])
+  self.assertEqual(paper['unknown_current_evidence'],[]);self.assertFalse(paper['trade_authority_granted'])
+  self.assertEqual(crypto['permission'],'BLOCKED');self.assertEqual(crypto['current_blockers'],trade['current_blockers'])
+  self.assertEqual(crypto['unknown_current_evidence'],['DRIVER_HEARTBEAT_NOT_CURRENT_PROCESS:crypto'])
+  self.assertFalse(crypto['trade_authority_granted'])
+  lines=progress.format_text(out).splitlines()
+  for lane in ('paper','crypto'):
+   prefix='TRADING lane '+lane+' '
+   self.assertEqual(json.loads(next(line[len(prefix):] for line in lines if line.startswith(prefix))),trade['lanes'][lane])
+
+ def test_unknown_evidence_keeps_shared_gaps_and_only_its_own_driver_gaps(self):
+  del self.units['heptatrader-execution.service']
+  self.units['heptatrader-paper-driver.service'].pop('ActiveState')
+  (self.state/'crypto-driver/state.json').unlink()
+  stop={'present':None,'origin':'UNREADABLE'}
+  with mock.patch.object(progress,'native_stop_observation',return_value=stop),mock.patch.object(progress,'presence',return_value=None):
+   trade=self.collect()['trading']
+  shared={'UNIT_STATE_UNAVAILABLE:heptatrader-execution.service','NATIVE_KILL_SWITCH_UNREADABLE',
+   'PERSISTENT_MAINTENANCE_HOLD_UNREADABLE'}
+  paper_gap='UNIT_STATE_UNAVAILABLE:heptatrader-paper-driver.service'
+  crypto_gap='DRIVER_HEARTBEAT_NOT_CURRENT_PROCESS:crypto'
+  self.assertEqual(set(trade['unknown_current_evidence']),shared|{paper_gap,crypto_gap})
+  for name,gap in (('paper',paper_gap),('crypto',crypto_gap)):
+   lane=trade['lanes'][name]
+   self.assertEqual(set(lane['unknown_current_evidence']),shared|{gap})
+   self.assertEqual(lane['current_blockers'],[]);self.assertEqual(lane['permission'],'NATIVE_ADMISSION_NOT_ATTESTED')
+   self.assertFalse(lane['trade_authority_granted'])
 
  def financial_hold_fixture(self):
   guard_root=self.home/'shared-guard';health=self.home/'source-health.json';hold=guard_root/'manual-hold.json'
@@ -884,6 +924,9 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(model['retry_not_before_ms'],NOW-9000+120000)
   self.assertEqual(model['next_action'],'RESTORE_EXISTING_PROVIDER_CAPACITY_THEN_ORIGINAL_DRIVER_RETRIES')
   self.assertEqual(trade['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(trade['current_blockers'],[])
+  for lane in trade['lanes'].values():
+   self.assertEqual(lane['permission'],'NATIVE_ADMISSION_NOT_ATTESTED');self.assertEqual(lane['current_blockers'],[])
+   self.assertFalse(lane['trade_authority_granted'])
   self.assertIn('MODEL paper ',progress.format_text(out));self.assertEqual(path.read_bytes(),raw)
 
  def test_later_success_and_retained_or_undated_error_stay_historical(self):
