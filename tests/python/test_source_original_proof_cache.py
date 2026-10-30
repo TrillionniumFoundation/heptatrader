@@ -3,6 +3,7 @@ import hashlib
 import errno
 from contextlib import contextmanager
 import os
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -65,7 +66,7 @@ class OriginalProofTests(unittest.TestCase):
     def test_identity_checks_also_catch_a_missed_change_event(self):
         self.cold()
         raw = self.h.p1.read_bytes()
-        with patch.object(self.cache._proofs._watch, "changed", return_value=False):
+        with patch.object(self.cache._proofs._watch, "changed_paths", return_value=frozenset()):
             self.h.p1.write_bytes(b"X" + raw[1:])
             with self.assertRaisesRegex(ContractError, "SOURCE_PREFIX_HASH_CHANGED"):
                 self.read()
@@ -276,6 +277,93 @@ class ColdOriginalReadTests(unittest.TestCase):
         self.assertEqual(stats["original_proof_reuses"], 32)
         self.assertEqual(stats["original_proof_full_sha256_verifications"], 64)
 
+    def test_one_original_event_rehashes_only_that_file_and_keeps_full_deadline(self):
+        cache = self.cache(300000)
+        cold = self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        target = Path(self.pins[17]["path"])
+        before = target.stat()
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+        self.clock[0] = 200.0
+        with self.reads() as counts:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(counts[pin["path"]], pin["bytes"] if pin["path"] == str(target) else 0)
+        self.assertEqual(cache._proofs._full_at, 100.0)
+        self.assertEqual(cache.counters()["original_proof_targeted_invalidations"], 1)
+        self.assertEqual(cache.counters()["original_proof_full_sha256_verifications"], 33)
+        self.clock[0] = 400.0
+        with self.reads() as expired:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(expired[pin["path"]], pin["bytes"])
+
+    def test_unrelated_sibling_event_does_not_rehash_any_original(self):
+        cache = self.cache(300000)
+        cold = self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        Path(self.pins[17]["path"]).with_name("unrelated.tmp").write_bytes(b"not source evidence")
+        with self.reads() as counts:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(counts[pin["path"]], 0)
+        self.assertEqual(cache.counters()["original_proof_full_sha256_verifications"], 32)
+
+    def test_replaced_original_with_old_reader_rearms_before_future_reuse(self):
+        cache = self.cache(300000)
+        cold = self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        target = Path(self.pins[17]["path"])
+        replacement = target.with_name("replacement.tmp")
+        with target.open("rb") as old_reader:
+            replacement.write_bytes(old_reader.read())
+            replacement.chmod(0o600)
+            os.replace(replacement, target)
+            with self.reads() as counts:
+                self.assertEqual(self.read(cache), cold)
+            for pin in self.pins:
+                self.assertEqual(counts[pin["path"]], pin["bytes"])
+            # The new inode must have its own watch after the full rebuild,
+            # even while the old inode remains alive through this reader.
+            before = target.stat()
+            os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+            self.assertEqual(cache._proofs._watch.changed_paths(), frozenset({str(target)}))
+
+    def test_lost_event_coverage_still_rehashes_every_original(self):
+        cache = self.cache(300000)
+        cold = self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        with patch.object(cache._proofs._watch, "changed_paths",
+                          side_effect=[None, frozenset(), frozenset()]), self.reads() as counts:
+            self.assertEqual(self.read(cache), cold)
+        for pin in self.pins:
+            self.assertEqual(counts[pin["path"]], pin["bytes"])
+
+    def test_event_on_other_original_during_target_rehash_cannot_publish(self):
+        cache = self.cache(300000)
+        self.read(cache)
+        if not cache._proofs._watch.available:
+            self.skipTest("continuous file change observation unavailable")
+        target = Path(self.pins[17]["path"])
+        before = target.stat()
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+        verify = module.verify_prefix
+        def write_after_verification(pin, **kwargs):
+            result = verify(pin, **kwargs)
+            if pin["path"] == str(target):
+                victim = Path(self.pins[0]["path"])
+                raw = victim.read_bytes()
+                victim.write_bytes(b"X" + raw[1:])
+            return result
+        with patch.object(module, "verify_prefix", side_effect=write_after_verification):
+            with self.assertRaisesRegex(ContractError, "READINESS_ORIGINAL_CHANGED_DURING_PASS"):
+                self.read(cache)
+        self.assertFalse(cache._proofs._watch.available)
+
     def test_wrong_pin_hash_wins_over_strict_parser_failure(self):
         cache = self.cache()
         path = self.paths[0]
@@ -479,6 +567,60 @@ class UncachedSealedVerificationTests(unittest.TestCase):
 
 
 class SharedChangeWatchTests(unittest.TestCase):
+    def test_atomic_replace_with_old_reader_requires_rearm_for_new_inode(self):
+        with tempfile.TemporaryDirectory() as td:
+            path, replacement = (Path(td) / name for name in ("original", "replacement"))
+            path.write_bytes(b"original")
+            watch = _ChangeWatch()
+            self.addCleanup(watch.close)
+            if not watch.arm_many([path]):
+                self.skipTest("inotify unavailable")
+            with path.open("rb") as old_reader:
+                replacement.write_bytes(b"original")
+                os.replace(replacement, path)
+                self.assertEqual(old_reader.read(), b"original")
+                self.assertIsNone(watch.changed_paths())
+                self.assertIsNone(watch.changed_paths())
+                self.assertTrue(watch.arm_many([path]))
+                self.assertEqual(watch.changed_paths(), frozenset())
+                path.write_bytes(b"new inode changed")
+                self.assertEqual(watch.changed_paths(), frozenset({str(path)}))
+
+    def test_precise_set_events_leave_single_and_boolean_apis_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            first, second, sibling = (Path(td) / name for name in ("first", "second", "sibling"))
+            first.write_bytes(b"one")
+            second.write_bytes(b"two")
+            watch = _ChangeWatch()
+            self.addCleanup(watch.close)
+            if not watch.arm_many([first, second]):
+                self.skipTest("inotify unavailable")
+            sibling.write_bytes(b"unrelated")
+            self.assertTrue(watch.changed())  # Existing consumers retain broad invalidation.
+            sibling.unlink()
+            self.assertEqual(watch.changed_paths(), frozenset())
+            second.write_bytes(b"changed")
+            self.assertEqual(watch.changed_paths(), frozenset({str(second)}))
+            os.chmod(Path(td), 0o750)
+            self.assertEqual(watch.changed_paths(), frozenset({str(first), str(second)}))
+            self.assertTrue(watch.arm(first))
+            self.assertIsNone(watch.changed_paths())  # No accidental selective proof for a single watch.
+
+    def test_overflow_unknown_descriptor_and_truncated_event_lose_precise_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "original"
+            path.write_bytes(b"one")
+            watch = _ChangeWatch()
+            self.addCleanup(watch.close)
+            for packet in (struct.pack("iIII", -1, 0x4000, 0, 0),
+                           struct.pack("iIII", 2147483647, 0x2, 0, 0), b"short"):
+                with self.subTest(packet=packet):
+                    if not watch.arm_many([path]):
+                        self.skipTest("inotify unavailable")
+                    with patch("hepta_change_watch.os.read", side_effect=[packet, BlockingIOError()]):
+                        self.assertIsNone(watch.changed_paths())
+                    self.assertIsNone(watch.changed_paths())  # Loss stays sticky until rearming.
+
     def test_many_originals_use_one_descriptor_and_catch_nonfirst_mutation(self):
         with tempfile.TemporaryDirectory() as td:
             paths = []
