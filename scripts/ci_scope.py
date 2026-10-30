@@ -100,10 +100,11 @@ VERIFIED_HELPER_DEPENDENCIES = {
                    "tests/python/test_paper_driver.py"}),
     ),
     "scripts/hepta_progress.py": (
-        frozenset({"hepta_maintenance_latch"}),
+        frozenset({"hepta_maintenance_latch", "hepta_decision_attribution"}),
         frozenset({"scripts/heptatrader-user", "cmake/HeptaInstall.cmake",
                    "tests/python/test_cmake_install_behavior.py",
-                   "scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py"}),
+                   "scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py",
+                   "scripts/hepta_decision_attribution.py", "tests/python/test_driver_observation_state.py"}),
     ),
     "scripts/hepta_verified_loader.py": (
         frozenset(),

@@ -577,7 +577,9 @@ class ComponentScopeTests(unittest.TestCase):
         for path in (helper, "tests/python/test_hepta_progress.py"):
             self.assertEqual(scope_for_paths([path], self.root), self.PYTHON)
         for dependency in ("scripts/hepta_maintenance_latch.py",
-                           "tests/python/test_hepta_maintenance_latch.py"):
+                           "tests/python/test_hepta_maintenance_latch.py",
+                           "scripts/hepta_decision_attribution.py",
+                           "tests/python/test_driver_observation_state.py"):
             (self.root / dependency).unlink()
             self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
             self.write(dependency)

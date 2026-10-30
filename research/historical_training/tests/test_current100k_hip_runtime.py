@@ -255,7 +255,8 @@ class FinancialHipTests(unittest.TestCase):
             def named_parameters(self): return []
         def inner_failure(features):
             raise ValueError('INNER_OPTIMIZER_FRAME')
-        def failed_optimizer(features, targets):
+        def failed_optimizer(features, targets, *, readout_profile=None):
+            self.assertIsNone(readout_profile)
             if chain:
                 try:
                     inner_failure(features)
