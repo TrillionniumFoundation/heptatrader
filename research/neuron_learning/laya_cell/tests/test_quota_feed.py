@@ -3,7 +3,7 @@ import copy,json,os,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from laya_cell.integrity import ContractError
+from laya_cell.integrity import ContractError,digest
 from laya_cell.resident_budget import policy,inspect,GIB
 from laya_cell.resident_data import contiguous_history,forecast_input
 from laya_cell.source_readiness import probe,assess,RULE
@@ -81,6 +81,47 @@ class SourceReadinessTests(unittest.TestCase):
  def test_path_gap_not_zero_filled(self):
   q=[x for x in self.fixture() if not T+120000<=x['t']<=T+160000]
   self.assertEqual(probe(q,T,self.c)['status'],'PATH_GAP')
+ def test_first_outcome_gap_is_distinct_from_healthy_input_history(self):
+  q=[x for x in self.fixture() if not (T+120000<=x['t']<=T+160000 or T+220000<=x['t']<=T+260000)]
+  original=copy.deepcopy(q);config=copy.deepcopy(self.c);sample,task=forecast_input(self.c,q,T)
+  r=probe(q,T,self.c)
+  self.assertEqual(r['status'],'PATH_GAP');self.assertEqual(r['history_max_gap_ms'],10000)
+  self.assertEqual(r['outcome_path_first_gap'],{'from_ms':T+119000,'to_ms':T+161000,'gap_ms':42000})
+  self.assertEqual(q,original);self.assertEqual(self.c,config)
+  self.assertEqual(forecast_input(self.c,q,T),(sample,task))
+  self.assertEqual(sample['sample_id'],digest(sample['input_snapshot']))
+  self.assertNotIn('outcome_path_first_gap',sample)
+  self.assertNotIn('outcome_path_first_gap',sample['input_snapshot'])
+ def test_outcome_gap_boundary_and_endpoint_priority_are_unchanged(self):
+  for gap,status in ((30000,'USABLE'),(30001,'PATH_GAP')):
+   with self.subTest(gap_ms=gap):
+    q=[x for x in self.fixture() if not T+120000<x['t']<T+120000+gap]
+    if gap==30001:q=sorted(q+quotes([120000+gap]),key=lambda x:x['t'])
+    r=probe(q,T,self.c);self.assertEqual(r['status'],status)
+    if status=='USABLE':self.assertNotIn('outcome_path_first_gap',r)
+    else:self.assertEqual(r['outcome_path_first_gap'],{'from_ms':T+120000,'to_ms':T+150001,'gap_ms':30001})
+  late=[x for x in q if not T+300000<=x['t']<=T+305000]
+  r=probe(late,T,self.c);self.assertEqual(r['status'],'ENDPOINT_GAP')
+  self.assertNotIn('outcome_path_first_gap',r)
+  r=probe([x for x in q if x['t']<T+300000],T,self.c)
+  self.assertEqual(r['status'],'OUTCOME_UNAVAILABLE');self.assertNotIn('outcome_path_first_gap',r)
+  endpoint=[x for x in self.fixture() if not T+270000<x['t']<T+300001]
+  endpoint=sorted(endpoint+quotes([300001]),key=lambda x:x['t'])
+  r=probe(endpoint,T,self.c);self.assertEqual(r['status'],'PATH_GAP')
+  self.assertEqual(r['outcome_path_first_gap'],{'from_ms':T+270000,'to_ms':T+300001,'gap_ms':30001})
+ def test_outcome_gap_diagnostic_retains_original_source_prefix_binding(self):
+  now=T+1800000
+  q=quotes([x for x in range(-240000,1800001,1000) if not 120000<=x<=160000])
+  prefixes=[{'path':'/fixture/quotes.jsonl','bytes':123,'sha256':'b'*64}]
+  original=copy.deepcopy(prefixes)
+  r=assess(self.c,now,quote_loader=lambda config,at:(q,prefixes))
+  gaps=[p for p in r['probes'] if p['status']=='PATH_GAP']
+  self.assertTrue(gaps)
+  self.assertEqual(gaps[0]['outcome_path_first_gap'],{'from_ms':T+119000,'to_ms':T+161000,'gap_ms':42000})
+  self.assertEqual(prefixes,original);self.assertEqual(r['source_prefixes'],original)
+  self.assertEqual(r['source_prefix_digest'],digest(original))
+  self.assertEqual(r['rule'],RULE);self.assertFalse(r['old_failed_windows_changed'])
+  self.assertFalse(r['automatic_trial_registration']);self.assertFalse(r['trading_authority'])
  def test_no_new_trial_authority_even_full_coverage(self):
   now=T+3600000;q=quotes(list(range(0,3600001,1000)))
   with patch('laya_cell.source_readiness.read_quotes',return_value=(q,[])):r=assess(self.c,now)

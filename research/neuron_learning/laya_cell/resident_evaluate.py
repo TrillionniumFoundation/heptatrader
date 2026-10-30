@@ -18,7 +18,9 @@ from . import resident_price_baselines as price_refs
 from . import resident_price_calibration as price_calibration
 from . import resident_parent_calibration as parent_calibration
 
-PREDICTION_PREWARM_MS=90000
+# Scheduling lead only; every plan pins this evaluator's runtime bytes.
+# Fixed input/outcome windows and the original admission checks are unchanged.
+PREDICTION_PREWARM_MS=30000
 PUBLICATION_PROFILE='FIXED_SLOT_DURABLE_PUBLICATION_V1'
 
 _WORKER_EXCEPTION_TITLE=re.compile(
@@ -340,7 +342,7 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
      or value.get('plan_id')!=plan['plan_id'] or value.get('candidate_id')!=plan['candidate_id']
      or value.get('slot')!=slot or type(value.get('slot')) is not int
      or type(value.get('at_ms')) is not int
-     or not start-90000<=value['at_ms']<=start+rule['input_grace_ms']
+     or not start-PREDICTION_PREWARM_MS<=value['at_ms']<=start+rule['input_grace_ms']
      or value.get('resource_admission_attempted_at_suppression') is not False
      or value.get('receipt_id')!=digest({k:v for k,v in value.items() if k!='receipt_id'})):
   raise ContractError('FUTILITY_SUPPRESSION_RECEIPT_CHANGED')
