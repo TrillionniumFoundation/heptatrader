@@ -15,10 +15,73 @@ concurrency:
   group: heptatrader-core-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 jobs:
+  scope:
+    name: Source and change scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.scope_identity.outcome == 'success' && steps.scope.outcome == 'success' }}
+      lanes: ${{ steps.scope.outputs.lanes }}
+    steps:
+    - name: Use bounded Git HTTP transport
+      run: git config --global http.version HTTP/1.1
+    - name: Checkout exact event subject without credentials
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Assert exact source identity
+      env:
+        EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      id: scope_identity
+    - name: Identify native, Python and learning change scopes
+      id: scope
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        set -euo pipefail
+        if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+          git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+        fi
+        python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
+    - name: Documentation links preflight
+      id: docs
+      if: ${{ !cancelled() && steps.scope_identity.outcome == 'success' }}
+      run: python3 scripts/check_documentation.py
+    - name: Whitespace check
+      id: whitespace
+      if: ${{ !cancelled() && steps.scope_identity.outcome == 'success' }}
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        set -euo pipefail
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+        if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+          git -c http.version=HTTP/1.1 fetch --no-tags --depth=2 origin "$HEAD_SHA"
+          if git rev-parse --verify 'HEAD^' >/dev/null 2>&1; then
+            git diff --check HEAD^ "$HEAD_SHA" --
+          else
+            git diff-tree --check --root -r "$HEAD_SHA" --
+          fi
+        else
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null
+          git diff --check "$BASE_SHA" "$HEAD_SHA" --
+        fi
   core:
-    name: core-runtime-exact-head
+    name: core-runtime-${{ matrix.lane }}
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.ready == 'true' && needs.scope.outputs.lanes != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.scope.outputs.lanes) }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/build/compiler-cache
       CCACHE_BASEDIR: ${{ github.workspace }}
@@ -39,26 +102,12 @@ jobs:
         EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       id: identity
-    - name: Identify native, Python and learning change scopes
-      id: scope
-      env:
-        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-      run: |
-        set -euo pipefail
-        if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
-          git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$BASE_SHA" || true
-        fi
-        python3 -B scripts/ci_scope.py --base "$BASE_SHA" --format github >> "$GITHUB_OUTPUT"
-    - name: Documentation links preflight
-      id: docs
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
-      run: python3 scripts/check_documentation.py
     - name: Install selected lane dependencies
       id: deps
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && (steps.scope.outputs.run_native != 'false' || steps.scope.outputs.run_python != 'false' || steps.scope.outputs.run_learning != 'false') }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
       env:
-        RUN_NATIVE: ${{ steps.scope.outputs.run_native }}
-        RUN_LEARNING: ${{ steps.scope.outputs.run_learning }}
+        RUN_NATIVE: ${{ matrix.lane == 'native' }}
+        RUN_LEARNING: ${{ matrix.lane == 'learning' }}
       run: |
         set -euo pipefail
         packages=(cmake libssl-dev zlib1g-dev python3-yaml python3-numpy python3-cryptography)
@@ -94,7 +143,7 @@ jobs:
         sudo apt-get install "${apt_options[@]}" --yes --no-install-recommends "${packages[@]}"
     - name: Restore native compiler cache
       id: native_cache
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'native' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
       continue-on-error: true
       with:
@@ -104,18 +153,18 @@ jobs:
           heptatrader-ccache-v1-${{ runner.os }}-${{ runner.arch }}-
     - name: Native build and behavior tests
       id: native
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'native' }}
       env:
         HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
         HEPTA_JOBS: '2'
         CMAKE_CXX_COMPILER_LAUNCHER: ccache
       run: ./scripts/dev_core.sh
     - name: Observe compiler cache reuse
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'native' }}
       continue-on-error: true
       run: ccache --show-stats
     - name: Retain actual test diagnostics
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && matrix.lane == 'native' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: core-tests-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -127,26 +176,26 @@ jobs:
         retention-days: 7
     - name: Python core behavior tests
       id: python_core
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'python' }}
       run: python3 scripts/run_python_tests.py --lane core
     - name: Python source contracts
       id: python_source
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_python != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'python' }}
       run: python3 scripts/run_python_tests.py --lane source
     - name: Artifact packaging behavior
       id: python_packaging
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_native != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'native' }}
       run: python3 scripts/run_python_tests.py --lane packaging
     - name: Cache CPU research dependency downloads
       id: learning_cache
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'learning' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
       continue-on-error: true
       with:
         path: ~/.cache/pip
         key: heptatrader-cpu-torch-2.8.0-safetensors-0.8.0-v2-${{ runner.os }}-${{ runner.arch }}
     - name: Install pinned CPU research test dependency
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && matrix.lane == 'learning' }}
       run: |
         python3 -m venv --system-site-packages "$RUNNER_TEMP/hepta-core-python"
         "$RUNNER_TEMP/hepta-core-python/bin/python" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
@@ -157,29 +206,8 @@ jobs:
       id: learning_install
     - name: Python learning tests once
       id: python_learning
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.learning_install.outcome == 'success' && steps.scope.outputs.run_learning != 'false' }}
+      if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.deps.outcome == 'success' && steps.learning_install.outcome == 'success' && matrix.lane == 'learning' }}
       env:
         OMP_NUM_THREADS: '1'
         MKL_NUM_THREADS: '1'
       run: python3 scripts/run_python_tests.py --lane learning
-    - name: Whitespace check
-      id: whitespace
-      if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
-      env:
-        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      run: |
-        set -euo pipefail
-        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-        if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
-          git -c http.version=HTTP/1.1 fetch --no-tags --depth=2 origin "$HEAD_SHA"
-          if git rev-parse --verify 'HEAD^' >/dev/null 2>&1; then
-            git diff --check HEAD^ "$HEAD_SHA" --
-          else
-            git diff-tree --check --root -r "$HEAD_SHA" --
-          fi
-        else
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null
-          git diff --check "$BASE_SHA" "$HEAD_SHA" --
-        fi

@@ -89,16 +89,21 @@ class DevelopmentCiTests(unittest.TestCase):
                               "assert sys.argv[1:] in ([], ['--core'])\n"
                               "call = ['native']\n" + record)
             native.chmod(0o755)
-            for step_id in ("native", "python_core", "python_source", "python_packaging", "python_learning"):
-                _, _, step = self.step(ci, step_id)
-                result = subprocess.run(
-                    [shutil.which("bash"), "-e", "-o", "pipefail", "-c", step["run"]],
-                    cwd=root, capture_output=True, text=True, timeout=10,
-                    env={**os.environ, "PATH": str(binary), "HEPTA_TEST_CALLS": str(log)})
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for lane in ("native", "python", "learning"):
+                context = {"matrix.lane": lane, "steps.identity.outcome": "success",
+                           "steps.deps.outcome": "success", "steps.learning_install.outcome": "success"}
+                for step_id in ("native", "python_core", "python_source", "python_packaging", "python_learning"):
+                    _, _, step = self.step(ci, step_id)
+                    if not condition_value(step, context):
+                        continue
+                    result = subprocess.run(
+                        [shutil.which("bash"), "-e", "-o", "pipefail", "-c", step["run"]],
+                        cwd=root, capture_output=True, text=True, timeout=10,
+                        env={**os.environ, "PATH": str(binary), "HEPTA_TEST_CALLS": str(log)})
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual([json.loads(line) for line in log.read_text().splitlines()],
-                             [["native"], ["python", "core"], ["python", "source"],
-                              ["python", "packaging"], ["python", "learning"]])
+                             [["native"], ["python", "packaging"], ["python", "core"],
+                              ["python", "source"], ["python", "learning"]])
 
     def test_behavior_steps_follow_scope_and_real_dependencies(self):
         ci = workflow("core-ci.yml")
@@ -109,19 +114,17 @@ class DevelopmentCiTests(unittest.TestCase):
         ids = [step["id"] for step in job["steps"] if "id" in step]
         context = {f"steps.{name}.{field}": "success" for name in ids
                    for field in ("outcome", "conclusion")}
-        flags = ("run_native", "run_python", "run_learning")
-        context.update({f"steps.{scope['id']}.outputs.{flag}": "true" for flag in flags})
         self.assertNotIn("continue-on-error", scope)
         self.assertIn("github.event.pull_request.base.sha", scope["env"]["BASE_SHA"])
-        lanes = (("native", "run_native"), ("python_core", "run_python"),
-                 ("python_source", "run_python"), ("python_packaging", "run_native"),
-                 ("python_learning", "run_learning"),
-                 ("learning_install", "run_learning"), ("docs", None), ("whitespace", None))
-        for step_id, flag in lanes:
+        lanes = (("native", "native"), ("python_core", "python"),
+                 ("python_source", "python"), ("python_packaging", "native"),
+                 ("python_learning", "learning"), ("learning_install", "learning"))
+        for step_id, lane in lanes:
             _, _, step = self.step(ci, step_id)
-            required = {identity["id"]} | ({deps["id"]} if flag else set())
+            required = {identity["id"], deps["id"]}
             if step_id == "python_learning":
                 required.add(install["id"])
+            context["matrix.lane"] = lane
             with self.subTest(step_id=step_id):
                 self.assertNotIn("continue-on-error", step)
                 self.assertTrue(condition_value(step, context))
@@ -132,14 +135,35 @@ class DevelopmentCiTests(unittest.TestCase):
                                                     for field in ("outcome", "conclusion")}}
                     self.assertEqual(condition_value(step, failed_context, succeeded=False),
                                       failed not in required, (step_id, failed))
-                for output in ("false", ""):
-                    values = {**context, **{f"steps.{scope['id']}.outputs.{name}": output for name in flags}}
-                    self.assertEqual(condition_value(step, values, succeeded=False),
-                                      flag is None or output != "false", (step_id, output))
-                if flag:
-                    values = {**context, **{f"steps.{scope['id']}.outputs.{name}": "false" for name in flags}}
-                    values[f"steps.{scope['id']}.outputs.{flag}"] = "true"
-                    self.assertTrue(condition_value(step, values))
+                for other in ("native", "python", "learning", ""):
+                    self.assertEqual(condition_value(step, {**context, "matrix.lane": other}),
+                                     other == lane)
+
+    def test_independent_matrix_preserves_failed_diagnostics_and_docs_only_skips(self):
+        ci = workflow("core-ci.yml")
+        scope_name, source, _ = self.step(ci, "scope")
+        _, behavior, _ = self.step(ci, "native")
+        self.assertEqual(behavior["needs"], scope_name)
+        self.assertEqual(behavior["strategy"]["fail-fast"], "false")
+        self.assertEqual(behavior["strategy"]["matrix"]["lane"],
+                         "${{ fromJSON(needs.scope.outputs.lanes) }}")
+        readiness = {"if": source["outputs"]["ready"]}
+        context = {"steps.scope_identity.outcome": "success", "steps.scope.outcome": "success",
+                   "steps.docs.outcome": "failure", "steps.whitespace.outcome": "failure"}
+        self.assertTrue(condition_value(readiness, context))
+        for failed in ("scope_identity", "scope"):
+            self.assertFalse(condition_value(readiness, {**context, f"steps.{failed}.outcome": "failure"}))
+        for ready, lanes, expected in (("true", '["python"]', True),
+                                       ("true", '["native","python","learning"]', True),
+                                       ("true", '[]', False), ("false", '["python"]', False),
+                                       ("", "", False)):
+            values = {"needs.scope.outputs.ready": ready, "needs.scope.outputs.lanes": lanes}
+            self.assertEqual(condition_value(behavior, values, succeeded=False), expected)
+            self.assertFalse(condition_value(behavior, values, cancelled=True))
+        for step_id in ("docs", "whitespace"):
+            _, _, step = self.step(ci, step_id)
+            self.assertTrue(condition_value(step, context, succeeded=False))
+            self.assertFalse(condition_value(step, {**context, "steps.scope_identity.outcome": "failure"}))
 
     def test_scope_step_publishes_machine_outputs_with_the_original_base(self):
         _, _, step = self.step(workflow("core-ci.yml"), "scope")
@@ -159,7 +183,7 @@ class DevelopmentCiTests(unittest.TestCase):
                 "parser.add_argument('--format', default='text')\n"
                 "args = parser.parse_args()\n"
                 "assert args.base == os.environ['BASE_SHA']\n"
-                "print('run_native=false\\nrun_python=true\\nrun_learning=false'\n"
+                "print('run_native=false\\nrun_python=true\\nrun_learning=false\\nlanes=[\"python\"]'\n"
                 "      if args.format == 'github' else 'human-readable scope')\n")
             output = root / "github-output"
             result = subprocess.run(
@@ -169,7 +193,8 @@ class DevelopmentCiTests(unittest.TestCase):
                      "GITHUB_OUTPUT": str(output)})
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines()),
-                             {"run_native": "false", "run_python": "true", "run_learning": "false"})
+                             {"run_native": "false", "run_python": "true", "run_learning": "false",
+                              "lanes": '["python"]'})
 
 
     def test_routine_events_use_read_only_credentials_and_exact_source(self):
@@ -399,8 +424,7 @@ class DevelopmentCiTests(unittest.TestCase):
         context = {f"steps.{step['id']}.{field}": "success"
                    for step in job["steps"] if "id" in step
                    for field in ("outcome", "conclusion")}
-        context.update({f"steps.scope.outputs.{flag}": "true"
-                        for flag in ("run_native", "run_python", "run_learning")})
+        context["matrix.lane"] = "native"
         for cache_outcome in ("success", "failure", "skipped"):
             values = {**context, "steps.native_cache.outcome": cache_outcome,
                       "steps.native_cache.conclusion": cache_outcome}
@@ -423,8 +447,7 @@ class DevelopmentCiTests(unittest.TestCase):
         context = {f"steps.{step['id']}.{field}": "success"
                    for step in job["steps"] if "id" in step
                    for field in ("outcome", "conclusion")}
-        context.update({f"steps.scope.outputs.{flag}": "true"
-                        for flag in ("run_native", "run_python", "run_learning")})
+        context["matrix.lane"] = "learning"
         for cache in caches:
             for hit in ("true", "false", ""):
                 with self.subTest(cache=cache["id"], hit=hit):

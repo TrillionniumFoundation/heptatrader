@@ -2,6 +2,7 @@
 import subprocess
 from contextlib import redirect_stdout
 import io
+import json
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -12,11 +13,23 @@ import tempfile
 from ci_scope import (
     docs_only, diff_paths, scope_for_paths, main,
     VERIFIED_PYTHON_GROUPS, VERIFIED_PYTHON_LEARNING_GROUPS, VERIFIED_HELPER_DEPENDENCIES,
-    PYTHON_LEARNING_PACKAGES, RELEASE_VALIDATION_GROUP,
+    PYTHON_LEARNING_PACKAGES, PYTHON_PACKAGES, RELEASE_VALIDATION_GROUP,
 )
 
 
 class DocsOnlyScope(unittest.TestCase):
+    def test_github_matrix_omits_prose_and_keeps_every_unknown_change_lane(self):
+        for paths, expected in ((["README.md"], []),
+                                (None, ["native", "python", "learning"])):
+            output = io.StringIO()
+            with self.subTest(paths=paths), redirect_stdout(output), \
+                    patch("ci_scope.diff_paths", return_value=paths):
+                self.assertEqual(main(["--base", "a" * 40, "--format", "github"]), 0)
+            values = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+            self.assertEqual(json.loads(values.pop("lanes")), expected)
+            self.assertEqual([name.removeprefix("run_") for name, enabled in values.items()
+                              if enabled == "true"], expected)
+
     def test_documentation_only(self):
         self.assertTrue(docs_only(["README.md", "docs/technical/a.md", "docs/b.md"]))
 
@@ -202,7 +215,7 @@ class ComponentScopeTests(unittest.TestCase):
         fixture_paths = set(frozenset.union(*groups))
         for _, support in VERIFIED_HELPER_DEPENDENCIES.values():
             fixture_paths.update(support)
-        for support in PYTHON_LEARNING_PACKAGES.values():
+        for support in PYTHON_PACKAGES.values():
             fixture_paths.update(support)
         for path in fixture_paths:
             self.write(path)
@@ -210,6 +223,44 @@ class ComponentScopeTests(unittest.TestCase):
         for package in (self.LAYA, self.HISTORY):
             self.write(package + "/new_readout.py", "value = 1\n")
             self.write(package + "/tests/test_new_readout.py", "import unittest\n")
+        self.write("research/train_v2/new_readout.py", "value = 1\n")
+        self.write("tests/python/test_train_v2_new_readout.py", "import unittest\n")
+
+    def test_train_v2_consumers_and_discovered_root_tests_keep_core_behavior(self):
+        source = "research/train_v2/new_readout.py"
+        test = "tests/python/test_train_v2_new_readout.py"
+        for paths in ([source], [test], [source, test, "docs/research.md"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(scope_for_paths(paths, self.root), self.PYTHON)
+        # A mixed Laya/research change still runs the learning suite.
+        self.assertEqual(scope_for_paths([source, self.LAYA + "/new_readout.py"], self.root),
+                         self.PYTHON_LEARNING)
+
+    def test_actual_train_v2_consumers_keep_full_core_source_without_native_or_torch(self):
+        root = Path(__file__).resolve().parents[2]
+        for path in ("research/train_v2/economics.py", "research/train_v2/adapters.py",
+                     "research/train_v2/original_model_timing.py", "research/train_v2/registry.py",
+                     "tests/python/test_train_v2_economics.py"):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], root), self.PYTHON)
+
+    def test_train_v2_boundaries_missing_tests_and_mixed_inputs_keep_full(self):
+        source = "research/train_v2/new_readout.py"
+        for path in ("research/train_v2/contracts.py", "research/train_v2/__init__.py",
+                     "research/train_v2/canonical_native.py", "research/train_v2/physical_native_build.py",
+                     "research/train_v2/new_config.json", "research/train_v2/new_config.yaml",
+                     "research/train_v2/new_package/model.py",
+                     "tests/python/test_train_v2_physical_native_roundtrip.py",
+                     "scripts/run_python_tests.py", "HeptaTrade/runtime.cpp"):
+            with self.subTest(path=path):
+                self.write(path)
+                self.assertEqual(scope_for_paths([source, path], self.root), self.FULL)
+        self.write(source, "def invalid(\n")
+        self.assertEqual(scope_for_paths([source], self.root), self.FULL)
+        self.write(source)
+        for test in (self.root / "tests/python").glob("test_train_v2_*.py"):
+            test.unlink()
+        self.assertEqual(scope_for_paths([source], self.root), self.FULL)
 
     def write(self, path, source="pass\n"):
         target = self.root / path
@@ -236,7 +287,8 @@ class ComponentScopeTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "NATIVE_AND_PYTHON: native/package and all core/source tests.\n")
             else:
                 self.assertEqual(output.getvalue().splitlines(),
-                                 ["run_native=true", "run_python=true", "run_learning=false"])
+                                 ["run_native=true", "run_python=true", "run_learning=false",
+                                  'lanes=["native","python"]'])
 
     def test_release_closure_unknown_imports_and_syntax_errors_restore_full(self):
         support = VERIFIED_HELPER_DEPENDENCIES["scripts/accept_core_release.py"][1]
@@ -296,7 +348,8 @@ class ComponentScopeTests(unittest.TestCase):
                                     cwd=self.root, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             return {key: value == "true" for key, value in
-                    (line.split("=", 1) for line in result.stdout.splitlines())}
+                    (line.split("=", 1) for line in result.stdout.splitlines())
+                    if key.startswith("run_")}
         git("init", "-q"); git("add", "."); git("commit", "-qm", "initial release fixture")
         base = git("rev-parse", "HEAD")
         self.write("scripts/run_release_simulator_smoke.py", "# release-only edit\n")
@@ -558,10 +611,14 @@ class ComponentScopeTests(unittest.TestCase):
                 cwd=self.root, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             pairs = [line.split("=", 1) for line in result.stdout.splitlines()]
-            self.assertEqual(len(pairs), 3)
-            self.assertEqual({key for key, _ in pairs}, set(self.FULL))
-            self.assertTrue(all(value in ("true", "false") for _, value in pairs))
-            return {key: value == "true" for key, value in pairs}
+            self.assertEqual(len(pairs), 4)
+            self.assertEqual({key for key, _ in pairs}, set(self.FULL) | {"lanes"})
+            flags = {key: value for key, value in pairs if key.startswith("run_")}
+            self.assertTrue(all(value in ("true", "false") for value in flags.values()))
+            self.assertEqual(json.loads(dict(pairs)["lanes"]),
+                             [key.removeprefix("run_") for key, value in flags.items()
+                              if value == "true"])
+            return {key: value == "true" for key, value in flags.items()}
         git("init", "-q")
         git("add", ".")
         git("commit", "-qm", "initial fixture")
