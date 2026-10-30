@@ -702,16 +702,23 @@ def evaluator_idle_poll_seconds(gate,tasks):
         return 2
     try:
         from .value_priority_admission import decision
-        held,reason,_=decision(gate.c['value_priority'],'evaluator',int(time.time()*1000))
+        now_ms=int(time.time()*1000)
+        held,reason,proof=decision(gate.c['value_priority'],'evaluator',now_ms)
     except (OSError,ValueError,TypeError,KeyError):
         return 2
     if held and reason in ('VALUE_PRIORITY_DEFER_NEW_LONG_EVALUATION',
                           'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST'):
+        # A real request's known expiry can shorten a negative wait, never
+        # grant admission. Recheck the original gate immediately afterwards.
+        expiry=proof.get('reservation_expires_ms') if isinstance(proof,dict) else None
+        if reason=='VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST' and type(expiry) is int and expiry>=now_ms:
+            remaining_ms=expiry-int(time.time()*1000)
+            return max(1,min(10,remaining_ms//1000+1))
         return 10
     return 2
 
 
-def _prediction_retry_window(path,slot,attempt,now_ms):
+def _prediction_retry_window(path,slot,attempt,now_ms,*,reservation_expires_ms=None):
     # Timing-only negative cache; a returned value cannot admit a worker.
     try:
         plan=read(path)
@@ -724,6 +731,8 @@ def _prediction_retry_window(path,slot,attempt,now_ms):
         start=plan['start_ms']+slot*rule['slot_spacing_ms']
         if now_ms>=start:return None
         delay_ms=min(10000,2000*2**min(max(attempt-1,0),3),start-now_ms)
+        if type(reservation_expires_ms) is int and reservation_expires_ms>=0:
+            delay_ms=min(delay_ms,max(1,reservation_expires_ms-now_ms+1))
         return {'plan':str(path),'slot':slot,'attempt':attempt,
                 'denied_at_ms':now_ms,'slot_start_ms':start,
                 'next_probe_at_ms':now_ms+delay_ms}
@@ -764,7 +773,10 @@ def guarded_evaluator_class(base,gate):
                     and not getattr(gate,'draining',False))
                 attempt=previous.get('attempt',0)+1 if same else 1
                 wall=int(time.time()*1000);tick=time.monotonic()
-                retry=_prediction_retry_window(path,slot,attempt,wall)
+                proof=prior.get('value_priority_evidence') if isinstance(prior,dict) else None
+                expiry=(proof.get('reservation_expires_ms') if isinstance(proof,dict)
+                        and 'VALUE_PRIORITY_FRESH_FLAT_ORIGINAL_REQUEST' in reasons else None)
+                retry=_prediction_retry_window(path,slot,attempt,wall,reservation_expires_ms=expiry)
                 self._launch_retry=({**retry,'key':key,'checked_tick':tick,
                     'next_tick':tick+(retry['next_probe_at_ms']-wall)/1000,
                     'reason_codes':list(reasons)} if retry is not None else None)
