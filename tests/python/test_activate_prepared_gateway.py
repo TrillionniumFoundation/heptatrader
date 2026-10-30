@@ -571,6 +571,37 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertIn("STOP_PROPAGATION", result["error"])
         self.assertFalse(any(e[0] == "stop" for e in self.events))
 
+    def test_managed_broker_with_zero_main_pid_survives_gateway_transaction_untouched(self):
+        broker = gateway.driver.BROKER_UNIT
+        execution = gateway.driver.EXECUTION_UNIT
+        self.units[broker].update(ActiveState="active", SubState="running", MainPID="0",
+                                 InvocationID="original-managed-broker")
+        original = copy.deepcopy(self.units[broker])
+        proof = {"managed_unit": dict(original, Id=broker, User="", Type="simple", ExitType="cgroup",
+                    ControlGroup="/fixture/ibgateway.service", ExecStart="configured-original-launcher",
+                    RemainAfterExit="no", ControlPID="0", Job="", KillMode="control-group",
+                    SendSIGKILL="yes", UnitFileState="static", StopWhenUnneeded="no"),
+            "broker_process": {"pid_key": ["99", "unchanged-java-start"], "exe_sha256": "a" * 64,
+                "cgroup": "/fixture/ibgateway.service", "netns": [1, 2]},
+            "execution_process": {"pid_key": list(self.alive[self.units[execution]["MainPID"]])},
+            "broker_manual_stop_shield_claimed": True,
+            "sockets": {"execution": {"inode": 10, "fds": [1]},
+                        "accepted": {"inode": 11, "fds": [2]}, "listener": {"inode": 12, "fds": [3]}}}
+        self.snapshot["interactive"] = copy.deepcopy(proof)
+        guards = {unit: self.guards[unit].read_bytes() for unit in (broker, execution)}
+        with mock.patch.object(gateway.driver, "interactive_broker_snapshot",
+                               side_effect=lambda *args: copy.deepcopy(proof)):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(self.units[broker], original)
+        self.assertEqual({unit: self.guards[unit].read_bytes() for unit in guards}, guards)
+        for unit in (broker, execution):
+            self.assertFalse(any(event and event[0] in ("stop", "start") and event[-1] == unit
+                                 for event in self.events))
+            self.assertFalse(self.guards[unit].with_name(gateway.POLICY).exists())
+            self.assertFalse(self.guards[unit].with_name(gateway.RELEASE).exists())
+        self.assertTrue(self.last_audit is not None)
+
     def test_only_known_expired_watch_may_disappear(self):
         watch = dict(record(), paper=False, watch=True, token_sha256="e" * 64, expires_at_ms=1)
         self.assertEqual(gateway.comparable_catalog([self.rows[0], watch], self.rows), self.rows)

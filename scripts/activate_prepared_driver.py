@@ -329,30 +329,65 @@ def interactive_broker_container(broker):
     return container, shell
 
 
-def configured_execstart(value):
+def configured_execstart(value, *, reason="INTERACTIVE_EXECUTION_EXECSTART_INVALID"):
     """Keep exact command policy, excluding systemd's last-run diagnostics."""
     command = re.fullmatch(
         r"\{ path=([^;{}\r\n]+) ; argv\[\]=([^;{}\r\n]+) ; ignore_errors=(yes|no) ; "
         r"start_time=[^;{}\r\n]+ ; stop_time=[^;{}\r\n]+ ; pid=[0-9]+ ; "
         r"code=[^;{}\r\n]+ ; status=[^;{}\r\n]+ \}", value)
     if command is None:
-        fail("INTERACTIVE_EXECUTION_EXECSTART_INVALID")
+        fail(reason)
     path, argv, ignore_errors = command.groups()
     return "{ path=" + path + " ; argv[]=" + argv + " ; ignore_errors=" + ignore_errors + " ; }"
 
 
-def interactive_broker_snapshot(broker_pid, selected, current):
-    """Prove the existing GNOME Broker path without claiming a stop shield.
+def managed_broker_container(broker, current):
+    """Bind the protected service that owns the actual connected Java process.
 
-    This optional path never starts/protects the GUI process. Its identity and
-    sockets must survive every original maintenance boundary unchanged; a fresh
-    authoritative owner audit is still the only authorization for driver stop.
+    ExitType=cgroup can keep a service running after its original main process
+    exits. MainPID=0 is accepted only with that lifetime policy; the live Java
+    process and its PAPER sockets remain independently required by the caller.
     """
-    unused = unit_properties(BROKER_UNIT, (*fence.SHOW_PROPS, "UnitFileState", "ExecStart", "ControlGroup"), "INTERACTIVE_BROKER_UNIT")
-    if ({key: unused[key] for key in fence.SHOW_PROPS} != current[BROKER_UNIT]
-            or unused["LoadState"] != "loaded" or unused["ActiveState"] != "inactive"
-            or unused["MainPID"] != "0" or unused["RefuseManualStop"] != "yes"):
-        fail("INTERACTIVE_BROKER_UNUSED_UNIT_REQUIRED")
+    properties = (*fence.SHOW_PROPS, "Id", "UnitFileState", "ExecStart", "ControlGroup",
+                  "User", "Type", "ExitType", "RemainAfterExit", "ControlPID", "Job",
+                  "KillMode", "SendSIGKILL", "Restart", "Transient", "Delegate", "NeedDaemonReload", "StopWhenUnneeded")
+    unit = unit_properties(BROKER_UNIT, properties, "MANAGED_BROKER_UNIT")
+    group = "/user.slice/user-%d.slice/user@%d.service/app.slice/" % (os.geteuid(), os.geteuid()) + BROKER_UNIT
+    if ({key: unit[key] for key in fence.SHOW_PROPS} != current[BROKER_UNIT]
+            or unit["Id"] != BROKER_UNIT or unit["LoadState"] != "loaded"
+            or unit["ActiveState"] != "active" or unit["SubState"] != "running"
+            or not unit["InvocationID"] or unit["RefuseManualStop"] != "yes"
+            or unit["User"] not in ("", str(os.geteuid()), pwd.getpwuid(os.geteuid()).pw_name)
+            or unit["ControlGroup"] != group or broker["cgroup"] != group
+            or unit["ControlPID"] != "0" or unit["Job"] or unit["NeedDaemonReload"] != "no"
+            or unit["RemainAfterExit"] != "no" or unit["StopWhenUnneeded"] != "no"
+            or unit["MainPID"] not in ("0", broker["pid_key"][0])
+            or unit["ExitType"] not in ("main", "cgroup")
+            or (unit["MainPID"] == "0" and unit["ExitType"] != "cgroup")):
+        fail("MANAGED_BROKER_UNIT_NOT_PROTECTED")
+    fence.check_state({BROKER_UNIT: current[BROKER_UNIT]}, {BROKER_UNIT: unit}, required=True)
+    # Our Gateway daemon-reload may reset last-run metadata without replacing
+    # the service or Java process. Preserve the exact configured command.
+    unit["ExecStart"] = configured_execstart(unit["ExecStart"], reason="MANAGED_BROKER_EXECSTART_INVALID")
+    return unit
+
+
+def interactive_broker_snapshot(broker_pid, selected, current):
+    """Prove the existing Broker process, container and live PAPER connection.
+
+    The GNOME path claims no stop shield. The managed path requires the existing
+    service shield; neither path installs one or grants Broker stop authority.
+    Identity and sockets must survive every original maintenance boundary. A
+    fresh authoritative owner audit remains required for each driver stop.
+    """
+    managed = current[BROKER_UNIT]["ActiveState"] == "active"
+    unused = None
+    if not managed:
+        unused = unit_properties(BROKER_UNIT, (*fence.SHOW_PROPS, "UnitFileState", "ExecStart", "ControlGroup"), "INTERACTIVE_BROKER_UNIT")
+        if ({key: unused[key] for key in fence.SHOW_PROPS} != current[BROKER_UNIT]
+                or unused["LoadState"] != "loaded" or unused["ActiveState"] != "inactive"
+                or unused["MainPID"] != "0" or unused["RefuseManualStop"] != "yes"):
+            fail("INTERACTIVE_BROKER_UNUSED_UNIT_REQUIRED")
     execution_unit = unit_properties(EXECUTION_UNIT, (*fence.SHOW_PROPS, "ExecStart", "ControlGroup"), "INTERACTIVE_EXECUTION_UNIT")
     if ({key: execution_unit[key] for key in fence.SHOW_PROPS} != current[EXECUTION_UNIT]
             or execution_unit["LoadState"] != "loaded" or execution_unit["ActiveState"] != "active"
@@ -369,9 +404,11 @@ def interactive_broker_snapshot(broker_pid, selected, current):
     if (execution_pid == broker_pid or execution["netns"] != broker["netns"]
             or execution["cgroup"] != execution_unit["ControlGroup"]
             or Path(broker["exe"]).name != "java"
-            or broker["cgroup"] == unused["ControlGroup"]):
+            or (managed and execution["cgroup"] == broker["cgroup"])
+            or (unused is not None and broker["cgroup"] == unused["ControlGroup"])):
         fail("INTERACTIVE_BROKER_TOPOLOGY_INVALID")
-    scope, shell = interactive_broker_container(broker)
+    scope, shell = ((managed_broker_container(broker, current), None) if managed
+                    else interactive_broker_container(broker))
     edges = unit_properties(selected, (*STOP_EDGES, "Conflicts", "ConflictedBy"), "INTERACTIVE_SELECTED_EDGES")
     if any(edges[name] for name in STOP_EDGES):
         fail("INTERACTIVE_BROKER_DRIVER_STOP_PROPAGATION")
@@ -426,14 +463,21 @@ def interactive_broker_snapshot(broker_pid, selected, current):
                 fail("INTERACTIVE_BROKER_SOCKET_CHANGED_DURING_INSPECTION")
     if interactive_process(execution_pid) != execution or interactive_process(broker_pid) != broker:
         fail("INTERACTIVE_BROKER_PROCESS_CHANGED_DURING_INSPECTION")
-    if shell is not None:
+    if managed:
+        if managed_broker_container(broker, current) != scope:
+            fail("MANAGED_BROKER_UNIT_CHANGED_DURING_INSPECTION")
+    elif shell is not None:
         if (interactive_process(int(scope["MainPID"])) != shell
                 or unit_properties(scope["Id"], tuple(scope), "INTERACTIVE_BROKER_SCOPE") != scope):
             fail("INTERACTIVE_BROKER_GNOME_SESSION_CHANGED_DURING_INSPECTION")
-    proof = {"unused_unit": unused, "execution_unit": execution_unit,
-             "execution_process": execution, "broker_process": broker, "scope": scope,
+    proof = {"execution_unit": execution_unit,
+             "execution_process": execution, "broker_process": broker,
              "selected_edges": edges, "shutdown_target": shutdown, "profile": environment,
-             "sockets": sockets, "broker_manual_stop_shield_claimed": False}
+             "sockets": sockets, "broker_manual_stop_shield_claimed": managed}
+    if managed:
+        proof["managed_unit"] = scope
+    else:
+        proof.update(unused_unit=unused, scope=scope)
     if shell is not None:
         proof["gnome_shell_process"] = shell
     return proof

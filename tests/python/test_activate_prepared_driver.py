@@ -1366,7 +1366,7 @@ class InteractiveBrokerSnapshotTests(unittest.TestCase):
                     self.units[self.selected][name] = original
 
     def test_unused_unit_requires_exact_loaded_inactive_zero_pid_and_guard(self):
-        for name, changed in (("LoadState", "not-found"), ("ActiveState", "active"),
+        for name, changed in (("LoadState", "not-found"), ("ActiveState", "deactivating"),
                               ("MainPID", "123"), ("RefuseManualStop", "no")):
             with self.subTest(property=name):
                 old = self.units[activation.BROKER_UNIT][name]
