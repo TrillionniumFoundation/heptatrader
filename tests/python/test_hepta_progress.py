@@ -1055,4 +1055,92 @@ class ProgressTests(unittest.TestCase):
   self.assertEqual(driver['model_availability']['state'],'CURRENT_MODEL_AVAILABILITY_UNCONFIRMED')
   self.assertFalse(out['trading']['trade_authority_granted'])
 
+ def test_trainer_future_activation_keeps_running_owner_and_timer_states_separate(self):
+  root,_=self.fixture_learning();name='heptatrader-laya-trainer.service'
+  self.units[name].update(LoadState='loaded',MainPID='9',SubState='running',UnitFileState='enabled')
+  status_path=root/'control/status.json';status=json.loads(status_path.read_text())
+  self.write(status_path,{**status,'state':'EVALUATING_BOUNDED_CANDIDATE_QUEUE',
+   'pending_original_trials':1,'current_blockers':['EVALUATING_BOUNDED_CANDIDATE_QUEUE']})
+  before=self.collect()['learning'][0];raw=status_path.read_bytes()
+  self.units[name].update(Restart='no',DropInPaths='/owner/unparsed-entry-config.conf',
+   ConditionResult='yes',Conditions='[unprintable]')
+  timer_name='heptatrader-laya-trainer-readmission.timer'
+  for active,enabled,reload in [('inactive','disabled','no'),('active','disabled','no'),('inactive','enabled','yes')]:
+   with self.subTest(timer_active=active,timer_enabled=enabled,need_reload=reload):
+    self.units[name]['NeedDaemonReload']=reload
+    self.units[timer_name]={'LoadState':'loaded','ActiveState':active,'UnitFileState':enabled,
+     'SubState':'waiting' if active=='active' else 'dead','NeedDaemonReload':'no'}
+    with mock.patch.object(progress.subprocess,'run',side_effect=AssertionError('no systemd mutation or probe')):
+     out=self.collect()
+    entry=out['learning'][0];activation=entry['future_activation'];configuration=activation['service_configuration']
+    self.assertTrue(activation['current_supervisor_running']);self.assertTrue(entry['activity']['supervisor_running'])
+    self.assertEqual(activation['scope'],'FUTURE_SERVICE_ACTIVATION_ONLY')
+    self.assertEqual(configuration['source'],'SYSTEMD_MANAGER_REPORTED')
+    self.assertEqual(configuration['NeedDaemonReload'],reload);self.assertEqual(configuration['Restart'],'no')
+    self.assertEqual(configuration['DropInPaths'],'/owner/unparsed-entry-config.conf')
+    self.assertEqual(configuration['ConditionResult'],'yes');self.assertEqual(configuration['Conditions'],'[unprintable]')
+    self.assertEqual(activation['condition_result_scope'],'LAST_ACTIVATION_RESULT_ONLY')
+    self.assertEqual(activation['unknown_metadata'],['service_configuration.Conditions'])
+    self.assertEqual(activation['readmission_timer']['unit'],timer_name)
+    self.assertEqual(activation['readmission_timer']['ActiveState'],active)
+    self.assertEqual(activation['readmission_timer']['UnitFileState'],enabled)
+    self.assertEqual(activation['next_action'],'OWNER_REVIEW_ORIGINAL_TRAINER_AND_READMISSION_CONFIGURATION')
+    self.assertTrue(activation['recovery_conditions']['original_owner_and_change_provenance_required'])
+    self.assertFalse(activation['worker_launch_authority'])
+    self.assertEqual(entry['current_blockers'],before['current_blockers']);self.assertEqual(entry['resume'],before['resume'])
+    self.assertEqual(entry['latest_forward'],before['latest_forward']);self.assertEqual(out['source_errors'],[])
+    rendered=next(line for line in progress.format_text(out).splitlines() if line.startswith('TRAINER future activation '))
+    self.assertIn('"Restart":"no"',rendered);self.assertIn('"NeedDaemonReload":"'+reload+'"',rendered)
+    self.assertIn('"ActiveState":"'+active+'"',rendered);self.assertIn('"UnitFileState":"'+enabled+'"',rendered)
+    self.assertIn('LAST_ACTIVATION_RESULT_ONLY',rendered);self.assertEqual(status_path.read_bytes(),raw)
+
+ def test_missing_activation_metadata_stays_unknown_and_other_trainers_do_not_borrow_timer(self):
+  self.fixture_learning();name='heptatrader-laya-trainer.service';self.units[name]['MainPID']='9'
+  activation=self.collect()['learning'][0]['future_activation']
+  for key in ('NeedDaemonReload','Restart','DropInPaths','ConditionResult','Conditions'):
+   self.assertIsNone(activation['service_configuration'][key]);self.assertIn('service_configuration.'+key,activation['unknown_metadata'])
+  for key in ('LoadState','ActiveState','SubState','UnitFileState','NeedDaemonReload'):
+   self.assertIsNone(activation['readmission_timer'][key]);self.assertIn('readmission_timer.'+key,activation['unknown_metadata'])
+  self.assertFalse(activation['worker_launch_authority']);self.assertTrue(activation['current_supervisor_running'])
+  self.assertEqual(activation['next_action'],'READ_ORIGINAL_TRAINER_AND_READMISSION_METADATA')
+  self.assertEqual(activation['recovery_conditions'],{'fresh_manager_configuration_and_reload_state_required':True})
+  alternate='heptatrader-laya-other-trainer.service';self.units[alternate]=self.units.pop(name)
+  self.units[alternate]['Id']=alternate
+  self.units['heptatrader-laya-trainer-readmission.timer']={'ActiveState':'active','UnitFileState':'enabled'}
+  entry=self.collect()['learning'][0]
+  self.assertEqual(entry['unit'],alternate);self.assertNotIn('future_activation',entry)
+
+ def test_normal_activation_configuration_observes_lifecycle_without_owner_review(self):
+  self.fixture_learning();name='heptatrader-laya-trainer.service'
+  self.units[name].update(LoadState='loaded',MainPID='9',SubState='running',UnitFileState='enabled',
+   NeedDaemonReload='no',Restart='on-failure',DropInPaths='',ConditionResult='yes',Conditions='[unprintable]')
+  self.units['heptatrader-laya-trainer-readmission.timer']={'LoadState':'loaded','ActiveState':'active',
+   'SubState':'waiting','UnitFileState':'enabled','NeedDaemonReload':'no'}
+  entry=self.collect()['learning'][0];activation=entry['future_activation']
+  self.assertEqual(activation['next_action'],'OBSERVE_ORIGINAL_TRAINER_LIFECYCLE')
+  self.assertEqual(activation['recovery_conditions'],{})
+  self.assertEqual(activation['unknown_metadata'],['service_configuration.Conditions'])
+  self.assertEqual(activation['condition_result_scope'],'LAST_ACTIVATION_RESULT_ONLY')
+  self.assertTrue(activation['current_supervisor_running']);self.assertFalse(activation['worker_launch_authority'])
+  self.assertEqual(entry['current_blockers'],[])
+
+ def test_discovery_retains_raw_activation_properties_without_reading_dropins_or_reloading(self):
+  name='heptatrader-laya-trainer.service';timer='heptatrader-laya-trainer-readmission.timer'
+  fields={'NeedDaemonReload':'yes','Restart':'no','DropInPaths':r'/owner/a.conf /owner/name\x20b.conf',
+   'ConditionResult':'yes','Conditions':'[unprintable]'}
+  listing=subprocess.CompletedProcess([],0,name+' enabled\n'+timer+' disabled\n','')
+  output=('Id='+name+'\nLoadState=loaded\nMainPID=0\nActiveState=inactive\nUnitFileState=enabled\nExecStart=\n'
+   +'\n'.join(key+'='+value for key,value in fields.items())+'\n\nId='+timer+
+   '\nLoadState=loaded\nMainPID=0\nActiveState=inactive\nUnitFileState=disabled\nNeedDaemonReload=no\n')
+  details=subprocess.CompletedProcess([],0,output,'')
+  with mock.patch.object(progress.subprocess,'run',side_effect=[listing,details]) as run, \
+    mock.patch.object(progress,'_object',side_effect=AssertionError('no drop-in or credential read')):
+   units=progress.discover_units()
+  self.assertEqual([call.args[0][3] for call in run.call_args_list],['list-unit-files','show'])
+  requested=next(arg for arg in run.call_args_list[1].args[0] if arg.startswith('--property='))
+  self.assertTrue(set(fields)<=set(requested.removeprefix('--property=').split(',')))
+  view=progress.unit_view(units[name])
+  self.assertEqual({key:view[key] for key in fields},fields)
+  self.assertEqual(units[timer]['UnitFileState'],'disabled')
+
 if __name__=='__main__':unittest.main()
