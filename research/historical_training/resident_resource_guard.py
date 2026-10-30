@@ -979,6 +979,32 @@ def verify_config(c):
     return original
 
 
+def _trainer_worker_reaped(service):
+    missing=object()
+    return (getattr(service,'child',missing) is None
+            and getattr(service,'_pending_worker_completion',missing) is None)
+
+
+def _drain_trainer_worker(service,gate):
+    """Keep the original locks until the pending child's natural reap."""
+    first_error=None
+    while not service.stop and not _trainer_worker_reaped(service):
+        try:
+            if (not hasattr(service,'child') or not hasattr(service,'_pending_worker_completion')
+                    or service._pending_worker_completion is None):
+                raise EvidenceError('TRAINER_DRAIN_COMPLETION_IDENTITY_UNAVAILABLE')
+            service.reap_pending_worker()
+        except Exception as exc:
+            if first_error is None:
+                first_error=exc
+                try:
+                    atomic(gate.root/'trainer-error.json',{'at_ms':int(time.time()*1000),
+                        'error':str(exc),'orders_sent':0,'active':True,'drain_waiting_for_worker_reap':True})
+                except Exception:pass
+        if not service.stop and not _trainer_worker_reaped(service):time.sleep(1)
+    return first_error
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--role',choices=['trainer','evaluator'],required=True)
     p.add_argument('--check-only',action='store_true')
@@ -1031,6 +1057,7 @@ def main():
             return
         if a.role=='trainer':service.recover()
         while not service.stop:
+            if a.role=='trainer' and gate.draining:break
             try:
                 service.step()
                 error_path=gate.root/(a.role+'-error.json')
@@ -1047,10 +1074,8 @@ def main():
                     atomic(service.root/'status.json',{'at_ms':failed_at,'state':'INDEPENDENT_EVALUATION_UNAVAILABLE',
                         'reason':str(exc),'promotion_performed':False,'broker_orders_sent':0})
                 if a.once:raise
-            # Trainer step waits for its bounded child and commits completion;
-            # --once never interrupts it to dispatch another candidate. The
-            # existing finally block still reaps a failed/pending child, while
-            # inherited locks fence recovery if an unkillable child survives.
+            # A drain waits only for the original pending child in cleanup;
+            # it must not run another queue/admission step or force that child.
             if a.once or (gate.draining and (a.role=='trainer' or not service.tasks)):break
             poll_seconds=30 if a.role=='trainer' else evaluator_idle_poll_seconds(gate,service.tasks)
             for _ in range(poll_seconds):
@@ -1058,18 +1083,25 @@ def main():
                 time.sleep(1)
     finally:
         try:
+            drain_error=None;active_error=sys.exc_info()[1]
             if a.role=='trainer':
-                child=getattr(service,'child',None)
-                if child is not None:
-                    from laya_cell.resident import terminate_worker
-                    terminate_worker(child)
-                reaped=child is None or child.poll() is not None
+                if gate.draining and not service.stop:
+                    drain_error=_drain_trainer_worker(service,gate)
+                if gate.draining and not service.stop:
+                    reaped=_trainer_worker_reaped(service)
+                else:
+                    child=getattr(service,'child',None)
+                    if child is not None:
+                        from laya_cell.resident import terminate_worker
+                        terminate_worker(child)
+                    reaped=child is None or child.poll() is not None
             else:
                 stop_workers=getattr(service,'stop_workers',None)
                 if callable(stop_workers):stop_workers()
                 reaped=not any(p.poll() is None for p,_,_ in service.tasks.values())
             # Close only; LOCK_UN would unlock the child's shared description.
             if reaped:gate.release()
+            if a.once and drain_error is not None and active_error is None:raise drain_error
         finally:
             if a.role=='trainer':service.db.close()
             os.close(fd)
