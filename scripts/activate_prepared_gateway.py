@@ -496,10 +496,8 @@ def read_tool(plan, environment, owner, tool, *fields):
             "call", tool, *fields],
             capture_output=True, timeout=12)
     except subprocess.TimeoutExpired as error:
-        pinned(plan["reader"])
         read_tool_failure(tool, "TIMEOUT", stdout=error.output, stderr=error.stderr, timeout=error.timeout)
     except OSError as error:
-        pinned(plan["reader"])
         read_tool_failure(tool, "OS_ERROR", os_errno=error.errno, error_type=type(error))
     pinned(plan["reader"])
     try:

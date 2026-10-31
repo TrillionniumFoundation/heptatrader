@@ -970,6 +970,16 @@ class GatewayReadDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(detail["kind"], "OS_ERROR")
                 self.assertEqual(detail["os_errno"], number)
 
+    def test_failed_reader_keeps_original_pin_sequence_and_cannot_mask_failure_type(self):
+        # The old code only re-pinned after a reader returned. Adding a pin on
+        # exception could turn a timeout into a typed, retryable missing file.
+        for error in (subprocess.TimeoutExpired(["/private/secret-token"], 12),
+                PermissionError(13, "secret-output", "/private/secret-token")):
+            with self.subTest(error_type=type(error)), mock.patch.object(gateway, "pinned", side_effect=[
+                    Path("/fixture/heptactl"), FileNotFoundError(2, "secret-output")]) as pin:
+                self.failure(error=error, error_type=type(error))
+                pin.assert_called_once_with(self.plan["reader"])
+
 
 class ControllerStartupObservationTests(unittest.TestCase):
     def setUp(self):
