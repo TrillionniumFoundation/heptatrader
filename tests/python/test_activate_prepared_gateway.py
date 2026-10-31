@@ -10,6 +10,7 @@ import subprocess
 import shutil
 import sys
 import tempfile
+import traceback
 import types
 import unittest
 from unittest import mock
@@ -517,6 +518,36 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(self.events.count(("start", gateway.GATEWAY)), starts)
         self.assertEqual(self.resume_count, 1)
 
+    def test_new_gateway_read_failure_is_diagnostic_and_same_plan_resume_does_not_repeat_controls(self):
+        failed_reads = 0
+        def native(argv, **kwargs):
+            nonlocal failed_reads
+            result = self.native_call(argv, **kwargs)
+            if ("system.get_health" in argv and self.current_binary == self.packages["candidate"]["binary"]):
+                failed_reads += 1
+                return subprocess.CompletedProcess(argv, 6, b"", b"DISCOVERY_LIST_REJECTED\n")
+            return result
+        with mock.patch.object(gateway.subprocess, "run", native):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertEqual(result["phase"], "GATEWAY_STARTED")
+        self.assertIn('"client_reason":"DISCOVERY_LIST_REJECTED"', result["error"])
+        self.assertEqual(failed_reads, 1)
+        self.assertEqual(self.resume_count, 0)
+        checkpoint = json.loads((self.root / "operator-maintenance" / gateway.CHECKPOINT).read_text())
+        self.assertFalse(checkpoint["owner_progress"][self.owner["token_sha256"]].get("resume_sent"))
+        controls = [event for event in self.events if event and event[0] in ("start", "stop")
+            and event[-1] in (gateway.GATEWAY, gateway.EXECUTION, gateway.driver.BROKER_UNIT)]
+        fences = sum("recovery-query" in event for event in self.events)
+        audits = self.audit_number
+        result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual([event for event in self.events if event and event[0] in ("start", "stop")
+            and event[-1] in (gateway.GATEWAY, gateway.EXECUTION, gateway.driver.BROKER_UNIT)], controls)
+        self.assertEqual(sum("recovery-query" in event for event in self.events), fences)
+        self.assertEqual(self.resume_count, 1)
+        self.assertGreater(self.audit_number, audits)
+
     def test_committed_recovery_query_is_not_replayed_after_checkpoint_interruption(self):
         original = gateway.atomic_json
         durable_before_fence = None
@@ -838,6 +869,106 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(result["status"], "HELD", result)
         self.assertIn("REFRESH_NOT_ALLOWED", result["error"])
         self.assertFalse(any(event[0] == "stop" for event in self.events))
+
+
+class GatewayReadDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.plan = {"reader": {"path": "/fixture/heptactl", "sha256": "a" * 64}}
+        self.environment = {"HEPTA_TOOL_SOCKET": "/private/gateway.sock"}
+        self.owner = {"token_path": "/private/secret-token"}
+        patcher = mock.patch.object(gateway, "pinned", return_value=Path("/fixture/heptactl"))
+        patcher.start(); self.addCleanup(patcher.stop)
+
+    def failure(self, result=None, error=None, error_type=RuntimeError):
+        with mock.patch.object(gateway.subprocess, "run", return_value=result, side_effect=error) as run:
+            with self.assertRaisesRegex(error_type, r"NATIVE_READ_NOT_CONFIRMED:system\.get_health:") as caught:
+                gateway.read_tool(self.plan, self.environment, self.owner, "system.get_health")
+            run.assert_called_once()
+        self.assertIs(type(caught.exception), error_type)
+        if isinstance(error, OSError):
+            self.assertEqual(caught.exception.errno, error.errno)
+        if isinstance(error, subprocess.TimeoutExpired):
+            self.assertEqual(caught.exception.timeout, error.timeout)
+            self.assertIsNone(caught.exception.output)
+            self.assertIsNone(caught.exception.stderr)
+        raw = str(caught.exception)
+        self.assertLess(len(raw), 1024)
+        self.assertNotIn("secret-token", raw)
+        self.assertNotIn("secret-output", raw)
+        self.assertNotIn("SECRET_OUTPUT", raw)
+        self.assertNotIn("/private/", raw)
+        rendered = "".join(traceback.format_exception(caught.exception))
+        self.assertNotIn("secret-token", rendered)
+        self.assertNotIn("secret-output", rendered)
+        self.assertNotIn("SECRET_OUTPUT", rendered)
+        self.assertNotIn("/private/", rendered)
+        return json.JSONDecoder().raw_decode(raw.split("NATIVE_READ_NOT_CONFIRMED:system.get_health:", 1)[1])[0]
+
+    def test_success_preserves_payload_and_existing_single_read_timeouts(self):
+        payload = {"execution_service_epoch": "same-native-epoch"}
+        response = {"status": "ok", "tool": "system.get_health", "payload": payload}
+        with mock.patch.object(gateway.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(response).encode(), b"")) as run:
+            self.assertEqual(gateway.read_tool(self.plan, self.environment, self.owner, "system.get_health"), payload)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs, {"capture_output": True, "timeout": 12})
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[argv.index("--io-timeout-ms") + 1], "4000")
+
+    def test_known_client_reason_is_retained_without_retry(self):
+        for code in (b"DISCOVERY_LIST_REJECTED", b"SOCKET_CONNECT_FAILED", b"FRAME_BODY_TIMEOUT"):
+            with self.subTest(code=code):
+                detail = self.failure(subprocess.CompletedProcess([], 6, b"", code + b"\n"))
+                self.assertEqual(detail["returncode"], 6)
+                self.assertEqual(detail["client_reason"], code.decode())
+                self.assertEqual(detail["stdout_bytes"], 0)
+                self.assertEqual(detail["stderr_bytes"], len(code) + 1)
+
+    def test_native_error_uses_existing_strict_projection_and_omits_detail(self):
+        response = {"status": "error", "tool": "system.get_health", "reason_code": "READ_TOOL_FAILED",
+            "detail": "secret-output /private/secret-token", "order_id": -1, "payload": None}
+        detail = self.failure(subprocess.CompletedProcess([], 9, json.dumps(response).encode(), b""))
+        self.assertEqual(detail["reason_code"], "READ_TOOL_FAILED")
+        self.assertEqual(detail["status"], "error")
+        self.assertTrue(detail["tool_matches"])
+        self.assertFalse(detail["payload_object"])
+        for changed in (dict(response, reason_code="secret-output"), dict(response, reason_code="SECRET_OUTPUT"),
+                dict(response, extra="secret-output"),
+                dict(response, detail="secret-output" * 4096), dict(response, tool="secret-output")):
+            with self.subTest(changed=list(changed)):
+                detail = self.failure(subprocess.CompletedProcess([], 9, json.dumps(changed).encode(), b""))
+                self.assertNotIn("reason_code", detail)
+
+    def test_invalid_json_and_nonobject_envelopes_fail_with_bounded_classification(self):
+        for raw in (b"secret-output", b'{"status":"ok","status":"secret-output"}', b"\xff", b"[" * 1200):
+            with self.subTest(raw=raw[:24]):
+                detail = self.failure(subprocess.CompletedProcess([], 0, raw, b"secret-output"))
+                self.assertEqual(detail["kind"], "INVALID_JSON")
+        for raw in (b"null", b"[]", b'"secret-output"'):
+            with self.subTest(raw=raw):
+                detail = self.failure(subprocess.CompletedProcess([], 0, raw, b""))
+                self.assertEqual(detail["kind"], "INVALID_ENVELOPE")
+
+    def test_unknown_output_and_invalid_envelope_strings_are_not_copied(self):
+        response = {"status": "secret-output", "tool": "/private/secret-token", "payload": ["secret-output"]}
+        detail = self.failure(subprocess.CompletedProcess([], 1, json.dumps(response).encode(), b"secret-output"))
+        self.assertEqual(detail["status"], "UNKNOWN")
+        self.assertFalse(detail["tool_matches"])
+        self.assertFalse(detail["payload_object"])
+        self.assertNotIn("client_reason", detail)
+
+    def test_timeout_and_os_error_do_not_expose_command_or_exception_text(self):
+        detail = self.failure(error=subprocess.TimeoutExpired(["/private/secret-token"], 12,
+            output=b"secret-output", stderr=b"secret-output"), error_type=subprocess.TimeoutExpired)
+        self.assertEqual(detail["kind"], "TIMEOUT")
+        self.assertIsNone(detail["returncode"])
+        self.assertEqual(detail["stdout_bytes"], len(b"secret-output"))
+        for error_type, number in ((PermissionError, 13), (FileNotFoundError, 2), (OSError, 5)):
+            with self.subTest(error_type=error_type):
+                detail = self.failure(error=error_type(number, "secret-output", "/private/secret-token"),
+                    error_type=error_type)
+                self.assertEqual(detail["kind"], "OS_ERROR")
+                self.assertEqual(detail["os_errno"], number)
 
 
 class ControllerStartupObservationTests(unittest.TestCase):

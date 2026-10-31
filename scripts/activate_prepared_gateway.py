@@ -490,16 +490,80 @@ def fresh_audit(plan, environment, owner):
 
 def read_tool(plan, environment, owner, tool, *fields):
     binary = pinned(plan["reader"])
-    result = subprocess.run([str(binary), "--socket", environment["HEPTA_TOOL_SOCKET"],
-        "--token-file", owner["token_path"], "--io-timeout-ms", "4000", "--call-id", "gateway-status-" + uuid.uuid4().hex,
-        "call", tool, *fields],
-        capture_output=True, timeout=12)
+    try:
+        result = subprocess.run([str(binary), "--socket", environment["HEPTA_TOOL_SOCKET"],
+            "--token-file", owner["token_path"], "--io-timeout-ms", "4000", "--call-id", "gateway-status-" + uuid.uuid4().hex,
+            "call", tool, *fields],
+            capture_output=True, timeout=12)
+    except subprocess.TimeoutExpired as error:
+        pinned(plan["reader"])
+        read_tool_failure(tool, "TIMEOUT", stdout=error.output, stderr=error.stderr, timeout=error.timeout)
+    except OSError as error:
+        pinned(plan["reader"])
+        read_tool_failure(tool, "OS_ERROR", os_errno=error.errno, error_type=type(error))
     pinned(plan["reader"])
-    value = strict(result.stdout) if result.stdout else {}
+    try:
+        value = strict(result.stdout) if result.stdout else {}
+    except (ValueError, UnicodeError, RecursionError):
+        read_tool_failure(tool, "INVALID_JSON", result)
+    if not isinstance(value, dict):
+        read_tool_failure(tool, "INVALID_ENVELOPE", result)
     payload = value.get("payload") or {}
     if result.returncode or value.get("status") != "ok" or value.get("tool") != tool or not isinstance(payload, dict):
-        fail("NATIVE_READ_NOT_CONFIRMED:" + tool)
+        read_tool_failure(tool, "REPLY_NOT_CONFIRMED", result, envelope=value)
     return payload
+
+
+def read_tool_failure(tool, kind, result=None, *, stdout=None, stderr=None, os_errno=None,
+        error_type=RuntimeError, timeout=None, envelope=None):
+    """Retain bounded diagnostics in the existing error receipt, never a permit.
+
+    No command, token path, raw output or arbitrary exception text is retained.
+    This function does not retry a read or any control RPC. Existing typed
+    startup waits remain with their callers; audit freshness is unchanged.
+    """
+    rc = result.returncode if result is not None else None
+    if result is not None:
+        stdout, stderr = result.stdout, result.stderr
+    details = {"kind": kind, "returncode": rc if type(rc) is int and -255 <= rc <= 255 else None,
+        "stdout_bytes": len(stdout or b""), "stderr_bytes": len(stderr or b"")}
+    if type(os_errno) is int and 0 <= os_errno <= 255:
+        details["os_errno"] = os_errno
+    # Reuse the maintenance latch's strict, <=4 KiB native error projection.
+    # Additional stderr codes are literal reasons from the pinned native CLI.
+    codes = driver.latch.NATIVE_READ_STDERR_CODES | {
+        "SOCKET_CONNECT_FAILED", "FRAME_WRITE_TIMEOUT", "FRAME_HEADER_TIMEOUT", "FRAME_BODY_TIMEOUT",
+        "INVALID_RESULT_ENVELOPE", "UNKNOWN_RESULT_STATUS", "RESULT_TOOL_MISMATCH"}
+    if type(stderr) is bytes and len(stderr) <= 128:
+        code = stderr.decode("ascii", errors="replace").strip()
+        if code in codes:
+            details["client_reason"] = code
+    if rc == 9:
+        code = driver.latch._native_error_reason(stdout, tool)
+        # Canonical syntax alone is not a secret filter. Retain only literal
+        # read-registry / remote-Execution reasons proven by native source.
+        if code in {"READ_TOOL_FAILED", "TOOL_HANDLER_UNAVAILABLE", "REMOTE_EXECUTION_DISABLED",
+                "EXECUTION_SERVICE_EPOCH_MISMATCH", "EXECUTION_SERVICE_EPOCH_CHANGED",
+                "EXECUTION_GATEWAY_DAEMON_IDENTITY_UNAVAILABLE", "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH",
+                "EXECUTION_GATEWAY_CONTEXT_MISMATCH"}:
+            details["reason_code"] = code
+    if envelope is not None:
+        status = envelope.get("status")
+        details["status"] = status if status in (
+            "ok", "error", "permission_denied", "invalid_tool", "rejected", "duplicate", "uncertain") else "UNKNOWN"
+        details["tool_matches"] = envelope.get("tool") == tool
+        details["payload_object"] = isinstance(envelope.get("payload"), dict)
+    message = "NATIVE_READ_NOT_CONFIRMED:" + tool + ":" + json.dumps(details, sort_keys=True, separators=(",", ":"))
+    # Preserve OS exception types/errno: existing native maintenance explicitly
+    # treats FileNotFoundError and PermissionError as bounded startup waits.
+    # Suppress contexts that could retain argv, paths, or arbitrary output.
+    if issubclass(error_type, OSError):
+        raise error_type(os_errno, message) from None
+    if kind == "TIMEOUT":
+        # Keep the original timeout type/budget without exposing its argv or
+        # retaining partial output. Existing callers still see a timeout.
+        raise subprocess.TimeoutExpired(message, timeout) from None
+    raise RuntimeError(message) from None
 
 
 def original_command(plan, environment, owner, audit):
