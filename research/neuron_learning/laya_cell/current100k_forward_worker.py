@@ -1,4 +1,4 @@
-"""One bounded signed Value observation turn; no trading API or warm GPU daemon.
+"""Bounded signed Value observations; default one turn, explicit finite warmth.
 
 A finite external timer invokes this worker. Inference holds the SAME heavy-worker
 lock through tensor destruction. Missing/late requests remain missed. Evaluation
@@ -22,6 +22,9 @@ def validate_runtime(c):
  for name,want in inventory.items():
   p=Path(name)
   if p.is_absolute() or '..' in p.parts or sha_file(root/p)!=want:raise ContractError('VALUE_FORWARD_RUNTIME_CHANGED')
+ if c.get('warm_flat_profile') is not None:
+  from .current100k_warm_flat import check_source_pin
+  check_source_pin(c)
 
 
 def acquire_value_resources(gate,subject):
@@ -33,6 +36,8 @@ def acquire_value_resources(gate,subject):
 
 
 def run(c,mode):
+ if mode=='predict' and c.get('warm_flat_profile') is not None:
+  raise ContractError('VALUE_WARM_PARENT_ENTRY_REQUIRED')
  from .financial_forward_predict import PhaseClock,RegisteredPlanSnapshot
  clock=PhaseClock();started_ms=int(time.time()*1000)
  validate_runtime(c);clock.mark('worker_runtime_validation')
@@ -138,7 +143,12 @@ def main():
  fd=os.open(root/(a.mode+'-worker.lock'),os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
  try:
-  try:print(json.dumps(run(c,a.mode)),flush=True)
+  try:
+   if a.mode=='predict' and c.get('warm_flat_profile') is not None:
+    from .current100k_warm_flat import run_parent
+    result=run_parent(c,a.config,fd)
+   else:result=run(c,a.mode)
+   print(json.dumps(result),flush=True)
   except Exception as exc:
    status={'at_ms':int(time.time()*1000),'state':'UNAVAILABLE_NO_SELECTION','reason':str(exc)[:220],'broker_orders_sent':0,'actor_updated':False}
    atomic(root/('predictor-status.json' if a.mode=='predict' else 'evaluator-status.json'),status)

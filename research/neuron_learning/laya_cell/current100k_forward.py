@@ -41,6 +41,10 @@ def validate_bound_plan(plan,c):
  check_readout_profile(c.get('readout_profile'))
  validate_plan(plan,int(time.time()*1000))
  if plan.get('schema')!=PLAN_SCHEMA:raise ContractError('CURRENT100K_FORWARD_PLAN_SCHEMA')
+ if plan.get('warm_flat_profile') is not None:
+  from .current100k_warm_flat import check_profile
+  check_profile(plan['warm_flat_profile'])
+  if 'current100k_warm_flat.py' not in plan.get('runtime_sha256',{}):raise ContractError('VALUE_WARM_PLAN_SOURCE_PIN_REQUIRED')
  scope=plan.get('behavior_scope',{})
  if (scope.get('behavior_profile')!=BEHAVIOR or scope.get('reference_notional_usd')!=100000
      or scope.get('quantity') is not None or plan.get('producer_registration',{}).get('sha256')!=scope.get('producer_manifest_sha256') or scope.get('instrument')!='EUR.USD' or scope.get('currency')!='USD'
@@ -181,6 +185,11 @@ def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy
   plan['readout_profile']=dict(c['readout_profile'])
   for name in ('financial_value_profile.py','financial_value_train.py'):
    plan['runtime_sha256'][name]=sha_file(source/name)
+ if config.get('warm_flat_profile') is not None:
+  from .current100k_warm_flat import check_profile,check_source_pin
+  check_profile(config['warm_flat_profile']);check_source_pin(config)
+  plan['warm_flat_profile']=dict(config['warm_flat_profile'])
+  plan['runtime_sha256']['current100k_warm_flat.py']=sha_file(source/'current100k_warm_flat.py')
  plan['plan_id']=digest(plan);validate_bound_plan(plan,c)
  folder=Path(config['forward_root'])/'plans'/plan['plan_id'];write_once(folder/'plan.json',plan)
  seal=sign_record(config,'registrar',{'plan_id':plan['plan_id'],'plan_file_sha256':sha_file(folder/'plan.json'),'at_ms':int(time.time()*1000)})
