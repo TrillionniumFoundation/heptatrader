@@ -9,6 +9,27 @@ NY = ZoneInfo("America/New_York")
 DAY_MS = 86400000
 
 
+def upcoming_regular_openings(now_ms):
+    """Advisory wakeup candidates, never admission of a future plan.
+
+    Resolve each local opening separately so a weekend crossing a daylight
+    saving transition has the correct UTC time. The pinned session clock still
+    decides whether a boundary actually opens a regular session.
+    """
+    if type(now_ms) is not int or now_ms < 0:
+        raise ValueError("FORWARD_INTEGER_REQUIRED:now_ms")
+    try:
+        day = datetime.fromtimestamp(now_ms / 1000, timezone.utc).astimezone(NY).date()
+    except (OverflowError, OSError, ValueError):
+        raise ValueError("FORWARD_DATETIME_RANGE") from None
+    for offset in range(8):
+        opening = datetime.combine(day + timedelta(days=offset), time(17, 15), tzinfo=NY)
+        when = int(opening.timestamp() * 1000)
+        if now_ms < when <= now_ms + 7 * DAY_MS:
+            if session_clock(opening)["calendar_regular_session_open"]:
+                yield when
+
+
 def calendar_admission(candidate, plan, now_ms, *, clock=session_clock):
     """The caller supplies the final proposal from the existing rule builder."""
     if not isinstance(candidate, Mapping) or not isinstance(plan, Mapping):

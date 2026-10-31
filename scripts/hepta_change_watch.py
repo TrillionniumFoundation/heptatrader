@@ -18,6 +18,9 @@ class _ChangeWatch:
         self._file_wd = self._parent_wd = -1
         self._name = b""
         self.last_events = []
+        self._many_files = self._many_parents = None
+        self._changed_paths = set()
+        self._coverage_lost = False
 
     @property
     def available(self):
@@ -25,11 +28,13 @@ class _ChangeWatch:
 
     def close(self):
         fd, self.fd = self.fd, -1
+        self._many_files = self._many_parents = None
         if fd >= 0:
             os.close(fd)
 
     def arm(self, path, *, directory=False):
         self.close()
+        self._coverage_lost = False
         if sys.platform != 'linux':
             return False
         try:
@@ -58,13 +63,15 @@ class _ChangeWatch:
 
 
     def arm_many(self, paths):
-        """Watch a stable set of originals with one fd; any event invalidates it."""
+        """Watch a stable set with one fd; changed() keeps its conservative API."""
         paths = tuple(dict.fromkeys(Path(path) for path in paths))
         if not paths:
             self.close()
             return False
         if not self.arm(paths[0]):
             return False
+        self._many_files = {self._file_wd: {str(paths[0])}}
+        self._many_parents = {}
         try:
             libc = ctypes.CDLL(None, use_errno=True)
             add = libc.inotify_add_watch
@@ -72,15 +79,25 @@ class _ChangeWatch:
             file_mask = 0x2 | 0x4 | 0x8 | 0x400 | 0x800 | 0x2000 | 0x02000000
             parent_mask = 0x40 | 0x80 | 0x100 | 0x200 | 0x2000 | 0x400 | 0x800 | 0x4 | 0x01000000
             for path in paths[1:]:
-                if add(self.fd, os.fsencode(path), file_mask) < 0:
+                wd = add(self.fd, os.fsencode(path), file_mask)
+                if wd < 0:
                     self.close()
                     return False
-            for parent in dict.fromkeys(path.parent for path in paths):
-                if add(self.fd, os.fsencode(parent), parent_mask) < 0:
+                self._many_files.setdefault(wd, set()).add(str(path))
+            parent_paths = {}
+            for path in paths:
+                parent_paths.setdefault(path.parent, {}).setdefault(
+                    os.fsencode(path.name), set()).add(str(path))
+            for parent, members in parent_paths.items():
+                wd = add(self.fd, os.fsencode(parent), parent_mask)
+                if wd < 0:
                     self.close()
                     return False
-            # In a set every watched event matters, including lost watches and
-            # overflow. The single-file path keeps its existing name filter.
+                names = self._many_parents.setdefault(wd, {})
+                for name, targets in members.items():
+                    names.setdefault(name, set()).update(targets)
+            # The original boolean API still notices every watched event.
+            # Sealed readers may use changed_paths() for a stable set instead.
             self._file_wd = self._parent_wd = -1
             self._name = b""
             return True
@@ -88,8 +105,50 @@ class _ChangeWatch:
             self.close()
             return False
 
+    def _observe_many(self, wd, mask, name):
+        if self._many_files is None:
+            return
+        # Unmount, overflow, ignored watches and directory/file moves or
+        # deletion lose continuous coverage. Never localize those events.
+        if mask & (0x400 | 0x800 | 0x2000 | 0x4000 | 0x8000):
+            self._coverage_lost = True
+        elif wd in self._many_files:
+            self._changed_paths.update(self._many_files[wd])
+        elif wd in self._many_parents:
+            names = self._many_parents[wd]
+            if name:
+                targets = names.get(name, ())
+                # A watched basename may now name a different inode while an
+                # open reader keeps the old inode's watch alive. A new receipt
+                # must not inherit that obsolete watch: rearm the whole set.
+                if targets and mask & (0x40 | 0x80 | 0x100 | 0x200):
+                    self._coverage_lost = True
+                else:
+                    self._changed_paths.update(targets)
+            elif mask & 0x4:
+                for paths in names.values():
+                    self._changed_paths.update(paths)
+            else:
+                self._coverage_lost = True
+        else:
+            self._coverage_lost = True
+
+    def changed_paths(self):
+        """Affected set members, or None when continuous coverage is uncertain.
+
+        This does not prove content. Callers must still bind original SHA
+        receipts to current identities and enforce their revalidation deadline.
+        """
+        if self._many_files is None:
+            return None
+        self.changed()
+        if not self.available or self._coverage_lost:
+            return None
+        return frozenset(self._changed_paths)
+
     def changed(self):
         self.last_events = []
+        self._changed_paths = set()
         if self.fd < 0:
             return True
         found = False
@@ -113,6 +172,7 @@ class _ChangeWatch:
                         self.close()
                         return True
                     name = data[offset + 16:end].split(b"\0", 1)[0]
+                    self._observe_many(wd, mask, name)
                     if (wd != self._parent_wd or not name or name == self._name
                             or mask & (0x400 | 0x800 | 0x2000 | 0x4000 | 0x8000)):
                         found = True

@@ -48,6 +48,53 @@ def read_private(path,limit=MAX_STREAM,*,prefix_bytes=None):
   return b''.join(chunks)
  finally:os.close(fd)
 
+DRIVER_OBSERVATION_FIELDS=frozenset({"resident_loop_progress","loop_observation",
+    "entry_inference_pause","model_inference_pause","last_error","last_error_observation",
+    "last_transient_error","model_completion_observation","history"})
+
+def merge_driver_observation(path,state,state_sha256):
+    """Merge optional diagnostics bound to these exact durable state bytes.
+
+    Recovery and transaction validation must consume the original state only.
+    Missing, stale, corrupt or non-private observations leave that state intact.
+    """
+    if (state.get('schema')!='heptatrader.paper-driver.v1'
+            or state.get('instrument') not in ('EUR.USD','BTC.USD')):
+        return state
+    fd=None
+    try:
+        fd=os.open(Path(path).with_suffix('.observation.json'),
+            os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+        before=os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid!=os.geteuid()
+                or before.st_nlink!=1 or before.st_mode&0o077 or before.st_size>1048576):
+            return state
+        raw=bytearray()
+        while len(raw)<before.st_size:
+            chunk=os.read(fd,min(65536,before.st_size-len(raw)))
+            if not chunk:return state
+            raw.extend(chunk)
+        after=os.fstat(fd)
+        identity=lambda item:(item.st_dev,item.st_ino,item.st_size,item.st_mtime_ns,
+                              item.st_ctime_ns,item.st_mode,item.st_uid,item.st_nlink)
+        if identity(before)!=identity(after):return state
+        observation=strict(raw)
+        if (not isinstance(observation,dict)
+                or set(observation)!={'schema','instrument','state_sha256','fields'}
+                or observation['schema']!='heptatrader.driver-observation-state.v1'
+                or observation['instrument']!=state.get('instrument')
+                or observation['state_sha256']!=state_sha256
+                or not isinstance(observation['fields'],dict)
+                or not set(observation['fields'])<=DRIVER_OBSERVATION_FIELDS):
+            return state
+        merged={key:value for key,value in state.items() if key not in DRIVER_OBSERVATION_FIELDS}
+        merged.update(observation['fields'])
+        return merged
+    except (OSError,ValueError,TypeError,RecursionError):
+        return state
+    finally:
+        if fd is not None:os.close(fd)
+
 class Journal:
  def __init__(self,directory,manifest,manifest_sha256,capacity=128):
   self.root=Path(directory);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)

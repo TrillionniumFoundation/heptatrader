@@ -77,6 +77,9 @@ def validate_registration(config,path,plan):
   raise ContractError('VALUE_CANDIDATE_AND_PLAN_BEHAVIOR_MISMATCH')
  if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
   from .current100k_forward import validate_bound_plan
+  if config.get('warm_flat_profile') is not None or plan.get('warm_flat_profile') is not None:
+   from .current100k_warm_flat import check_binding
+   check_binding(config,plan)
   validate_bound_plan(plan,c)
  return c
 

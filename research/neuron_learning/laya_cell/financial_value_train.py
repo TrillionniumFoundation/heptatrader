@@ -13,6 +13,7 @@ from .integrity import ContractError,read_json,digest,sha_file,canonical
 from .model import load_verified_laya,require_pocket4_gpu,tensor_hash
 from .native import NativePorts
 from .financial_value_data import PROFILE,to_row,snapshot
+from .financial_value_profile import CENTERED_RESIDUAL_PROFILE,check_readout_profile
 
 class FinancialHead(nn.Module):
  def __init__(self,device):
@@ -20,11 +21,66 @@ class FinancialHead(nn.Module):
   with torch.no_grad():self.value.weight.zero_();self.value.bias.zero_()
  def forward(self,features):return self.value(features).squeeze(-1)
 
-def train_head(features,targets):
+class CenteredFinancialHead(FinancialHead):
+ """Frozen train-only offset/geometry plus a bounded, zero-start residual.
+
+ L2-normalized prompt embeddings share a large common component. Centering
+ makes the finite optimizer budget act on input differences, while the frozen
+ train mean accounts for the common target offset immediately. Neither buffer
+ is recomputed on prospective requests, including requests in a new batch.
+ """
+ def __init__(self,device):
+  super().__init__(device)
+  self.register_buffer('feature_center',torch.zeros(768,device=device,dtype=torch.float32))
+  self.register_buffer('feature_rms',torch.ones((),device=device,dtype=torch.float32))
+  self.register_buffer('baseline_scaled',torch.zeros((),device=device,dtype=torch.float32))
+ def transformed(self,features):
+  residual=(features-self.feature_center)/self.feature_rms
+  return residual/torch.linalg.vector_norm(residual,dim=-1,keepdim=True).clamp_min(1.)
+ def forward(self,features):
+  return (self.baseline_scaled+self.value(self.transformed(features)).squeeze(-1)).clamp(-.15,.15)
+
+
+def load_value_head(tensors,device,*,readout_profile=None):
+ """Load frozen geometry and weights under the candidate's explicit profile."""
+ check_readout_profile(readout_profile)
+ head=FinancialHead(device) if readout_profile is None else CenteredFinancialHead(device)
+ if set(tensors)!=set(head.state_dict()) or any(not torch.isfinite(t).all() for t in tensors.values()):
+  raise ContractError('FINANCIAL_TENSOR_SCOPE')
+ head.load_state_dict(tensors,strict=True);head.requires_grad_(False).eval()
+ if float(torch.linalg.vector_norm(torch.cat([p.detach().flatten() for p in head.parameters()])))>.100001:
+  raise ContractError('READOUT_NORM_BOUND')
+ if readout_profile is not None:
+  if (any(t.dtype!=torch.float32 for t in tensors.values())
+      or float(torch.linalg.vector_norm(head.feature_center))>1.000001
+      or float(head.feature_rms)<CENTERED_RESIDUAL_PROFILE['minimum_feature_rms']*(1.-1e-6)
+      or float(head.feature_rms)>1.000001 or abs(float(head.baseline_scaled))>.150001):
+   raise ContractError('VALUE_FROZEN_GEOMETRY_BOUND')
+ return head
+
+
+def prediction_usd(head,features,*,readout_profile=None):
+ check_readout_profile(readout_profile)
+ values=head(features)*100
+ # Enforce the existing dollar bound after float32 multiplication as well.
+ if readout_profile is not None:values=values.clamp(-15.,15.)
+ return values
+
+
+def train_head(features,targets,*,readout_profile=None):
+ check_readout_profile(readout_profile)
  if features.ndim!=2 or features.shape[1]!=768 or targets.shape!=features.shape[:1]:raise ContractError('VALUE_TENSOR_SHAPE')
  if not torch.isfinite(features).all() or not torch.isfinite(targets).all():raise ContractError('VALUE_NONFINITE_INPUT')
  if (targets.abs()>8).any():raise ContractError('VALUE_TARGET_BOUND')
- features=features.detach();head=FinancialHead(features.device);optimizer=torch.optim.SGD(head.parameters(),lr=.05)
+ features=features.detach();targets=targets.detach()
+ head=FinancialHead(features.device) if readout_profile is None else CenteredFinancialHead(features.device)
+ if readout_profile is not None:
+  if not len(features) or (torch.linalg.vector_norm(features,dim=1)>1.000001).any():raise ContractError('VALUE_NORMALIZED_FEATURE_SCOPE')
+  with torch.no_grad():
+   head.feature_center.copy_(features.mean(0))
+   head.feature_rms.copy_(torch.sqrt((features-head.feature_center).square().sum(1).mean()).clamp_min(CENTERED_RESIDUAL_PROFILE['minimum_feature_rms']))
+   head.baseline_scaled.copy_(targets.mean().clamp(-.15,.15))
+ optimizer=torch.optim.SGD(head.parameters(),lr=.05)
  before=head(features).detach();initial={k:v.detach().clone() for k,v in head.state_dict().items()};steps=[]
  for _ in range(16):
   optimizer.zero_grad(set_to_none=True);loss=F.smooth_l1_loss(head(features),targets);loss.backward()
@@ -38,9 +94,20 @@ def train_head(features,targets):
  after=head(features).detach();final_norm=float(torch.linalg.vector_norm(torch.cat([p.detach().flatten() for p in head.parameters()])))
  if final_norm>.100001:raise ContractError('VALUE_UPDATE_BOUND_EXCEEDED')
  changed=sum(int(torch.count_nonzero(v-initial[k])) for k,v in head.state_dict().items())
- return head,{'steps':steps,'before_scaled':before.cpu().tolist(),'after_scaled':after.cpu().tolist(),
+ diagnostic={'steps':steps,'before_scaled':before.cpu().tolist(),'after_scaled':after.cpu().tolist(),
   'huber_before':float(F.smooth_l1_loss(before,targets)),'huber_after':float(F.smooth_l1_loss(after,targets)),
   'changed_parameters':changed,'effective_update_l2':final_norm,'trainable_parameters':769}
+ if readout_profile is not None:
+  mean=targets.mean();median=targets.median()
+  diagnostic.update(readout_profile=dict(readout_profile),training_fit_is_not_efficacy=True,
+   feature_center_l2=float(torch.linalg.vector_norm(head.feature_center)),feature_rms=float(head.feature_rms),
+   target_std_usd=float(targets.std(unbiased=False)*100),prediction_std_usd=float(after.std(unbiased=False)*100),
+   training_mae_usd=float((after-targets).abs().mean()*100),
+   training_mean_baseline_mae_usd=float((mean-targets).abs().mean()*100),
+   training_median_baseline_mae_usd=float((median-targets).abs().mean()*100),
+   zero_baseline_mae_usd=float(targets.abs().mean()*100),
+   frozen_baseline_usd=float(head.baseline_scaled*100),geometry_fitted_on_training_rows_only=True)
+ return head,diagnostic
 
 def features_from_laya(raw,tokenizer,rows):
  batch=tokenizer([r['feature_text'] for r in rows],padding=True,truncation=False,return_tensors='pt')

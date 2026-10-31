@@ -8,6 +8,7 @@ import hashlib, math, time
 from pathlib import Path
 from .integrity import ContractError, digest, read_json, sha_file
 from .resident_store import write_once
+from .financial_value_profile import check_readout_profile
 
 PLAN_SCHEMA='heptatrader.current100k-value-forward-plan.v1'
 CANDIDATE_SCHEMA='heptatrader.current100k-value-candidate.v1'
@@ -17,6 +18,7 @@ NEW_PRODUCER_SCOPE='NEW_PRODUCER_SCOPE'
 def validate_value_candidate(directory,c=None):
  from historical_training.current100k import BEHAVIOR
  directory=Path(directory);c=read_json(directory/'candidate.json') if c is None else c
+ check_readout_profile(c.get('readout_profile'))
  if c.get('schema')!=CANDIDATE_SCHEMA or c.get('candidate_id')!=digest({k:v for k,v in c.items() if k!='candidate_id'}):
   raise ContractError('CURRENT100K_FORWARD_CANDIDATE_HASH')
  if (c.get('training_scope')!=BEHAVIOR or c.get('pnl_reward_used') is not True
@@ -36,14 +38,20 @@ def validate_bound_plan(plan,c):
  from historical_training.current100k import BEHAVIOR,to_row
  from .financial_value_data import ExactRequestIndex
  from .financial_forward_protocol import validate_plan
+ check_readout_profile(c.get('readout_profile'))
  validate_plan(plan,int(time.time()*1000))
  if plan.get('schema')!=PLAN_SCHEMA:raise ContractError('CURRENT100K_FORWARD_PLAN_SCHEMA')
+ if plan.get('warm_flat_profile') is not None:
+  from .current100k_warm_flat import check_profile
+  check_profile(plan['warm_flat_profile'])
+  if 'current100k_warm_flat.py' not in plan.get('runtime_sha256',{}):raise ContractError('VALUE_WARM_PLAN_SOURCE_PIN_REQUIRED')
  scope=plan.get('behavior_scope',{})
  if (scope.get('behavior_profile')!=BEHAVIOR or scope.get('reference_notional_usd')!=100000
      or scope.get('quantity') is not None or plan.get('producer_registration',{}).get('sha256')!=scope.get('producer_manifest_sha256') or scope.get('instrument')!='EUR.USD' or scope.get('currency')!='USD'
      or plan.get('candidate_id')!=c['candidate_id'] or plan.get('candidate_created_at_ms')!=c['created_at_ms']
      or plan.get('head_tensor_sha256')!=c['head_sha256'] or plan.get('training_dataset_sha256')!=c['dataset_sha256']
-     or plan.get('hip_runtime_manifest_sha256')!=c.get('hip_runtime_manifest_sha256')):
+     or plan.get('hip_runtime_manifest_sha256')!=c.get('hip_runtime_manifest_sha256')
+     or plan.get('readout_profile')!=c.get('readout_profile')):
   raise ContractError('CURRENT100K_FORWARD_PLAN_SCOPE')
  path=Path(plan['training_dataset_path'])
  if sha_file(path)!=c['dataset_sha256']:raise ContractError('CURRENT100K_FORWARD_DATASET_PIN')
@@ -173,6 +181,15 @@ def register(config,candidate_directory,dataset_path,prior_candidate_path,legacy
   'automatic_effect_authority':False,'candidate_refit_allowed':False,'old_trial_ids_retained':[x['plan_id'] for x in legacy]}
  if config.get('hip_runtime') is not None:
   plan['hip_runtime_manifest_sha256']=config['hip_runtime']['sha256']
+ if c.get('readout_profile') is not None:
+  plan['readout_profile']=dict(c['readout_profile'])
+  for name in ('financial_value_profile.py','financial_value_train.py'):
+   plan['runtime_sha256'][name]=sha_file(source/name)
+ if config.get('warm_flat_profile') is not None:
+  from .current100k_warm_flat import check_profile,check_source_pin
+  check_profile(config['warm_flat_profile']);check_source_pin(config)
+  plan['warm_flat_profile']=dict(config['warm_flat_profile'])
+  plan['runtime_sha256']['current100k_warm_flat.py']=sha_file(source/'current100k_warm_flat.py')
  plan['plan_id']=digest(plan);validate_bound_plan(plan,c)
  folder=Path(config['forward_root'])/'plans'/plan['plan_id'];write_once(folder/'plan.json',plan)
  seal=sign_record(config,'registrar',{'plan_id':plan['plan_id'],'plan_file_sha256':sha_file(folder/'plan.json'),'at_ms':int(time.time()*1000)})

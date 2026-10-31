@@ -36,7 +36,12 @@ def probe(quotes,start,config):
          'history_max_gap_ms':max(y['t']-x['t'] for x,y in zip(sample['input_snapshot']['quotes'],sample['input_snapshot']['quotes'][1:]))}
  if b>=len(times):return {**result,'status':'OUTCOME_UNAVAILABLE'}
  if times[b]>due+RULE['endpoint_tolerance_ms']:return {**result,'status':'ENDPOINT_GAP','actual_delay_ms':times[b]-due}
- if any(y-x>RULE['path_gap_max_ms'] for x,y in zip(times[a:b],times[a+1:b+1])):return {**result,'status':'PATH_GAP'}
+ for x,y in zip(times[a:b],times[a+1:b+1]):
+  if y-x>RULE['path_gap_max_ms']:
+   # These original quote times belong to the outcome path, not input history.
+   # assess() binds this diagnostic to the same verified source prefixes.
+   return {**result,'status':'PATH_GAP',
+           'outcome_path_first_gap':{'from_ms':x,'to_ms':y,'gap_ms':y-x}}
  return {**result,'status':'USABLE','actual_endpoint_ms':times[b]}
 
 def probe_starts(now):

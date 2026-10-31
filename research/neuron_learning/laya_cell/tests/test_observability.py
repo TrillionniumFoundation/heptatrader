@@ -5,7 +5,7 @@ from unittest.mock import patch
 from laya_cell.integrity import ContractError,digest
 from laya_cell.resident_data import contiguous_history,forecast_input
 from laya_cell.resident_rewards import financial_episodes
-from laya_cell.resident_evaluate import measure,Evaluator
+from laya_cell.resident_evaluate import measure,Evaluator,PREDICTION_PREWARM_MS
 from laya_cell.resident_store import database
 from laya_cell.promotion import RULE
 
@@ -110,14 +110,14 @@ class EndpointTests(unittest.TestCase):
    measure(p,0,r,q,T+320000,publication_record=publication)
 
 class AsyncSchedulingTests(unittest.TestCase):
- def setup_case(self,start):
+ def setup_case(self,start,evaluator_class=Evaluator):
   from laya_cell.integrity import sha_file,canonical
   from unittest.mock import MagicMock
   td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup);root=Path(td.name)
   period=root/'period.json';period.write_text('{}');pin=root/'pinned.py';pin.write_text('fixed')
   config={'period_path':str(period),'period_sha256':sha_file(period),'evaluation_directory':str(root/'evaluation'),
           'runtime_directory':str(root),'python':'unused-python'}
-  cfg=root/'config.json';cfg.write_bytes(canonical(config));engine=Evaluator(cfg)
+  cfg=root/'config.json';cfg.write_bytes(canonical(config));engine=evaluator_class(cfg)
   folder=root/'evaluation/plan';folder.mkdir()
   plan={'candidate_id':'c','rule':RULE,'scope':config['period_sha256'],'start_ms':start,'outcome_end_ms':T+99999999,
         'trial':1,'evaluation_runtime_sha256':{'pinned.py':sha_file(pin)}}
@@ -126,12 +126,35 @@ class AsyncSchedulingTests(unittest.TestCase):
   self.addCleanup(lambda:[v[1].close() for v in engine.tasks.values()])
   return engine,plan,path,proc
  def test_model_prewarm_starts_before_input_slot_without_blocking(self):
-  engine,plan,path,proc=self.setup_case(T+60000)
+  engine,plan,path,proc=self.setup_case(T+PREDICTION_PREWARM_MS)
   with patch('laya_cell.resident_evaluate.time.time',return_value=T/1000),patch('laya_cell.resident_evaluate.read_quotes',return_value=([],[])) as rd,patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
    first=engine.step();second=engine.step()
   self.assertEqual(first['active_prediction_workers'],1);self.assertEqual(second['active_prediction_workers'],1)
   rd.assert_not_called();proc.wait.assert_not_called()
   self.assertFalse(first['source_scan_performed']);self.assertFalse(second['source_scan_performed'])
+  self.assertEqual(list(path.parent.glob('outcome-*.json')),[])
+ def test_thirty_second_boundary_defers_heavy_lease_and_preserves_fixed_plan(self):
+  from historical_training.resident_resource_guard import guarded_evaluator_class
+  from types import SimpleNamespace
+  from unittest.mock import Mock
+  gate=SimpleNamespace(draining=False,acquire=Mock(return_value=True),release=Mock(),lease=None)
+  engine,plan,path,proc=self.setup_case(T,guarded_evaluator_class(Evaluator,gate))
+  original=path.read_bytes()
+  with patch('laya_cell.resident_evaluate.read_quotes',side_effect=AssertionError('no early source read')), \
+       patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc) as spawn:
+   for now in (T-90000,T-30001):
+    with self.subTest(now=now),patch('laya_cell.resident_evaluate.time.time',return_value=now/1000):
+     status=engine.step()
+    self.assertEqual(status['active_prediction_workers'],0)
+    self.assertEqual(status['prediction_prewarm_ms'],30000)
+    gate.acquire.assert_not_called();spawn.assert_not_called()
+   with patch('laya_cell.resident_evaluate.time.time',return_value=(T-30000)/1000):
+    status=engine.step()
+  gate.acquire.assert_called_once_with({'plan':str(path),'slot':0})
+  spawn.assert_called_once()
+  self.assertEqual(status['active_prediction_workers'],1)
+  self.assertEqual(path.read_bytes(),original)
+  self.assertEqual(list(path.parent.glob('input-*.json')),[])
   self.assertEqual(list(path.parent.glob('outcome-*.json')),[])
  def test_outcome_refresh_does_not_use_snapshot_from_before_worker(self):
   from laya_cell.integrity import canonical
@@ -160,7 +183,7 @@ class AsyncSchedulingTests(unittest.TestCase):
   rd.assert_called_once_with(engine.c,T+320000)
   self.assertTrue(second['source_scan_performed']);proc.wait.assert_not_called()
  def test_failed_worker_retains_reason_and_phase(self):
-  engine,plan,path,proc=self.setup_case(T+60000)
+  engine,plan,path,proc=self.setup_case(T+PREDICTION_PREWARM_MS)
   with patch('laya_cell.resident_evaluate.time.time',return_value=T/1000),patch('laya_cell.resident_evaluate.read_quotes',return_value=([],[])),patch('laya_cell.resident_evaluate.subprocess.Popen',return_value=proc):
    engine.step();proc.poll.return_value=2;proc.wait.side_effect=None;proc.wait.return_value=2;engine.step()
   out=json.loads((path.parent/'outcome-000.json').read_bytes())
@@ -171,7 +194,8 @@ class AsyncSchedulingTests(unittest.TestCase):
   engine,plan,path,proc=self.setup_case(T)
   _,pred,qs=EndpointTests().fixture();pred['plan_id']=plan['plan_id']
   (path.parent/'prediction-000.json').write_bytes(canonical(pred))
-  clock=[T+310000];events=[]
+  ready_at=T+RULE['slot_spacing_ms']-PREDICTION_PREWARM_MS
+  clock=[ready_at];events=[]
   def launch(*args,**kwargs):events.append(('launch',clock[0]));return proc
   def slow_source(*_):
    events.append(('source',clock[0]));clock[0]=T+480000
@@ -180,7 +204,7 @@ class AsyncSchedulingTests(unittest.TestCase):
        patch('laya_cell.resident_evaluate.read_quotes',side_effect=slow_source), \
        patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
    engine.step()
-  self.assertEqual(events,[('launch',T+310000),('source',T+310000)])
+  self.assertEqual(events,[('launch',ready_at),('source',ready_at)])
   self.assertIn((str(path),1),engine.tasks)
   self.assertEqual(json.loads((path.parent/'outcome-000.json').read_bytes())['status'],'OBSERVED')
   self.assertEqual(json.loads(path.read_bytes()),plan)
@@ -200,7 +224,8 @@ class AsyncSchedulingTests(unittest.TestCase):
   current.pop('plan_id');current['plan_id']=digest(current)
   folder=path.parent.parent/'z-current';folder.mkdir();current_path=folder/'plan.json'
   current_path.write_bytes(canonical(current))
-  clock=[T+310000];events=[]
+  ready_at=current['start_ms']-PREDICTION_PREWARM_MS
+  clock=[ready_at];events=[]
   def launch(*args,**kwargs):events.append(('launch',clock[0],args[0]));return proc
   def slow_source(*_):events.append(('source',clock[0],None));clock[0]=T+480000;return qs,[]
   with patch('laya_cell.resident_evaluate.time.time',side_effect=lambda:clock[0]/1000), \
@@ -208,7 +233,7 @@ class AsyncSchedulingTests(unittest.TestCase):
        patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
    engine.step()
   self.assertEqual([event[0] for event in events],['launch','source'])
-  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],T+310000)
+  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],ready_at)
   self.assertIn((str(current_path),0),engine.tasks)
  def test_actual_dispatch_after_expensive_preflight_cannot_launch_expired_slot(self):
   engine,plan,path,proc=self.setup_case(T)
@@ -237,7 +262,8 @@ class AsyncSchedulingTests(unittest.TestCase):
   current.pop('plan_id');current['plan_id']=digest(current)
   folder=path.parent.parent/'z-viable';folder.mkdir();current_path=folder/'plan.json'
   current_path.write_bytes(canonical(current))
-  clock=[T-60000];events=[]
+  ready_at=current['start_ms']-PREDICTION_PREWARM_MS
+  clock=[ready_at];events=[]
   def launch(*args,**kwargs):events.append(('launch',clock[0],args[0]));return proc
   def slow_source(*_):events.append(('source',clock[0],None));clock[0]+=300000;return qs,[]
   with patch('laya_cell.resident_evaluate.time.time',side_effect=lambda:clock[0]/1000), \
@@ -245,7 +271,7 @@ class AsyncSchedulingTests(unittest.TestCase):
        patch('laya_cell.resident_evaluate.subprocess.Popen',side_effect=launch):
    engine.step()
   self.assertEqual([event[0] for event in events],['launch','source'])
-  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],T-60000)
+  self.assertIn(str(current_path),events[0][2]);self.assertEqual(events[0][1],ready_at)
   self.assertNotIn((str(path),4),engine.tasks)
   for target,raw in originals.items():self.assertEqual(target.read_bytes(),raw)
 

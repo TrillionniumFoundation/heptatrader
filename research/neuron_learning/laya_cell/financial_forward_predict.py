@@ -30,6 +30,9 @@ def pin(config,plan):
   raise ContractError('VALUE_CANDIDATE_AND_PLAN_BEHAVIOR_MISMATCH')
  if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
   from .current100k_forward import validate_bound_plan
+  if config.get('warm_flat_profile') is not None or plan.get('warm_flat_profile') is not None:
+   from .current100k_warm_flat import check_binding
+   check_binding(config,plan)
   validate_bound_plan(plan,c)
  return c
 
@@ -207,13 +210,11 @@ class Predictor:
    self.load();phases.mark('model_load')
    import torch
    from safetensors.torch import load_file
-   from .financial_value_train import FinancialHead,features_from_laya
+   from .financial_value_train import load_value_head,features_from_laya,prediction_usd
    if c['base_id']!=self.base_id:raise ContractError('FINANCIAL_BASE_MISMATCH')
    if key not in self.heads:
-    head=FinancialHead(torch.device('cuda'));tensors=load_file(str(Path(plan['candidate_directory'])/'value-head.safetensors'))
-    if set(tensors)!=set(head.state_dict()) or any(not torch.isfinite(t).all() for t in tensors.values()):raise ContractError('FINANCIAL_TENSOR_SCOPE')
-    head.load_state_dict(tensors,strict=True);head.requires_grad_(False).eval()
-    if float(torch.linalg.vector_norm(torch.cat([t.float().flatten() for t in tensors.values()])))>.100001:raise ContractError('READOUT_NORM_BOUND')
+    tensors=load_file(str(Path(plan['candidate_directory'])/'value-head.safetensors'))
+    head=load_value_head(tensors,torch.device('cuda'),readout_profile=c.get('readout_profile'))
     self.heads[key]=head
    head=self.heads[key]
    if plan.get('schema')=='heptatrader.current100k-value-forward-plan.v1':
@@ -225,7 +226,7 @@ class Predictor:
     encoded=[features_from_laya(self.raw,self.tokenizer,[row]) for row in rows]
     features=torch.cat([x[0] for x in encoded]);info={'serial_action_features':[x[1] for x in encoded]}
    else:features,info=features_from_laya(self.raw,self.tokenizer,rows)
-   with torch.no_grad():values=(head(features)*100).cpu().tolist()
+   with torch.no_grad():values=prediction_usd(head,features,readout_profile=c.get('readout_profile')).cpu().tolist()
    if any(not torch.isfinite(t).all() for t in head.parameters()):raise ContractError('VALUE_NONFINITE')
    inference_seconds=time.monotonic()-begin;phases.mark('inference');computed=int(time.time()*1000)
    payload={'schema':'heptatrader.financial-forward-prediction.v1','plan_id':plan['plan_id'],'candidate_id':key,
