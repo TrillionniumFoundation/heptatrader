@@ -42,6 +42,8 @@ VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
     frozenset({"scripts/activate_prepared_gateway.py", "scripts/native_execution_maintenance.py",
                "tests/python/test_activate_prepared_gateway.py",
+               "tests/python/test_managed_broker_maintenance.py",
+               "tests/python/test_gateway_prepared_reconnect.py",
                "tests/python/test_native_execution_maintenance.py"}),
     frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
                "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
