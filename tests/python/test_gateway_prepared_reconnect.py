@@ -217,3 +217,245 @@ class PreparedReconnectTransactions(unittest.TestCase):
         path=self.f.policy_path(gateway.GATEWAY);path.write_bytes(gateway.HELD_STOP)
         try:self.assert_rejected("EXISTING_STOP_POLICY")
         finally:path.unlink()
+
+
+class LeaseSuccessorComponents(unittest.TestCase):
+    def setUp(self):self.f=fixture(self)
+    def advanced(self,snapshot):
+        rows=copy.deepcopy(snapshot['records'])
+        rows[0]['generation']+=1;rows[0]['expires_at_ms']+=14400000
+        return rows
+    def receipt_state(self):
+        state=state_for(self.f);before=copy.deepcopy(state['snapshot'])
+        rows=self.advanced(before);after,changes=gateway.lease_successor_snapshot(before,rows)
+        witness={'plan_sha256':state['plan_sha256'],'markers':state['markers'],'deadline_ms':before['deadline'],
+            'original_snapshot':copy.deepcopy(before),'native_authority':['fixture-service-epoch',1],
+            'previous_witness':before['interactive'],'witness':before['interactive'],
+            'audits':[{'token_sha256':owner['token_sha256'],'generation':owner['state_generation'],
+                'original_command_sha256':gateway.digest(owner['command'])} for owner in after['owners']]}
+        state['prepared_reconnects']=[witness]
+        state['prepared_lease_successors']=[{'schema':'heptatrader.gateway-lease-successor.v1',
+            'plan_sha256':state['plan_sha256'],'markers':state['markers'],'deadline_ms':before['deadline'],
+            'before_catalog':before['records'],'after_catalog':rows,'successors':changes,
+            'reconnect_receipt_sha256':gateway.digest(json.dumps(witness,sort_keys=True))}]
+        state['effective_snapshot']=after
+        return state
+    def test_exact_successor_preserves_original_snapshot_and_deadline(self):
+        state=self.receipt_state();original=copy.deepcopy(state['snapshot'])
+        actual=gateway.effective_snapshot(state)
+        self.assertEqual(actual['owners'][0]['state_generation'],113)
+        self.assertEqual(actual['records'][0]['generation'],113)
+        self.assertEqual(actual['deadline'],original['deadline'])
+        self.assertEqual(state['snapshot'],original)
+        self.assertGreater(actual['records'][0]['expires_at_ms'],actual['deadline'])
+    def test_only_exact_plus_one_and_strictly_increasing_integer_expiry(self):
+        snapshot=state_for(self.f)['snapshot']
+        for generation,expiry in ((112,1),(114,1),(111,1),(True,1),(113,0),(113,-1),(113,True)):
+            rows=self.advanced(snapshot);rows[0]['generation']=generation
+            rows[0]['expires_at_ms']=expiry if type(expiry)is bool else snapshot['records'][0]['expires_at_ms']+expiry
+            with self.subTest(generation=generation,expiry=expiry),self.assertRaises(RuntimeError):
+                gateway.lease_successor_snapshot(snapshot,rows)
+    def test_every_other_catalog_field_and_frozen_owner_remains_exact(self):
+        snapshot=state_for(self.f)['snapshot']
+        for key in snapshot['records'][0]:
+            if key in ('generation','expires_at_ms','token_sha256'):continue
+            rows=self.advanced(snapshot);old=rows[0][key]
+            rows[0][key]=not old if type(old)is bool else old+1 if type(old)is int else str(old)+'-changed'
+            with self.subTest(field=key),self.assertRaises(RuntimeError):gateway.lease_successor_snapshot(snapshot,rows)
+        for mutation in ('extra','removed','token'):
+            rows=self.advanced(snapshot)
+            if mutation=='extra':rows[0]['unreviewed_field']=True
+            elif mutation=='removed':rows[0].pop('agent_sha256')
+            else:rows[0]['token_sha256']='f'*64
+            with self.subTest(mutation=mutation),self.assertRaises(RuntimeError):gateway.lease_successor_snapshot(snapshot,rows)
+        for key,value in (('finalization_state',False),('finalization_state',0.0),('bootstrap_issuer',1),('watch',0)):
+            rows=self.advanced(snapshot);rows[0][key]=value
+            with self.subTest(field=key,value=value),self.assertRaises(RuntimeError):gateway.lease_successor_snapshot(snapshot,rows)
+        snapshot['owners'][0]['resident']=None
+        with self.assertRaises(RuntimeError):gateway.lease_successor_snapshot(snapshot,self.advanced(snapshot))
+    def test_receipt_replay_binds_plan_markers_deadline_catalog_and_current_audit(self):
+        original=self.receipt_state();gateway.effective_snapshot(original)
+        for field,value in (('plan_sha256','b'*64),('markers',[]),('deadline_ms',1),
+                ('before_catalog',[]),('reconnect_receipt_sha256','f'*64)):
+            state=copy.deepcopy(original);state['prepared_lease_successors'][0][field]=value
+            with self.subTest(field=field),self.assertRaises(RuntimeError):gateway.effective_snapshot(state)
+        for field,value in (('deadline',original['snapshot']['deadline']+1),('environment',{})):
+            state=copy.deepcopy(original);state['effective_snapshot'][field]=value
+            with self.subTest(field=field),self.assertRaises(RuntimeError):gateway.effective_snapshot(state)
+        state=copy.deepcopy(original);state['prepared_reconnects'][0]['audits'][0]['generation']=112
+        state['prepared_lease_successors'][0]['reconnect_receipt_sha256']=gateway.digest(json.dumps(state['prepared_reconnects'][0],sort_keys=True))
+        with self.assertRaises(RuntimeError):gateway.effective_snapshot(state)
+    def test_later_control_records_are_separate_from_original_and_bound_effective_identity(self):
+        state=self.receipt_state();original=copy.deepcopy(state['snapshot'])
+        state.update(status='HELD',phase='PREPARED',owned_policies=[str(self.f.policy_path(gateway.GATEWAY))],
+            error='RuntimeError:FIXTURE_AFTER_PARTIAL_FENCE',rollback='NO_PROCESS_FORCED_OR_REPLACED')
+        state['effective_snapshot']['records'][0]['recovery_only']=True
+        state['effective_snapshot']['owners'][0]['record']['recovery_only']=True
+        path=self.f.root/'partial-effect-checkpoint.json';gateway.atomic_json(path,state)
+        state=json.loads(path.read_text())
+        self.assertIs(gateway.effective_snapshot(state),state['effective_snapshot'])
+        self.assertEqual(state['snapshot'],original)
+        with self.assertRaisesRegex(RuntimeError,'CONTROL_EFFECTS_NOT_EMPTY'):gateway.prepared_reconnect_effects(state,True)
+        state['phase']='OWNERS_FENCED'
+        self.assertIs(gateway.effective_snapshot(state),state['effective_snapshot'])
+        state['effective_snapshot']['owners'][0]['command']='different'
+        with self.assertRaises(RuntimeError):gateway.effective_snapshot(state)
+
+
+class LeaseSuccessorTransactions(unittest.TestCase):
+    setUp=PreparedReconnectTransactions.setUp
+    assert_no_controls=PreparedReconnectTransactions.assert_no_controls
+    assert_rejected=PreparedReconnectTransactions.assert_rejected
+    reset_checkpoint=PreparedReconnectTransactions.reset_checkpoint
+    def advance(self,*,same_tcp=True):
+        self.f.rows[0]['generation']+=1;self.f.rows[0]['expires_at_ms']+=14400000
+        value=json.loads(self.f.state_path.read_text());value['lease_generation']=self.f.rows[0]['generation']
+        value['lease_last_renew_ms']=int(self.f.clock*1000)
+        self.f.state_path.write_text(json.dumps(value))
+        if same_tcp:self.f.interactive_current=copy.deepcopy(self.original['snapshot']['interactive'])
+    def complete(self,expected_generation=114):
+        result=self.f.run_upgrade(resume=True)
+        self.assertEqual(result['status'],'COMPLETE',result)
+        state=json.loads(self.checkpoint.read_text())
+        self.assertEqual(state['snapshot'],self.original['snapshot'])
+        self.assertEqual(state['effective_snapshot']['deadline'],self.original['snapshot']['deadline'])
+        self.assertEqual(json.loads(self.f.state_path.read_text())['lease_generation'],expected_generation)
+        for operation in ('recovery-query','paper-resume'):
+            calls=[e for e in self.f.events if operation in e]
+            self.assertEqual(len(calls),1,(operation,calls))
+            self.assertEqual(int(calls[0][calls[0].index('--generation')+1]),expected_generation-1)
+        for unit in (gateway.EXECUTION,gateway.driver.BROKER_UNIT):
+            self.assertFalse(any(e and e[0] in ('stop','start','reset-failed') and e[-1]==unit for e in self.f.events))
+            self.assertFalse(self.f.policy_path(unit).exists())
+        gateway.effective_snapshot(state)
+        return state
+    def test_unchanged_tcp_successor_rebinds_all_controls_without_extending_deadline(self):
+        self.advance();state=self.complete()
+        self.assertEqual(len(state['prepared_lease_successors']),1)
+        receipt=state['prepared_lease_successors'][0]
+        self.assertEqual(receipt['before_catalog'],self.original['snapshot']['records'])
+        self.assertEqual(receipt['after_catalog'][0]['generation'],113)
+        self.assertEqual(receipt['historical_control_operation'],'NOT_INFERRED')
+        proof=state['prepared_reconnects'][0]
+        self.assertEqual(proof['previous_witness'],proof['witness'])
+        self.assertEqual(proof['audits'][0]['generation'],113)
+        self.assertNotIn(proof['audits'][0]['audit_command_sha256'],{gateway.digest(x) for x in self.f.audit_used})
+    def test_combined_tcp_and_exact_successor_uses_one_bound_receipt(self):
+        self.advance(same_tcp=False);state=self.complete()
+        self.assertEqual(len(state['prepared_reconnects']),1)
+        self.assertNotEqual(state['prepared_reconnects'][0]['previous_witness'],state['prepared_reconnects'][0]['witness'])
+    def test_interrupted_before_first_control_reuses_receipt_without_second_successor(self):
+        self.advance();original=gateway.fresh_audit;calls=0
+        def observe(*args):
+            nonlocal calls
+            calls+=1
+            if calls==2:raise RuntimeError('FIXTURE_BEFORE_FIRST_CONTROL')
+            return original(*args)
+        with mock.patch.object(gateway,'fresh_audit',side_effect=observe):
+            result=self.f.run_upgrade(resume=True)
+        self.assertEqual((result['status'],result['phase']),('HELD','PREPARED'),result)
+        self.assert_no_controls()
+        first=json.loads(self.checkpoint.read_text())
+        self.assertEqual(len(first['prepared_lease_successors']),1)
+        state=self.complete()
+        self.assertEqual(state['prepared_lease_successors'],first['prepared_lease_successors'])
+    def test_successor_after_stop_audit_is_held_for_new_same_plan_boundary(self):
+        self.advance();original=gateway.fresh_audit;calls=0
+        def observe(*args):
+            nonlocal calls
+            calls+=1;result=original(*args)
+            if calls==2:self.advance()
+            return result
+        with mock.patch.object(gateway,'fresh_audit',side_effect=observe):
+            result=self.f.run_upgrade(resume=True)
+        self.assertEqual((result['status'],result['phase']),('HELD','PREPARED'),result)
+        self.assertIn('REQUIRES_RESUME_BOUNDARY',result['error']);self.assert_no_controls()
+        state=self.complete(expected_generation=115)
+        self.assertEqual(len(state['prepared_lease_successors']),2)
+    def test_successor_cannot_cross_any_existing_control_intent(self):
+        self.advance()
+        for key,value in EFFECTS.items():
+            with self.subTest(field=key):
+                self.reset_checkpoint();gateway.atomic_json(self.checkpoint,dict(self.original,**{key:value}))
+                self.assert_rejected('CONTROL_EFFECTS_NOT_EMPTY')
+    def test_catalog_movement_during_successor_audit_cannot_create_effective_baseline(self):
+        self.advance();original=gateway.fresh_audit
+        def observe(*args):
+            result=original(*args);self.f.rows[0]['expires_at_ms']+=1;return result
+        with mock.patch.object(gateway,'fresh_audit',side_effect=observe):
+            self.assert_rejected('CATALOG_CHANGED_DURING_AUDIT')
+        self.assertNotIn('effective_snapshot',json.loads(self.checkpoint.read_text()))
+    def test_catalog_successor_without_driver_confirmation_is_rejected(self):
+        self.f.rows[0]['generation']+=1;self.f.rows[0]['expires_at_ms']+=14400000
+        self.assert_rejected('CONTROLLER_STATE_CHANGED:state_generation')
+    def test_unchanged_native_prepared_flow_does_not_enter_successor_gate(self):
+        self.f.interactive_current=copy.deepcopy(self.original['snapshot']['interactive'])
+        self.original['snapshot']['native_execution']={'fixture_original_native_plan':True}
+        self.reset_checkpoint()
+        with mock.patch.object(gateway.native_maintenance,'reconcile_release'), \
+                mock.patch.object(gateway.native_maintenance,'verify',return_value=False), \
+                mock.patch.object(gateway,'fresh_audit',side_effect=RuntimeError('FIXTURE_ORIGINAL_NATIVE_AUDIT')):
+            self.assert_rejected('FIXTURE_ORIGINAL_NATIVE_AUDIT')
+    def test_unchanged_all_frozen_owner_flow_keeps_existing_policy_transition(self):
+        unit=self.f.driver_unit;pid=self.f.units[unit]['MainPID']
+        self.f.release_driver();self.f.alive.pop(pid)
+        self.f.units[unit].update(ActiveState='inactive',SubState='dead',MainPID='0',InvocationID='')
+        self.original['snapshot']['statuses'][unit]=copy.deepcopy(self.f.units[unit])
+        self.original['snapshot']['owners'][0]['resident']=None
+        self.original['snapshot']['frozen'][unit]=gateway.driver.frozen_driver_snapshot(unit)
+        self.original['snapshot']['controller_topology'].pop(unit,None)
+        self.f.interactive_current=copy.deepcopy(self.original['snapshot']['interactive'])
+        self.reset_checkpoint()
+        result=self.f.run_upgrade(resume=True)
+        self.assertEqual(result['status'],'COMPLETE',result)
+        self.assertFalse(any(e and e[0] in ('start','stop') and e[-1]==unit for e in self.f.events))
+        self.assertNotIn('prepared_lease_successors',json.loads(self.checkpoint.read_text()))
+
+    def test_saved_successor_reentry_rechecks_current_driver_and_prior_native_authority(self):
+        self.advance();original=gateway.fresh_audit;calls=0
+        def observe(*args):
+            nonlocal calls
+            calls+=1
+            if calls==2:raise RuntimeError('FIXTURE_BEFORE_FIRST_CONTROL')
+            return original(*args)
+        with mock.patch.object(gateway,'fresh_audit',side_effect=observe):held=self.f.run_upgrade(resume=True)
+        self.assertEqual((held['status'],held['phase']),('HELD','PREPARED'),held)
+        saved=json.loads(self.checkpoint.read_text());self.assert_no_controls()
+        for authority in (('different-epoch',1),('fixture-service-epoch',2)):
+            gateway.atomic_json(self.checkpoint,saved)
+            with mock.patch.object(gateway,'held_native_authority',return_value=authority):result=self.f.run_upgrade(resume=True)
+            self.assertEqual(result['status'],'HELD',result)
+            self.assertIn('NATIVE_AUTHORITY_CHANGED',result['error']);self.assert_no_controls()
+            self.assertEqual(json.loads(self.checkpoint.read_text())['prepared_lease_successors'],saved['prepared_lease_successors'])
+        gateway.atomic_json(self.checkpoint,saved)
+        raw=self.f.state_path.read_bytes();value=json.loads(raw);value['lease_generation']+=1
+        self.f.state_path.write_text(json.dumps(value))
+        try:
+            result=self.f.run_upgrade(resume=True)
+            self.assertEqual(result['status'],'HELD',result)
+            self.assertIn('CONTROLLER_STATE_CHANGED:state_generation',result['error']);self.assert_no_controls()
+        finally:self.f.state_path.write_bytes(raw)
+
+    def test_two_unchanged_frozen_owners_keep_original_sequential_fencing_flow(self):
+        unit=self.f.driver_unit;pid=self.f.units[unit]['MainPID']
+        self.f.release_driver();self.f.alive.pop(pid)
+        self.f.units[unit].update(ActiveState='inactive',SubState='dead',MainPID='0',InvocationID='')
+        snapshot=self.original['snapshot'];snapshot['statuses'][unit]=copy.deepcopy(self.f.units[unit])
+        snapshot['owners'][0]['resident']=None
+        snapshot['frozen'][unit]=gateway.driver.frozen_driver_snapshot(unit)
+        snapshot['controller_topology'].pop(unit,None)
+        path=self.f.root/'crypto-driver/state.json'
+        fixtures.put(path,json.dumps(dict(self.f.initial_state,instrument='BTC.USD')).encode())
+        fixtures.put(path.parent/'driver.lock',b'')
+        fixtures.put(self.f.home/'.config/heptatrader/crypto.token',b'second-token\n')
+        owner=gateway.controller('BTC.USD',self.f.home);owner['resident']=None
+        row=dict(fixtures.record(),token_sha256=gateway.digest('second-token'),session_sha256=gateway.digest('second-session'))
+        owner['record']=copy.deepcopy(row);self.f.rows.append(row)
+        snapshot['owners'].append(owner);snapshot['records']=copy.deepcopy(self.f.rows)
+        self.f.interactive_current=copy.deepcopy(snapshot['interactive']);self.reset_checkpoint()
+        result=self.f.run_upgrade(resume=True)
+        self.assertEqual(result['status'],'COMPLETE',result)
+        self.assertEqual(self.f.resume_count,2)
+        self.assertEqual(len([e for e in self.f.events if 'recovery-query' in e]),2)
+        self.assertFalse(any(e and e[0] in ('start','stop') and e[-1] in gateway.driver.DRIVER_UNITS for e in self.f.events))
+        self.assertNotIn('prepared_lease_successors',json.loads(self.checkpoint.read_text()))

@@ -562,14 +562,109 @@ def interactive_process_identity(proof):
     return value
 
 
-def prepared_reconnect_effects(state, resume):
+def prepared_reconnect_pristine(state, resume):
     allowed = {"schema", "plan_sha256", "status", "phase", "snapshot", "markers",
-        "stopped_controllers", "error", "rollback", "prepared_reconnects"}
-    if (not resume or state.get("phase") != "PREPARED" or set(state) - allowed
-            or state.get("stopped_controllers") != []
-            or state.get("rollback") not in (None, "NO_PROCESS_FORCED_OR_REPLACED")
-            or state["snapshot"].get("native_execution") is not None):
+        "stopped_controllers", "error", "rollback", "prepared_reconnects",
+        "prepared_lease_successors", "effective_snapshot"}
+    return (resume and state.get("phase") == "PREPARED" and not set(state) - allowed
+        and state.get("stopped_controllers") == []
+        and state.get("rollback") in (None, "NO_PROCESS_FORCED_OR_REPLACED")
+        and state["snapshot"].get("native_execution") is None)
+
+
+def prepared_reconnect_effects(state, resume):
+    if not prepared_reconnect_pristine(state, resume):
         fail("PREPARED_RECONNECT_CONTROL_EFFECTS_NOT_EMPTY")
+
+
+def lease_successor_snapshot(snapshot, rows):
+    """Current authenticated successor, not a claim about the historical RPC."""
+    if equivalent(rows, snapshot["records"]):
+        return snapshot, []
+    old_rows = {row["token_sha256"]: row for row in snapshot["records"]}
+    new_rows = {row["token_sha256"]: row for row in rows}
+    if len(new_rows) != len(rows) or list(old_rows) != list(new_rows):
+        fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+    candidate = json.loads(json.dumps(snapshot))
+    owners = {owner["token_sha256"]: owner for owner in candidate["owners"]}
+    changes = []
+    for token, old in old_rows.items():
+        row = new_rows[token]
+        if equivalent(row, old):
+            continue
+        if (token not in owners or owners[token]["resident"] is None
+                or old.get("paper") is not True or old.get("watch") is not False
+                or old.get("recovery_only") is not False or set(row) != set(old)
+                or any(not equivalent(row[key], old[key]) for key in old if key not in ("generation", "expires_at_ms"))
+                or type(row["generation"]) is not int or not 0 < row["generation"] < 2**64
+                or row["generation"] != old["generation"] + 1
+                or type(row["expires_at_ms"]) is not int or not 0 < row["expires_at_ms"] < 2**64
+                or row["expires_at_ms"] <= old["expires_at_ms"]):
+            fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+        owner = owners[token]
+        if not equivalent(owner["record"], old) or owner["state_generation"] != old["generation"]:
+            fail("PREPARED_LEASE_SUCCESSOR_ORIGINAL_BINDING_CHANGED")
+        owner["record"] = json.loads(json.dumps(row))
+        owner["state_generation"] = row["generation"]
+        changes.append({"token_sha256": token, "old_generation": old["generation"],
+            "new_generation": row["generation"], "old_expires_at_ms": old["expires_at_ms"],
+            "new_expires_at_ms": row["expires_at_ms"]})
+    if not changes:
+        fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+    candidate["records"] = json.loads(json.dumps(rows))
+    # The transaction deadline is deliberately not the new lease expiry.
+    return candidate, changes
+
+
+def effective_snapshot(state):
+    original = state["snapshot"]
+    if "effective_snapshot" not in state and "prepared_lease_successors" not in state:
+        return original
+    records = state.get("prepared_lease_successors")
+    actual = state.get("effective_snapshot")
+    if not isinstance(records, list) or not records or not isinstance(actual, dict):
+        fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+    previous = original
+    witnesses = {digest(json.dumps(record, sort_keys=True)): record for record in state.get("prepared_reconnects", [])}
+    for record in records:
+        if (not isinstance(record, dict) or record.get("schema") != "heptatrader.gateway-lease-successor.v1"
+                or record.get("plan_sha256") != state["plan_sha256"]
+                or not equivalent(record.get("markers"), state["markers"])
+                or record.get("deadline_ms") != original["deadline"]
+                or not equivalent(record.get("before_catalog"), previous["records"])
+                or record.get("reconnect_receipt_sha256") not in witnesses):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        witness = witnesses[record["reconnect_receipt_sha256"]]
+        if (witness.get("plan_sha256") != state["plan_sha256"]
+                or not equivalent(witness.get("markers"), state["markers"])
+                or witness.get("deadline_ms") != original["deadline"]
+                or not equivalent(witness.get("original_snapshot"), previous)):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        previous, changes = lease_successor_snapshot(previous, record["after_catalog"])
+        if not changes or not equivalent(changes, record.get("successors")):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        audits = {audit["token_sha256"]: audit for audit in witness.get("audits", [])}
+        if (len(audits) != len(previous["owners"]) or any(
+                owner["token_sha256"] not in audits
+                or audits[owner["token_sha256"]].get("generation") != owner["state_generation"]
+                or audits[owner["token_sha256"]].get("original_command_sha256") != digest(owner["command"])
+                for owner in previous["owners"])):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+    if prepared_reconnect_pristine(state, True):
+        if not equivalent(actual, previous):
+            fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_SNAPSHOT_CHANGED")
+    else:
+        # Later phases mutate only the effective catalog, owner recovery
+        # records, TCP witness and (downwards) the recovery deadline.
+        fixed = set(previous) - {"owners", "records", "interactive", "deadline"}
+        if (set(actual) != set(previous) or any(not equivalent(actual[key], previous[key]) for key in fixed)
+                or type(actual["deadline"]) is not int or actual["deadline"] > original["deadline"]
+                or len(actual["owners"]) != len(previous["owners"])):
+            fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_SNAPSHOT_CHANGED")
+        for old, owner in zip(previous["owners"], actual["owners"]):
+            if set(owner) != set(old) or any(not equivalent(owner[key], old[key]) for key in old if key != "record"):
+                fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_OWNER_CHANGED")
+    return actual
 
 
 def prepared_processes_unchanged(home, snapshot):
@@ -849,7 +944,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             state = strict(read_private(checkpoint, 1048576))
             if state.get("plan_sha256") != plan_sha or state.get("status") == "COMPLETE":
                 fail("RESUMABLE_MAINTENANCE_CHECKPOINT_REQUIRED")
-            snapshot = state["snapshot"]
+            snapshot = effective_snapshot(state)
             native_maintenance.reconcile_release(sys.modules[__name__], home, snapshot, state)
             state.update(status="RUNNING")
             state.pop("error", None)
@@ -877,7 +972,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             actual = observe_controller_start(owner, controller_observations.get(unit))
             controller_observations[unit] = actual
             return actual
-        def context(*, expected_interactive=None, allow_reconnect_refresh=True):
+        def context(*, expected_interactive=None, allow_reconnect_refresh=True, allow_lease_successor=False):
             check_lock_binding()
             if not equivalent(driver.marker_identity(home), state["markers"]):
                 fail("MAINTENANCE_MARKERS_CHANGED")
@@ -957,12 +1052,42 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             for item in snapshot["packages"].values():
                 pinned(item["binary"])
             expected = effective_interactive(snapshot, state) if expected_interactive is None else expected_interactive
+            if (not changing_native and resume and state.get("phase") == "PREPARED"
+                    and allow_reconnect_refresh and expected_interactive is None):
+                # A lease can advance without a TCP reconnect. Reconcile it
+                # before any stop/fence intent, through the same fresh proof.
+                rows = catalog(plan, snapshot["environment"])
+                pristine = prepared_reconnect_pristine(state, resume)
+                if not equivalent(rows, snapshot["records"]):
+                    if pristine:
+                        if not allow_lease_successor:
+                            fail("PREPARED_LEASE_SUCCESSOR_REQUIRES_RESUME_BOUNDARY")
+                        refresh_interactive_witness(interactive, allow_lease_successor=True)
+                        return
+                    # Existing all-frozen flows can fence successive owners
+                    # while phase is still PREPARED. Keep that original flow,
+                    # but never reconcile another lease after control intent.
+                    generations = {row["token_sha256"]: row["generation"] for row in rows}
+                    if any(generations.get(owner["token_sha256"]) != owner["state_generation"]
+                            for owner in snapshot["owners"]):
+                        fail("PREPARED_RECONNECT_CONTROL_EFFECTS_NOT_EMPTY")
+                if pristine and allow_lease_successor and state.get("prepared_lease_successors"):
+                    prepared_reconnect_effects(state, resume)
+                    prepared_processes_unchanged(home, snapshot)
+                    authority = held_native_authority(plan, snapshot, snapshot["owners"][0])
+                    if any(not equivalent(previous.get("native_authority"), authority)
+                            for previous in state["prepared_reconnects"]):
+                        fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
             if not changing_native and not equivalent(interactive, expected):
                 if not allow_reconnect_refresh or expected_interactive is not None:
                     fail("INTERACTIVE_BROKER_CHANGED")
-                refresh_interactive_witness(interactive)
+                refresh_interactive_witness(interactive, allow_lease_successor=allow_lease_successor)
 
-        def refresh_interactive_witness(interactive):
+        def refresh_interactive_witness(interactive, *, allow_lease_successor=False):
+            nonlocal snapshot
+            before_snapshot = snapshot
+            proof_snapshot = snapshot
+            successors = []
             # PREPARED may reconcile only before any upgrade control intent.
             # The existing post-stop recovery keeps its original restrictions.
             prepared = resume and state.get("phase") == "PREPARED"
@@ -980,9 +1105,11 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 fail("INTERACTIVE_BROKER_IDENTITY_CHANGED")
             native_before = None
             if prepared:
-                observed_gateway = prepared_processes_unchanged(home, snapshot)
                 binary = snapshot["gateway"]["binary"]
                 native_before = held_native_authority(plan, snapshot, snapshot["owners"][0])
+                if any(not equivalent(previous.get("native_authority"), native_before)
+                        for previous in state.get("prepared_reconnects", [])):
+                    fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
             else:
                 for owner in snapshot["owners"]:
                     resident = owner["resident"]
@@ -1000,14 +1127,21 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 if state.get("gateway_started"):
                     same_gateway(state["gateway_started"], observed_gateway)
             rows = catalog(plan, snapshot["environment"])
-            if not equivalent(rows, snapshot["records"]):
+            if prepared:
+                proof_snapshot, successors = lease_successor_snapshot(snapshot, rows)
+                if successors and not allow_lease_successor:
+                    fail("PREPARED_LEASE_SUCCESSOR_REQUIRES_RESUME_BOUNDARY")
+                observed_gateway = prepared_processes_unchanged(home, proof_snapshot)
+                if successors:
+                    bind_owners(rows, proof_snapshot["owners"], proof_snapshot["environment"], deadline=snapshot["deadline"])
+            elif not equivalent(rows, snapshot["records"]):
                 fail("RECONNECT_ORIGINAL_CATALOG_CHANGED")
             paper = {row["token_sha256"]: row for row in rows if row["paper"] is True}
-            if set(paper) != {owner["token_sha256"] for owner in snapshot["owners"]}:
+            if set(paper) != {owner["token_sha256"] for owner in proof_snapshot["owners"]}:
                 fail("RECONNECT_WRITING_OWNER_SET_CHANGED")
             observations = []
             authority = None
-            for owner in snapshot["owners"]:
+            for owner in proof_snapshot["owners"]:
                 row = paper[owner["token_sha256"]]
                 if (not equivalent(row, owner["record"]) or row["generation"] != owner["state_generation"]
                         or (not prepared and (row["recovery_only"] is not True
@@ -1057,9 +1191,9 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 "audits": observations}
             if prepared:
                 prepared_reconnect_effects(state, resume)
-                prepared_processes_unchanged(home, snapshot)
-                for owner in snapshot["owners"]:
-                    if held_native_authority(plan, snapshot, owner) != native_before:
+                prepared_processes_unchanged(home, proof_snapshot)
+                for owner in proof_snapshot["owners"]:
+                    if held_native_authority(plan, proof_snapshot, owner) != native_before:
                         fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
                 context(expected_interactive=interactive, allow_reconnect_refresh=False)
                 if not equivalent(catalog(plan, snapshot["environment"]), rows):
@@ -1072,11 +1206,24 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 receipt.update(schema="heptatrader.gateway-prepared-reconnect.v1", plan_sha256=state["plan_sha256"],
                     markers=state["markers"], deadline_ms=snapshot["deadline"], native_authority=native_before,
                     previous_witness=effective_interactive(snapshot, state), witness=interactive,
-                    original_snapshot=json.loads(json.dumps(snapshot)))
+                    original_snapshot=json.loads(json.dumps(before_snapshot)))
                 history = [*state.get("prepared_reconnects", []), receipt]
-                if len(json.dumps(dict(state, prepared_reconnects=history), sort_keys=True).encode()) >= 1048576:
+                updates = {"prepared_reconnects": history}
+                if successors:
+                    successor_receipt = {"schema": "heptatrader.gateway-lease-successor.v1",
+                        "at_ms": now_ms(), "plan_sha256": state["plan_sha256"], "markers": state["markers"],
+                        "deadline_ms": state["snapshot"]["deadline"],
+                        "before_catalog": json.loads(json.dumps(before_snapshot["records"])),
+                        "after_catalog": json.loads(json.dumps(rows)), "successors": successors,
+                        "reconnect_receipt_sha256": digest(json.dumps(receipt, sort_keys=True)),
+                        "historical_control_operation": "NOT_INFERRED"}
+                    updates.update(effective_snapshot=proof_snapshot,
+                        prepared_lease_successors=[*state.get("prepared_lease_successors", []), successor_receipt])
+                if len(json.dumps(dict(state, **updates), sort_keys=True).encode()) >= 1048576:
                     fail("PREPARED_RECONNECT_RECEIPT_BOUND")
-                state["prepared_reconnects"] = history
+                effective_snapshot(dict(state, **updates))
+                state.update(updates)
+                snapshot = proof_snapshot
             else:
                 snapshot["interactive"] = interactive
                 state["interactive_refresh"] = receipt
@@ -1113,7 +1260,9 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 driver.ctl("daemon-reload")
         save()
         try:
-            context()
+            # Freeze the effective lease before taking a fresh stop audit.
+            # Later drift must retain the hold for another same-plan resume.
+            context(allow_lease_successor=True)
             if state.get("starting_controller"):
                 unit = state["starting_controller"]
                 owner = next(owner for owner in snapshot["owners"] if owner["unit"] == unit)
