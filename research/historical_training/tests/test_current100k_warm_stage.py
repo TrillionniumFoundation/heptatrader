@@ -11,6 +11,10 @@ class StopBeforeEffect(BaseException): pass
 
 class StageBoundaryTests(unittest.TestCase):
     def setUp(self):
+        # The CLI owns its process umask; these in-process fixtures must restore ours.
+        previous_umask = os.umask(0o077)
+        os.umask(previous_umask)
+        self.addCleanup(os.umask, previous_umask)
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve(); self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
         self.data = {'producer_manifest_sha256': 'p'*64, 'period_sha256': 'q'*64,
