@@ -197,29 +197,80 @@ class Capture:
    self.journal.close()
   return close
 
-def _verified_producer_graphs(directory,instrument,period_sha256,*,request_records=None):
+class VerifiedSegmentCache:
+ """Resident parser cache; re-read changed files and prove old prefixes unchanged.
+
+ This cache is process-local. It never authorizes persisted cached facts after a
+ restart. Append-only prefix mutation, replacement, truncation or deletion fails.
+ """
+ def __init__(self):
+  self.entries={};self.bytes_read=0;self.records_parsed=0;self.reuses=0
+ def check_paths(self,paths):
+  names={str(Path(p)) for p in paths}
+  if not set(self.entries)<=names:raise ValueError('ATTRIBUTION_CACHED_SEGMENT_REMOVED')
+ def _identity(self,path):
+  st=Path(path).lstat()
+  if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_mode&0o077:
+   raise ValueError('ATTRIBUTION_FILE_SCOPE')
+  return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns,st.st_mode,st.st_uid,st.st_gid)
+ def read(self,path):
+  name=str(Path(path));before=self._identity(path);old=self.entries.get(name)
+  if old is not None and before==old['identity']:
+   self.reuses+=1;return old['prefix'],old['records']
+  raw=read_private(path);self.bytes_read+=len(raw)
+  if self._identity(path)!=before:raise ValueError('ATTRIBUTION_SOURCE_CHANGED_DURING_READ')
+  blob=raw[:raw.rfind(b'\n')+1];offset=0;records=[];h=hashlib.sha256()
+  if old is not None:
+   offset=old['prefix']['bytes']
+   if before[:2]!=old['identity'][:2] or len(blob)<offset:
+    raise ValueError('ATTRIBUTION_CACHED_SEGMENT_REPLACED_OR_TRUNCATED')
+   if hashlib.sha256(blob[:offset]).hexdigest()!=old['prefix']['sha256']:
+    raise ValueError('ATTRIBUTION_CACHED_PREFIX_CHANGED')
+   records=list(old['records']);h.update(blob[:offset])
+  for line in blob[offset:].splitlines(keepends=True):
+   if len(line)>MAX_RECORD:raise ValueError('ATTRIBUTION_RECORD_BOUND')
+   r=strict(line)
+   if r.get('schema')!=SCHEMA or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'}):
+    raise ValueError('ATTRIBUTION_HASH')
+   h.update(line);offset+=len(line);self.records_parsed+=1
+   records.append((r,{'path':name,'bytes':offset,'sha256':h.hexdigest()}))
+  prefix={'path':name,'bytes':len(blob),'sha256':h.hexdigest()}
+  total=len(blob)+sum(e['prefix']['bytes'] for key,e in self.entries.items() if key!=name)
+  if total>MAX_TOTAL:raise ValueError('ATTRIBUTION_CACHE_STORAGE_BOUND')
+  self.entries[name]={'identity':before,'prefix':prefix,'records':records}
+  return prefix,records
+
+
+def _verified_producer_graphs(directory,instrument,period_sha256,*,request_records=None,segment_cache=None):
  """Validate a complete directory snapshot before selecting registered producers."""
  files=sorted(Path(directory).glob('*.jsonl'))
  if len(files)>128:raise ValueError('PRODUCER_FILE_BOUND')
  groups={};prefixes=[];completed_prefixes={};witnesses={}
+ if segment_cache is not None:
+  if not isinstance(segment_cache,VerifiedSegmentCache):raise ValueError('ATTRIBUTION_SEGMENT_CACHE_TYPE')
+  segment_cache.check_paths(files)
  for p in files:
-  blob=read_private(p);blob=blob[:blob.rfind(b'\n')+1]
-  full_prefix={'path':str(p),'bytes':len(blob),'sha256':hashlib.sha256(blob).hexdigest()}
-  prefixes.append(full_prefix);running_hash=hashlib.sha256();offset=0;file_producer=None
-  for line in blob.splitlines(keepends=True):
-   if len(line)>MAX_RECORD:raise ValueError('ATTRIBUTION_RECORD_BOUND')
-   running_hash.update(line);offset+=len(line);r=strict(line)
-   if r.get('schema')!=SCHEMA or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'}):raise ValueError('ATTRIBUTION_HASH')
+  if segment_cache is None:
+   blob=read_private(p);blob=blob[:blob.rfind(b'\n')+1]
+   full_prefix={'path':str(p),'bytes':len(blob),'sha256':hashlib.sha256(blob).hexdigest()}
+   parsed=[];running_hash=hashlib.sha256();offset=0
+   for line in blob.splitlines(keepends=True):
+    if len(line)>MAX_RECORD:raise ValueError('ATTRIBUTION_RECORD_BOUND')
+    running_hash.update(line);offset+=len(line);r=strict(line)
+    if r.get('schema')!=SCHEMA or r.get('sha256')!=digest({k:v for k,v in r.items() if k!='sha256'}):raise ValueError('ATTRIBUTION_HASH')
+    parsed.append((r,{'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}))
+  else:full_prefix,parsed=segment_cache.read(p)
+  prefixes.append(full_prefix);file_producer=None
+  for r,record_prefix in parsed:
    producer=r['producer_id']
    if file_producer is not None and file_producer!=producer:raise ValueError('MIXED_PRODUCERS_IN_SEGMENT')
    file_producer=producer
    if request_records is not None and r.get('kind')=='REQUEST':
     # Optional same-call output, populated from the exact bytes checked above.
     # It grants no credit until this function validates every producer chain.
-    request_records.setdefault(producer,[]).append((r,{'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}))
+    request_records.setdefault(producer,[]).append((r,dict(record_prefix)))
    if r.get('kind')=='COMMAND_BINDING':
-    witnesses[(producer,r['sequence'])]=list(completed_prefixes.get(producer,[]))+[
-       {'path':str(p),'bytes':offset,'sha256':running_hash.hexdigest()}]
+    witnesses[(producer,r['sequence'])]=list(completed_prefixes.get(producer,[]))+[dict(record_prefix)]
    groups.setdefault(producer,[]).append(r)
   if file_producer is not None:completed_prefixes.setdefault(file_producer,[]).append(full_prefix)
  graphs=[]
