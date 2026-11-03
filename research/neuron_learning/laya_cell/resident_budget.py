@@ -4,12 +4,25 @@ This is an application admission check, not a filesystem quota. A bounded job
 reserve plus filesystem reserve is checked before new work; old bytes remain.
 """
 from __future__ import annotations
-import os,stat
+import os
+from collections import OrderedDict
 from pathlib import Path
 from .integrity import ContractError
+from .tree_usage_cache import TreeUsageCache
 
 GIB=1024**3
 MAX_EXPLICIT_STATE_BUDGET=16*GIB
+_TREE_USAGE=OrderedDict()
+
+def _usage(root):
+ key=str(root)
+ cache=_TREE_USAGE.get(key)
+ if cache is None:
+  cache=TreeUsageCache(root);_TREE_USAGE[key]=cache
+  while len(_TREE_USAGE)>4:
+   _,old=_TREE_USAGE.popitem(last=False);old.close()
+ else:_TREE_USAGE.move_to_end(key)
+ return cache.usage()
 
 def policy(config):
  limit=config.get('state_max_bytes');headroom=config.get('state_admission_reserve_bytes',0)
@@ -22,12 +35,10 @@ def policy(config):
 def inspect(config):
  limit,reserve,minimum_free=policy(config);root=Path(config['state_root'])
  if not root.is_absolute() or root.is_symlink() or not root.is_dir():raise ContractError('STATE_ROOT_SCOPE')
- used=0;files=0
- for p in root.rglob('*'):
-  try:s=p.lstat()
-  except FileNotFoundError:continue # rotating mutable status temp; immutable artifacts are not removed here
-  if stat.S_ISLNK(s.st_mode):raise ContractError('STATE_TREE_SYMLINK')
-  if stat.S_ISREG(s.st_mode):used+=s.st_size;files+=1
+ # Change notifications account for mutable children, not just root metadata.
+ # Topology changes/lost notifications force a full scan; disk free is always
+ # queried afresh and the existing admission thresholds remain unchanged.
+ used,files=_usage(root)
  disk=os.statvfs(root);available=disk.f_bavail*disk.f_frsize
  result={'state_used_bytes':used,'state_max_bytes':limit,'admission_reserve_bytes':reserve,
   'state_remaining_bytes':limit-used,'filesystem_available_bytes':available,'filesystem_reserve_bytes':minimum_free,

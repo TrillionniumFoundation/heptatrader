@@ -7,7 +7,8 @@ from __future__ import annotations
 import sqlite3
 import argparse,fcntl,json,os,signal,stat,subprocess,sys,time
 from pathlib import Path
-from .integrity import ContractError,read_json,digest,sha_file,canonical
+from .integrity import ContractError,read_json,digest,canonical
+from .file_digest_cache import FileDigestCache
 from .resident_data import collect
 from .resident_rewards import current as rewards_current
 from .resident_reward_cache import RewardRefreshGuard, FULL_REVERIFY_SECONDS
@@ -36,6 +37,11 @@ WORKER_TERMINATE_GRACE_SECONDS=15
 WORKER_KILL_GRACE_SECONDS=15
 TRAINING_DISPATCH_MARGIN_MS=60000
 FORWARD_LEAD_MS=120000
+
+# Revalidate file identity on every use; content is read only after a change.
+# A native binary repeated in runtime_sha256 shares this same digest cache.
+_FILE_DIGESTS=FileDigestCache()
+sha_file=_FILE_DIGESTS.sha256
 
 
 def training_forward_window(window,rule,now_ms):

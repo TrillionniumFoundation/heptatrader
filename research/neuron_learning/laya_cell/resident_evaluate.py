@@ -7,7 +7,8 @@ from __future__ import annotations
 import argparse,fcntl,json,math,os,re,signal,subprocess,sys,time
 from bisect import bisect_left,bisect_right
 from pathlib import Path
-from .integrity import ContractError,read_json,digest,sha_file
+from .integrity import ContractError,read_json,digest
+from .file_digest_cache import FileDigestCache
 from .resident_store import write_once,atomic
 from .resident_data import read_quotes
 from .dataset import BIN_EDGES_BPS
@@ -22,6 +23,11 @@ from . import resident_parent_calibration as parent_calibration
 # Fixed input/outcome windows and the original admission checks are unchanged.
 PREDICTION_PREWARM_MS=30000
 PUBLICATION_PROFILE='FIXED_SLOT_DURABLE_PUBLICATION_V1'
+
+# Active plans still check every pinned path on each pass. Unchanged inodes
+# reuse their already verified content digest within this evaluator process.
+_FILE_DIGESTS=FileDigestCache()
+sha_file=_FILE_DIGESTS.sha256
 
 _WORKER_EXCEPTION_TITLE=re.compile(
  r'^(?:[A-Za-z_][A-Za-z_0-9]*\.)*'
