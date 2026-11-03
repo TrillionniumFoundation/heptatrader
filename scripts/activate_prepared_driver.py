@@ -754,6 +754,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         or new.get("native_clients") != old.get("native_clients")
     )
     base_binding_changed = new.get("btc_base_binding") != old.get("btc_base_binding")
+    price_gate_changed = new.get("price_bootstrap_gate") != old.get("price_bootstrap_gate")
     expected = dict(old)
     expected.pop("created_at_ms", None)
     expected.update(
@@ -761,7 +762,7 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
         prepared_from_manifest_sha256=installed["manifest_sha256"],
         runtime_bytes_changed=changed,
         trading_behavior_changed=(
-            old.get("trading_behavior_changed") is not False or changed or read_transport_changed or base_binding_changed
+            old.get("trading_behavior_changed") is not False or changed or read_transport_changed or base_binding_changed or price_gate_changed
         ),
         behavior_equivalence_assessed=False,
     )
@@ -783,6 +784,9 @@ def verify_prepared(candidate, candidate_sha, instrument, installed):
     expected.pop("native_clients", None)
     if "native_clients" in new:
         expected["native_clients"] = new["native_clients"]
+    expected.pop("price_bootstrap_gate", None)
+    if "price_bootstrap_gate" in new:
+        expected["price_bootstrap_gate"] = new["price_bootstrap_gate"]
     names = set(target["runtime_sha256"])
     if instrument == "BTC.USD":
         names = names | {"profile.json"}

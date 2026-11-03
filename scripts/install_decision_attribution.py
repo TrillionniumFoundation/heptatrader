@@ -26,12 +26,15 @@ def state_ok(s):
  return (abs(float(s.get('position',0)))<=1e-9 and s.get('pending') is None and not s.get('halt_new_entries')
    and not s.get('owner_fence_recovery_required') and not s.get('lease_uncertain') and not s.get('risk_halt_reason'))
 
-def runtime_filenames(instrument,*,legacy=False):
+def runtime_filenames(instrument,*,legacy=False,price_bootstrap=False):
  names={'hepta_decision_attribution.py','heptatrader_attributed_driver.py',
         'heptatrader_paper_driver.py'}
  if instrument=='BTC.USD':
   names.update({'heptatrader_btc_economics_driver.py','hepta_btc_entry_policy.py'})
  if not legacy:names.update({'hepta_verified_loader.py','hepta_native_reader.py'})
+ if price_bootstrap:
+  if instrument!='EUR.USD' or legacy:raise ValueError('PRICE_BOOTSTRAP_CURRENT_FX_RUNTIME_REQUIRED')
+  names.add('hepta_price_bootstrap_gate.py')
  return names
 
 
@@ -84,10 +87,14 @@ def inspect_resident(command,instrument):
    validate_binary_binding(m['native_read_binary'])
    if stream is not True:raise ValueError('NATIVE_READ_BINARY_REQUIRES_STREAM')
   except ValueError as exc:raise RuntimeError(str(exc)) from exc
- allowed=[runtime_filenames(instrument)]
+ price_bootstrap='price_bootstrap_gate' in m
+ if price_bootstrap:
+  from hepta_price_bootstrap_gate import validate_selection
+  validate_selection(m)
+ allowed=[runtime_filenames(instrument,price_bootstrap=price_bootstrap)]
  if stream is False:
-  allowed.append(runtime_filenames(instrument)-{'hepta_native_reader.py'})
-  if loader is None:allowed.append(runtime_filenames(instrument,legacy=True))
+  allowed.append(runtime_filenames(instrument,price_bootstrap=price_bootstrap)-{'hepta_native_reader.py'})
+  if loader is None and not price_bootstrap:allowed.append(runtime_filenames(instrument,legacy=True))
  if (type(stream) is not bool or loader not in (None,'verified-bytes.v1') or not isinstance(hashes,dict)
      or set(hashes) not in allowed):
   raise RuntimeError('ATTRIBUTION_INSTALLED_RUNTIME_INCOMPLETE')
@@ -160,7 +167,7 @@ def _verify_prepared(release,expected,files):
    raise RuntimeError('ATTRIBUTION_PREPARED_RUNTIME_CHANGED:'+name)
  return hashlib.sha256(raw).hexdigest()
 
-def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None,native_clients=None):
+def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None,native_clients=None,price_bootstrap_gate=None):
  """Stage exact candidate bytes; never read broker/state or change a unit."""
  if os.geteuid()==0:raise RuntimeError('USER_SERVICE_ONLY')
  h=Path.home();repo=Path(__file__).resolve().parents[1];source=repo/'scripts'
@@ -173,6 +180,14 @@ def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None
  if hashlib.sha256(installed_raw).hexdigest()!=observed['manifest_sha256']:
   raise RuntimeError('ATTRIBUTION_INSTALLED_MANIFEST_CHANGED')
  installed=strict(installed_raw)
+ if price_bootstrap_gate is not None and price_bootstrap_gate is not True:raise ValueError('PRICE_BOOTSTRAP_EXPLICIT_ENABLE_ONLY')
+ selection=installed.get('price_bootstrap_gate')
+ if price_bootstrap_gate is True:
+  if instrument!='EUR.USD':raise ValueError('PRICE_BOOTSTRAP_PAPER_FX_ONLY')
+  from hepta_price_bootstrap_gate import SELECTION_SCHEMA,PROFILE
+  if selection is None:
+   selection={'schema':SELECTION_SCHEMA,'profile':PROFILE,
+              'receipt_root':str(h/'.local/state/heptatrader/price-bootstrap'/installed['period_sha256']/instrument)}
  if native_read_stream is None:native_read_stream=installed.get('native_read_stream',False)
  if type(native_read_stream) is not bool:raise RuntimeError('NATIVE_READER_MODE_INVALID')
  if native_clients is None:native_clients=installed.get('native_clients')
@@ -188,7 +203,7 @@ def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None
  if native_read_binary is not None:
   if native_read_stream is not True:raise RuntimeError('NATIVE_READ_BINARY_REQUIRES_STREAM')
   with verified_binary(native_read_binary):pass
- files={name:(source/name).read_bytes() for name in sorted(runtime_filenames(instrument))}
+ files={name:(source/name).read_bytes() for name in sorted(runtime_filenames(instrument,price_bootstrap=selection is not None))}
  for name,raw in files.items():
   if len(raw)>1048576:raise RuntimeError('ATTRIBUTION_SOURCE_TOO_LARGE:'+name)
   compile(raw,name,'exec',dont_inherit=True)  # Validate without executing candidate code.
@@ -215,13 +230,18 @@ def prepare_upgrade(instrument,*,native_read_stream=None,native_read_binary=None
                          or native_read_binary!=installed.get('native_read_binary')
                          or native_clients!=installed.get('native_clients'))
  base_binding_changed=(instrument=='BTC.USD' and installed.get('btc_base_binding')!='RUNTIME_MANIFEST_V1')
+ price_gate_changed=selection!=installed.get('price_bootstrap_gate')
  manifest.update(source_sha=source_sha,runtime_sha256=hashes,runtime_loader='verified-bytes.v1',
                  native_read_stream=native_read_stream,
                  prepared_from_manifest_sha256=observed['manifest_sha256'],
                  runtime_bytes_changed=runtime_bytes_changed,
-                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed or read_transport_changed or base_binding_changed),
+                 trading_behavior_changed=(installed.get('trading_behavior_changed') is not False or runtime_bytes_changed or read_transport_changed or base_binding_changed or price_gate_changed),
                  behavior_equivalence_assessed=False)
  if instrument=='BTC.USD':manifest['btc_base_binding']='RUNTIME_MANIFEST_V1'
+ if selection is not None:
+  manifest['price_bootstrap_gate']=selection
+  from hepta_price_bootstrap_gate import validate_selection
+  validate_selection(manifest)
  if native_clients is not None:
   manifest['native_clients']={name:dict(binding) for name,binding in native_clients.items()}
   manifest.pop('native_read_binary',None)
@@ -368,10 +388,13 @@ def main():
  p.add_argument('--native-read-binary-sha256')
  p.add_argument('--native-client-bindings',type=Path,help='private JSON pinning heptactl, paper-command and sessionctl together')
  p.add_argument('--native-client-bindings-sha256')
+ p.add_argument('--price-bootstrap-gate',action='store_true',default=None,
+                help='prepare an explicitly new FX producer with a durable PRICE persistence pre-OPEN gate')
  mode=p.add_mutually_exclusive_group()
  mode.add_argument('--inspect-only',action='store_true')
  mode.add_argument('--prepare-upgrade',action='store_true')
  a=p.parse_args();os.umask(0o077)
+ if a.price_bootstrap_gate is not None and not a.prepare_upgrade:p.error('--price-bootstrap-gate requires --prepare-upgrade')
  if (a.native_read_stream is not None or a.native_read_binary is not None or a.native_read_binary_sha256 is not None or a.native_client_bindings is not None or a.native_client_bindings_sha256 is not None) and not a.prepare_upgrade:p.error('native client options require --prepare-upgrade')
  if bool(a.native_read_binary)!=bool(a.native_read_binary_sha256):p.error('--native-read-binary and --native-read-binary-sha256 must be supplied together')
  if bool(a.native_client_bindings)!=bool(a.native_client_bindings_sha256):p.error('--native-client-bindings and --native-client-bindings-sha256 must be supplied together')
@@ -388,6 +411,7 @@ def main():
   if a.native_read_stream is not None:options['native_read_stream']=a.native_read_stream
   if read_binary is not None:options['native_read_binary']=read_binary
   if clients is not None:options['native_clients']=clients
+  if a.price_bootstrap_gate is not None:options['price_bootstrap_gate']=a.price_bootstrap_gate
   prepare_upgrade(a.instrument,**options)
  else:
   if a.evidence_directory is None:p.error('--evidence-directory required for installation')

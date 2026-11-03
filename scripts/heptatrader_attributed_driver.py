@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observation-only launcher over immutable existing FX or BTC PAPER behavior."""
+"""Pinned PAPER launcher, with an explicit optional pre-OPEN PRICE seal gate."""
 from __future__ import annotations
 import argparse,hashlib,os,sys
 from pathlib import Path
@@ -30,6 +30,10 @@ def load_manifest(path):
  for name,expected in m['runtime_sha256'].items():
   if Path(name).name!=name or hashlib.sha256(read_private(root/name,1048576)).hexdigest()!=expected:
    raise ValueError('PINNED_RUNTIME_CHANGED')
+ if 'price_bootstrap_gate' in m:
+  name='hepta_price_bootstrap_gate.py'
+  module=load_verified_module('hepta_pinned_price_bootstrap_manifest',root/name,m['runtime_sha256'].get(name))
+  module.validate_selection(m)
  return m,hashlib.sha256(raw).hexdigest()
 
 
@@ -69,8 +73,16 @@ def main():
   if hashlib.sha256(read_private(profile,65536)).hexdigest()!=m['btc_profile_sha256']:raise ValueError('BTC_PROFILE_CHANGED')
   close_economics=btc.attach(driver,btc.load_profile(profile))
 
- observer=None
+ observer=None;close_price_gate=None
  try:
+  # Install fail-closed OPEN interception before the optional journal. A
+  # missing Capture context can never silently restore ungated entry behavior.
+  # CLOSE and unknown-send recovery retain their original path. Only an
+  # explicitly durable local pre-submit boundary has a separate reconciliation.
+  if 'price_bootstrap_gate' in m:
+   name='hepta_price_bootstrap_gate.py'
+   module=load_verified_module('hepta_pinned_price_bootstrap',root/name,m['runtime_sha256'][name])
+   close_price_gate=module.PriceBootstrapGate(driver,m,manifest_sha).install()
   # Once the already-pinned trading program is loaded, optional evidence failure
   # cannot remove legacy risk exits. It only makes attribution unavailable.
   try:
@@ -81,5 +93,6 @@ def main():
   return driver.main()
  finally:
   if observer is not None:observer()
+  if close_price_gate is not None:close_price_gate()
   if close_economics is not None:close_economics()
 if __name__=='__main__':raise SystemExit(main())

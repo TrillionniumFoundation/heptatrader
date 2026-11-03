@@ -52,7 +52,7 @@ MODULE_FILES = {
     'laya_cell.resident_hip_runtime': 'learn/laya_cell/resident_hip_runtime.py',
 }
 MODULE_FILES.update({name[:-3]: 'scripts/' + name for name in (
-    'hepta_verified_loader.py', 'hepta_decision_attribution.py', 'hepta_native_reader.py',
+    'hepta_verified_loader.py', 'hepta_decision_attribution.py', 'hepta_native_reader.py', 'hepta_price_bootstrap_gate.py',
     'hepta_maintenance_latch.py', 'install_risk_stop_fence.py', 'install_decision_attribution.py')})
 
 SHARED_UNITS = {role: 'heptatrader-laya-' + role + '.service' for role in ('trainer', 'evaluator')}

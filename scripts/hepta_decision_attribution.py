@@ -3,8 +3,10 @@
 Records the literal infer CLI prompt/options, original local input snapshot,
 returned envelope, decoded decision and original PREPARED command. The identity
 link uses the actual returned Python object, not time proximity or equal text.
-Background I/O and bounded queues cannot veto a risk exit or submit. Lost evidence
-is explicitly unusable for model credit; it never changes a trading outcome.
+Without an explicit pre-open-price-bootstrap manifest this remains observation
+only. The optional separately pinned gate receives the real call context; its
+own durable files, never queue.put, govern new OPEN preparation. Risk exits and
+original command recovery do not depend on that gate.
 """
 from __future__ import annotations
 from collections import OrderedDict
@@ -167,6 +169,7 @@ class Journal:
 class Capture:
  def __init__(self,journal,driver,manifest):
   self.journal=journal;self.driver=driver;self.manifest=manifest;self.local=threading.local();self.lock=threading.Lock();self.objects=OrderedDict()
+  self.price_gate=getattr(driver,'PRICE_BOOTSTRAP_GATE',None)
  def emit(self,*args):
   try:return self.journal.emit(*args)
   except Exception:return False
@@ -189,7 +192,7 @@ class Capture:
       'model_id':d.MODEL,'model_controls':params,'prompt':prompt,'prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest(),
       'history_snapshot':ctx['history'],'position_at_request':ctx['position'],'started_at_ms':int(time.time()*1000),
       'input_scope':'EXACT_LOCAL_INFER_CLI_REQUEST_NOT_UNOBSERVED_PROVIDER_INTERNAL_CONTEXT'}
-    ctx['request']=request;ctx['request_sha256']=digest(request);self.emit('REQUEST',request)
+    ctx['request']=request;ctx['request_sha256']=digest(request);ctx['request_monotonic_ns']=time.monotonic_ns();self.emit('REQUEST',request)
    except Exception:ctx['invalid']=True
    result=original['run'](argv,*args,**kw)
    try:
@@ -200,6 +203,7 @@ class Capture:
    return result
   def model_decision(openclaw,state_dir,history,position):
    ctx={'id':uuid.uuid4().hex,'history':copy.deepcopy(history[-24:]),'position':float(position),'calls':0}
+   ctx['worker']=getattr(getattr(d,'_MODEL_RUN_CONTEXT',None),'worker',None)
    self.local.inference=ctx
    try:decision=original['model_decision'](openclaw,state_dir,history,position)
    finally:self.local.inference=None
@@ -211,7 +215,11 @@ class Capture:
     with self.lock:
      self.objects[id(decision)]=(decision,info)
      while len(self.objects)>32:self.objects.popitem(last=False)
-   except Exception:self.emit('UNBOUND_DECISION',{'reason':'NO_SINGLE_EXACT_REQUEST','instrument':d.INSTRUMENT})
+    if self.price_gate is not None and ctx['position']==0 and d.entry_candidate_allowed(decision):
+     self.price_gate.capture(decision,ctx,info,self.journal.manifest_sha)
+   except Exception as exc:
+    self.emit('UNBOUND_DECISION',{'reason':'NO_SINGLE_EXACT_REQUEST','instrument':d.INSTRUMENT})
+    if self.price_gate is not None and ctx['position']==0 and d.entry_candidate_allowed(decision):self.price_gate.reject_capture(decision,ctx,exc)
    return decision
   def prepare_send(state,path,*args,**kw):
    previous=getattr(self.local,'preparing',None);self.local.preparing=state
@@ -232,10 +240,12 @@ class Capture:
                                 'reason':'NO_IDENTICAL_RETURNED_DECISION_OBJECT'});return result
     command={k:copy.deepcopy(pending[k]) for k in ('command_id','kind','created_at_ms','instrument','side','position_before_send',
              'reference_price','quantity_mode','cash_quantity','order_quantity','target_notional_usd','order_type','tif') if k in pending}
-    self.emit('COMMAND_BINDING',{'command':command,'request_id':entry[1]['request_id'],
+    binding={'command':command,'request_id':entry[1]['request_id'],
       'request_sha256':entry[1]['request_sha256'],'response_sha256':entry[1]['response_sha256'],
       'decision_sha256':entry[1]['decision_sha256'],'decision_available_at_ms':entry[1]['available_at_ms'],
-      'basis':'IDENTICAL_RETURNED_OBJECT_AT_ORIGINAL_DURABLE_PREPARED','state_write_succeeded':True})
+      'basis':'IDENTICAL_RETURNED_OBJECT_AT_ORIGINAL_DURABLE_PREPARED','state_write_succeeded':True}
+    if 'price_bootstrap_forecast' in pending:binding['price_bootstrap_forecast']=copy.deepcopy(pending['price_bootstrap_forecast'])
+    self.emit('COMMAND_BINDING',binding)
    except Exception:self.emit('OBSERVER_ERROR',{'phase':'PREPARED','authority_effect':'NONE'})
    return result
   for n,f in {'run':run,'model_decision':model_decision,'prepare_send':prepare_send,'atomic_json':atomic_json}.items():setattr(d,n,f)

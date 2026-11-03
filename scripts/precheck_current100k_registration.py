@@ -24,7 +24,7 @@ import stat
 import time
 
 SUPPORT_FILES = (
-    'hepta_verified_loader.py', 'hepta_decision_attribution.py',
+    'hepta_verified_loader.py', 'hepta_decision_attribution.py', 'hepta_price_bootstrap_gate.py',
     'hepta_native_reader.py', 'hepta_maintenance_latch.py',
     'install_risk_stop_fence.py', 'install_decision_attribution.py',
     'activate_prepared_driver.py', 'precheck_current100k_registration.py',

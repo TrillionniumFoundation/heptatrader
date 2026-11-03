@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -17,6 +18,40 @@ from hepta_verified_loader import SourceHashMismatch
 
 
 class RecoveryLauncherTests(unittest.TestCase):
+    def test_price_gate_is_installed_before_journal_failure_and_does_not_block_close(self):
+        import hepta_price_bootstrap_gate as gate
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = importlib.util.spec_from_file_location('launcher_gate_fixture',Path(attributed.__file__).parent/'heptatrader_paper_driver.py')
+            driver = importlib.util.module_from_spec(spec); spec.loader.exec_module(driver)
+            calls=[]
+            def native(binary,socket,token,outbox,operation,extra):
+                calls.append(operation)
+                if operation=='prepare-close':return {'ok':True,'command_id':'fixture-close'}
+                if operation=='submit':return {'ok':True,'transport_ok':True,'application_status':'ok'}
+                raise AssertionError('ungated OPEN called native transport')
+            driver.paper_cmd=native
+            def run():
+                state=driver.load_state(root/'state.json');state['last_decision']={'action':'BUY','confidence':.9}
+                with self.assertRaisesRegex(gate.GateError,'NO_IDENTICAL_CAPTURED'):
+                    driver.prepare_send(state,root/'state.json','unused','unused','unused','unused','OPEN',{},'BUY')
+                state['position']=1
+                driver.prepare_send(state,root/'state.json','unused','unused','unused','unused','CLOSE')
+                return 7
+            driver.main=run
+            manifest={'instrument':'EUR.USD','execution_domain':'PAPER','runtime_loader':'verified-bytes.v1',
+                'journal_directory':str(root/'journal'),'runtime_sha256':{'heptatrader_paper_driver.py':'a'*64,gate.MODULE:'c'*64},
+                'price_bootstrap_gate':{'schema':gate.SELECTION_SCHEMA,'profile':gate.PROFILE,'receipt_root':str(root/'price')}}
+            def load(name,path,sha):return gate if name=='hepta_pinned_price_bootstrap' else driver
+            with mock.patch.object(sys,'argv',['launcher','--manifest',str(root/'manifest.json')]), \
+                 mock.patch.object(attributed.os,'umask'), \
+                 mock.patch.object(attributed,'load_manifest',return_value=(manifest,'b'*64)), \
+                 mock.patch.object(attributed,'load_verified_module',side_effect=load), \
+                 mock.patch.object(attributed,'Journal',side_effect=OSError('fixture journal unavailable')), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(attributed.main(),7)
+            self.assertEqual(calls,['prepare-close','submit']);self.assertFalse(hasattr(driver,'PRICE_BOOTSTRAP_GATE'))
+
     def test_attributed_recovery_reaches_base_even_without_optional_journal(self):
         seen = []
         driver = SimpleNamespace(main=lambda: seen.append(list(sys.argv)) or 7)

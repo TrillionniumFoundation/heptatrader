@@ -129,6 +129,36 @@ class PrepareUpgradeTests(unittest.TestCase):
   self.assertEqual({p.name:p.read_bytes() for p in resident.iterdir()},before)
   self._unchanged()
 
+ def test_explicit_price_gate_preparation_pins_new_producer_without_live_mutation(self):
+  import hepta_price_bootstrap_gate as gate
+  self._put(self.source/gate.MODULE,(ROOT/'scripts'/gate.MODULE).read_bytes())
+  service,old,resident=self._resident('EUR.USD','price-opt-in')
+  installed={'manifest':str(resident/'manifest.json'),'manifest_sha256':installer.sha(resident/'manifest.json')}
+  before={p.name:p.read_bytes() for p in resident.iterdir()}
+  with self._offline(service):
+   result=installer.prepare_upgrade('EUR.USD',price_bootstrap_gate=True)
+   again=installer.prepare_upgrade('EUR.USD',price_bootstrap_gate=True)
+  self.assertEqual(result['manifest_sha256'],again['manifest_sha256'])
+  candidate=Path(result['manifest']);manifest=json.loads(candidate.read_bytes())
+  self.assertEqual(manifest['price_bootstrap_gate']['profile'],gate.PROFILE)
+  self.assertIn(gate.MODULE,manifest['runtime_sha256']);self.assertNotIn(gate.MODULE,old['runtime_sha256'])
+  self.assertNotEqual(result['manifest_sha256'],installed['manifest_sha256'])
+  self.assertIs(manifest['trading_behavior_changed'],True);self.assertIs(manifest['behavior_equivalence_assessed'],False)
+  self.assertFalse(Path(manifest['price_bootstrap_gate']['receipt_root']).exists())
+  self.assertFalse(result['activated']);self.assertFalse(result['trade_authority'])
+  activation.verify_prepared(candidate,result['manifest_sha256'],'EUR.USD',installed)
+  self.assertEqual({p.name:p.read_bytes() for p in resident.iterdir()},before);self._unchanged()
+
+ def test_price_gate_is_not_implicitly_enabled_and_rejects_btc(self):
+  service,_,_=self._resident('EUR.USD','price-default')
+  candidate=self._prepare('EUR.USD',service)
+  manifest=json.loads(Path(candidate['manifest']).read_bytes())
+  self.assertNotIn('price_bootstrap_gate',manifest);self.assertNotIn('hepta_price_bootstrap_gate.py',manifest['runtime_sha256'])
+  service,_,_=self._resident('BTC.USD','price-btc-refused')
+  with self._offline(service),self.assertRaisesRegex(ValueError,'PRICE_BOOTSTRAP_PAPER_FX_ONLY'):
+   installer.prepare_upgrade('BTC.USD',price_bootstrap_gate=True)
+  self._unchanged()
+
  def test_ordinary_upgrade_preserves_an_existing_stream_choice(self):
   service,old,resident=self._resident('EUR.USD','stream-retained')
   old['native_read_stream']=True
