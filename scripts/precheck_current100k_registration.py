@@ -379,7 +379,26 @@ def wake_candidates(stage_path, stage_sha256, deadline_ms, mode='precheck', read
                 '--request', stage['registration_request'], '--request-sha256', stage['registration_request_sha256']]
     need(stage['explicit_argv']['registrar'] == expected, 'WAKE_REGISTRAR_ARGV_CHANGED')
     not_before = request['registration_not_before_ms']
-    need(type(not_before) is int and not_before == stage['prior_outcome_end_ms']
+    scope = request.get('registration_scope', 'SAME_PRODUCER_REFIT')
+    need(scope in ('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE')
+         and stage.get('registration_scope', 'SAME_PRODUCER_REFIT') == scope,
+         'WAKE_REGISTRATION_SCOPE_CHANGED')
+    if scope == 'SAME_PRODUCER_REFIT':
+        expected_not_before = stage['prior_outcome_end_ms']
+    else:
+        # New-producer lineage is checked again by the original registrar.
+        # Its earliest registration time is the completed new candidate's
+        # creation time, not the previous producer's still-open trial window.
+        candidate_path = Path(request['candidate_directory']) / 'candidate.json'
+        candidate_sha = request['input_sha256'].get(str(candidate_path))
+        need(candidate_sha is not None, 'WAKE_NEW_CANDIDATE_PIN_REQUIRED')
+        candidate = pinned_json(candidate_path, candidate_sha)
+        expected_not_before = candidate.get('created_at_ms')
+        need(candidate.get('schema') == 'heptatrader.current100k-value-candidate.v1'
+             and candidate.get('candidate_id') == stage['candidate_id']
+             and type(expected_not_before) is int,
+             'WAKE_COMPLETED_NEW_CANDIDATE_REQUIRED')
+    need(type(not_before) is int and not_before == expected_not_before
          and type(deadline_ms) is int and not_before < deadline_ms,
          'WAKE_EXPLICIT_FINITE_DEADLINE_REQUIRED')
     need(mode in ('precheck', 'register'), 'WAKE_MODE_INVALID')
@@ -448,6 +467,7 @@ def wake_candidates(stage_path, stage_sha256, deadline_ms, mode='precheck', read
         '', '[Install]', 'WantedBy=timers.target', ''))
     return {'schema': 'heptatrader.current100k-registration-wake.v1', 'stage': str(stage_path),
         'stage_sha256': stage_sha256, 'mode': mode, 'not_before_ms': not_before,
+        'registration_scope': scope,
         'deadline_ms': deadline_ms, 'calendar_utc': calendar, 'calendars_utc': calendars,
         'readmission_seconds': readmission_seconds, 'calendar_events': len(calendars),
         'success_keeps_oneshot_active_without_a_process': True, 'argv': argv,

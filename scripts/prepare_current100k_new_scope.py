@@ -32,8 +32,8 @@ def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
-def select_dataset(data, registration, prior, history, validate_rows):
-    """Select by input time alone; no reward ranking or historical row reuse."""
+def population(data, registration, prior, history):
+    """Verify the complete producer population before selecting or resuming."""
     if (data.get('schema') != 'heptatrader.current100k-value-dataset.v1'
             or digest({k:v for k,v in data.items() if k != 'fingerprint'}) != data.get('fingerprint')
             or data.get('producer_manifest_sha256') != registration['sha256']
@@ -64,17 +64,27 @@ def select_dataset(data, registration, prior, history, validate_rows):
         'last_input_at_ms': ordered[-1]['input_started_at_ms'] if rows else None,
         'training_started': False, 'trial_registered': False, 'broker_orders_sent': 0,
         'efficacy_claim': False}
-    if len(rows) < MIN_ROWS:
+    return ordered, summary
+
+
+def selected_summary(summary, frozen):
+    return {**summary, 'state': 'VERIFIED_NEW_PRODUCER_32_READY_FOR_GUARDED_FIT',
+        'selected_row_ids': [r['row_id'] for r in frozen['rows']],
+        'selected_first_input_at_ms': frozen['rows'][0]['input_started_at_ms'],
+        'selected_last_input_at_ms': frozen['rows'][-1]['input_started_at_ms']}
+
+
+def select_dataset(data, registration, prior, history, validate_rows):
+    """Select by input time alone; no reward ranking or historical row reuse."""
+    ordered, summary = population(data, registration, prior, history)
+    if len(ordered) < MIN_ROWS:
         return None, {**summary, 'state': 'WAITING_NEW_PRODUCER_32_SETTLED_LABELS'}
     frozen = {**data, 'rows': ordered[:MIN_ROWS]}
     frozen['fingerprint'] = digest({k:v for k,v in frozen.items() if k != 'fingerprint'})
     # The existing row verifier recomputes executions, fees, exact request
     # provenance and target bounds. The watcher cannot weaken its contract.
     validate_rows(frozen, data)
-    return frozen, {**summary, 'state': 'VERIFIED_NEW_PRODUCER_32_READY_FOR_GUARDED_FIT',
-        'selected_row_ids': [r['row_id'] for r in frozen['rows']],
-        'selected_first_input_at_ms': frozen['rows'][0]['input_started_at_ms'],
-        'selected_last_input_at_ms': frozen['rows'][-1]['input_started_at_ms']}
+    return frozen, selected_summary(summary, frozen)
 
 
 def write_once(path, value):
@@ -87,6 +97,66 @@ def write_once(path, value):
     with os.fdopen(fd, 'wb') as stream:
         stream.write(raw); stream.flush(); os.fsync(stream.fileno())
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
+def prepare_ready(output, data, registration, prior, history, pins, source_path, source_sha, now, validate_rows):
+    """Resume one immutable cohort, including a crash before its ready receipt.
+
+    A newer population may contain additional or late-settled rows. Those rows
+    never replace an already frozen cohort. Every selected row must still match
+    the current consumer and pass the original economic/provenance verifier.
+    """
+    destination = output / 'FROZEN_NEW_PRODUCER_32.json'
+    ready_path = output / 'READY_FOR_GUARDED_FIT.json'
+    if ready_path.exists() and not destination.exists():
+        raise ValueError('NEW_SCOPE_READY_WITHOUT_FROZEN_DATASET')
+    resumed = destination.exists()
+    if resumed:
+        _, summary = population(data, registration, prior, history)
+        frozen = read(destination, limit=64*1024**2)
+        ordered, _ = population(frozen, registration, prior, history)
+        if len(ordered) != MIN_ROWS or ordered != frozen['rows']:
+            raise ValueError('NEW_SCOPE_FROZEN_COHORT_BOUND_OR_ORDER')
+        validate_rows(frozen, data)
+        summary = selected_summary(summary, frozen)
+    else:
+        frozen, summary = select_dataset(data, registration, prior, history, validate_rows)
+        if frozen is None:
+            return None, summary
+        write_once(destination, frozen)
+    dataset_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+    bound = {'selection_policy': POLICY, 'minimum_rows': MIN_ROWS,
+        'state': 'VERIFIED_NEW_PRODUCER_32_READY_FOR_GUARDED_FIT',
+        'selected_row_ids': [r['row_id'] for r in frozen['rows']],
+        'producer_manifest_sha256': registration['sha256'], 'period_sha256': frozen['period_sha256'],
+        'behavior_model_id': prior['behavior_scope']['behavior_model_id'],
+        'dataset_path': str(destination), 'dataset_sha256': dataset_sha,
+        'legacy_plans_sha256': pins, 'expected_trial': len(history)+1,
+        'registration_scope': 'NEW_PRODUCER_SCOPE', 'training_started': False,
+        'trial_registered': False, 'broker_orders_sent': 0, 'efficacy_claim': False,
+        'next_required_step': 'NORMAL_GUARDED_CENTERED_FIT_THEN_WARM_STAGE'}
+    if ready_path.exists():
+        receipt = read(ready_path)
+        if any(receipt.get(key) != value for key, value in bound.items()):
+            raise ValueError('NEW_SCOPE_READY_RECEIPT_CHANGED')
+    else:
+        receipt = {**summary, **bound, 'at_ms': now,
+            'source_consumer_dataset': str(source_path), 'source_consumer_dataset_sha256': source_sha,
+            'recovered_existing_frozen_cohort': resumed}
+        write_once(ready_path, receipt)
+    return receipt, {**summary, 'dataset_path': str(destination), 'dataset_sha256': dataset_sha,
+        'ready_at_ms': receipt['at_ms'], 'resumed_frozen_cohort': resumed}
+
+
+def write_status(output, summary):
+    temporary = output / 'status.json.next'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(canonical(summary)+b'\n'); stream.flush(); os.fsync(stream.fileno())
+    os.replace(temporary, output / 'status.json')
+    fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try: os.fsync(fd)
     finally: os.close(fd)
 
@@ -152,6 +222,7 @@ def main():
     signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
     while not stopped:
         now = int(time.time()*1000)
+        receipt = None
         try:
             if hashlib.sha256(args.consumer_config.read_bytes()).hexdigest() != args.consumer_config_sha256:
                 raise ValueError('NEW_SCOPE_CONSUMER_CONFIG_CHANGED')
@@ -172,31 +243,17 @@ def main():
             if dataset_sha != status['dataset_sha256']:
                 raise ValueError('NEW_SCOPE_CONSUMER_DATASET_CHANGED_DURING_READ')
             if dataset_sha != cached_digest:
-                frozen, summary = select_dataset(json.loads(raw), registration, prior, history, selected_rows)
+                receipt, summary = prepare_ready(output, json.loads(raw), registration, prior, history, pins,
+                    dataset_path, dataset_sha, now, selected_rows)
                 cached_digest = dataset_sha; cached_summary = summary
-                if frozen is not None:
-                    # Freeze exactly one predetermined cohort. Fitting/replay
-                    # and registration each retain their independent checks.
-                    destination = output / 'FROZEN_NEW_PRODUCER_32.json'
-                    write_once(destination, frozen)
-                    receipt = {**summary, 'at_ms': now, 'dataset_path': str(destination),
-                        'dataset_sha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
-                        'source_consumer_dataset': str(dataset_path), 'source_consumer_dataset_sha256': dataset_sha,
-                        'legacy_plans_sha256': pins, 'expected_trial': len(history)+1,
-                        'registration_scope': 'NEW_PRODUCER_SCOPE', 'next_required_step': 'NORMAL_GUARDED_CENTERED_FIT_THEN_WARM_STAGE'}
-                    write_once(output / 'READY_FOR_GUARDED_FIT.json', receipt)
-                    print(json.dumps(receipt, sort_keys=True), flush=True)
-                    return
             summary = {**cached_summary, 'at_ms': now, 'consumer_input_checked_at_ms': stamp,
                 'source_dataset_sha256': dataset_sha}
         except (OSError, ValueError, KeyError) as error:
             summary = {'at_ms': now, 'state': 'NEW_SCOPE_PREPARATION_BLOCKED', 'reason': str(error)[:600],
                 'training_started': False, 'trial_registered': False, 'broker_orders_sent': 0}
-        temporary = output / 'status.json.next'
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-        with os.fdopen(fd, 'wb') as stream: stream.write(canonical(summary)+b'\n')
-        os.replace(temporary, output / 'status.json'); print(json.dumps(summary, sort_keys=True), flush=True)
-        if args.once or time.monotonic() >= deadline:
+        write_status(output, summary)
+        print(json.dumps(receipt if receipt is not None else summary, sort_keys=True), flush=True)
+        if receipt is not None or args.once or time.monotonic() >= deadline:
             return
         wake = min(deadline, time.monotonic()+args.interval_seconds)
         while not stopped and time.monotonic() < wake:

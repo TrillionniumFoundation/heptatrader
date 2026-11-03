@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -90,6 +92,83 @@ class NewScopeSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'DIFFERENT_BYTES'):
                 preparation.write_once(path, {'row_ids': ['b']})
             self.assertEqual(path.read_bytes(), before)
+
+    def prepare(self, output, data, now=5000):
+        raw = preparation.canonical(data)
+        return preparation.prepare_ready(output, data, self.registration, self.prior, [self.prior],
+            {'/history/plan.json': 'original-plan-pin'}, Path('/consumer/dataset.json'),
+            hashlib.sha256(raw).hexdigest(), now, self.validator)
+
+    def test_ready_resume_retains_original_cohort_when_population_and_metadata_advance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            receipt, _ = self.prepare(output, self.dataset(32))
+            frozen_before = (output / 'FROZEN_NEW_PRODUCER_32.json').read_bytes()
+            ready_before = (output / 'READY_FOR_GUARDED_FIT.json').read_bytes()
+            expanded = self.dataset(40); expanded['exported_at_ms'] = 6000
+            # A later settlement can have an earlier input time. It must not
+            # replace the cohort chosen at the first eligible observation.
+            expanded['rows'][39]['input_started_at_ms'] = 999
+            self.fingerprint(expanded)
+            resumed, status = self.prepare(output, expanded, now=6000)
+            self.assertEqual(resumed, receipt)
+            self.assertEqual(status['distinct_settled_rows'], 40)
+            self.assertTrue(status['resumed_frozen_cohort'])
+            self.assertEqual((output / 'FROZEN_NEW_PRODUCER_32.json').read_bytes(), frozen_before)
+            self.assertEqual((output / 'READY_FOR_GUARDED_FIT.json').read_bytes(), ready_before)
+            self.assertEqual(self.validator.call_count, 2)
+            self.assertEqual(self.validator.call_args.args[1], expanded)
+
+    def test_crash_after_frozen_write_recovers_without_reselecting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            frozen, _ = self.select(self.dataset(32))
+            preparation.write_once(output / 'FROZEN_NEW_PRODUCER_32.json', frozen)
+            receipt, _ = self.prepare(output, self.dataset(40))
+            self.assertTrue(receipt['recovered_existing_frozen_cohort'])
+            self.assertEqual(receipt['selected_row_ids'], [str(i) for i in range(32)])
+            self.assertEqual(json.loads((output / 'FROZEN_NEW_PRODUCER_32.json').read_bytes()), frozen)
+
+    def test_resume_requires_original_economic_provenance_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory); self.prepare(output, self.dataset(32))
+            before = (output / 'READY_FOR_GUARDED_FIT.json').read_bytes()
+            self.validator.side_effect = ValueError('REAL_REWARD_WITHDRAWN_OR_CHANGED')
+            with self.assertRaisesRegex(ValueError, 'REAL_REWARD_WITHDRAWN_OR_CHANGED'):
+                self.prepare(output, self.dataset(40))
+            self.assertEqual((output / 'READY_FOR_GUARDED_FIT.json').read_bytes(), before)
+
+    def test_changed_ready_identity_cannot_redirect_continuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory); self.prepare(output, self.dataset(32))
+            path = output / 'READY_FOR_GUARDED_FIT.json'; receipt = json.loads(path.read_bytes())
+            receipt['dataset_path'] = '/another/cohort.json'
+            path.chmod(0o600); path.write_bytes(preparation.canonical(receipt))
+            with self.assertRaisesRegex(ValueError, 'READY_RECEIPT_CHANGED'):
+                self.prepare(output, self.dataset(32))
+
+    def test_ready_without_frozen_data_cannot_be_reconstructed_with_new_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory); self.prepare(output, self.dataset(32))
+            (output / 'FROZEN_NEW_PRODUCER_32.json').unlink()
+            with self.assertRaisesRegex(ValueError, 'READY_WITHOUT_FROZEN_DATASET'):
+                self.prepare(output, self.dataset(40))
+
+    def test_resumed_cohort_still_requires_exactly_thirty_two_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            preparation.write_once(output / 'FROZEN_NEW_PRODUCER_32.json', self.dataset(31))
+            with self.assertRaisesRegex(ValueError, 'FROZEN_COHORT_BOUND_OR_ORDER'):
+                self.prepare(output, self.dataset(32))
+
+    def test_latest_status_is_published_after_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory); _, summary = self.prepare(output, self.dataset(32))
+            preparation.write_status(output, summary)
+            status = json.loads((output / 'status.json').read_bytes())
+            self.assertEqual(status['state'], 'VERIFIED_NEW_PRODUCER_32_READY_FOR_GUARDED_FIT')
+            self.assertEqual(status['remaining_rows'], 0)
+            self.assertFalse((output / 'status.json.next').exists())
 
 
 if __name__ == '__main__':

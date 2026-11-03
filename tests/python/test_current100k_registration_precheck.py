@@ -212,6 +212,21 @@ class WakeCandidateTests(unittest.TestCase):
         return precheck.wake_candidates(self.stage_path, self.sha(self.stage_path), self.deadline, mode, readmission_seconds,
             self.selection_path if mode == 'register' else None, self.sha(self.selection_path) if mode == 'register' else None)
 
+    def new_producer_scope(self):
+        directory = self.root / 'new-candidate'; directory.mkdir()
+        candidate_path = directory / 'candidate.json'
+        candidate = {'schema': 'heptatrader.current100k-value-candidate.v1',
+            'candidate_id': 'new-candidate-id', 'created_at_ms': 1793600000000}
+        candidate_path.write_bytes(raw(candidate))
+        self.request.update(registration_scope='NEW_PRODUCER_SCOPE',
+            registration_not_before_ms=candidate['created_at_ms'], candidate_directory=str(directory),
+            input_sha256={str(candidate_path): self.sha(candidate_path)})
+        self.request_path.write_bytes(raw(self.request))
+        self.stage.update(registration_scope='NEW_PRODUCER_SCOPE', candidate_id=candidate['candidate_id'],
+            registration_request_sha256=self.sha(self.request_path))
+        self.command[-1] = self.sha(self.request_path)
+        return candidate_path
+
     def test_separate_one_time_utc_precheck_is_finite_and_read_only(self):
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*'))
         result = self.prepare()
@@ -236,6 +251,34 @@ class WakeCandidateTests(unittest.TestCase):
         seconds = datetime.strptime(result['calendar_utc'], '%Y-%m-%d %H:%M:%S UTC').replace(tzinfo=timezone.utc).timestamp()
         self.assertGreaterEqual(int(seconds * 1000), self.request['registration_not_before_ms'])
         self.assertLess(int(seconds * 1000) - self.request['registration_not_before_ms'], 1000)
+
+    def test_new_producer_can_wake_after_completed_fit_before_prior_window_ends(self):
+        self.new_producer_scope()
+        result = self.prepare()
+        self.assertEqual(result['registration_scope'], 'NEW_PRODUCER_SCOPE')
+        calendar = datetime.strptime(result['calendar_utc'], '%Y-%m-%d %H:%M:%S UTC').replace(tzinfo=timezone.utc)
+        self.assertEqual(int(calendar.timestamp()*1000), self.request['registration_not_before_ms'])
+        self.assertLess(self.request['registration_not_before_ms'], self.stage['prior_outcome_end_ms'])
+        self.assertEqual(self.stage['prior_outcome_end_ms'], 1794557397469)
+
+    def test_new_producer_requires_pinned_completed_candidate_and_matching_scope(self):
+        candidate_path = self.new_producer_scope()
+        before = candidate_path.read_bytes(); candidate_path.write_bytes(before + b' ')
+        with self.assertRaisesRegex(ValueError, 'SHA256_CHANGED'):
+            self.prepare()
+        candidate_path.write_bytes(before)
+        self.stage['registration_scope'] = 'SAME_PRODUCER_REFIT'
+        with self.assertRaisesRegex(ValueError, 'REGISTRATION_SCOPE_CHANGED'):
+            self.prepare()
+
+    def test_new_producer_time_cannot_substitute_earlier_unpinned_boundary(self):
+        self.new_producer_scope()
+        self.request['registration_not_before_ms'] -= 1
+        self.request_path.write_bytes(raw(self.request))
+        self.stage['registration_request_sha256'] = self.sha(self.request_path)
+        self.command[-1] = self.sha(self.request_path)
+        with self.assertRaisesRegex(ValueError, 'FINITE_DEADLINE_REQUIRED'):
+            self.prepare()
 
     def test_register_wake_requires_complete_bound_activation_and_no_process_restart(self):
         result = self.prepare('register')

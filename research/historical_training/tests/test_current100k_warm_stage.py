@@ -219,8 +219,11 @@ class StageBoundaryTests(unittest.TestCase):
         text = stage.finite_unit('predict', '/new/config.json', '1'*64, '/new/runtime', '/selected/python', 5)
         for item in ('Type=oneshot', 'Restart=no', 'StartLimitIntervalSec=10s', 'StartLimitBurst=12',
                      'TimeoutStartSec=240', 'TimeoutStopSec=20', 'KillMode=control-group',
-                     'SendSIGKILL=yes', '--mode predict', 'RestrictAddressFamilies=AF_UNIX'): self.assertIn(item, text)
+                     'SendSIGKILL=yes', '--mode predict', 'RestrictAddressFamilies=AF_UNIX',
+                     'CPUQuota=400%', 'CPUWeight=500', 'MemoryLow=768M'): self.assertIn(item, text)
         self.assertNotIn('[Install]', text)
+        evaluator = stage.finite_unit('evaluate', '/new/config.json', '1'*64, '/new/runtime', '/selected/python', 5)
+        for item in ('CPUQuota=50%', 'CPUWeight=10', 'MemoryLow=0'): self.assertIn(item, evaluator)
 
 
 if __name__ == '__main__': unittest.main()
