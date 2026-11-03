@@ -35,6 +35,7 @@ class ObserverTests(unittest.TestCase):
         observer.source(self.requests, [], 90000)
         self.assertEqual(self.events[0]['request_id'], 'request')
         self.assertEqual(self.events[0]['request_age_ms'], 88900)
+        self.assertEqual(self.events[0]['observed_at_ms'], 90000)
 
     def test_exact_denial_keeps_request_and_timestamp_not_nearby_state(self):
         self.observer.source(self.requests, [], 1200)

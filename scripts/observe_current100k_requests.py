@@ -140,7 +140,8 @@ class Observer:
                     'request_source_written_at_ms': item['source_written_at_ms'],
                     'request_sha256': item['request_sha256'],
                     'producer_manifest_sha256': item['producer_manifest_sha256']}
-                self.emit(rid, 'ORIGINAL_REQUEST_OBSERVED', request_age_ms=now_ms-start)
+                self.emit(rid, 'ORIGINAL_REQUEST_OBSERVED', observed_at_ms=now_ms,
+                          request_age_ms=now_ms-start)
                 if not self.same_scope:
                     self.emit(rid, 'NO_SAME_PRODUCER_REGISTERED_PLAN_IN_OBSERVED_CONFIG',
                         candidate_assigned=False, original_trial_prediction_eligible=False)
@@ -307,7 +308,9 @@ def main():
                     _, requests, bindings, issues = snapshot.read(registration, config['period_sha256'])
                     if issues:
                         raise ValueError('ORIGINAL_INGRESS_ISSUES:' + json.dumps(issues, sort_keys=True)[:500])
-                    observer.source(requests, bindings, now); last_issue = None
+                    # A cold verified source read may span several seconds.
+                    # Timestamp the completed observation, not the loop start.
+                    observer.source(requests, bindings, int(time.time()*1000)); last_issue = None
                 except (OSError, ValueError) as error:
                     issue = str(error)[:600]
                     if issue != last_issue:
