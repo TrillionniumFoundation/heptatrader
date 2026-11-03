@@ -115,6 +115,9 @@ def restore(state):
         from pathlib import Path
         from research.neuron_learning.laya_cell.integrity import sha_file
         import catboost
+        need(isinstance(state.get('version'),str) and bool(state['version'])
+             and state['version']==getattr(catboost,'__version__',None),
+             'CATBOOST_RUNTIME_VERSION_CHANGED')
         pin=state['model_file']; need(sha_file(Path(pin['path']))==pin['sha256'],'CATBOOST_FILE_CHANGED')
         threads=state['parameters']['thread_count']
         model=CatBoostCPU(threads=threads); model.model=catboost.CatBoostClassifier(); model.model.load_model(pin['path'])

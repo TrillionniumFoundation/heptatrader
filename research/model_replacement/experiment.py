@@ -41,6 +41,26 @@ def code_identity():
         pins['resident/'+name]=sha_file(resident/name)
     return pins
 
+def validate_backbone_load_identity(expected, actual):
+    """Bind restored inference to the sealed implementation and base weights.
+
+    Loading time and the local source path can change without changing model
+    identity. Execution settings and observed dependency/parameter identities
+    must still match, including before a LoRA adapter is restored.
+    """
+    need(isinstance(expected,dict) and isinstance(actual,dict),'MODEL_BACKBONE_LOAD_RECEIPT_REQUIRED')
+    for field in ('versions','implementation_sha256'):
+        need(isinstance(expected.get(field),dict) and bool(expected[field])
+             and isinstance(actual.get(field),dict) and bool(actual[field]),
+             'MODEL_BACKBONE_LOAD_IDENTITY_REQUIRED:'+field)
+    fields=('schema','model_kind','model_id','source_revision','files_sha256','artifact_sha256',
+            'device','dtype','seed','threads','interop_threads','batch_size','context_length_cap',
+            'offline_only','training_mode','trainable_parameters','total_parameters',
+            'parameters_sha256','versions','implementation_sha256')
+    for field in fields:
+        need(field in expected and field in actual and expected[field]==actual[field],
+             'MODEL_BACKBONE_LOAD_IDENTITY_CHANGED:'+field)
+
 def prediction_row(sample, instrument='EUR.USD', horizon_sec=300):
     state=causal_state(sample,instrument,horizon_sec)
     return {'sample_id':sample['sample_id'],'anchor_ms':sample['anchor_ms'],
@@ -160,7 +180,8 @@ class SavedPredictor:
         if state['backbone']:
             from .forecast_models import ForecastModelConfig, create_forecast_adapter
             self.adapter=create_forecast_adapter(ForecastModelConfig(**state['backbone']['config']))
-            self.adapter.load()
+            loaded=self.adapter.load()
+            validate_backbone_load_identity(state['backbone'].get('load'),loaded)
             if state['backbone']['lora']:
                 self.adapter.restore_lora(state['backbone']['lora'])
     def predict(self,rows):

@@ -96,9 +96,10 @@ class FitTests(unittest.TestCase):
                 calls.append(thread_count); return np.full((len(x),7),1/7)
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'model.cbm'; path.write_bytes(b'synthetic contract fixture')
-            state={'kind':'CATBOOST_CPU','parameters':{'thread_count':3},
+            state={'kind':'CATBOOST_CPU','version':'synthetic-test-version','parameters':{'thread_count':3},
                    'model_file':{'path':str(path),'sha256':sha_file(path)}}
-            with patch.dict(sys.modules,{'catboost':types.SimpleNamespace(CatBoostClassifier=FakeModel)}):
+            with patch.dict(sys.modules,{'catboost':types.SimpleNamespace(
+                    CatBoostClassifier=FakeModel,__version__='synthetic-test-version')}):
                 loaded=restore(state); loaded.predict_proba([[1.,2.]])
         self.assertEqual(calls,[3])
     def test_linear_updates_parameters_train_only_scaler_and_restores(self):
