@@ -5,6 +5,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import selectors
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +16,165 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 from hepta_decision_attribution import DRIVER_OBSERVATION_FIELDS, merge_driver_observation
+
+
+# Real filesystem operations and separate interpreters exercise abrupt process
+# loss. The only substituted boundary is a local transport fixture: no client,
+# socket, token, native runtime or broker is used by either process.
+CRASH_WORKER = r'''
+import importlib.util,json,os,signal,stat,sys
+from pathlib import Path
+module_path,state_path,mode,point=sys.argv[1:]
+spec=importlib.util.spec_from_file_location('isolated_crash_driver',module_path)
+d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
+path=Path(state_path)
+command='fixture-original-command-never-a-broker-order'
+operations=[]
+if mode=='recover':
+    state=d.load_state(path)
+    original=state['pending']['command_id']
+    def inspect(_binary,_socket,_token,_outbox,op,extra):
+        assert op=='inspect', 'recovery attempted a transport mutation'
+        assert extra[extra.index('--command-id')+1]==original
+        operations.append(op)
+        return {'ok':True,'result':{'payload':{'authoritative':True,
+            'command_id':original,'command_status':'uncertain'}}}
+    d.paper_cmd=inspect
+    snapshot={'position':0.0,'active':[],'orders':{'recent_orders':[]}}
+    for _ in range(2):
+        d.inspect_pending(state,path,'unused','unused','unused','unused',snapshot)
+    try:
+        d.prepare_send(state,path,'unused','unused','unused','unused','OPEN',
+            {'bid':1.1,'ask':1.2},'BUY')
+    except d.DriverError as exc:
+        assert 'replacement preparation forbidden' in str(exc)
+    else:
+        raise AssertionError('unresolved original command was replaceable')
+    recovered=d.load_state(path)
+    assert recovered['pending']['command_id']==command
+    assert recovered['position']==0 and recovered['entries']==0
+    print(json.dumps({'operations':operations,'pending':recovered['pending'],
+        'position':recovered['position'],'entries':recovered['entries']}),flush=True)
+    raise SystemExit(0)
+
+state=d.load_state(path);d.atomic_json(path,state)
+real_fsync=os.fsync;real_replace=os.replace
+phase='initial'
+def pause(name):
+    if name==point:
+        print(json.dumps({'point':name,'operations':operations}),flush=True)
+        while True: signal.pause()
+def fsync(fd):
+    real_fsync(fd)
+    kind='directory-sync' if stat.S_ISDIR(os.fstat(fd).st_mode) else 'file-sync'
+    pause(phase+'-'+kind)
+def replace(source,target):
+    if str(target).endswith('.observation.json'):
+        pause('observation-before-replace')
+        real_replace(source,target)
+        pause('observation-after-replace')
+    else:
+        real_replace(source,target)
+        pause(phase+'-replace')
+os.fsync=fsync;os.replace=replace
+real_atomic=d.atomic_json
+def atomic(path,value):
+    global phase
+    phase={'PREPARED':'prepared','POSSIBLY_SENT':'possibly',
+        'ACKNOWLEDGED':'ack'}[value['pending']['send_state']]
+    real_atomic(path,value)
+d.atomic_json=atomic
+def transport(_binary,_socket,_token,_outbox,op,extra):
+    operations.append(op)
+    if op=='prepare-open':
+        return {'ok':True,'command_id':command}
+    assert op=='submit'
+    saved=d.load_state(path)
+    assert saved['pending']['command_id']==command
+    assert saved['pending']['send_state']=='POSSIBLY_SENT'
+    pause('submitted-before-reply')
+    return {'ok':True,'transport_ok':True,'application_status':'ok'}
+d.paper_cmd=transport
+if point.startswith('observation-'):
+    state['pending']={'command_id':command,'kind':'OPEN','side':'BUY',
+        'send_state':'POSSIBLY_SENT','broker_order_id':None,'position_before_send':0.0}
+    d.atomic_json(path,state)
+    state['history']=[{'observed_at_ms':1234,'bid':1.1,'ask':1.2}]
+    state['last_error']='diagnostic after the durable original command'
+    d.checkpoint_loop_state(path,state)
+else:
+    d.prepare_send(state,path,'unused','unused','unused','unused','OPEN',
+        {'bid':1.1,'ask':1.2},'BUY')
+raise AssertionError('requested crash boundary was not reached')
+'''
+
+
+class DriverProcessCrashTests(unittest.TestCase):
+    def run_worker(self, path, mode, point):
+        return subprocess.Popen([sys.executable, '-B', '-c', CRASH_WORKER,
+            str(ROOT / 'scripts/heptatrader_paper_driver.py'), str(path), mode, point],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True)
+
+    def test_sigkill_keeps_original_command_across_send_and_observation_boundaries(self):
+        # A process crash does not simulate power loss. Before rename, recovery
+        # must see the previous complete state; after rename it sees the new
+        # complete state. Sending is possible only after directory fsync.
+        cases = [
+            ('prepared-directory-sync', 'PREPARED', 0),
+            ('possibly-file-sync', 'PREPARED', 0),
+            ('possibly-replace', 'POSSIBLY_SENT', 0),
+            ('possibly-directory-sync', 'POSSIBLY_SENT', 0),
+            ('submitted-before-reply', 'POSSIBLY_SENT', 1),
+            ('ack-file-sync', 'POSSIBLY_SENT', 1),
+            ('ack-replace', 'ACKNOWLEDGED', 1),
+            ('ack-directory-sync', 'ACKNOWLEDGED', 1),
+            ('observation-before-replace', 'POSSIBLY_SENT', 0),
+            ('observation-after-replace', 'POSSIBLY_SENT', 0),
+        ]
+        for point, expected_state, submit_count in cases:
+            with self.subTest(point=point), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'state.json'
+                child = self.run_worker(path, 'crash', point)
+                try:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(child.stdout, selectors.EVENT_READ)
+                        self.assertTrue(selector.select(10), 'crash boundary timed out')
+                        line = child.stdout.readline()
+                    self.assertTrue(line, child.stderr.read() if child.poll() is not None else
+                                    'child closed stdout before crash boundary')
+                    event = json.loads(line)
+                    self.assertEqual(event['point'], point)
+                    self.assertEqual(event['operations'].count('submit'), submit_count)
+                    self.assertEqual(event['operations'].count('prepare-open'),
+                                     0 if point.startswith('observation-') else 1)
+                    child.kill()
+                    stdout, stderr = child.communicate(timeout=5)
+                    self.assertEqual(child.returncode, -signal.SIGKILL)
+                    self.assertEqual((stdout, stderr), ('', ''))
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    child.communicate(timeout=5)
+                durable = json.loads(path.read_bytes())
+                self.assertEqual(durable['pending']['send_state'], expected_state)
+                self.assertEqual(durable['pending']['command_id'],
+                                 'fixture-original-command-never-a-broker-order')
+                # Loss of the optional sidecar cannot alter restart recovery.
+                path.with_suffix('.observation.json').unlink(missing_ok=True)
+                recovered = self.run_worker(path, 'recover', point)
+                try:
+                    stdout, stderr = recovered.communicate(timeout=10)
+                finally:
+                    if recovered.poll() is None:
+                        recovered.kill()
+                        recovered.communicate(timeout=5)
+                self.assertEqual(recovered.returncode, 0, stderr)
+                result = json.loads(stdout)
+                self.assertEqual(result['operations'], ['inspect', 'inspect'])
+                self.assertEqual(result['pending']['command_id'], durable['pending']['command_id'])
+                self.assertEqual(result['pending']['send_state'], expected_state)
+                self.assertEqual((result['position'], result['entries']), (0, 0))
 
 
 class DriverObservationStateTests(unittest.TestCase):
