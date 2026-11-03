@@ -2,6 +2,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -242,6 +243,7 @@ class RetirementFixture(unittest.TestCase):
         self.assertFalse((self.output/'PRE_FIT_RETIRED.json').exists())
         self.fail_disable=False;self.args.retire=False
         self.assertEqual(r.run(self.args)['state'],'PRE_FIT_RETIREMENT_INTENT_REQUIRES_EXPLICIT_RESUME')
+        self.args.resume_intent_sha256=r.digest((self.output/'RETIREMENT_INTENT.json').read_bytes())
         self.args.retire=True;self.assertEqual(r.run(self.args)['state'],'PRE_FIT_RETIRED')
 
     def test_unknown_reload_can_resume_only_exact_guard(self):
@@ -249,6 +251,7 @@ class RetirementFixture(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):r.run(self.args)
         self.assertFalse((self.output/'PRE_FIT_RETIRED.json').exists())
         self.fail_reload=False
+        self.args.resume_intent_sha256=r.digest((self.output/'RETIREMENT_INTENT.json').read_bytes())
         result=r.run(self.args);self.assertEqual(result['state'],'PRE_FIT_RETIRED')
         put(Path(result['service_guard']['path']),b'[Unit]\nConditionPathExists=/not-the-intent\n')
         with self.assertRaisesRegex(ValueError,'RETIREMENT_GUARD_CHANGED'):r.run(self.args)
@@ -335,5 +338,111 @@ class RetirementFixture(unittest.TestCase):
         target=json.loads(self.args.next_producer_manifest.read_bytes());target['prepared_from_manifest_sha256']='other'
         self.args.next_producer_sha256=put(self.args.next_producer_manifest,target)
         with self.assertRaisesRegex(ValueError,'EXPLICIT_SEPARATE_BOOTSTRAP_SUCCESSOR'):r.run(self.args)
+
+    def interrupted_disable(self):
+        self.args.retire=True;self.fail_disable=True
+        with self.assertRaises(subprocess.TimeoutExpired):r.run(self.args)
+        self.fail_disable=False;self.actions.clear()
+        raw=(self.output/'RETIREMENT_INTENT.json').read_bytes()
+        self.args.resume_intent_sha256=r.digest(raw)
+        return raw
+
+    def test_resume_after_stale_heartbeat_and_expired_original_action(self):
+        initial=self.interrupted_disable()
+        later=self.clock+3600000
+        self.args.deadline_ms=later+300000
+        self.args.expected_source_commit='reviewed-new-helper-source'
+        with patch.object(r,'now_ms',return_value=later):result=r.run(self.args)
+        self.assertEqual(result['state'],'PRE_FIT_RETIRED')
+        self.assertEqual((self.output/'RETIREMENT_INTENT.json').read_bytes(),initial)
+        self.assertEqual(result['binding']['deadline_ms'],self.clock+300000)
+        self.assertEqual(result['binding']['source_commit'],'helper-source')
+        review=json.loads(Path(result['completion_resume_review']['path']).read_bytes())
+        self.assertEqual(review['retirement_intent_sha256'],r.digest(initial))
+        self.assertEqual(review['action_deadline_ms'],later+300000)
+        self.assertEqual(review['source_commit'],'reviewed-new-helper-source')
+        self.assertTrue(review['initial_eligibility_revalidated_from_sealed_bytes'])
+        self.assertEqual(review['current_old_scope']['controller_status_sha256'],
+                         r.digest((self.root_v2/'status.json').read_bytes()))
+
+    def test_new_deadline_without_explicit_old_intent_pin_cannot_resume(self):
+        self.interrupted_disable();self.args.resume_intent_sha256=None
+        later=self.clock+3600000;self.args.deadline_ms=later+300000
+        with patch.object(r,'now_ms',return_value=later):
+            with self.assertRaisesRegex(ValueError,'EXPLICIT_RESUME_INTENT_PIN_REQUIRED'):r.run(self.args)
+        self.assertEqual(self.actions,[])
+        self.assertFalse((self.output/'PRE_FIT_RETIRED.json').exists())
+
+    def test_readonly_resume_review_accepts_stopped_status_without_mutating(self):
+        initial=self.interrupted_disable();self.args.retire=False;self.args.resume_intent_sha256=None
+        later=self.clock+3600000;self.args.deadline_ms=later+300000
+        before={str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch.object(r,'now_ms',return_value=later):result=r.run(self.args)
+        self.assertEqual(result['required_resume_intent_sha256'],r.digest(initial))
+        self.assertEqual(result['proposed_resume_review']['action_deadline_ms'],later+300000)
+        self.assertEqual(before,{str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        self.assertEqual(self.actions,[])
+
+    def test_resume_checks_new_side_effects_and_current_preserved_rows(self):
+        self.interrupted_disable()
+        put(self.prep_root/'FROZEN_NEW_PRODUCER_32.json',{})
+        with self.assertRaisesRegex(ValueError,'FROZEN32_READY'):r.run(self.args)
+        (self.prep_root/'FROZEN_NEW_PRODUCER_32.json').unlink()
+        self.replace_rows(1)
+        with self.assertRaisesRegex(ValueError,'OLD_SCOPE_WITHDRAWN_OR_REWRITTEN'):r.run(self.args)
+        self.assertEqual(self.actions,[])
+
+    def test_resume_revalidates_sealed_initial_freshness_not_just_hashes(self):
+        self.interrupted_disable()
+        intent=json.loads((self.output/'RETIREMENT_INTENT.json').read_bytes())
+        intent['old_scope']['observed_at_ms']=self.clock+180001;intent['at_ms']=self.clock+180002
+        self.args.resume_intent_sha256=put(self.output/'RETIREMENT_INTENT.json',intent)
+        with self.assertRaisesRegex(ValueError,'FRESH_WAITING'):r.run(self.args)
+        self.assertEqual(self.actions,[])
+
+    def test_parent_directories_and_intent_are_synced_before_systemd(self):
+        seen=[];real_fsync=os.fsync;original_command=self.command
+        def sync(fd):
+            seen.append(os.readlink('/proc/self/fd/'+str(fd)));return real_fsync(fd)
+        def mutation(argv,deadline,**kwargs):
+            self.assertIn(str(self.output.parent),seen)
+            self.assertIn(str(self.output),seen)
+            self.assertIn(str(self.output/'RETIREMENT_INTENT.json'),seen)
+            if argv==['systemctl','--user','daemon-reload']:
+                guard=r.guard_spec(r.inputs(self.args),self.proofs[self.v2sha])
+                self.assertIn(str(guard[0].parent),seen)
+                self.assertIn(str(guard[0].parent.parent),seen)
+                self.assertIn(str(guard[0]),seen)
+            return original_command(argv,deadline,**kwargs)
+        self.args.retire=True
+        with patch.object(os,'fsync',side_effect=sync),patch.object(r,'command',side_effect=mutation):r.run(self.args)
+
+    def test_existing_intent_and_snapshot_files_are_resynced_before_resume_effect(self):
+        self.interrupted_disable();seen=[];real_fsync=os.fsync;original_command=self.command
+        def sync(fd):
+            seen.append(os.readlink('/proc/self/fd/'+str(fd)));return real_fsync(fd)
+        def mutation(argv,deadline,**kwargs):
+            self.assertIn(str(self.output/'RETIREMENT_INTENT.json'),seen)
+            self.assertIn(str(self.output/'OLD_SCOPE_DATASET.json'),seen)
+            self.assertIn(str(self.output.parent),seen)
+            return original_command(argv,deadline,**kwargs)
+        with patch.object(os,'fsync',side_effect=sync),patch.object(r,'command',side_effect=mutation):r.run(self.args)
+
+    def test_resync_failure_never_attempts_another_systemd_effect(self):
+        self.interrupted_disable();real_fsync=os.fsync
+        def sync(fd):
+            if os.readlink('/proc/self/fd/'+str(fd))==str(self.output/'RETIREMENT_INTENT.json'):
+                raise OSError('fixture intent fsync failed')
+            return real_fsync(fd)
+        with patch.object(os,'fsync',side_effect=sync):
+            with self.assertRaisesRegex(OSError,'intent fsync failed'):r.run(self.args)
+        self.assertEqual(self.actions,[])
+        self.assertFalse((self.output/'PRE_FIT_RETIRED.json').exists())
+
+    def test_parent_directory_fsync_failure_stops_initial_action(self):
+        self.args.retire=True
+        with patch.object(os,'fsync',side_effect=OSError('fixture directory fsync failed')):
+            with self.assertRaisesRegex(OSError,'directory fsync failed'):r.run(self.args)
+        self.assertEqual(self.actions,[])
 
 if __name__=='__main__':unittest.main()

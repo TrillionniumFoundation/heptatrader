@@ -62,7 +62,10 @@ maintenance indefinitely waiting for positions to close. The helper:
 1. Revalidates the locked boundary and saves exact old controller/consumer
    status and dataset bytes plus both original CPU-check receipts in a separate
    output directory.
-2. Fsyncs `RETIREMENT_INTENT.json` before any systemd effect.
+2. Fsyncs `RETIREMENT_INTENT.json`, its directory and the new directory's parent
+   before any systemd effect. The service drop-in directory receives the same
+   parent-entry durability checks. Reusing a file verifies bytes and re-fsyncs
+   its contents and directory rather than treating equality as durability.
 3. Runs only `systemctl --user disable --now` for the selected request's exact
    timer. It never stops/kills a running service, and waits at most 15 seconds
    for the service to be idle.
@@ -84,15 +87,48 @@ v1 service is checked but not modified by this operation.
 
 A failed or timed-out systemctl call is not proof that it had no effect. The
 helper returns `PRE_FIT_RETIREMENT_HOLD_INSPECT_EXACT_INTENT_AND_UNITS` and leaves
-all evidence. It never automatically re-enables an old timer. A complete exact
-intent can be explicitly resumed using the same arguments within the original
-deadline; current units, pins and saved snapshot hashes are rechecked.
+all evidence. It never automatically re-enables an old timer.
+
+Initial admission and recovery use different time evidence. A stopped
+controller cannot keep publishing a fresh heartbeat. Recovery revalidates the
+original WAITING status and consumer data at their **sealed initial observation
+time**, then independently checks current locks, absence of side effects,
+actual units, and preservation of every original row. Current stopped status
+and consumer snapshots may be older than 180 seconds; they must still have the
+correct identity and no new started/registered state. Newly settled old-scope
+rows are recorded in the recovery inventory, not reclassified as a successor's
+cohort. Any frozen cohort, fit or registration effect still refuses recovery.
+
+A new read-only invocation may use a fresh bounded `--deadline-ms` to show the
+exact `required_resume_intent_sha256` and proposed review. To perform recovery,
+explicitly add `--resume-intent-sha256 EXACT_ORIGINAL_INTENT_SHA` and `--retire`.
+This is required even when the old deadline has not expired. A new action may
+use an updated reviewed helper commit, but all original subject, preparation,
+producer, successor and output identities must remain equal.
+
+```sh
+# Use the same subject/producer/output arguments as the initial command.
+# Only the current reviewed helper commit and this explicit action deadline
+# may differ; the original intent bytes and its deadline stay unchanged.
+... --expected-source-commit REVIEWED_HELPER_HEAD \
+    --deadline-ms NEW_FINITE_DEADLINE_MS \
+    --resume-intent-sha256 EXACT_ORIGINAL_INTENT_SHA \
+    --retire
+```
+
+Before any further systemd effect, the helper re-fsyncs the original snapshots
+and intent, and seals a separate `resume-reviews/<digest>.json`. That record
+binds the original intent SHA, original deadline, new helper source, fresh
+action deadline, current units and row inventory. `PRE_FIT_RETIRED.json` retains
+the original binding and points to the exact completion review. Supplying a
+later deadline without the explicit old-intent SHA cannot resume an action.
+Every invocation retains the 15-minute action bound; no timer silently renews it.
 
 Partial snapshot staging before an intent causes a hold and has authorized no
 systemd effect. After inspecting that boundary, a separate fresh output directory
 can be selected without deleting the partial evidence. This tool does not claim
-automatic recovery from every crash. An expired action requires a separate
-review; it is never silently given a renewed deadline.
+automatic recovery from every crash. An expired action uses the separate,
+explicitly pinned review above; the old intent is never given a renewed deadline.
 
 Rollback is not implemented automatically. A separate review must establish the
 old producer is actually active again through normal maintenance, native state

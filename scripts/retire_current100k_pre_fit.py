@@ -97,19 +97,47 @@ def read(path):
     return strict(checked(path))
 
 
-def immutable(path, raw):
-    path = Path(path)
-    if path.exists() or path.is_symlink():
-        need(checked(path) == raw, 'EXISTING_OUTPUT_CHANGED:' + str(path))
-        return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400)
-    with os.fdopen(fd, 'wb') as stream:
-        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+def sync_directory(path):
+    path = canonical_path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def durable_directory(path):
+    """Persist new directory entries, including the parent of the new root."""
+    path = canonical_path(path)
+    missing = []; current = path
+    while not current.exists():
+        missing.append(current); current = current.parent
+    need(current.is_dir(), 'DIRECTORY_PARENT_REQUIRED')
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+        sync_directory(directory)
+        sync_directory(directory.parent)
+    # A prior interrupted invocation may have created this directory without
+    # syncing its parent. Reusing it must establish that durability too.
+    sync_directory(path)
+    sync_directory(path.parent)
+
+
+def immutable(path, raw):
+    path = canonical_path(path)
+    if path.exists() or path.is_symlink():
+        need(checked(path) == raw, 'EXISTING_OUTPUT_CHANGED:' + str(path))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    sync_directory(path.parent)
+    sync_directory(path.parent.parent)
 
 
 def record(path, value):
@@ -267,32 +295,39 @@ def absent_effects(data):
             need(not path.exists() and not path.is_symlink(), 'FIT_OR_FORWARD_OUTPUT_EXISTS:' + str(path))
 
 
-def waiting_snapshot(data):
-    request = data['request']; prep = data['prep']; consumer = data['consumer']; current = now_ms()
-    control_raw = checked(data['root'] / 'status.json'); control = strict(control_raw)
+def waiting_snapshot(data, *, sealed=None, reference_ms=None, fresh=True, before_first32=True):
+    request = data['request']; prep = data['prep']; consumer = data['consumer']
+    current = now_ms() if reference_ms is None else reference_ms
+    control_raw = checked(data['root'] / 'status.json') if sealed is None else sealed['OLD_CONTROLLER_STATUS.json']
+    control = strict(control_raw)
     need(control.get('state') == WAITING and control.get('training_started') is False
          and control.get('trial_registered') is False
          and control.get('source_commit') == request['source_commit']
          and control.get('preparation_request_sha256') == request['preparation_request_sha256']
          and control.get('producer_manifest_sha256') == consumer['registration']['sha256']
          and type(control.get('distinct_settled_rows')) is int and 0 <= control['distinct_settled_rows'] < 32
-         and type(control.get('at_ms')) is int and 0 <= current - control['at_ms'] <= 180000,
+         and type(control.get('at_ms')) is int and 0 <= current - control['at_ms']
+         and (not fresh or current - control['at_ms'] <= 180000),
          'FRESH_WAITING_UNSTARTED_STATUS_REQUIRED')
     status_path = canonical_path(consumer['output_root']) / 'status.json'
-    status_raw = checked(status_path); status = strict(status_raw)
+    status_raw = checked(status_path) if sealed is None else sealed['OLD_SCOPE_STATUS.json']
+    status = strict(status_raw)
     stamp = status.get('input_checked_at_ms', status.get('at_ms'))
     need(status.get('state') in ('READY_VALUE_LABELS_NOT_EFFICACY', 'WAITING_CURRENT100K_SETTLED_LABELS')
-         and type(stamp) is int and 0 <= current - stamp <= 180000, 'FRESH_CONSUMER_REQUIRED')
+         and type(stamp) is int and 0 <= current - stamp and (not fresh or current - stamp <= 180000), 'FRESH_CONSUMER_REQUIRED')
     dataset_path = canonical_path(status['dataset_path'])
     need(dataset_path.is_relative_to(Path(consumer['output_root'])), 'DATASET_OUTSIDE_OLD_SCOPE')
-    dataset_raw = checked(dataset_path); dataset = strict(dataset_raw)
+    dataset_raw = checked(dataset_path) if sealed is None else sealed['OLD_SCOPE_DATASET.json']
+    dataset = strict(dataset_raw)
     need(digest(dataset_raw) == status['dataset_sha256']
          and digest(canonical({k:v for k,v in dataset.items() if k != 'fingerprint'})) == dataset.get('fingerprint')
          and dataset.get('producer_manifest_sha256') == consumer['registration']['sha256']
          and dataset.get('period_sha256') == consumer['period_sha256']
          and dataset.get('synthetic_rewards') == dataset.get('old25k_rewards') == 0
          and dataset.get('trade_authority') is False, 'OLD_DATASET_IDENTITY_CHANGED')
-    rows = dataset.get('rows'); need(isinstance(rows, list) and len(rows) < 32, 'OLD_SCOPE_ALREADY_HAS_32_ROWS')
+    rows = dataset.get('rows')
+    need(isinstance(rows, list) and len(rows) <= 4096, 'OLD_SCOPE_ROWS_BOUND')
+    need(not before_first32 or len(rows) < 32, 'OLD_SCOPE_ALREADY_HAS_32_ROWS')
     prior = next(pinned(path, value) for path, value in prep['legacy_plans_sha256'].items()
                  if Path(path).parent.name == prep['prior_plan_id'])
     for row in rows:
@@ -302,8 +337,9 @@ def waiting_snapshot(data):
              and row['row_id'] == digest(canonical({k:v for k,v in row.items() if k != 'row_id'})), 'OLD_ROW_IDENTITY_CHANGED')
     for name in ('row_id', 'input_id', 'reward_id', 'episode_id'):
         need(len({row[name] for row in rows}) == len(rows), 'DUPLICATE_OLD_ROW:' + name)
-    need(checked(status_path) == status_raw and checked(dataset_path) == dataset_raw
-         and checked(data['root'] / 'status.json') == control_raw, 'OLD_SCOPE_CHANGED_DURING_SNAPSHOT')
+    if sealed is None:
+        need(checked(status_path) == status_raw and checked(dataset_path) == dataset_raw
+             and checked(data['root'] / 'status.json') == control_raw, 'OLD_SCOPE_CHANGED_DURING_SNAPSHOT')
     summary = {'scope_state': 'INCOMPLETE_NOT_FROZEN_NOT_TRAINED', 'observed_at_ms': current,
         'producer_registration': consumer['registration'], 'consumer_config': prep['consumer_config'],
         'consumer_config_sha256': prep['consumer_config_sha256'], 'consumer_output_root': consumer['output_root'],
@@ -373,6 +409,31 @@ def verify_units(proof, deadline_ms, *, guard=None, retired=False, allow_transit
     return result
 
 
+def verified_intent(data, intent, binding):
+    # A new explicit review may use a later helper version and action deadline.
+    # The original intent and all subject/producer/preparation fields stay fixed.
+    execution_fields = {'source_repository', 'source_commit', 'deadline_ms'}
+    original = intent.get('binding', {})
+    need(set(original) == set(binding)
+         and {k:v for k,v in original.items() if k not in execution_fields}
+             == {k:v for k,v in binding.items() if k not in execution_fields}, 'RETIREMENT_INTENT_BINDING_CHANGED')
+    need(intent.get('schema') == SCHEMA and intent.get('state') == 'RETIREMENT_INTENT_SEALED_BEFORE_SYSTEMD_EFFECT'
+         and type(intent.get('at_ms')) is int
+         and intent['old_scope']['observed_at_ms'] <= intent['at_ms'] <= original['deadline_ms'],
+         'INITIAL_INTENT_TIME_OR_SCOPE_CHANGED')
+    names = {'OLD_SCOPE_STATUS.json', 'OLD_SCOPE_DATASET.json', 'OLD_CONTROLLER_STATUS.json', 'ORIGINAL_EXECUTOR_CHECK.json'}
+    if data['previous']:
+        names.add('ORIGINAL_PREDECESSOR_CHECK.json')
+    need(set(intent.get('snapshot_sha256', {})) == names, 'INITIAL_SNAPSHOT_CLOSURE_CHANGED')
+    snapshot = {name: checked(data['output'] / name) for name in names}
+    need(all(digest(raw) == intent['snapshot_sha256'][name] for name, raw in snapshot.items()), 'PRESERVED_SCOPE_SNAPSHOT_CHANGED')
+    initial, _ = waiting_snapshot(data, sealed=snapshot, reference_ms=intent['old_scope']['observed_at_ms'])
+    need(initial == intent['old_scope'], 'SEALED_INITIAL_ELIGIBILITY_CHANGED')
+    need(digest(canonical(strict(snapshot['ORIGINAL_EXECUTOR_CHECK.json']))) == intent['original_cpu_check_sha256'],
+         'INITIAL_EXECUTOR_CHECK_CHANGED')
+    return snapshot
+
+
 def run(args):
     need(type(args.deadline_ms) is int and 0 < args.deadline_ms - now_ms() <= MAX_ACTION_MS, 'FINITE_ACTION_DEADLINE_REQUIRED')
     repository(Path(__file__).resolve().parent.parent, args.expected_source_commit, args.deadline_ms)
@@ -385,36 +446,55 @@ def run(args):
             old_proof = original_check(previous['path'], previous['sha256'], previous['request'], args.deadline_ms)
             need(service_idle(verify_units(old_proof, args.deadline_ms, retired=True)), 'PREDECESSOR_NOT_IDLE')
         guard = guard_spec(data, proof); intent_path = output / 'RETIREMENT_INTENT.json'
-        intent = read(intent_path) if intent_path.exists() else None
+        intent_raw = checked(intent_path) if intent_path.exists() else None
+        intent = strict(intent_raw) if intent_raw is not None else None
+        intent_sha = digest(intent_raw) if intent_raw is not None else None
+        resume_pin = getattr(args, 'resume_intent_sha256', None)
+        need(resume_pin is None or intent_sha == resume_pin, 'EXACT_EXISTING_RESUME_INTENT_SHA_REQUIRED')
         need(not guard[0].exists() or intent is not None, 'RETIREMENT_GUARD_WITHOUT_THIS_INTENT')
         need(intent is not None or not output.exists() or not any(output.iterdir()),
              'PARTIAL_STAGING_WITHOUT_INTENT_NO_SYSTEMD_EFFECT_AUTHORIZED')
         if intent is not None:
-            need(intent.get('binding') == binding, 'RETIREMENT_INTENT_BINDING_CHANGED')
-            for name, checksum in intent['snapshot_sha256'].items():
-                need(digest(checked(output / name)) == checksum, 'PRESERVED_SCOPE_SNAPSHOT_CHANGED')
+            sealed_snapshot = verified_intent(data, intent, binding)
         loaded = verify_units(proof, args.deadline_ms, guard=guard if guard[0].exists() else None,
                               allow_transition=intent is not None)
         complete_path = output / 'PRE_FIT_RETIRED.json'
         if complete_path.exists():
             complete = read(complete_path)
-            need(complete.get('binding') == binding and intent is not None
-                 and complete.get('retirement_intent_sha256') == digest(checked(intent_path)), 'RETIREMENT_RECEIPT_CHANGED')
+            need(intent is not None and complete.get('binding') == intent['binding']
+                 and complete.get('retirement_intent_sha256') == intent_sha, 'RETIREMENT_RECEIPT_CHANGED')
             need(service_idle(verify_units(proof, args.deadline_ms, guard=guard, retired=True)), 'RETIRED_SERVICE_NOT_IDLE')
             return {**complete, 'readback_at_ms': now_ms(), 'rechecked': True}
         need(service_idle(loaded), 'SERVICE_BUSY_NO_FORCE_STOP')
-        summary, snapshot = waiting_snapshot(data)
+        # A stopped controller cannot produce a new heartbeat. After an intent
+        # exists, revalidate initial freshness at the sealed observation time,
+        # and inspect current locks/effects/units and row preservation separately.
+        summary, snapshot = waiting_snapshot(data, fresh=intent is None, before_first32=intent is None)
         snapshot['ORIGINAL_EXECUTOR_CHECK.json'] = canonical(proof) + b'\n'
         if data['previous']:
             snapshot['ORIGINAL_PREDECESSOR_CHECK.json'] = canonical(old_proof) + b'\n'
         absent_effects(data)
+        review = None
+        if intent is not None:
+            preserved = {r['row_id']:r['canonical_row_sha256'] for r in intent['old_scope']['rows']}
+            current = {r['row_id']:r['canonical_row_sha256'] for r in summary['rows']}
+            need(all(current.get(key) == value for key,value in preserved.items()), 'OLD_SCOPE_WITHDRAWN_OR_REWRITTEN')
+            review = {'schema': 'heptatrader.current100k-pre-fit-retirement-resume.v1',
+                'retirement_intent_sha256': intent_sha, 'original_deadline_ms': intent['binding']['deadline_ms'],
+                'source_repository': binding['source_repository'], 'source_commit': binding['source_commit'],
+                'reviewed_at_ms': now_ms(), 'action_deadline_ms': args.deadline_ms,
+                'current_old_scope': summary, 'units': loaded, 'initial_eligibility_revalidated_from_sealed_bytes': True,
+                'original_lock_order': [str(p) for p in locks], 'current_no_effects_verified': True,
+                'new_training_or_driver_activation_authority': False}
         if not args.retire:
             return {'state': 'PRE_FIT_RETIREMENT_ELIGIBLE_NO_MUTATION' if intent is None else 'PRE_FIT_RETIREMENT_INTENT_REQUIRES_EXPLICIT_RESUME',
                 'binding': binding, 'old_scope': summary, 'original_cpu_check': proof,
                 'original_lock_order': [str(p) for p in locks], 'units': loaded,
+                'required_resume_intent_sha256': intent_sha, 'proposed_resume_review': review,
                 'planned_service_guard': {'path': str(guard[0]), 'sha256': digest(guard[1]), 'text': guard[1].decode()},
                 'driver_activation_performed': False, 'service_changed': False, 'broker_orders_sent': 0}
-        output.mkdir(mode=0o700, parents=True, exist_ok=True)
+        need(intent is None or resume_pin == intent_sha, 'EXPLICIT_RESUME_INTENT_PIN_REQUIRED')
+        durable_directory(output)
         if intent is None:
             need(not any(output.iterdir()), 'SEPARATE_EMPTY_RETIREMENT_ROOT_REQUIRED')
             for name, raw in snapshot.items():
@@ -423,11 +503,21 @@ def run(args):
                 'at_ms': now_ms(), 'old_scope': summary, 'snapshot_sha256': {name:digest(raw) for name,raw in snapshot.items()},
                 'original_cpu_check_sha256': digest(canonical(proof)), 'original_lock_order': [str(p) for p in locks],
                 'service_guard': {'path': str(guard[0]), 'sha256': digest(guard[1])}}
+            remaining(args.deadline_ms)
             record(intent_path, intent)
+            intent_raw = checked(intent_path); intent_sha = digest(intent_raw)
         else:
-            preserved = {r['row_id']:r['canonical_row_sha256'] for r in intent['old_scope']['rows']}
-            current = {r['row_id']:r['canonical_row_sha256'] for r in summary['rows']}
-            need(all(current.get(key) == value for key,value in preserved.items()), 'OLD_SCOPE_WITHDRAWN_OR_REWRITTEN')
+            # Reestablish durability after a prior failure, not just equality.
+            for name, raw in sealed_snapshot.items():
+                immutable(output / name, raw)
+            immutable(intent_path, intent_raw)
+            review_root = output / 'resume-reviews'; durable_directory(review_root)
+            for name, raw in snapshot.items():
+                relative = digest(raw) + '-' + name
+                immutable(review_root / relative, raw)
+            review['snapshot_sha256'] = {digest(raw) + '-' + name: digest(raw) for name, raw in snapshot.items()}
+            review_path = review_root / (digest(canonical(review)) + '.json')
+            record(review_path, review)
         timer = next(name for name in proof['unit_candidates'] if name.endswith('.timer'))
         command(['systemctl', '--user', 'disable', '--now', timer], args.deadline_ms)
         idle_deadline = min(args.deadline_ms, now_ms() + 15000)
@@ -438,20 +528,21 @@ def run(args):
                 break
             remaining(idle_deadline); time.sleep(min(.1, remaining(idle_deadline)))
         absent_effects(data)
-        guard[0].parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        durable_directory(guard[0].parent)
         immutable(guard[0], guard[1])
         command(['systemctl', '--user', 'daemon-reload'], args.deadline_ms)
         final = verify_units(proof, args.deadline_ms, guard=guard, retired=True)
         need(service_idle(final), 'SERVICE_NOT_IDLE_AFTER_RETIREMENT')
         absent_effects(data)
         repository(Path(__file__).resolve().parent.parent, args.expected_source_commit, args.deadline_ms)
-        complete = {'schema': SCHEMA, 'state': 'PRE_FIT_RETIRED', 'binding': binding, 'at_ms': now_ms(),
+        complete = {'schema': SCHEMA, 'state': 'PRE_FIT_RETIRED', 'binding': intent['binding'], 'at_ms': now_ms(),
             'retirement_intent_sha256': digest(checked(intent_path)),
             'old_scope': {**intent['old_scope'], 'scope_state': 'INCOMPLETE_RETIRED_BEFORE_FROZEN_COHORT_OR_FIT'},
             'units': final, 'service_guard': intent['service_guard'],
             'original_requests_and_data_modified': False, 'continuation_complete_written': False,
             'training_started': False, 'trial_registered': False, 'registered_trials_stopped': False,
             'driver_activation_performed': False, 'broker_orders_sent': 0, 'current100k_p0_closed': False,
+            'completion_resume_review': {'path': str(review_path), 'sha256': digest(checked(review_path))} if review else None,
             'rollback': {'automatic': False, 'intent_and_receipt_must_be_retained': True,
                 'require_separate_explicit_review': True, 'require_original_producer_active_and_native_safe': True,
                 'require_no_frozen_cohort_fit_or_new_trial': True, 'require_all_successor_continuations_idle': True,
@@ -468,6 +559,7 @@ def main():
     parser.add_argument('--next-producer-manifest', type=Path, required=True); parser.add_argument('--next-producer-sha256', required=True)
     parser.add_argument('--output-directory', type=Path, required=True); parser.add_argument('--deadline-ms', type=int, required=True)
     parser.add_argument('--retire', action='store_true')
+    parser.add_argument('--resume-intent-sha256', help='explicitly bind a fresh bounded recovery review to the original immutable intent')
     args = parser.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     try:
