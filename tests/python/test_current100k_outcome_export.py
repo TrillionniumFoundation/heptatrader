@@ -77,6 +77,7 @@ class OutcomeExportTests(unittest.TestCase):
         preopen.plan = self.plan
         preopen.activation_sha256 = '4' * 64
         preopen.config_sha256 = '5' * 64
+        preopen.root = self.source / 'preopen'
         self.worker.preopen = preopen
         W.durable_once(self.review / 'strict-review-provenance.json', preopen.provenance())
         E.retained_review_plan(self.source, self.review)
@@ -113,6 +114,50 @@ class OutcomeExportTests(unittest.TestCase):
         self.assertEqual(raw, canonical(value) + b'\n')
         return value
 
+    def negative_terminal_fixture(self):
+        preopen = self.worker.preopen
+        preopen.activation_path = self.source / 'activation.json'
+        preopen.config_path = self.source / 'predictor-config.json'
+        preopen.plan_sha256 = W.sha(self.source / 'plan.json')
+        preopen.registration_sha256 = W.sha(self.source / 'registration.json')
+        preopen.config = {'max_request_age_ms': 60000}
+        W.durable_once(preopen.config_path, preopen.config)
+        preopen.config_sha256 = W.sha(preopen.config_path)
+        W.durable_once(preopen.activation_path, {'plan_id': self.plan['plan_id'],
+                                               'predictor_config_sha256': preopen.config_sha256})
+        preopen.activation_sha256 = W.sha(preopen.activation_path)
+        protocol = {key: self.plan[key] for key in
+                    ('plan_id', 'input_start_ms', 'input_end_ms', 'period_sha256', 'producer_registration')}
+        protocol['study_plan_sha256'] = preopen.plan_sha256
+        W.durable_once(preopen.root / 'protocol.json', protocol)
+        request = {'request_id': 'original-request', 'started_at_ms': 1000,
+                   'instrument': 'EUR.USD', 'period_sha256': self.plan['period_sha256'],
+                   'position_at_request': 0, 'prompt': 'synthetic private input, never exported'}
+        self.binding.update(request_sha256=W.digest(request),
+                            producer_manifest_sha256=self.plan['producer_registration']['sha256'])
+        self.binding['command'].update(kind='OPEN', instrument='EUR.USD', side='BUY')
+        folder = preopen.root / 'requests' / request['request_id']
+        W.durable_once(folder / 'input.json', {'plan_id': self.plan['plan_id'], 'request_item': {
+            'request': request, 'request_sha256': W.digest(request),
+            'producer_manifest_sha256': self.plan['producer_registration']['sha256']}})
+        terminal = {'schema': 'heptatrader.preopen-request-terminal.v1', 'plan_id': self.plan['plan_id'],
+                    'request_id': request['request_id'], 'request_sha256': W.digest(request),
+                    'producer_manifest_sha256': self.plan['producer_registration']['sha256'],
+                    'status': 'NO_PREDICTION_BEFORE_ORIGINAL_COMMAND', 'observed_at_ms': 2100,
+                    'broker_orders_sent': 0, 'old_trial_modified': False}
+        W.durable_once(folder / 'terminal.json', terminal)
+        original = {'request_id': request['request_id'], 'request_sha256': W.digest(request),
+                    'command_id': self.binding['command']['command_id']}
+        W.durable_once(folder / 'original-command.json', original)
+        linked = {'schema': 'heptatrader.preopen-research-command-binding.v1',
+                  'plan_id': self.plan['plan_id'], **original, 'binding': self.binding,
+                  'prediction_terminal': terminal['status'], 'publication': None,
+                  'observed_at_ms': 2101, 'status': 'MISSING_OR_LATE_NO_CREDIT',
+                  'before_original_command': False, 'production_eligible': False, 'broker_orders_sent': 0}
+        W.durable_once(preopen.root / 'bindings' / (original['command_id'] + '.json'), linked)
+        W.atomic(self.review / 'strict-review-provenance.json', preopen.provenance())
+        return folder, terminal
+
     def test_real_evaluator_exports_original_order_and_unchanged_assessment(self):
         report = self.evaluate()
         snapshot = self.snapshot(report)
@@ -122,6 +167,8 @@ class OutcomeExportTests(unittest.TestCase):
         expected = E.assessment(self.plan, snapshot['rows'], 3000, training_labels_current=False)
         self.assertEqual({k: report[k] for k in expected}, expected)
         self.assertEqual(W.read(self.review / 'assessment-strict.json'), report)
+        self.assertEqual(report['comparison_eligibility']['status'], 'UNKNOWN')
+        self.assertIsNone(report['comparison_eligibility']['formal_success_possible_under_frozen_rule'])
         self.assertEqual(self.original, {str(p.relative_to(self.source)): p.read_bytes()
                          for p in self.source.rglob('*') if p.is_file()})
 
@@ -248,6 +295,75 @@ class OutcomeExportTests(unittest.TestCase):
         for key, value in [('as_of_ms', True), ('plan_id', 'bad'), ('strict_preopen_terminal_required', False)]:
             with self.subTest(key=key), self.assertRaises(W.EvidenceError):
                 X.write_outcome_snapshot(self.review, {**report, key: value}, [])
+
+    def test_verified_negative_terminal_blocks_family_without_finishing_window(self):
+        folder, _ = self.negative_terminal_fixture()
+        report = self.evaluate()
+        eligibility = report['comparison_eligibility']
+        self.assertEqual(report['state'], 'PENDING')
+        self.assertEqual(report['as_of_ms'], 3000)
+        self.assertEqual(eligibility['status'], 'IRRECOVERABLY_INELIGIBLE')
+        self.assertIs(eligibility['formal_success_possible_under_frozen_rule'], False)
+        self.assertEqual(eligibility['permanent_unresolved_count_lower_bound'], 1)
+        proof = eligibility['failure_proofs'][0]
+        self.assertEqual(proof['terminal_sha256'], W.sha(folder / 'terminal.json'))
+        self.assertEqual(proof['original_command_sha256'], W.sha(folder / 'original-command.json'))
+        self.assertEqual(proof['proof_digest'], W.digest({k: v for k, v in proof.items() if k != 'proof_digest'}))
+        self.assertNotIn('synthetic private input', json.dumps(proof))
+        self.assertEqual(proof['command_id'], self.binding['command']['command_id'])
+        self.assertFalse(eligibility['is_final_protocol_report'])
+        snapshot = self.snapshot(report)
+        original = E.assessment(self.plan, snapshot['rows'], 3000, training_labels_current=False)
+        self.assertEqual({k: report[k] for k in original}, original)
+
+    def test_unsupported_or_wrong_terminal_is_unknown_without_changing_diagnostics(self):
+        folder, terminal = self.negative_terminal_fixture()
+        for update in ({'status': 'REQUEST_EXPIRED_NO_BACKDATING'}, {'plan_id': '0' * 64}):
+            with self.subTest(update=update):
+                W.atomic(folder / 'terminal.json', {**terminal, **update})
+                report = self.evaluate()
+                self.assertEqual(report['state'], 'PENDING')
+                self.assertEqual(report['status_counts'], {'CENSORED': 3})
+                self.assertEqual(report['comparison_eligibility']['status'], 'UNKNOWN')
+                self.assertIsNone(report['comparison_eligibility']['formal_success_possible_under_frozen_rule'])
+
+    def test_negative_terminal_requires_exact_original_command_binding(self):
+        folder, _ = self.negative_terminal_fixture()
+        W.atomic(folder / 'original-command.json', {'request_id': 'other', 'request_sha256': '0' * 64,
+                                                  'command_id': self.binding['command']['command_id']})
+        report = self.evaluate()
+        self.assertEqual(report['comparison_eligibility']['status'], 'UNKNOWN')
+        self.assertEqual(report['comparison_eligibility']['evidence_errors'][0]['reason'],
+                         'PERMANENT_FAILURE_EVIDENCE_UNAVAILABLE')
+        self.assertEqual(report['original_command_count'], 3)
+
+    def test_blocked_family_keeps_observed_diagnostic_metrics(self):
+        self.negative_terminal_fixture()
+        proof = self.worker.preopen.permanent_prediction_failure(self.binding, 3000)
+        rows = [{'command_id': 'covered', 'status': 'OBSERVED', 'opened_at_ms': 2000,
+                 'closed_at_ms': 2500, 'target_usd': 3., 'fee_usd': .2,
+                 'target_exceeds_training_support': False, 'predictions': {'parent': 1., 'patch': 2.}},
+                {'command_id': self.binding['command']['command_id'], 'status': 'CENSORED',
+                 'reason': 'NO_DURABLE_PREDICTION_FOR_ORIGINAL_REQUEST'}]
+        report = E.assessment(self.plan, rows, 3000)
+        report.update(outcome_set_digest=W.digest(rows), current_replay_complete=True)
+        before = copy.deepcopy(report)
+        metadata = X.comparison_eligibility(self.plan, report, [proof])
+        self.assertEqual(report, before)
+        self.assertEqual(report['observed_trades'], 1)
+        self.assertEqual(report['arm_metrics']['patch']['mae_usd'], 1.)
+        self.assertEqual(report['paired_comparisons']['patch vs parent']['mae_gain_usd'], 1.)
+        self.assertEqual(metadata['status'], 'IRRECOVERABLY_INELIGIBLE')
+
+    def test_source_loss_is_unknown_and_preserves_prior_negative_diagnostic(self):
+        self.negative_terminal_fixture()
+        first = self.evaluate()
+        self.assertEqual(first['comparison_eligibility']['status'], 'IRRECOVERABLY_INELIGIBLE')
+        result = E.strict_source_unavailable(self.review, self.plan, ValueError('source lost'), 3001)
+        self.assertEqual(result['comparison_eligibility']['status'], 'UNKNOWN')
+        self.assertIsNone(result['comparison_eligibility']['formal_success_possible_under_frozen_rule'])
+        prior = W.read(result['last_completed_assessment']['path'])
+        self.assertEqual(prior['comparison_eligibility'], first['comparison_eligibility'])
 
 
 if __name__ == '__main__':

@@ -66,6 +66,50 @@ The export is compatible with the runtime's Current100k USD handoff. It introduc
 no new scoring or statistical rule, registration, model inference, selection or
 trade authority.
 
+## Permanent missing predictions and comparison eligibility
+
+An original request terminal of
+`NO_PREDICTION_BEFORE_ORIGINAL_COMMAND` is immutable in the existing ledger.
+A later fill, closure, fee record, inference retry or runtime repair cannot turn
+that request into a successful original pre-command prediction. When the number
+of proven permanent misses exceeds the plan's frozen
+`maximum_unresolved_at_final`, formal comparison success is already impossible.
+The schedule still remains `PENDING` until the original deadline.
+
+Independent strict reviews now attach separate `comparison_eligibility` metadata.
+`IRRECOVERABLY_INELIGIBLE` and
+`formal_success_possible_under_frozen_rule=false` require supported, verified
+negative evidence. The original state, dates, heads, outcome rows/digest,
+denominator, scoring functions and statistical comparisons remain unchanged.
+This field is not an early final protocol report. The status file repeats the
+separate eligibility status so that `PENDING` does not imply recoverability.
+
+`PreopenEvidence.permanent_prediction_failure` captures the original terminal,
+input record, protocol, command reference and ledger binding without writing to
+the source. It checks fixed source pins, request and producer identity, the exact
+original command and full current binding, the negative terminal's scope, and
+request/PREPARED/terminal/binding/review time ordering. It exports a digest-bound
+proof with the original safe terminal/reference records and raw byte hashes.
+It does not export request text or account data. The currently supported terminal
+is exactly `NO_PREDICTION_BEFORE_ORIGINAL_COMMAND`; other statuses do not
+automatically establish permanent ineligibility.
+
+Missing or unsupported evidence yields `UNKNOWN` and a null formal-success flag.
+Invalid proof material adds an independent evidence error without changing the
+existing scoring or source issues. `CENSORED` alone never proves an irreversible
+miss, and no absence of negative evidence is interpreted as positive eligibility.
+If current source replay is unavailable, this metadata becomes `UNKNOWN`; the
+existing immutable prior assessment and `last_completed_assessment` reference
+retain any earlier verified negative result. Unknown current evidence does not
+erase that historical fact or restore formal eligibility.
+
+Covered OBSERVED rows remain available for descriptive diagnostics even after the
+family becomes irrecoverably ineligible. Their metrics cannot repair missing
+pre-command evidence or produce comparative selection credit. The runtime USD
+handoff checks proof digests, original safe receipt bytes, command population,
+clock order and the exact frozen limit. The original strict evaluator remains
+responsible for full private request and ledger verification.
+
 Omit --once for a resident observer that checks every 60 seconds and exits
 successfully after writing its final assessment at or after the original outcome
 deadline. The ordinary evaluator retains its existing 10-second loop. New normal
@@ -121,5 +165,8 @@ attempt/original-command receipts with unchanged terminal/binding files, and
 strict-loop final exit. All rejected commands remain in the denominator.
 
 The cache tracks every prediction and pre-open receipt read during validation.
-These are software checks, not prospective financial performance results. The
-first actual new opening and settled future outcomes still require observation.
+These are software checks, not prospective financial performance results. Actual
+pre-command publications and settled future outcomes require separate original
+lineage evidence. The export suite additionally checks permanent-negative
+receipts, invalid/unsupported evidence, exact original-command binding, retained
+observed diagnostics and source-loss history without altering the final clock.

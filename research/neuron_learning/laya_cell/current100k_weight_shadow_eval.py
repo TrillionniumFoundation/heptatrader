@@ -9,7 +9,7 @@ import argparse, fcntl, json, math, os, random, signal, time
 from collections import Counter
 from pathlib import Path
 from . import current100k_weight_shadow as W
-from .current100k_outcome_export import write_outcome_snapshot
+from .current100k_outcome_export import comparison_eligibility,write_outcome_snapshot
 
 def clusters(rows):
  intervals=sorted(((r['opened_at_ms']//W.DAY_MS,r['closed_at_ms']//W.DAY_MS,r) for r in rows),key=lambda v:(v[0],v[1],v[2]['command_id']))
@@ -227,6 +227,17 @@ class Evaluator:
   result['original_command_count_complete']=source_replay_complete
   result['strict_preopen_terminal_required']=self.preopen is not None
   if self.preopen is not None:result['review_provenance_sha256']=W.sha(self.root/'strict-review-provenance.json')
+  if self.strict_review:
+   proofs=[];proof_errors=[]
+   for row in results:
+    command_id=row['command_id']
+    if row['status']!='CENSORED' or command_id not in current or self.preopen is None:continue
+    try:
+     proof=self.preopen.permanent_prediction_failure(current[command_id],now)
+     if proof is not None:proofs.append(proof)
+    except (ValueError,OSError,KeyError,TypeError) as exc:
+     proof_errors.append({'command_id':command_id,'reason':'PERMANENT_FAILURE_EVIDENCE_UNAVAILABLE','error_type':type(exc).__name__})
+   result['comparison_eligibility']=comparison_eligibility(p,result,proofs,proof_errors)
   for row in results:
    folder=self.root/'outcomes'/W.safe_id(row['command_id']);record_id=W.digest(row)
    W.durable_once(folder/(record_id+'.json'),row)
@@ -366,6 +377,7 @@ def strict_source_unavailable(output_root,plan,error,now,*,source_issues=()):
                strict_preopen_terminal_required=True,last_completed_assessment=prior,outcome_set_digest=W.digest(rows),
                source_record_count=None,source_ledger_prefix=None,nontrade_requests=None,
                original_window_modified=False,source_failure={'type':type(error).__name__,'message':str(error)[:2000]})
+ result['comparison_eligibility']=comparison_eligibility(plan,result)
  for row in rows:
   folder=root/'outcomes'/row['command_id'];record_id=W.digest(row)
   W.durable_once(folder/(record_id+'.json'),row);W.atomic(folder/'current.json',{'record_id':record_id})
@@ -429,6 +441,10 @@ def main():
    if terminal is not None:
     status={k:terminal[k] for k in ('plan_id','state','checked_at_ms','observed_trades','original_command_count','prediction_coverage','error','last_completed_assessment','reasons','financial_candidate_selected','broker_orders_sent')}
     status.update(at_ms=W.clock_ms(),terminal_report_path=str(output_root/'terminal-unavailable.json'));finished=True
+   if args.strict_preopen and terminal is None:
+    eligibility=result.get('comparison_eligibility',{})
+    status.update(comparison_eligibility_status=eligibility.get('status','UNKNOWN'),
+                  formal_success_possible_under_frozen_rule=eligibility.get('formal_success_possible_under_frozen_rule'))
    status['assessment_path']=str(output_root/assessment_name)
    W.atomic(output_root/'evaluator-status.json',status);print(json.dumps(status),flush=True)
    if args.once or finished:break

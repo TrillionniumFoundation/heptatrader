@@ -54,6 +54,56 @@ class PreopenEvidence:
   linked=load(self.root/'bindings'/(cid+'.json'))
   W.require(linked.get('plan_id')==p['plan_id'] and linked.get('binding')==binding and linked.get('publication')==prediction and linked.get('status')=='PREOPEN_BOUND_RESEARCH' and linked.get('prediction_terminal')==terminal['status'] and linked.get('before_original_command')is True,'STRICT_PREOPEN_BINDING_NO_CREDIT')
   return {'terminal_sha256':W.sha(folder/'terminal.json'),'binding_sha256':W.sha(self.root/'bindings'/(cid+'.json')),'prediction_terminal':terminal['status'],'publication_durability_observed_at_ms':terminal['publication_durability_observed_at_ms']}
+ def permanent_prediction_failure(self,binding,as_of_ms):
+  """Prove one immutable missed original command; absence alone is not proof.
+
+  Only the existing NO_PREDICTION terminal is supported. Other statuses, absent
+  receipts and source errors remain unknown; no request or receipt is created.
+  Full input and ledger binding are checked here, never exported as user text.
+  """
+  from hepta_decision_attribution import read_private,strict
+  def captured(path):
+   raw=read_private(path);return strict(raw),W.hashlib.sha256(raw).hexdigest()
+  rid,cid=W.safe_id(binding['request_id']),W.safe_id(binding['command']['command_id'])
+  folder=self.root/'requests'/rid;path=folder/'terminal.json'
+  if not path.exists():return None
+  terminal,terminal_sha=captured(path)
+  if terminal.get('status')!='NO_PREDICTION_BEFORE_ORIGINAL_COMMAND':return None
+  p=self.plan;now=W.integer(as_of_ms)
+  W.require(W.sha(self.activation_path)==self.activation_sha256 and W.sha(self.config_path)==self.config_sha256
+            and W.sha(self.study_root/'plan.json')==self.plan_sha256 and W.sha(self.study_root/'registration.json')==self.registration_sha256,'STRICT_FAILURE_PINS_CHANGED')
+  protocol,protocol_sha=captured(self.root/'protocol.json')
+  for key in ('plan_id','input_start_ms','input_end_ms','period_sha256','producer_registration'):
+   W.require(protocol.get(key)==p[key],'STRICT_FAILURE_PROTOCOL:'+key)
+  W.require(protocol.get('study_plan_sha256')==self.plan_sha256,'STRICT_FAILURE_PROTOCOL_PLAN')
+  terminal_keys={'schema','plan_id','request_id','request_sha256','producer_manifest_sha256','status','observed_at_ms','broker_orders_sent','old_trial_modified'}
+  W.require(set(terminal)==terminal_keys and terminal['schema']=='heptatrader.preopen-request-terminal.v1'
+            and W.integer(terminal['broker_orders_sent'])==0 and terminal['old_trial_modified']is False,'STRICT_FAILURE_TERMINAL_SCOPE')
+  for key,expected in (('plan_id',p['plan_id']),('request_id',rid),('request_sha256',binding['request_sha256']),('producer_manifest_sha256',p['producer_registration']['sha256'])):
+   W.require(terminal.get(key)==expected,'STRICT_FAILURE_TERMINAL_IDENTITY:'+key)
+  record,input_sha=captured(folder/'input.json');item=record['request_item'];request=item['request']
+  W.require(record.get('plan_id')==p['plan_id'] and item['request_sha256']==binding['request_sha256']==W.digest(request)
+            and request['request_id']==rid and request['started_at_ms']==binding['request_started_at_ms']
+            and item['producer_manifest_sha256']==binding['producer_manifest_sha256']==p['producer_registration']['sha256']
+            and request['period_sha256']==p['period_sha256'] and request['instrument']=='EUR.USD' and request['position_at_request']==0,'STRICT_FAILURE_ORIGINAL_INPUT')
+  original,original_sha=captured(folder/'original-command.json')
+  W.require(original=={'request_id':rid,'request_sha256':binding['request_sha256'],'command_id':cid},'STRICT_FAILURE_ORIGINAL_COMMAND')
+  linked,binding_sha=captured(self.root/'bindings'/(cid+'.json'));command=binding['command']
+  W.require(linked.get('schema')=='heptatrader.preopen-research-command-binding.v1' and linked.get('plan_id')==p['plan_id']
+            and linked.get('request_id')==rid and linked.get('request_sha256')==binding['request_sha256'] and linked.get('command_id')==cid
+            and linked.get('binding')==binding and linked.get('prediction_terminal')==terminal['status'] and linked.get('publication')is None
+            and linked.get('status')=='MISSING_OR_LATE_NO_CREDIT' and linked.get('before_original_command')is False
+            and linked.get('production_eligible')is False and W.integer(linked.get('broker_orders_sent'))==0,'STRICT_FAILURE_COMMAND_BINDING')
+  started=W.integer(request['started_at_ms']);prepared=W.integer(command['created_at_ms']);failed=W.integer(terminal['observed_at_ms']);bound=W.integer(linked['observed_at_ms'])
+  W.require(p['input_start_ms']<=started<p['input_end_ms'] and started<=prepared<=failed<=bound<=now
+            and command.get('kind')=='OPEN' and command.get('instrument')=='EUR.USD' and command.get('side')in W.SIDES,'STRICT_FAILURE_CLOCK_OR_COMMAND')
+  proof={'schema':'heptatrader.current100k-permanent-preopen-failure.v1','plan_id':p['plan_id'],'command_id':cid,'request_id':rid,
+         'request_sha256':binding['request_sha256'],'producer_manifest_sha256':p['producer_registration']['sha256'],
+         'request_started_at_ms':started,'command_prepared_at_ms':prepared,'binding_observed_at_ms':bound,'verified_at_ms':now,
+         'terminal_record':terminal,'terminal_sha256':terminal_sha,'original_command_record':original,'original_command_sha256':original_sha,
+         'binding_sha256':binding_sha,'source_binding_digest':W.digest(binding),'input_record_sha256':input_sha,'protocol_sha256':protocol_sha,
+         'binding_status':'MISSING_OR_LATE_NO_CREDIT','before_original_command':False,'binding_verified_by_source':True}
+  proof['proof_digest']=W.digest(proof);return proof
  def reconcile_settlement(self,binding,prediction,first_fill_ms):
   """Bind an existing successful seal to a verified real fill without inference.
 

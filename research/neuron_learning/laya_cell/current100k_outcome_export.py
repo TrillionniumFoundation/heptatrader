@@ -12,11 +12,46 @@ from pathlib import Path
 import stat
 import tempfile
 
-from historical_training.common import EvidenceError, canonical
+from historical_training.common import EvidenceError, canonical, digest
 
 SCHEMA = 'hepta.weight.current100k-ordered-outcomes.v1'
 MAX_BYTES = 64 * 1024 * 1024
 MAX_ROWS = 100_000
+
+
+def comparison_eligibility(plan, assessment, proofs=(), evidence_errors=()):
+    """A separate negative-eligibility fact; never an early final assessment.
+
+    No positive eligibility is inferred from missing or unsupported evidence.
+    Original statistics, rows, schedule state and fixed deadlines stay intact.
+    """
+    maximum = plan['rule']['maximum_unresolved_at_final']
+    require(type(maximum) is int and maximum >= 0, 'UNRESOLVED_RULE')
+    proofs = sorted(proofs, key=lambda p: p['command_id'])
+    require(len({p['command_id'] for p in proofs}) == len(proofs), 'DUPLICATE_FAILURE_PROOF')
+    for proof in proofs:
+        require(proof['plan_id'] == plan['plan_id'] and proof['proof_digest'] ==
+                digest({k: v for k, v in proof.items() if k != 'proof_digest'}), 'FAILURE_PROOF_IDENTITY')
+    current = assessment.get('current_replay_complete') is True
+    require(current or not proofs, 'FAILURE_PROOF_WITHOUT_CURRENT_SOURCE')
+    blocked = current and len(proofs) > maximum
+    value = {
+        'schema': 'heptatrader.current100k-comparison-eligibility.v1',
+        'plan_id': plan['plan_id'], 'as_of_ms': assessment['as_of_ms'],
+        'outcome_set_digest': assessment['outcome_set_digest'],
+        'status': 'IRRECOVERABLY_INELIGIBLE' if blocked else 'UNKNOWN',
+        'formal_success_possible_under_frozen_rule': False if blocked else None,
+        'permanent_unresolved_count_lower_bound': len(proofs),
+        'maximum_unresolved_at_final': maximum,
+        'reason': ('IMMUTABLE_MISSED_PREOPEN_EXCEEDS_FROZEN_UNRESOLVED_LIMIT' if blocked else
+                   'NO_VERIFIED_IRREVERSIBLE_BLOCKER' if current else 'CURRENT_SOURCE_UNAVAILABLE'),
+        'failure_proofs': proofs, 'evidence_errors': list(evidence_errors),
+        'source_state': assessment['state'], 'original_outcome_end_ms': plan['outcome_end_ms'],
+        'is_final_protocol_report': False, 'original_window_modified': False,
+        'diagnostic_metrics_preserved': True, 'trade_authority': False,
+    }
+    value['eligibility_digest'] = digest(value)
+    return value
 
 
 def require(condition, reason):
