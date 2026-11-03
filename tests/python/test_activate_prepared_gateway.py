@@ -282,6 +282,51 @@ class GatewayUpgradeTests(unittest.TestCase):
                 "execution_service_epoch": "fixture-service-epoch", "execution_service_fencing_generation": 1}}
         return subprocess.CompletedProcess(argv, 0, json.dumps(value).encode(), b"")
 
+    def enable_audit_fixture(self):
+        # This suite already injects an accepted inspect result. Qualification
+        # parsing and real reader behavior have independent tests.
+        self.audit_path = put(self.root / "gateway/audit", b'{"retained_legacy_fixture":true}\n')
+        self.audit_original = self.audit_path.read_bytes()
+        self.environment["HEPTA_TOOL_SUPERVISOR_AUDIT_JOURNAL"] = str(self.audit_path)
+        self.plan["audit_seal"] = {"path": str(self.audit_path), "qualification": {"fixture": True}}
+        self.snapshot["audit_seal"] = {"path": str(self.audit_path), "sessionctl": self.plan["sessionctl"]}
+        self.audit_cut = None
+        self.audit_seals = self.audit_verifies = 0
+        self.patches.enter_context(mock.patch.object(gateway, "audit_seal_configuration",
+            side_effect=lambda *args: copy.deepcopy(self.snapshot["audit_seal"]), create=True))
+        self.patches.enter_context(mock.patch.object(gateway.subprocess, "run", self.audit_native_call))
+
+    def audit_native_call(self, argv, **kwargs):
+        if len(argv) != 3 or argv[1] not in ("--audit-seal-stopped", "--audit-verify"):
+            return self.native_call(argv, **kwargs)
+        self.events.append(tuple(argv))
+        self.assertEqual(kwargs["env"], {})
+        self.assertEqual(self.units[gateway.GATEWAY]["ActiveState"], "inactive")
+        self.assertEqual(self.units[self.driver_unit]["ActiveState"], "inactive")
+        if argv[1] == "--audit-verify":
+            self.audit_verifies += 1
+            if self.audit_cut == "verify":
+                return subprocess.CompletedProcess(argv, 1, b"", b"FIXTURE_VERIFY_REFUSED\n")
+            return subprocess.CompletedProcess(argv, 0, b"audit verified records=0\n", b"")
+        self.audit_seals += 1
+        checkpoint = json.loads((self.hold.parent / gateway.CHECKPOINT).read_text())
+        self.assertEqual(checkpoint["audit_seal"]["status"], "UNKNOWN")
+        raw = self.audit_path.read_bytes()
+        if raw and not raw.startswith(b"HJA3\t"):
+            archive = Path(str(self.audit_path) + ".segments")
+            archive.mkdir(mode=0o700, exist_ok=True)
+            segment = archive / (gateway.digest(raw) + ".hja2")
+            if not segment.exists():
+                put(segment, raw)
+            if self.audit_cut == "segment":
+                raise subprocess.TimeoutExpired("private-audit-fixture", 1)
+            anchor = b"HJA3\t" + gateway.digest(raw).encode() + b"\t0\n"
+            staged = put(self.audit_path.with_name(".anchor-fixture"), anchor)
+            os.replace(staged, self.audit_path)
+            if self.audit_cut == "anchor":
+                raise subprocess.TimeoutExpired("private-audit-fixture", 1)
+        return subprocess.CompletedProcess(argv, 0, b"audit sealed\n", b"")
+
     def run_upgrade(self, resume=False, plan_sha="a" * 64):
         return gateway.maintenance_upgrade(self.plan, plan_sha, home=self.home, resume=resume)
 
@@ -301,6 +346,94 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(json.loads(self.state_path.read_text())["lease_generation"], 113)
         self.assertFalse(any(self.policy_path(unit).exists() for unit in self.units))
         self.assertTrue(all(unit["RefuseManualStop"] == "yes" for unit in self.units.values()))
+
+    def test_audit_same_binary_maintenance_and_complete_reentry_preserve_producer(self):
+        self.enable_audit_fixture()
+        for package in self.packages.values():
+            package["binary"] = copy.deepcopy(self.current_binary)
+        result = self.run_upgrade()
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(result["audit_seal"]["status"], "VERIFIED")
+        self.assertEqual(self.audit_seals, 1)
+        checkpoint = self.hold.parent / gateway.CHECKPOINT
+        completed = checkpoint.read_bytes()
+        calls = len(self.events)
+        self.assertEqual(self.run_upgrade()["status"], "ALREADY_COMPLETE")
+        self.assertEqual(checkpoint.read_bytes(), completed)
+        self.assertEqual(len(self.events), calls)
+        self.assertFalse(any(event[0] in ("stop", "start") and event[-1] in
+            (gateway.EXECUTION, gateway.driver.BROKER_UNIT) for event in self.events))
+        self.assertEqual(self.resume_count, 1)
+
+    def test_audit_unknown_anchor_stops_both_start_paths_and_same_plan_recovers(self):
+        self.enable_audit_fixture()
+        self.audit_cut = "anchor"
+        result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertEqual(result["phase"], "GATEWAY_STOPPED")
+        self.assertEqual(self.resume_count, 0)
+        self.assertFalse(any(event[0] == "start" for event in self.events))
+        checkpoint = json.loads((self.hold.parent / gateway.CHECKPOINT).read_text())
+        intent = checkpoint["audit_seal"]["intent"]
+        self.audit_cut = None
+        result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        checkpoint = json.loads((self.hold.parent / gateway.CHECKPOINT).read_text())
+        self.assertEqual(checkpoint["audit_seal"]["intent"], intent)
+        self.assertEqual(self.audit_seals, 2)
+        self.assertEqual(self.resume_count, 1)
+
+    def test_audit_receipt_directory_sync_failure_cannot_trigger_fallback_start(self):
+        self.enable_audit_fixture()
+        original = gateway.atomic_json
+        def write(path, value):
+            original(path, value)
+            if Path(path).name == gateway.CHECKPOINT and value.get("audit_seal", {}).get("status") == "VERIFIED":
+                raise OSError("FIXTURE_CHECKPOINT_FSYNC_FAILED")
+        with mock.patch.object(gateway, "atomic_json", write):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertEqual(result["audit_seal"]["status"], "UNKNOWN")
+        self.assertFalse(any(event[0] == "start" for event in self.events))
+        self.assertEqual(self.resume_count, 0)
+        self.assertEqual(self.run_upgrade(resume=True)["status"], "COMPLETE")
+        self.assertEqual(self.audit_seals, 2)
+        self.assertEqual(self.resume_count, 1)
+
+    def test_audit_native_verify_failure_keeps_original_writer_stopped(self):
+        self.enable_audit_fixture()
+        self.audit_cut = "verify"
+        result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertIn("AUDIT_SEAL_VERIFY_NOT_CONFIRMED", result["error"])
+        self.assertEqual(self.units[gateway.GATEWAY]["ActiveState"], "inactive")
+        self.assertFalse(any(event[0] == "start" for event in self.events))
+        self.assertEqual(self.resume_count, 0)
+
+    def test_audit_fallback_start_lost_checkpoint_recovers_from_original_release_bytes(self):
+        self.enable_audit_fixture()
+        self.candidate_dies = True
+        original = gateway.atomic_json
+        def interrupt(path, value):
+            started = value.get("gateway_started") or {}
+            if (Path(path).name == gateway.CHECKPOINT and value.get("status") == "HELD"
+                    and started.get("binary") == self.packages["fallback"]["binary"]):
+                raise OSError("FIXTURE_AFTER_FALLBACK_START_BEFORE_CHECKPOINT")
+            original(path, value)
+        with mock.patch.object(gateway, "atomic_json", interrupt):
+            with self.assertRaisesRegex(OSError, "AFTER_FALLBACK_START"):
+                self.run_upgrade()
+        self.assertEqual(self.current_binary, self.packages["fallback"]["binary"])
+        checkpoint = json.loads((self.hold.parent / gateway.CHECKPOINT).read_text())
+        self.assertEqual(checkpoint["selected_release"], "candidate")
+        self.assertIn(self.packages["fallback"]["binary"]["path"], checkpoint["release_bytes"])
+        starts = sum(event == ("start", gateway.GATEWAY) for event in self.events)
+        result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(result["selected_release"], "fallback")
+        self.assertEqual(sum(event == ("start", gateway.GATEWAY) for event in self.events), starts)
+        self.assertEqual(self.audit_seals, 1)
+        self.assertEqual(self.resume_count, 1)
 
     def test_resume_success_state_sync_failure_is_idempotent_without_second_resume(self):
         original = gateway.atomic_json
@@ -869,6 +1002,384 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(result["status"], "HELD", result)
         self.assertIn("REFRESH_NOT_ALLOWED", result["error"])
         self.assertFalse(any(event[0] == "stop" for event in self.events))
+
+
+class AuditSealComponents(unittest.TestCase):
+    """Real private files/checkpoints; native publication is injected."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hepta-audit-seal-components-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.path = put(self.root / "audit", b'{"legacy_fixture":true}\n')
+        self.original = self.path.read_bytes()
+        self.checkpoint = self.root / "checkpoint.json"
+        self.plan = {"sessionctl": {"path": "/fixture/sessionctl", "sha256": "a" * 64}}
+        self.snapshot = {"deadline": gateway.now_ms() + 86400000,
+            "gateway": {"status": {"MainPID": "1234"}, "pid_key": ["1234", "5678"],
+                "binary": {"path": "/fixture/gateway", "sha256": "b" * 64}},
+            "owners": [], "audit_seal": {"path": str(self.path), "sessionctl": self.plan["sessionctl"]},
+            "packages": {name: {"binary": {"path": "/fixture/gateway", "sha256": "b" * 64}}
+                for name in ("candidate", "fallback")}}
+        self.state = {"snapshot": self.snapshot, "plan_sha256": "c" * 64, "markers": ["original-hold"],
+            "phase": "GATEWAY_STOPPED", "gateway_stopped": True, "owners_fenced": True,
+            "stopped_controllers": []}
+        self.current = {"ActiveState": "inactive", "MainPID": "0"}
+        self.job = ""
+        self.old_pid = None
+        self.seals = 0
+        self.verifies = 0
+        self.failure = None
+        self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.object(gateway.driver.fence, "show_unit", lambda unit: dict(self.current)))
+        self.stack.enter_context(mock.patch.object(gateway.driver, "unit_properties", lambda *args: {"Job": self.job}))
+        self.stack.enter_context(mock.patch.object(gateway.driver, "pid_key", lambda pid: self.old_pid))
+        self.real_cli = gateway.audit_offline_cli
+        self.stack.enter_context(mock.patch.object(gateway, "audit_offline_cli", self.cli))
+
+    def save(self):
+        gateway.atomic_json(self.checkpoint, self.state)
+
+    def reload(self):
+        self.state = json.loads(self.checkpoint.read_text())
+        self.snapshot = self.state["snapshot"]
+
+    def cli(self, plan, snapshot, operation):
+        self.assertEqual(self.current["ActiveState"], "inactive")
+        if operation == "verify":
+            self.verifies += 1
+            self.assertGreater(self.seals, 0)
+            raw = self.path.read_bytes()
+            if raw.startswith(b"HJA3\t"):
+                predecessor, _ = gateway.audit_anchor(raw)
+                segment = Path(str(self.path) + ".segments") / (predecessor + ".hja2")
+                if gateway.digest(segment.read_bytes()) != predecessor:
+                    raise RuntimeError("FIXTURE_NATIVE_SEGMENT_HASH_INVALID")
+            return 0
+        self.seals += 1
+        durable = json.loads(self.checkpoint.read_text())["audit_seal"]
+        self.assertEqual(durable["status"], "UNKNOWN")
+        self.assertIn("intent", durable)
+        raw = self.path.read_bytes()
+        if not raw or raw.startswith(b"HJA3\t"):
+            return None  # Native pure-anchor/noop directory fsync.
+        archive = Path(str(self.path) + ".segments")
+        archive.mkdir(mode=0o700, exist_ok=True)
+        segment = archive / (gateway.digest(raw) + ".hja2")
+        if not segment.exists():
+            put(segment, raw)
+        if self.failure == "after_segment":
+            raise subprocess.TimeoutExpired("private-fixture", 1)
+        anchor = b"HJA3\t" + gateway.digest(raw).encode() + b"\t0\n"
+        temporary = put(self.root / ".anchor-fixture", anchor)
+        os.replace(temporary, self.path)
+        if self.failure == "after_anchor":
+            raise subprocess.TimeoutExpired("private-fixture", 1)
+        return None
+
+    def run_step(self, save=None):
+        return gateway.run_audit_seal(self.plan, self.snapshot, self.state, save or self.save, lambda: None)
+
+    def start_admission(self):
+        return gateway.audit_before_gateway_start(self.snapshot, self.state,
+            self.snapshot["packages"]["candidate"]["binary"], self.save, lambda: None)
+
+
+    def test_legacy_zero_records_seals_all_bytes_before_durable_start_admission(self):
+        self.run_step()
+        progress = self.state["audit_seal"]
+        self.assertEqual(progress["intent"]["kind"], "ROTATABLE")
+        self.assertIsNone(progress["intent"]["records"])
+        self.assertIsNone(progress["intent"]["anchor"])
+        self.assertEqual(progress["receipt"]["records"], 0)
+        self.assertEqual(self.verifies, 1)
+        segment = Path(str(self.path) + ".segments") / (gateway.digest(self.original) + ".hja2")
+        self.assertEqual(segment.read_bytes(), self.original)
+        self.assertEqual(json.loads(self.checkpoint.read_text())["audit_seal"]["status"], "VERIFIED")
+        self.start_admission()
+        self.assertIn("writer_start_requested", json.loads(self.checkpoint.read_text())["audit_seal"])
+
+    def test_published_anchor_without_ack_requires_same_plan_native_fsync(self):
+        self.failure = "after_anchor"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        with self.assertRaisesRegex(RuntimeError, "VERIFIED_RECEIPT_REQUIRED"):
+            self.start_admission()
+        original_intent = copy.deepcopy(self.state["audit_seal"]["intent"])
+        self.reload()
+        self.failure = None
+        self.run_step()
+        self.assertEqual(self.seals, 2)
+        self.assertEqual(self.state["audit_seal"]["intent"], original_intent)
+        self.assertEqual(self.state["audit_seal"]["attempts"][1]["observed"], "PUBLISHED_DURABILITY_UNKNOWN")
+        self.assertEqual(len(list(Path(str(self.path) + ".segments").iterdir())), 1)
+
+    def test_segment_published_before_active_replacement_is_retained_on_resume(self):
+        self.failure = "after_segment"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        self.assertEqual(self.path.read_bytes(), self.original)
+        segment = next(Path(str(self.path) + ".segments").iterdir())
+        inode = segment.stat().st_ino
+        self.reload()
+        self.failure = None
+        self.run_step()
+        self.assertEqual(segment.stat().st_ino, inode)
+        self.assertEqual(segment.read_bytes(), self.original)
+        self.assertEqual(self.state["audit_seal"]["attempts"][1]["observed"], "NO_ACTIVE_REPLACEMENT")
+
+    def test_verified_receipt_save_failure_cannot_authorize_either_start(self):
+        def broken_save():
+            self.save()  # Simulate rename visible before parent fsync reports failure.
+            if self.state["audit_seal"].get("status") == "VERIFIED":
+                raise OSError("CHECKPOINT_DIRECTORY_FSYNC_FAILED")
+        with self.assertRaisesRegex(OSError, "CHECKPOINT_DIRECTORY_FSYNC_FAILED"):
+            self.run_step(save=broken_save)
+        self.assertEqual(self.state["audit_seal"]["status"], "UNKNOWN")
+        self.assertIn("unconfirmed_receipt", self.state["audit_seal"])
+        for selected in ("candidate", "fallback"):
+            with self.assertRaisesRegex(RuntimeError, "VERIFIED_RECEIPT_REQUIRED"):
+                gateway.audit_before_gateway_start(self.snapshot, self.state,
+                    self.snapshot["packages"][selected]["binary"], self.save, lambda: None)
+        self.save()  # Outer controller's HELD checkpoint.
+        self.reload()
+        self.run_step()
+        self.assertEqual(self.seals, 2)
+
+
+    def test_empty_and_existing_pure_anchor_still_call_native_durability_noop(self):
+        self.path.write_bytes(b"")
+        self.run_step()
+        self.assertEqual(self.state["audit_seal"]["intent"]["kind"], "EMPTY")
+        self.assertEqual(self.path.read_bytes(), b"")
+        self.assertEqual(self.seals, 1)
+        self.assertFalse(Path(str(self.path) + ".segments").exists())
+        # A separate stopped transaction can already have an exact anchor.
+        archive = Path(str(self.path) + ".segments")
+        archive.mkdir(mode=0o700)
+        predecessor = gateway.digest(self.original)
+        put(archive / (predecessor + ".hja2"), self.original)
+        anchor = ("HJA3\t" + predecessor + "\t0\n").encode()
+        self.path.write_bytes(anchor)
+        self.state.pop("audit_seal")
+        self.run_step()
+        self.assertEqual(self.state["audit_seal"]["intent"]["kind"], "ANCHOR")
+        self.assertEqual(self.path.read_bytes(), anchor)
+        self.assertEqual(self.seals, 2)
+        self.assertEqual(len(list(archive.iterdir())), 1)
+
+    def test_unexpected_writer_job_or_original_pid_blocks_even_initial_verify(self):
+        for field in ("active", "job", "pid"):
+            with self.subTest(field=field):
+                self.current["ActiveState"] = "active" if field == "active" else "inactive"
+                self.job = "pending" if field == "job" else ""
+                self.old_pid = ("1234", "5678") if field == "pid" else None
+                with self.assertRaisesRegex(RuntimeError, "WRITER_NOT_STOPPED"):
+                    self.run_step()
+        self.assertEqual((self.seals, self.verifies), (0, 0))
+
+    def test_changed_source_or_segment_cannot_be_treated_as_a_completed_seal(self):
+        self.failure = "after_segment"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        self.path.write_bytes(b"unexpected writer data\n")
+        self.reload()
+        self.failure = None
+        with self.assertRaisesRegex(RuntimeError, "PUBLICATION_UNKNOWN"):
+            self.run_step()
+        self.assertEqual(self.seals, 1)
+        self.assertEqual(next(Path(str(self.path) + ".segments").iterdir()).read_bytes(), self.original)
+
+    def test_verified_files_changed_before_first_start_keep_writer_stopped(self):
+        self.run_step()
+        with self.path.open("ab") as output:
+            output.write(b"unrequested append\n")
+        with self.assertRaisesRegex(RuntimeError, "PUBLICATION_UNKNOWN"):
+            self.start_admission()
+        self.assertNotIn("writer_start_requested", self.state["audit_seal"])
+
+    def test_after_durable_start_intent_resume_does_not_reseal_legitimate_appends(self):
+        self.run_step()
+        self.start_admission()
+        with self.path.open("ab") as output:
+            output.write(b"new writer append after its durable start intent\n")
+        self.state["phase"] = "GATEWAY_STARTED"
+        self.state["gateway_started"] = {"known": "candidate"}
+        self.current.update(ActiveState="active", MainPID="9000")
+        calls = (self.seals, self.verifies)
+        self.save(); self.reload()
+        self.run_step()
+        self.start_admission()
+        self.assertEqual((self.seals, self.verifies), calls)
+
+    def test_real_directory_lock_and_unsafe_inode_are_not_bypassed(self):
+        directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                gateway.audit_file(self.path)
+        finally:
+            os.close(directory)
+        os.link(self.path, self.root / "hardlink")
+        with self.assertRaisesRegex(RuntimeError, "PRIVATE_FILE_REQUIRED"):
+            gateway.audit_file(self.path)
+        (self.root / "hardlink").unlink()
+        self.path.chmod(0o640)
+        with self.assertRaisesRegex(RuntimeError, "PRIVATE_FILE_REQUIRED"):
+            gateway.audit_file(self.path)
+
+
+    def test_offline_cli_has_exact_path_and_strict_uint64_result_without_retry(self):
+        valid = subprocess.CompletedProcess([], 0, b"audit verified records=18446744073709551615\n", b"")
+        with mock.patch.object(gateway, "pinned", return_value=Path("/fixture/sessionctl")) as pin, \
+                mock.patch.object(gateway.subprocess, "run", return_value=valid) as run:
+            self.assertEqual(self.real_cli(self.plan, self.snapshot, "verify"), 2 ** 64 - 1)
+            self.assertEqual(run.call_args.args[0], ["/fixture/sessionctl", "--audit-verify", str(self.path)])
+            self.assertEqual(run.call_args.kwargs["env"], {})
+            self.assertLessEqual(run.call_args.kwargs["timeout"], 300)
+            self.assertEqual(pin.call_count, 2)
+        for raw in (b"audit verified records=-1\n", b"audit verified records=00\n",
+                b"audit verified records=18446744073709551616\n", b"audit verified records=1\nextra\n"):
+            with self.subTest(raw=raw), \
+                    mock.patch.object(gateway, "pinned", return_value=Path("/fixture/sessionctl")), \
+                    mock.patch.object(gateway.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, raw, b"")) as run:
+                with self.assertRaisesRegex(RuntimeError, "VERIFY_RESULT_INVALID"):
+                    self.real_cli(self.plan, self.snapshot, "verify")
+                self.assertEqual(run.call_count, 1)
+
+    def test_intent_cannot_move_to_a_new_plan_hold_or_deadline(self):
+        self.failure = "after_anchor"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        self.failure = None
+        for field in ("plan_sha256", "markers", "deadline"):
+            with self.subTest(field=field):
+                self.reload()
+                if field == "deadline":
+                    self.snapshot["deadline"] += 1000
+                else:
+                    self.state[field] = "different"
+                with self.assertRaisesRegex(RuntimeError, "INTENT_BINDING_CHANGED"):
+                    self.run_step()
+        self.assertEqual(self.seals, 1)
+
+    def test_unreviewed_writer_is_rejected_before_and_after_saved_start_intent(self):
+        self.run_step()
+        binary = {"path": "/fixture/unreviewed", "sha256": "f" * 64}
+        with self.assertRaisesRegex(RuntimeError, "UNREVIEWED_WRITER"):
+            gateway.audit_before_gateway_start(self.snapshot, self.state, binary, self.save, lambda: None)
+        self.start_admission()
+        with self.assertRaisesRegex(RuntimeError, "UNREVIEWED_WRITER"):
+            gateway.audit_before_gateway_start(self.snapshot, self.state, binary, self.save, lambda: None)
+
+
+    def test_visible_verified_receipt_is_durably_republished_before_first_start(self):
+        def interrupted_save():
+            self.save()
+            if self.state["audit_seal"].get("status") == "VERIFIED":
+                raise OSError("CHECKPOINT_FSYNC_ACK_LOST")
+        with self.assertRaises(OSError):
+            self.run_step(save=interrupted_save)
+        # Model process death before the outer HELD checkpoint: the visible
+        # receipt records an actually acknowledged native seal and verify.
+        self.reload()
+        self.assertEqual(self.state["audit_seal"]["status"], "VERIFIED")
+        self.run_step()
+        self.assertEqual(self.seals, 1)
+        self.start_admission()
+        self.assertIn("writer_start_requested", json.loads(self.checkpoint.read_text())["audit_seal"])
+
+    def test_read_only_start_gate_does_not_record_a_start_intent(self):
+        self.run_step()
+        gateway.audit_before_gateway_start(self.snapshot, self.state,
+            self.snapshot["packages"]["candidate"]["binary"], self.save, lambda: None,
+            request_start=False)
+        self.assertNotIn("writer_start_requested", self.state["audit_seal"])
+
+
+    def test_postpublication_count_is_observed_then_verified_without_rewriting_intent(self):
+        self.failure = "after_anchor"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        self.reload()
+        original_intent = copy.deepcopy(self.state["audit_seal"]["intent"])
+        self.assertIsNone(original_intent["records"])
+        self.path.write_bytes(self.path.read_bytes().replace(b"\t0\n", b"\t1\n"))
+        self.failure = None
+        with self.assertRaisesRegex(RuntimeError, "VERIFIED_COUNT_CHANGED"):
+            self.run_step()
+        self.assertEqual(self.state["audit_seal"]["intent"], original_intent)
+        self.assertEqual(self.state["audit_seal"]["status"], "UNKNOWN")
+        with self.assertRaisesRegex(RuntimeError, "VERIFIED_RECEIPT_REQUIRED"):
+            self.start_admission()
+
+    def test_corrupt_retained_segment_is_never_accepted_from_its_filename(self):
+        self.failure = "after_anchor"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.run_step()
+        self.reload()
+        segment = next(Path(str(self.path) + ".segments").iterdir())
+        segment.write_bytes(b"X" + segment.read_bytes()[1:])
+        self.failure = None
+        with self.assertRaisesRegex(RuntimeError, "NATIVE_SEGMENT_HASH_INVALID"):
+            self.run_step()
+        self.assertEqual(self.state["audit_seal"]["status"], "UNKNOWN")
+        with self.assertRaisesRegex(RuntimeError, "VERIFIED_RECEIPT_REQUIRED"):
+            self.start_admission()
+
+
+class AuditQualificationComponents(unittest.TestCase):
+    def setUp(self):
+        self.binary = {"path": "/fixture/gateway", "sha256": "a" * 64}
+        self.plan = {"candidate": {"manifest": "/fixture/current.json", "sha256": "b" * 64},
+            "fallback": {"manifest": "/fixture/current.json", "sha256": "b" * 64},
+            "sessionctl": {"path": "/fixture/sessionctl", "sha256": "c" * 64},
+            "recovery_fixes_sha256": "d" * 64}
+        self.packages = {name: {"binary": self.binary, "source_sha": "e" * 40} for name in ("candidate", "fallback")}
+        good = {"seal_returncode": 0, "verify_before_returncode": 0, "verify_after_returncode": 0,
+            "verify_after_rejection": "", "gateway_returncode": 0, "ready": True, "rejection": ""}
+        bad = dict(good, verify_after_returncode=1, gateway_returncode=7, ready=False,
+            verify_after_rejection="SUPERVISOR_AUDIT_SEGMENT_INVALID",
+            rejection="SUPERVISOR_AUDIT_INIT_FAILED:SUPERVISOR_AUDIT_SEGMENT_INVALID")
+        self.receipt = {"schema": "heptatrader.gateway-audit-reader-qualification.v1", "result": "PASS",
+            "uid": 1000, "execution_mode": "SIMULATOR", "watch_only": True,
+            "persistent_lease_store": False, "processes_reaped": True, "production_services_changed": False,
+            "source_inputs": {**{key: self.plan[key] for key in ("candidate", "fallback", "sessionctl")},
+                "recovery_evidence": {"path": "/fixture/recovery.json", "sha256": "d" * 64},
+                "simulator": {"path": "/fixture/simulator", "sha256": "f" * 64}},
+            "input_artifact": {"path": "/fixture/inputs.json", "sha256": "1" * 64},
+            "qualification_tool": {"path": "/fixture/qualification.py", "sha256": "2" * 64},
+            "cases": [{"binary": self.binary, "source_sha": "e" * 40, "roles": ["candidate", "fallback"],
+                "valid": good, "missing": copy.deepcopy(bad), "corrupt": copy.deepcopy(bad)}]}
+
+    def test_one_real_reader_identity_can_cover_both_unchanged_release_roles(self):
+        self.assertEqual(gateway.audit_qualification(self.receipt, self.plan, self.packages, 1000),
+            self.receipt["source_inputs"])
+
+    def test_equal_binary_bytes_at_another_path_need_their_own_actual_reader_case(self):
+        self.packages["fallback"] = {"source_sha": "e" * 40,
+            "binary": dict(self.binary, path="/fixture/unqualified-gateway")}
+        with self.assertRaisesRegex(RuntimeError, "QUALIFIED_BINARY_CHANGED"):
+            gateway.audit_qualification(self.receipt, self.plan, self.packages, 1000)
+
+    def test_flag_or_unrelated_start_failure_is_not_a_reader_qualification(self):
+        for field, value in (("gateway_returncode", 5), ("gateway_returncode", True),
+                ("ready", True), ("rejection", "UNRELATED_CONFIG_FAILURE"), ("verify_after_returncode", 0)):
+            with self.subTest(field=field, value=value):
+                receipt = copy.deepcopy(self.receipt)
+                receipt["cases"][0]["missing"][field] = value
+                with self.assertRaisesRegex(RuntimeError, "READER_CASE_NOT_CONFIRMED"):
+                    gateway.audit_qualification(receipt, self.plan, self.packages, 1000)
+
+    def test_prior_binary_source_uid_or_unqualified_fallback_cannot_borrow_receipt(self):
+        for change in ("source", "manifest", "uid", "roles"):
+            with self.subTest(change=change):
+                receipt = copy.deepcopy(self.receipt)
+                if change == "source": receipt["cases"][0]["source_sha"] = "0" * 40
+                elif change == "manifest": receipt["source_inputs"]["candidate"]["sha256"] = "0" * 64
+                elif change == "uid": receipt["uid"] = 0
+                else: receipt["cases"][0]["roles"] = ["candidate"]
+                with self.assertRaises(RuntimeError):
+                    gateway.audit_qualification(receipt, self.plan, self.packages, 1000)
 
 
 class GatewayReadDiagnosticsTests(unittest.TestCase):

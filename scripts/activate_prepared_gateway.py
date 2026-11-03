@@ -9,6 +9,7 @@ created. A private checkpoint permits observation/recovery after interruption.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -38,6 +39,8 @@ HELD_STOP = SAFE_STOP.replace(b"RefuseManualStop=no", b"RefuseManualStop=yes")
 # must still live beyond that check; this transaction grants no extra TTL.
 MIN_TTL_MS = 4 * 60 * 60 * 1000 + 120000
 MAX_AUDIT_AGE_MS = 5000
+AUDIT_MAXIMUM_BYTES = 1024 * 1024 * 1024
+AUDIT_OFFLINE_TIMEOUT_SECONDS = 300
 LANES = {"EUR.USD": ("paper-driver", "paper.token"), "BTC.USD": ("crypto-driver", "crypto.token")}
 
 
@@ -445,6 +448,8 @@ def inspect(plan, home):
             ("RefuseManualStop", "SendSIGKILL", "TimeoutStopUSec", "Restart"), "ORIGINAL_SERVICE_POLICY")
             for unit in {GATEWAY, *(owner["unit"] for owner in owners)}}}
     snapshot["native_execution"] = native_maintenance.prepare(sys.modules[__name__], plan, home, snapshot)
+    if "audit_seal" in plan:
+        snapshot["audit_seal"] = audit_seal_configuration(plan, environment, packages)
     return snapshot
 
 
@@ -981,6 +986,435 @@ def check_transition_catalog(plan, snapshot, state):
             fail("RESUMED_OWNER_CHANGED_HELD")
 
 
+def audit_qualification(value, plan, packages, uid):
+    """Validate a pinned receipt from the isolated real-reader fixture."""
+    if (not isinstance(value, dict)
+            or value.get("schema") != "heptatrader.gateway-audit-reader-qualification.v1"
+            or value.get("result") != "PASS" or type(value.get("uid")) is not int
+            or value["uid"] != uid or uid <= 0 or value.get("execution_mode") != "SIMULATOR"
+            or value.get("watch_only") is not True or value.get("persistent_lease_store") is not False
+            or value.get("processes_reaped") is not True or value.get("production_services_changed") is not False):
+        fail("AUDIT_SEAL_READER_QUALIFICATION_REQUIRED")
+    inputs = value.get("source_inputs", {})
+    if not isinstance(inputs, dict):
+        fail("AUDIT_SEAL_QUALIFIED_INPUTS_REQUIRED")
+    if any(not equivalent(inputs.get(name), plan[name]) for name in ("candidate", "fallback", "sessionctl")):
+        fail("AUDIT_SEAL_QUALIFIED_ARTIFACT_CHANGED")
+    evidence = inputs.get("recovery_evidence", {})
+    if evidence.get("sha256") != plan["recovery_fixes_sha256"]:
+        fail("AUDIT_SEAL_QUALIFIED_SOURCE_EVIDENCE_CHANGED")
+    for pin in (evidence, inputs.get("simulator", {}), value.get("input_artifact", {}),
+            value.get("qualification_tool", {})):
+        if (not isinstance(pin, dict) or not isinstance(pin.get("path"), str)
+                or not Path(pin["path"]).is_absolute()
+                or re.fullmatch(r"[0-9a-f]{64}", pin.get("sha256", "")) is None):
+            fail("AUDIT_SEAL_QUALIFICATION_PROVENANCE_INVALID")
+    cases = value.get("cases")
+    if not isinstance(cases, list) or not 1 <= len(cases) <= 2:
+        fail("AUDIT_SEAL_READER_CASES_REQUIRED")
+    covered = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            fail("AUDIT_SEAL_READER_CASES_REQUIRED")
+        roles = case.get("roles")
+        if (not isinstance(roles, list) or not roles or any(not isinstance(role, str) for role in roles)
+                or len(set(roles)) != len(roles)
+                or any(role not in ("candidate", "fallback") or role in covered for role in roles)):
+            fail("AUDIT_SEAL_READER_ROLES_INVALID")
+        binary = case.get("binary")
+        for role in roles:
+            if (not equivalent(binary, packages[role]["binary"])
+                    or case.get("source_sha") != packages[role]["source_sha"]):
+                fail("AUDIT_SEAL_QUALIFIED_BINARY_CHANGED")
+        covered.update(roles)
+        for name in ("valid", "missing", "corrupt"):
+            result = case.get(name, {})
+            if not isinstance(result, dict):
+                fail("AUDIT_SEAL_READER_CASE_NOT_CONFIRMED")
+            rejected = name != "valid"
+            expected = {"seal_returncode": 0, "verify_before_returncode": 0,
+                "verify_after_returncode": 1 if rejected else 0,
+                "gateway_returncode": 7 if rejected else 0}
+            if (any(type(result.get(key)) is not int or result[key] != number for key, number in expected.items())
+                    or result.get("ready") is not (not rejected)
+                    or result.get("verify_after_rejection") != ("SUPERVISOR_AUDIT_SEGMENT_INVALID" if rejected else "")
+                    or result.get("rejection") != (
+                        "SUPERVISOR_AUDIT_INIT_FAILED:SUPERVISOR_AUDIT_SEGMENT_INVALID" if rejected else "")):
+                fail("AUDIT_SEAL_READER_CASE_NOT_CONFIRMED")
+    if covered != {"candidate", "fallback"}:
+        fail("AUDIT_SEAL_BOTH_READERS_REQUIRED")
+    return inputs
+
+
+def audit_seal_configuration(plan, environment, packages):
+    if "audit_seal" not in plan:
+        return None
+    value = plan["audit_seal"]
+    if (not isinstance(value, dict) or set(value) != {"path", "qualification"}
+            or not isinstance(value.get("path"), str) or "\0" in value["path"]
+            or plan.get("native_execution") is not None):
+        fail("AUDIT_SEAL_GATEWAY_ONLY_PLAN_REQUIRED")
+    path = Path(value["path"])
+    if (not path.is_absolute() or str(path) != value["path"] or path.resolve(strict=True) != path
+            or environment.get("HEPTA_TOOL_SUPERVISOR_AUDIT_JOURNAL") != str(path)):
+        fail("AUDIT_SEAL_CONFIGURED_PATH_REQUIRED")
+    # No content scan or native verify of the online journal during preflight.
+    audit_private_file(path.lstat())
+    item = value["qualification"]
+    if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+            or re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", "")) is None):
+        fail("AUDIT_SEAL_QUALIFICATION_PIN_REQUIRED")
+    raw = read_private(item["path"], 262144)
+    if digest(raw) != item["sha256"]:
+        fail("AUDIT_SEAL_QUALIFICATION_CHANGED")
+    inputs = audit_qualification(strict(raw), plan, packages, os.geteuid())
+    evidence_pin = inputs["recovery_evidence"]
+    evidence_raw = read_private(evidence_pin["path"], 262144)
+    if digest(evidence_raw) != evidence_pin["sha256"]:
+        fail("AUDIT_SEAL_SOURCE_EVIDENCE_CHANGED")
+    evidence = strict(evidence_raw)
+    if evidence.get("schema") != "heptatrader.gateway-recovery-source-evidence.v2":
+        fail("AUDIT_SEAL_SOURCE_EVIDENCE_REQUIRED")
+    builds = [evidence.get(name, {}) for name in ("candidate", "fallback")]
+    for package in packages.values():
+        if not any(equivalent(row.get("binary"), package["binary"])
+                and row.get("source_sha") == package["source_sha"] for row in builds):
+            fail("AUDIT_SEAL_READER_BUILD_NOT_BOUND")
+    return {"path": str(path), "qualification": item, "sessionctl": plan["sessionctl"],
+        "readers": {name: {"source_sha": package["source_sha"], "binary": package["binary"]}
+            for name, package in packages.items()}}
+
+
+def audit_private_file(info):
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077 or not 0 <= info.st_size <= AUDIT_MAXIMUM_BYTES):
+        fail("AUDIT_SEAL_PRIVATE_FILE_REQUIRED")
+
+
+def audit_file(path, *, contents=True):
+    """Read an exact private inode; never load the whole journal into memory."""
+    path = Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        fail("AUDIT_SEAL_CANONICAL_PATH_REQUIRED")
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    try:
+        fcntl.flock(directory, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
+            fail("AUDIT_SEAL_PARENT_DIRECTORY_UNSAFE")
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=directory)
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        before = os.fstat(descriptor)
+        audit_private_file(before)
+        identity = lambda item: {key: getattr(item, "st_" + key) for key in
+            ("dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns")}
+        parent_identity = lambda item: {key: getattr(item, "st_" + key) for key in
+            ("dev", "ino", "mode", "uid", "gid")}
+        result = {"file": identity(before), "directory": parent_identity(parent)}
+        head = b""
+        if contents:
+            hasher = hashlib.sha256()
+            remaining = before.st_size
+            deadline = time.monotonic() + AUDIT_OFFLINE_TIMEOUT_SECONDS
+            while remaining:
+                if time.monotonic() >= deadline:
+                    fail("AUDIT_SEAL_HASH_TIMEOUT")
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    fail("AUDIT_SEAL_SOURCE_SHORT_READ")
+                head = (head + chunk[:192])[:192]
+                hasher.update(chunk); remaining -= len(chunk)
+            result["sha256"] = hasher.hexdigest()
+        named = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        if (identity(os.fstat(descriptor)) != identity(before) or identity(named) != identity(before)
+                or parent_identity(path.parent.lstat()) != parent_identity(parent)
+                or path.resolve(strict=True) != path):
+            fail("AUDIT_SEAL_FILE_CHANGED")
+        return result, head
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def audit_file_unchanged(path, expected):
+    actual, _ = audit_file(path, contents=False)
+    if actual != {key: expected[key] for key in ("file", "directory")}:
+        fail("AUDIT_SEAL_FILE_CHANGED")
+
+
+def audit_offline_cli(plan, snapshot, operation):
+    """The exact three-argument offline CLI; never a supervisor RPC."""
+    flag = {"seal": "--audit-seal-stopped", "verify": "--audit-verify"}[operation]
+    binary = pinned(plan["sessionctl"])
+    available = (snapshot["deadline"] - now_ms() - MIN_TTL_MS) // 1000
+    if available <= 0:
+        fail("MAINTENANCE_TTL_BUDGET_EXHAUSTED")
+    result = subprocess.run([str(binary), flag, snapshot["audit_seal"]["path"]], env={},
+        capture_output=True, timeout=min(AUDIT_OFFLINE_TIMEOUT_SECONDS, available))
+    # run() reaps on return, and kills/reaps on timeout. After a controller
+    # crash the native directory lock serializes same-plan reconciliation.
+    pinned(plan["sessionctl"])
+    if result.returncode != 0 or result.stderr:
+        fail("AUDIT_SEAL_" + operation.upper() + "_NOT_CONFIRMED:" + str(result.returncode))
+    if operation == "seal":
+        if result.stdout != b"audit sealed\n":
+            fail("AUDIT_SEAL_RESULT_INVALID")
+        return None
+    match = re.fullmatch(rb"audit verified records=(0|[1-9][0-9]{0,19})\n", result.stdout)
+    if match is None or int(match[1]) >= 2 ** 64:
+        fail("AUDIT_SEAL_VERIFY_RESULT_INVALID")
+    return int(match[1])
+
+
+def audit_binding(snapshot, state):
+    return json.loads(json.dumps({"plan_sha256": state["plan_sha256"], "markers": state["markers"],
+        "deadline_ms": snapshot["deadline"], "gateway": snapshot["gateway"],
+        "configuration": snapshot["audit_seal"]}))
+
+
+def audit_anchor(raw):
+    match = re.fullmatch(rb"HJA3\t([0-9a-f]{64})\t(0|[1-9][0-9]{0,19})\n", raw)
+    if match is None or int(match[2]) >= 2 ** 64:
+        fail("AUDIT_SEAL_ANCHOR_INVALID")
+    return match[1].decode(), int(match[2])
+
+
+def audit_intent(snapshot, state, progress):
+    intent = progress.get("intent", {})
+    if (intent.get("schema") != "heptatrader.gateway-audit-seal-intent.v1"
+            or not equivalent(intent.get("binding"), audit_binding(snapshot, state))
+            or intent.get("kind") not in ("EMPTY", "ANCHOR", "ROTATABLE")):
+        fail("AUDIT_SEAL_INTENT_BINDING_CHANGED")
+    source = intent.get("source", {})
+    if (set(source) != {"file", "directory", "sha256"}
+            or re.fullmatch(r"[0-9a-f]{64}", source.get("sha256", "")) is None
+            or type(source.get("file", {}).get("size")) is not int
+            or not 0 <= source["file"]["size"] <= AUDIT_MAXIMUM_BYTES):
+        fail("AUDIT_SEAL_SOURCE_BINDING_INVALID")
+    anchor = intent.get("anchor")
+    if intent["kind"] == "ROTATABLE":
+        if source["file"]["size"] == 0 or intent.get("records") is not None or anchor is not None:
+            fail("AUDIT_SEAL_SEGMENT_BINDING_INVALID")
+        return intent
+    if type(intent.get("records")) is not int or not 0 <= intent["records"] < 2 ** 64:
+        fail("AUDIT_SEAL_COUNT_BINDING_INVALID")
+    if intent["kind"] == "EMPTY":
+        if source["file"]["size"] != 0 or source["sha256"] != digest(b"") or intent["records"] != 0 or anchor is not None:
+            fail("AUDIT_SEAL_EMPTY_BINDING_INVALID")
+    else:
+        if not isinstance(anchor, str):
+            fail("AUDIT_SEAL_ANCHOR_BINDING_INVALID")
+        predecessor, count = audit_anchor(anchor.encode())
+        if count != intent["records"]:
+            fail("AUDIT_SEAL_ANCHOR_COUNT_CHANGED")
+        if source["file"]["size"] != len(anchor.encode()) or source["sha256"] != digest(anchor):
+            fail("AUDIT_SEAL_ANCHOR_BINDING_INVALID")
+    return intent
+
+
+def audit_layout(snapshot, intent):
+    path = Path(snapshot["audit_seal"]["path"])
+    current, head = audit_file(path)
+    source = intent["source"]
+    if current["directory"] != source["directory"]:
+        fail("AUDIT_SEAL_PARENT_DIRECTORY_CHANGED")
+    segment = None
+    if intent["kind"] == "ROTATABLE" and equivalent(current, source):
+        return "NO_ACTIVE_REPLACEMENT", current, segment, None
+    anchor = intent["anchor"]
+    if intent["kind"] in ("EMPTY", "ANCHOR"):
+        if not equivalent(current, source):
+            fail("AUDIT_SEAL_NOOP_SOURCE_CHANGED")
+        classification = "NOOP_DURABILITY_UNKNOWN"
+    else:
+        try:
+            predecessor, _ = audit_anchor(head)
+        except RuntimeError:
+            fail("AUDIT_SEAL_PUBLICATION_UNKNOWN")
+        if (predecessor != source["sha256"] or current["file"]["size"] != len(head)
+                or current["sha256"] != digest(head)
+                or current["file"]["ino"] == source["file"]["ino"]):
+            fail("AUDIT_SEAL_PUBLICATION_UNKNOWN")
+        anchor = head.decode()
+        classification = "PUBLISHED_DURABILITY_UNKNOWN"
+    if anchor is not None:
+        predecessor, _ = audit_anchor(anchor.encode())
+        segment_path = Path(str(path) + ".segments") / (predecessor + ".hja2")
+        segment, _ = audit_file(segment_path, contents=False)
+        if segment["directory"]["mode"] & 0o077:
+            fail("AUDIT_SEAL_SEGMENT_DIRECTORY_UNSAFE")
+        if intent["kind"] == "ROTATABLE" and segment["file"]["size"] != source["file"]["size"]:
+            fail("AUDIT_SEAL_SEGMENT_SIZE_CHANGED")
+    return classification, current, segment, anchor
+
+
+def audit_writer_stopped(snapshot, state, context):
+    context()
+    if (state.get("gateway_stopped") is not True or state.get("owners_fenced") is not True
+            or state.get("gateway_started") or state.get("phase") != "GATEWAY_STOPPED"
+            or snapshot.get("native_execution") is not None
+            or any(owner["resident"] is not None and owner["unit"] not in state["stopped_controllers"]
+                for owner in snapshot["owners"])):
+        fail("AUDIT_SEAL_STOPPED_TRANSACTION_REQUIRED")
+    current = driver.fence.show_unit(GATEWAY)
+    job = driver.unit_properties(GATEWAY, ("Job",), "AUDIT_SEAL_STOPPED_JOB")["Job"]
+    if (current["ActiveState"] != "inactive" or current["MainPID"] not in ("", "0") or job
+            or driver.pid_key(snapshot["gateway"]["status"]["MainPID"]) == tuple(snapshot["gateway"]["pid_key"])):
+        fail("AUDIT_SEAL_WRITER_NOT_STOPPED")
+
+
+def audit_receipt(snapshot, state):
+    progress = state.get("audit_seal", {})
+    intent = audit_intent(snapshot, state, progress)
+    receipt = progress.get("receipt", {})
+    if (progress.get("status") != "VERIFIED"
+            or receipt.get("schema") != "heptatrader.gateway-audit-seal-receipt.v1"
+            or receipt.get("intent_sha256") != digest(json.dumps(intent, sort_keys=True))
+            or type(receipt.get("records")) is not int or not 0 <= receipt["records"] < 2 ** 64
+            or (intent["records"] is not None and receipt["records"] != intent["records"])
+            or type(receipt.get("seal_exit_code")) is not int or receipt["seal_exit_code"] != 0
+            or type(receipt.get("verify_exit_code")) is not int or receipt["verify_exit_code"] != 0):
+        fail("AUDIT_SEAL_VERIFIED_RECEIPT_REQUIRED")
+    if intent["kind"] == "EMPTY":
+        if receipt.get("anchor") is not None or receipt["records"] != 0:
+            fail("AUDIT_SEAL_RECEIPT_ANCHOR_CHANGED")
+    else:
+        anchor = receipt.get("anchor")
+        if not isinstance(anchor, str):
+            fail("AUDIT_SEAL_RECEIPT_ANCHOR_CHANGED")
+        predecessor, count = audit_anchor(anchor.encode())
+        expected_predecessor = (intent["source"]["sha256"] if intent["kind"] == "ROTATABLE"
+            else audit_anchor(intent["anchor"].encode())[0])
+        if count != receipt["records"] or predecessor != expected_predecessor:
+            fail("AUDIT_SEAL_RECEIPT_ANCHOR_CHANGED")
+    return intent, receipt
+
+
+def prepare_audit_intent(plan, snapshot, state, progress, save, context):
+    original_progress = progress
+    progress = json.loads(json.dumps(progress))
+    path = Path(snapshot["audit_seal"]["path"])
+    first = "intent" not in progress
+    if first:
+        source, head = audit_file(path)
+        kind = "EMPTY" if source["file"]["size"] == 0 else "ROTATABLE"
+        records = 0 if kind == "EMPTY" else None
+        anchor = None
+        if kind != "EMPTY":
+            if source["file"]["size"] == len(head):
+                try:
+                    _, count = audit_anchor(head)
+                    kind, anchor, records = "ANCHOR", head.decode(), count
+                except RuntimeError:
+                    pass  # Nonempty legacy with zero HJA2 records still rotates.
+        audit_writer_stopped(snapshot, state, context)
+        audit_file_unchanged(path, source)
+        progress["intent"] = {"schema": "heptatrader.gateway-audit-seal-intent.v1",
+            "binding": audit_binding(snapshot, state), "source": source, "records": records,
+            "kind": kind, "anchor": anchor, "created_at_ms": now_ms()}
+        progress["status"] = "INTENT_RECORDED"
+    intent = audit_intent(snapshot, state, progress)
+    if first and intent["kind"] == "ROTATABLE":
+        # H binds the exact original bytes, including any prior anchor.
+        # Native seal and final verify establish N; no extra pre-count scan.
+        audit_file_unchanged(path, intent["source"])
+        classification = "NO_ACTIVE_REPLACEMENT"
+    else:
+        classification, _, _, _ = audit_layout(snapshot, intent)
+    if classification == "NO_ACTIVE_REPLACEMENT":
+        archive = Path(str(path) + ".segments")
+        space = os.statvfs(archive if archive.exists() else path.parent)
+        parent_space = os.statvfs(path.parent)
+        if (space.f_bavail * space.f_frsize < intent["source"]["file"]["size"] + 4096
+                or parent_space.f_bavail * parent_space.f_frsize < 4096):
+            fail("AUDIT_SEAL_COPY_SPACE_REQUIRED")
+    attempt = {"at_ms": now_ms(), "observed": classification, "status": "REQUESTED"}
+    progress.setdefault("attempts", []).append(attempt)
+    progress["status"] = "UNKNOWN"
+    # Reserve room for the receipt and HELD diagnostics before mutating state.
+    if len(json.dumps(dict(state, audit_seal=progress), sort_keys=True).encode()) + 8192 >= 1048576:
+        fail("AUDIT_SEAL_CHECKPOINT_BOUND")
+    original_progress.clear(); original_progress.update(progress)
+    save()  # Intent and unknown outcome are durable before the filesystem effect.
+    return intent, attempt
+
+
+def run_audit_seal(plan, snapshot, state, save, context):
+    if snapshot.get("audit_seal") is None:
+        return
+    progress = state.setdefault("audit_seal", {})
+    if progress.get("status") == "VERIFIED":
+        audit_receipt(snapshot, state)
+        return  # A started Gateway may legitimately append after the anchor.
+    if progress.get("writer_start_requested"):
+        fail("AUDIT_SEAL_UNKNOWN_AFTER_WRITER_START")
+    audit_writer_stopped(snapshot, state, context)
+    intent, attempt = prepare_audit_intent(plan, snapshot, state, progress, save, context)
+    path = Path(snapshot["audit_seal"]["path"])
+    try:
+        audit_writer_stopped(snapshot, state, context)
+        audit_offline_cli(plan, snapshot, "seal")
+        classification, active, segment, anchor = audit_layout(snapshot, intent)
+        if classification == "NO_ACTIVE_REPLACEMENT":
+            fail("AUDIT_SEAL_SUCCESS_WITHOUT_PUBLICATION")
+        records = audit_anchor(anchor.encode())[1] if anchor is not None else 0
+        if (intent["records"] is not None and records != intent["records"]
+                or audit_offline_cli(plan, snapshot, "verify") != records):
+            fail("AUDIT_SEAL_VERIFIED_COUNT_CHANGED")
+        audit_writer_stopped(snapshot, state, context)
+        audit_file_unchanged(path, active)
+        if segment is not None:
+            predecessor, _ = audit_anchor(anchor.encode())
+            audit_file_unchanged(Path(str(path) + ".segments") / (predecessor + ".hja2"), segment)
+        # The pinned verifier checks every retained segment's actual SHA and
+        # count. Avoid a duplicate Python scan of the same large segment.
+        receipt = {"schema": "heptatrader.gateway-audit-seal-receipt.v1",
+            "intent_sha256": digest(json.dumps(intent, sort_keys=True)), "records": records, "anchor": anchor,
+            "active": active, "segment": segment, "completed_at_ms": now_ms(),
+            "seal_exit_code": 0, "verify_exit_code": 0}
+        progress["receipt"] = receipt; progress["status"] = "VERIFIED"
+        attempt["status"] = "VERIFIED"
+        save()
+    except BaseException as error:
+        if "receipt" in progress:
+            progress["unconfirmed_receipt"] = progress.pop("receipt")
+        progress["status"] = "UNKNOWN"
+        attempt.update(status="UNKNOWN", error_type=type(error).__name__)
+        raise
+
+
+def audit_before_gateway_start(snapshot, state, binary, save, context, *, request_start=True):
+    if snapshot.get("audit_seal") is None:
+        return
+    if binary not in [item["binary"] for item in snapshot["packages"].values()]:
+        fail("AUDIT_SEAL_UNREVIEWED_WRITER")
+    intent, receipt = audit_receipt(snapshot, state)
+    progress = state["audit_seal"]
+    requested = progress.get("writer_start_requested")
+    receipt_sha = digest(json.dumps(receipt, sort_keys=True))
+    if requested is not None:
+        if (requested.get("receipt_sha256") != receipt_sha
+                or requested.get("binary") not in [item["binary"] for item in snapshot["packages"].values()]):
+            fail("AUDIT_SEAL_WRITER_START_BINDING_CHANGED")
+        return
+    audit_writer_stopped(snapshot, state, context)
+    _, active, segment, anchor = audit_layout(snapshot, intent)
+    if (anchor != receipt.get("anchor") or not equivalent(active, receipt.get("active"))
+            or not equivalent(segment, receipt.get("segment"))):
+        fail("AUDIT_SEAL_VERIFIED_FILES_CHANGED")
+    if not request_start:
+        return
+    progress["writer_start_requested"] = {"receipt_sha256": receipt_sha, "binary": binary, "at_ms": now_ms()}
+    try:
+        save()  # Only after this may a new writer legitimately append.
+    except BaseException:
+        progress.pop("writer_start_requested", None)
+        raise
+
+
 def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallback=False):
     home = Path(home or pwd.getpwuid(os.geteuid()).pw_dir)
     root = home / ".local/state/heptatrader"
@@ -1026,6 +1460,10 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             state = {"schema": "heptatrader.gateway-upgrade.v1", "plan_sha256": plan_sha,
                 "status": "RUNNING", "phase": "PREPARED", "snapshot": snapshot,
                 "markers": driver.marker_identity(home), "stopped_controllers": []}
+        if "audit_seal" in plan or snapshot.get("audit_seal") is not None:
+            if not equivalent(snapshot.get("audit_seal"),
+                    audit_seal_configuration(plan, snapshot["environment"], snapshot["packages"])):
+                fail("AUDIT_SEAL_CONFIGURATION_CHANGED")
         def save():
             atomic_json(checkpoint, state)
         controller_observations = {}
@@ -1417,9 +1855,18 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 controlled_stop(GATEWAY, current, audits, selected_policy=policy)
                 state.pop("stopping", None)
                 state["gateway_stopped"] = True; state["phase"] = "GATEWAY_STOPPED"; save()
+            if (snapshot.get("audit_seal") is not None and not state.get("gateway_started")
+                    and not state.get("audit_seal", {}).get("writer_start_requested")
+                    and state["phase"] != "GATEWAY_STOPPED"):
+                # A lost normal-stop reply can leave the old phase recorded.
+                state["phase"] = "GATEWAY_STOPPED"; save()
             context()
+            run_audit_seal(plan, snapshot, state, save, context)
             native_maintenance.run(sys.modules[__name__], plan, home, snapshot, state, save, context,
                 fallback=native_fallback)
+            audit_before_gateway_start(snapshot, state,
+                snapshot["packages"][state.get("selected_release", "candidate")]["binary"], save, context,
+                request_start=False)
             if not state.get("gateway_started"):
                 # Old 0004 is never an automatic rollback after RecoveryQuery.
                 selected = state.get("selected_release", "candidate")
@@ -1440,6 +1887,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                         put_owned(execution_dropin, new_exec, old.encode() if old is not None else None)
                     state["release_bytes"] = new_exec.decode(); state["selected_release"] = selected; save()
                     driver.ctl("daemon-reload")
+                    audit_before_gateway_start(snapshot, state, item, save, context)
                     actual = start_gateway(item)
                 state["gateway_started"] = actual; state["phase"] = "GATEWAY_STARTED"; save()
             same_gateway(state["gateway_started"], gateway(snapshot["packages"][state.get("selected_release", "candidate")]["binary"]))
@@ -1517,6 +1965,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 if native_ready and current["ActiveState"] in ("inactive", "failed") and current["MainPID"] in ("", "0") and not job:
                     context()
                     item = snapshot["packages"]["fallback"]["binary"]
+                    audit_before_gateway_start(snapshot, state, item, save, context, request_start=False)
                     raw = ("[Service]\nExecStart=\nExecStart=" + item["path"] + "\n").encode()
                     old = state.get("release_bytes", snapshot.get("original_release_bytes"))
                     put_owned(execution_dropin, raw, old.encode() if old else None)
@@ -1528,6 +1977,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                     if current["ActiveState"] == "failed":
                         driver.ctl("reset-failed", GATEWAY)
                     state["selected_release"] = "fallback"
+                    audit_before_gateway_start(snapshot, state, item, save, context)
                     state["gateway_started"] = start_gateway(item)
                     state["rollback"] = "COMPATIBLE_GATEWAY_RUNNING_HOLD_RETAINED"
                 else:
@@ -1539,6 +1989,11 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
         result = {key: state[key] for key in ("status", "phase", "error", "rollback", "rollback_error") if key in state}
         result["selected_release"] = state.get("selected_release")
         result["gateway_binary_sha256"] = (state.get("gateway_started") or {}).get("binary", {}).get("sha256")
+        if snapshot.get("audit_seal") is not None:
+            progress = state.get("audit_seal", {})
+            result["audit_seal"] = {"status": progress.get("status", "NOT_STARTED"),
+                "records": (progress.get("receipt") or {}).get("records"),
+                "active_source_sha256": ((progress.get("intent") or {}).get("source") or {}).get("sha256")}
         if state.get("native_execution") is not None:
             native = state["native_execution"]
             result["native_execution"] = {
@@ -1578,6 +2033,10 @@ def main(argv=None):
             "native_gate_rpc_observed": False, "fresh_audit_consumed": False}
         if value.get("native_execution") is not None:
             result["native_candidate_sha256"] = value["native_execution"]["candidate"]["binary"]["sha256"]
+        if value.get("audit_seal") is not None:
+            result["audit_seal"] = {"path": value["audit_seal"]["path"],
+                "qualification_sha256": value["audit_seal"]["qualification"]["sha256"],
+                "journal_contents_read": False, "requires_stopped_gateway": True}
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in ("COMPLETE", "ALREADY_COMPLETE", "PREFLIGHT_PASSED_NO_CONTROL_ACTION") else 2
 

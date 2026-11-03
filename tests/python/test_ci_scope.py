@@ -416,7 +416,8 @@ class ComponentScopeTests(unittest.TestCase):
         fixtures = ("tests/python/test_activate_prepared_gateway.py",
                     "tests/python/test_native_execution_maintenance.py",
                     "tests/python/test_managed_broker_maintenance.py",
-                    "tests/python/test_gateway_prepared_reconnect.py")
+                    "tests/python/test_gateway_prepared_reconnect.py",
+                    "tests/python/test_gateway_audit_qualification.py")
         # The actual #483 change set: two controllers, the new lifecycle suite,
         # and documentation. The entire core/source lane remains enabled.
         changes = [*controllers, fixtures[1],
@@ -432,8 +433,9 @@ class ComponentScopeTests(unittest.TestCase):
         fixtures = ("tests/python/test_activate_prepared_gateway.py",
                     "tests/python/test_native_execution_maintenance.py",
                     "tests/python/test_managed_broker_maintenance.py",
-                    "tests/python/test_gateway_prepared_reconnect.py")
-        for controller in controllers:
+                    "tests/python/test_gateway_prepared_reconnect.py",
+                    "tests/python/test_gateway_audit_qualification.py")
+        for controller in (*controllers, fixtures[-1]):
             for source in ("import torch\n", "import new_native_adapter\n",
                            "from . import runtime\n", "def invalid(\n"):
                 self.write(controller, source)

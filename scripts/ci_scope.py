@@ -44,6 +44,7 @@ VERIFIED_PYTHON_GROUPS = (
                "tests/python/test_activate_prepared_gateway.py",
                "tests/python/test_managed_broker_maintenance.py",
                "tests/python/test_gateway_prepared_reconnect.py",
+               "tests/python/test_gateway_audit_qualification.py",
                "tests/python/test_native_execution_maintenance.py"}),
     frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
                "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
@@ -83,6 +84,7 @@ VERIFIED_HELPER_DEPENDENCIES = {
                    "tests/python/test_activate_prepared_driver.py"}),
     ),
     "scripts/native_execution_maintenance.py": (frozenset(), frozenset()),
+    "tests/python/test_gateway_audit_qualification.py": (frozenset(), frozenset()),
     "scripts/hepta_oms_report.py": (
         frozenset(),
         frozenset({"tests/python/test_oms_operational_report.py",
