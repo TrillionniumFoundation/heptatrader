@@ -377,18 +377,61 @@ def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadlin
     finally: os.close(lock)
 
 
+def restore_readmission_only(stage_path, stage_sha256, selection_path, selection_sha256, cleanup_deadline_ms):
+    """Bounded cleanup of the original timer; no activation deadline renewal."""
+    import stat
+    from current100k_priority_activation import read_prepared_priority, restore_shared_readmission
+    now = int(time.time() * 1000)
+    need(type(cleanup_deadline_ms) is int and 0 < cleanup_deadline_ms - now <= 180000,
+         'READMISSION_CLEANUP_EXPLICIT_FINITE_DEADLINE_REQUIRED')
+    budget = WakeBudget(cleanup_deadline_ms)
+    stage, configs, registration_request = stage_inputs(stage_path, stage_sha256)
+    config = configs['registrar']; selection = pinned_json(selection_path, selection_sha256)
+    need(config.get('background_guards') is not None and selection.get('readmission_timers') is not None,
+         'READMISSION_CLEANUP_NEW_PROFILE_ONLY')
+    observed = registration_state(config, registration_request)
+    need(observed['state'] == 'PUBLISHED', 'READMISSION_CLEANUP_EXISTING_PLAN_REQUIRED')
+    plan = observed['plan']; root = Path(config['forward_root'])
+    plan_path = root / 'plans' / plan['plan_id'] / 'plan.json'
+    # Never create a missing activation lock or candidate as a cleanup side effect.
+    lock = os.open(root / 'activation.lock', os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(lock)
+        need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.geteuid()
+             and not info.st_mode & 0o077, 'WARM_ACTIVATION_LOCK_SCOPE')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        budget.remaining()
+        candidate = read_prepared_priority(stage, config, plan_path, plan)
+        result = restore_shared_readmission(stage, config, plan_path, plan, candidate, selection,
+                                            remaining_seconds=budget.remaining)
+        return {**result, 'cleanup_deadline_ms': cleanup_deadline_ms,
+            'original_activation_deadline_ms': selection['activation_deadline_ms']}
+    finally:
+        os.close(lock)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', type=Path, required=True); parser.add_argument('--stage-sha256', required=True)
     parser.add_argument('--selection-request', type=Path); parser.add_argument('--selection-request-sha256')
     parser.add_argument('--wake-deadline-ms', type=int)
     parser.add_argument('--verify-native-execution', action='store_true')
+    parser.add_argument('--restore-readmission-only', action='store_true')
+    parser.add_argument('--cleanup-deadline-ms', type=int)
     args = parser.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     if args.verify_native_execution:
         need(args.selection_request is None and args.selection_request_sha256 is None
-             and args.wake_deadline_ms is None, 'WARM_LIVE_READ_ONLY_MODE_CONFLICT')
+             and args.wake_deadline_ms is None and not args.restore_readmission_only
+             and args.cleanup_deadline_ms is None, 'WARM_LIVE_READ_ONLY_MODE_CONFLICT')
         print(json.dumps(verify_native_execution(args.stage, args.stage_sha256), sort_keys=True)); return
+    if args.restore_readmission_only:
+        need(args.selection_request is not None and args.selection_request_sha256 is not None
+             and args.cleanup_deadline_ms is not None and args.wake_deadline_ms is None,
+             'READMISSION_CLEANUP_EXPLICIT_INPUTS_REQUIRED')
+        print(json.dumps(restore_readmission_only(args.stage, args.stage_sha256,
+            args.selection_request, args.selection_request_sha256, args.cleanup_deadline_ms), sort_keys=True)); return
+    need(args.cleanup_deadline_ms is None, 'READMISSION_CLEANUP_MODE_REQUIRED')
     need(args.selection_request is not None and args.selection_request_sha256 is not None
          and args.wake_deadline_ms is not None, 'WARM_ACTIVATION_EXPLICIT_INPUTS_REQUIRED')
     print(json.dumps(activate(args.stage, args.stage_sha256, args.selection_request,

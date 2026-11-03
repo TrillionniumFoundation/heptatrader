@@ -38,6 +38,7 @@ import time
 
 MODULE_FILES = {
     'current100k_background_guards': 'scripts/current100k_background_guards.py',
+    'retire_current100k_pre_fit': 'scripts/retire_current100k_pre_fit.py',
     'activate_prepared_driver': 'scripts/activate_prepared_driver.py',
     'precheck_current100k_registration': 'scripts/precheck_current100k_registration.py',
     'historical_training.common': 'research/historical_training/common.py',
@@ -60,6 +61,14 @@ SHARED_UNITS = {role: 'heptatrader-laya-' + role + '.service' for role in ('trai
 SHARED_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID', 'InvocationID',
     'ExecStart', 'Environment', 'FragmentPath', 'DropInPaths', 'WorkingDirectory', 'ControlGroup',
     'Restart', 'Type', 'KillMode', 'KillSignal', 'TimeoutStopUSec', 'NeedDaemonReload')
+READMISSION_TIMERS = {role: 'heptatrader-laya-' + role + '-readmission.timer' for role in SHARED_UNITS}
+READMISSION_SCHEMA = 'heptatrader.current100k-shared-readmission-selection.v1'
+READMISSION_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'FragmentPath',
+    'DropInPaths', 'UnitFileState', 'NeedDaemonReload', 'Triggers', 'Job',
+    'BindsTo', 'PartOf', 'BoundBy', 'ConsistsOf', 'PropagatesStopTo',
+    'OnSuccess', 'OnFailure', 'Conflicts', 'StopWhenUnneeded', 'RefuseManualStop')
+READMISSION_NO_PROPAGATION = ('BindsTo', 'PartOf', 'BoundBy', 'ConsistsOf',
+                            'PropagatesStopTo', 'OnSuccess', 'OnFailure')
 
 
 def _environment(value):
@@ -82,7 +91,7 @@ def _command(value):
 
 
 def selection_request(actual_units, original_wrapper_files, drain_timeout_seconds=660,
-                      *, activation_deadline_ms=None):
+                      *, activation_deadline_ms=None, inhibit_shared_readmission=False):
     """Freeze observed static inputs; current process IDs are deliberately absent.
 
     The caller must set an explicit activation deadline before the request is
@@ -113,9 +122,151 @@ def selection_request(actual_units, original_wrapper_files, drain_timeout_second
             'old_environment': _environment(properties['Environment']),
             'working_directory': properties['WorkingDirectory'],
             'properties': {key: properties[key] for key in ('KillMode', 'KillSignal', 'TimeoutStopUSec')}}
-    return {'schema': 'heptatrader.current100k-shared-priority-selection.v1',
+    result = {'schema': 'heptatrader.current100k-shared-priority-selection.v1',
         'activation_deadline_ms': activation_deadline_ms, 'drain_timeout_seconds': drain_timeout_seconds,
         'roles': roles}
+    need(type(inhibit_shared_readmission) is bool, 'READMISSION_PROFILE_REQUIRED')
+    if inhibit_shared_readmission:
+        result['readmission_timers'] = {}
+        for role, unit in READMISSION_TIMERS.items():
+            snapshot = actual_units['units'][unit]
+            need(snapshot['rc'] == 0, 'READMISSION_UNIT_UNAVAILABLE:' + role)
+            p = snapshot['properties']; _readmission_policy(p, role)
+            files = {}
+            for path in [p['FragmentPath'], *shlex.split(p['DropInPaths'])]:
+                record = actual_units['files'][path]
+                need(checksum(record['text'].encode()) == record['sha256'], 'READMISSION_SNAPSHOT_CHANGED')
+                files[path] = {key: record[key] for key in ('sha256', 'text', 'mode')}
+            result['readmission_timers'][role] = {'schema': READMISSION_SCHEMA, 'role': role, 'unit': unit,
+                'fragment_path': p['FragmentPath'], 'files': files, 'trigger_unit': SHARED_UNITS[role],
+                'original_unit_file_state': p['UnitFileState'],
+                'original_active_state': p['ActiveState'], 'original_sub_state': p['SubState']}
+    return result
+
+
+def _readmission_policy(p, role):
+    need(p.get('Id') == READMISSION_TIMERS[role] and p.get('LoadState') == 'loaded'
+         and p.get('Triggers') == SHARED_UNITS[role]
+         and p.get('NeedDaemonReload') == 'no' and p.get('Job') in ('', '0')
+         and all(p.get(key) == '' for key in READMISSION_NO_PROPAGATION)
+         and p.get('Conflicts') == 'shutdown.target'
+         and p.get('StopWhenUnneeded') == 'no' and p.get('RefuseManualStop') == 'no'
+         and p.get('UnitFileState') in ('enabled', 'disabled')
+         and ((p.get('ActiveState') == 'active' and p.get('SubState') in ('waiting', 'running'))
+              or (p.get('ActiveState') == 'inactive' and p.get('SubState') == 'dead')),
+         'READMISSION_POLICY_OR_PENDING_JOB_CHANGED')
+
+
+def _readmission_contract(config, request):
+    timers = request.get('readmission_timers')
+    if config.get('background_guards') is None:
+        need(timers is None, 'READMISSION_REQUIRES_EXPLICIT_BACKGROUND_PROFILE')
+        return None
+    need(isinstance(timers, dict) and set(timers) == set(READMISSION_TIMERS), 'BOTH_READMISSION_TIMER_PINS_REQUIRED')
+    for role, unit in READMISSION_TIMERS.items():
+        value = timers[role]
+        need(isinstance(value, dict) and set(value) == {'schema', 'role', 'unit', 'fragment_path', 'files',
+             'trigger_unit', 'original_unit_file_state', 'original_active_state', 'original_sub_state'}
+             and value['schema'] == READMISSION_SCHEMA and value['role'] == role and value['unit'] == unit
+             and value['trigger_unit'] == SHARED_UNITS[role]
+             and Path(value['fragment_path']) == Path.home() / '.config/systemd/user' / unit
+             and isinstance(value['files'], dict) and value['fragment_path'] in value['files']
+             and value['original_unit_file_state'] in ('enabled', 'disabled')
+             and ((value['original_active_state'] == 'active' and value['original_sub_state'] in ('waiting', 'running'))
+                  or (value['original_active_state'] == 'inactive' and value['original_sub_state'] == 'dead')),
+             'EXPLICIT_READMISSION_TIMER_PIN_REQUIRED:' + role)
+    return {role: timers[role] for role in SHARED_UNITS}
+
+
+def _observe_readmission(timer, *, state='original', remaining_seconds=None):
+    from precheck_current100k_registration import owned_bytes
+    import activate_prepared_driver as driver
+    need(state in ('original', 'paused', 'any'), 'READMISSION_OBSERVATION_MODE')
+    for path, record in timer['files'].items():
+        raw = owned_bytes(path)
+        need(raw == record['text'].encode() and checksum(raw) == record['sha256']
+             and stat.S_IMODE(Path(path).lstat().st_mode) == int(record['mode'], 0),
+             'READMISSION_UNIT_BYTES_CHANGED')
+    if remaining_seconds is not None:
+        need(remaining_seconds() >= 15, 'INSUFFICIENT_BUDGET_BEFORE_READMISSION_READ')
+    p = driver.unit_properties(timer['unit'], READMISSION_PROPERTIES, 'CURRENT100K_READMISSION')
+    if remaining_seconds is not None: remaining_seconds()
+    _readmission_policy(p, timer['role'])
+    need(p['FragmentPath'] == timer['fragment_path']
+         and set(shlex.split(p['DropInPaths'])) == set(timer['files']) - {timer['fragment_path']}
+         and p['UnitFileState'] == timer['original_unit_file_state'], 'READMISSION_SELECTION_CHANGED')
+    expected = timer['original_active_state'] if state == 'original' else 'inactive'
+    need(state == 'any' or p['ActiveState'] == expected, 'READMISSION_ACTIVITY_CHANGED:' + state)
+    return p
+
+
+def _readmission_no_role_job(timer, remaining_seconds=None):
+    import activate_prepared_driver as driver
+    if remaining_seconds is not None:
+        need(remaining_seconds() >= 15, 'INSUFFICIENT_BUDGET_BEFORE_ROLE_JOB_READ')
+    p = driver.unit_properties(timer['trigger_unit'], ('Id', 'Job'), 'CURRENT100K_READMISSION_ROLE_JOB')
+    need(p.get('Id') == timer['trigger_unit'] and p.get('Job') in ('', '0'),
+         'ROLE_PENDING_JOB_AFTER_READMISSION_PAUSE:' + timer['role'])
+    if remaining_seconds is not None: remaining_seconds()
+
+
+def _readmission_record(path, intent_path, timer, state, *, remaining_seconds=None):
+    from precheck_current100k_registration import owned_bytes
+    from retire_current100k_pre_fit import immutable
+    binding = {'schema': 'heptatrader.current100k-shared-readmission-effect.v1',
+        'state': state, 'intent_sha256': checksum(owned_bytes(intent_path)),
+        'timer_selection_sha256': checksum(canonical(timer)), 'unit': timer['unit'], 'role': timer['role'],
+        'original_unit_file_state': timer['original_unit_file_state'],
+        'restore_active_state': timer['original_active_state'], 'unit_enabled_state_modified': False,
+        'worker_stop_or_restart_performed': False}
+    if path.exists() or path.is_symlink():
+        value = json.loads(owned_bytes(path))
+        need(set(value) == {*binding, 'at_ms'} and {key: value[key] for key in binding} == binding
+             and type(value['at_ms']) is int, 'READMISSION_EFFECT_RECEIPT_CHANGED')
+    else:
+        value = {**binding, 'at_ms': int(time.time() * 1000)}
+    if remaining_seconds is not None: remaining_seconds()
+    # The existing retirement publisher uses atomic RENAME_NOREPLACE, not a
+    # hard-link phase. A killed writer leaves no partial canonical receipt.
+    immutable(path, canonical(value) + b'\n')
+    _sync_selected_files({str(path): canonical(value) + b'\n'}, (path.parent, path.parent.parent),
+                         remaining_seconds=remaining_seconds)
+    return {'path': str(path), 'sha256': checksum(owned_bytes(path)), 'state': state}
+
+
+def _pause_readmission(timer, output, intent_path, request, plan, remaining_seconds=None):
+    p = _observe_readmission(timer, state='any', remaining_seconds=remaining_seconds)
+    if p['ActiveState'] == 'active':
+        need(timer['original_active_state'] == 'active', 'READMISSION_OUTSIDE_ACTIVITY_CHANGED')
+        window = activation_window(request, plan)
+        limit = min(30, (window['effective_deadline_ms'] - int(time.time() * 1000)) / 1000)
+        if remaining_seconds is not None: limit = min(limit, remaining_seconds())
+        need(limit > 0, 'ACTIVATION_TOTAL_BUDGET_EXPIRED')
+        subprocess.run(['systemctl', '--user', 'stop', timer['unit']], check=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=limit)
+    _observe_readmission(timer, state='paused', remaining_seconds=remaining_seconds)
+    _readmission_no_role_job(timer, remaining_seconds)
+    return _readmission_record(output / ('READMISSION_' + timer['role'].upper() + '_PAUSED.json'), intent_path, timer,
+        'ORIGINAL_READMISSION_TIMER_PAUSED', remaining_seconds=remaining_seconds)
+
+
+def _restore_readmission(timer, output, intent_path, remaining_seconds, *, before_effect):
+    p = _observe_readmission(timer, state='any', remaining_seconds=remaining_seconds)
+    if p['ActiveState'] != timer['original_active_state']:
+        # Selection only pauses the timer. An originally inactive timer must
+        # never be stopped again here to conceal an outside activation.
+        need(timer['original_active_state'] == 'active' and p['ActiveState'] == 'inactive',
+             'READMISSION_OUTSIDE_ACTIVITY_CHANGED')
+        effect_seconds = before_effect()
+        limit = min(30, effect_seconds)
+        if remaining_seconds is not None: limit = min(limit, remaining_seconds())
+        need(limit > 0, 'READMISSION_RESTORE_BUDGET_EXPIRED')
+        subprocess.run(['systemctl', '--user', 'start', timer['unit']], check=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=limit)
+    proof = _observe_readmission(timer, state='original', remaining_seconds=remaining_seconds)
+    receipt = _readmission_record(output / ('READMISSION_' + timer['role'].upper() + '_RESTORED.json'), intent_path, timer,
+        'ORIGINAL_READMISSION_TIMER_RESTORED', remaining_seconds=remaining_seconds)
+    return {**receipt, 'readback': proof}
 
 
 def activation_window(request, plan, *, now_ms=None):
@@ -341,6 +492,12 @@ def verify_prepared_priority(stage, registrar_config, plan_path, plan, candidate
     return expected
 
 
+def read_prepared_priority(stage, registrar_config, plan_path, plan):
+    """Reconstruct only the expected identity, then verify already existing files."""
+    candidate, _ = _inputs(stage, registrar_config, plan_path, plan)
+    return verify_prepared_priority(stage, registrar_config, plan_path, plan, candidate)
+
+
 def role_candidate(candidate, role):
     if 'role_wrappers' not in candidate:
         return candidate
@@ -380,7 +537,8 @@ def check_background_wrapper(candidate, observed_path, observed_sha256, *, role=
         'activated': False, 'service_actions': []}
 
 
-def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=None, remaining_seconds=None):
+def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=None, remaining_seconds=None,
+                             _readmission_state='original', _readmission_restore_only=False):
     """Read-only pre-registration gate for the observed original shared services.
 
     This proves current unit/process/config compatibility, not a completed
@@ -395,8 +553,11 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
     import activate_prepared_driver as driver
     need(request.get('schema') == 'heptatrader.current100k-shared-priority-selection.v1'
          and set(request['roles']) == set(SHARED_UNITS), 'SELECTION_REQUEST_SCOPE')
+    timers = _readmission_contract(config, request)
+    need(type(_readmission_restore_only) is bool and (not _readmission_restore_only
+         or timers is not None and candidate is not None and _roles is None), 'READMISSION_RESTORE_PROOF_SCOPE')
     deadline = request.get('activation_deadline_ms')
-    need(type(deadline) is int and int(time.time() * 1000) <= deadline,
+    need(type(deadline) is int and (_readmission_restore_only or int(time.time() * 1000) <= deadline),
          'ACTIVATION_DEADLINE_EXPIRED_OR_UNSET')
     need(type(request.get('drain_timeout_seconds')) is int
          and 1 <= request['drain_timeout_seconds'] <= 720, 'DRAIN_BOUND_REQUIRED')
@@ -415,6 +576,9 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
     if candidate is not None:
         plan = pinned_json(candidate['plan_path'], candidate['plan_sha256'])
         verify_prepared_priority(stage, config, Path(candidate['plan_path']), plan, candidate)
+    if timers is not None and _roles is None:
+        for timer in timers.values():
+            _observe_readmission(timer, state=_readmission_state, remaining_seconds=remaining_seconds)
     observations = {}
     for role, unit in SHARED_UNITS.items():
         if _roles is not None and role not in _roles: continue
@@ -429,6 +593,7 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
         wrapper = pinned_json(expected['old_wrapper'], expected['old_wrapper_sha256'])
         choice = role_candidate(candidate, role) if candidate is not None else None
         is_selected = choice is not None and expected['old_wrapper'] == choice['wrapper']
+        need(not _readmission_restore_only or is_selected, 'READMISSION_RESTORE_REQUIRES_ALL_SELECTED')
         if background is not None:
             role_binding = background['roles'][role]
             owner = role_binding['owner']
@@ -497,7 +662,8 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
         observations[role] = {'unit': unit, 'pid_key': list(identity), 'invocation_id': before['InvocationID'],
             'control_group': group, 'wrapper': expected['old_wrapper'],
             'wrapper_sha256': expected['old_wrapper_sha256'], 'runtime_identity_verified': True}
-    need(int(time.time() * 1000) <= deadline, 'ACTIVATION_DEADLINE_EXPIRED_DURING_PRECHECK')
+    need(_readmission_restore_only or int(time.time() * 1000) <= deadline,
+         'ACTIVATION_DEADLINE_EXPIRED_DURING_PRECHECK')
     return {'state': 'SHARED_PRIORITY_ORIGINAL_RUNTIME_VERIFIED_NO_WRITE',
         'request_sha256': checksum(canonical(request)), 'roles': observations,
         'cooperative_drain_verified': False, 'activated': False, 'service_actions': [],
@@ -564,8 +730,7 @@ def _empty_group(group):
                [path / 'cgroup.procs', *path.rglob('*/cgroup.procs')])
 
 
-def _inactive_role(request, selected, role, original, properties):
-    import activate_prepared_driver as driver
+def _role_unit_selection(request, selected, role, properties):
     old = request['roles'][role]; new = selected['roles'][role]; p = properties
     need(p['Id'] == old['unit'] and p['LoadState'] == 'loaded'
          and p['FragmentPath'] == old['fragment_path']
@@ -578,20 +743,44 @@ def _inactive_role(request, selected, role, original, properties):
     pair = (_command(p['ExecStart']), _environment(p['Environment']))
     need(pair in ((old['old_argv'], old['old_environment']), (new['old_argv'], new['old_environment'])),
          'DRAINED_UNIT_SELECTION_CHANGED:' + role)
+
+
+def _inactive_role(request, selected, role, original, properties):
+    import activate_prepared_driver as driver
+    p = properties
+    _role_unit_selection(request, selected, role, p)
     need(p['ActiveState'] == 'inactive' and p['SubState'] == 'dead' and p['MainPID'] == '0'
          and p['ControlGroup'] in ('', original['control_group'])
          and driver.pid_key(int(original['pid_key'][0])) != tuple(original['pid_key'])
          and _empty_group(original['control_group']), 'ORIGINAL_CONTROLLER_NOT_DRAINED:' + role)
 
 
+def _original_drain_in_progress(request, selected, role, original, properties):
+    """A disappearing original PID is a wait state, never a new identity."""
+    import activate_prepared_driver as driver
+    p = properties; pid = int(original['pid_key'][0]); key = driver.pid_key(pid)
+    if (p['ActiveState'] != 'deactivating' and not (p['ActiveState'] == 'active'
+            and p['MainPID'] in ('0', str(pid)) and key is None)):
+        return False
+    _role_unit_selection(request, selected, role, p)
+    need(p['MainPID'] in ('0', str(pid)) and p['InvocationID'] == original['invocation_id']
+         and p['ControlGroup'] in ('', original['control_group'])
+         and key in (None, tuple(original['pid_key'])), 'ORIGINAL_CONTROLLER_CHANGED_WHILE_DRAINING:' + role)
+    return True
+
+
 def _selection_states(stage, config, request, selected, candidate, intent, documents, remaining_seconds=None):
     import activate_prepared_driver as driver
     _original_files(request, documents); states = {}; proofs = {}
+    timers = _readmission_contract(config, request)
     for role, unit in SHARED_UNITS.items():
         p = _unit_properties(unit, remaining_seconds)
         if p['ActiveState'] == 'inactive':
             _inactive_role(request, selected, role, intent['original_roles'][role], p)
             states[role] = 'DRAINED'; continue
+        if timers is not None and _original_drain_in_progress(request, selected, role,
+                intent['original_roles'][role], p):
+            states[role] = 'DRAINING'; continue
         chosen = selected if _command(p['ExecStart']) == selected['roles'][role]['old_argv'] else request
         proof = precheck_shared_priority(stage, config, chosen, candidate, _roles=(role,), remaining_seconds=remaining_seconds)['roles'][role]
         if chosen is selected:
@@ -612,6 +801,7 @@ def select_shared_priority(stage, config, plan_path, plan, candidate, request, *
     verify_prepared_priority(stage, config, plan_path, plan, candidate)
     if remaining_seconds is not None: remaining_seconds()
     activation_window(request, plan)
+    timers = _readmission_contract(config, request)
     selected, documents = selection_dropins(request, candidate); _original_files(request, documents)
     output = Path(config['forward_root']) / 'activation' / plan['plan_id']
     intent_path = output / 'PRIORITY_SELECTION.json'
@@ -629,11 +819,68 @@ def select_shared_priority(stage, config, plan_path, plan, candidate, request, *
         intent = {**binding, 'original_roles': observed['roles']}
         _private_directory(output.parent)
         _private_directory(output)
-        write_immutable(intent_path, canonical(intent) + b'\n', 0o400, 'SELECTION_INTENT_CONFLICT')
+        if timers is None:
+            write_immutable(intent_path, canonical(intent) + b'\n', 0o400, 'SELECTION_INTENT_CONFLICT')
+        else:
+            from retire_current100k_pre_fit import immutable
+            immutable(intent_path, canonical(intent) + b'\n')
     _sync_selection_intent(Path(config['forward_root']), output, intent_path, intent, remaining_seconds=remaining_seconds)
     states, proofs = _selection_states(stage, config, request, selected, candidate, intent, documents, remaining_seconds)
+    if timers is not None and not all(state == 'SELECTED' for state in states.values()):
+        window = activation_window(request, plan)
+        available = (window['effective_deadline_ms'] - int(time.time() * 1000)) / 1000
+        if remaining_seconds is not None: available = min(available, remaining_seconds())
+        need(available > 150, 'INSUFFICIENT_BUDGET_BEFORE_READMISSION_PAUSE')
+        for timer in timers.values():
+            _pause_readmission(timer, output, intent_path, request, plan, remaining_seconds)
+        # Stop does not authorize accepting a replacement controller. Recheck
+        # the same original process keys after timer/job quiescence.
+        states, proofs = _selection_states(stage, config, request, selected, candidate, intent, documents, remaining_seconds)
     return _select_observed(stage, config, plan, candidate, request, selected, documents,
                             intent, intent_path, states, proofs, remaining_seconds)
+
+
+def restore_shared_readmission(stage, config, plan_path, plan, candidate, request, *, remaining_seconds):
+    """Only restore a paused timer after both same-plan roles are selected.
+
+    This requires a separate bounded cleanup caller and never renews the
+    activation deadline. It cannot signal/drain/start a service, register a
+    plan, publish a wrapper or enable predictor/evaluator units.
+    """
+    from precheck_current100k_registration import owned_bytes
+    need(callable(remaining_seconds), 'READMISSION_RESTORE_FINITE_BUDGET_REQUIRED')
+    remaining_seconds()
+    verify_prepared_priority(stage, config, plan_path, plan, candidate)
+    timers = _readmission_contract(config, request)
+    need(timers is not None, 'READMISSION_RESTORE_EXPLICIT_PROFILE_REQUIRED')
+    selected, documents = selection_dropins(request, candidate)
+    _original_files(request, documents)
+    output = Path(config['forward_root']) / 'activation' / plan['plan_id']
+    intent_path = output / 'PRIORITY_SELECTION.json'
+    intent = json.loads(owned_bytes(intent_path))
+    binding = {'schema': 'heptatrader.current100k-shared-priority-intent.v1',
+        'plan_id': plan['plan_id'], 'plan_sha256': candidate['plan_sha256'],
+        'request_sha256': checksum(canonical(request)), 'candidate_sha256': checksum(canonical(candidate)),
+        'dropins_sha256': {path: checksum(raw) for path, raw in documents.items()}}
+    need({key: intent.get(key) for key in binding} == binding
+         and set(intent) == {*binding, 'original_roles'}
+         and set(intent['original_roles']) == set(SHARED_UNITS), 'SELECTION_INTENT_CHANGED')
+    _sync_selection_intent(Path(config['forward_root']), output, intent_path, intent, remaining_seconds=remaining_seconds)
+    proof = precheck_shared_priority(stage, config, selected, candidate, remaining_seconds=remaining_seconds,
+        _readmission_state='any', _readmission_restore_only=True)
+    receipt = {role: _restore_readmission(timer, output, intent_path, remaining_seconds, before_effect=remaining_seconds)
+               for role, timer in timers.items()}
+    # Restoring a timer while its target already runs must not change the
+    # selected roles. Read both complete live identities again.
+    after = precheck_shared_priority(stage, config, selected, candidate, remaining_seconds=remaining_seconds,
+        _readmission_restore_only=True)
+    need(after['roles'] == proof['roles'], 'SELECTED_ROLE_CHANGED_DURING_READMISSION_RESTORE')
+    return {'state': 'SAME_PLAN_READMISSION_TIMER_RESTORED_ONLY', 'plan_id': plan['plan_id'],
+        'plan_sha256': candidate['plan_sha256'], 'readmission': receipt,
+        'original_activation_deadline_ms': request['activation_deadline_ms'],
+        'activation_deadline_renewed': False, 'registration_performed': False,
+        'cooperative_drain_performed': False, 'service_start_stop_or_restart_performed': False,
+        'broker_orders_sent': 0}
 
 
 def _sync_selection_intent(root, output, path, intent, *, remaining_seconds=None):
@@ -689,14 +936,24 @@ def _select_observed(stage, config, plan, candidate, request, selected, document
         if remaining_seconds is not None: remaining = min(remaining, remaining_seconds())
         need(remaining > 0, 'ACTIVATION_TOTAL_BUDGET_EXPIRED')
         return min(cap, remaining)
+    timers = _readmission_contract(config, request)
     def finished():
-        proof = precheck_shared_priority(stage, config, selected, candidate, remaining_seconds=remaining_seconds)
+        proof = precheck_shared_priority(stage, config, selected, candidate, remaining_seconds=remaining_seconds,
+                                         _readmission_state='any' if timers is not None else 'original')
+        timer_result = {}
+        if timers is not None:
+            restored = {role: _restore_readmission(timer, intent_path.parent, intent_path, remaining_seconds,
+                before_effect=lambda: timeout(30)) for role, timer in timers.items()}
+            after = precheck_shared_priority(stage, config, selected, candidate, remaining_seconds=remaining_seconds)
+            need(after['roles'] == proof['roles'], 'SELECTED_ROLE_CHANGED_DURING_READMISSION_RESTORE')
+            timer_result = {'readmission': restored}
         window = activation_window(request, plan)
         return {'state': 'SAME_PLAN_SHARED_PRIORITY_SELECTED', 'plan_id': plan['plan_id'],
             'plan_sha256': candidate['plan_sha256'], 'roles': proof['roles'],
             'intent_sha256': checksum(owned_bytes(intent_path)), 'dropins_sha256': intent['dropins_sha256'],
             'activated': True, 'cooperative_drain_verified': True, 'original_unit_files_modified': False,
-            'registration_performed': False, 'future_admission_granted': False, 'broker_orders_sent': 0, **window}
+            'registration_performed': False, 'future_admission_granted': False, 'broker_orders_sent': 0,
+            **window, **timer_result}
     if all(state == 'SELECTED' for state in states.values()): return finished()
     descriptors = []
     remaining = timeout(request['drain_timeout_seconds'] + 150)
@@ -707,6 +964,10 @@ def _select_observed(stage, config, plan, candidate, request, selected, document
         for role, state in states.items():
             if state != 'ORIGINAL': continue
             activation_window(request, plan)
+            if timers is not None:
+                for timer in timers.values():
+                    _observe_readmission(timer, state='paused', remaining_seconds=remaining_seconds)
+                    _readmission_no_role_job(timer, remaining_seconds)
             need(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'PIDFD_SIGNAL_REQUIRED')
             proof = proofs[role]; pid = int(proof['pid_key'][0]); fd = os.pidfd_open(pid, 0)
             descriptors.append(fd)
@@ -736,6 +997,10 @@ def _select_observed(stage, config, plan, candidate, request, selected, document
         pending = [SHARED_UNITS[role] for role, state in states.items() if state == 'DRAINED']
         if pending:
             activation_window(request, plan)
+            if timers is not None:
+                for timer in timers.values():
+                    _observe_readmission(timer, state='paused', remaining_seconds=remaining_seconds)
+                    _readmission_no_role_job(timer, remaining_seconds)
             subprocess.run(['systemctl', '--user', 'start', *pending], check=True,
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout(45))
         return finished()

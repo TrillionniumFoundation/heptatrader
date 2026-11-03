@@ -31,6 +31,7 @@ SUPPORT_FILES = (
     'activate_current100k_warm_stage.py', 'current100k_priority_activation.py',
     'finite_plan_calendar.py',
     'current100k_background_guards.py',
+    'retire_current100k_pre_fit.py',
 )
 # The current original worker/warm REQUEST predicate uses this same strict bound.
 ORIGINAL_REQUEST_MAX_AGE_MS = 60000

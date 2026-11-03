@@ -87,6 +87,7 @@ class BackgroundGuardTests(unittest.TestCase):
             properties[unit]['Environment'] = 'PYTHONPATH=' + bound['pythonpath']
             processes[101+offset]['cmdline'] = b'\0'.join(item.encode() for item in argv)+b'\0'
             processes[101+offset]['environ'] = ('PYTHONPATH='+bound['pythonpath']).encode()+b'\0INVOCATION_ID=invocation-'+role.encode()+b'\0'
+        original_tests.add_readmission_fixture(self, request, properties)
         return request, properties, processes
 
     def test_exact_append_uses_real_import_root_outside_new_wrapper_directory(self):
@@ -162,6 +163,7 @@ class BackgroundGuardTests(unittest.TestCase):
     def test_legacy_path_does_not_gain_distinct_wrapper_permission(self):
         request, _, _ = self.shared_fixture()
         self.config.pop('background_guards'); self.stage.pop('background_guards')
+        request.pop('readmission_timers')
         write(self.config_path, self.config); self.stage['configs']['registrar']['sha256'] = sha(self.config_path)
         with self.assertRaisesRegex(ValueError, 'ORIGINAL_GUARD_IMPORT_SELECTION_CHANGED|REQUIRES_DISTINCT_CANDIDATE'):
             activation.precheck_shared_priority(self.stage, self.config, request)
@@ -179,7 +181,7 @@ class BackgroundGuardTests(unittest.TestCase):
         request, candidate, _, _, calls, signals, _ = self.selection_fixture()
         original = activation.subprocess.run
         def partial_start(argv, **kwargs):
-            if argv[:3] == ['systemctl', '--user', 'start']:
+            if argv[:3] == ['systemctl', '--user', 'start'] and not set(activation.READMISSION_TIMERS.values()).intersection(argv):
                 original(argv[:3]+[activation.SHARED_UNITS['trainer']], **kwargs)
                 raise OSError('evaluator start result unavailable')
             return original(argv, **kwargs)

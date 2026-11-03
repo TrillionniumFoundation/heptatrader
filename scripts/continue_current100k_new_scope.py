@@ -437,11 +437,15 @@ def warm_stage(request, inputs, fit_path, candidate, readiness):
     return path, stage
 
 
-def observed_selection(deadline_ms):
-    from current100k_priority_activation import SHARED_UNITS, SHARED_PROPERTIES, _command, selection_request
+def observed_selection(deadline_ms, *, inhibit_shared_readmission=False):
+    from current100k_priority_activation import (SHARED_UNITS, SHARED_PROPERTIES, _command,
+        selection_request, READMISSION_TIMERS, READMISSION_PROPERTIES)
     snapshot = {'units': {}, 'files': {}}; wrappers = {}
-    for name in SHARED_UNITS.values():
-        result = subprocess.run(['systemctl', '--user', 'show', name, '--property='+','.join(SHARED_PROPERTIES)],
+    units = {name: SHARED_PROPERTIES for name in SHARED_UNITS.values()}
+    if inhibit_shared_readmission:
+        units.update({unit: READMISSION_PROPERTIES for unit in READMISSION_TIMERS.values()})
+    for name, wanted_properties in units.items():
+        result = subprocess.run(['systemctl', '--user', 'show', name, '--property='+','.join(wanted_properties)],
             capture_output=True, text=True, timeout=20, check=False)
         need(result.returncode == 0, 'SHARED_UNIT_UNAVAILABLE')
         props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
@@ -449,9 +453,11 @@ def observed_selection(deadline_ms):
         for spelling in [props['FragmentPath'], *shlex.split(props['DropInPaths'])]:
             path = Path(spelling); text = path.read_text()
             snapshot['files'][spelling] = {'text': text, 'sha256': sha(path), 'mode': oct(path.stat().st_mode & 0o777)}
-        spelling = _command(props['ExecStart'])[5]; path = Path(spelling)
-        wrappers[spelling] = {'text': path.read_text(), 'sha256': sha(path)}
-    return selection_request(snapshot, wrappers, activation_deadline_ms=deadline_ms)
+        if name in SHARED_UNITS.values():
+            spelling = _command(props['ExecStart'])[5]; path = Path(spelling)
+            wrappers[spelling] = {'text': path.read_text(), 'sha256': sha(path)}
+    return selection_request(snapshot, wrappers, activation_deadline_ms=deadline_ms,
+                             inhibit_shared_readmission=inhibit_shared_readmission)
 
 
 def install_units(units):
@@ -516,9 +522,16 @@ def handoff(request, stage_path, stage):
     first_ms = ((registration['registration_not_before_ms']+999)//1000)*1000
     deadline = first_ms + (request['activation_events']-1)*request['activation_readmission_seconds']*1000 + 1000
     if not selection_path.exists():
-        write_once(selection_path, observed_selection(deadline))
+        if request.get('background_guards') is None:
+            write_once(selection_path, observed_selection(deadline))
+        else:
+            write_once(selection_path, observed_selection(deadline, inhibit_shared_readmission=True))
     selection = read(selection_path)
     need(selection['activation_deadline_ms'] == deadline, 'ACTIVATION_DEADLINE_CHANGED_NO_RENEWAL')
+    if request.get('background_guards') is not None:
+        need(isinstance(selection.get('readmission_timers'), dict)
+             and set(selection['readmission_timers']) == {'trainer', 'evaluator'},
+             'BOTH_READMISSION_TIMER_SELECTIONS_REQUIRED')
     wake_root = root / 'registration-wake'; wake_path = wake_root / 'WAKE_STAGE.json'
     if not wake_path.exists():
         need(int(time.time()*1000) < deadline, 'ACTIVATION_DEADLINE_EXPIRED_NO_RENEWAL')

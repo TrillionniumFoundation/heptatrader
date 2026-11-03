@@ -13,6 +13,29 @@ def write(path, value):
     path.write_bytes(value if isinstance(value,bytes) else activation.canonical(value)+b'\n')
     path.chmod(0o400);return path
 
+
+def add_readmission_fixture(test, request, properties):
+    """Actual timer shape, independently pinned through the production builder."""
+    files = {path: record for role in request['roles'].values() for path, record in role['files'].items()}
+    for role, name in activation.READMISSION_TIMERS.items():
+        fragment = write(test.home / '.config/systemd/user' / name,
+            ('[Unit]\nDescription=Conditional Laya ' + role + ' re-admission, original guard enforced\n\n'
+             '[Timer]\nOnCalendar=*-*-* *:' + ('0' if role == 'trainer' else '2') + '/5:00\nAccuracySec=30s\nPersistent=false\n'
+             'Unit=' + activation.SHARED_UNITS[role] + '\n\n[Install]\nWantedBy=timers.target\n').encode())
+        properties[name] = {'Id': name, 'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running',
+            'FragmentPath': str(fragment), 'DropInPaths': '', 'UnitFileState': 'enabled', 'NeedDaemonReload': 'no',
+            'Triggers': activation.SHARED_UNITS[role], 'Job': '', 'Conflicts': 'shutdown.target',
+            'StopWhenUnneeded': 'no', 'RefuseManualStop': 'no',
+            **{key: '' for key in activation.READMISSION_NO_PROPAGATION}}
+        properties[activation.SHARED_UNITS[role]]['Job'] = ''
+        files[str(fragment)] = {'text': fragment.read_text(), 'sha256': sha(fragment), 'mode': '0o400'}
+    wrappers = {role['old_wrapper']: {'text': Path(role['old_wrapper']).read_text(),
+                                     'sha256': sha(role['old_wrapper'])} for role in request['roles'].values()}
+    rebuilt = activation.selection_request({'units': {name: {'rc': 0, 'properties': value}
+        for name, value in properties.items()}, 'files': files}, wrappers,
+        activation_deadline_ms=request['activation_deadline_ms'], inhibit_shared_readmission=True)
+    request['readmission_timers'] = rebuilt['readmission_timers']
+
 class PreparationTests(unittest.TestCase):
     def setUp(self):
         previous_umask = os.umask(0o077); self.addCleanup(os.umask, previous_umask)
@@ -282,7 +305,11 @@ class SelectionTests(unittest.TestCase):
             p.update(ActiveState='inactive', SubState='dead', MainPID='0')
         def command(argv, **options):
             calls.append(argv)
-            if argv == ['systemctl', '--user', 'daemon-reload']:
+            if argv[:3] == ['systemctl', '--user', 'stop'] and argv[3:] in [[unit] for unit in activation.READMISSION_TIMERS.values()] and 'readmission_timers' in request:
+                properties[argv[3]].update(ActiveState='inactive', SubState='dead')
+            elif argv[:3] == ['systemctl', '--user', 'start'] and argv[3:] in [[unit] for unit in activation.READMISSION_TIMERS.values()] and 'readmission_timers' in request:
+                properties[argv[3]].update(ActiveState='active', SubState='waiting')
+            elif argv == ['systemctl', '--user', 'daemon-reload']:
                 for role, unit in activation.SHARED_UNITS.items():
                     expected = selected['roles'][role]; p = properties[unit]
                     p['ExecStart'] = '{ path=' + expected['old_argv'][0] + ' ; argv[]=' + ' '.join(expected['old_argv']) + ' ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
