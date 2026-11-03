@@ -11,12 +11,27 @@ class Clock:
  def wall(self):return self.now
  def ns(self):return self.tick
  def seconds(self):return self.tick/1e9
- def advance(self,seconds):self.now+=int(seconds*1000);self.tick+=int(seconds*1e9)
+ def advance(self,seconds):
+  self.now+=int(seconds*1000)
+  # A positive sleep advances the nanosecond clock even below its resolution.
+  self.tick+=max(1,int(seconds*1e9)) if seconds>0 else 0
 
 class Gate:
- def __init__(self,admit=True,continuation=True):self.events=[];self.admit=admit;self.continuation=continuation
+ def __init__(self,admit=True,continuation=True,clock=lambda:10000):
+  self.events=[];self.admit=admit;self.continuation=continuation;self.clock=clock
  def acquire(self,subject):self.events.append('acquire');return self.admit
- def check(self):self.events.append('check');return {'admit_new_worker':self.continuation,'reasons':[] if self.continuation else ['MANUAL_HOLD']}
+ def check(self):
+  self.events.append('check');now=self.clock()
+  return {'schema':'heptatrader.resident-resource-admission.v1','role':'value-predictor',
+   'admit_new_worker':self.continuation,'reasons':[] if self.continuation else ['MANUAL_HOLD'],
+   'existing_workers_interrupted':False,'at_ms':now,
+   'original_live_source_evidence':{'schema':'heptatrader.original-live-freshness.v1',
+    'continuity_at_ms':now-500,'continuity_prefix_digest':'a'*64,
+    'pinned_prefix':{'path':'/synthetic/original/quotes.jsonl','bytes':100,'sha256':'b'*64},
+    'verified_live_prefix':{'path':'/synthetic/original/quotes.jsonl','bytes':200,'sha256':'c'*64},
+    'quote_observed_at_ms':now-1000,'quote_known_at_ms':now-100,'quote_receipt':{'synthetic':True},
+    'quote_timestamp_rewritten':False,'source_ttl_ms':5000,
+    'cached_continuity_not_efficacy':True,'broker_queries_sent':0}}
  def release(self):self.events.append('release')
 
 class LedgerTests(unittest.TestCase):
@@ -109,13 +124,14 @@ class LedgerTests(unittest.TestCase):
    def statistics(inner):return {}
   return Source()
  def runner(self,source,gate,**kw):
+  gate.clock=self.clock.wall
   return run_resident(source,self.ledger,lambda:gate.events.append('warm'),self.publish,
    lambda:gate.events.append('close'),gate,max_seconds=kw.pop('max_seconds',1),
    sleep=self.clock.advance,monotonic=self.clock.seconds,**kw)
  def test_one_warm_load_serves_multiple_original_requests(self):
   gate=Gate();result=self.runner(self.source([self.item(1),self.item(2)]),gate)
   self.assertEqual(result['model_loads'],1);self.assertEqual(result['request_attempts'],2)
-  self.assertEqual(gate.events,['acquire','warm','close','release'])
+  self.assertEqual(gate.events,['acquire','warm','check','close','release'])
  def test_durable_cooldown_prevents_restart_reacquisition(self):
   source=self.source([self.item()]);self.runner(source,Gate());gate=Gate();result=self.runner(source,gate)
   self.assertEqual(result['model_loads'],0);self.assertNotIn('acquire',gate.events)

@@ -36,6 +36,52 @@ call for its conservative pre-OPEN check. Only exact original command identity
 and a strictly earlier completed prediction qualify as PREOPEN_BOUND_RESEARCH.
 A request cannot bind two commands. No production Value coverage is granted.
 
+## Bounded wait for a past stale quote
+
+The new research lifecycle uses policy
+`EXISTING_WARM_PAST_QUOTE_HOLD_15S_CUMULATIVE_V1`. The original guard governs NEW
+heavy-worker admission; its negative decision is not automatically an instruction
+to destroy an existing child. This exception applies only to a model already
+warmed while holding the same original heavy-worker lease.
+
+A pause requires the exact single refusal `LATEST_SOURCE_QUOTE_NOT_FRESH` plus
+that current guard call's complete original-source proof. The report and quote
+clocks must be causal, the quote must be genuinely older than five seconds, and
+the original continuity and verified prefix extension must remain bound. Future,
+missing, rewritten, malformed, or unbound timestamps do not qualify. Every other
+resource, source, manual hold, or drain refusal retains normal cleanup/handoff.
+No guard source, external pin, TTL, encoder, head, or statistical rule changes.
+
+While paused, inference readiness is false: there is no attempt, model forward,
+or prediction seal. Normal source capture, original-command reconciliation, and
+request expiry continue on every poll. A new successful complete guard call and
+a current verified attribution snapshot are required to resume. Warmup is also
+followed by a new guard check. Before each attempt, the original quote's five-second
+TTL and guard interval are rechecked, including after long reads or queued work;
+a bare positive decision without its complete proof cannot authorize inference.
+
+The budget is **15 cumulative monotonic seconds per resident session**, equal to
+three maximum five-second guard intervals. A fresh interval or a new stale episode
+does not reset it. The original session bound, input cutoff, stop signal, fair
+handoff request, and each nonrenewable request deadline still apply. Poll sleeps
+are capped at the remaining pause budget. Synchronous guard/source calls and
+cleanup cannot be forcibly preempted: actual elapsed time may exceed the budget
+while such a call runs, but return and recovery paths check the bound before any
+inference. A regression makes a guard call return at 16 seconds and verifies
+cleanup with zero forwards. This is not a hard real-time interruption guarantee.
+
+Private immutable pause entry/end records bind the same lease ID and the guard
+proof, record accumulated time, and verify that no attempt occurred during the
+pause. Session receipts expose the policy, count, duration, and resumptions.
+Cleanup remains model/tensor destruction followed by original lease release and
+its actual-release cooldown. Audit-write failure cannot bypass that cleanup.
+
+This is a lifecycle repair for subsequent engineering collection. The three
+already recorded missing-prediction commands, their terminals, and the seen-command
+denominator remain unchanged. They cannot receive retroactive predictions or
+credit. The fixed window's zero-unresolved gate is already blocked; subsequent
+coverage does not turn that window into a successful efficacy verification.
+
 ## CLI configuration
 
 Run the integrated release, including the weight-study and weight-shadow modules:
