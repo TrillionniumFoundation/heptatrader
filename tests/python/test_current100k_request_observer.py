@@ -2,8 +2,9 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import observe_current100k_requests as observation
 
@@ -69,6 +70,20 @@ class ObserverTests(unittest.TestCase):
             producer_registration={'manifest': '/new/manifest.json', 'sha256': 'different'})
         with self.assertRaisesRegex(ValueError, 'REQUEST_PRODUCER_CHANGED'):
             observer.source(self.requests, [], 1200)
+
+    def test_frozen_release_without_header_uses_original_full_registration(self):
+        full = Mock()
+        validator, method = observation.registration_validator(SimpleNamespace(validate_registration=full))
+        validator({'original': 'config'}, Path('/original/plan.json'), {'original': 'plan'})
+        full.assert_called_once_with({'original': 'config'}, Path('/original/plan.json'), {'original': 'plan'})
+        self.assertEqual(method, 'ORIGINAL_COMPLETE_REGISTRATION_VALIDATOR')
+
+    def test_new_release_uses_its_own_original_header_validator(self):
+        header = Mock(); full = Mock()
+        validator, method = observation.registration_validator(SimpleNamespace(
+            validate_registration_header=header, validate_registration=full))
+        self.assertIs(validator, header); self.assertEqual(method, 'ORIGINAL_HEADER_VALIDATOR')
+        full.assert_not_called()
 
     def test_directory_events_report_new_files_without_tree_scan(self):
         directory = self.root / 'denials'; directory.mkdir()

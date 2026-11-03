@@ -123,7 +123,9 @@ class FinancialHipTests(unittest.TestCase):
         self.enter(patch.object(prediction, 'RegisteredPlanSnapshot',
                          return_value=SimpleNamespace(full_validations=1, reuses=0)))
         snapshot = SimpleNamespace(full_scans=1, reuses=0, read=lambda *args: ({}, {
-            'request': {'request': {'started_at_ms': T - 100, 'position_at_request': 0}}}, {}, []))
+            'request': {'request': {'request_id': 'request', 'started_at_ms': T - 100,
+                'position_at_request': 0}, 'request_sha256': 'exact-request-sha',
+                'producer_manifest_sha256': 'exact-producer-sha'}}, {}, []))
         self.enter(patch('laya_cell.financial_forward_source.VerifiedIngressSnapshot', return_value=snapshot))
         return c
 
@@ -151,10 +153,14 @@ class FinancialHipTests(unittest.TestCase):
 
     def test_fresh_predictor_still_validates_training_before_resource_admission(self):
         c = self.worker_config(); self.install_gate()
-        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=ContractError('TRAINING_WITHDRAWN')):
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=ContractError('TRAINING_WITHDRAWN')), \
+                patch.object(prediction, 'request_event') as event:
             with self.assertRaisesRegex(ContractError, 'TRAINING_WITHDRAWN'):
                 worker.run(c, 'predict')
         self.gate_type.assert_not_called(); self.assertEqual(self.trace, [])
+        self.assertEqual(event.call_args.args[2], 'WORKER_FAILED')
+        self.assertEqual(event.call_args.args[1]['request']['request_id'], 'request')
+        self.assertEqual(event.call_args.kwargs['reason'], 'ContractError:TRAINING_WITHDRAWN')
 
     def test_trial_denied_gate_never_loads_gpu_or_creates_output(self):
         c = self.trial_config()

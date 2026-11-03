@@ -54,7 +54,7 @@ class BudgetTests(unittest.TestCase):
  def test_preparation_delay_cannot_reuse_stale_entry_clock(self):
   with tempfile.TemporaryDirectory() as root:
    worker=Predictor({'forward_root':root})
-   with patch('laya_cell.financial_forward_predict.time.time',side_effect=[60.,62.,62.]),patch.object(worker,'load') as load,patch('laya_cell.financial_forward_predict.pin') as pin:
+   with patch('laya_cell.financial_forward_predict.time.time',side_effect=[60.,62.,62.]),patch('laya_cell.financial_forward_predict.request_event'),patch.object(worker,'load') as load,patch('laya_cell.financial_forward_predict.pin') as pin:
     result=worker.predict(self.plan,{'request':self.req,'producer_manifest_sha256':'x'})
    self.assertIsNone(result);load.assert_not_called();pin.assert_not_called()
  def test_publication_does_not_reset_existing_budget(self):

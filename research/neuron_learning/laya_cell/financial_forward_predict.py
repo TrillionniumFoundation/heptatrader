@@ -223,6 +223,8 @@ class Predictor:
   if (folder/'commit.json').exists() or (folder/'failure.json').exists():return None
   folder.mkdir(mode=0o700,parents=True,exist_ok=True)
   if now-r['started_at_ms']>60000:
+   request_event(plan,item,'REQUEST_STALE_OBSERVED',request_age_ms=now-r['started_at_ms'],
+    evidence_scope='POSTHOC_STALE_OBSERVATION_NOT_ORIGINAL_CAUSE')
    write_once(folder/'failure.json',{'reason':'REQUEST_ALREADY_OLD_NO_BACKDATING','observed_at_ms':now,'request_id':rid});return None
   phases=PhaseClock()
   request_event(plan,item,'PREDICTION_ENTERED')
@@ -267,15 +269,16 @@ class Predictor:
    try:
     committed=publish_prediction(self.c,plan,r,folder,payload,budget)
     request_event(plan,item,'PREDICTION_COMMITTED',computed_at_ms=computed,
-     committed_at_ms=committed['committed_at_ms'],prediction_phases_ms=dict(phases.phases),
+     committed_at_ms=committed['role_witness']['signed_at_ms'],
+     commit_started_at_ms=committed['committed_at_ms'],prediction_phases_ms=dict(phases.phases),
      request_to_computed_ms=computed-r['started_at_ms'])
     return committed
    finally:self.publication_timings_ms.append((time.perf_counter()-started)*1000.)
   except Exception as exc:
    failure={'reason':type(exc).__name__+':'+str(exc)[:220],'observed_at_ms':int(time.time()*1000),'request_id':rid,
             'prediction_phases_ms':dict(phases.phases)}
-   self.current_prediction_failures.append(failure);write_once(folder/'failure.json',failure)
    request_event(plan,item,'PREDICTION_FAILED',reason=failure['reason'],prediction_phases_ms=dict(phases.phases))
+   self.current_prediction_failures.append(failure);write_once(folder/'failure.json',failure)
    return None
  def step(self):
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('FINANCIAL_PREDICT_PERIOD_CHANGED')

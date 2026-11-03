@@ -72,7 +72,7 @@ def run(c,mode):
   atomic(status_path,status);return status
  if now<plan['input_start_ms']:return wait_status('WAIT_FIXED_FUTURE_START')
  if mode=='predict' and now>=plan['input_end_ms']:return wait_status('FIXED_INPUT_WINDOW_CLOSED_NO_MODEL_LOAD')
- gate=None;worker=None;hip_context=None;torch=None
+ gate=None;worker=None;hip_context=None;torch=None;active_requests={}
  gpu_import_attempted=False;gpu_runtime_ready=False
  try:
   if mode=='predict':
@@ -87,7 +87,8 @@ def run(c,mode):
     request=item['request'];folder=root/'plans'/plan['plan_id']/'predictions'/rid
     if (plan['input_start_ms']<=request['started_at_ms']<=now<plan['input_end_ms'] and now-request['started_at_ms']<60000
         and request['position_at_request']==0 and not (folder/'commit.json').exists() and not (folder/'failure.json').exists()):
-     fresh.append(rid);request_event(plan,item,'REQUEST_OBSERVED',worker_started_at_ms=started_ms,
+     fresh.append(rid);active_requests[rid]=item
+     request_event(plan,item,'REQUEST_OBSERVED',worker_started_at_ms=started_ms,
       request_age_ms=now-request['started_at_ms'],worker_phases_ms=dict(clock.phases))
    if not fresh:
     return wait_status('WAIT_FRESH_ORIGINAL_REQUEST',sealed_predictions=len(list((root/'plans'/plan['plan_id']/'predictions').glob('*/commit.json'))))
@@ -126,6 +127,9 @@ def run(c,mode):
    worker=Evaluator(c)
   return worker.step()
  except BaseException as exc:
+  for item in active_requests.values():
+   request_event(plan,item,'WORKER_FAILED',reason=type(exc).__name__+':'+str(exc)[:220],
+    worker_started_at_ms=started_ms,worker_phases_ms=dict(clock.phases))
   # A status/publication failure can keep step.self and tensors alive through
   # chained errors even after dropping this frame's worker reference.
   pending=[exc];seen=set()

@@ -182,6 +182,7 @@ def main():
     if hashlib.sha256(raw).hexdigest() != args.config_sha256:
         raise ValueError('CONFIG_CHANGED')
     config = json.loads(raw)
+    sys.dont_write_bytecode = True
     source = Path(config['worker_source_root'])
     sys.path[:0] = [str(source / part) for part in ('research', 'learn', 'scripts')]
     from laya_cell.current100k_forward_worker import validate_runtime

@@ -35,6 +35,19 @@ def read(path, limit=2*1024**2):
         os.close(fd)
 
 
+def registration_validator(evaluator):
+    """Use the original release's strongest available read-only validator.
+
+    Earlier frozen releases predate the header-only shortcut. Their complete
+    registration validator remains authoritative; never transplant new runtime
+    functions into that frozen import graph to obtain a faster check.
+    """
+    header = getattr(evaluator, 'validate_registration_header', None)
+    if header is not None:
+        return header, 'ORIGINAL_HEADER_VALIDATOR'
+    return evaluator.validate_registration, 'ORIGINAL_COMPLETE_REGISTRATION_VALIDATOR'
+
+
 class DirectoryEvents:
     """Use directory events instead of rescanning the denial history each poll."""
     def __init__(self, paths):
@@ -244,12 +257,14 @@ def main():
     sys.path[:0] = [str(source / part) for part in ('research', 'learn', 'scripts')]
     from laya_cell.current100k_forward_worker import validate_runtime
     from laya_cell.financial_forward_source import VerifiedIngressSnapshot
-    from laya_cell.financial_forward_evaluate import validate_registration_header, read_prediction
+    from laya_cell import financial_forward_evaluate as original_evaluator
+    validate_registration, validation_method = registration_validator(original_evaluator)
+    read_prediction = original_evaluator.read_prediction
     validate_runtime(config)
     paths = list((root / 'plans').glob('*/plan.json'))
     if len(paths) != 1:
         raise ValueError('OBSERVER_EXACTLY_ONE_ORIGINAL_PLAN')
-    plan = read(paths[0]); validate_registration_header(config, paths[0], plan)
+    plan = read(paths[0]); validate_registration(config, paths[0], plan)
     if (plan['worker_runtime_inventory_digest'] != config['worker_runtime_inventory_digest']
             or plan['producer_registration'] != config['producer_registration']
             or plan['period_sha256'] != config['period_sha256']):
@@ -284,7 +299,7 @@ def main():
             if tick-checked >= 60:
                 if hashlib.sha256(args.config.read_bytes()).hexdigest() != args.config_sha256:
                     raise ValueError('OBSERVER_ORIGINAL_CONFIG_CHANGED')
-                validate_runtime(config); validate_registration_header(config, paths[0], plan); checked = tick
+                validate_runtime(config); validate_registration(config, paths[0], plan); checked = tick
             if source_checked == 0 or tick-source_checked >= 5 or overflow or any(path.parent == journal for path in changed):
                 try:
                     _, requests, bindings, issues = snapshot.read(registration, config['period_sha256'])
@@ -328,6 +343,7 @@ def main():
                     'reference_prior_plan_id': None if observer.same_scope else plan['plan_id'],
                     'registration_scope_state': observer.scope, 'producer_registration': registration,
                     'observed_config_forward_root': str(root),
+                    'original_registration_validation': validation_method,
                     'tracked_requests': len(observer.pending), 'events_written': log.events,
                     'ingress_full_scans': snapshot.full_scans, 'ingress_snapshot_reuses': snapshot.reuses,
                     'original_trial_modified': False, 'prediction_worker_launched': False, 'gpu_loaded': False,
