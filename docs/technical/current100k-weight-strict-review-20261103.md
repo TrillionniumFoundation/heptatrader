@@ -55,7 +55,10 @@ CENSORED denominator and preserves the prior reported count as a lower bound if
 local enumeration is unavailable. The report explicitly marks the command count
 as incomplete, records source_issues, and separates known command identities from
 any retained but unenumerated count. It never creates substitute command IDs or
-zero-valued outcomes. Previously complete reports remain archived and referenced
+zero-valued outcomes. The zero OBSERVED count and coverage describe withdrawn
+verification credit over the retained lower bound; current_source_totals keeps the
+actual unavailable source counts and coverage explicitly null. Previously complete
+reports remain archived and referenced
 through last_completed_assessment; they are historical evidence, not current
 credit.
 

@@ -6,9 +6,71 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "research"), str(ROOT / "research/neuron_learning")]
 from laya_cell import current100k_weight_shadow as W
+from laya_cell import current100k_weight_shadow_eval as E
 from laya_cell.current100k_preopen import ResidentIngress
 from run_current100k_preopen_research import original_guard
 from run_verified_weight_research import verify_release
+from current100k_weight_continuation import continue_activation
+
+# Processing budget after the frozen outcome deadline, never another data window.
+FINAL_REPORT_TIMEOUT_MS = 120000
+
+
+def terminal_status(root, receipt):
+    return {**{key: receipt[key] for key in (
+        "plan_id", "state", "checked_at_ms", "outcome_end_ms", "current_replay_complete",
+        "observed_trades", "original_command_count", "prediction_coverage", "error",
+        "last_completed_assessment", "last_assessment_read_error", "financial_candidate_selected")},
+        "terminal_report_path": str(Path(root) / "terminal-unavailable.json"),
+        "terminal_report_sha256": W.sha(Path(root) / "terminal-unavailable.json"),
+        "final_reasons": receipt["reasons"]}
+
+
+
+def final_unavailable_status(root, plan, error, checked_at_ms, worker_exits):
+    try:
+        terminal = E.publish_final_unavailable(root, plan, error, checked_at_ms=checked_at_ms,
+                                               diagnostics={"worker_exits": dict(worker_exits)})
+        return terminal_status(root, terminal)
+    except Exception as final_exc:
+        return {"state": "FINAL_UNAVAILABLE_NO_SELECTION", "plan_id": plan["plan_id"],
+                "checked_at_ms": checked_at_ms, "outcome_end_ms": plan["outcome_end_ms"],
+                "current_replay_complete": False, "observed_trades": None,
+                "original_command_count": None, "prediction_coverage": None,
+                "financial_candidate_selected": False,
+                "error": {"type": type(error).__name__, "message": str(error)[:2000]},
+                "terminal_report_error": {"type": type(final_exc).__name__, "message": str(final_exc)[:2000]}}
+
+
+def fixed_final_status(root, plan, now, stop_evaluator, worker_exits=None):
+    """Consume a completed final, or bound how long final publication can fail."""
+    if now < plan["outcome_end_ms"]:
+        return None
+    terminal = E.read_terminal_unavailable(root, plan)
+    if terminal is not None:
+        return terminal_status(root, terminal)
+    final = Path(root) / "assessment.json"
+    if final.exists():
+        assessment = W.read(final)
+        W.require(assessment.get("schema") == "heptatrader.current100k-weight-shadow-assessment.v1" and assessment.get("plan_id") == plan["plan_id"], "SUPERVISOR_FINAL_ASSESSMENT_SCOPE")
+        if W.integer(assessment["as_of_ms"]) >= plan["outcome_end_ms"]:
+            W.require(assessment["as_of_ms"] <= now and assessment["state"] in ("FINAL_INCOMPLETE", "FINAL_RESEARCH_COMPARISON"), "SUPERVISOR_FINAL_ASSESSMENT_STATE")
+            W.require(all(assessment.get(k) is False for k in ("financial_candidate_selected", "canonical_agentd_accepted", "trade_authority")), "SUPERVISOR_FINAL_NO_AUTHORITY")
+            return {"state": "FINAL_ASSESSMENT_AVAILABLE", "assessment_state": assessment["state"],
+                    "assessment_as_of_ms": assessment["as_of_ms"], "assessment_sha256": W.sha(final),
+                    "observed_trades": assessment["observed_trades"], "original_command_count": assessment["original_command_count"],
+                    "prediction_coverage": assessment["prediction_coverage"], "final_reasons": assessment["reasons"],
+                    "financial_candidate_selected": False}
+    publication_deadline = plan["outcome_end_ms"] + FINAL_REPORT_TIMEOUT_MS
+    if now < publication_deadline:
+        return None
+    stop_evaluator()
+    terminal = E.publish_final_unavailable(
+        root, plan, TimeoutError("FINAL_REPORT_PUBLICATION_TIMEOUT"),
+        diagnostics={"publication_deadline_ms": publication_deadline,
+                     "publication_timeout_ms": FINAL_REPORT_TIMEOUT_MS,
+                     "worker_exits": dict(worker_exits or {}), "data_window_extended": False})
+    return terminal_status(root, terminal)
 
 
 def pinned_json(path, expected):
@@ -129,6 +191,8 @@ def phase(now, plan):
 
 
 def ensure_activation(config, study, template, root, *, source_recovery=None):
+    if config.get("continuation") is not None:
+        return continue_activation(config, root)
     path = root / "plan.json"
     if path.exists():
         W.require((root / "registration.json").exists(), "SUPERVISOR_INCOMPLETE_REGISTRATION")
@@ -173,6 +237,7 @@ def run(config):
     def stop(*_): stopping[0] = True
     for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, stop)
     children, retries, last_exits = {}, {}, {}
+    plan = None
     launcher = str(ROOT / "scripts/run_verified_weight_research.py")
     def spawn(role, args):
         old = children.get(role)
@@ -193,18 +258,27 @@ def run(config):
             try: child.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 child.kill()
-                child.wait()
-        last_exits[role] = {"code": child.returncode, "observed_at_ms": W.clock_ms()}
+                child.wait(timeout=5)
+        W.require(child.poll() is not None, "SUPERVISOR_CHILD_EXIT_UNCONFIRMED")
+        last_exits[role] = {"code": child.returncode, "observed_at_ms": W.clock_ms(), "reaped": True}
         children.pop(role)
     status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1",
               "at_ms": W.clock_ms(), "state": "STARTING", "broker_orders_sent": 0,
-              "automatic_selection": False, "supervisor_running": True}
+              "automatic_selection": False, "financial_candidate_selected": False, "supervisor_running": True}
     try:
+        # Consume an existing final before reopening source/guard dependencies.
+        if (root / "plan.json").exists():
+            plan = W.ShadowStore(root).plan
+            now = W.clock_ms()
+            final = fixed_final_status(root, plan, now, lambda: stop_child("evaluator"), last_exits)
+            if final is not None:
+                status.update(final)
+                return status
         source = RegistrationSource(study["producer_registration"], study["period_sha256"], study["behavior_model_id"])
         guard = original_guard(template)
         while not stopping[0]:
             now = W.clock_ms()
-            status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1", "at_ms": now, "broker_orders_sent": 0, "automatic_selection": False, "supervisor_running": True, "child_exits": dict(last_exits)}
+            status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1", "at_ms": now, "broker_orders_sent": 0, "automatic_selection": False, "financial_candidate_selected": False, "supervisor_running": True, "child_exits": dict(last_exits)}
             try:
                 pinned_json(config["study_config_path"], config["study_config_sha256"])
                 if not (root / "plan.json").exists():
@@ -243,24 +317,41 @@ def run(config):
                     status["native_stop_present"] = native_stop
                     if now < plan["input_end_ms"] and not native_stop: spawn("predictor", ["--config", str(predictor_path), "--sha256", W.sha(predictor_path)])
                     else: stop_child("predictor")
+                    final = fixed_final_status(root, plan, now, lambda: stop_child("evaluator"), last_exits)
+                    if final is not None:
+                        stop_child("evaluator")
+                        status.update(final)
+                        status.update(at_ms=W.clock_ms(), child_exits=dict(last_exits))
+                        W.atomic(root / "supervisor-status.json", status)
+                        return status
                     spawn("evaluator", ["--root", str(root)])
-                    final = root / "assessment.json"
-                    if now >= plan["outcome_end_ms"] and final.exists():
-                        assessment = W.read(final)
-                        if assessment.get("plan_id") == plan["plan_id"] and assessment.get("as_of_ms", 0) >= plan["outcome_end_ms"]:
-                            stop_child("evaluator")
-                            status.update(state="FINAL_ASSESSMENT_AVAILABLE", assessment_state=assessment["state"], observed_trades=assessment["observed_trades"], final_reasons=assessment["reasons"])
-                            W.atomic(root / "supervisor-status.json", status)
-                            return status
                 status["children"] = {name: {"pid": child.pid, "running": child.poll() is None} for name, child in children.items()}
             except Exception as exc:
                 status.update(state="UNAVAILABLE_NO_SELECTION", reason=type(exc).__name__ + ":" + str(exc)[:300])
                 stop_child("predictor")
                 stop_child("evaluator")
+                # A source/config failure after the fixed end must not keep this
+                # supervisor alive forever or turn an old assessment into a final.
+                if plan is None and (root / "plan.json").exists():
+                    try: plan = W.ShadowStore(root).plan
+                    except Exception as plan_exc:
+                        status["registered_plan_read_error"] = type(plan_exc).__name__ + ":" + str(plan_exc)[:300]
+                checked = W.clock_ms()
+                if plan is not None and checked >= plan["outcome_end_ms"]:
+                    status.update(final_unavailable_status(root, plan, exc, checked, last_exits))
+                    status.update(at_ms=W.clock_ms(), child_exits=dict(last_exits))
+                    W.atomic(root / "supervisor-status.json", status)
+                    return status
             W.atomic(root / "supervisor-status.json", status)
             for _ in range(10):
                 if stopping[0]: break
                 time.sleep(1)
+    except Exception as exc:
+        checked = W.clock_ms()
+        if plan is not None and checked >= plan["outcome_end_ms"]:
+            status.update(final_unavailable_status(root, plan, exc, checked, last_exits))
+            return status
+        raise
     finally:
         failure = sys.exc_info()[1]
         cleanup_errors = []
@@ -277,11 +368,12 @@ def run(config):
                                 for name, child in children.items()})
         if failure is not None or cleanup_errors:
             error = failure if failure is not None else cleanup_errors[0][1]
-            status.update(state="FAILED", reason=type(error).__name__ + ":" + str(error)[:300])
+            status.update(reason=type(error).__name__ + ":" + str(error)[:300])
+            if status.get("state") != "FINAL_UNAVAILABLE_NO_SELECTION": status["state"] = "FAILED"
             if cleanup_errors:
                 status["cleanup_errors"] = [{"role": role, "reason": type(exc).__name__ + ":" + str(exc)[:300]}
                                             for role, exc in cleanup_errors]
-        elif status.get("state") != "FINAL_ASSESSMENT_AVAILABLE":
+        elif status.get("state") not in ("FINAL_ASSESSMENT_AVAILABLE", "FINAL_UNAVAILABLE_NO_SELECTION"):
             status.update(state="STOPPED", stop_reason="SUPERVISOR_STOP_REQUESTED")
         try:
             W.atomic(root / "supervisor-status.json", status)

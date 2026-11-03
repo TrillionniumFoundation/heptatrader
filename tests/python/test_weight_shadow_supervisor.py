@@ -5,8 +5,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import test_current100k_weight_shadow as fixtures
+import test_current100k_weight_continuation as continuation_fixtures
 import supervise_current100k_weight_shadow as S
 from laya_cell import current100k_weight_shadow as W
+from laya_cell import current100k_weight_shadow_eval as E
 
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
@@ -53,6 +55,119 @@ class SupervisorTests(unittest.TestCase):
             self.assertFalse(eligible)
         self.assertFalse(S.fresh_request(now, {}, 60000)[1])
         self.assertTrue(S.fresh_request(now, {"r":{"request":{"started_at_ms":now - 1000}}}, 60000)[1])
+
+    def runnable_config(self):
+        template = {"source_registration": self.plan["producer_registration"], "period_sha256": self.plan["period_sha256"],
+                    **{key: self.plan[key] for key in ("encoder_backend", "encoder_threads", "encoder_batch_size")}}
+        evidence = self.root / "qualification-evidence.json"
+        W.atomic(evidence, {"synthetic_fixture": True})
+        qualification = {"backend": self.plan["encoder_backend"], "tensor_cleanup_verified": True,
+                         "max_request_seconds": 1, "deadline_budget_seconds": 2,
+                         "evidence_path": str(evidence), "evidence_sha256": W.sha(evidence)}
+        config = {**self.config, "schema": "heptatrader.weight-shadow-supervisor.v1", "trade_authority": False,
+                  "automatic_selection": False, "actor_update": False, "state_root": str(self.root),
+                  "native_stop_marker": str(self.root / "unused-native-stop"), "python": "/usr/bin/python3",
+                  "release_manifest": "synthetic-release", "release_manifest_sha256": "1" * 64}
+        for name, value in (("study_config", self.plan), ("predictor_template", template), ("qualification", qualification)):
+            path = self.root / (name + ".json")
+            W.atomic(path, value)
+            config[name + "_path"] = str(path)
+            config[name + "_sha256"] = W.sha(path)
+        return config
+
+    def pending_assessment(self):
+        result = E.assessment(self.plan, [], self.plan["outcome_end_ms"] - 1000)
+        W.atomic(self.root / "assessment.json", result)
+        return (self.root / "assessment.json").read_bytes()
+
+    def test_watchdog_does_not_extend_window_or_relabel_previous_result(self):
+        prior = self.pending_assessment()
+        plan_bytes = (self.root / "plan.json").read_bytes()
+        deadline = self.plan["outcome_end_ms"] + S.FINAL_REPORT_TIMEOUT_MS
+        with patch.object(W, "clock_ms", return_value=deadline + 19), patch("builtins.print"), \
+             patch.object(S, "terminal_status", wraps=S.terminal_status) as status:
+            stopped = []
+            self.assertIsNone(S.fixed_final_status(self.root, self.plan, deadline - 1, lambda: stopped.append(True)))
+            result = S.fixed_final_status(self.root, self.plan, deadline, lambda: stopped.append(True))
+            self.assertEqual(stopped, [True])
+            self.assertEqual(status.call_count, 1)
+        self.assertEqual(result["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+        self.assertEqual(result["checked_at_ms"], deadline + 19)
+        self.assertEqual(result["error"]["type"], "TimeoutError")
+        for key in ("observed_trades", "original_command_count", "prediction_coverage"):
+            self.assertIsNone(result[key])
+        self.assertEqual((self.root / "assessment.json").read_bytes(), prior)
+        self.assertEqual((self.root / "plan.json").read_bytes(), plan_bytes)
+        self.assertFalse(result["financial_candidate_selected"])
+        terminal = E.read_terminal_unavailable(self.root, self.plan)
+        self.assertEqual(terminal["diagnostics"]["publication_deadline_ms"], deadline)
+        self.assertFalse(terminal["diagnostics"]["data_window_extended"])
+        self.assertEqual(S.fixed_final_status(self.root, self.plan, deadline + 10000,
+                                             lambda: self.fail("terminal must be reused"))["checked_at_ms"], deadline + 19)
+
+    def test_complete_final_is_consumed_without_spawning_or_restamping(self):
+        final = E.assessment(self.plan, [], self.plan["outcome_end_ms"] + 1)
+        W.atomic(self.root / "assessment.json", final)
+        before = (self.root / "assessment.json").read_bytes()
+        result = S.fixed_final_status(self.root, self.plan, self.plan["outcome_end_ms"] + 2,
+                                      lambda: self.fail("no timeout"))
+        self.assertEqual(result["state"], "FINAL_ASSESSMENT_AVAILABLE")
+        self.assertEqual(result["assessment_as_of_ms"], final["as_of_ms"])
+        self.assertEqual((self.root / "assessment.json").read_bytes(), before)
+        self.assertFalse((self.root / "terminal-unavailable.json").exists())
+
+    def test_supervisor_terminates_when_evaluator_never_publishes(self):
+        config = self.runnable_config()
+        prior = self.pending_assessment()
+        now = self.plan["outcome_end_ms"] + S.FINAL_REPORT_TIMEOUT_MS
+        with patch.object(S, "verify_release", return_value=(S.ROOT, {})), \
+             patch.object(S, "RegistrationSource"), patch.object(S, "original_guard"), \
+             patch.object(W, "clock_ms", return_value=now), patch.object(S.signal, "signal"), \
+             patch.object(S.subprocess, "Popen", side_effect=AssertionError("must not restart a final worker")), \
+             patch.object(S.time, "sleep", side_effect=AssertionError("must not loop beyond fixed timeout")):
+            result = S.run(config)
+        self.assertEqual(result["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+        self.assertEqual(result["error"]["message"], "FINAL_REPORT_PUBLICATION_TIMEOUT")
+        self.assertFalse(result["financial_candidate_selected"])
+        self.assertEqual((self.root / "assessment.json").read_bytes(), prior)
+
+    def test_supervisor_terminalizes_actual_config_read_error_after_end(self):
+        config = self.runnable_config()
+        prior = self.pending_assessment()
+        now = self.plan["outcome_end_ms"] + 1
+        with patch.object(S, "verify_release", return_value=(S.ROOT, {})), \
+             patch.object(S, "RegistrationSource"), patch.object(S, "original_guard"), \
+             patch.object(W, "clock_ms", return_value=now), patch.object(S.signal, "signal"), \
+             patch.object(S, "ensure_activation", side_effect=OSError("injected config read failure")), \
+             patch.object(S.time, "sleep", side_effect=AssertionError("must not retry final source failure")):
+            result = S.run(config)
+        self.assertEqual(result["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+        self.assertEqual(result["error"], {"type": "OSError", "message": "injected config read failure"})
+        self.assertEqual(result["checked_at_ms"], now)
+        self.assertIsNone(result["prediction_coverage"])
+        self.assertEqual((self.root / "assessment.json").read_bytes(), prior)
+
+
+
+    def test_final_source_constructor_failure_and_restart_remain_terminal(self):
+        config = self.runnable_config()
+        prior = self.pending_assessment()
+        now = self.plan["outcome_end_ms"] + 1
+        with patch.object(S, "verify_release", return_value=(S.ROOT, {})), \
+             patch.object(S, "RegistrationSource", side_effect=OSError("injected source initialization read failure")) as source, \
+             patch.object(S, "original_guard"), patch.object(W, "clock_ms", return_value=now), \
+             patch.object(S.signal, "signal"), patch.object(S.time, "sleep", side_effect=AssertionError("must finish")):
+            result = S.run(config)
+            self.assertEqual(result["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+            self.assertEqual(result["error"]["message"], "injected source initialization read failure")
+            self.assertFalse(result["supervisor_running"])
+            self.assertIsNone(result["prediction_coverage"])
+            terminal = (self.root / "terminal-unavailable.json").read_bytes()
+            restarted = S.run(config)
+            self.assertEqual(source.call_count, 1)
+            self.assertEqual(restarted["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+            self.assertEqual((self.root / "terminal-unavailable.json").read_bytes(), terminal)
+        self.assertEqual((self.root / "assessment.json").read_bytes(), prior)
 
 
 class SourceRecoveryTests(unittest.TestCase):
@@ -311,24 +426,22 @@ class SourceRecoveryTests(unittest.TestCase):
 
 
 class SupervisorShutdownTests(unittest.TestCase):
-    """Exercise actual run/finally paths with owned fake subprocesses."""
+    """Exercise actual run/finally paths with a real registered plan and fake children."""
     def setUp(self):
-        import tempfile
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.fixture = fixtures.ShadowTests("runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.root = self.fixture.study
         self.now = 2000
-        self.plan = {"plan_id": "a" * 64, "input_start_ms": 1000,
-                     "input_end_ms": 10000, "outcome_end_ms": 11000}
-        self.plan_bytes = b'{"existing_registered_plan":"unchanged"}\n'
-        (self.root / "plan.json").write_bytes(self.plan_bytes)
+        self.plan = copy.deepcopy(self.fixture.p)
+        self.plan_bytes = (self.root / "plan.json").read_bytes()
         self.predictor = self.root / "predictor-config.json"
         self.predictor.write_text("{}")
         evidence = self.root / "qualification-evidence.json"
         evidence.write_text("{}")
-        self.study = {"producer_registration": {"sha256": "1" * 64},
-                      "period_sha256": "2" * 64, "behavior_model_id": "test-model",
-                      "encoder_backend": "cpu_fp32", "encoder_threads": 2, "encoder_batch_size": 1}
+        self.study = {key: self.plan[key] for key in
+                      ("producer_registration", "period_sha256", "behavior_model_id",
+                       "encoder_backend", "encoder_threads", "encoder_batch_size")}
         self.template = dict(self.study, source_registration=self.study["producer_registration"])
         self.qualification = {"backend": "cpu_fp32", "tensor_cleanup_verified": True,
                               "max_request_seconds": 1, "deadline_budget_seconds": 60,
@@ -372,6 +485,11 @@ class SupervisorShutdownTests(unittest.TestCase):
             self.children[role] = child
             return child
         def sleep(_):
+            if exit_kind == "final":
+                self.now = self.plan["outcome_end_ms"] + 1
+                if not (self.root / "assessment.json").exists():
+                    W.atomic(self.root / "assessment.json", E.assessment(self.plan, [], self.now))
+                return
             if exit_kind == "exception": raise RuntimeError("synthetic supervisor failure")
             handlers[S.signal.SIGTERM](S.signal.SIGTERM, None)
         with ExitStack() as stack:
@@ -404,18 +522,40 @@ class SupervisorShutdownTests(unittest.TestCase):
         self.assertTrue(all(child.terminated for child in self.children.values()))
 
     def test_final_assessment_survives_cleanup_with_no_running_children(self):
-        self.now = 12000
-        (self.root / "assessment.json").write_text(json.dumps({
-            "plan_id": self.plan["plan_id"], "as_of_ms": self.now,
-            "state": "FINAL_RESEARCH_COMPARISON", "observed_trades": 7, "reasons": []}))
-        returned = self.run_case()
+        returned = self.run_case(exit_kind="final")
         status = self.status()
         self.assertEqual(status, returned)
         self.assertEqual(status["state"], "FINAL_ASSESSMENT_AVAILABLE")
-        self.assertEqual(status["observed_trades"], 7)
+        self.assertEqual(status["observed_trades"], 0)
         self.assertFalse(status["supervisor_running"])
         self.assertEqual(status["children"], {})
         self.assertEqual(status["child_exits"]["evaluator"]["code"], -15)
+
+    def test_final_unavailable_receipt_survives_cleanup(self):
+        self.now = self.plan["outcome_end_ms"] + 1
+        terminal = {
+            "schema": E.TERMINAL_UNAVAILABLE_SCHEMA, "plan_id": self.plan["plan_id"],
+            "state": "FINAL_UNAVAILABLE_NO_SELECTION", "checked_at_ms": self.now,
+            "outcome_end_ms": self.plan["outcome_end_ms"], "current_replay_complete": False,
+            "observed_trades": None, "original_command_count": None, "prediction_coverage": None,
+            "error": {"type": "RuntimeError", "message": "synthetic unavailable source"},
+            "last_completed_assessment": None, "last_assessment_read_error": None,
+            "financial_candidate_selected": False, "canonical_agentd_accepted": False,
+            "trade_authority": False, "broker_orders_sent": 0,
+            "reasons": ["FINAL_SOURCE_OR_EVALUATOR_UNAVAILABLE"]}
+        path = self.root / "terminal-unavailable.json"
+        path.write_text(json.dumps(terminal))
+        before = path.read_bytes()
+        returned = self.run_case()
+        status = self.status()
+        self.assertEqual(status, returned)
+        self.assertEqual(status["state"], "FINAL_UNAVAILABLE_NO_SELECTION")
+        self.assertFalse(status["supervisor_running"])
+        self.assertEqual(status["children"], {})
+        self.assertEqual(status["child_exits"], {})
+        self.assertEqual(self.children, {})
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIsNone(status["observed_trades"])
 
     def test_exceptional_exit_stops_children_and_records_failure(self):
         with self.assertRaisesRegex(RuntimeError, "synthetic supervisor failure"):
@@ -453,6 +593,35 @@ class SupervisorShutdownTests(unittest.TestCase):
         self.assertNotIn("predictor", status["child_exits"])
         self.assertEqual(status["child_exits"]["evaluator"]["code"], -15)
         self.assertEqual(status["cleanup_errors"][0]["role"], "predictor")
+
+
+class SupervisorContinuationTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = continuation_fixtures.ContinuationTests("runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+
+    def test_registered_continuation_returns_derived_config_without_reactivation(self):
+        f = self.fixture
+        config = f.pin_record(f.prepare())
+        before = {p: p.read_bytes() for p in f.state.glob("*.json")}
+        with patch.object(W, "freeze", side_effect=AssertionError("must retain the registered window")):
+            plan, predictor = S.ensure_activation(config, {}, {}, f.state)
+        self.assertEqual(plan, f.plan)
+        self.assertNotEqual(predictor, f.state / "predictor-config.json")
+        self.assertEqual(W.read(predictor)["runtime_root"], str(f.newroot))
+        for path, raw in before.items():
+            self.assertEqual(path.read_bytes(), raw)
+
+    def test_invalid_continuation_does_not_fall_back_to_activation(self):
+        f = self.fixture
+        config = f.pin_record(f.prepare())
+        config["continuation"]["sha256"] = "0" * 64
+        with patch.object(W, "freeze", side_effect=AssertionError("no fallback registration")):
+            with self.assertRaisesRegex(ValueError, "PIN_CHANGED"):
+                S.ensure_activation(config, {}, {}, f.state)
+        self.assertFalse((f.state / "continuations").exists())
+
 
 
 if __name__ == "__main__": unittest.main()

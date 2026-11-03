@@ -112,7 +112,7 @@ def source_bindings(config,instrument,now_ms):
  return bindings,excluded+exact_issues
 
 
-def current(config,now_ms,*,source_observer=None):
+def current(config,now_ms,*,source_observer=None,event_cutoff_ms=None):
  from data import prefix,strict
  import hepta_pnl_accounting as accounting
  result={'schema':'heptatrader.laya-reward-status.v2','at_ms':now_ms,'execution_rewards':[],'rewards':[],
@@ -125,13 +125,24 @@ def current(config,now_ms,*,source_observer=None):
   if source['trailing_uncommitted_bytes']:raise ContractError('INCOMPLETE_OMS_TAIL')
   events=[strict(x) for x in raw.splitlines()]
   if source_observer is not None:source_observer(max((e['ts_ms'] for e in events if type(e.get('ts_ms')) is int),default=0))
+  replay_now=now_ms
+  if event_cutoff_ms is not None:
+   if type(event_cutoff_ms)is not int or not period['started_at_ms']<=event_cutoff_ms<=now_ms:
+    raise ContractError('REWARD_EVENT_CUTOFF_INVALID')
+   # Preserve the original prefix/hash. Later native events are outside this
+   # registered label view. Malformed evidence and impossible future clocks
+   # still reach the unchanged native validator and remain fail-closed.
+   retained=[e for e in events if not (type(e.get('ts_ms'))is int and event_cutoff_ms<e['ts_ms']<=now_ms)]
+   result['source_event_cutoff']={'at_ms':event_cutoff_ms,'basis':'ORIGINAL_OMS_EVENT_TS_MS',
+    'excluded_after_cutoff':len(events)-len(retained),'retained_events':len(retained)}
+   events=retained;replay_now=event_cutoff_ms
   instruments=config.get('reward_instruments',['EUR.USD','BTC.USD'])
   if not instruments or any(i not in ('EUR.USD','BTC.USD') for i in instruments):raise ContractError('REWARD_INSTRUMENT_SCOPE')
   for instrument in instruments:
    try:
     if Decimal(str(period['instruments'][instrument]['opening_quantity']))!=0:raise ContractError('NONZERO_OPENING_POSITION_UNALLOCATED')
-    report=accounting.replay(events,period,instrument,now_ms)
-    try:bindings,exclusions=source_bindings(config,instrument,now_ms)
+    report=accounting.replay(events,period,instrument,replay_now)
+    try:bindings,exclusions=source_bindings(config,instrument,replay_now)
     except (ContractError,ValueError,KeyError,TypeError,OSError) as exc:
      bindings={};exclusions=[{'reason':'ATTRIBUTION_UNAVAILABLE:'+str(exc),'instrument':instrument}]
     observed,blocked=financial_episodes(report,bindings,period['period_id'],instrument)

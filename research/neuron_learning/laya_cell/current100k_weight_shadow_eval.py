@@ -110,7 +110,7 @@ class Evaluator:
    provenance=self.preopen.provenance()
    provenance.update(review_output_root=str(self.root),original_reports_modified=self.root==self.source_root)
    W.durable_once(self.root/'strict-review-provenance.json',provenance)
-  self.assessment_name = 'assessment-strict.json' if output_root is not None and self.preopen is not None else 'assessment.json'
+  self.assessment_name='assessment-strict.json' if output_root is not None and self.preopen is not None else 'assessment.json'
   if strict_preopen:W.require(retained_review_plan(self.source_root,self.root)==self.plan,'SHADOW_REVIEW_PLAN_CHANGED')
   p=self.plan;W.require(W.sha(p['reward_config_path'])==p['reward_config_sha256'],'SHADOW_REWARD_CONFIG_CHANGED')
   self.config=W.read(p['reward_config_path']);self.last_identity=None;self.last_result=None;self.last_read_ms=0
@@ -132,10 +132,28 @@ class Evaluator:
   W.require(W.sha(p['reward_config_path'])==p['reward_config_sha256'],'SHADOW_REWARD_CONFIG_CHANGED')
   W.require(W.sha(p['training_dataset_path'])==p['training_dataset_sha256'],'SHADOW_TRAINING_DATA_CHANGED')
   manifest,requests,bindings,issues=ingress(p['producer_registration'],p['period_sha256'])
-  report=current(self.config,now)
+  report=current(self.config,now,event_cutoff_ms=min(now,p['outcome_end_ms']))
   if not report.get('components',{}).get('EUR.USD',{}).get('ledger_complete'):
    issues.append({'reason':'CURRENT_LEDGER_REPLAY_UNAVAILABLE'})
+  # A partial final replay cannot establish the population denominator. Keep
+  # the last completed assessment intact; main publishes a separate failure.
+  if now>=p['outcome_end_ms'] and issues and not self.strict_review:
+   raise W.EvidenceError('FINAL_SOURCE_UNAVAILABLE:'+json.dumps(issues,sort_keys=True)[:2000])
   times,command_fills,execution_commands=execution_index(report['source_prefix']) if report.get('source_prefix') else ({},{},{})
+  # The live evaluator owns CPU-only settlement binding after inference stops.
+  # A separate strict review remains read-only over the original receipt graph.
+  if self.preopen is not None and self.root==self.source_root and now>=p['input_end_ms'] and not issues:
+   for binding in bindings:
+    if not p['input_start_ms']<=binding['request_started_at_ms']<p['input_end_ms']:continue
+    first=command_fills.get(binding['command']['command_id'])
+    if first is None:continue
+    try:
+     prediction=self.store.prediction(binding['request_id'])
+     if prediction is not None:self.preopen.reconcile_settlement(binding,prediction,first)
+    except (ValueError,OSError,KeyError,TypeError):
+     # Strict scoring retains failed evidence in the denominator. Contention
+     # waits for a later bounded evaluation, without spinning or a heavy lease.
+     pass
   return self.evaluate_snapshot(requests,bindings,report,times,command_fills,execution_commands,now,issues)
  def evaluate_snapshot(self,requests,bindings,report,times,command_fills,execution_commands,now,issues=()):
   p=self.plan;issues=list(issues);source_replay_complete=not bool(issues)
@@ -193,8 +211,8 @@ class Evaluator:
    record=W.read(path)
    if record['command_id'] not in found:
     results.append({**record,'request_id':None,'status':'CENSORED','reason':'PREVIOUS_ACTUAL_COMMAND_NO_LONGER_OBSERVABLE'})
-  # An incomplete authoritative replay cannot preserve current financial credit.
-  # Retain any newly discovered denominator first, without overwriting the last complete report.
+  # Retain the known denominator before withdrawing current credit on source loss.
+  # Prediction rejection remains local and does not imply a failed source replay.
   if self.strict_review and not source_replay_complete:
    return strict_source_unavailable(self.root,p,ValueError('STRICT_SOURCE_REPLAY_INCOMPLETE'),now,source_issues=issues)
   present={r['reward_id'] for r in report.get('rewards',[])}
@@ -202,6 +220,7 @@ class Evaluator:
   result=assessment(p,results,now,issues,training_ok)
   result['nontrade_requests']=sum(p['input_start_ms']<=v['request']['started_at_ms']<p['input_end_ms'] and v['request']['position_at_request']==0 and rid not in {b['request_id'] for b in seen.values()} for rid,v in requests.items())
   result['outcome_set_digest']=W.digest(results);result['source_ledger_prefix']=report.get('source_prefix')
+  result['source_event_cutoff']=report.get('source_event_cutoff')
   result['source_record_count']=len(requests)
   result['current_replay_complete']=source_replay_complete
   result['original_command_count_complete']=source_replay_complete
@@ -222,6 +241,52 @@ class Evaluator:
   result=self.snapshot();after=self.identity(W.clock_ms())
   self.last_identity=identity if identity==after else None;self.last_result=result;self.last_read_ms=now
   return result
+
+TERMINAL_UNAVAILABLE_SCHEMA='heptatrader.current100k-weight-shadow-terminal-unavailable.v1'
+
+def read_terminal_unavailable(root,plan):
+ path=Path(root)/'terminal-unavailable.json'
+ if not path.exists():return None
+ value=W.read(path)
+ W.require(value.get('schema')==TERMINAL_UNAVAILABLE_SCHEMA and value.get('plan_id')==plan['plan_id'],'SHADOW_TERMINAL_IDENTITY')
+ W.require(value.get('state')=='FINAL_UNAVAILABLE_NO_SELECTION' and value.get('current_replay_complete')is False,'SHADOW_TERMINAL_STATE')
+ W.require(value.get('outcome_end_ms')==plan['outcome_end_ms'] and W.integer(value['checked_at_ms'])>=plan['outcome_end_ms'],'SHADOW_TERMINAL_BEFORE_FIXED_END')
+ W.require(all(value.get(k)is False for k in ('financial_candidate_selected','canonical_agentd_accepted','trade_authority')),'SHADOW_TERMINAL_NO_AUTHORITY')
+ W.require(all(value.get(k)is None for k in ('observed_trades','original_command_count','prediction_coverage')),'SHADOW_TERMINAL_UNKNOWN_COVERAGE')
+ W.require(isinstance(value.get('error'),dict) and isinstance(value['error'].get('type'),str) and isinstance(value['error'].get('message'),str),'SHADOW_TERMINAL_ERROR')
+ return value
+
+def publish_final_unavailable(root,plan,error,*,checked_at_ms=None,diagnostics=None,assessment_name='assessment.json'):
+ """A separate immutable failure receipt; never re-date or overwrite an assessment."""
+ root=Path(root);W.validate_plan(plan)
+ checked=W.clock_ms() if checked_at_ms is None else W.integer(checked_at_ms)
+ W.require(checked>=plan['outcome_end_ms'],'SHADOW_TERMINAL_BEFORE_FIXED_END')
+ existing=read_terminal_unavailable(root,plan)
+ if existing is not None:return existing
+ W.require(assessment_name in ('assessment.json','assessment-strict.json'),'SHADOW_TERMINAL_ASSESSMENT_NAME')
+ prior=None;prior_error=None;path=root/assessment_name
+ if path.exists():
+  try:
+   raw=path.read_bytes();value=json.loads(raw)
+   W.require(value.get('schema')=='heptatrader.current100k-weight-shadow-assessment.v1' and value.get('plan_id')==plan['plan_id'],'SHADOW_PRIOR_ASSESSMENT_SCOPE')
+   W.require(type(value.get('as_of_ms'))is int and plan['registered_at_ms']<=value['as_of_ms']<=checked,'SHADOW_PRIOR_ASSESSMENT_CLOCK')
+   prior={'path':str(path),'sha256':W.hashlib.sha256(raw).hexdigest(),
+          **{k:value.get(k) for k in ('as_of_ms','state','observed_trades','original_command_count','prediction_coverage')}}
+   # Also pin the complete old report independently of its mutable live pointer.
+   saved=root/'finalization-assessments'/(W.digest(value)+'.json')
+   W.durable_once(saved,value)
+   prior.update(snapshot_path=str(saved),snapshot_sha256=W.sha(saved))
+  except (OSError,ValueError,KeyError,TypeError) as exc:
+   prior_error={'type':type(exc).__name__,'message':str(exc)[:2000]}
+ receipt={'schema':TERMINAL_UNAVAILABLE_SCHEMA,'plan_id':plan['plan_id'],'state':'FINAL_UNAVAILABLE_NO_SELECTION',
+          'checked_at_ms':checked,'outcome_end_ms':plan['outcome_end_ms'],'current_replay_complete':False,
+          'error':{'type':type(error).__name__,'message':str(error)[:2000]},'diagnostics':diagnostics,
+          'last_completed_assessment':prior,'last_assessment_read_error':prior_error,
+          'observed_trades':None,'original_command_count':None,'prediction_coverage':None,
+          'reasons':['FINAL_SOURCE_OR_EVALUATOR_UNAVAILABLE'],'financial_candidate_selected':False,
+          'canonical_agentd_accepted':False,'trade_authority':False,'broker_orders_sent':0}
+ W.durable_once(root/'terminal-unavailable.json',receipt)
+ return read_terminal_unavailable(root,plan)
 
 STRICT_FAILURE_SCHEMA='heptatrader.weight-shadow-strict-source-failure.v1'
 
@@ -292,6 +357,9 @@ def strict_source_unavailable(output_root,plan,error,now,*,source_issues=()):
  result.update(original_command_count=denominator,observed_trades=0,status_counts={'CENSORED':denominator} if denominator else {},
                prediction_coverage=0.,current_replay_complete=False,original_command_count_complete=False,
                denominator_scope='RETAINED_KNOWN_COMMANDS_AND_PRIOR_COUNT_LOWER_BOUND',
+               current_credit_withdrawn=True,observed_trades_scope='CURRENT_VERIFIABLE_CREDIT',
+               prediction_coverage_scope='CURRENT_CREDIT_OVER_RETAINED_LOWER_BOUND',
+               current_source_totals={'observed_trades':None,'original_command_count':None,'prediction_coverage':None},
                retained_known_command_count=len(rows),retained_unenumerated_command_count=denominator-len(rows),
                strict_preopen_terminal_required=True,last_completed_assessment=prior,outcome_set_digest=W.digest(rows),
                source_record_count=None,source_ledger_prefix=None,nontrade_requests=None,
@@ -313,12 +381,15 @@ def main():
  if args.register:
   W.require(not args.strict_preopen and args.output_root is None,'SHADOW_REVIEW_CANNOT_REGISTER')
   print(json.dumps(W.freeze(W.read(args.register),args.root)));return
- worker=None
+ output_root=args.output_root if args.output_root is not None else args.root
  if args.strict_preopen:
   W.require(args.output_root is not None and args.output_root.resolve()!=args.root.resolve(),'SHADOW_STRICT_REVIEW_SEPARATE_OUTPUT')
-  output_root=args.output_root;plan=retained_review_plan(args.root,output_root);assessment_name='assessment-strict.json'
- else:
-  worker=Evaluator(args.root,output_root=args.output_root);output_root=worker.root;plan=worker.plan;assessment_name=worker.assessment_name
+  plan=retained_review_plan(args.root,output_root)
+ else:plan=W.ShadowStore(args.root).plan
+ worker=None
+ W.require(output_root.is_absolute() and not output_root.is_symlink(),'SHADOW_EVALUATOR_OUTPUT_ROOT')
+ output_root.mkdir(mode=0o700,parents=True,exist_ok=True)
+ assessment_name='assessment-strict.json' if args.output_root is not None and (args.strict_preopen or (args.root/'activation.json').exists()) else 'assessment.json'
  fd=os.open(output_root/'evaluator.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);stopping=False
  def stop(*_):
@@ -327,27 +398,37 @@ def main():
  signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
  try:
   while not stopping:
-   final_review=False
+   terminal=None;finished=False
    try:
-    terminal=read_strict_terminal(output_root,plan) if args.strict_preopen else None
-    if terminal is not None:
-     result=terminal['assessment'];W.atomic(output_root/assessment_name,result)
+    strict_terminal=read_strict_terminal(output_root,plan) if args.strict_preopen else None
+    if strict_terminal is not None:
+     result=strict_terminal['assessment'];W.atomic(output_root/assessment_name,result)
     else:
-     if worker is None:worker=Evaluator(args.root,output_root=output_root,strict_preopen=True)
-     result=worker.step()
-    final_review=bool(args.strict_preopen and result.get('as_of_ms',0)>=plan['outcome_end_ms'] and result.get('state') in ('FINAL_INCOMPLETE','FINAL_RESEARCH_COMPARISON'))
-    status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
-    status.update(at_ms=W.clock_ms(),financial_candidate_selected=False,broker_orders_sent=0,replay_skipped=result.get('replay_skipped',False))
+     # Also consume pre-existing generic failure receipts from an older release.
+     terminal=read_terminal_unavailable(output_root,plan)
+     if terminal is None:
+      if worker is None:worker=Evaluator(args.root,output_root=args.output_root,strict_preopen=args.strict_preopen)
+      result=worker.step()
+    if terminal is None:
+     status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
+     status.update(at_ms=W.clock_ms(),financial_candidate_selected=False,broker_orders_sent=0,replay_skipped=result.get('replay_skipped',False))
+     finished=result['as_of_ms']>=plan['outcome_end_ms'] and result['state'].startswith('FINAL_')
    except Exception as exc:
-    now=W.clock_ms();status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':now,'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
+    checked=W.clock_ms()
+    status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':checked,'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
     if args.strict_preopen:
      if worker is not None:worker.last_identity=None;worker.last_result=None
-     result=strict_source_unavailable(output_root,plan,exc,now)
+     result=strict_source_unavailable(output_root,plan,exc,checked)
      status.update({k:result[k] for k in ('plan_id','as_of_ms','observed_trades','original_command_count','reasons','current_replay_complete','original_command_count_complete')})
-     if now>=plan['outcome_end_ms']:status['state']=result['state'];final_review=True
+     if checked>=plan['outcome_end_ms']:status['state']=result['state'];finished=True
+    elif checked>=plan['outcome_end_ms']:
+     terminal=publish_final_unavailable(output_root,plan,exc,checked_at_ms=checked,assessment_name=assessment_name)
+   if terminal is not None:
+    status={k:terminal[k] for k in ('plan_id','state','checked_at_ms','observed_trades','original_command_count','prediction_coverage','error','last_completed_assessment','reasons','financial_candidate_selected','broker_orders_sent')}
+    status.update(at_ms=W.clock_ms(),terminal_report_path=str(output_root/'terminal-unavailable.json'));finished=True
    status['assessment_path']=str(output_root/assessment_name)
    W.atomic(output_root/'evaluator-status.json',status);print(json.dumps(status),flush=True)
-   if args.once or final_review:break
+   if args.once or finished:break
    for _ in range(60 if args.strict_preopen else 10):
     if stopping:break
     time.sleep(1)

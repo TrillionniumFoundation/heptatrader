@@ -116,6 +116,196 @@ class ShadowTests(ForwardScopeFixture, unittest.TestCase):
         fills = {opening['command_id']: 2001, closing['command_id']: 2500}
         return report, times, fills, commands
 
+    def native_cutoff_fixture(self, case):
+        from test_pnl_accounting import period, send, fill, commission, terminal
+        cutoff = self.p['outcome_end_ms']
+        native_period = period()
+        native_period['started_at_ms'] = 100
+        opening = send(self.binding['command']['command_id'], 'EUR.USD', 'BUY', 2000, 1)
+        closing = send(self.reward['executions'][-1]['command_id'], 'EUR.USD', 'SELL',
+                       cutoff + 1 if case == 'late-close' else 2990, 2)
+        first = fill(opening, 'cutoff-open', 100000, 1., at=2001)
+        last = fill(closing, 'cutoff-close', 100000, 1.00001,
+                    at=cutoff + 1 if case in ('late-close', 'inflight-close') else 3000)
+        fee = commission(last)
+        if case == 'late-fee': fee['ts_ms'] = cutoff + 1
+        if case == 'complete': fee['ts_ms'] = cutoff
+        if case == 'bad-record': last['broker_econ_valid'] = 0
+        events = [opening, first, terminal(first), commission(first),
+                  closing, last, terminal(last), fee,
+                  dict(terminal(first), ts_ms=cutoff + 5)]
+        events.sort(key=lambda e: e['ts_ms'])
+        period_path = self.root / 'cutoff-period.json'
+        W.atomic(period_path, native_period)
+        oms = self.root / 'cutoff-oms.jsonl'
+        original = b''.join((json.dumps(e, sort_keys=True) + '\n').encode() for e in events)
+        oms.write_bytes(original)
+        oms.chmod(0o600)
+        config = {'period_path': str(period_path), 'period_sha256': W.sha(period_path),
+                  'oms_path': str(oms), 'reward_instruments': ['EUR.USD']}
+        config_path = self.root / 'cutoff-rewards.json'
+        W.atomic(config_path, config)
+        p = dict(self.p, reward_config_path=str(config_path), reward_config_sha256=W.sha(config_path))
+        p['plan_id'] = W.digest({k: v for k, v in p.items() if k != 'plan_id'})
+        root = self.root / 'cutoff-evaluation'
+        W.durable_once(root / 'plan.json', p)
+        W.durable_once(root / 'registration.json', {
+            'plan_id': p['plan_id'], 'plan_sha256': W.sha(root / 'plan.json'), 'durable_at_ms': 4})
+        evaluator = E.Evaluator(root)
+        self.store = evaluator.store
+        self.seal()
+        exact = {**self.reward['input_attribution'], 'input_id': self.item['request_sha256'],
+                 'forecast_id': self.binding['decision_sha256'], 'model_id': p['behavior_model_id'],
+                 'instrument': 'EUR.USD', 'side': 'BUY'}
+        return evaluator, config, {opening['req_id']: exact}, oms, original
+
+    def completed_assessment_fixture(self, root=None):
+        root = self.study if root is None else root
+        result = E.assessment(self.p, [self.score(self.seal()),
+                              {'command_id': 'unresolved-original', 'status': 'CENSORED'}], 4000)
+        W.atomic(root / 'assessment.json', result)
+        return result, (root / 'assessment.json').read_bytes()
+
+    def test_final_read_failure_is_immutable_and_does_not_redate_last_assessment(self):
+        prior, original = self.completed_assessment_fixture()
+        plan_bytes = (self.study / 'plan.json').read_bytes()
+        registration = (self.study / 'registration.json').read_bytes()
+        now = self.p['outcome_end_ms'] + 17
+        # Real missing reward-config file fails inside Evaluator.__init__.
+        with patch('sys.argv', ['evaluator', '--root', str(self.study)]), \
+             patch.object(W, 'clock_ms', return_value=now), patch.object(E.signal, 'signal'), \
+             patch('builtins.print'), patch.object(E.time, 'sleep', side_effect=AssertionError('must finish')):
+            E.main()
+        terminal_path = self.study / 'terminal-unavailable.json'
+        terminal = E.read_terminal_unavailable(self.study, self.p)
+        self.assertEqual(terminal['state'], 'FINAL_UNAVAILABLE_NO_SELECTION')
+        self.assertEqual(terminal['checked_at_ms'], now)
+        self.assertEqual(terminal['error']['type'], 'FileNotFoundError')
+        self.assertIn(self.p['reward_config_path'], terminal['error']['message'])
+        self.assertNotIn('as_of_ms', terminal)
+        self.assertFalse(terminal['current_replay_complete'])
+        for key in ('observed_trades', 'original_command_count', 'prediction_coverage'):
+            self.assertIsNone(terminal[key])
+            self.assertEqual(terminal['last_completed_assessment'][key], prior[key])
+        self.assertEqual(terminal['last_completed_assessment']['as_of_ms'], prior['as_of_ms'])
+        self.assertEqual(terminal['last_completed_assessment']['sha256'], hashlib.sha256(original).hexdigest())
+        saved = Path(terminal['last_completed_assessment']['snapshot_path'])
+        self.assertEqual(W.read(saved), prior)
+        self.assertEqual(W.sha(saved), terminal['last_completed_assessment']['snapshot_sha256'])
+        frozen_terminal = terminal_path.read_bytes()
+        with patch('sys.argv', ['evaluator', '--root', str(self.study)]), \
+             patch.object(W, 'clock_ms', return_value=now + 90000), patch.object(E.signal, 'signal'), \
+             patch('builtins.print'), patch.object(E, 'Evaluator', side_effect=AssertionError('terminal is final')):
+            E.main()
+        self.assertEqual(terminal_path.read_bytes(), frozen_terminal)
+        self.assertEqual((self.study / 'assessment.json').read_bytes(), original)
+        self.assertEqual((self.study / 'plan.json').read_bytes(), plan_bytes)
+        self.assertEqual((self.study / 'registration.json').read_bytes(), registration)
+        self.assertFalse(W.read(self.study / 'evaluator-status.json')['financial_candidate_selected'])
+
+    def test_strict_output_failure_preserves_original_reports(self):
+        prior, original = self.completed_assessment_fixture()
+        review = self.root / 'strict-output'
+        review.mkdir()
+        W.atomic(review / 'assessment-strict.json', prior)
+        old_strict = (review / 'assessment-strict.json').read_bytes()
+        immutable = {p: p.read_bytes() for p in (self.study / 'plan.json', self.study / 'registration.json')}
+        with patch('sys.argv', ['evaluator', '--root', str(self.study), '--strict-preopen', '--output-root', str(review)]), \
+             patch.object(W, 'clock_ms', return_value=self.p['outcome_end_ms'] + 1), \
+             patch.object(E.signal, 'signal'), patch('builtins.print'):
+            E.main()
+        terminal = E.read_strict_terminal(review, self.p)
+        current = W.read(review / 'assessment-strict.json')
+        self.assertEqual(current, terminal['assessment'])
+        self.assertEqual(current['state'], 'FINAL_INCOMPLETE')
+        self.assertEqual(current['observed_trades'], 0)
+        self.assertFalse(current['current_replay_complete'])
+        for key in ('observed_trades', 'original_command_count', 'prediction_coverage'):
+            self.assertIsNone(current['current_source_totals'][key])
+        archived = Path(current['last_completed_assessment']['path'])
+        self.assertEqual(archived.read_bytes(), old_strict)
+        self.assertEqual(W.read(archived), prior)
+        self.assertEqual((self.study / 'assessment.json').read_bytes(), original)
+        self.assertFalse((self.study / 'terminal-unavailable.json').exists())
+        for path, value in immutable.items():
+            self.assertEqual(path.read_bytes(), value)
+        self.assertEqual(W.read(review / 'evaluator-status.json')['assessment_path'], str(review / 'assessment-strict.json'))
+
+
+    def test_read_failure_before_fixed_end_is_not_a_terminal(self):
+        _, original = self.completed_assessment_fixture()
+        with patch('sys.argv', ['evaluator', '--root', str(self.study), '--once']), \
+             patch.object(W, 'clock_ms', return_value=self.p['outcome_end_ms'] - 1), \
+             patch.object(E.signal, 'signal'), patch('builtins.print'):
+            E.main()
+        self.assertEqual(W.read(self.study / 'evaluator-status.json')['state'], 'UNAVAILABLE_NO_SELECTION')
+        self.assertFalse((self.study / 'terminal-unavailable.json').exists())
+        self.assertEqual((self.study / 'assessment.json').read_bytes(), original)
+
+    def assert_native_outcome_cutoff(self, case, expected_observed):
+        from laya_cell import financial_forward_source, resident_rewards
+        evaluator, config, bindings, oms, original = self.native_cutoff_fixture(case)
+        cutoff = self.p['outcome_end_ms']
+        now = cutoff + 17
+        with patch.object(W, 'clock_ms', return_value=now), \
+             patch.object(financial_forward_source, 'ingress', return_value=(
+                 {}, {self.binding['request_id']: self.item}, [self.binding], [])), \
+             patch.object(resident_rewards, 'source_bindings', return_value=(bindings, [])):
+            latest = resident_rewards.current(config, now)
+            fixed = resident_rewards.current(config, now, event_cutoff_ms=cutoff)
+            self.assertNotIn('source_event_cutoff', latest)
+            self.assertEqual(fixed['source_prefix'], latest['source_prefix'])
+            self.assertEqual(fixed['source_prefix']['sha256'], hashlib.sha256(original).hexdigest())
+            self.assertEqual(fixed['source_event_cutoff']['at_ms'], cutoff)
+            self.assertGreater(fixed['source_event_cutoff']['excluded_after_cutoff'], 0)
+            if case in ('bad-record', 'inflight-close'):
+                self.assertFalse(fixed['components']['EUR.USD']['ledger_complete'])
+                if case == 'inflight-close':
+                    self.assertTrue(latest['components']['EUR.USD']['ledger_complete'])
+                    self.assertEqual(len(latest['rewards']), 1)
+                    self.assertEqual(fixed['components']['EUR.USD']['reason'],
+                                     'SUBMITTED_COMMAND_WITHOUT_FILL_OR_ZERO_FILL_PROOF')
+                with self.assertRaisesRegex(W.EvidenceError, 'FINAL_SOURCE_UNAVAILABLE'):
+                    evaluator.snapshot()
+            else:
+                self.assertTrue(fixed['components']['EUR.USD']['ledger_complete'])
+                self.assertEqual(len(latest['rewards']), 1)
+                self.assertEqual(len(fixed['rewards']), expected_observed)
+                if case == 'complete': self.assertEqual(fixed['rewards'], latest['rewards'])
+                result = evaluator.snapshot()
+                self.assertEqual(result['observed_trades'], expected_observed)
+                self.assertEqual(result['original_command_count'], 1)
+                self.assertEqual(result['source_event_cutoff'], fixed['source_event_cutoff'])
+        self.assertEqual(oms.read_bytes(), original)
+
+    def test_fixed_outcome_cutoff_excludes_fee_after_already_completed_close(self):
+        self.assert_native_outcome_cutoff('late-fee', 0)
+
+    def test_fixed_outcome_cutoff_excludes_late_close(self):
+        self.assert_native_outcome_cutoff('late-close', 0)
+
+    def test_fixed_outcome_cutoff_preserves_complete_before_deadline_baseline(self):
+        self.assert_native_outcome_cutoff('complete', 1)
+
+    def test_fixed_outcome_cutoff_keeps_bad_in_scope_replay_fail_closed(self):
+        self.assert_native_outcome_cutoff('bad-record', 0)
+
+    def test_fixed_outcome_cutoff_does_not_borrow_late_first_fill_for_pending_send(self):
+        self.assert_native_outcome_cutoff('inflight-close', 0)
+
+    def test_partial_source_at_final_cannot_overwrite_assessment_with_zero_population(self):
+        from laya_cell import financial_forward_source, resident_rewards
+        evaluator = self.evaluator_fixture()
+        _, original = self.completed_assessment_fixture(evaluator.root)
+        for complete, issues in ((False, []), (True, [{'reason': 'INGRESS_READ_FAILED'}])):
+            with self.subTest(complete=complete), \
+                 patch.object(W, 'clock_ms', return_value=self.p['outcome_end_ms']), \
+                 patch.object(financial_forward_source, 'ingress', return_value=({}, {}, [], issues)), \
+                 patch.object(resident_rewards, 'current', return_value={'components': {'EUR.USD': {'ledger_complete': complete}}}):
+                with self.assertRaisesRegex(W.EvidenceError, 'FINAL_SOURCE_UNAVAILABLE'):
+                    evaluator.snapshot()
+            self.assertEqual((evaluator.root / 'assessment.json').read_bytes(), original)
+
     def test_request_before_window_with_fill_inside_is_excluded_in_both_replay_states(self):
         evaluator = self.evaluator_fixture(input_start_ms=1001)
         for complete in (False, True):
@@ -548,6 +738,246 @@ class ShadowTests(ForwardScopeFixture, unittest.TestCase):
                 patch.object(E.time, 'sleep', side_effect=AssertionError('final review must exit')):
             E.main()
             self.assertEqual(step.call_count, 1)
+
+
+class SettlementReconciliationTests(unittest.TestCase):
+    """Synthetic canonical requests, real sealing and CPU-only ledger recovery."""
+    def fixture(self, *, status='SEALED_AWAITING_ORIGINAL_COMMAND', observed_offset=-1000):
+        f = ShadowTests('runTest')
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        old = f.evaluator_fixture()
+        end = f.p['input_end_ms']
+        f.item = copy.deepcopy(f.item)
+        f.item['request']['request_id'] = 'a' * 32
+        f.item['request']['started_at_ms'] = end - 4000
+        f.item['request_sha256'] = W.digest(f.item['request'])
+        f.source = f.root / 'boundary-request.jsonl'
+        raw = (json.dumps({'kind': 'REQUEST', 'data': f.item['request']},
+                          sort_keys=True, separators=(',', ':')) + '\n').encode()
+        f.source.write_bytes(raw)
+        f.source.chmod(0o600)
+        witness = {'path': str(f.source), 'bytes': len(raw),
+                   'sha256': hashlib.sha256(raw).hexdigest()}
+        f.item.update(source_prefix=witness, source_record_sha256=witness['sha256'])
+        f.binding = copy.deepcopy(f.binding)
+        f.binding.update(request_id=f.item['request']['request_id'], request_sha256=f.item['request_sha256'],
+                         request_started_at_ms=end - 4000)
+        f.binding['command']['created_at_ms'] = end + 2000
+        f.reward = copy.deepcopy(f.reward)
+        f.reward['input_id'] = f.item['request_sha256']
+        f.reward['input_attribution']['source_prefixes'] = [witness]
+        f.reward['input_attribution']['request_id'] = f.item['request']['request_id']
+        f.reward['reward_id'] = W.digest({k: v for k, v in f.reward.items() if k != 'reward_id'})
+        f.f.update(request_id=f.item['request']['request_id'], request_sha256=f.item['request_sha256'],
+                   input_started_at_ms=end - 4000, computed_at_ms=end - 3000,
+                   feature_text_sha256={s: hashlib.sha256(feature_text(f.item['request'], s).encode()).hexdigest()
+                                        for s in W.SIDES})
+        with patch.object(W, 'clock_ms', side_effect=[end - 1500, end - 1400, end - 1300]):
+            f.prediction = f.store.seal(f.item, f.f, f.predictions)
+        source, preopen = old.root, old.root / 'preopen'
+        config = {'study_plan_path': str(source / 'plan.json'),
+                  'study_plan_sha256': W.sha(source / 'plan.json'),
+                  'source_registration': f.p['producer_registration'],
+                  'period_sha256': f.p['period_sha256'], 'state_root': str(preopen),
+                  'max_request_age_ms': 60000, 'trade_authority': False,
+                  'automatic_selection': False, 'actor_update': False}
+        W.durable_once(source / 'predictor-config.json', config)
+        W.durable_once(source / 'activation.json', {'plan_id': f.p['plan_id'],
+                       'predictor_config_sha256': W.sha(source / 'predictor-config.json')})
+        protocol = {k: f.p[k] for k in
+                    ('plan_id', 'input_start_ms', 'input_end_ms', 'period_sha256', 'producer_registration')}
+        protocol.update(max_request_age_ms=60000, study_plan_sha256=config['study_plan_sha256'])
+        W.durable_once(preopen / 'protocol.json', protocol)
+        f.folder = preopen / 'requests' / f.binding['request_id']
+        W.durable_once(f.folder / 'input.json', {'plan_id': f.p['plan_id'], 'request_item': f.item})
+        identity = {'plan_id': f.p['plan_id'], 'request_id': f.binding['request_id'],
+                    'request_sha256': f.binding['request_sha256']}
+        W.durable_once(f.folder / 'attempt.json', {**identity, 'started_at_ms': end - 3500,
+                       'deadline_ms': end, 'started_monotonic_ns': 0})
+        W.durable_once(f.folder / 'terminal.json', {
+            **identity, 'producer_manifest_sha256': f.manifest, 'status': status,
+            'publication': f.prediction, 'publication_durability_observed_at_ms': end + observed_offset,
+            'elapsed_ms': 2500., 'observed_at_ms': end + observed_offset})
+        f.evaluator = E.Evaluator(source)
+        report, times, fills, commands = f.execution_replay_fixture(complete=True)
+        f.report = {**report, 'components': {'EUR.USD': {'ledger_complete': True}},
+                    'source_prefix': witness}
+        f.times = {k: v + end for k, v in times.items()}
+        f.fills = {k: v + end for k, v in fills.items()}
+        f.commands = commands
+        f.now = end + 5000
+        f.binding_path = preopen / 'bindings' / (f.binding['command']['command_id'] + '.json')
+        protected = [source / name for name in
+                     ('plan.json', 'registration.json', 'activation.json', 'predictor-config.json')]
+        protected += [preopen / 'protocol.json'] + [f.folder / name for name in
+                     ('input.json', 'attempt.json', 'terminal.json')]
+        f.protected = {p: p.read_bytes() for p in protected}
+        return f
+
+    def snapshot(self, f, *, evaluator=None, now=None, issues=()):
+        from laya_cell import financial_forward_source as S, resident_rewards as R
+        from laya_cell import financial_forward_evaluate as F, current100k_preopen as P
+        now = f.now if now is None else now
+        with patch.object(S, 'ingress', return_value=({}, {f.binding['request_id']: f.item},
+                                                      [f.binding], list(issues))), \
+             patch.object(R, 'current', return_value=f.report), \
+             patch.object(F, 'execution_index', return_value=(f.times, f.fills, f.commands)), \
+             patch.object(W, 'clock_ms', return_value=now), \
+             patch.object(P.RequestLedger, 'attempt', side_effect=AssertionError('prediction replay forbidden')), \
+             patch.object(P.RequestLedger, 'recover', side_effect=AssertionError('terminal recovery forbidden')), \
+             patch.object(P.RequestLedger, 'finish', side_effect=AssertionError('new terminal forbidden')):
+            return (f.evaluator if evaluator is None else evaluator).snapshot()
+
+    def assert_protected(self, f):
+        for path, raw in f.protected.items():
+            self.assertEqual(path.read_bytes(), raw, str(path))
+
+    def assert_no_binding(self, f):
+        self.assertFalse(f.binding_path.exists())
+        self.assertFalse((f.folder / 'original-command.json').exists())
+
+
+
+    def test_terminal_lost_before_binding_cannot_create_a_replacement_terminal(self):
+        from laya_cell import current100k_preopen as P
+        f = self.fixture()
+        original = P.RequestLedger.reconcile
+        terminal = f.folder / 'terminal.json'
+        def lose_terminal(ledger, binding, **kw):
+            terminal.unlink()
+            return original(ledger, binding, **kw)
+        with patch.object(P.RequestLedger, 'reconcile', lose_terminal):
+            self.assertEqual(self.snapshot(f)['observed_trades'], 0)
+        self.assertFalse(terminal.exists())
+        self.assert_no_binding(f)
+        f.protected.pop(terminal)
+        self.assert_protected(f)
+
+    def test_live_snapshot_binds_pre_end_seal_to_post_end_open_with_current_clock(self):
+        f = self.fixture()
+        self.assert_no_binding(f)
+        result = self.snapshot(f)
+        self.assertEqual(result['observed_trades'], 1)
+        self.assertEqual(result['original_command_count'], 1)
+        linked = W.read(f.binding_path)
+        self.assertEqual(linked['status'], 'PREOPEN_BOUND_RESEARCH')
+        self.assertEqual(linked['observed_at_ms'], f.now)
+        self.assertLess(f.prediction['committed_at_ms'], f.p['input_end_ms'])
+        self.assertGreater(f.binding['command']['created_at_ms'], f.p['input_end_ms'])
+        self.assertEqual(linked['binding'], f.binding)
+        self.assert_protected(f)
+        before = f.binding_path.read_bytes()
+        self.assertEqual(self.snapshot(f, now=f.now + 100)['observed_trades'], 1)
+        self.assertEqual(f.binding_path.read_bytes(), before)
+
+    def test_missing_failed_and_interrupted_terminals_are_not_repaired(self):
+        for status in ('MISSING', 'PREDICTION_FAILED_OR_LATE', 'INTERRUPTED_UNKNOWN_NO_REPLAY',
+                       'REQUEST_EXPIRED_NO_BACKDATING', 'NO_PREDICTION_BEFORE_ORIGINAL_COMMAND'):
+            with self.subTest(status=status):
+                f = self.fixture(status=status)
+                if status == 'MISSING':
+                    path = f.folder / 'terminal.json'
+                    path.unlink()
+                    f.protected.pop(path)
+                result = self.snapshot(f)
+                self.assertEqual(result['observed_trades'], 0)
+                self.assertEqual(result['original_command_count'], 1)
+                self.assert_no_binding(f)
+                self.assert_protected(f)
+                if status == 'MISSING':
+                    self.assertFalse((f.folder / 'terminal.json').exists())
+
+    def test_completion_at_input_end_and_elapsed_deadline_never_bind(self):
+        for failure in ('at_input_end', 'elapsed_deadline'):
+            with self.subTest(failure=failure):
+                f = self.fixture(observed_offset=0 if failure == 'at_input_end' else -1000)
+                if failure == 'elapsed_deadline':
+                    path = f.folder / 'terminal.json'
+                    value = W.read(path)
+                    value['elapsed_ms'] = 3500.
+                    W.atomic(path, value)
+                    f.protected[path] = path.read_bytes()
+                self.assertEqual(self.snapshot(f)['observed_trades'], 0)
+                self.assert_no_binding(f)
+                self.assert_protected(f)
+
+    def test_actual_fill_is_required_and_must_be_inside_original_outcome_cutoff(self):
+        for mode in ('missing', 'after_outcome'):
+            with self.subTest(mode=mode):
+                f = self.fixture()
+                cid = f.binding['command']['command_id']
+                if mode == 'missing':
+                    f.fills.pop(cid)
+                else:
+                    f.fills[cid] = f.p['outcome_end_ms'] + 1
+                    f.now = f.p['outcome_end_ms'] + 2
+                result = self.snapshot(f)
+                self.assertEqual(result['observed_trades'], 0)
+                self.assertEqual(result['original_command_count'], 1)
+                self.assert_no_binding(f)
+
+    def test_live_reconciliation_waits_until_input_window_is_closed(self):
+        f = self.fixture()
+        self.snapshot(f, now=f.p['input_end_ms'] - 1)
+        self.assert_no_binding(f)
+        self.assert_protected(f)
+
+    def test_separate_strict_review_never_writes_original_ledger(self):
+        f = self.fixture()
+        review = E.Evaluator(f.evaluator.source_root, output_root=f.root / 'read-only-review',
+                             strict_preopen=True)
+        result = self.snapshot(f, evaluator=review)
+        self.assertEqual(result['observed_trades'], 0)
+        self.assertEqual(result['original_command_count'], 1)
+        self.assert_no_binding(f)
+        self.assert_protected(f)
+
+    def test_unhealthy_source_does_not_publish_settlement_binding(self):
+        f = self.fixture()
+        result = self.snapshot(f, issues=[{'reason': 'PRODUCER_GAP_OR_LOSS'}])
+        self.assertEqual(result['observed_trades'], 0)
+        self.assert_no_binding(f)
+        self.assert_protected(f)
+
+    def test_writer_contention_is_nonblocking_and_next_snapshot_recovers(self):
+        from laya_cell import current100k_preopen as P
+        f = self.fixture()
+        ledger = P.RequestLedger(f.evaluator.preopen.root,
+                                 W.read(f.evaluator.preopen.root / 'protocol.json'))
+        try:
+            self.assertEqual(self.snapshot(f)['observed_trades'], 0)
+            self.assert_no_binding(f)
+        finally:
+            ledger.close()
+        self.assertEqual(self.snapshot(f)['observed_trades'], 1)
+        self.assert_protected(f)
+
+    def test_fixed_final_observes_only_prior_events_and_does_not_backdate(self):
+        f = self.fixture()
+        f.now = f.p['outcome_end_ms'] + 1
+        result = self.snapshot(f)
+        self.assertTrue(result['state'].startswith('FINAL_'))
+        self.assertEqual(result['observed_trades'], 1)
+        self.assertEqual(W.read(f.binding_path)['observed_at_ms'], f.now)
+        self.assertLess(f.fills[f.binding['command']['command_id']], f.p['outcome_end_ms'])
+        self.assert_protected(f)
+
+    def test_conflicting_original_receipts_are_never_overwritten(self):
+        for mode in ('original_command', 'negative_binding'):
+            with self.subTest(mode=mode):
+                f = self.fixture()
+                path = f.folder / 'original-command.json' if mode == 'original_command' else f.binding_path
+                W.durable_once(path, {'request_id': f.binding['request_id'],
+                                      'request_sha256': f.binding['request_sha256'],
+                                      'command_id': 'different-command',
+                                      'status': 'MISSING_OR_LATE_NO_CREDIT'})
+                before = path.read_bytes()
+                self.assertEqual(self.snapshot(f)['observed_trades'], 0)
+                self.assertEqual(path.read_bytes(), before)
+                if mode == 'original_command':
+                    self.assertFalse(f.binding_path.exists())
+                self.assert_protected(f)
 
 
 if __name__ == '__main__':

@@ -200,7 +200,7 @@ class RequestLedger:
    return self.finish(rid,"SEALED_AWAITING_ORIGINAL_COMMAND",publication=receipt,publication_durability_observed_at_ms=end,elapsed_ms=(end_tick-tick)/1e6,before_command_confirmed=False)
   except Exception as exc:
    return self.finish(rid,"PREDICTION_FAILED_OR_LATE",reason=type(exc).__name__+":"+str(exc)[:350],deadline_ms=deadline)
- def reconcile(self,binding):
+ def reconcile(self,binding,*,existing_success_only=False):
   rid=binding["request_id"];folder=self.folder(rid)
   if not (folder/"input.json").exists():return None
   item=load(folder/"input.json")["request_item"]
@@ -210,6 +210,13 @@ class RequestLedger:
   require(isinstance(cid,str) and re.fullmatch("[A-Za-z0-9_.-]{1,128}",cid) is not None,"PREOPEN_COMMAND_ID")
   require(type(created)is int and item["request"]["started_at_ms"]<=created<=self.clock() and cmd.get("kind")=="OPEN"
    and cmd.get("instrument")=="EUR.USD" and cmd.get("side") in ("BUY","SELL"),"PREOPEN_ORIGINAL_COMMAND_SCOPE")
+  sealed_terminal=None
+  if existing_success_only:
+   sealed_terminal=self.terminal(rid)
+   require(sealed_terminal is not None and sealed_terminal.get("status")=="SEALED_AWAITING_ORIGINAL_COMMAND","PREOPEN_EXISTING_SUCCESS_REQUIRED")
+   publication=sealed_terminal.get("publication",{});observed=sealed_terminal.get("publication_durability_observed_at_ms")
+   require(type(publication.get("seal_durable_completed_at_ms"))is int and type(observed)is int
+    and publication["seal_durable_completed_at_ms"]<=observed<created,"PREOPEN_EXISTING_SUCCESS_BEFORE_COMMAND")
   request_binding=folder/"original-command.json"
   identity={"request_id":rid,"request_sha256":item["request_sha256"],"command_id":cid}
   if request_binding.exists():require(load(request_binding)==identity,"PREOPEN_MULTIPLE_ORIGINAL_COMMANDS")
@@ -217,7 +224,7 @@ class RequestLedger:
   p=self.bindings/(cid+".json")
   if p.exists():
    old=load(p);require(old["binding"]==binding,"PREOPEN_COMMAND_REBIND");return old
-  terminal=self.terminal(rid)
+  terminal=sealed_terminal if existing_success_only else self.terminal(rid)
   if terminal is None:terminal=self.finish(rid,"NO_PREDICTION_BEFORE_ORIGINAL_COMMAND")
   publication=terminal.get("publication",{})
   before=(terminal["status"]=="SEALED_AWAITING_ORIGINAL_COMMAND" and type(publication.get("seal_durable_completed_at_ms"))is int
