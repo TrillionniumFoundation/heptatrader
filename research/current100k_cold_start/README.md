@@ -168,3 +168,46 @@ OS/compiler caches; its time is not another process-cold benchmark. The report
 identifies the exact historical loader/head version tested. A future change to
 either still needs its own parity evidence; this does not certify unexecuted
 code paths or a different centered head.
+
+The first successful GPU result is also saved immediately in
+`staged-result.json`, with CPU features/values, timing and resource evidence.
+`staged-state-hashes.json` preserves the CPU initial and post-inference state.
+These files survive a later comparison or cleanup failure and remain explicitly
+historical diagnostic results, with no forward seal.
+
+After first-model destruction the diagnostic writes
+`allocation-after-destroy.json` **before** enforcing zero allocated GPU bytes.
+It records allocated/reserved bytes, Torch allocator statistics, bounded segment
+metadata and a bounded list of live GPU tensors (shape, dtype, storage size,
+hashed storage identity and referrer types/key names). It never captures tensor
+contents in that inspection, calls a global compiler/runtime reset or lowers the
+zero requirement. Nonzero allocation prevents the second model load; actual
+process exit/reap still precedes final heavy-lease release. This distinguishes
+Python references from possible native/context-lifetime allocation without
+pretending a per-process cache must disappear when one model is deleted.
+
+To also exercise the future standalone tokenizer adapter, add the exact source
+file and SHA:
+
+```text
+--comparison-tokenizer-source /absolute/candidate/source/tokenizer.py \
+--comparison-tokenizer-sha256 EXACT_FILE_SHA256
+```
+
+The parent checks its source/API without importing ML. The child allows that
+one file read-only in the original sandbox, verifies it again, and compiles the
+verified bytes into a private diagnostic module (no sibling bytecode cache and
+no replacement of `laya_cell` modules). While the staged GPU model/head is still
+alive, it compares the same request's tokens/masks, features and values against
+the CPU-loaded ordinary AutoTokenizer. `future-tokenizer-result.json` is written
+before model cleanup and `future_tokenizer_parity` is a separate final-report
+field. Runtime versions and tokenizer class are recorded. The adapter's source
+is invoked as supplied; a conditional fallback inside it is not mislabeled as
+proof that its optimized branch ran. The extra tokenizer load/inference is
+separate from the first staged prediction's timing.
+
+Diagnostic RSS/GPU peaks include verification hashing, optional comparison and
+any second load. They are not the production worker's peak working set. A later
+two-process comparison can avoid requiring context-lifetime allocations to clear
+in one interpreter, but each process must receive its own newly admitted
+original lease and the first must be reaped before admitting the second.

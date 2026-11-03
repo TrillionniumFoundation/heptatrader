@@ -27,6 +27,35 @@ def source_pins():
     return {name: bench.sha(Path(__file__).with_name(name)) for name in (Path(__file__).name, 'benchmark.py')}
 
 
+def comparison_source(path, expected):
+    """Pin one optional standalone tokenizer source without importing ML."""
+    need((path is None) == (expected is None), 'COMPARISON_TOKENIZER_PATH_AND_SHA_REQUIRED')
+    if path is None: return None
+    path = Path(path)
+    need(path.is_absolute() and path.resolve() == path and path.is_file()
+         and path.stat().st_size <= 256*1024 and type(expected) is str and len(expected) == 64,
+         'COMPARISON_TOKENIZER_SOURCE_SCOPE')
+    raw = path.read_bytes(); need(hashlib.sha256(raw).hexdigest() == expected, 'COMPARISON_TOKENIZER_SOURCE_CHANGED')
+    tree = bench.ast.parse(raw)
+    need(not any(isinstance(node, bench.ast.ImportFrom) and node.level for node in bench.ast.walk(tree)),
+         'COMPARISON_TOKENIZER_MUST_BE_STANDALONE')
+    functions = [node for node in tree.body if isinstance(node, bench.ast.FunctionDef) and node.name == 'load_local_tokenizer']
+    need(len(functions) == 1 and len(functions[0].args.args) == 1, 'COMPARISON_TOKENIZER_API_REQUIRED')
+    return {'path': str(path), 'sha256': expected}
+
+
+def load_comparison_tokenizer(selection, directory):
+    checked = comparison_source(selection['path'], selection['sha256'])
+    path = Path(checked['path']); raw = path.read_bytes()
+    need(hashlib.sha256(raw).hexdigest() == checked['sha256'], 'COMPARISON_TOKENIZER_CHANGED_BEFORE_IMPORT')
+    spec = importlib.util.spec_from_file_location('_heptatrader_tokenizer_comparison_'+checked['sha256'][:16], path)
+    module = importlib.util.module_from_spec(spec)
+    # Compile the verified source bytes, never an unpinned sibling .pyc. This
+    # private module does not replace laya_cell.tokenizer or any authority API.
+    exec(compile(raw, str(path), 'exec', dont_inherit=True), module.__dict__)
+    return module.load_local_tokenizer(directory)
+
+
 def fd_snapshot(pid):
     paths = list((Path('/proc')/str(pid)/'fd').iterdir())
     need(len(paths) <= 4096, 'FD_INSPECTION_BOUND')
@@ -129,10 +158,12 @@ def same_request(item, current):
 
 def reap(process):
     if process.poll() is not None: return True
-    process.terminate()
+    try: process.terminate()
+    except ProcessLookupError: pass
     try: process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try: process.kill()
+        except ProcessLookupError: pass
         try: process.wait(timeout=2)
         except subprocess.TimeoutExpired: return False
     return process.poll() is not None
@@ -140,6 +171,8 @@ def reap(process):
 
 def parent(args):
     started = time.monotonic_ns(); started_at = int(time.time()*1000)
+    comparison = comparison_source(getattr(args, 'comparison_tokenizer_source', None),
+                                   getattr(args, 'comparison_tokenizer_sha256', None))
     config, guard, plan_path, plan, candidate, api, requests = original_inputs(args)
     item = bench.select_request(requests, args.request_id, plan, started_at)
     need(not args.request_sha256 or item['request_sha256'] == args.request_sha256, 'REQUEST_SHA256_CHANGED')
@@ -162,6 +195,7 @@ def parent(args):
         admitted_ns = time.monotonic_ns()
         proof = {'schema': 'heptatrader.cpu-standby-historical-diagnostic.v1', 'scope': SCOPE,
             'source_sha256': source_pins(), 'config_path': str(args.config.resolve()), 'config_sha256': args.sha256,
+            'comparison_tokenizer': comparison,
             'plan_path': str(plan_path), 'plan_sha256': bench.sha(plan_path), 'plan': plan, 'candidate': candidate,
             'request_item': item, 'model_api': api, 'admission': gate.last_admission, 'checked_ns': admitted_ns,
             'parent_pid': os.getpid(), 'heavy_lock_path': str(gate.lease.path),
@@ -304,6 +338,51 @@ def diff_state(left, right):
     return {'exact': not different, 'tensor_count': len(names), 'different_tensor_names': different}
 
 
+def allocation_snapshot(torch):
+    """Metadata only, under the still-held GPU lease; never clear global caches."""
+    import itertools, warnings
+    report = {'memory_allocated_bytes': torch.cuda.memory_allocated(),
+        'memory_reserved_bytes': torch.cuda.memory_reserved(), 'memory_stats': dict(torch.cuda.memory_stats()),
+        'live_gpu_tensors': [], 'scan_truncated': False,
+        'tensor_contents_captured': False, 'global_runtime_cache_reset': False}
+    begin = time.monotonic(); objects = gc.get_objects(); report['gc_objects_observed'] = len(objects)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for obj in objects:
+            if time.monotonic()-begin > 5 or len(report['live_gpu_tensors']) >= 256:
+                report['scan_truncated'] = True; break
+            try:
+                if not isinstance(obj, torch.Tensor) or obj.device.type != 'cuda' or obj.is_meta: continue
+                refs = []
+                for ref in itertools.islice(gc.get_referrers(obj), 16):
+                    if ref is objects: continue
+                    entry = {'type': type(ref).__module__+'.'+type(ref).__name__}
+                    if type(ref) is dict:
+                        entry['matching_keys'] = [key for key, value in itertools.islice(ref.items(), 128)
+                                                   if value is obj and type(key) is str][:8]
+                    refs.append(entry)
+                storage = obj.untyped_storage()
+                report['live_gpu_tensors'].append({'type': type(obj).__module__+'.'+type(obj).__name__,
+                    'shape': list(obj.shape), 'dtype': str(obj.dtype), 'device': str(obj.device),
+                    'numel': obj.numel(), 'storage_bytes': storage.nbytes(),
+                    'storage_identity_sha256': hashlib.sha256(str(storage.data_ptr()).encode()).hexdigest(),
+                    'requires_grad': bool(obj.requires_grad), 'is_leaf': bool(obj.is_leaf),
+                    'grad_fn_type': type(obj.grad_fn).__name__ if obj.grad_fn is not None else None, 'referrers': refs})
+            except Exception as exc:
+                report.setdefault('inspection_errors', []).append(type(exc).__name__)
+                if len(report['inspection_errors']) >= 16: report['scan_truncated'] = True; break
+    del objects
+    try:
+        segments = torch.cuda.memory_snapshot()
+        report['allocator_segments'] = [{key: segment.get(key) for key in
+            ('device', 'total_size', 'allocated_size', 'active_size', 'segment_type', 'stream')}
+            | {'blocks': [{key: block.get(key) for key in ('size', 'requested_size', 'state')}
+                          for block in segment.get('blocks', [])[:256]]} for segment in segments[:256]]
+        report['allocator_segments_truncated'] = len(segments) > 256
+    except Exception as exc: report['allocator_snapshot_unavailable'] = type(exc).__name__
+    return report
+
+
 def child(args):
     child_started = time.monotonic_ns()
     need(bench.sha(args.child_proof) == args.child_proof_sha256, 'INPUT_PROOF_CHANGED')
@@ -324,6 +403,9 @@ def child(args):
     plan, candidate, item = proof['plan'], proof['candidate'], proof['request_item']; output = args.child_proof.parent
     need(bench.sha(proof['plan_path']) == proof['plan_sha256'], 'ORIGINAL_PLAN_CHANGED')
     api = bench.model_api(config, candidate); need(api == proof['model_api'], 'FROZEN_MODEL_API_CHANGED')
+    comparison = proof.get('comparison_tokenizer')
+    if comparison is not None:
+        need(comparison_source(comparison['path'], comparison['sha256']) == comparison, 'COMPARISON_TOKENIZER_PIN')
     from laya_cell import resident_hip_runtime as hip
     from sandbox import enter
     context = hip.prepare_worker(config, 'predict')
@@ -332,6 +414,7 @@ def child(args):
         'export_dir': config['attribution_directory'],
         'read_only_paths': config['worker_read_only_paths'] + [config['worker_source_root'], sys.prefix,
             str(Path(__file__).resolve().parent), str(Path(plan['candidate_directory']))]
+            + ([comparison['path']] if comparison is not None else [])
             + (context['readonly'] if context is not None else [])})
     # Do not merely omit the signing call: verify this diagnostic cannot read
     # the original role key through an accidentally broad allowlist either.
@@ -386,9 +469,55 @@ def child(args):
     torch.cuda.reset_peak_memory_stats(); setup_done = time.monotonic_ns()
     raw = raw.to(device); head = head.to(device); torch.cuda.synchronize(); copied = time.monotonic_ns()
     staged_features, staged_values, staged = infer(torch, value_module, raw, tokenizer, head, rows, api, candidate.get('readout_profile'))
+    staged_timing = {'original_front_and_cpu_admission': proof['original_front_and_cpu_admission_ms'],
+        'torch_cpu_import': (after_torch-before_torch)/1e6, 'cpu_model_and_head_load': (cpu_loaded-after_torch)/1e6,
+        'cpu_parity_hashing': (cpu_ready_ns-cpu_loaded)/1e6,
+        'fresh_admission_to_first_gpu_api': (gpu_start-fresh['checked_ns'])/1e6,
+        'fresh_gpu_setup': (setup_done-gpu_start)/1e6, 'cpu_to_gpu_copy': (copied-setup_done)/1e6,
+        'fresh_admission_to_staged_result': (staged['completed_ns']-fresh['checked_ns'])/1e6,
+        'parent_start_to_staged_result': (staged['completed_ns']-proof['started_ns'])/1e6}
+    # Persist completed evidence before optional comparisons or model cleanup.
+    bench.write(output/'staged-result.json', {'scope': SCOPE, 'phase': 'STAGED_GPU_INFERENCE_COMPLETE',
+        'config_sha256': proof['config_sha256'], 'plan_id': plan['plan_id'], 'candidate_id': candidate['candidate_id'],
+        'request_id': item['request']['request_id'], 'request_sha256': item['request_sha256'],
+        'source_sha256': proof['source_sha256'], 'cpu_proof': cpu_only, 'staged': staged,
+        'features': staged_features.tolist(), 'values': staged_values.tolist(), 'timing_ms': staged_timing,
+        'hip_runtime_proof': hip_proof, 'max_process_rss_bytes': int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024,
+        'max_gpu_allocated_bytes': torch.cuda.max_memory_allocated(), 'max_gpu_reserved_bytes': torch.cuda.max_memory_reserved(),
+        'cgroup_before': cgroup_before, 'cgroup_after': bench.cgroup_snapshot(),
+        'direct_loader_parity_proven': False, 'forward_seal_created': False, 'broker_orders_sent': 0})
     staged_state = model_state(torch, {'model': raw, 'head': head})
+    bench.write(output/'staged-state-hashes.json', {'cpu_initial': cpu_state, 'staged_after': staged_state, 'cpu_tokenizer': cpu_tokens})
+    future_parity = {'requested': False}; future_tokens = None
+    if comparison is not None:
+        comparison_start = time.monotonic_ns()
+        comparison_tokenizer = load_comparison_tokenizer(comparison, base/'tokenizer')
+        comparison_load_ms = (time.monotonic_ns()-comparison_start)/1e6
+        future_tokens = tokenizer_state(torch, comparison_tokenizer, rows)
+        future_features, future_values, future_inference = infer(torch, value_module, raw, comparison_tokenizer,
+            head, rows, api, candidate.get('readout_profile'))
+        token_equal = cpu_tokens == future_tokens
+        feature_equal = torch.equal(staged_features, future_features); value_equal = torch.equal(staged_values, future_values)
+        future_parity = {'requested': True, 'source': comparison, 'exact': token_equal and feature_equal and value_equal,
+            'private_module_only_no_laya_module_replaced': True, 'same_original_gpu_model_and_head': True,
+            'tokenizer_input_ids_and_masks_exact': token_equal, 'features_bitwise_equal': feature_equal,
+            'values_bitwise_equal': value_equal,
+            'feature_max_absolute_difference': float((staged_features-future_features).abs().max()),
+            'value_max_absolute_difference_usd': float((staged_values-future_values).abs().max()),
+            'tokenizer_class': type(comparison_tokenizer).__module__+'.'+type(comparison_tokenizer).__name__,
+            'versions': {name: getattr(sys.modules.get(name), '__version__', None) for name in ('transformers', 'tokenizers')},
+            'adapter_fast_path_instrumented': False, 'tokenizer_load_ms': comparison_load_ms, 'inference': future_inference}
+        bench.write(output/'future-tokenizer-result.json', {'scope': SCOPE, 'future_tokenizer_parity': future_parity,
+            'tokenizer_tensors': future_tokens, 'features': future_features.tolist(), 'values': future_values.tolist(),
+            'forward_seal_created': False, 'broker_orders_sent': 0})
+        comparison_tokenizer = None
     raw = head = tokenizer = None; gc.collect(); torch.cuda.synchronize(); torch.cuda.empty_cache()
-    released_bytes = torch.cuda.memory_allocated(); need(released_bytes == 0, 'FIRST_MODEL_GPU_ALLOCATION_NOT_RELEASED')
+    released_bytes = torch.cuda.memory_allocated()
+    allocation = allocation_snapshot(torch)
+    bench.write(output/'allocation-after-destroy.json', {'scope': SCOPE,
+        'fresh_original_lease_still_held': True, 'first_model_memory_allocated_bytes': released_bytes,
+        'direct_model_load_permitted': released_bytes == 0, **allocation})
+    need(released_bytes == 0, 'FIRST_MODEL_GPU_ALLOCATION_NOT_RELEASED:'+str(released_bytes))
     direct_start = time.monotonic_ns()
     raw, tokenizer, direct_base = load_verified_laya(base, base_manifest, enforce_gpu=True)
     raw.requires_grad_(False).eval(); need(direct_base == base_id, 'DIRECT_LOADER_BASE_CHANGED')
@@ -399,11 +528,13 @@ def child(args):
     direct_features, direct_values, direct = infer(torch, value_module, raw, tokenizer, head, rows, api, candidate.get('readout_profile'))
     direct_after_state = model_state(torch, {'model': raw, 'head': head})
     initial_parity = diff_state(cpu_state, direct_initial_state); after_parity = diff_state(staged_state, direct_after_state)
-    exact = (initial_parity['exact'] and after_parity['exact'] and cpu_tokens == direct_tokens
-             and torch.equal(staged_features, direct_features) and torch.equal(staged_values, direct_values))
+    historical_exact = (initial_parity['exact'] and after_parity['exact'] and cpu_tokens == direct_tokens
+                        and torch.equal(staged_features, direct_features) and torch.equal(staged_values, direct_values))
+    exact = historical_exact and (not future_parity['requested'] or future_parity['exact'])
     usage = resource.getrusage(resource.RUSAGE_SELF)
     report = {'state': 'HISTORICAL_PARITY_EXACT' if exact else 'HISTORICAL_PARITY_DIFFERENCE_REVIEW_REQUIRED',
         'scope': SCOPE, 'exact_parity': exact, 'forward_seal_created': False, 'broker_orders_sent': 0,
+        'historical_loader_exact_parity': historical_exact, 'future_tokenizer_parity': future_parity,
         'v2_plan_registered': False, 'optimizer_used': False, 'publish_path_exercised': False,
         'config_sha256': proof['config_sha256'], 'plan_id': plan['plan_id'], 'plan_sha256': proof['plan_sha256'],
         'candidate_id': candidate['candidate_id'], 'head_sha256': plan['head_tensor_sha256'], 'base_id': base_id,
@@ -431,7 +562,7 @@ def child(args):
         'cgroup_before': cgroup_before, 'cgroup_after': bench.cgroup_snapshot()}
     bench.write(output/'parity-state-hashes.json', {'cpu_initial': cpu_state, 'staged_after': staged_state,
         'direct_initial': direct_initial_state, 'direct_after': direct_after_state,
-        'cpu_tokenizer': cpu_tokens, 'direct_tokenizer': direct_tokens})
+        'cpu_tokenizer': cpu_tokens, 'direct_tokenizer': direct_tokens, 'future_tokenizer': future_tokens})
     bench.write(output/'report.json', report)
     channel.send('DONE', {'report_sha256': bench.sha(output/'report.json'), 'exact_parity': exact})
     # Keep fresh_fd through actual process exit, even on numerical differences.
@@ -443,6 +574,7 @@ def main():
     parser.add_argument('--config', type=Path); parser.add_argument('--sha256')
     parser.add_argument('--request-id', default='latest-flat'); parser.add_argument('--request-sha256')
     parser.add_argument('--output', type=Path); parser.add_argument('--threads', type=int, choices=range(1,5), default=2)
+    parser.add_argument('--comparison-tokenizer-source', type=Path); parser.add_argument('--comparison-tokenizer-sha256')
     parser.add_argument('--timeout-seconds', type=int, default=120)
     parser.add_argument('--child-proof', type=Path); parser.add_argument('--child-proof-sha256')
     parser.add_argument('--heavy-fd', type=int); parser.add_argument('--socket-fd', type=int)

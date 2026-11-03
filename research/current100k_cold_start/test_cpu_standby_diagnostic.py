@@ -41,6 +41,27 @@ class Boundaries(unittest.TestCase):
             with self.assertRaises(OSError):os.fstat(read)
         finally:os.close(write)
 
+    def test_optional_comparison_source_executes_only_its_pinned_standalone_bytes(self):
+        self.assertIsNone(diag.comparison_source(None,None))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'tokenizer.py'
+            path.write_text('def load_local_tokenizer(directory):\n    return {"fixture_directory":str(directory)}\n')
+            pin=diag.bench.sha(path);selection=diag.comparison_source(path,pin)
+            before=sys.modules.get('laya_cell.tokenizer')
+            self.assertEqual(diag.load_comparison_tokenizer(selection,Path('/frozen/tokenizer')),
+                             {'fixture_directory':'/frozen/tokenizer'})
+            self.assertIs(sys.modules.get('laya_cell.tokenizer'),before)
+            path.write_text('raise AssertionError("must not execute changed bytes")\n')
+            with self.assertRaisesRegex(ValueError,'SOURCE_CHANGED'):
+                diag.load_comparison_tokenizer(selection,Path('/frozen/tokenizer'))
+            path.write_text('from .authority import changed\ndef load_local_tokenizer(directory):\n    return None\n')
+            with self.assertRaisesRegex(ValueError,'MUST_BE_STANDALONE'):
+                diag.comparison_source(path,diag.bench.sha(path))
+
+    def test_exit_between_poll_and_signal_is_still_reaped(self):
+        process=Mock();process.poll.side_effect=[None,0];process.terminate.side_effect=ProcessLookupError()
+        self.assertTrue(diag.reap(process));process.wait.assert_called_once_with(timeout=10)
+
 
 class ProcessLifecycle(unittest.TestCase):
     def setUp(self):
