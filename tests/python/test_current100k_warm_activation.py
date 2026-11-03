@@ -83,6 +83,100 @@ class FiniteActivationTests(unittest.TestCase):
 
 
 
+class LiveExecutionAcceptanceTests(unittest.TestCase):
+    """A stale success receipt cannot substitute for the selected live units."""
+    def setUp(self):
+        from unittest.mock import patch
+        import current100k_priority_activation as priority
+        FiniteActivationTests.setUp(self)
+        self.patching = patch; self.addCleanup(patch.stopall)
+        for config in self.configs.values(): config['forward_root'] = self.stage['forward_root']
+        self.candidates = activation.role_candidates(self.stage, self.configs, self.plan, self.priority)
+        self.home = self.root / 'home'; folder = self.home / '.config/systemd/user'; folder.mkdir(parents=True)
+        patch.object(Path, 'home', return_value=self.home).start()
+        self.clock = patch.object(activation.time, 'time', return_value=(self.plan['input_start_ms']-5000)/1000).start()
+        patch.object(activation, 'stage_inputs', return_value=(self.stage, self.configs, {})).start()
+        patch.object(activation, 'registration_state', return_value={'state': 'PUBLISHED', 'plan': self.plan}).start()
+        patch.object(priority, '_inputs', return_value=(self.priority, {})).start()
+        self.prepared = patch.object(priority, 'verify_prepared_priority').start()
+        plan_path = Path(self.stage['forward_root']) / 'plans' / self.plan['plan_id'] / 'plan.json'
+        plan_path.parent.mkdir(parents=True)
+        plan_path.write_text(json.dumps(self.plan, sort_keys=True))
+        for spelling, raw in self.candidates['documents'].items():
+            path = Path(spelling); path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
+        self.units = {}
+        for name, raw in self.candidates['units'].items():
+            (folder / name).write_bytes(raw)
+            properties = {'LoadState': 'loaded', 'FragmentPath': str(folder / name),
+                'DropInPaths': '', 'NeedDaemonReload': 'no', 'MainPID': '0'}
+            if name.endswith('.service'):
+                command = next(line.removeprefix('ExecStart=') for line in raw.decode().splitlines() if line.startswith('ExecStart='))
+                environment = ' '.join(line.removeprefix('Environment=') for line in raw.decode().splitlines()
+                    if line.startswith('Environment='))
+                properties.update(Type='oneshot', WorkingDirectory=self.stage['release'], Environment=environment,
+                    ActiveState='inactive', SubState='dead', Result='success', ExecMainStatus='0', UnitFileState='static',
+                    ExecStart='{ path=/python ; argv[]=' + command + ' ; ignore_errors=no ; }')
+            else:
+                properties.update(ActiveState='active', SubState='waiting', UnitFileState='enabled',
+                    NextElapseUSecRealtime='future scheduled event')
+            self.units[name] = properties
+        self.native = patch.object(activation, 'native_unit', side_effect=lambda name, *_: self.units[name]).start()
+        status = {'state': 'SAME_PLAN_NATIVE_WARM_EXECUTION_SCHEDULED', 'plan_id': self.plan['plan_id'],
+            'plan_path': str(plan_path), 'plan_sha256': hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+            'unit_sha256': {name: hashlib.sha256(raw).hexdigest() for name, raw in self.candidates['units'].items()},
+            'configs': {role: {k:v for k,v in info.items() if k != 'config'} for role,info in self.candidates['roles'].items()},
+            'activation_before_input_start': True}
+        (Path(self.stage['forward_root']) / 'activation-status.json').write_text(json.dumps(status))
+
+    def verify(self):
+        return activation.verify_native_execution(self.root / 'stage.json', 'd'*64)
+
+    def test_live_success_checks_both_roles_configs_effective_commands_and_future_timers(self):
+        result = self.verify()
+        self.assertEqual(result['state'], 'REGISTERED_NATIVE_EXECUTION_LIVE_VERIFIED')
+        self.assertTrue(result['role_configs_verified'])
+        self.assertTrue(result['timers_enabled_active_and_next_event_verified'])
+        self.assertEqual(len(result['units']), 4)
+        self.assertFalse(result['current100k_p0_closed']); self.assertEqual(result['services_changed'], [])
+        self.prepared.assert_called_once()
+
+    def test_failed_predictor_cannot_hide_behind_historical_success(self):
+        name = self.candidates['roles']['predictor']['service']
+        self.units[name]['ActiveState'] = 'failed'
+        with self.assertRaisesRegex(ValueError, 'ROLE_NOT_RUNNABLE'): self.verify()
+        self.units[name].update(ActiveState='inactive', Result='exit-code', ExecMainStatus='1')
+        with self.assertRaisesRegex(ValueError, 'ROLE_LAST_RUN_FAILED'): self.verify()
+
+    def test_disabled_inactive_or_expired_timer_never_passes(self):
+        name = self.candidates['roles']['evaluator']['timer']; original = dict(self.units[name])
+        for field, value in (('UnitFileState', 'disabled'), ('ActiveState', 'inactive'),
+                             ('NextElapseUSecRealtime', 'infinity')):
+            self.units[name] = {**original, field: value}
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'TIMER_NOT_WAITING'):
+                self.verify()
+
+    def test_changed_effective_command_or_environment_never_passes(self):
+        name = self.candidates['roles']['predictor']['service']; original = dict(self.units[name])
+        self.units[name]['ExecStart'] = '/wrong/command'
+        with self.assertRaisesRegex(ValueError, 'LOADED_ARGV_CHANGED'): self.verify()
+        self.units[name] = {**original, 'Environment': original['Environment'] + ' EXTRA=changed'}
+        with self.assertRaisesRegex(ValueError, 'ROLE_ENVIRONMENT_CHANGED'): self.verify()
+
+    def test_changed_config_or_unit_bytes_never_pass(self):
+        role = self.candidates['roles']['predictor']; config = Path(role['path']); original = config.read_bytes()
+        config.write_bytes(b'changed config')
+        with self.assertRaisesRegex(ValueError, 'ROLE_CONFIG_CHANGED'): self.verify()
+        config.write_bytes(original)
+        unit = self.home / '.config/systemd/user' / role['service']; unit.write_text('changed unit')
+        with self.assertRaisesRegex(ValueError, 'UNIT_BYTES_CONFLICT'): self.verify()
+
+    def test_elapsed_window_is_explicitly_not_new_live_acceptance(self):
+        self.clock.return_value = self.plan['input_end_ms']/1000
+        result = self.verify()
+        self.assertEqual(result['state'], 'REGISTERED_INPUT_WINDOW_ELAPSED_NO_LIVE_ACCEPTANCE')
+        self.native.assert_not_called(); self.assertFalse(result['current100k_p0_closed'])
+
+
 class ActivationSequenceTests(unittest.TestCase):
     """Faults use private plan bytes and mocked service/process boundaries."""
     def setUp(self):

@@ -225,5 +225,36 @@ class StageBoundaryTests(unittest.TestCase):
         evaluator = stage.finite_unit('evaluate', '/new/config.json', '1'*64, '/new/runtime', '/selected/python', 5)
         for item in ('CPUQuota=50%', 'CPUWeight=10', 'MemoryLow=0'): self.assertIn(item, evaluator)
 
+    def test_same_staging_intent_resumes_partial_closure_without_replacing_bytes(self):
+        output = self.root / 'new-stage'; intent = {'candidate_id': 'fixed', 'dataset_sha256': 'a'*64}
+        stage.staging_directory(output, 'STAGING_REQUEST.json', intent)
+        stage.stage_json(output / 'already-verified.json', {'source_sha256': 'b'*64})
+        before = {p.name: p.read_bytes() for p in output.iterdir()}
+        stage.staging_directory(output, 'STAGING_REQUEST.json', intent, resume=True)
+        stage.stage_json(output / 'already-verified.json', {'source_sha256': 'b'*64})
+        stage.stage_json(output / 'remaining.json', {'source_sha256': 'c'*64})
+        for name, raw in before.items(): self.assertEqual((output / name).read_bytes(), raw)
+        self.assertTrue((output / 'remaining.json').exists())
+
+    def test_resume_refuses_changed_intent_unknown_files_or_changed_canonical_bytes(self):
+        from laya_cell.integrity import ContractError
+        output = self.root / 'new-stage'; intent = {'candidate_id': 'fixed'}
+        stage.staging_directory(output, 'STAGING_REQUEST.json', intent)
+        with self.assertRaisesRegex(ValueError, 'STAGING_REQUEST_CHANGED'):
+            stage.staging_directory(output, 'STAGING_REQUEST.json', {'candidate_id': 'replacement'}, resume=True)
+        path = output / 'config.json'; path.write_text('partial or changed'); path.chmod(0o400)
+        with self.assertRaisesRegex(ContractError, 'IMMUTABLE_STAGING_JSON_CHANGED'):
+            stage.stage_json(path, {'complete': True})
+        self.assertEqual(path.read_text(), 'partial or changed')
+        unknown = self.root / 'old-unbound-stage'; unknown.mkdir(mode=0o700)
+        (unknown / 'unknown.json').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'STAGING_INTENT_MISSING_REQUIRES_INSPECTION'):
+            stage.staging_directory(unknown, 'STAGING_REQUEST.json', intent, resume=True)
+
+    def test_empty_directory_after_interrupt_before_intent_is_resumable(self):
+        output = self.root / 'empty-stage'; output.mkdir(mode=0o700)
+        stage.staging_directory(output, 'STAGING_REQUEST.json', {'candidate_id': 'fixed'}, resume=True)
+        self.assertTrue((output / 'STAGING_REQUEST.json').is_file())
+
 
 if __name__ == '__main__': unittest.main()

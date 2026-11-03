@@ -342,6 +342,34 @@ class WakeCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'FINITE_DEADLINE_REQUIRED'):
             self.prepare()
 
+    def test_interrupted_pure_wake_publication_resumes_identical_pins(self):
+        from laya_cell import immutable_files
+        real = immutable_files.write_immutable; result = self.prepare(); output = self.root / 'wake'
+        def interrupted(path, *args, **kwargs):
+            if path.name == result['timer_name'] + '.candidate':
+                raise RuntimeError('injected staging interruption')
+            return real(path, *args, **kwargs)
+        with patch.object(immutable_files, 'write_immutable', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'injected staging interruption'):
+                precheck.publish_wake(output, result)
+        service = output / (result['service_name'] + '.candidate'); before = service.read_bytes()
+        self.assertFalse((output / 'WAKE_STAGE.json').exists())
+        recovered = precheck.publish_wake(output, result, resume=True)
+        self.assertEqual(service.read_bytes(), before)
+        self.assertEqual(json.loads((output / 'WAKE_STAGE.json').read_bytes()), recovered)
+        self.assertFalse(recovered['registration_performed']); self.assertFalse(recovered['installed'])
+
+    def test_wake_resume_cannot_change_deadline_or_existing_unit_bytes(self):
+        from laya_cell.integrity import ContractError
+        result = self.prepare(); output = self.root / 'wake'; precheck.publish_wake(output, result)
+        with self.assertRaisesRegex(ValueError, 'STAGING_REQUEST_CHANGED'):
+            precheck.publish_wake(output, {**result, 'deadline_ms': result['deadline_ms']+1}, resume=True)
+        service = output / (result['service_name'] + '.candidate')
+        service.chmod(0o600); service.write_text('changed unit'); service.chmod(0o400)
+        with self.assertRaisesRegex(ContractError, 'IMMUTABLE_WAKE_STAGING_BYTES_CHANGED'):
+            precheck.publish_wake(output, result, resume=True)
+        self.assertEqual(service.read_text(), 'changed unit')
+
 
 if __name__ == '__main__':
     unittest.main()

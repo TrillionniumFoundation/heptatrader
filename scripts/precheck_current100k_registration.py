@@ -482,6 +482,29 @@ def wake_candidates(stage_path, stage_sha256, deadline_ms, mode='precheck', read
         'physical_wakeup_guaranteed': False, 'catch_up_requires_running_user_manager': True}
 
 
+def publish_wake(output, result, *, resume=False):
+    from laya_cell.stage_current100k_warm_flat import staging_directory
+    from laya_cell.immutable_files import write_immutable
+    output = Path(output); result = dict(result)
+    documents = {result['service_name'] + '.candidate': result['service'].encode(),
+                 result['timer_name'] + '.candidate': result['timer'].encode()}
+    result['files'] = {name: hashlib.sha256(raw).hexdigest() for name, raw in documents.items()}
+    documents['WAKE_STAGE.json'] = (json.dumps(result, sort_keys=True, indent=2) + '\n').encode()
+    staging_directory(output, 'WAKE_STAGING_REQUEST.json', {
+        'schema': 'heptatrader.current100k-wake-staging-request.v1',
+        'stage': result['stage'], 'stage_sha256': result['stage_sha256'], 'mode': result['mode'],
+        'selection_request_sha256': result['selection_request_sha256'], 'deadline_ms': result['deadline_ms'],
+        'files_sha256': {name: hashlib.sha256(raw).hexdigest() for name, raw in documents.items()},
+        'registration_performed': False, 'services_changed': [],
+    }, resume=resume)
+    for name, raw in documents.items():
+        write_immutable(output / name, raw, 0o400, 'IMMUTABLE_WAKE_STAGING_BYTES_CHANGED')
+    fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', type=Path, required=True)
@@ -491,25 +514,13 @@ def main():
     parser.add_argument('--readmission-seconds', type=int, default=0)
     parser.add_argument('--selection-request', type=Path); parser.add_argument('--selection-request-sha256')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--resume-staging', action='store_true')
     args = parser.parse_args()
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     result = wake_candidates(args.stage, args.stage_sha256, args.deadline_ms, args.mode, args.readmission_seconds,
                              args.selection_request, args.selection_request_sha256)
     output = args.output
-    need(output.is_absolute() and output.resolve() == output and not output.exists(),
-         'NEW_WAKE_EVIDENCE_DIRECTORY_REQUIRED')
-    output.mkdir(mode=0o700, parents=True)
-    documents = {result['service_name'] + '.candidate': result['service'].encode(),
-                 result['timer_name'] + '.candidate': result['timer'].encode()}
-    result['files'] = {name: hashlib.sha256(raw).hexdigest() for name, raw in documents.items()}
-    documents['WAKE_STAGE.json'] = (json.dumps(result, sort_keys=True, indent=2) + '\n').encode()
-    for name, raw in documents.items():
-        fd = os.open(output / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY)
-    try: os.fsync(fd)
-    finally: os.close(fd)
+    result = publish_wake(output, result, resume=args.resume_staging)
     print(json.dumps({'state': 'WAKE_CANDIDATE_PREPARED_NOT_INSTALLED', 'receipt': str(output / 'WAKE_STAGE.json'),
                       'service': result['service_name'], 'timer': result['timer_name'],
                       'calendar_utc': result['calendar_utc'], 'registration_performed': False}, sort_keys=True))

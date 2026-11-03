@@ -135,6 +135,31 @@ def checked(path, limit=64 * 1024 * 1024):
              == identity(path.lstat()), 'INPUT_CHANGED_DURING_READ')
     return raw
 
+
+def stage_json(path, value):
+    """No partial canonical JSON name is exposed by a killed pure stager."""
+    from historical_training.common import canonical
+    from laya_cell.immutable_files import write_immutable
+    path = Path(path)
+    write_immutable(path, canonical(value)+b'\n', 0o400, 'IMMUTABLE_STAGING_JSON_CHANGED')
+
+
+def staging_directory(output, name, request, *, resume=False):
+    """Resume only an identical staging intent; unknown existing bytes stay put."""
+    from historical_training.common import canonical
+    output = Path(output)
+    need(output.is_absolute() and output.resolve() == output, 'CANONICAL_STAGING_DIRECTORY_REQUIRED')
+    if output.exists():
+        info = output.lstat()
+        need(resume and stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+             and not info.st_mode & 0o077, 'EXPLICIT_PRIVATE_STAGING_RESUME_REQUIRED')
+        if any(output.iterdir()):
+            need((output / name).is_file(), 'STAGING_INTENT_MISSING_REQUIRES_INSPECTION')
+            need(checked(output / name) == canonical(request)+b'\n', 'STAGING_REQUEST_CHANGED')
+    else:
+        output.mkdir(mode=0o700, parents=True)
+    stage_json(output / name, request)
+
 def assemble_files(repo, original, wrapper):
     from laya_cell.install_resident import runtime_files, retained_hip_manifest
     from historical_training.install_consumer import runtime_inventory
@@ -262,6 +287,7 @@ def main():
     p.add_argument('--legacy-plan', type=Path, action='append', required=True)
     p.add_argument('--registration-scope', choices=('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE'),
                    default='SAME_PRODUCER_REFIT')
+    p.add_argument('--resume-staging', action='store_true')
     a = p.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     for path, wanted in ((a.fit_stage, a.fit_stage_sha256),
@@ -276,7 +302,8 @@ def main():
     need(Path(__file__).resolve() == repo / 'research/neuron_learning/laya_cell/stage_current100k_warm_flat.py',
          'STAGER_MUST_RUN_FROM_SELECTED_CLEAN_SOURCE')
     sys.path[:0] = [str(repo / part) for part in ('research', 'research/neuron_learning', 'scripts')]
-    from historical_training.common import read, digest, canonical, write_once
+    from historical_training.common import read, digest, canonical
+    write_once = stage_json
     from historical_training.current100k import validate_config
     from historical_training.resident_resource_guard import verify_config
     from laya_cell.current100k_forward import validate_value_candidate
@@ -337,7 +364,8 @@ def main():
              ('state_root', 'manual_hold_path', 'resource_rule', 'max_heavy_workers', 'period_path', 'period_sha256')),
          'ORIGINAL_SHARED_HEAVY_LEASE_OR_RESOURCE_POLICY_CHANGED')
     for directory in (a.forward_root, a.evidence_root):
-        need(directory.is_absolute() and directory.resolve() == directory and not directory.exists()
+        need(directory.is_absolute() and directory.resolve() == directory
+             and (not directory.exists() or (directory == a.evidence_root and a.resume_staging))
              and not directory.is_relative_to(Path(prior['registry_root'])), 'NEW_SEPARATE_FORWARD_AND_EVIDENCE_ROOTS_REQUIRED')
 
     prior_training = {'dataset_path': str(dataset_path), 'read_only_paths': training_readonly_paths(data, dataset_path)}
@@ -358,6 +386,17 @@ def main():
     inventory['bin/current100k-warm-launch.py'] = hashlib.sha256(launcher).hexdigest()
     release_id = digest(inventory)
     release = Path.home() / '.local/share/heptatrader/current100k-forward/releases' / release_id
+    staging_directory(a.evidence_root, 'STAGING_REQUEST.json', {
+        'schema': 'heptatrader.current100k-warm-staging-request.v1', 'source_commit': a.expected_head,
+        'fit_stage': str(a.fit_stage), 'fit_stage_sha256': a.fit_stage_sha256,
+        'prior_forward_stage': str(a.prior_forward_stage), 'prior_forward_stage_sha256': a.prior_forward_stage_sha256,
+        'guard_config': str(a.guard_config), 'guard_config_sha256': a.guard_config_sha256,
+        'candidate_id': a.candidate_id, 'dataset_sha256': a.dataset_sha256,
+        'legacy_plans_sha256': {str(path): sha(path) for path in a.legacy_plan},
+        'registration_scope': a.registration_scope, 'forward_root': str(a.forward_root),
+        'release': str(release), 'runtime_inventory_sha256': release_id,
+        'training_performed': False, 'registration_performed': False, 'broker_orders_sent': 0,
+    }, resume=a.resume_staging)
     for name, wanted in inventory.items():
         target = release / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         value = launcher if name == 'bin/current100k-warm-launch.py' else files[name]
@@ -367,7 +406,7 @@ def main():
         'release_id': release_id, 'source_commit': a.expected_head, 'fit_source_commit': fit['source_commit'], 'files': inventory})
     new_fit = {**fit, 'source_commit': a.expected_head, 'runtime_directory': str(release),
         'period_sha256': owner['period_sha256'], 'guard_config': str(a.guard_config), 'guard_config_sha256': a.guard_config_sha256}
-    configs = {}; paths = {}; a.evidence_root.mkdir(mode=0o700, parents=True)
+    configs = {}; paths = {}
     for role, original in originals.items():
         config = role_configuration(original, new_fit, consumer, producer, release, inventory,
                                             a.forward_root, candidate_dir, dataset_path)
@@ -390,20 +429,25 @@ def main():
     environment = dict(os.environ, PYTHONPATH=':'.join(str(release / part) for part in ('research', 'learn', 'scripts')),
         PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='2', HF_HUB_OFFLINE='1',
         TRANSFORMERS_OFFLINE='1', USE_TF='0')
-    launch = str(release / 'bin/current100k-warm-launch.py'); argv = {}; proofs = {}
+    launch = str(release / 'bin/current100k-warm-launch.py'); argv = {}; proofs = {}; proof_files = {}
     for role, mode in (('registrar', 'register'), ('predictor', 'predict'), ('evaluator', 'evaluate')):
         python = fit['python'] if mode == 'predict' else '/usr/bin/python3'
         command = [python, '-B', launch, '--config', str(paths[role]), '--sha256', sha(paths[role]), '--mode', mode]
         result = subprocess.run([*command, '--check-only'], cwd=release, env=environment,
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
-        write_once(a.evidence_root / ('CPU_CHECK_' + role + '.json'), {'returncode': result.returncode,
-            'stdout': result.stdout[:131072], 'stderr': result.stderr[:131072], 'argv': [*command, '--check-only']})
+        check_result = {'returncode': result.returncode, 'stdout': result.stdout[:131072],
+            'stderr': result.stderr[:131072], 'argv': [*command, '--check-only']}
+        # A failed CPU check is evidence, not a partially published model or
+        # trial. Keep it immutable and allow a later same-pin check to succeed.
+        proof_path = a.evidence_root / ('CPU_CHECK_' + role + '-' + digest(check_result) + '.json')
+        write_once(proof_path, check_result)
         need(result.returncode == 0, 'WARM_CPU_CHECK_FAILED:' + role)
         proof = json.loads(result.stdout)
         need(proof['state'] == 'CPU_FORWARD_CLOSURE_VERIFIED' and proof['gpu_loaded'] is False
              and proof['worker_admission_granted'] is False
              and proof['loader'] == str(release / 'learn/laya_cell/resident_hip_runtime.py'), 'WARM_CPU_LOADER_OR_SCOPE_CHANGED')
         argv[role] = command; proofs[role] = proof
+        proof_files[role] = {'path': str(proof_path), 'sha256': sha(proof_path)}
     argv['registrar'] += ['--request', str(request_path), '--request-sha256', sha(request_path)]
     units = {}
     for role, mode in (('predictor', 'predict'), ('evaluator', 'evaluate')):
@@ -429,7 +473,8 @@ def main():
         'registration_precheck_argv': [*argv['registrar'], '--registration-precheck'],
         'configs': {role: {'path': str(path), 'sha256': sha(path)} for role, path in paths.items()},
         'registration_request': str(request_path), 'registration_request_sha256': sha(request_path),
-        'explicit_argv': argv, 'pythonpath': environment['PYTHONPATH'], 'cpu_checks': proofs, 'unit_candidates': units,
+        'explicit_argv': argv, 'pythonpath': environment['PYTHONPATH'], 'cpu_checks': proofs,
+        'cpu_check_receipts': proof_files, 'unit_candidates': units,
         'guard_config': str(a.guard_config), 'guard_config_sha256': a.guard_config_sha256,
         'guard_priority_changed': False, 'unit_installed': False, 'services_changed': [], 'keys_created': 0,
         'old_plans_modified': False, 'gpu_loaded': False, 'candidate_retrained': False,

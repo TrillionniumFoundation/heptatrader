@@ -153,7 +153,8 @@ def native_unit(name, budget=None):
     need(re.fullmatch(r'heptatrader-current100k-warm-trial(?:[2-9]|[1-9][0-9]+)-(predictor|evaluator)\.(service|timer)', name),
          'WARM_ACTIVATION_UNIT_NAME_SCOPE')
     keys = ('LoadState', 'ActiveState', 'SubState', 'FragmentPath', 'DropInPaths',
-            'NeedDaemonReload', 'ExecStart', 'UnitFileState', 'MainPID', 'NextElapseUSecRealtime')
+            'NeedDaemonReload', 'ExecStart', 'UnitFileState', 'MainPID', 'NextElapseUSecRealtime',
+            'WorkingDirectory', 'Environment', 'Type', 'Result', 'ExecMainStatus')
     result = subprocess.run(['systemctl', '--user', 'show', name, '--no-pager',
         '--property=' + ','.join(keys)], text=True, capture_output=True, timeout=budget.timeout(15) if budget is not None else 15)
     values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
@@ -236,6 +237,56 @@ def enable_roles(candidates, deadline_ms, budget):
     return selected_unit_bytes(candidates, require_loaded=True, budget=budget)
 
 
+def verify_native_execution(stage_path, stage_sha256):
+    """Read-only live acceptance, distinct from a historical activation receipt."""
+    from current100k_priority_activation import _inputs, verify_prepared_priority, _environment
+    stage, configs, request = stage_inputs(stage_path, stage_sha256)
+    observed = registration_state(configs['registrar'], request)
+    need(observed['state'] == 'PUBLISHED', 'WARM_LIVE_SIGNED_PLAN_REQUIRED')
+    plan = observed['plan']; root = Path(stage['forward_root'])
+    plan_path = root / 'plans' / plan['plan_id'] / 'plan.json'
+    plan_sha = hashlib.sha256(owned_bytes(plan_path)).hexdigest()
+    status = json.loads(owned_bytes(root / 'activation-status.json'))
+    need(status.get('state') == 'SAME_PLAN_NATIVE_WARM_EXECUTION_SCHEDULED'
+         and status.get('plan_id') == plan['plan_id'] and status.get('plan_path') == str(plan_path)
+         and status.get('plan_sha256') == plan_sha, 'WARM_LIVE_ACTIVATION_RECEIPT_CHANGED')
+    now = int(time.time()*1000)
+    if now >= plan['input_end_ms']:
+        return {'state': 'REGISTERED_INPUT_WINDOW_ELAPSED_NO_LIVE_ACCEPTANCE',
+            'plan_id': plan['plan_id'], 'trial': plan['trial'], 'plan_path': str(plan_path),
+            'plan_sha256': plan_sha, 'at_ms': now, 'current100k_p0_closed': False,
+            'original_window_modified': False, 'broker_orders_sent': 0}
+    priority, _ = _inputs(stage, configs['registrar'], plan_path, plan)
+    verify_prepared_priority(stage, configs['registrar'], plan_path, plan, priority)
+    candidates = role_candidates(stage, configs, plan, priority)
+    need(status.get('unit_sha256') == {name: hashlib.sha256(raw).hexdigest() for name, raw in candidates['units'].items()}
+         and status.get('configs') == {role: {key: value for key, value in info.items() if key != 'config'}
+             for role, info in candidates['roles'].items()}, 'WARM_LIVE_ROLE_BINDING_CHANGED')
+    for path, raw in candidates['documents'].items():
+        need(owned_bytes(path) == raw, 'WARM_LIVE_ROLE_CONFIG_CHANGED:' + path)
+    units = selected_unit_bytes(candidates, require_loaded=True)
+    for role, info in candidates['roles'].items():
+        current = units[info['service']]
+        need(current.get('Type') == 'oneshot' and current.get('WorkingDirectory') == stage['release']
+             and current.get('ActiveState') in ('inactive', 'active', 'activating'),
+             'WARM_LIVE_ROLE_NOT_RUNNABLE:' + role)
+        if current['ActiveState'] == 'inactive':
+            need(current.get('Result') == 'success' and current.get('ExecMainStatus') == '0',
+                 'WARM_LIVE_ROLE_LAST_RUN_FAILED:' + role)
+        expected_environment = {}
+        for line in candidates['units'][info['service']].decode().splitlines():
+            if line.startswith('Environment='):
+                expected_environment.update(_environment(line.removeprefix('Environment=')))
+        need(_environment(current.get('Environment', '')) == expected_environment,
+             'WARM_LIVE_ROLE_ENVIRONMENT_CHANGED:' + role)
+    return {'state': 'REGISTERED_NATIVE_EXECUTION_LIVE_VERIFIED', 'plan_id': plan['plan_id'],
+        'trial': plan['trial'], 'plan_path': str(plan_path), 'plan_sha256': plan_sha, 'at_ms': now,
+        'activation_before_input_start': status['activation_before_input_start'],
+        'units': units, 'role_configs_verified': True, 'timers_enabled_active_and_next_event_verified': True,
+        'current100k_p0_closed': False, 'same_request_preopen_prediction_chain_verified': False,
+        'registration_performed': False, 'services_changed': [], 'broker_orders_sent': 0}
+
+
 def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadline_ms):
     import stat
     from current100k_priority_activation import (precheck_shared_priority, prepare_priority,
@@ -310,10 +361,17 @@ def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadlin
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', type=Path, required=True); parser.add_argument('--stage-sha256', required=True)
-    parser.add_argument('--selection-request', type=Path, required=True); parser.add_argument('--selection-request-sha256', required=True)
-    parser.add_argument('--wake-deadline-ms', type=int, required=True)
+    parser.add_argument('--selection-request', type=Path); parser.add_argument('--selection-request-sha256')
+    parser.add_argument('--wake-deadline-ms', type=int)
+    parser.add_argument('--verify-native-execution', action='store_true')
     args = parser.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
+    if args.verify_native_execution:
+        need(args.selection_request is None and args.selection_request_sha256 is None
+             and args.wake_deadline_ms is None, 'WARM_LIVE_READ_ONLY_MODE_CONFLICT')
+        print(json.dumps(verify_native_execution(args.stage, args.stage_sha256), sort_keys=True)); return
+    need(args.selection_request is not None and args.selection_request_sha256 is not None
+         and args.wake_deadline_ms is not None, 'WARM_ACTIVATION_EXPLICIT_INPUTS_REQUIRED')
     print(json.dumps(activate(args.stage, args.stage_sha256, args.selection_request,
         args.selection_request_sha256, args.wake_deadline_ms), sort_keys=True))
 
