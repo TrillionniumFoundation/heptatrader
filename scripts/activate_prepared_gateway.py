@@ -41,6 +41,7 @@ MIN_TTL_MS = 4 * 60 * 60 * 1000 + 120000
 MAX_AUDIT_AGE_MS = 5000
 AUDIT_MAXIMUM_BYTES = 1024 * 1024 * 1024
 AUDIT_OFFLINE_TIMEOUT_SECONDS = 300
+GATEWAY_READINESS_TIMEOUT_SECONDS = 35
 LANES = {"EUR.USD": ("paper-driver", "paper.token"), "BTC.USD": ("crypto-driver", "crypto.token")}
 
 
@@ -493,13 +494,13 @@ def fresh_audit(plan, environment, owner):
             ("source", "authoritative", "owner_fenced", "owner_recovery_only", "native_new_risk_guard_blocked", "mutation_ready")}}
 
 
-def read_tool(plan, environment, owner, tool, *fields):
+def read_tool(plan, environment, owner, tool, *fields, timeout_seconds=12):
     binary = pinned(plan["reader"])
     try:
         result = subprocess.run([str(binary), "--socket", environment["HEPTA_TOOL_SOCKET"],
             "--token-file", owner["token_path"], "--io-timeout-ms", "4000", "--call-id", "gateway-status-" + uuid.uuid4().hex,
             "call", tool, *fields],
-            capture_output=True, timeout=12)
+            capture_output=True, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as error:
         read_tool_failure(tool, "TIMEOUT", stdout=error.output, stderr=error.stderr, timeout=error.timeout)
     except OSError as error:
@@ -566,7 +567,12 @@ def read_tool_failure(tool, kind, result=None, *, stdout=None, stderr=None, os_e
         # Keep the original timeout type/budget without exposing its argv or
         # retaining partial output. Existing callers still see a timeout.
         raise subprocess.TimeoutExpired(message, timeout) from None
-    raise RuntimeError(message) from None
+    error = RuntimeError(message)
+    # Keep the public exception type and bounded diagnostic text. The startup
+    # observer uses these structured fields, never substring-matches an error.
+    error.native_read_tool = tool
+    error.native_read_details = details
+    raise error from None
 
 
 def original_command(plan, environment, owner, audit):
@@ -870,6 +876,62 @@ def start_gateway(binary):
                 raise
         time.sleep(0.2)
     fail("GATEWAY_STARTUP_NOT_STABLE")
+
+
+def wait_gateway_readiness(plan, snapshot, state, context):
+    """Wait only for the already-observed Gateway's first read endpoint.
+
+    A stable native process can still be loading retained audit history. Only
+    the pinned reader's exact, empty-reply connect failure is retryable here.
+    Owner audits and control RPCs remain outside this loop and keep their
+    existing freshness/unknown-outcome handling.
+    """
+    expected = state["gateway_started"]
+    owner = snapshot["owners"][0]
+    deadline = time.monotonic() + GATEWAY_READINESS_TIMEOUT_SECONDS
+    lease_deadline = snapshot["deadline"]
+    last_error = None
+
+    def remaining():
+        if snapshot["deadline"] != lease_deadline:
+            fail("GATEWAY_READINESS_DEADLINE_CHANGED")
+        lease_budget = (lease_deadline - now_ms() - MIN_TTL_MS) / 1000
+        if lease_budget <= 0:
+            fail("MAINTENANCE_TTL_BUDGET_EXHAUSTED")
+        budget = min(deadline - time.monotonic(), lease_budget)
+        if budget <= 0:
+            fail("GATEWAY_READINESS_TIMEOUT" + (":" + str(last_error) if last_error else ""))
+        return budget
+
+    while True:
+        remaining()
+        context()
+        same_gateway(expected, gateway(expected["binary"]))
+        budget = remaining()
+        try:
+            read_tool(plan, snapshot["environment"], owner, "system.get_health",
+                timeout_seconds=min(12, budget))
+        except RuntimeError as error:
+            # rc=4, no stdout and this literal stderr are the observed pinned
+            # native connect failure. Permission, identity, native rejection,
+            # malformed reply and I/O/handler timeouts must still fail closed.
+            if (type(error) is not RuntimeError
+                    or getattr(error, "native_read_tool", None) != "system.get_health"
+                    or getattr(error, "native_read_details", None) != {
+                        "kind": "REPLY_NOT_CONFIRMED", "returncode": 4,
+                        "stdout_bytes": 0, "stderr_bytes": 22,
+                        "client_reason": "SOCKET_CONNECT_FAILED", "status": "UNKNOWN",
+                        "tool_matches": False, "payload_object": False}):
+                raise
+            last_error = error
+        else:
+            last_error = None
+        context()
+        same_gateway(expected, gateway(expected["binary"]))
+        budget = remaining()
+        if last_error is None:
+            return
+        time.sleep(min(0.2, budget))
 
 
 def observe_controller_start(owner, first=None):
@@ -1900,6 +1962,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 actual_environment = configured_environment(snapshot["environment"])
             if actual_environment != snapshot["environment"]:
                 fail("NEW_GATEWAY_ENVIRONMENT_CHANGED")
+            wait_gateway_readiness(plan, snapshot, state, context)
             for owner in snapshot["owners"]:
                 check_transition_catalog(plan, snapshot, state)
                 resume_owner(plan, snapshot, owner, state, save, context)

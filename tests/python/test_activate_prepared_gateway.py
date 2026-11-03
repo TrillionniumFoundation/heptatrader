@@ -347,6 +347,60 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertFalse(any(self.policy_path(unit).exists() for unit in self.units))
         self.assertTrue(all(unit["RefuseManualStop"] == "yes" for unit in self.units.values()))
 
+    def test_gateway_socket_startup_wait_keeps_one_fence_start_and_resume(self):
+        pending_reads = 0
+        def native(argv, **kwargs):
+            nonlocal pending_reads
+            result = self.native_call(argv, **kwargs)
+            if ("system.get_health" in argv and self.current_binary == self.packages["candidate"]["binary"]
+                    and pending_reads < 2):
+                pending_reads += 1
+                return subprocess.CompletedProcess(argv, 4, b"", b"SOCKET_CONNECT_FAILED\n")
+            return result
+        with mock.patch.object(gateway.subprocess, "run", native):
+            result = self.run_upgrade()
+        self.assertEqual(result["status"], "COMPLETE", result)
+        self.assertEqual(pending_reads, 2)
+        self.assertEqual(self.resume_count, 1)
+        self.assertEqual(sum("recovery-query" in event for event in self.events), 1)
+        self.assertEqual(self.events.count(("start", gateway.GATEWAY)), 1)
+        self.assertEqual(self.events.count(("stop", "--no-block", gateway.GATEWAY)), 1)
+        self.assertFalse(any(event[0] in ("start", "stop") and event[-1] in
+            (gateway.EXECUTION, gateway.driver.BROKER_UNIT) for event in self.events))
+
+    def test_gateway_socket_timeout_keeps_verified_seal_and_same_plan_resume_does_not_replay(self):
+        self.enable_audit_fixture()
+        def native(argv, **kwargs):
+            result = self.audit_native_call(argv, **kwargs)
+            if "system.get_health" in argv and self.current_binary == self.packages["candidate"]["binary"]:
+                return subprocess.CompletedProcess(argv, 4, b"", b"SOCKET_CONNECT_FAILED\n")
+            return result
+        with mock.patch.object(gateway, "GATEWAY_READINESS_TIMEOUT_SECONDS", 0.45):
+            with mock.patch.object(gateway.subprocess, "run", native):
+                result = self.run_upgrade()
+        self.assertEqual(result["status"], "HELD", result)
+        self.assertEqual(result["phase"], "GATEWAY_STARTED")
+        self.assertIn("GATEWAY_READINESS_TIMEOUT", result["error"])
+        self.assertEqual(result["audit_seal"]["status"], "VERIFIED")
+        self.assertEqual(self.resume_count, 0)
+        self.assertEqual(self.audit_seals, 1)
+        checkpoint_path = self.hold.parent / gateway.CHECKPOINT
+        before = json.loads(checkpoint_path.read_text())
+        controls = [event for event in self.events if event[0] in ("start", "stop")]
+        fences = sum("recovery-query" in event for event in self.events)
+        result = self.run_upgrade(resume=True)
+        self.assertEqual(result["status"], "COMPLETE", result)
+        after = json.loads(checkpoint_path.read_text())
+        self.assertEqual(after["audit_seal"], before["audit_seal"])
+        self.assertEqual(after["gateway_started"], before["gateway_started"])
+        # The driver starts once after readiness; no Gateway/Broker/Execution
+        # stop/start, original owner fence or offline seal is repeated.
+        remaining_controls = [event for event in self.events if event[0] in ("start", "stop")]
+        self.assertEqual(remaining_controls, controls + [("start", self.driver_unit)])
+        self.assertEqual(sum("recovery-query" in event for event in self.events), fences)
+        self.assertEqual(self.audit_seals, 1)
+        self.assertEqual(self.resume_count, 1)
+
     def test_audit_same_binary_maintenance_and_complete_reentry_preserve_producer(self):
         self.enable_audit_fixture()
         for package in self.packages.values():
@@ -668,7 +722,7 @@ class GatewayUpgradeTests(unittest.TestCase):
         self.assertEqual(failed_reads, 1)
         self.assertEqual(self.resume_count, 0)
         checkpoint = json.loads((self.root / "operator-maintenance" / gateway.CHECKPOINT).read_text())
-        self.assertFalse(checkpoint["owner_progress"][self.owner["token_sha256"]].get("resume_sent"))
+        self.assertFalse(checkpoint.get("owner_progress", {}).get(self.owner["token_sha256"], {}).get("resume_sent"))
         controls = [event for event in self.events if event and event[0] in ("start", "stop")
             and event[-1] in (gateway.GATEWAY, gateway.EXECUTION, gateway.driver.BROKER_UNIT)]
         fences = sum("recovery-query" in event for event in self.events)
@@ -1490,6 +1544,175 @@ class GatewayReadDiagnosticsTests(unittest.TestCase):
                     Path("/fixture/heptactl"), FileNotFoundError(2, "secret-output")]) as pin:
                 self.failure(error=error, error_type=type(error))
                 pin.assert_called_once_with(self.plan["reader"])
+
+
+class GatewayReadinessObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = 0.0
+        self.binary = {"path": "/fixture/candidate", "sha256": "a" * 64}
+        self.observed = {"status": {"MainPID": "777", "InvocationID": "new-invocation", "NRestarts": "0"},
+            "pid_key": ("777", "123"), "binary": self.binary}
+        self.plan = {"reader": {"path": "/fixture/heptactl", "sha256": "b" * 64}}
+        self.snapshot = {"environment": {"HEPTA_TOOL_SOCKET": "/private/gateway.sock"},
+            "owners": [{"token_path": "/private/secret-token"}],
+            "deadline": 1000000 + gateway.MIN_TTL_MS + 3600000}
+        self.state = {"gateway_started": copy.deepcopy(self.observed)}
+        self.context = mock.Mock()
+        self.patches = contextlib.ExitStack(); self.addCleanup(self.patches.close)
+        self.patches.enter_context(mock.patch.object(gateway, "time", types.SimpleNamespace(
+            monotonic=lambda: self.clock, sleep=self.sleep)))
+        self.patches.enter_context(mock.patch.object(gateway, "now_ms", lambda: 1000000 + int(self.clock * 1000)))
+        self.patches.enter_context(mock.patch.object(gateway, "pinned", return_value=Path("/fixture/heptactl")))
+        self.observe = self.patches.enter_context(mock.patch.object(gateway, "gateway", return_value=self.observed))
+        self.control = self.patches.enter_context(mock.patch.object(gateway.driver, "ctl"))
+        self.rpc = self.patches.enter_context(mock.patch.object(gateway, "rpc"))
+
+    def sleep(self, seconds):
+        self.clock += seconds
+
+    @staticmethod
+    def pending():
+        return subprocess.CompletedProcess([], 4, b"", b"SOCKET_CONNECT_FAILED\n")
+
+    @staticmethod
+    def ready():
+        return subprocess.CompletedProcess([], 0,
+            b'{"status":"ok","tool":"system.get_health","payload":{"fixture":true}}', b"")
+
+    def wait(self):
+        return gateway.wait_gateway_readiness(self.plan, self.snapshot, self.state, self.context)
+
+    def test_immediate_ready_preserves_state_and_performs_only_one_read(self):
+        original = copy.deepcopy((self.plan, self.snapshot, self.state))
+        with mock.patch.object(gateway.subprocess, "run", return_value=self.ready()) as run:
+            self.assertIsNone(self.wait())
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.context.call_count, 2)
+        self.assertEqual(self.observe.call_count, 2)
+        self.assertEqual(run.call_args.args[0][-2:], ["call", "system.get_health"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 12)
+        self.assertEqual((self.plan, self.snapshot, self.state), original)
+        self.rpc.assert_not_called(); self.control.assert_not_called()
+        self.assertEqual(self.clock, 0)
+
+    def test_exact_connect_failure_waits_for_same_process_without_control_replay(self):
+        with mock.patch.object(gateway.subprocess, "run", side_effect=[
+                self.pending(), self.pending(), self.ready()]) as run:
+            self.wait()
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(self.context.call_count, 6)
+        self.assertEqual(self.observe.call_count, 6)
+        self.assertAlmostEqual(self.clock, 0.4)
+        self.rpc.assert_not_called(); self.control.assert_not_called()
+
+    def test_rejections_bad_replies_other_client_errors_and_wrong_rc_do_not_retry(self):
+        rejection = {"status": "error", "tool": "system.get_health", "reason_code": "READ_TOOL_FAILED",
+            "detail": "unready is not a connection failure", "order_id": -1, "payload": None}
+        failures = [
+            subprocess.CompletedProcess([], 6, b"", b"SOCKET_CONNECT_FAILED\n"),
+            subprocess.CompletedProcess([], 4, b"{}", b"SOCKET_CONNECT_FAILED\n"),
+            subprocess.CompletedProcess([], 4, b"", b"SOCKET_CONNECT_FAILED"),
+            subprocess.CompletedProcess([], 4, b"", b"FRAME_HEADER_TIMEOUT\n"),
+            subprocess.CompletedProcess([], 4, b"", b"DISCOVERY_LIST_REJECTED\n"),
+            subprocess.CompletedProcess([], 9, json.dumps(rejection).encode(), b""),
+            subprocess.CompletedProcess([], 0, b"malformed-json", b""),
+        ]
+        for result in failures:
+            with self.subTest(rc=result.returncode, stderr=result.stderr):
+                with mock.patch.object(gateway.subprocess, "run", return_value=result) as run:
+                    with self.assertRaisesRegex(RuntimeError, "NATIVE_READ_NOT_CONFIRMED"):
+                        self.wait()
+                run.assert_called_once()
+                self.assertEqual(self.clock, 0)
+        self.rpc.assert_not_called(); self.control.assert_not_called()
+
+    def test_os_error_and_timeout_remain_immediate_failures(self):
+        for error in (PermissionError(13, "private process"), FileNotFoundError(2, "private reader"),
+                subprocess.TimeoutExpired(["private reader"], 12)):
+            with self.subTest(kind=type(error).__name__):
+                with mock.patch.object(gateway.subprocess, "run", side_effect=error) as run:
+                    with self.assertRaises(type(error)):
+                        self.wait()
+                run.assert_called_once()
+                self.assertEqual(self.clock, 0)
+
+    def test_matching_text_without_structured_reader_provenance_does_not_retry(self):
+        try:
+            with mock.patch.object(gateway.subprocess, "run", return_value=self.pending()):
+                gateway.read_tool(self.plan, self.snapshot["environment"], self.snapshot["owners"][0], "system.get_health")
+        except RuntimeError as error:
+            message = str(error)
+        with mock.patch.object(gateway, "read_tool", side_effect=RuntimeError(message)) as read:
+            with self.assertRaisesRegex(RuntimeError, "SOCKET_CONNECT_FAILED"):
+                self.wait()
+            read.assert_called_once()
+        self.assertEqual(self.clock, 0)
+
+    def test_persistent_connect_failure_has_bounded_reads_and_probe_timeout(self):
+        with mock.patch.object(gateway, "GATEWAY_READINESS_TIMEOUT_SECONDS", 0.45):
+            with mock.patch.object(gateway.subprocess, "run", return_value=self.pending()) as run:
+                with self.assertRaisesRegex(RuntimeError, "GATEWAY_READINESS_TIMEOUT.*SOCKET_CONNECT_FAILED"):
+                    self.wait()
+        self.assertEqual(run.call_count, 3)
+        budgets = [item.kwargs["timeout"] for item in run.call_args_list]
+        self.assertAlmostEqual(budgets[0], 0.45)
+        self.assertAlmostEqual(budgets[-1], 0.05)
+        self.assertAlmostEqual(self.clock, 0.45)
+        self.rpc.assert_not_called(); self.control.assert_not_called()
+
+    def test_marker_or_native_context_drift_aborts_before_another_probe(self):
+        self.context.side_effect = [None, RuntimeError("MAINTENANCE_MARKERS_CHANGED")]
+        with mock.patch.object(gateway.subprocess, "run", return_value=self.pending()) as run:
+            with self.assertRaisesRegex(RuntimeError, "MAINTENANCE_MARKERS_CHANGED"):
+                self.wait()
+        run.assert_called_once()
+        self.assertEqual(self.clock, 0)
+
+    def test_pid_invocation_restart_or_image_drift_never_becomes_a_new_start(self):
+        for field, value in (("MainPID", "778"), ("InvocationID", "other"), ("NRestarts", "1"),
+                ("pid_key", ("777", "different-start-ticks")),
+                ("binary", dict(self.binary, sha256="c" * 64))):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(self.observed)
+                (changed["status"] if field in changed["status"] else changed)[field] = value
+                self.observe.side_effect = [self.observed, changed]
+                with mock.patch.object(gateway.subprocess, "run", return_value=self.pending()) as run:
+                    with self.assertRaisesRegex(RuntimeError, "GATEWAY_PROCESS_CHANGED"):
+                        self.wait()
+                run.assert_called_once()
+                self.assertEqual(self.clock, 0)
+        self.control.assert_not_called()
+
+    def test_existing_lease_budget_bounds_probe_and_is_not_extended(self):
+        self.snapshot["deadline"] = 1000000 + gateway.MIN_TTL_MS + 100
+        before = self.snapshot["deadline"]
+        def pending(argv, **kwargs):
+            self.assertAlmostEqual(kwargs["timeout"], 0.1)
+            self.clock += 0.1
+            return self.pending()
+        with mock.patch.object(gateway.subprocess, "run", side_effect=pending) as run:
+            with self.assertRaisesRegex(RuntimeError, "MAINTENANCE_TTL_BUDGET_EXHAUSTED"):
+                self.wait()
+        run.assert_called_once()
+        self.assertEqual(self.snapshot["deadline"], before)
+        self.assertAlmostEqual(self.clock, 0.1)
+
+    def test_expired_or_changed_deadline_is_not_replaced_with_a_new_budget(self):
+        self.snapshot["deadline"] = 1000000 + gateway.MIN_TTL_MS
+        with mock.patch.object(gateway.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "MAINTENANCE_TTL_BUDGET_EXHAUSTED"):
+                self.wait()
+            run.assert_not_called()
+        self.snapshot["deadline"] += 100000
+        self.context.reset_mock()
+        def change():
+            if self.context.call_count == 2:
+                self.snapshot["deadline"] += 1000
+        self.context.side_effect = change
+        with mock.patch.object(gateway.subprocess, "run", return_value=self.pending()) as run:
+            with self.assertRaisesRegex(RuntimeError, "GATEWAY_READINESS_DEADLINE_CHANGED"):
+                self.wait()
+            run.assert_called_once()
 
 
 class ControllerStartupObservationTests(unittest.TestCase):
