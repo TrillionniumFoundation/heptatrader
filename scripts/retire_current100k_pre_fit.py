@@ -23,6 +23,7 @@ import shlex
 import stat
 import subprocess
 import time
+import uuid
 
 SCHEMA = 'heptatrader.current100k-pre-fit-retirement.v1'
 CONTINUATION_SCHEMA = 'heptatrader.current100k-newscope-continuation.v1'
@@ -125,19 +126,56 @@ def durable_directory(path):
 
 def immutable(path, raw):
     path = canonical_path(path)
-    if path.exists() or path.is_symlink():
-        need(checked(path) == raw, 'EXISTING_OUTPUT_CHANGED:' + str(path))
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    if not path.exists() and not path.is_symlink():
+        temporary = path.with_name('.' + path.name + '.writing-' + uuid.uuid4().hex)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
+            offset = 0
+            while offset < len(raw):
+                written = os.write(fd, raw[offset:])
+                need(type(written) is int and 0 < written <= len(raw) - offset, 'IMMUTABLE_SHORT_WRITE')
+                offset += written
+            os.fchmod(fd, 0o400)
             os.fsync(fd)
+            need(checked(temporary) == raw, 'STAGED_BYTES_CHANGED')
+            try:
+                publish_exclusive(temporary, path)
+            except FileExistsError:
+                # A competitor's canonical name is never replaced.
+                need(checked(path) == raw, 'EXISTING_OUTPUT_CHANGED:' + str(path))
         finally:
-            os.close(fd)
-    else:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            try:
+                try:
+                    found = temporary.lstat(); opened = os.fstat(fd)
+                    need((found.st_dev, found.st_ino) == (opened.st_dev, opened.st_ino), 'STAGING_INODE_CHANGED')
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            finally:
+                os.close(fd)
+    # This also finishes durability when a prior process died after the atomic
+    # rename but before directory fsync. The canonical file is always complete.
+    need(checked(path) == raw, 'EXISTING_OUTPUT_CHANGED:' + str(path))
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     sync_directory(path.parent)
     sync_directory(path.parent.parent)
+
+
+def publish_exclusive(temporary, path):
+    """Linux atomic no-replace rename; no partial final and no hard-link phase."""
+    import ctypes
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, 'renameat2', None)
+    need(rename is not None, 'ATOMIC_NO_REPLACE_UNAVAILABLE')
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(temporary), -100, os.fsencode(path), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(path))
 
 
 def record(path, value):

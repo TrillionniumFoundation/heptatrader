@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -444,5 +445,74 @@ class RetirementFixture(unittest.TestCase):
         with patch.object(os,'fsync',side_effect=OSError('fixture directory fsync failed')):
             with self.assertRaisesRegex(OSError,'directory fsync failed'):r.run(self.args)
         self.assertEqual(self.actions,[])
+
+    def test_guard_partial_write_after_disable_leaves_no_partial_final_and_resumes(self):
+        self.args.retire=True;real_write=os.write;injected=[]
+        def write(fd,raw):
+            target=os.readlink('/proc/self/fd/'+str(fd))
+            if '.90-pre-fit-retired.conf.writing-' in target and not injected:
+                injected.append(target);real_write(fd,raw[:23])
+                raise OSError('fixture storage error after 23 guard bytes')
+            return real_write(fd,raw)
+        with patch.object(os,'write',side_effect=write):
+            with self.assertRaisesRegex(OSError,'23 guard bytes'):r.run(self.args)
+        self.assertEqual(len(injected),1)
+        guard=r.guard_spec(r.inputs(self.args),self.proofs[self.v2sha])
+        self.assertFalse(guard[0].exists())
+        self.assertTrue((self.output/'RETIREMENT_INTENT.json').exists())
+        self.assertFalse((self.output/'PRE_FIT_RETIRED.json').exists())
+        timer=next(n for n in self.proofs[self.v2sha]['unit_candidates'] if n.endswith('.timer'))
+        self.assertEqual(self.native[timer]['ActiveState'],'inactive')
+        self.args.resume_intent_sha256=r.digest((self.output/'RETIREMENT_INTENT.json').read_bytes())
+        result=r.run(self.args)
+        self.assertEqual(result['state'],'PRE_FIT_RETIRED')
+        self.assertEqual(guard[0].read_bytes(),guard[1]);self.assertEqual(guard[0].stat().st_nlink,1)
+
+    def test_positive_short_writes_are_completed_before_publication(self):
+        path=self.root/'short-write.json';raw=b'a'*107;real_write=os.write
+        with patch.object(os,'write',side_effect=lambda fd,value:real_write(fd,value[:7])):
+            r.immutable(path,raw)
+        self.assertEqual(path.read_bytes(),raw);self.assertEqual(path.stat().st_nlink,1)
+        self.assertEqual(list(self.root.glob('.short-write.json.writing-*')),[])
+
+    def test_process_exit_after_atomic_rename_leaves_one_complete_resumable_file(self):
+        path=self.root/'after-rename.json'
+        program="""import os,sys
+from pathlib import Path
+import retire_current100k_pre_fit as r
+original=r.publish_exclusive
+def crash_after_rename(a,b):
+    original(a,b)
+    os._exit(77)
+r.publish_exclusive=crash_after_rename
+r.immutable(Path(sys.argv[1]),b'complete staged authority\\n')
+"""
+        result=subprocess.run([sys.executable,'-B','-c',program,str(path)],capture_output=True,
+            env=dict(os.environ,PYTHONPATH=str(Path(r.__file__).parent)),timeout=10)
+        self.assertEqual(result.returncode,77,result.stderr)
+        self.assertEqual(path.read_bytes(),b'complete staged authority\n')
+        self.assertEqual(path.stat().st_nlink,1)
+        self.assertEqual(list(self.root.glob('.after-rename.json.writing-*')),[])
+        r.immutable(path,b'complete staged authority\n')
+        self.assertEqual(path.stat().st_nlink,1)
+
+    def test_atomic_publish_never_overwrites_a_competing_canonical_file(self):
+        path=self.root/'competing.json';publish=r.publish_exclusive
+        def competitor(temporary,destination):
+            put(destination,b'other immutable authority\n')
+            publish(temporary,destination)
+        with patch.object(r,'publish_exclusive',side_effect=competitor):
+            with self.assertRaisesRegex(ValueError,'EXISTING_OUTPUT_CHANGED'):
+                r.immutable(path,b'our immutable authority\n')
+        self.assertEqual(path.read_bytes(),b'other immutable authority\n')
+        self.assertEqual(path.stat().st_nlink,1)
+        self.assertEqual(list(self.root.glob('.competing.json.writing-*')),[])
+
+    def test_unknown_existing_partial_guard_is_held_never_overwritten(self):
+        self.interrupted_disable()
+        guard=r.guard_spec(r.inputs(self.args),self.proofs[self.v2sha])
+        put(guard[0],guard[1][:23]);self.actions.clear()
+        with self.assertRaisesRegex(ValueError,'RETIREMENT_GUARD_CHANGED'):r.run(self.args)
+        self.assertEqual(guard[0].read_bytes(),guard[1][:23]);self.assertEqual(self.actions,[])
 
 if __name__=='__main__':unittest.main()

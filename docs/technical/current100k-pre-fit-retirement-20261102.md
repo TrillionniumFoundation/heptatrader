@@ -66,6 +66,12 @@ maintenance indefinitely waiting for positions to close. The helper:
    before any systemd effect. The service drop-in directory receives the same
    parent-entry durability checks. Reusing a file verifies bytes and re-fsyncs
    its contents and directory rather than treating equality as durability.
+   All immutable files are first fully written and fsynced under a unique
+   same-directory temporary name, then published with Linux
+   `renameat2(RENAME_NOREPLACE)`. No partial canonical file or hard-link phase is
+   exposed. A process exit after rename leaves either a complete canonical file
+   or an unpublished temporary; an existing unequal canonical file remains a
+   hold and is never overwritten.
 3. Runs only `systemctl --user disable --now` for the selected request's exact
    timer. It never stops/kills a running service, and waits at most 15 seconds
    for the service to be idle.
