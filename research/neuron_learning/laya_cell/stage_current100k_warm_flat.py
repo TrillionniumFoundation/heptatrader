@@ -20,6 +20,7 @@ import sys
 LAUNCHER = r'''#!/usr/bin/env python3
 """CPU pre-exec selection or original sandboxed registrar; explicit bounded warm-flat worker."""
 import argparse, json, os, sys, time
+from contextlib import nullcontext
 from pathlib import Path
 from historical_training.common import read, sha, digest, write_once
 from historical_training.resident_resource_guard import verify_config
@@ -32,7 +33,12 @@ def main():
     p.add_argument('--mode', choices=('predict', 'evaluate', 'register'), required=True)
     p.add_argument('--request', type=Path); p.add_argument('--request-sha256')
     p.add_argument('--check-only', action='store_true')
+    p.add_argument('--registration-precheck', action='store_true')
+    p.add_argument('--wake-deadline-ms', type=int)
     a = p.parse_args(); os.umask(0o077)
+    if (a.registration_precheck and (a.check_only or a.mode != 'register')
+            or a.wake_deadline_ms is not None and a.mode != 'register'):
+        raise ValueError('REGISTRATION_PRECHECK_MODE_CONFLICT')
     if sha(a.config) != a.sha256: raise ValueError('FORWARD_CONFIG_CHANGED')
     c = read(a.config); role = {'predict': 'predictor', 'evaluate': 'evaluator', 'register': 'registrar'}[a.mode]
     if c['signing_role'] != role or a.config.name != role + '-' + digest(c) + '.json':
@@ -54,72 +60,46 @@ def main():
         os.execvpe(python, [python, '-B', '-m', 'laya_cell.current100k_forward_worker',
             '--config', str(a.config), '--mode', a.mode], environment)
         return
-    if a.request is None or not a.request_sha256 or sha(a.request) != a.request_sha256:
-        raise ValueError('EXACT_NEW_SCOPE_REGISTRATION_REQUEST_REQUIRED')
-    request = read(a.request)
-    if (request['schema'] != 'heptatrader.current100k-warm-registration-request.v1'
-            or type(request['expected_trial']) is not int or request['expected_trial'] < 2
-            or request.get('registration_scope') != 'SAME_PRODUCER_REFIT'
-            or request['input_start_delay_ms'] != 900000):
-        raise ValueError('INDEPENDENT_WARM_REGISTRATION_REQUEST_REQUIRED')
-    for path, expected in request['input_sha256'].items():
-        if sha(path) != expected: raise ValueError('REGISTRATION_ORIGINAL_INPUT_CHANGED')
-    # Check the complete history before the original registrar writes a plan.
-    # Appended trials cannot silently consume a different alpha-spending index.
-    from laya_cell.financial_forward_protocol import validate_plan
-    from laya_cell.current100k_warm_flat import check_profile
-    check_profile(c.get('warm_flat_profile'))
-    if c.get('warm_flat_profile') is None:
-        raise ValueError('EXPLICIT_WARM_PROFILE_REQUIRED')
-    actual_paths = {str(path) for root in request['legacy_plans_roots']
-                    for path in Path(root).glob('*/plan.json')}
-    if actual_paths != set(request['legacy_plan_paths']):
-        raise ValueError('WARM_REGISTRATION_HISTORY_CHANGED_BEFORE_WRITE')
-    history = [read(path) for path in request['legacy_plan_paths']]
-    for plan in history: validate_plan(plan)
-    if (sorted(plan['trial'] for plan in history) != list(range(1, request['expected_trial']))
-            or len({plan['plan_id'] for plan in history}) != len(history)):
-        raise ValueError('WARM_REGISTRATION_COMPLETE_HISTORY_REQUIRED')
-    prior = read(request['prior_plan_path'])
-    if (prior not in history or prior['trial'] != request['expected_trial'] - 1
-            or prior['producer_registration'] != c['producer_registration']
-            or str(Path(prior['candidate_directory']) / 'candidate.json') != request['prior_candidate_path']):
-        raise ValueError('WARM_SAME_PRODUCER_PRIOR_PLAN_CHANGED')
-    if (type(request.get('registration_not_before_ms')) is not int
-            or request['registration_not_before_ms'] != prior['outcome_end_ms']
-            or int(time.time() * 1000) < request['registration_not_before_ms']):
+    from precheck_current100k_registration import precheck_registration, check_wake_deadline, OriginalProducerAdmission, prepare_registrar_root
+    request, proof = precheck_registration(c, a.request, a.request_sha256,
+        wake_deadline_ms=a.wake_deadline_ms)
+    if a.registration_precheck:
+        proof['configuration_sha256'] = a.sha256
+        print(json.dumps(proof, sort_keys=True))
+        return
+    if check_wake_deadline(a.wake_deadline_ms) < request['registration_not_before_ms']:
         raise ValueError('WARM_WAIT_PRIOR_OUTCOME_END_NO_REGISTRATION')
-    # A later registration revalidates the original producer, without rollover.
-    from historical_training.current100k import validate_config
-    validate_config({'automatic_trading': False, 'automatic_training': False,
-        'period_path': c['period_path'], 'period_sha256': c['period_sha256'],
-        'registration': c['producer_registration']})
-    from sandbox import enter
-    root = Path(c['forward_root']); root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    restrictions = enter({'output_dir': str(root), 'period_path': c['period_path'], 'legacy_capture': request['dataset_path'],
-        'oms_path': c['oms_path'], 'export_dir': c['attribution_directory'],
-        'read_only_paths': c['worker_read_only_paths'] + [c['worker_source_root'], sys.prefix,
-            str(a.config), str(a.request), c['role_key_path'], c['witness_trust_path'],
-            request['candidate_directory'], str(Path(request['prior_candidate_path']).parent),
-            request['prior_plan_path'], *request['legacy_plans_roots'],
-            *request['prior_training_read_only_paths']]})
-    denied = {}
-    for other, path in request['existing_role_key_paths'].items():
-        if other == role: continue
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC); os.close(fd)
-        except PermissionError: denied[other] = True
-        else: raise ValueError('OTHER_ROLE_KEY_READABLE:' + other)
-    write_once(root / 'sandbox-registrar.json', {**restrictions, 'role': role,
-        'other_role_keys_denied': denied, 'canonical_owner_key_access': False})
-    from laya_cell.current100k_forward import register, SAME_PRODUCER_REFIT
-    plan = register(c, Path(request['candidate_directory']), Path(request['dataset_path']),
-        Path(request['prior_candidate_path']), [Path(path) for path in request['legacy_plans_roots']],
-        registration_scope=SAME_PRODUCER_REFIT, prior_plan_path=Path(request['prior_plan_path']),
-        input_start_delay_ms=request['input_start_delay_ms'])
+    already_registered = proof['state'] == 'REGISTRATION_ALREADY_COMPLETE_VERIFIED_NO_WRITE'
+    admission_context = nullcontext(None) if already_registered else OriginalProducerAdmission(c, request, proof, a.wake_deadline_ms)
+    with admission_context as admission:
+        from sandbox import enter
+        root = Path(c['forward_root'])
+        with prepare_registrar_root(root) as root_parent_fd:
+            restrictions = enter({'output_dir': str(root), 'period_path': c['period_path'], 'legacy_capture': request['dataset_path'],
+                'oms_path': c['oms_path'], 'export_dir': c['attribution_directory'],
+                'read_only_paths': c['worker_read_only_paths'] + [c['worker_source_root'], sys.prefix,
+                    str(a.config), str(a.request), c['role_key_path'], c['witness_trust_path'],
+                    request['candidate_directory'], str(Path(request['prior_candidate_path']).parent),
+                    request['prior_plan_path'], *request['legacy_plans_roots'],
+                    *request['prior_training_read_only_paths'], *(admission.read_only_paths if admission is not None else [])]})
+            denied = {}
+            for other, path in request['existing_role_key_paths'].items():
+                if other == role: continue
+                try:
+                    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC); os.close(fd)
+                except PermissionError: denied[other] = True
+                else: raise ValueError('OTHER_ROLE_KEY_READABLE:' + other)
+            write_once(root / 'sandbox-registrar.json', {**restrictions, 'role': role,
+                'other_role_keys_denied': denied, 'canonical_owner_key_access': False})
+            from laya_cell.current100k_forward import register, SAME_PRODUCER_REFIT
+            plan = register(c, Path(request['candidate_directory']), Path(request['dataset_path']),
+                Path(request['prior_candidate_path']), [Path(path) for path in request['legacy_plans_roots']],
+                registration_scope=SAME_PRODUCER_REFIT, prior_plan_path=Path(request['prior_plan_path']),
+                input_start_delay_ms=request['input_start_delay_ms'], admission_check=admission, root_parent_fd=root_parent_fd)
     if plan['trial'] != request['expected_trial']: raise ValueError('INDEPENDENT_WARM_TRIAL_HISTORY_CHANGED')
     path = root / 'plans' / plan['plan_id'] / 'plan.json'
-    print(json.dumps({'state': 'REGISTERED_SAME_PRODUCER_WARM_PROFILE', 'trial': plan['trial'],
+    print(json.dumps({'state': ('REGISTRATION_ALREADY_COMPLETE_DURABLE_VERIFIED' if already_registered
+        else 'REGISTERED_SAME_PRODUCER_WARM_PROFILE'), 'registration_performed': not already_registered, 'trial': plan['trial'],
         'plan_path': str(path), 'plan_sha256': sha(path), 'plan_id': plan['plan_id'],
         'input_start_ms': plan['input_start_ms'], 'input_end_ms': plan['input_end_ms'],
         'outcome_end_ms': plan['outcome_end_ms'], 'gpu_loaded': False, 'keys_created': 0,
@@ -169,6 +149,11 @@ def assemble_files(repo, original, wrapper):
     init = repo / 'research/historical_training/__init__.py'
     if init.is_file():
         files['research/historical_training/__init__.py'] = init
+    from precheck_current100k_registration import SUPPORT_FILES
+    for name in SUPPORT_FILES:
+        target = 'scripts/' + name; source = repo / target
+        need(target not in files or files[target] == source, 'REGISTRATION_SUPPORT_SOURCE_COLLISION')
+        files[target] = source
     selected = retained_hip_manifest(original)
     need(selected is not None, 'EXISTING_ACCEPTED_HIP_SELECTION_REQUIRED')
     files[selected[0]] = selected[1]
@@ -277,6 +262,7 @@ def main():
     from historical_training.current100k import validate_config
     from historical_training.resident_resource_guard import verify_config
     from laya_cell.current100k_forward import validate_value_candidate
+    from laya_cell import current100k_forward as registration_contract
     from laya_cell.financial_value_profile import CENTERED_RESIDUAL_PROFILE
     from laya_cell.financial_forward_witness import verify_trust
     from laya_cell.current100k_warm_flat import PROFILE
@@ -401,6 +387,7 @@ def main():
     need(git('rev-parse', 'HEAD') == a.expected_head and not git('status', '--porcelain', '--untracked-files=all'),
          'SOURCE_CHANGED_DURING_WARM_PREPARATION')
     need(not a.forward_root.exists() and 'torch' not in sys.modules, 'STAGING_MUST_NOT_REGISTER_OR_LOAD_GPU')
+    from activate_current100k_warm_stage import ACTIVATION_PROFILE
     receipt = {'schema': 'heptatrader.current100k-warm-flat-stage.v1', 'state': 'STAGED_CPU_VERIFIED_NOT_REGISTERED',
         'source_commit': a.expected_head, 'release': str(release), 'release_id': release_id,
         'fit_stage': str(a.fit_stage), 'fit_stage_sha256': a.fit_stage_sha256,
@@ -408,6 +395,9 @@ def main():
         'candidate_id': candidate['candidate_id'], 'dataset_sha256': a.dataset_sha256, 'rows': candidate['rows'],
         'expected_trial': trial, 'forward_root': str(a.forward_root),
         'prior_outcome_end_ms': prior['outcome_end_ms'], 'registration_scheduled': False,
+        'registration_publish_profile': getattr(registration_contract, 'REGISTRATION_PUBLISH_PROFILE', None),
+        'registration_activation_profile': ACTIVATION_PROFILE,
+        'registration_precheck_argv': [*argv['registrar'], '--registration-precheck'],
         'configs': {role: {'path': str(path), 'sha256': sha(path)} for role, path in paths.items()},
         'registration_request': str(request_path), 'registration_request_sha256': sha(request_path),
         'explicit_argv': argv, 'pythonpath': environment['PYTHONPATH'], 'cpu_checks': proofs, 'unit_candidates': units,

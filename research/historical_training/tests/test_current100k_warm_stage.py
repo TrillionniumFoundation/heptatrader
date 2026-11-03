@@ -2,6 +2,8 @@
 import contextlib, copy, hashlib, io, json, os, sys, tempfile, types, unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+import time
+import precheck_current100k_registration as registration_precheck
 
 from laya_cell import stage_current100k_warm_flat as stage
 def raw(value): return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
@@ -52,7 +54,8 @@ class StageBoundaryTests(unittest.TestCase):
         request_path = self.root/'request.json'; request_path.write_bytes(raw(request)+b'\n')
         effects = {'runtime': Mock(), 'guard': Mock(return_value={}), 'hip': Mock(), 'trust': Mock(), 'producer': Mock(),
                    'sandbox': Mock(side_effect=StopBeforeEffect()), 'exec': Mock(side_effect=StopBeforeEffect()),
-                   'write': Mock(side_effect=AssertionError('unexpected publication'))}
+                   'write': Mock(side_effect=AssertionError('unexpected publication')),
+                   'admission': Mock(return_value=contextlib.nullcontext(types.SimpleNamespace(read_only_paths=[])))}
         common = types.ModuleType('historical_training.common')
         common.read = lambda path: json.loads(Path(path).read_text())
         common.sha = stage.sha; common.digest = digest; common.write_once = effects['write']
@@ -65,6 +68,11 @@ class StageBoundaryTests(unittest.TestCase):
         sandbox = types.ModuleType('sandbox'); sandbox.enter = effects['sandbox']
         self.stack.enter_context(patch.dict(sys.modules, {m.__name__: m for m in (common, guard_module, worker, hip, witness, consumer, sandbox)}))
         self.stack.enter_context(patch.object(laya_cell, 'resident_hip_runtime', hip, create=True))
+        self.stack.enter_context(patch.object(registration_precheck, 'check_precheck_source'))
+        self.stack.enter_context(patch.object(registration_precheck, 'OriginalProducerAdmission', effects['admission']))
+        self.stack.enter_context(patch.object(registration_precheck, 'registration_state', return_value={'state': 'EMPTY', 'plan': None}))
+        self.stack.enter_context(patch.object(registration_precheck, 'running_producer',
+            side_effect=lambda *_: {'request_activity': {'started_at_ms': int(time.time()*1000)}}))
         argv = ['launcher', '--config', str(config), '--sha256', stage.sha(config), '--mode', mode]
         if check_only: argv.append('--check-only')
         if mode == 'register': argv += ['--request', str(request_path), '--request-sha256', stage.sha(request_path)]
@@ -78,6 +86,49 @@ class StageBoundaryTests(unittest.TestCase):
         proof = json.loads(out.getvalue()); self.assertFalse(proof['gpu_loaded']); self.assertFalse(proof['worker_admission_granted'])
         for key in ('sandbox', 'exec', 'write'): effects[key].assert_not_called()
         self.assertFalse((self.root/'new-forward').exists())
+    def test_full_registration_precheck_checks_inputs_without_output_or_sandbox(self):
+        module, effects, _ = self.fixture('register'); sys.argv.append('--registration-precheck')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out): module.main()
+        proof = json.loads(out.getvalue())
+        self.assertEqual(proof['state'], 'FRESH_REGISTRATION_ELIGIBLE_NOW_NO_WRITE')
+        self.assertFalse(proof['registration_performed']); effects['producer'].assert_called_once()
+        for key in ('sandbox', 'exec', 'write'): effects[key].assert_not_called()
+        self.assertFalse((self.root/'new-forward').exists())
+    def test_cpu_check_does_not_claim_registration_eligibility(self):
+        module, effects, _ = self.fixture('register', True); out = io.StringIO()
+        with contextlib.redirect_stdout(out): module.main()
+        self.assertEqual(json.loads(out.getvalue())['state'], 'CPU_FORWARD_CLOSURE_VERIFIED')
+        effects['producer'].assert_not_called()
+    def test_registration_precheck_rejects_mixed_cpu_mode(self):
+        module, effects, _ = self.fixture('register', True); sys.argv.append('--registration-precheck')
+        with self.assertRaisesRegex(ValueError, 'MODE_CONFLICT'): module.main()
+        for key in ('sandbox', 'exec', 'write'): effects[key].assert_not_called()
+    def test_expired_wake_refuses_before_root_or_producer_check(self):
+        module, effects, _ = self.fixture('register'); sys.argv += ['--wake-deadline-ms', '1']
+        with self.assertRaisesRegex(ValueError, 'WAKE_DEADLINE_EXPIRED'): module.main()
+        for key in ('sandbox', 'producer', 'write'): effects[key].assert_not_called()
+        self.assertFalse((self.root/'new-forward').exists())
+    def test_parent_sync_failure_cannot_enter_sandbox_or_register(self):
+        module, effects, _ = self.fixture('register')
+        parent = self.root.stat(); fsync = os.fsync; observed = []
+        def sync(fd):
+            item = os.fstat(fd)
+            if (item.st_dev, item.st_ino) == (parent.st_dev, parent.st_ino):
+                observed.append(True); raise OSError('fixture parent fsync failure')
+            return fsync(fd)
+        with patch.object(os, 'fsync', side_effect=sync):
+            with self.assertRaisesRegex(OSError, 'parent fsync failure'): module.main()
+        self.assertEqual(observed, [True])
+        effects['sandbox'].assert_not_called(); effects['write'].assert_not_called()
+        self.assertEqual(list((self.root/'new-forward').glob('plans/*/plan.json')), [])
+    def test_formal_published_reentry_does_not_skip_original_durability_path(self):
+        module, effects, _ = self.fixture('register')
+        with patch.object(registration_precheck, 'registration_state',
+                return_value={'state': 'PUBLISHED', 'plan': {'plan_id': 'fixed', 'trial': 2}}):
+            with self.assertRaises(StopBeforeEffect): module.main()
+        effects['admission'].assert_not_called()
+        effects['sandbox'].assert_called_once()
     def test_predict_keeps_original_worker_entry_and_hip_environment(self):
         module, effects, config = self.fixture('predict')
         with self.assertRaises(StopBeforeEffect): module.main()
@@ -113,6 +164,17 @@ class StageBoundaryTests(unittest.TestCase):
         with patch.object(module.time, 'time', return_value=end/1000):
             with self.assertRaises(StopBeforeEffect): module.main()
         effects['producer'].assert_called_once(); effects['sandbox'].assert_called_once()
+    def test_outer_stage_parser_reaches_original_uid_guard(self):
+        arguments = ['stage']
+        for name in ('repo', 'fit-stage', 'prior-forward-stage', 'guard-config', 'forward-root', 'evidence-root'):
+            arguments += ['--' + name, '/temporary/' + name]
+        for name in ('expected-head', 'fit-stage-sha256', 'prior-forward-stage-sha256',
+                     'guard-config-sha256', 'candidate-id', 'dataset-sha256'):
+            arguments += ['--' + name, 'a' * 64]
+        arguments += ['--legacy-plan', '/temporary/plan.json']
+        with patch.object(sys, 'argv', arguments), patch.object(stage, 'need', side_effect=StopBeforeEffect()) as gate:
+            with self.assertRaises(StopBeforeEffect): stage.main()
+        self.assertEqual(gate.call_args.args[1], 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     def test_unit_has_hard_cgroup_bound_without_install_target_or_restart(self):
         text = stage.finite_unit('predict', '/new/config.json', '1'*64, '/new/runtime', '/selected/python', 5)
         for item in ('Type=oneshot', 'Restart=no', 'StartLimitIntervalSec=10s', 'StartLimitBurst=12',

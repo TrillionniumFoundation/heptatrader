@@ -219,15 +219,20 @@ class NewProducerScopeRegistrationTests(ForwardScopeFixture,unittest.TestCase):
   self.config={'automatic_trading':False,'actor_update':False,'period_path':str(self.root/'period.json'),
    'period_sha256':self.period,'producer_registration':{'manifest':str(self.root/'producer.json'),'sha256':self.manifest},
    'forward_root':str(self.root/'forward'),'witness_trust_digest':'4'*64,'worker_runtime_inventory_digest':'5'*64}
- def register(self,**changes):
+ def register(self,*,expected_signatures=1,**changes):
   from unittest.mock import patch
   from laya_cell.current100k_forward import register,NEW_PRODUCER_SCOPE
   arguments={'registration_scope':NEW_PRODUCER_SCOPE,'prior_plan_path':self.prior_path,**changes}
-  # Only the existing signer is substituted: validation, source-prefix replay,
-  # exact execution/fee arithmetic and immutable plan publication are real.
-  with patch('laya_cell.financial_forward_witness.sign_record',return_value={'fixture_signature':True}) as signer:
-   result=register(self.config,self.directory,self.dataset,self.prior['directory']/'candidate.json',self.history,**arguments)
-  signer.assert_called_once();self.assertEqual(signer.call_args.args[1],'registrar')
+  # Only local cryptography is substituted in these economic-scope fixtures.
+  # Exact source-prefix/fee validation and atomic bundle publication are real;
+  # the dedicated transaction suite also uses actual role signatures.
+  def signed(config,role,record):
+   return {**record,'role_witness':{'signed_at_ms':record['at_ms']},'signature':'fixture-signature'}
+  with patch('laya_cell.financial_forward_witness.sign_record',side_effect=signed) as signer:
+   with patch('laya_cell.financial_forward_evaluate.verify_record'):
+    result=register(self.config,self.directory,self.dataset,self.prior['directory']/'candidate.json',self.history,**arguments)
+  self.assertEqual(signer.call_count,expected_signatures)
+  if expected_signatures:self.assertEqual(signer.call_args.args[1],'registrar')
   return result
  def test_new_producer_uses_fresh_rows_and_preserves_trial_budget_and_old_bytes(self):
   from laya_cell.financial_forward_protocol import RULE
@@ -320,5 +325,6 @@ class NewProducerScopeRegistrationTests(ForwardScopeFixture,unittest.TestCase):
   candidate['candidate_id']=digest({k:v for k,v in candidate.items() if k!='candidate_id'});path.write_text(json.dumps(candidate))
   with self.assertRaisesRegex(ContractError,'PRIOR_CANDIDATE_BINDING'):self.register()
  def test_existing_new_scope_registry_is_never_replayed(self):
-  self.register()
-  with self.assertRaisesRegex(ContractError,'ALREADY_REGISTERED_NO_REPLAY'):self.register()
+  plan=self.register()
+  self.assertEqual(self.register(expected_signatures=0),plan)
+  self.assertEqual(len(list((Path(self.config['forward_root'])/'plans').glob('*/plan.json'))),1)

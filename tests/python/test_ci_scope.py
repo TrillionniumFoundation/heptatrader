@@ -197,6 +197,19 @@ class ComponentScopeTests(unittest.TestCase):
     NATIVE_PYTHON = {"run_native": True, "run_python": True, "run_learning": False}
     LAYA = "research/neuron_learning/laya_cell"
     HISTORY = "research/historical_training"
+    CURRENT100K_SCRIPTS = (
+        "scripts/precheck_current100k_registration.py",
+        "scripts/activate_current100k_warm_stage.py",
+        "scripts/current100k_priority_activation.py", "scripts/finite_plan_calendar.py",
+        "scripts/check_current100k_registration_sandbox.py",
+    )
+    CURRENT100K_FIXTURES = (
+        "tests/python/test_current100k_registration_precheck.py",
+        "tests/python/test_current100k_registration_precheck_integration.py",
+        "tests/python/test_current100k_registration_admission.py",
+        "tests/python/test_current100k_priority_activation.py",
+        "tests/python/test_current100k_warm_activation.py",
+    )
 
     def test_artifact_builder_inputs_keep_native_and_packaging_feedback(self):
         # Packaging CI follows run_native conservatively: all build/controller,
@@ -267,6 +280,86 @@ class ComponentScopeTests(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source)
         return target
+
+    def test_current100k_registration_and_activation_keep_core_source_and_learning(self):
+        paths = [*self.CURRENT100K_SCRIPTS, *self.CURRENT100K_FIXTURES]
+        changed_sets = [[path] for path in paths] + [paths, paths + ["docs/forward-observations.md"],
+            paths + [self.LAYA + "/current100k_forward.py",
+                     self.HISTORY + "/tests/test_current100k_registration_atomic.py"]]
+        for changed in changed_sets:
+            with self.subTest(changed=changed):
+                self.assertEqual(scope_for_paths(changed, self.root), self.PYTHON_LEARNING)
+
+    def test_actual_current100k_operator_imports_keep_the_verified_python_boundary(self):
+        actual = Path(__file__).resolve().parents[2]
+        for helper in self.CURRENT100K_SCRIPTS:
+            self.write(helper, (actual / helper).read_text())
+        for path in (*self.CURRENT100K_SCRIPTS, *self.CURRENT100K_FIXTURES):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([path], self.root), self.PYTHON_LEARNING)
+
+    def test_current100k_unknown_import_or_invalid_helper_restores_full_for_fixture_edits(self):
+        fixture = "tests/python/test_current100k_registration_precheck_integration.py"
+        for helper in self.CURRENT100K_SCRIPTS:
+            for source in ("import new_native_adapter\n", "import torch\n",
+                           "from . import unknown\n", "def invalid(\n"):
+                self.write(helper, source)
+                for changed in (helper, fixture):
+                    with self.subTest(helper=helper, source=source, changed=changed):
+                        self.assertEqual(scope_for_paths([changed], self.root), self.FULL)
+            self.write(helper)
+        self.assertEqual(scope_for_paths([fixture], self.root), self.PYTHON_LEARNING)
+
+    def test_current100k_missing_sources_or_discovery_support_restore_full(self):
+        supports = (
+            "scripts/activate_prepared_driver.py", "scripts/hepta_native_reader.py",
+            "scripts/run_python_tests.py", "tests/python/test_historical_training.py",
+            "research/neuron_learning/sandbox.py",
+            self.HISTORY + "/resident_resource_guard.py",
+            self.LAYA + "/financial_forward_evaluate.py",
+            self.HISTORY + "/tests/test_current100k_registration_atomic.py",
+        )
+        for missing in (*self.CURRENT100K_SCRIPTS, *self.CURRENT100K_FIXTURES, *supports):
+            (self.root / missing).unlink()
+            for changed in (self.CURRENT100K_SCRIPTS[0], self.CURRENT100K_FIXTURES[-1]):
+                with self.subTest(missing=missing, changed=changed):
+                    self.assertEqual(scope_for_paths([changed], self.root), self.FULL)
+            self.write(missing)
+
+    def test_current100k_mixed_native_shared_sandbox_and_unknown_changes_stay_full(self):
+        for path in (
+            "HeptaTrade/execution/service.cpp", "CMakeLists.txt", "cmake/HeptaInstall.cmake",
+            "scripts/build_ib_candidate_artifact.sh", "scripts/run_python_tests.py",
+            "scripts/ci_scope.py", ".github/workflows/core-ci.yml",
+            "research/neuron_learning/sandbox.py", self.LAYA + "/financial_forward_protocol.py",
+            self.LAYA + "/resident_hip_runtime.py", self.HISTORY + "/common.py",
+            "scripts/unreviewed_registration.py", "research/new_package/register.py",
+            self.LAYA + "/future_registration.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(scope_for_paths([self.CURRENT100K_SCRIPTS[0], path], self.root), self.FULL)
+
+    def test_current100k_retyped_helper_cannot_inherit_the_verified_scope(self):
+        helper = self.CURRENT100K_SCRIPTS[0]; path = self.root / helper
+        path.unlink(); path.symlink_to(self.root / self.CURRENT100K_SCRIPTS[-1])
+        self.assertEqual(scope_for_paths([self.CURRENT100K_FIXTURES[0]], self.root), self.FULL)
+        path.unlink(); path.mkdir()
+        self.assertEqual(scope_for_paths([helper], self.root), self.FULL)
+
+    def test_current100k_root_fixtures_and_historical_discovery_remain_in_core(self):
+        import importlib.util
+        source = Path(__file__).resolve().parents[2] / "scripts/run_python_tests.py"
+        spec = importlib.util.spec_from_file_location("current100k_ci_partition_fixture", source)
+        runner = importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)
+        for group in (runner.SOURCE_TESTS, runner.LEARNING_TESTS, runner.INSTALL_TESTS,
+                      runner.PACKAGING_TESTS, runner.PROCESS_TESTS, runner.EXTERNAL_TESTS,
+                      runner.LEGACY_TESTS):
+            for name in group:self.write("tests/python/" + name)
+        groups = runner.partitions(self.root)
+        expected = {Path(path).name for path in self.CURRENT100K_FIXTURES} | {"test_historical_training.py"}
+        self.assertTrue(expected <= groups["core"])
+        for lane, members in groups.items():
+            if lane != "core":self.assertFalse(expected & members, lane)
 
     def test_actual_release_validation_keeps_native_package_and_python_feedback(self):
         root = Path(__file__).resolve().parents[2]

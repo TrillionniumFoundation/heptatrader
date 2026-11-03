@@ -72,6 +72,63 @@ RELEASE_VALIDATION_GROUP = frozenset({
 # These support files must exist, but changing one does not inherit the helper's
 # exemption. Keep import checks local to the verified Python entry points.
 VERIFIED_HELPER_DEPENDENCIES = {
+    # Existing signed Python registration, resource priority and finite unit
+    # activation consume the learning runtime; they do not rebuild native
+    # packages. Check their real source closure even for a fixture-only edit.
+    "scripts/precheck_current100k_registration.py": (
+        frozenset({"activate_current100k_warm_stage", "activate_prepared_driver", "historical_training.common",
+                   "historical_training.current100k", "laya_cell.current100k_forward",
+                   "laya_cell.current100k_warm_flat", "laya_cell.financial_forward_protocol",
+                   "laya_cell.financial_forward_source"}),
+        frozenset({
+            "scripts/run_python_tests.py", "tests/python/test_historical_training.py",
+            "scripts/activate_current100k_warm_stage.py",
+            "scripts/activate_prepared_driver.py", "scripts/hepta_verified_loader.py",
+            "scripts/hepta_decision_attribution.py", "scripts/hepta_native_reader.py",
+            "scripts/hepta_maintenance_latch.py", "scripts/install_risk_stop_fence.py",
+            "scripts/install_decision_attribution.py",
+            "research/historical_training/common.py", "research/historical_training/current100k.py",
+            "research/neuron_learning/laya_cell/current100k_forward.py",
+            "research/neuron_learning/laya_cell/current100k_warm_flat.py",
+            "research/neuron_learning/laya_cell/financial_forward_protocol.py",
+            "research/neuron_learning/laya_cell/financial_forward_source.py",
+            "research/historical_training/tests/test_current100k_registration_atomic.py",
+            "research/historical_training/tests/test_current100k_forward_scope.py",
+        }),
+    ),
+    "scripts/activate_current100k_warm_stage.py": (
+        frozenset({"precheck_current100k_registration", "finite_plan_calendar",
+                   "current100k_priority_activation", "laya_cell.immutable_files", "laya_cell.resident_store",
+                   "historical_training.common", "laya_cell.financial_forward_protocol",
+                   "laya_cell.stage_current100k_warm_flat"}),
+        frozenset({"scripts/current100k_priority_activation.py",
+                   "research/historical_training/common.py",
+                   "research/neuron_learning/laya_cell/financial_forward_protocol.py",
+                   "research/neuron_learning/laya_cell/immutable_files.py",
+                   "research/neuron_learning/laya_cell/resident_store.py",
+                   "research/neuron_learning/laya_cell/stage_current100k_warm_flat.py",
+                   "research/historical_training/tests/test_current100k_warm_stage.py"}),
+    ),
+    "scripts/current100k_priority_activation.py": (
+        frozenset({"activate_prepared_driver", "precheck_current100k_registration",
+                   "historical_training.resident_resource_guard",
+                   "historical_training.value_priority_admission",
+                   "laya_cell.financial_forward_evaluate", "laya_cell.immutable_files",
+                   "laya_cell.resident_hip_runtime"}),
+        frozenset({"scripts/activate_prepared_driver.py",
+                   "research/historical_training/resident_resource_guard.py",
+                   "research/historical_training/value_priority_admission.py",
+                   "research/neuron_learning/laya_cell/financial_forward_evaluate.py",
+                   "research/neuron_learning/laya_cell/immutable_files.py",
+                   "research/neuron_learning/laya_cell/resident_hip_runtime.py"}),
+    ),
+    "scripts/finite_plan_calendar.py": (frozenset(), frozenset()),
+    "scripts/check_current100k_registration_sandbox.py": (
+        frozenset({"activate_prepared_driver", "precheck_current100k_registration",
+                   "laya_cell.current100k_forward", "sandbox"}),
+        frozenset({"scripts/activate_prepared_driver.py", "research/neuron_learning/sandbox.py",
+                   "research/neuron_learning/laya_cell/current100k_forward.py"}),
+    ),
     # Gateway/native handoff controls already-built releases through the Python
     # driver API. Keep both lifecycle suites and their shared driver fixture;
     # native code, release builders and installation changes stay outside this
@@ -236,6 +293,21 @@ PYTHON_BOUNDARY = re.compile(
 # Cross-package operator/observer dependencies remain explicit. Research package
 # members and their in-package tests no longer need per-version lists here.
 VERIFIED_PYTHON_LEARNING_GROUPS = (
+    # Root-level fixtures default to core. Historical fixtures are discovered
+    # by test_historical_training, and Laya fixtures by the learning runner.
+    # The UID1000 sandbox tool retains its explicit real-host invocation; this
+    # scope rule does not make ordinary CI impersonate that runtime identity.
+    frozenset({
+        "scripts/precheck_current100k_registration.py",
+        "scripts/activate_current100k_warm_stage.py",
+        "scripts/current100k_priority_activation.py", "scripts/finite_plan_calendar.py",
+        "scripts/check_current100k_registration_sandbox.py",
+        "tests/python/test_current100k_registration_precheck.py",
+        "tests/python/test_current100k_registration_precheck_integration.py",
+        "tests/python/test_current100k_registration_admission.py",
+        "tests/python/test_current100k_priority_activation.py",
+        "tests/python/test_current100k_warm_activation.py",
+    }),
     frozenset({
         "scripts/hepta_pnl_watch.py", "scripts/hepta_change_watch.py",
         "tests/python/test_pnl_watch_regression.py", "tests/python/test_pnl_append_ledger.py",
