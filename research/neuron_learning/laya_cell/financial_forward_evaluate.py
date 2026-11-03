@@ -60,7 +60,12 @@ def read_prediction(root,plan,request_id,config=None):
          'prediction_sha256':prediction_sha256,'commit_sha256':commit_sha256}
 
 
-def validate_registration(config,path,plan):
+def validate_registration_header(config,path,plan):
+ """Validate signed plan/runtime without replaying frozen training rows.
+
+ This header alone grants no prediction or model admission. A positive request
+ still requires validate_registration and the complete candidate binding.
+ """
  validate_plan(plan,int(time.time()*1000));seal=read_json(path.parent/'registration.json')
  verify_record(config,'registrar',seal)
  if seal['plan_file_sha256']!=sha_file(path) or seal['plan_id']!=plan['plan_id']:
@@ -69,6 +74,10 @@ def validate_registration(config,path,plan):
  if seal['role_witness']['signed_at_ms']>=plan['input_start_ms']:raise ContractError('PLAN_SIGNED_AFTER_INPUT_START')
  for name,value in plan['runtime_sha256'].items():
   if sha_file(Path(__file__).parent/name)!=value:raise ContractError('FROZEN_EVALUATOR_RUNTIME_CHANGED')
+
+
+def validate_registration(config,path,plan):
+ validate_registration_header(config,path,plan)
  from .financial_forward_protocol import validate_candidate
  c=validate_candidate(Path(plan['candidate_directory']))
  if c['candidate_id']!=plan['candidate_id'] or sha_file(Path(plan['candidate_directory'])/'candidate.json')!=plan['candidate_manifest_sha256']:

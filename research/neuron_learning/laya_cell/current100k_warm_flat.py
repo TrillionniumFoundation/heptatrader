@@ -217,7 +217,7 @@ def fresh_ids(root, plan, requests, now_ms, anchor=None):
     return sorted(result, key=lambda rid: (requests[rid]['request']['started_at_ms'], rid))
 
 
-def validated_plan(config):
+def validated_plan(config, *, defer_registration=False):
     from .current100k_forward_worker import validate_runtime
     from .financial_forward_predict import RegisteredPlanSnapshot
     from .financial_forward_source import VerifiedIngressSnapshot
@@ -231,7 +231,16 @@ def validated_plan(config):
     plan = read_json(paths[0]); check_binding(config, plan); hip.check_plan(config, plan)
     need(plan.get('schema') == PLAN_SCHEMA
          and plan['worker_runtime_inventory_digest'] == config['worker_runtime_inventory_digest'], 'PLAN_RUNTIME_SCOPE')
-    prepared = RegisteredPlanSnapshot(config, paths[0], plan)
+    # A denied idle turn needs only the signed plan/runtime and the original
+    # request graph. Replaying training rows cannot turn an absent request into
+    # an admissible one. The positive path completes the original validation
+    # before Guard admission; children always use the complete default path.
+    if defer_registration:
+        from .financial_forward_evaluate import validate_registration_header
+        validate_registration_header(config, paths[0], plan)
+        prepared = None
+    else:
+        prepared = RegisteredPlanSnapshot(config, paths[0], plan)
     snapshot = VerifiedIngressSnapshot(plan['producer_registration'], config['period_sha256'])
     return plan, prepared, snapshot
 
@@ -473,7 +482,7 @@ def run_parent(config, config_path, controller_fd):
     need(config_path.resolve() == config_path and read_json(config_path) == config, 'CONFIG_PATH_OR_BYTES')
     root = Path(config['forward_root'])
     need(root.is_absolute() and root.resolve() == root, 'CANONICAL_FORWARD_ROOT_REQUIRED')
-    plan, prepared, snapshot = validated_plan(config)
+    plan, prepared, snapshot = validated_plan(config, defer_registration=True)
     need(lock_identity(controller_fd) == [os.stat(root / 'predict-worker.lock').st_dev,
          os.stat(root / 'predict-worker.lock').st_ino], 'CONTROLLER_LOCK_SCOPE')
     def status(state, **extra):
@@ -496,6 +505,14 @@ def run_parent(config, config_path, controller_fd):
         if str(exc) in ('VALUE_WARM_ORIGINAL_PREPARED_OBSERVED', 'VALUE_WARM_ORIGINAL_NONFLAT_OBSERVED'):
             return status('WAIT_NEXT_REAL_FLAT_REQUEST', reason=str(exc))
         raise
+    if prepared is None:
+        from .financial_forward_predict import RegisteredPlanSnapshot
+        prepared = RegisteredPlanSnapshot(config, root / 'plans' / plan['plan_id'] / 'plan.json', plan)
+    # Historical validation can be slow. Refuse a withdrawn, expired or now
+    # nonflat request before taking a heavy lease or starting a GPU child.
+    requests, bindings = original_view(snapshot, config, plan)
+    flat_epoch(requests, bindings, epoch)
+    anchor = request_item(requests, anchor['request']['request_id'], plan, int(time.time() * 1000))
     from historical_training.resident_resource_guard import Gate
     from .current100k_forward_worker import acquire_value_resources
     wrapper = original_guard(config); gate = Gate(wrapper, 'value-predictor')

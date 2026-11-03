@@ -354,6 +354,72 @@ while time.monotonic()<stop:
             self.addCleanup(clean)
             return child, channel
         self.enter(patch.object(warm, 'spawn_child', side_effect=spawn))
+    def deferred_fixture(self):
+        self.fixture()
+        plan, _, snapshot = warm.validated_plan.return_value
+        warm.validated_plan.return_value = (plan, None, snapshot)
+        return snapshot
+    def test_idle_without_fresh_request_skips_frozen_training_replay_and_heavy_lease(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture(); self.item['request']['started_at_ms'] -= 60000
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=AssertionError('idle training replay')) as replay:
+            result = warm.run_parent(self.config, self.path, self.controller.fd)
+        self.assertEqual(result['state'], 'WAIT_FRESH_ORIGINAL_REQUEST')
+        warm.validated_plan.assert_called_once_with(self.config, defer_registration=True)
+        replay.assert_not_called(); self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_already_sealed_request_skips_frozen_training_replay(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture()
+        path = self.root/'plans'/'plan'/'predictions'/'r'/'commit.json'
+        path.parent.mkdir(parents=True); path.write_text('{}')
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=AssertionError('duplicate training replay')) as replay:
+            result = warm.run_parent(self.config, self.path, self.controller.fd)
+        self.assertEqual(result['state'], 'WAIT_FRESH_ORIGINAL_REQUEST')
+        replay.assert_not_called(); self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_original_open_skips_frozen_training_replay(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture(); self.live.write_text('original prepared command')
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=AssertionError('nonflat training replay')) as replay:
+            result = warm.run_parent(self.config, self.path, self.controller.fd)
+        self.assertEqual(result['state'], 'WAIT_NEXT_REAL_FLAT_REQUEST')
+        replay.assert_not_called(); self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_fresh_request_still_revalidates_training_before_any_heavy_admission(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture()
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=ContractError('FROZEN_TRAINING_WITHDRAWN')) as replay:
+            with self.assertRaisesRegex(ContractError, 'FROZEN_TRAINING_WITHDRAWN'):
+                warm.run_parent(self.config, self.path, self.controller.fd)
+        replay.assert_called_once_with(self.config, self.root/'plans'/'plan'/'plan.json', self.plan)
+        self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_expired_request_after_training_validation_cannot_acquire_heavy_lease(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture()
+        def validated(*args):
+            self.enter(patch.object(warm.time, 'time', return_value=(self.item['request']['started_at_ms']+60000)/1000))
+            return SimpleNamespace(candidate=Mock(return_value={}))
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=validated):
+            with self.assertRaisesRegex(ContractError, 'NOT_FRESH_FLAT'):
+                warm.run_parent(self.config, self.path, self.controller.fd)
+        self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_source_loss_after_training_validation_cannot_acquire_heavy_lease(self):
+        from laya_cell import financial_forward_predict as prediction
+        snapshot = self.deferred_fixture()
+        def validated(*args):
+            snapshot.read = lambda *args: ({}, {'r': self.item}, [], [{'reason': 'GAP'}])
+            return SimpleNamespace(candidate=Mock(return_value={}))
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=validated):
+            with self.assertRaisesRegex(ContractError, 'ORIGINAL_SOURCE_UNAVAILABLE'):
+                warm.run_parent(self.config, self.path, self.controller.fd)
+        self.gate.acquire.assert_not_called(); self.assertEqual(self.launched, [])
+    def test_deferred_positive_path_preserves_original_finite_child_and_reap(self):
+        from laya_cell import financial_forward_predict as prediction
+        self.deferred_fixture()
+        with patch.object(prediction, 'RegisteredPlanSnapshot', return_value=SimpleNamespace(candidate=Mock(return_value={}))) as replay:
+            result = warm.run_parent(self.config, self.path, self.controller.fd)
+        replay.assert_called_once(); self.assertEqual(result['state'], 'WARM_SESSION_DRAINED')
+        self.assertEqual(result['reason'], 'VALUE_WARM_ORIGINAL_PREPARED_OBSERVED')
+        self.assertEqual(len(self.launched), 1); self.assertIsNotNone(self.launched[0].poll())
+        self.gate.release.assert_called_once(); self.available(self.heavy.path, True)
     def test_parent_stops_on_prepared_and_reaps_before_lease_release(self):
         self.fixture()
         result = warm.run_parent(self.config, self.path, self.controller.fd)
@@ -376,6 +442,39 @@ while time.monotonic()<stop:
         self.assertFalse(warm.stop_child(process, Mock(), self.binding(), 1, 'FIXTURE'))
         process.terminate.assert_called_once(); process.kill.assert_called_once()
         self.assertEqual([c.kwargs['timeout'] for c in process.wait.call_args_list], [10., 2.])
+
+
+class SignedIdleHeaderTests(unittest.TestCase):
+    def fixture(self):
+        # Reuse the actual private Ed25519/atomic-bundle fixture. Its two
+        # synthetic training rows are never financial evidence.
+        from historical_training.tests.test_current100k_registration_atomic import AtomicRegistrationTests
+        f = AtomicRegistrationTests('test_only_complete_signed_bundle_is_published_to_original_reader_layout')
+        f.setUp(); self.addCleanup(f.doCleanups)
+        return f, f.register()
+    def test_signed_idle_header_does_not_read_or_grant_candidate(self):
+        from laya_cell import financial_forward_evaluate as evaluation
+        from laya_cell import financial_forward_protocol as protocol
+        f, plan = self.fixture(); path = f.plans()[0]
+        with patch.object(protocol, 'validate_candidate', side_effect=AssertionError('idle candidate read')) as candidate:
+            self.assertIsNone(evaluation.validate_registration_header(f.config, path, plan))
+        candidate.assert_not_called()
+        (f.directory/'value-head.safetensors').write_bytes(b'withdrawn fixture head')
+        evaluation.validate_registration_header(f.config, path, plan)
+        with self.assertRaises(ContractError): evaluation.validate_registration(f.config, path, plan)
+    def test_idle_header_still_rejects_changed_original_signature(self):
+        from laya_cell import financial_forward_evaluate as evaluation
+        f, plan = self.fixture(); path = f.plans()[0]
+        seal = path.with_name('registration.json'); value = json.loads(seal.read_bytes())
+        value['plan_id'] = '0'*64; seal.chmod(0o600); seal.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'LOCAL_ROLE_SIGNATURE_VERIFY_FAILED'):
+            evaluation.validate_registration_header(f.config, path, plan)
+    def test_idle_header_still_rejects_changed_plan_bytes(self):
+        from laya_cell import financial_forward_evaluate as evaluation
+        f, plan = self.fixture(); path = f.plans()[0]
+        path.chmod(0o600); path.write_bytes(path.read_bytes()+b' ')
+        with self.assertRaisesRegex(ContractError, 'REGISTRATION_CHANGED'):
+            evaluation.validate_registration_header(f.config, path, plan)
 
 
 class ParentDeathTests(PrivateCase):
