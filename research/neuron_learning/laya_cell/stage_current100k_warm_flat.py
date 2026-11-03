@@ -203,6 +203,9 @@ def role_configuration(prior, fit, consumer, producer, release, inventory, forwa
     c['decision_attribution_registrations'] = {**c['decision_attribution_registrations'], 'EUR.USD': [registration]}
     c['worker_read_only_paths'] = list(dict.fromkeys([*c['worker_read_only_paths'], str(candidate), str(dataset),
         str(release), fit['runtime_directory'], registration['manifest']]))
+    c.pop('background_guards', None)
+    if fit.get('background_guards') is not None:
+        c['background_guards'] = copy.deepcopy(fit['background_guards'])
     return c
 
 def training_readonly_paths(data, dataset):
@@ -349,6 +352,13 @@ def main():
     consumer = read(fit['consumer_config']); producer = validate_config(consumer)
     need(consumer['registration']['sha256'] == data['producer_manifest_sha256'], 'FROZEN_PRODUCER_CHANGED')
     wrapper = read(a.guard_config); owner = verify_config(wrapper); hip.check_guard_selection(fit, owner)
+    background_fields = {}
+    if fit.get('background_guards') is not None:
+        from current100k_background_guards import load_binding
+        need(a.registration_scope == 'NEW_PRODUCER_SCOPE' and a.worker_profile == 'cpu-standby-v2',
+             'BACKGROUND_APPEND_REQUIRES_NEW_V2_SCOPE')
+        load_binding(fit['background_guards'], consumer['registration'], str(a.guard_config), a.guard_config_sha256)
+        background_fields['background_guards'] = copy.deepcopy(fit['background_guards'])
     need(owner['period_sha256'] == consumer['period_sha256'] == data['period_sha256'], 'WARM_PERIOD_CHANGED')
     prior_stage = read(a.prior_forward_stage); prior_path = Path(prior_stage['registration']['plan_path'])
     need(sha(prior_path) == prior_stage['registration']['plan_sha256'], 'ORIGINAL_TRIAL_PLAN_CHANGED')
@@ -411,6 +421,7 @@ def main():
         'forward_root': str(a.forward_root),
         'release': str(release), 'runtime_inventory_sha256': release_id,
         'training_performed': False, 'registration_performed': False, 'broker_orders_sent': 0,
+        **background_fields,
     }, resume=a.resume_staging)
     for name, wanted in inventory.items():
         target = release / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -496,6 +507,7 @@ def main():
         'guard_priority_changed': False, 'unit_installed': False, 'services_changed': [], 'keys_created': 0,
         'old_plans_modified': False, 'gpu_loaded': False, 'candidate_retrained': False,
         'trial_registered': False, 'timers_created': False, 'broker_orders_sent': 0}
+    receipt.update(background_fields)
     write_once(a.evidence_root / 'WARM_STAGE.json', receipt)
     print(json.dumps(receipt, sort_keys=True))
 

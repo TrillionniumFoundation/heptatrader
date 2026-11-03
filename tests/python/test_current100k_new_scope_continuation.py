@@ -166,6 +166,19 @@ class PreparationSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ACCEPTED_MODEL_PYTHON_HIP_CHANGED'):
             continuation.load_inputs(self.request)
 
+    def test_explicit_background_binding_is_checked_against_this_producer_and_primary_guard(self):
+        self.request.update(worker_profile='cpu-standby-v2',
+                            background_guards={'path':'/pinned/background.json','sha256':'e'*64})
+        with patch.object(continuation, 'hardware_evidence', return_value={'verified':True}), \
+                patch('current100k_background_guards.load_binding', return_value={'two_roles':'verified'}) as verify:
+            inputs = continuation.load_inputs(self.request)
+        verify.assert_called_once_with(self.request['background_guards'], self.prep['producer_registration'],
+                                       self.request['guard_config'], self.request['guard_config_sha256'])
+        self.assertEqual(inputs['background_guards'], {'two_roles':'verified'})
+        self.request['worker_profile'] = 'warm-flat-v1'
+        with self.assertRaisesRegex(ValueError, 'BACKGROUND_APPEND_REQUIRES_INDEPENDENT_V2_SCOPE'):
+            continuation.load_inputs(self.request)
+
     def test_timer_persists_beyond_one_day_and_stops_execution_when_complete(self):
         units = continuation.service_units(self.root / 'request.json', 'a'*64, self.request)
         service = next(value for key, value in units.items() if key.endswith('.service'))

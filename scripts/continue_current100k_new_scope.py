@@ -228,6 +228,13 @@ def load_inputs(request):
          'FIXED_CENTERED_FIT_REQUIRED')
     wrapper = pinned(request['guard_config'], request['guard_config_sha256'])
     owner = verify_config(wrapper)
+    background = None
+    if request.get('background_guards') is not None:
+        from current100k_background_guards import load_binding
+        need(request.get('supersedes_continuation') is None and worker_profile(request) == 'cpu-standby-v2',
+             'BACKGROUND_APPEND_REQUIRES_INDEPENDENT_V2_SCOPE')
+        background = load_binding(request['background_guards'], prep['producer_registration'],
+                                  request['guard_config'], request['guard_config_sha256'])
     need(template['hip_runtime'] == owner['hip_runtime'] and template['python'] == owner['python']
          and template['base_directory'] == owner['base_directory'], 'ACCEPTED_MODEL_PYTHON_HIP_CHANGED')
     need(type(request['fit_timeout_seconds']) is int and 60 <= request['fit_timeout_seconds'] <= 900
@@ -246,7 +253,8 @@ def load_inputs(request):
     need(len(set(outputs)) == len(outputs), 'DISTINCT_OUTPUT_ROOTS_REQUIRED')
     return {'source': source, 'prep_path': prep_path, 'prep': prep, 'consumer': consumer,
         'history': history, 'prior': prior, 'template': template, 'wrapper': wrapper, 'owner': owner,
-        'worker_profile': worker_profile(request), 'hardware_evidence': hardware, 'predecessor': predecessor}
+        'worker_profile': worker_profile(request), 'hardware_evidence': hardware, 'predecessor': predecessor,
+        'background_guards': background}
 
 
 def environment(root, layout=('research', 'learn', 'scripts')):
@@ -317,6 +325,9 @@ def stage_fit(request, inputs, readiness):
         'native_binary': str(release / 'bin/hepta-trader-neuron-native'),
         'native_binary_sha256': inventory['bin/hepta-trader-neuron-native'],
         'guard_config': request['guard_config'], 'guard_config_sha256': request['guard_config_sha256']}
+    config.pop('background_guards', None)
+    if request.get('background_guards') is not None:
+        config['background_guards'] = copy.deepcopy(request['background_guards'])
     folder = Path(request['controller_root']) / 'fit-stage'; folder.mkdir(mode=0o700, exist_ok=True)
     config_path = folder / (digest(config)+'.json'); write_once(config_path, config)
     command = [config['python'], '-B', str(release / 'bin/current100k-value-launch.py'),
@@ -417,6 +428,7 @@ def warm_stage(request, inputs, fit_path, candidate, readiness):
         need(result.returncode == 0 and path.exists(), 'WARM_STAGE_FAILED:' + result.stderr[-600:])
     stage = read(path)
     need(stage.get('worker_profile', 'warm-flat-v1') == worker_profile(request), 'WARM_STAGE_WORKER_PROFILE_CHANGED')
+    need(stage.get('background_guards') == request.get('background_guards'), 'WARM_STAGE_BACKGROUND_BINDING_CHANGED')
     need(stage['candidate_id'] == candidate['candidate_id'] and stage['dataset_sha256'] == readiness['dataset_sha256']
          and stage['expected_trial'] == readiness['expected_trial'] and stage['registration_scope'] == 'NEW_PRODUCER_SCOPE'
          and stage['forward_root'] == request['forward_root'] and stage['source_commit'] == request['source_commit']
@@ -708,6 +720,10 @@ def predecessor_lock(request, inputs, *, require_installed):
 
 def install_continuation(request_path, request_sha, request, inputs):
     units = service_units(request_path, request_sha, request)
+    if inputs.get('background_guards') is not None:
+        from current100k_background_guards import verify_loaded_roles
+        need(inputs.get('predecessor') is None, 'BACKGROUND_APPEND_REQUIRES_INDEPENDENT_SCOPE')
+        inputs['background_runtime_verification'] = verify_loaded_roles(inputs['background_guards'])
     if inputs.get('predecessor') is None:
         install_units(units)
         verified_continuation_units(units, timer_state='waiting')
@@ -800,6 +816,7 @@ def main():
             'source_commit': request['source_commit'], 'preparation_source_commit': request['preparation_source_commit'],
             'minimum_rows': MIN_ROWS, 'expected_trial': inputs['prep']['expected_trial'], 'gpu_loaded': False,
             'worker_profile': worker_profile(request), 'worker_profile_evidence': request.get('worker_profile_evidence'),
+            'background_guards': request.get('background_guards'),
             'predecessor_handoff_required': inputs.get('predecessor') is not None,
             'broker_orders_sent': 0, 'unit_candidates': service_units(args.request, args.sha256, request)}, sort_keys=True))
         return
@@ -811,6 +828,7 @@ def main():
         print(json.dumps({'state': 'PERSISTENT_NEW_SCOPE_CONTINUATION_INSTALLED',
             'request_sha256': args.sha256, 'units': list(units), 'training_started_by_installer': False,
             'worker_profile': worker_profile(request), 'predecessor_handoff': supersession,
+            'background_runtime_verification': inputs.get('background_runtime_verification'),
             'broker_orders_sent': 0}, sort_keys=True)); return
     lock = os.open(root / 'continuation.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:

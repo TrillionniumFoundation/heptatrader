@@ -37,6 +37,7 @@ import time
 
 
 MODULE_FILES = {
+    'current100k_background_guards': 'scripts/current100k_background_guards.py',
     'activate_prepared_driver': 'scripts/activate_prepared_driver.py',
     'precheck_current100k_registration': 'scripts/precheck_current100k_registration.py',
     'historical_training.common': 'research/historical_training/common.py',
@@ -192,6 +193,7 @@ def _inputs(stage, config, plan_path, plan):
          'RESEARCH_SCOPE_REQUIRED')
     need(stage['guard_config'] == config['guard_config']
          and stage['guard_config_sha256'] == config['guard_config_sha256'], 'ORIGINAL_GUARD_CHANGED')
+    need(stage.get('background_guards') == config.get('background_guards'), 'ORIGINAL_BACKGROUND_BINDING_CHANGED')
     path = Path(plan_path)
     plan_id = plan.get('plan_id')
     need(isinstance(plan_id, str) and re.fullmatch('[0-9a-f]{64}', plan_id) is not None,
@@ -217,6 +219,11 @@ def _inputs(stage, config, plan_path, plan):
     check_plan(config, plan)
     wrapper = pinned_json(config['guard_config'], config['guard_config_sha256'])
     owner = verify_config(wrapper)
+    background = None
+    if config.get('background_guards') is not None:
+        from current100k_background_guards import load_binding
+        background = load_binding(config['background_guards'], config['producer_registration'],
+                                  config['guard_config'], config['guard_config_sha256'])
     check_guard_selection(config, owner)
     selected = copy.deepcopy(wrapper)
     selected['value_priority'] = {**wrapper['value_priority'],
@@ -234,6 +241,11 @@ def _inputs(stage, config, plan_path, plan):
         need(checksum(value) == expected, 'GUARD_SOURCE_CHANGED')
         sources[relative] = value
     sources['wrapper.json'] = canonical(selected) + b'\n'
+    if background is not None:
+        evaluator = copy.deepcopy(background['roles']['evaluator']['config'])
+        evaluator['value_priority'] = copy.deepcopy(selected['value_priority'])
+        verify_config(evaluator)
+        sources['evaluator-wrapper.json'] = canonical(evaluator) + b'\n'
     files = {name: checksum(value) for name, value in sources.items()}
     identity = checksum(canonical(files))
     release = Path.home() / '.local/share/heptatrader/laya-guard/releases' / identity
@@ -246,6 +258,9 @@ def _inputs(stage, config, plan_path, plan):
         'registration_sha256': seal_sha, 'files': files,
         'changed_fields': ['value_priority.plan_path', 'value_priority.plan_sha256'],
         'resources_owner_keys_holds_changed': False, 'activated': False}
+    if background is not None:
+        manifest['background_guards'] = config['background_guards']
+        manifest['evaluator_registration_preserved'] = True
     sources['MANIFEST.json'] = canonical(manifest) + b'\n'
     candidate = {'schema': 'heptatrader.current100k-priority-candidate.v1',
         'state': 'PRIORITY_PREPARED_NOT_SELECTED', 'release': str(release),
@@ -261,6 +276,16 @@ def _inputs(stage, config, plan_path, plan):
         'shared_service_selection_required': True, 'activated': False,
         'registrar_config_modified': False, 'registration_performed': False,
         'broker_orders_sent': 0}
+    if background is not None:
+        candidate['background_guards'] = config['background_guards']
+        candidate['role_wrappers'] = {}
+        for role, filename in (('trainer', 'wrapper.json'), ('evaluator', 'evaluator-wrapper.json')):
+            original_role = background['roles'][role]['config']
+            candidate['role_wrappers'][role] = {
+                'wrapper': str(release / filename), 'wrapper_sha256': files[filename],
+                'resident_config': original_role['original_config'],
+                'resident_config_sha256': original_role['original_config_sha256'],
+                'python': candidate['python'], 'pythonpath': candidate['pythonpath']}
     # No wrapper or stage may drift between the signed validation and preparation.
     need(pinned_json(config_info['path'], config_info['sha256']) == config
          and pinned_json(config['guard_config'], config['guard_config_sha256']) == wrapper
@@ -316,7 +341,15 @@ def verify_prepared_priority(stage, registrar_config, plan_path, plan, candidate
     return expected
 
 
-def check_background_wrapper(candidate, observed_path, observed_sha256):
+def role_candidate(candidate, role):
+    if 'role_wrappers' not in candidate:
+        return candidate
+    need(role in ('trainer', 'evaluator') and set(candidate['role_wrappers']) == set(SHARED_UNITS),
+         'EXPLICIT_BACKGROUND_ROLE_REQUIRED')
+    return {**candidate, **candidate['role_wrappers'][role]}
+
+
+def check_background_wrapper(candidate, observed_path, observed_sha256, *, role=None):
     """Pure compatibility preflight for an actually observed background config.
 
     The caller must obtain the path/SHA from the actual process and unit.  A
@@ -326,6 +359,7 @@ def check_background_wrapper(candidate, observed_path, observed_sha256):
     from precheck_current100k_registration import pinned_json
     from historical_training.resident_resource_guard import verify_config
     from historical_training.value_priority_admission import verify_policy
+    candidate = role_candidate(candidate, role)
     selected = pinned_json(candidate['wrapper'], candidate['wrapper_sha256'])
     observed = pinned_json(observed_path, observed_sha256)
     verify_config(observed)
@@ -369,9 +403,15 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
     registrar = stage['configs']['registrar']
     need(pinned_json(registrar['path'], registrar['sha256']) == config
          and stage['guard_config'] == config['guard_config']
-         and stage['guard_config_sha256'] == config['guard_config_sha256'], 'ORIGINAL_REGISTRAR_CONFIG_CHANGED')
+         and stage['guard_config_sha256'] == config['guard_config_sha256']
+         and stage.get('background_guards') == config.get('background_guards'), 'ORIGINAL_REGISTRAR_CONFIG_CHANGED')
     original = pinned_json(config['guard_config'], config['guard_config_sha256'])
     owner = verify_config(original)
+    background = None
+    if config.get('background_guards') is not None:
+        from current100k_background_guards import load_binding
+        background = load_binding(config['background_guards'], config['producer_registration'],
+                                  config['guard_config'], config['guard_config_sha256'])
     if candidate is not None:
         plan = pinned_json(candidate['plan_path'], candidate['plan_sha256'])
         verify_prepared_priority(stage, config, Path(candidate['plan_path']), plan, candidate)
@@ -387,23 +427,36 @@ def precheck_shared_priority(stage, config, request, candidate=None, *, _roles=N
                  and stat.S_IMODE(Path(path).lstat().st_mode) == int(pinned['mode'], 0),
                  'ORIGINAL_UNIT_BYTES_CHANGED:' + role)
         wrapper = pinned_json(expected['old_wrapper'], expected['old_wrapper_sha256'])
-        selected_wrapper = (pinned_json(candidate['wrapper'], candidate['wrapper_sha256'])
-            if candidate is not None and expected['old_wrapper'] == candidate['wrapper'] else original)
+        choice = role_candidate(candidate, role) if candidate is not None else None
+        is_selected = choice is not None and expected['old_wrapper'] == choice['wrapper']
+        if background is not None:
+            role_binding = background['roles'][role]
+            owner = role_binding['owner']
+            if not is_selected:
+                need((expected['old_wrapper'], expected['old_wrapper_sha256'])
+                     == (role_binding['wrapper'], role_binding['wrapper_sha256']),
+                     'EXACT_BACKGROUND_ROLE_PIN_CHANGED:' + role)
+            selected_wrapper = (pinned_json(choice['wrapper'], choice['wrapper_sha256']) if is_selected
+                                else role_binding['config'])
+        else:
+            selected_wrapper = (pinned_json(choice['wrapper'], choice['wrapper_sha256']) if is_selected else original)
         need(wrapper == selected_wrapper, 'BACKGROUND_WRAPPER_REQUIRES_DISTINCT_CANDIDATE')
         verify_config(wrapper)
         need(expected['old_argv'] == [owner['python'], '-B', '-m', 'historical_training.resident_resource_guard',
              '--config', expected['old_wrapper'], '--role', role]
              and set(expected['properties']) == {'KillMode', 'KillSignal', 'TimeoutStopUSec'},
              'ORIGINAL_GUARD_ARGUMENTS_CHANGED')
-        old_pythonpath = ':'.join([str(Path(expected['old_wrapper']).parent / 'research'),
-            owner['runtime_directory'] + '/learn', owner['runtime_directory'] + '/scripts'])
+        guard_root = (Path(background['roles'][role]['guard_import_root'])
+            if background is not None and not is_selected else Path(expected['old_wrapper']).parent / 'research')
+        old_pythonpath = ':'.join([str(guard_root), owner['runtime_directory'] + '/learn',
+                                  owner['runtime_directory'] + '/scripts'])
         need(expected['old_environment'].get('PYTHONPATH') == old_pythonpath,
              'ORIGINAL_GUARD_IMPORT_SELECTION_CHANGED')
         for name, wanted in wrapper['guard_files_sha256'].items():
-            source = Path(expected['old_wrapper']).parent / 'research/historical_training' / name
+            source = guard_root / 'historical_training' / name
             need(checksum(owned_bytes(source)) == wanted, 'ORIGINAL_GUARD_SOURCE_CHANGED')
         if candidate is not None:
-            check_background_wrapper(candidate, expected['old_wrapper'], expected['old_wrapper_sha256'])
+            check_background_wrapper(candidate, expected['old_wrapper'], expected['old_wrapper_sha256'], role=role)
         before = _unit_properties(unit, remaining_seconds)
         expected_dropins = set(expected['files']) - {expected['fragment_path']}
         need(before['Id'] == unit and before['LoadState'] == 'loaded'
@@ -464,23 +517,24 @@ def _unit_properties(unit, remaining_seconds=None):
 def selection_dropins(request, candidate):
     """Create exact new drop-in bytes; never replace an original file."""
     from precheck_current100k_registration import pinned_json
-    owner = pinned_json(candidate['resident_config'], candidate['resident_config_sha256'])
     selected = copy.deepcopy(request); documents = {}
     for role, unit in SHARED_UNITS.items():
+        choice = role_candidate(candidate, role)
+        owner = pinned_json(choice['resident_config'], choice['resident_config_sha256'])
         old = request['roles'][role]; fragment = Path.home() / '.config/systemd/user' / unit
         need(Path(old['fragment_path']) == fragment, 'ORIGINAL_FRAGMENT_PATH_SCOPE')
         path = fragment.with_name(unit + '.d') / ('99-current100k-priority-' + candidate['plan_id'] + '.conf')
-        argv = [candidate['python'], '-B', '-m', 'historical_training.resident_resource_guard',
-                '--config', candidate['wrapper'], '--role', role]
+        argv = [choice['python'], '-B', '-m', 'historical_training.resident_resource_guard',
+                '--config', choice['wrapper'], '--role', role]
         need(all(re.fullmatch(r'[-A-Za-z0-9_./:]+', value) for value in
-            [*argv, candidate['pythonpath'], owner['runtime_directory']]), 'SELECTION_ARGUMENT_ESCAPE_REQUIRED')
-        raw = ('[Service]\nEnvironment=PYTHONPATH=' + candidate['pythonpath']
+            [*argv, choice['pythonpath'], owner['runtime_directory']]), 'SELECTION_ARGUMENT_ESCAPE_REQUIRED')
+        raw = ('[Service]\nEnvironment=PYTHONPATH=' + choice['pythonpath']
             + '\nExecStart=\nExecStart=' + ' '.join(argv)
             + '\nWorkingDirectory=' + owner['runtime_directory'] + '\n').encode()
         value = selected['roles'][role]
         value['files'][str(path)] = {'sha256': checksum(raw), 'text': raw.decode(), 'mode': '0o600'}
-        value.update(old_wrapper=candidate['wrapper'], old_wrapper_sha256=candidate['wrapper_sha256'], old_argv=argv)
-        value['old_environment']['PYTHONPATH'] = candidate['pythonpath']
+        value.update(old_wrapper=choice['wrapper'], old_wrapper_sha256=choice['wrapper_sha256'], old_argv=argv)
+        value['old_environment']['PYTHONPATH'] = choice['pythonpath']
         documents[str(path)] = raw
     return selected, documents
 

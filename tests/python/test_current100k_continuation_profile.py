@@ -214,6 +214,17 @@ class ProfileRouteTests(unittest.TestCase):
         child.assert_not_called()
         self.assertFalse((Path(self.request['controller_root']) / 'WARM_STAGE_BOUND.json').exists())
 
+    def test_warm_resume_cannot_drop_or_replace_the_explicit_background_binding(self):
+        self.request['background_guards'] = {'path':'/pinned/background.json','sha256':'b'*64}
+        path = Path(self.request['controller_root']) / 'warm-stage/WARM_STAGE.json'
+        self.write(path, self.stage)
+        with self.assertRaisesRegex(ValueError, 'WARM_STAGE_BACKGROUND_BINDING_CHANGED'):
+            continuation.warm_stage(self.request, {'source':self.repo,'prep':self.prep},
+                                   self.fit_path, self.candidate, self.readiness)
+        self.stage['background_guards'] = dict(self.request['background_guards']); self.write(path, self.stage)
+        self.assertEqual(continuation.warm_stage(self.request, {'source':self.repo,'prep':self.prep},
+            self.fit_path, self.candidate, self.readiness), (path, self.stage))
+
 
 class PreFitTimerHandoffTests(unittest.TestCase):
     sha = staticmethod(previous_tests.PreparationSourceTests.sha)

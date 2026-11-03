@@ -30,6 +30,7 @@ SUPPORT_FILES = (
     'activate_prepared_driver.py', 'precheck_current100k_registration.py',
     'activate_current100k_warm_stage.py', 'current100k_priority_activation.py',
     'finite_plan_calendar.py',
+    'current100k_background_guards.py',
 )
 # The current original worker/warm REQUEST predicate uses this same strict bound.
 ORIGINAL_REQUEST_MAX_AGE_MS = 60000

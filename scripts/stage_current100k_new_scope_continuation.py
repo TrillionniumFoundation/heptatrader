@@ -52,6 +52,8 @@ def main():
         parser.add_argument('--worker-profile-evidence-' + name + '-sha256')
     parser.add_argument('--supersedes-request', type=Path)
     parser.add_argument('--supersedes-request-sha256')
+    parser.add_argument('--background-guards', type=Path)
+    parser.add_argument('--background-guards-sha256')
     parser.add_argument('--install', action='store_true')
     args = parser.parse_args(); os.umask(0o077); sys.dont_write_bytecode = True
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
@@ -100,6 +102,13 @@ def main():
     if args.supersedes_request is not None:
         request['supersedes_continuation'] = {'request': str(args.supersedes_request),
             'sha256': args.supersedes_request_sha256}
+    need((args.background_guards is None) == (args.background_guards_sha256 is None),
+         'BACKGROUND_GUARDS_PATH_AND_HASH_REQUIRED')
+    if args.background_guards is not None:
+        need(args.supersedes_request is None and args.worker_profile == 'cpu-standby-v2',
+             'BACKGROUND_APPEND_REQUIRES_INDEPENDENT_V2_SCOPE')
+        request['background_guards'] = {'path': str(args.background_guards),
+            'sha256': args.background_guards_sha256}
     predecessor_inputs(request)
     prior_path, prior_sha = next((path, value) for path, value in prep['legacy_plans_sha256'].items()
                                 if Path(path).parent.name == prep['prior_plan_id'])
@@ -141,6 +150,7 @@ def main():
     print(json.dumps({'state': 'PERSISTENT_NEW_SCOPE_CONTINUATION_INSTALLED' if installation else 'CONTINUATION_STAGED_NOT_INSTALLED',
         'request': str(request_path), 'request_sha256': request_sha, 'source_commit': args.expected_head,
         'worker_profile': args.worker_profile, 'worker_profile_evidence': request.get('worker_profile_evidence'),
+        'background_guards': request.get('background_guards'),
         'preparation_request_unchanged': hashlib.sha256(checked(args.preparation_request)).hexdigest()
             == args.preparation_request_sha256,
         'explicit_argv': command, 'cpu_check': proof, 'installation': installation,
