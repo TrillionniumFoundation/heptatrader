@@ -381,10 +381,15 @@ def restore_readmission_only(stage_path, stage_sha256, selection_path, selection
     """Bounded cleanup of the original timer; no activation deadline renewal."""
     import stat
     from current100k_priority_activation import read_prepared_priority, restore_shared_readmission
+    cleanup_started = time.monotonic()
     now = int(time.time() * 1000)
     need(type(cleanup_deadline_ms) is int and 0 < cleanup_deadline_ms - now <= 180000,
          'READMISSION_CLEANUP_EXPLICIT_FINITE_DEADLINE_REQUIRED')
     budget = WakeBudget(cleanup_deadline_ms)
+    # A wall-clock rollback must not turn a short cleanup into the normal
+    # 24-minute activation budget. Bind both clocks at this explicit entry.
+    budget.stop = min(budget.stop, cleanup_started + (cleanup_deadline_ms - now) / 1000)
+    budget.remaining()
     stage, configs, registration_request = stage_inputs(stage_path, stage_sha256)
     config = configs['registrar']; selection = pinned_json(selection_path, selection_sha256)
     need(config.get('background_guards') is not None and selection.get('readmission_timers') is not None,

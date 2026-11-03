@@ -285,6 +285,23 @@ class ReadmissionTests(unittest.TestCase):
                     warm_activation.restore_readmission_only(Path('/stage'), 's', Path('/selection'), 'p', deadline)
             read_stage.assert_not_called()
 
+    def test_cleanup_wall_rollback_cannot_extend_its_initial_monotonic_budget(self):
+        clocks = {'wall': 1., 'mono': 100.}; budgets = []
+        original_budget = warm_activation.WakeBudget
+        def capture(deadline):
+            value = original_budget(deadline); budgets.append(value); return value
+        def rollback(*args):
+            self.assertEqual(budgets[0].stop, 160.)
+            clocks.update(wall=1., mono=161.)
+            budgets[0].remaining()
+            self.fail('cleanup exceeded its initial 60-second monotonic budget')
+        with patch.object(warm_activation.time, 'time', side_effect=lambda: clocks['wall']), \
+                patch.object(warm_activation.time, 'monotonic', side_effect=lambda: clocks['mono']), \
+                patch.object(warm_activation, 'WakeBudget', side_effect=capture), \
+                patch.object(warm_activation, 'stage_inputs', side_effect=rollback):
+            with self.assertRaisesRegex(ValueError, 'WARM_ACTIVATION_TOTAL_BUDGET_EXPIRED'):
+                warm_activation.restore_readmission_only(Path('/stage'), 's', Path('/selection'), 'p', 61000)
+
 
 if __name__ == '__main__':
     unittest.main()
