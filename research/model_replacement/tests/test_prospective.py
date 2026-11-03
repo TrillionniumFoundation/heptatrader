@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -144,6 +145,21 @@ class ProtocolTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, error):
                 p.seal_plan(config, self.root / "bad-plan.json", now=self.clock, identity=self.identity)
             self.assertFalse((self.root / "bad-plan.json").exists())
+
+    def test_retry_policy_is_sealed_only_into_new_plans(self):
+        plan = self.plan()
+        self.assertEqual(plan["outcome_policy"]["source_error_retry_interval_ms"], 5000)
+        self.assertEqual(plan["outcome_policy"]["source_error_grace_ms"], 60000)
+        legacy = copy.deepcopy(plan)
+        legacy["outcome_policy"].pop("source_error_retry_interval_ms")
+        legacy["outcome_policy"].pop("source_error_grace_ms")
+        legacy["plan_id"] = p.digest({k: v for k, v in legacy.items() if k != "plan_id"})
+        legacy_path = self.root / "legacy-plan.json"
+        pin = pin_json(legacy_path, legacy)
+        pin_json(Path(str(legacy_path) + ".seal.json"), {"plan_id": legacy["plan_id"],
+            "plan_sha256": pin["sha256"], "plan_durable_at_ms": legacy["created_at_ms"]})
+        with self.assertRaisesRegex(ValueError, "PLAN_POLICY"):
+            p.load_plan(legacy_path, pin["sha256"], identity=self.identity)
 
     def test_complete_plan_shared_original_input_real_label_and_resident_models(self):
         plan = self.plan()
@@ -310,6 +326,7 @@ class ProtocolTest(unittest.TestCase):
         outcome = observer.slots[0]["outcome"]["data"]
         self.assertEqual(outcome["status"], "CENSORED")
         self.assertIn("ORIGINAL_INPUT_PREFIX_CHANGED", outcome["reason"])
+        self.assertEqual(p.summarize(plan, observer.journal.events)["outcome_resource_retry_records"], 0)
 
     def test_path_gap_cannot_be_filled_by_endpoint(self):
         plan = self.plan()
@@ -405,6 +422,139 @@ class ProtocolTest(unittest.TestCase):
         final["data"]["seal_sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "ARM_FINAL_SEAL_PROOF"):
             p.replay(events, plan)
+
+    def test_transient_settlement_resource_refusal_recovers_without_repredicting(self):
+        plan = self.plan()
+        observer, source, _, calls = self.observer(plan)
+        self.clock.value = p.slot_time(plan, 0)
+        observer.tick()
+        poll = source.poll
+        def refused(*args, **kwargs):
+            raise BlockingIOError(errno.EAGAIN, "temporary resource refusal")
+        source.poll = refused
+        self.clock.value = calls[0][1][0]["anchor_ms"] + 310000
+        self.assertFalse(observer.tick())
+        self.assertIsNone(observer.slots[0]["outcome"])
+        report = p.summarize(plan, observer.journal.events)
+        self.assertEqual(report["pending_outcome_resource_deferrals"], 1)
+        self.assertEqual(report["arms"]["prior"]["censored"], 0)
+        self.assertEqual(report["arms"]["prior"]["unresolved_or_future"], 1)
+        self.assertFalse(report["arms"]["prior"]["coverage_passed"])
+        source.poll = poll
+        self.clock.advance(1000)
+        self.assertFalse(observer.tick())
+        self.assertEqual(source.calls, 1)
+        self.clock.advance(4000)
+        self.assertTrue(observer.tick())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(source.calls, 2)
+        self.assertEqual(observer.slots[0]["outcome"]["data"]["status"], "OBSERVED")
+        self.assertTrue(p.summarize(plan, observer.journal.events)["identical_all_arm_coverage_passed"])
+
+    def test_settlement_resource_retry_is_bounded_and_does_not_reopen_final_censor(self):
+        plan = self.plan()
+        observer, source, _, calls = self.observer(plan)
+        self.clock.value = p.slot_time(plan, 0)
+        observer.tick()
+        poll = source.poll
+        def refused(*args, **kwargs):
+            raise OSError(errno.EMFILE, "temporary descriptor exhaustion")
+        source.poll = refused
+        mature = calls[0][1][0]["anchor_ms"] + 310000
+        for step in range(13):
+            self.clock.value = mature + step * 5000
+            observer.tick()
+        report = p.summarize(plan, observer.journal.events)
+        self.assertEqual(report["outcome_resource_retry_records"], 12)
+        self.assertEqual(report["pending_outcome_resource_deferrals"], 0)
+        self.assertIn("OUTCOME_RESOURCE_RETRY_EXHAUSTED", observer.slots[0]["outcome"]["data"]["reason"])
+        self.assertEqual(report["arms"]["prior"]["censored"], 1)
+        source.poll = poll
+        self.clock.advance(5000)
+        observer.tick()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(source.calls, 1)
+        self.assertEqual(observer.slots[0]["outcome"]["data"]["status"], "CENSORED")
+
+    def test_restart_preserves_settlement_retry_cooldown_and_original_prediction(self):
+        plan = self.plan()
+        observer, source, _, calls = self.observer(plan)
+        self.clock.value = p.slot_time(plan, 0)
+        observer.tick()
+        poll = source.poll
+        def refused(*args, **kwargs):
+            raise OSError(errno.EBUSY, "temporary resource refusal")
+        source.poll = refused
+        self.clock.value = calls[0][1][0]["anchor_ms"] + 310000
+        observer.tick()
+        observer.journal.close()
+        source.poll = poll
+        self.clock.advance(1000)
+        resumed, _, _, new_calls = self.observer(plan, source)
+        resumed.tick()
+        self.assertEqual(source.calls, 1)
+        self.clock.advance(4000)
+        self.assertTrue(resumed.tick())
+        self.assertEqual(source.calls, 2)
+        self.assertEqual(new_calls, [])
+        self.assertEqual(p.summarize(plan, resumed.journal.events)["arms"]["prior"]["observed"], 1)
+
+    def test_retry_logging_delay_does_not_extend_grace_or_corrupt_replay(self):
+        plan = self.plan()
+        observer, source, _, calls = self.observer(plan)
+        self.clock.value = p.slot_time(plan, 0)
+        observer.tick()
+        def refused(*args, **kwargs):
+            raise OSError(errno.EAGAIN, "temporary resource refusal")
+        source.poll = refused
+        append = observer.journal.append
+        def delayed(kind, data):
+            if kind == "OUTCOME_DEFERRED":
+                self.clock.advance(60000)
+            return append(kind, data)
+        observer.journal.append = delayed
+        self.clock.value = calls[0][1][0]["anchor_ms"] + 310000
+        observer.tick()
+        p.replay(observer.journal.events, plan)
+        observer.tick()
+        report = p.summarize(plan, observer.journal.events)
+        self.assertEqual(report["outcome_resource_retry_records"], 1)
+        self.assertEqual(report["arms"]["prior"]["censored"], 1)
+
+    def test_preexisting_final_censored_receipt_is_not_rejudged_on_restart(self):
+        plan = self.plan()
+        observer, source, _, _ = self.observer(plan)
+        self.clock.value = p.slot_time(plan, 0)
+        observer.tick()
+        observer.outcome(0, {"status": "CENSORED", "reason": "PREEXISTING_FINAL_READ_REFUSAL"})
+        observer.journal.close()
+        self.clock.advance(400000)
+        resumed, _, _, calls = self.observer(plan, source)
+        self.assertTrue(resumed.tick())
+        self.assertEqual(calls, [])
+        self.assertEqual(source.calls, 1)
+        self.assertEqual(resumed.slots[0]["outcome"]["data"]["reason"], "PREEXISTING_FINAL_READ_REFUSAL")
+
+    def test_separate_arm_coverage_cannot_pass_an_insufficient_common_cohort(self):
+        plan = self.plan(slot_count=3, max_censored=1)
+        def failure_at(slot):
+            def fail():
+                if self.clock() == p.slot_time(plan, slot):
+                    raise RuntimeError("fixed synthetic prediction refusal")
+            return fail
+        observer, _, _, _ = self.observer(plan, behaviors={"prior": failure_at(0), "chronos_frozen": failure_at(1)})
+        for slot in range(3):
+            self.clock.value = p.slot_time(plan, slot)
+            observer.tick()
+            self.clock.advance(10000)
+            observer.tick()
+        self.clock.value = p.slot_time(plan, 2) + 310000
+        self.assertTrue(observer.tick())
+        report = p.summarize(plan, observer.journal.events)
+        self.assertTrue(all(arm["coverage_passed"] for arm in report["arms"].values()))
+        self.assertEqual(report["identical_all_arm_observed_slots"], 1)
+        self.assertEqual(report["identical_all_arm_censored_slots"], 2)
+        self.assertFalse(report["identical_all_arm_coverage_passed"])
 
 
 class ActualSourceFormatTest(unittest.TestCase):

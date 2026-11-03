@@ -18,6 +18,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 import copy
 from decimal import Decimal
+import errno
 import fcntl
 import hashlib
 import importlib.metadata
@@ -57,6 +58,7 @@ OUTCOME_POLICY = {
     "maximum_endpoint_lateness_ms": 5000, "maximum_availability_lag_ms": 5000,
     "maximum_path_gap_ms": 30000, "settle_after_ms": 10000,
     "maximum_absolute_return_bps": 800,
+    "source_error_retry_interval_ms": 5000, "source_error_grace_ms": 60000,
 }
 WARMUP_POLICY = "FIXED_NUMERICAL_INPUT_NO_MARKET_OBSERVATION_NO_SCORE_NO_TRAINING"
 SEGMENT = re.compile(r"segment-([0-9]{16,20})-[A-Za-z0-9]+\Z")
@@ -488,7 +490,7 @@ def real_outcome(sample, batch, now_ms):
 
 def empty_slot():
     return {"input": None, "finals": {}, "outcome": None, "begun": False,
-            "attempts": {}, "predictions": {}, "seals": {}}
+            "attempts": {}, "predictions": {}, "seals": {}, "outcome_deferred": None}
 
 
 def replay(events, plan):
@@ -559,6 +561,20 @@ def replay(events, plan):
                 need(data["status"] == "MISSING" and type(data.get("reason")) is str and data["reason"],
                      "ARM_FINAL_STATUS")
             state["finals"][name] = event
+        elif kind == "OUTCOME_DEFERRED":
+            need(state["begun"] and state["input"] is not None and state["outcome"] is None
+                 and len(state["finals"]) == len(arms), "OUTCOME_DEFERRED_ORDER")
+            mature = state["input"]["data"]["sample"]["anchor_ms"] + 300000 + OUTCOME_POLICY["settle_after_ms"]
+            until = mature + OUTCOME_POLICY["source_error_grace_ms"]
+            failed = data.get("failed_at_ms")
+            need(type(failed) is int and mature <= failed < until and failed <= event["at_ms"]
+                 and type(data.get("reason")) is str
+                 and data.get("retry_until_ms") == until
+                 and data.get("retry_after_ms") == min(failed + OUTCOME_POLICY["source_error_retry_interval_ms"], until),
+                 "OUTCOME_DEFERRED_RETRY_BOUND")
+            need(state["outcome_deferred"] is None
+                 or failed >= state["outcome_deferred"]["data"]["retry_after_ms"], "OUTCOME_RETRY_TOO_EARLY")
+            state["outcome_deferred"] = event
         elif kind == "OUTCOME":
             need(state["begun"] and state["outcome"] is None and len(state["finals"]) == len(arms),
                  "OUTCOME_BEFORE_ALL_ARM_FINALS_OR_DUPLICATE")
@@ -755,7 +771,9 @@ class Observer:
     def settle(self):
         now = self.clock()
         pending = [(slot, state) for slot, state in self.slots.items() if state["outcome"] is None
-                   and state["input"] is not None and now >= state["input"]["data"]["sample"]["anchor_ms"] + 310000]
+                   and state["input"] is not None and now >= state["input"]["data"]["sample"]["anchor_ms"] + 310000
+                   and (state["outcome_deferred"] is None
+                        or now >= state["outcome_deferred"]["data"]["retry_after_ms"])]
         if not pending:
             return
         try:
@@ -763,14 +781,29 @@ class Observer:
             batch = self.source.poll(now, earliest)
             error = None
         except Exception as exc:
-            batch, error = None, exception_reason(exc)
+            batch, error = None, exc
         for slot, state in pending:
             try:
-                need(batch is not None, "OUTCOME_SOURCE_UNAVAILABLE:" + str(error))
+                if error is not None:
+                    raise error
                 verify_prefixes(state["input"]["data"]["source_prefixes"])
                 result = real_outcome(state["input"]["data"]["sample"], batch, now)
             except Exception as exc:
-                result = {"status": "CENSORED", "reason": exception_reason(exc)}
+                # Retry the grader's temporary resource/read failure, never an
+                # old prediction or a missing/late/invalid market observation.
+                # Only original timestamp-valid bytes can eventually succeed.
+                until = state["input"]["data"]["sample"]["anchor_ms"] + 310000 + OUTCOME_POLICY["source_error_grace_ms"]
+                at = self.clock()
+                if temporary_read_error(exc) and at < until:
+                    event, _ = self.journal.append("OUTCOME_DEFERRED", {"slot": slot,
+                        "reason": exception_reason(exc), "failed_at_ms": at, "retry_until_ms": until,
+                        "retry_after_ms": min(at + OUTCOME_POLICY["source_error_retry_interval_ms"], until)})
+                    state["outcome_deferred"] = event
+                    continue
+                reason = exception_reason(exc)
+                if temporary_read_error(exc):
+                    reason = "OUTCOME_RESOURCE_RETRY_EXHAUSTED:" + reason
+                result = {"status": "CENSORED", "reason": reason}
             self.outcome(slot, result)
 
     def tick(self):
@@ -807,6 +840,14 @@ class Observer:
 def exception_reason(exc):
     value = str(exc).replace("\n", " ")[:240]
     return type(exc).__name__ + ":" + value
+
+
+def temporary_read_error(exc):
+    """An explicit bounded allowlist; integrity/clock/policy errors never retry."""
+    return isinstance(exc, MemoryError) or isinstance(exc, OSError) and exc.errno in {
+        errno.EAGAIN, errno.EINTR, errno.EMFILE, errno.ENFILE, errno.ENOMEM,
+        errno.EBUSY, errno.ETIMEDOUT, errno.ESTALE, errno.EIO, errno.ENOENT,
+    }
 
 
 def summarize(plan, events):
@@ -879,14 +920,24 @@ def summarize(plan, events):
                                 baseline - values[output]["mean_brier"] if baseline is not None else None
                                 for output in ("raw", "calibrated")}
         results[name]["common_cohort_comparisons_vs_raw_references"] = comparisons
+    closed = sum(s["outcome"] is not None for s in slots.values())
+    common_censored = closed - len(comparable)
+    common_pass = (closed == plan["slot_count"] and len(comparable) >= plan["coverage_rule"]["min_observed"]
+                   and common_censored <= plan["coverage_rule"]["max_censored"])
     return {"schema": PLAN_SCHEMA + ".status", "plan_id": plan["plan_id"], "fixed_slots": plan["slot_count"],
-        "slots_started": len(slots), "outcomes_finalized": sum(s["outcome"] is not None for s in slots.values()),
+        "slots_started": len(slots), "outcomes_finalized": closed,
         "identical_all_arm_observed_slots": len(comparable), "reference_arm": reference,
+        "identical_all_arm_censored_slots": common_censored,
+        "identical_all_arm_unresolved_or_future": plan["slot_count"] - closed,
+        "identical_all_arm_coverage_passed": common_pass,
         "identical_all_arm_time_coverage": coverage(comparable),
         "reference_output": "raw_probabilities", "arms": results,
         "model_loads": [e["data"] for e in events if e["kind"] == "MODEL_LOAD"],
         "outcome_censor_reasons": dict(Counter(s["outcome"]["data"].get("reason") for s in slots.values()
              if s["outcome"] and s["outcome"]["data"]["status"] == "CENSORED")),
+        "pending_outcome_resource_deferrals": sum(s["outcome"] is None and s["outcome_deferred"] is not None
+                                                  for s in slots.values()),
+        "outcome_resource_retry_records": sum(e["kind"] == "OUTCOME_DEFERRED" for e in events),
         "chain_head": events[-1]["sha256"] if events else None, "event_count": len(events),
         "trade_permission": False, "automatic_promotion": False, "better_than_laya_claim_allowed": False,
         "efficacy_claim": False, "metric_scope": "PRICE_PROBABILITIES_NOT_EXECUTION_PNL"}
