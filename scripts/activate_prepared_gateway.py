@@ -869,10 +869,14 @@ def start_gateway(binary):
             if time.monotonic() - stable_at >= 3:
                 return actual
         except (FileNotFoundError, PermissionError, RuntimeError) as error:
-            # /proc may briefly be unavailable while exec establishes the
-            # process. Retry only BEFORE any successful image observation.
+            # Type=simple may report the forked child active before exec has
+            # installed its one-argument command line. Keep polling only
+            # BEFORE the first strict image observation; an argv mismatch is
+            # never accepted, and the original 35-second bound still applies.
             transient_read = isinstance(error, (FileNotFoundError, PermissionError))
-            if first is not None or (not transient_read and str(error) != "GATEWAY_NOT_RUNNING_WITHOUT_ACTIVATOR"):
+            transient_start = str(error) in {
+                "GATEWAY_NOT_RUNNING_WITHOUT_ACTIVATOR", "GATEWAY_ARGV_NOT_EXACT_BINARY"}
+            if first is not None or (not transient_read and not transient_start):
                 raise
         time.sleep(0.2)
     fail("GATEWAY_STARTUP_NOT_STABLE")

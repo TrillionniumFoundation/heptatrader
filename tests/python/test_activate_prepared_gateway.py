@@ -1798,7 +1798,8 @@ class GatewayStartupObservationTests(unittest.TestCase):
         self.clock += seconds
 
     def test_transient_initial_process_read_then_strict_stable_observation_succeeds(self):
-        for error in (PermissionError("temporary exec permissions"), FileNotFoundError("temporary proc path")):
+        for error in (PermissionError("temporary exec permissions"), FileNotFoundError("temporary proc path"),
+                      RuntimeError("GATEWAY_ARGV_NOT_EXACT_BINARY")):
             with self.subTest(error=type(error).__name__):
                 self.clock = 0.0; self.start.reset_mock()
                 first = True
@@ -1814,17 +1815,21 @@ class GatewayStartupObservationTests(unittest.TestCase):
                 self.assertLess(self.clock, 35)
                 self.start.assert_called_once_with("start", gateway.GATEWAY)
 
-    def test_continuous_initial_permission_denial_is_bounded_by_existing_deadline(self):
-        with mock.patch.object(gateway, "gateway", side_effect=PermissionError("still unavailable")) as observations:
-            with self.assertRaisesRegex(RuntimeError, "GATEWAY_STARTUP_NOT_STABLE"):
-                gateway.start_gateway(self.binary)
-            self.assertGreater(observations.call_count, 1)
-        self.assertGreaterEqual(self.clock, 35)
-        self.assertLessEqual(self.clock, 35.3)
-        self.start.assert_called_once_with("start", gateway.GATEWAY)
+    def test_continuous_initial_process_errors_are_bounded_by_existing_deadline(self):
+        for error in (PermissionError("still unavailable"), RuntimeError("GATEWAY_ARGV_NOT_EXACT_BINARY")):
+            with self.subTest(error=str(error)):
+                self.clock = 0.0; self.start.reset_mock()
+                with mock.patch.object(gateway, "gateway", side_effect=error) as observations:
+                    with self.assertRaisesRegex(RuntimeError, "GATEWAY_STARTUP_NOT_STABLE"):
+                        gateway.start_gateway(self.binary)
+                    self.assertGreater(observations.call_count, 1)
+                self.assertGreaterEqual(self.clock, 35)
+                self.assertLessEqual(self.clock, 35.3)
+                self.start.assert_called_once_with("start", gateway.GATEWAY)
 
     def test_read_failure_after_first_verified_image_is_immediate_refusal(self):
-        for error in (PermissionError("permission lost"), FileNotFoundError("process disappeared")):
+        for error in (PermissionError("permission lost"), FileNotFoundError("process disappeared"),
+                      RuntimeError("GATEWAY_ARGV_NOT_EXACT_BINARY")):
             with self.subTest(error=type(error).__name__):
                 self.clock = 0.0; self.start.reset_mock()
                 with mock.patch.object(gateway, "gateway", side_effect=[self.observed, error]) as observations:
@@ -1833,6 +1838,35 @@ class GatewayStartupObservationTests(unittest.TestCase):
                     self.assertEqual(observations.call_count, 2)
                 self.assertEqual(self.clock, 0.2)
                 self.start.assert_called_once_with("start", gateway.GATEWAY)
+
+    def test_initial_image_and_configuration_mismatches_remain_immediate(self):
+        for reason in ("GATEWAY_RUNNING_IMAGE_MISMATCH", "GATEWAY_PROCESS_EXE_MISMATCH",
+                       "GATEWAY_BINARY_MISMATCH", "GATEWAY_EXECSTART_MISMATCH",
+                       "GATEWAY_CHANGED_DURING_INSPECTION"):
+            with self.subTest(reason=reason):
+                self.clock = 0.0; self.start.reset_mock()
+                with mock.patch.object(gateway, "gateway", side_effect=RuntimeError(reason)) as observations:
+                    with self.assertRaisesRegex(RuntimeError, reason):
+                        gateway.start_gateway(self.binary)
+                    observations.assert_called_once_with(self.binary)
+                self.assertEqual(self.clock, 0.0)
+                self.start.assert_called_once_with("start", gateway.GATEWAY)
+
+    def test_actual_multiple_argument_snapshot_cannot_be_admitted_by_polling(self):
+        status = {"ActiveState": "active", "SubState": "running", "MainPID": "777",
+            "InvocationID": "new-invocation", "TriggeredBy": ""}
+        raw = self.binary["path"].encode() + b"\0unexpected-argument\0"
+        with mock.patch.object(gateway.driver, "unit_properties", return_value=status), mock.patch.object(
+                gateway.driver, "proc_bytes", return_value=raw), mock.patch.object(
+                gateway.driver, "interactive_process") as process:
+            with self.assertRaisesRegex(RuntimeError, "GATEWAY_ARGV_NOT_EXACT_BINARY"):
+                gateway.gateway(self.binary)
+            with self.assertRaisesRegex(RuntimeError, "GATEWAY_STARTUP_NOT_STABLE"):
+                gateway.start_gateway(self.binary)
+            process.assert_not_called()
+        self.assertGreaterEqual(self.clock, 35)
+        self.assertLessEqual(self.clock, 35.3)
+        self.start.assert_called_once_with("start", gateway.GATEWAY)
 
 
 class GatewayProcessAndEnvironmentTests(unittest.TestCase):
