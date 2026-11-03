@@ -308,6 +308,45 @@ These results establish engineering behavior and real-head parity. They do not
 establish multi-day prospective coverage, improved model quality or a completed
 live source-end transition through the original guard.
 
+## Actual new-family deployment
+
+The qualified release was activated as a separate enabled research service. The
+unchanged supervisor performed source-recovery and resource checks and registered
+the new eleven-head family. A read-only audit at 2026-11-03 15:49:30.179 UTC found
+the service active/running and the supervisor collecting the fixed input window.
+
+| Event | UTC |
+| --- | --- |
+| Registration | 2026-11-03 15:44:25.673 |
+| Input start | 2026-11-03 15:49:25.673 |
+| Input end | 2026-11-17 15:49:25.673 |
+| Outcome end | 2026-11-18 15:49:25.673 |
+
+The new plan ID is
+`3a365ad12cab17e3864d26501dcef0e1bb8ffdb72c2b30503cdc402ffdc219cc`;
+its file SHA-256 is
+`66d6c95296c9bc9adb2b764d6c8366d48d528e586f5d6070c854d5926ed5402c`.
+Activation binds predictor configuration
+`385bd3dd8dc7a968b29e5057b62aa50600f66df43df23173b5320b6ea9d3ad3a`.
+The original plan and its three permanent missing pre-open predictions remain
+unchanged. This deployment does not restart or replace that population.
+
+At 15:55:13.845 and 15:56:04.794 UTC, read-only observations confirmed eleven CPU
+heads ready, zero encoder loads and zero guard acquisitions. The heads-ready
+receipt has SHA-256
+`ad4bdde8de33fb5e398a5630196aa313852168bfd237ea32702cc5d5a49d9eb4`.
+Both observations found zero request inputs, terminals and publications for the
+new family, so no actual cross-plan prediction or pre-open binding was yet
+verified. The independently enabled strict-review service was active/running;
+its assessment was PENDING, with a complete current replay, zero commands and
+OBSERVED outcomes, and UNKNOWN/null comparison eligibility.
+
+The collector and strict reviewer remain bounded by their own frozen deadlines.
+These deployment receipts add evidence without rewriting the candidate
+preparation's earlier `cross_plan_shared_encoding_verified:false` field. A live
+shared prediction, later settlement, long-term coverage and source-end guarded
+handoff require separately timed evidence.
+
 ## Coverage and interpretation limits
 
 The new family remains subject to its original completeness, coverage, timing,

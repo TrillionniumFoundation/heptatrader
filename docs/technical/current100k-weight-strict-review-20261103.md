@@ -170,3 +170,28 @@ pre-command publications and settled future outcomes require separate original
 lineage evidence. The export suite additionally checks permanent-negative
 receipts, invalid/unsupported evidence, exact original-command binding, retained
 observed diagnostics and source-loss history without altering the final clock.
+
+## Independent original-source verification at 2026-11-03 15:40:59.250 UTC
+
+The separately qualified 447-Python-file release completed a strict original
+replay and runtime import. It retained nine original commands: four OBSERVED,
+two PENDING and three CENSORED, with a complete current replay. The verified
+permanent-unresolved lower bound is three, so comparison eligibility is
+`IRRECOVERABLY_INELIGIBLE` and formal success under the frozen rule is false.
+The original source state remains PENDING until its fixed deadline. No early
+final state, replacement outcome or reduced denominator was introduced.
+
+The evaluation took 2.866407579 seconds. Original plan/configuration/head pins,
+existing immutable request and command receipts, and the captured journal/OMS
+prefixes compared unchanged before and after. Normal later append events remain
+allowed. The runtime handoff file SHA-256 is
+`142e3029ad0ce75218c2aab7bcf01c4f358e1d51a766034754f9a002a75a304d`;
+its canonical document digest is
+`5f1516ed04b5204cf25dc2831c5c589f3946f561b8432f308568dc2b8b28fdaf`.
+
+This release separately passed 16 export/eligibility tests, 20 shared-feature
+tests and three cross-repository handoffs on Pocket4, with no skips. These are
+the latest focused suites; earlier suite counts above are historical and are
+not added again. The [new shared-feature family](current100k-shared-features-20261103.md)
+has its own registration and future population. It cannot repair or inherit
+the failed old window.
