@@ -396,6 +396,159 @@ class ShadowTests(ForwardScopeFixture, unittest.TestCase):
         self.assertFalse(plan['historical_trials_modified'])
         self.assertEqual(W.ShadowStore(destination).plan, plan)
 
+    def strict_fixture(self, *, status='SEALED_AWAITING_ORIGINAL_COMMAND', observed=1006, elapsed=3.):
+        evaluator = self.evaluator_fixture()
+        prediction = self.seal()
+        request = {self.binding['request_id']: self.item}
+        report, times, fills, commands = self.execution_replay_fixture(complete=True)
+        baseline = evaluator.evaluate_snapshot(request, [self.binding], report, times, fills, commands, 3001)
+        self.assertEqual(baseline['observed_trades'], 1)
+        source = evaluator.root
+        preopen = source / 'preopen'
+        config = {'study_plan_path': str(source / 'plan.json'),
+                  'study_plan_sha256': W.sha(source / 'plan.json'),
+                  'source_registration': self.p['producer_registration'],
+                  'period_sha256': self.p['period_sha256'], 'state_root': str(preopen),
+                  'max_request_age_ms': 60000, 'trade_authority': False,
+                  'automatic_selection': False, 'actor_update': False}
+        W.durable_once(source / 'predictor-config.json', config)
+        W.durable_once(source / 'activation.json', {
+            'plan_id': self.p['plan_id'],
+            'predictor_config_sha256': W.sha(source / 'predictor-config.json')})
+        protocol = {k: self.p[k] for k in
+                    ('plan_id', 'input_start_ms', 'input_end_ms', 'period_sha256', 'producer_registration')}
+        protocol.update(max_request_age_ms=60000, study_plan_sha256=config['study_plan_sha256'])
+        W.durable_once(preopen / 'protocol.json', protocol)
+        rid = self.binding['request_id'];cid = self.binding['command']['command_id']
+        folder = preopen / 'requests' / rid
+        W.durable_once(folder / 'input.json', {'plan_id': self.p['plan_id'], 'request_item': self.item})
+        identity = {'plan_id': self.p['plan_id'], 'request_id': rid,
+                    'request_sha256': self.binding['request_sha256']}
+        W.durable_once(folder / 'attempt.json', {
+            **identity, 'started_at_ms': 1003, 'deadline_ms': 61000, 'started_monotonic_ns': 0})
+        W.durable_once(folder / 'terminal.json', {
+            **identity, 'producer_manifest_sha256': self.manifest, 'status': status,
+            'publication': prediction, 'publication_durability_observed_at_ms': observed,
+            'elapsed_ms': elapsed, 'observed_at_ms': observed})
+        W.durable_once(folder / 'original-command.json', {
+            'request_id': rid, 'request_sha256': self.binding['request_sha256'], 'command_id': cid})
+        W.durable_once(preopen / 'bindings' / (cid + '.json'), {
+            **identity, 'binding': self.binding, 'publication': prediction,
+            'prediction_terminal': status, 'status': 'PREOPEN_BOUND_RESEARCH',
+            'before_original_command': True})
+        strict = E.Evaluator(source, output_root=self.root / 'strict-review', strict_preopen=True)
+        return strict, (request, [self.binding], report, times, fills, commands, 3001), folder
+
+    def test_strict_review_rejects_late_failed_or_unknown_attempt_despite_durable_prediction(self):
+        for status in ('PREDICTION_FAILED_OR_LATE', 'INTERRUPTED_UNKNOWN_NO_REPLAY'):
+            with self.subTest(status=status):
+                # Each receipt graph is independently immutable.
+                if status != 'PREDICTION_FAILED_OR_LATE':
+                    self.setUp()
+                strict, args, _ = self.strict_fixture(status=status)
+                report = strict.evaluate_snapshot(*args)
+                self.assertEqual(report['observed_trades'], 0)
+                self.assertEqual(report['original_command_count'], 1)
+                self.assertEqual(report['status_counts'], {'CENSORED': 1})
+                self.assertIn('STRICT_PREOPEN_TERMINAL:' + status, report['source_issues'][0]['reason'])
+
+    def test_strict_review_preserves_original_evidence_and_survives_restart(self):
+        strict, args, _ = self.strict_fixture()
+        source = strict.source_root
+        before = {str(p.relative_to(source)): W.sha(p) for p in source.rglob('*') if p.is_file()}
+        first = strict.evaluate_snapshot(*args)
+        self.assertEqual(first['observed_trades'], 1)
+        self.assertTrue(first['strict_preopen_terminal_required'])
+        restarted = E.Evaluator(source, output_root=strict.root, strict_preopen=True)
+        self.assertEqual(restarted.evaluate_snapshot(*args)['outcome_set_digest'], first['outcome_set_digest'])
+        after = {str(p.relative_to(source)): W.sha(p) for p in source.rglob('*') if p.is_file()}
+        self.assertEqual(before, after)
+        self.assertEqual(W.read(source / 'assessment.json')['observed_trades'], 1)
+        self.assertEqual(W.read(strict.root / 'strict-review-provenance.json')['original_plan_sha256'],
+                         W.sha(source / 'plan.json'))
+
+    def test_strict_review_uses_monotonic_deadline_not_just_early_publication(self):
+        strict, args, _ = self.strict_fixture(elapsed=60000.)
+        report = strict.evaluate_snapshot(*args)
+        self.assertEqual(report['observed_trades'], 0)
+        self.assertIn('STRICT_PREOPEN_MONOTONIC_DEADLINE', report['source_issues'][0]['reason'])
+
+    def test_strict_review_requires_completion_before_prepared(self):
+        strict, args, _ = self.strict_fixture(observed=2000)
+        report = strict.evaluate_snapshot(*args)
+        self.assertEqual(report['observed_trades'], 0)
+        self.assertIn('STRICT_PREOPEN_LATE_OR_DEADLINE', report['source_issues'][0]['reason'])
+
+    def test_strict_review_missing_terminal_remains_visible_and_cache_identity_changes(self):
+        strict, args, folder = self.strict_fixture()
+        before = strict.preopen.identity()
+        (folder / 'terminal.json').unlink()
+        self.assertNotEqual(before, strict.preopen.identity())
+        report = strict.evaluate_snapshot(*args)
+        self.assertEqual(report['observed_trades'], 0)
+        self.assertEqual(report['original_command_count'], 1)
+
+    def test_strict_review_refuses_disagreeing_command_binding(self):
+        strict, args, _ = self.strict_fixture()
+        path = strict.preopen.root / 'bindings' / (self.binding['command']['command_id'] + '.json')
+        data = W.read(path)
+        data['status'] = 'MISSING_OR_LATE_NO_CREDIT'
+        W.atomic(path, data)
+        report = strict.evaluate_snapshot(*args)
+        self.assertEqual(report['observed_trades'], 0)
+        self.assertIn('STRICT_PREOPEN_BINDING_NO_CREDIT', report['source_issues'][0]['reason'])
+
+    def test_strict_review_config_mutation_never_grants_credit(self):
+        strict, args, _ = self.strict_fixture()
+        config = W.read(strict.preopen.config_path)
+        config['max_request_age_ms'] = 60001
+        W.atomic(strict.preopen.config_path, config)
+        report = strict.evaluate_snapshot(*args)
+        self.assertEqual(report['observed_trades'], 0)
+        self.assertIn('STRICT_PREOPEN_PINS_CHANGED', report['source_issues'][0]['reason'])
+
+    def changed_receipt_invalidates_cached_observation(self, filename, change):
+        strict, args, folder = self.strict_fixture()
+        strict.config['oms_path'] = str(self.source)
+        strict.config['period_path'] = str(self.dataset)
+        from laya_cell import financial_forward_source
+        with patch.object(financial_forward_source, 'ingress_identity', return_value={'fixture': 'unchanged'}), \
+                patch.object(W, 'clock_ms', return_value=3001), \
+                patch.object(strict, 'snapshot', side_effect=lambda: strict.evaluate_snapshot(*args)) as replay:
+            self.assertEqual(strict.step()['observed_trades'], 1)
+            self.assertTrue(strict.step()['replay_skipped'])
+            self.assertEqual(replay.call_count, 1)
+            stable = (W.sha(folder / 'terminal.json'),
+                      W.sha(strict.preopen.root / 'bindings' / (self.binding['command']['command_id'] + '.json')))
+            path = folder / filename
+            value = W.read(path);value.update(change);W.atomic(path, value)
+            result = strict.step()
+            self.assertEqual(replay.call_count, 2)
+            self.assertEqual(result['observed_trades'], 0)
+            self.assertEqual(result['original_command_count'], 1)
+            self.assertEqual(stable, (W.sha(folder / 'terminal.json'),
+                             W.sha(strict.preopen.root / 'bindings' / (self.binding['command']['command_id'] + '.json'))))
+
+    def test_changed_attempt_invalidates_cached_observed_without_terminal_change(self):
+        self.changed_receipt_invalidates_cached_observation('attempt.json', {'deadline_ms': 999999})
+
+    def test_changed_original_command_invalidates_cached_observed_without_terminal_change(self):
+        self.changed_receipt_invalidates_cached_observation('original-command.json', {'command_id': 'different'})
+
+    def test_strict_live_loop_exits_after_fixed_final_assessment(self):
+        import sys
+        strict, args, _ = self.strict_fixture()
+        final_args = (*args[:-1], self.p['outcome_end_ms'])
+        final = strict.evaluate_snapshot(*final_args)
+        self.assertEqual(final['state'], 'FINAL_INCOMPLETE')
+        argv = ['evaluator', '--root', str(strict.source_root), '--strict-preopen',
+                '--output-root', str(strict.root)]
+        with patch.object(sys, 'argv', argv), patch.object(E, 'Evaluator', return_value=strict), \
+                patch.object(strict, 'step', return_value=final) as step, \
+                patch.object(E.time, 'sleep', side_effect=AssertionError('final review must exit')):
+            E.main()
+            self.assertEqual(step.call_count, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

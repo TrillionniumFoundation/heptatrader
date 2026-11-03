@@ -190,8 +190,8 @@ class ShadowStore:
   features=read(folder/'features.json');require(value['feature_digest']==digest(features),'SHADOW_FEATURE_DIGEST_CHANGED');validate_runtime_proof(self.plan,features)
   validate_predictions(self.plan,value['predictions'])
   return {**value,'committed_at_ms':observed['publication_durability_observed_at_ms'],'seal_durable_completed_at_ms':observed['publication_durability_observed_at_ms'],'publication_durability_observed_at_ms':observed['publication_durability_observed_at_ms'],'prediction_sha256':publication['prediction_sha256'],'publication_path':str(folder/'publication.json'),'publication_sha256':sha(folder/'publication.json'),'observation_path':str(folder/'observation.json'),'observation_sha256':sha(folder/'observation.json')}
- def remember_commands(self,bindings):
-  folder=self.root/'seen-commands';folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+ def remember_commands(self,bindings,*,state_root=None):
+  folder=(self.root if state_root is None else Path(state_root))/'seen-commands';folder.mkdir(mode=0o700,parents=True,exist_ok=True)
   for b in bindings:
    if self.plan['input_start_ms']<=b['request_started_at_ms']<self.plan['input_end_ms']:
     durable_once(folder/(safe_id(b['command']['command_id'])+'.json'),b)

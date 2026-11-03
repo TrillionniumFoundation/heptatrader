@@ -98,8 +98,20 @@ def assessment(p,results,now,source_issues=(),training_labels_current=True):
 
 class Evaluator:
  """Separate process: reads sealed predictions and current authoritative replay."""
- def __init__(self,root):
-  self.store=W.ShadowStore(root);self.plan=self.store.plan;self.root=Path(root)
+ def __init__(self,root,*,output_root=None,strict_preopen=False):
+  self.store=W.ShadowStore(root);self.plan=self.store.plan;self.source_root=Path(root)
+  self.root=Path(output_root) if output_root is not None else self.source_root
+  W.require(self.root.is_absolute() and not self.root.is_symlink(),'SHADOW_EVALUATOR_OUTPUT_ROOT')
+  self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
+  self.preopen=None;self.strict_review=bool(strict_preopen)
+  if strict_preopen or (self.source_root/'activation.json').exists():
+   from .current100k_preopen_evidence import PreopenEvidence
+   self.preopen=PreopenEvidence(self.source_root)
+   provenance=self.preopen.provenance()
+   provenance.update(review_output_root=str(self.root),original_reports_modified=self.root==self.source_root)
+   W.durable_once(self.root/'strict-review-provenance.json',provenance)
+  self.assessment_name = 'assessment-strict.json' if output_root is not None and self.preopen is not None else 'assessment.json'
+  if strict_preopen:W.require(retained_review_plan(self.source_root,self.root)==self.plan,'SHADOW_REVIEW_PLAN_CHANGED')
   p=self.plan;W.require(W.sha(p['reward_config_path'])==p['reward_config_sha256'],'SHADOW_REWARD_CONFIG_CHANGED')
   self.config=W.read(p['reward_config_path']);self.last_identity=None;self.last_result=None;self.last_read_ms=0
  def identity(self,now):
@@ -109,7 +121,9 @@ class Evaluator:
           'oms':file_identity(self.config['oms_path']),'period':file_identity(self.config['period_path']),
           'reward_config':file_identity(p['reward_config_path']),'dataset':file_identity(p['training_dataset_path']),
           'final':now>=p['outcome_end_ms'],
-          'publications':[(str(x),file_identity(x)) for x in sorted((self.root/'predictions').glob('*/publication.json'))]}
+          'publications':[(str(x),file_identity(x)) for x in sorted((self.source_root/'predictions').glob('*/*.json'))
+                          if x.name in {'features.json','prediction.json','commit.json','publication.json','observation.json'}],
+          'preopen':self.preopen.identity() if self.preopen is not None else None}
  def snapshot(self):
   from .financial_forward_source import ingress
   from .resident_rewards import current
@@ -124,20 +138,27 @@ class Evaluator:
   times,command_fills,execution_commands=execution_index(report['source_prefix']) if report.get('source_prefix') else ({},{},{})
   return self.evaluate_snapshot(requests,bindings,report,times,command_fills,execution_commands,now,issues)
  def evaluate_snapshot(self,requests,bindings,report,times,command_fills,execution_commands,now,issues=()):
-  p=self.plan;issues=list(issues);seen=self.store.remember_commands(bindings)
+  p=self.plan;issues=list(issues);source_replay_complete=not bool(issues)
+  seen=self.store.remember_commands(bindings,state_root=self.root)
   current={b['command']['command_id']:b for b in bindings}
   reward_by={r['open_command_id']:r for r in report.get('rewards',[])}
   known_by={r['open_command_id']:r for r in report.get('execution_rewards',[]) if r.get('instrument')=='EUR.USD'}
   results=[]
   for cmd,b in seen.items():
-   try:prediction=self.store.prediction(b['request_id'])
-   except (ValueError,OSError,KeyError) as exc:
-    prediction=None;issues.append({'command_id':cmd,'reason':'PREDICTION_REVOKED:'+str(exc)[:160]})
+   failure=None;preopen_evidence=None
+   try:
+    prediction=self.store.prediction(b['request_id'])
+    if prediction is not None and self.preopen is not None:preopen_evidence=self.preopen.check(b,prediction)
+   except (ValueError,OSError,KeyError,TypeError) as exc:
+    prediction=None;failure='PREDICTION_REVOKED:'+str(exc)[:160]
+    issues.append({'command_id':cmd,'reason':failure})
    reward=reward_by.get(cmd);first=command_fills.get(cmd);closed=None
    if reward is not None and reward.get('executions'):
     full_times=[times.get(e['execution_id']) for e in reward['executions']]
     if all(t is not None for t in full_times):closed=max(full_times)
    result=W.score_case(p,b,prediction,requests.get(b['request_id']),reward,first,closed,now)
+   if failure:result.update(status='CENSORED',reason=failure)
+   if preopen_evidence is not None:result['preopen_terminal_evidence']=preopen_evidence
    if cmd not in current:result.update(status='CENSORED',reason='PREVIOUSLY_SEEN_BINDING_WITHDRAWN')
    elif cmd in known_by and reward is None:result.update(status='CENSORED',reason='CURRENT_REWARD_UNSETTLED_OR_REVOKED')
    results.append(result)
@@ -172,18 +193,26 @@ class Evaluator:
    record=W.read(path)
    if record['command_id'] not in found:
     results.append({**record,'request_id':None,'status':'CENSORED','reason':'PREVIOUS_ACTUAL_COMMAND_NO_LONGER_OBSERVABLE'})
+  # An incomplete authoritative replay cannot preserve current financial credit.
+  # Retain any newly discovered denominator first, without overwriting the last complete report.
+  if self.strict_review and not source_replay_complete:
+   return strict_source_unavailable(self.root,p,ValueError('STRICT_SOURCE_REPLAY_INCOMPLETE'),now,source_issues=issues)
   present={r['reward_id'] for r in report.get('rewards',[])}
   training_ok=set(p['training_reward_ids'])<=present
   result=assessment(p,results,now,issues,training_ok)
   result['nontrade_requests']=sum(p['input_start_ms']<=v['request']['started_at_ms']<p['input_end_ms'] and v['request']['position_at_request']==0 and rid not in {b['request_id'] for b in seen.values()} for rid,v in requests.items())
   result['outcome_set_digest']=W.digest(results);result['source_ledger_prefix']=report.get('source_prefix')
   result['source_record_count']=len(requests)
+  result['current_replay_complete']=source_replay_complete
+  result['original_command_count_complete']=source_replay_complete
+  result['strict_preopen_terminal_required']=self.preopen is not None
+  if self.preopen is not None:result['review_provenance_sha256']=W.sha(self.root/'strict-review-provenance.json')
   for row in results:
    folder=self.root/'outcomes'/W.safe_id(row['command_id']);record_id=W.digest(row)
    W.durable_once(folder/(record_id+'.json'),row)
    pointer={'record_id':record_id}
    if not (folder/'current.json').exists() or W.read(folder/'current.json')!=pointer:W.atomic(folder/'current.json',pointer)
-  W.atomic(self.root/'assessment.json',result)
+  W.atomic(self.root/self.assessment_name,result)
   return result
  def step(self):
   now=W.clock_ms();identity=self.identity(now)
@@ -194,13 +223,103 @@ class Evaluator:
   self.last_identity=identity if identity==after else None;self.last_result=result;self.last_read_ms=now
   return result
 
+STRICT_FAILURE_SCHEMA='heptatrader.weight-shadow-strict-source-failure.v1'
+
+def retained_review_plan(source_root,output_root):
+ """Retain an already registered plan for source-loss restart; never register."""
+ source_root=Path(source_root);output_root=Path(output_root)
+ W.require(source_root.is_absolute() and output_root.is_absolute() and source_root!=output_root,'SHADOW_STRICT_REVIEW_SEPARATE_OUTPUT')
+ W.require(not output_root.is_symlink(),'SHADOW_EVALUATOR_OUTPUT_ROOT')
+ output_root.mkdir(mode=0o700,parents=True,exist_ok=True);path=output_root/'review-plan-snapshot.json'
+ if path.exists():saved=W.read(path)
+ else:
+  store=W.ShadowStore(source_root)
+  saved={'schema':'heptatrader.weight-shadow-review-plan-snapshot.v1','source_root':str(source_root),
+         'plan':store.plan,'original_plan_sha256':W.sha(source_root/'plan.json'),
+         'registration':W.read(source_root/'registration.json'),'window_registered_by_review':False}
+  saved['snapshot_id']=W.digest(saved);W.durable_once(path,saved)
+ W.require(saved.get('schema')=='heptatrader.weight-shadow-review-plan-snapshot.v1' and saved.get('source_root')==str(source_root)
+           and saved.get('window_registered_by_review')is False
+           and saved.get('snapshot_id')==W.digest({k:v for k,v in saved.items() if k!='snapshot_id'}),'SHADOW_REVIEW_PLAN_SNAPSHOT')
+ p=saved['plan'];W.validate_plan(p);registration=saved['registration']
+ W.require(registration['plan_id']==p['plan_id'] and registration['plan_sha256']==saved['original_plan_sha256']
+           and p['registered_at_ms']<=registration['durable_at_ms']<p['input_start_ms'],'SHADOW_REVIEW_REGISTRATION_SNAPSHOT')
+ return p
+
+def read_strict_terminal(output_root,plan):
+ path=Path(output_root)/'strict-terminal-unavailable.json'
+ if not path.exists():return None
+ receipt=W.read(path)
+ W.require(receipt.get('schema')==STRICT_FAILURE_SCHEMA and receipt.get('plan_id')==plan['plan_id']
+           and receipt.get('outcome_end_ms')==plan['outcome_end_ms']
+           and W.integer(receipt['as_of_ms'])>=plan['outcome_end_ms'],'SHADOW_STRICT_FINAL_SCOPE')
+ result=receipt['assessment']
+ W.require(result.get('plan_id')==plan['plan_id'] and result.get('state')=='FINAL_INCOMPLETE'
+           and result.get('as_of_ms')==receipt['as_of_ms'] and result.get('observed_trades')==0
+           and result.get('current_replay_complete')is False
+           and all(result.get(k)is False for k in ('financial_candidate_selected','canonical_agentd_accepted','trade_authority')),
+           'SHADOW_STRICT_FINAL_NO_CURRENT_CREDIT')
+ return receipt
+
+def strict_source_unavailable(output_root,plan,error,now,*,source_issues=()):
+ """Revoke current credit, retaining the known denominator and past reports."""
+ root=Path(output_root);W.validate_plan(plan);now=W.integer(now)
+ existing=read_strict_terminal(root,plan)
+ if existing is not None:
+  W.atomic(root/'assessment-strict.json',existing['assessment']);return existing['assessment']
+ issue={'reason':'STRICT_SOURCE_REPLAY_UNAVAILABLE','error_type':type(error).__name__,'message':str(error)[:2000]}
+ path=root/'assessment-strict.json';prior=None;prior_count=0
+ if path.exists():
+  try:
+   old=W.read(path);W.require(old['plan_id']==plan['plan_id'],'SHADOW_STRICT_PRIOR_SCOPE')
+   count=old.get('original_command_count');W.require(type(count)is int and count>=0,'SHADOW_STRICT_PRIOR_COUNT');prior_count=count
+   prior_path=root/'assessment-history'/(W.digest(old)+'.json');W.durable_once(prior_path,old)
+   prior=old.get('last_completed_assessment') if old.get('current_replay_complete')is False else {
+          'path':str(prior_path),'sha256':W.sha(prior_path),'as_of_ms':old.get('as_of_ms'),
+          'state':old.get('state'),'original_command_count':count,'observed_trades':old.get('observed_trades')}
+  except (OSError,ValueError,KeyError,TypeError) as exc:issue['prior_assessment_error']=type(exc).__name__+':'+str(exc)[:300]
+ ids=set();state_errors=[]
+ for directory,kind in ((root/'seen-commands','file'),(root/'seen-unbound-commands','file'),(root/'outcomes','directory')):
+  if not directory.exists():continue
+  for item in sorted(directory.iterdir()):
+   if (kind=='file' and item.suffix!='.json') or (kind=='directory' and not item.is_dir()):continue
+   try:ids.add(W.safe_id(item.stem if kind=='file' else item.name))
+   except ValueError as exc:state_errors.append({'path':str(item),'reason':str(exc)})
+ rows=[{'command_id':cid,'request_id':None,'status':'CENSORED','reason':'CURRENT_SOURCE_UNAVAILABLE_NO_CREDIT'} for cid in sorted(ids)]
+ result=assessment(plan,rows,now,[*source_issues,issue,*state_errors],training_labels_current=False);denominator=max(prior_count,len(rows))
+ if denominator>plan['rule']['maximum_unresolved_at_final']:
+  result['reasons']=sorted(set(result['reasons'])|{'UNRESOLVED_OR_CENSORED_ORIGINAL_COMMANDS'})
+ result.update(original_command_count=denominator,observed_trades=0,status_counts={'CENSORED':denominator} if denominator else {},
+               prediction_coverage=0.,current_replay_complete=False,original_command_count_complete=False,
+               denominator_scope='RETAINED_KNOWN_COMMANDS_AND_PRIOR_COUNT_LOWER_BOUND',
+               retained_known_command_count=len(rows),retained_unenumerated_command_count=denominator-len(rows),
+               strict_preopen_terminal_required=True,last_completed_assessment=prior,outcome_set_digest=W.digest(rows),
+               source_record_count=None,source_ledger_prefix=None,nontrade_requests=None,
+               original_window_modified=False,source_failure={'type':type(error).__name__,'message':str(error)[:2000]})
+ for row in rows:
+  folder=root/'outcomes'/row['command_id'];record_id=W.digest(row)
+  W.durable_once(folder/(record_id+'.json'),row);W.atomic(folder/'current.json',{'record_id':record_id})
+ if now>=plan['outcome_end_ms']:
+  receipt={'schema':STRICT_FAILURE_SCHEMA,'plan_id':plan['plan_id'],'outcome_end_ms':plan['outcome_end_ms'],
+           'as_of_ms':now,'assessment':result,'original_window_modified':False,'broker_orders_sent':0}
+  W.durable_once(root/'strict-terminal-unavailable.json',receipt)
+ W.atomic(path,result);return result
+
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,required=True)
  parser.add_argument('--register',type=Path);parser.add_argument('--once',action='store_true')
+ parser.add_argument('--strict-preopen',action='store_true');parser.add_argument('--output-root',type=Path)
  args=parser.parse_args();os.umask(0o077)
  if args.register:
+  W.require(not args.strict_preopen and args.output_root is None,'SHADOW_REVIEW_CANNOT_REGISTER')
   print(json.dumps(W.freeze(W.read(args.register),args.root)));return
- worker=Evaluator(args.root);fd=os.open(args.root/'evaluator.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+ worker=None
+ if args.strict_preopen:
+  W.require(args.output_root is not None and args.output_root.resolve()!=args.root.resolve(),'SHADOW_STRICT_REVIEW_SEPARATE_OUTPUT')
+  output_root=args.output_root;plan=retained_review_plan(args.root,output_root);assessment_name='assessment-strict.json'
+ else:
+  worker=Evaluator(args.root,output_root=args.output_root);output_root=worker.root;plan=worker.plan;assessment_name=worker.assessment_name
+ fd=os.open(output_root/'evaluator.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);stopping=False
  def stop(*_):
   nonlocal stopping
@@ -208,14 +327,28 @@ def main():
  signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
  try:
   while not stopping:
+   final_review=False
    try:
-    result=worker.step();status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
+    terminal=read_strict_terminal(output_root,plan) if args.strict_preopen else None
+    if terminal is not None:
+     result=terminal['assessment'];W.atomic(output_root/assessment_name,result)
+    else:
+     if worker is None:worker=Evaluator(args.root,output_root=output_root,strict_preopen=True)
+     result=worker.step()
+    final_review=bool(args.strict_preopen and result.get('as_of_ms',0)>=plan['outcome_end_ms'] and result.get('state') in ('FINAL_INCOMPLETE','FINAL_RESEARCH_COMPARISON'))
+    status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
     status.update(at_ms=W.clock_ms(),financial_candidate_selected=False,broker_orders_sent=0,replay_skipped=result.get('replay_skipped',False))
    except Exception as exc:
-    status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':W.clock_ms(),'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
-   W.atomic(args.root/'evaluator-status.json',status);print(json.dumps(status),flush=True)
-   if args.once:break
-   for _ in range(10):
+    now=W.clock_ms();status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':now,'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
+    if args.strict_preopen:
+     if worker is not None:worker.last_identity=None;worker.last_result=None
+     result=strict_source_unavailable(output_root,plan,exc,now)
+     status.update({k:result[k] for k in ('plan_id','as_of_ms','observed_trades','original_command_count','reasons','current_replay_complete','original_command_count_complete')})
+     if now>=plan['outcome_end_ms']:status['state']=result['state'];final_review=True
+   status['assessment_path']=str(output_root/assessment_name)
+   W.atomic(output_root/'evaluator-status.json',status);print(json.dumps(status),flush=True)
+   if args.once or final_review:break
+   for _ in range(60 if args.strict_preopen else 10):
     if stopping:break
     time.sleep(1)
  finally:os.close(fd)

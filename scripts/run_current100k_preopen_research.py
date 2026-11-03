@@ -143,8 +143,8 @@ def run(c):
  ingress=ResidentIngress(c['source_registration'],c['period_sha256'])
  class Source:
   def __init__(self):self.remembered={}
-  def read(self):
-   value=ingress.read()
+  def read(self,*,retry_deadline_ms=None):
+   value=ingress.read(retry_deadline_ms=retry_deadline_ms)
    if not value[3]:
     fresh=[]
     for binding in value[2]:
@@ -153,6 +153,7 @@ def run(c):
      else:fresh.append(binding);self.remembered[cid]=binding
     if fresh:store.remember_commands(fresh)
    return value
+  def read_with_deadline(self,deadline_ms):return self.read(retry_deadline_ms=deadline_ms)
   def statistics(self):return ingress.statistics()
  models={}
  def warm():

@@ -11,6 +11,17 @@ The resident source reader reuses parsed append-only records, while revalidating
 manifest pins, health, file identity and producer chains. Appended segments must
 retain the exact previously verified prefix. A restart discards source caches.
 
+An ordinary append overlapping capture retries at most three times, with 10 ms
+pauses and a 150 ms monotonic retry budget capped by the earliest known original
+request deadline. An in-flight synchronous read cannot be preempted; a request
+that expires during it receives no inference. Exhausted capture attempts yield
+PREOPEN_SOURCE_SNAPSHOT_BUSY and never return a stale or unverified snapshot. A busy
+source retains an already verified warm resident while inference waits. Original
+guard checks, manual holds, worker handoff, request expiry and the fixed input
+window still apply. Hash, producer, append-only-prefix and health violations
+retain the original failure/handoff behavior. None of these retries renews a
+request, the study window or a resource lease.
+
 Every eligible original request gets a durable private ledger input. Resource
 holds and expired inputs remain explicit records. One attempt is allowed per
 original identity. Interrupted attempts remain unknown and are never backfilled.

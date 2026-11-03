@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Arm frozen research; start its fixed window only when original inputs resume."""
 from __future__ import annotations
-import argparse, fcntl, hashlib, json, os, signal, subprocess, sys, time
+import argparse, fcntl, hashlib, json, math, os, signal, subprocess, sys, time
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "research"), str(ROOT / "research/neuron_learning")]
@@ -22,6 +22,105 @@ def fresh_request(now, requests, maximum_age):
     return latest, latest is not None and 0 <= now - latest <= maximum_age
 
 
+def successful_decisions(requests, graphs, producer_sha256, behavior_model_id):
+    """Verify original RESPONSE/DECISION evidence, including successful HOLDs.
+
+    An opening is deliberately not required: this is source readiness, not
+    authority to trade. The same verified attribution graph supplies requests,
+    replies and decisions; a recent attempted provider call is insufficient.
+    """
+    from hepta_decision_attribution import digest, strict
+    completed = {}
+    for _, producer, originals, responses, decisions, _, invalid, order in graphs:
+        if producer != producer_sha256 or invalid:
+            continue
+        for rid, request in originals.items():
+            item = requests.get(rid)
+            response, decision = responses.get(rid), decisions.get(rid)
+            if not item or not isinstance(response, dict) or not isinstance(decision, dict):
+                continue
+            try:
+                if (item["request"] != request or item["producer_manifest_sha256"] != producer_sha256
+                        or request["model_id"] != behavior_model_id
+                        or item["request_sha256"] != digest(request)
+                        or response["request_id"] != rid or decision["request_id"] != rid
+                        or response["request_sha256"] != item["request_sha256"]
+                        or decision["request_sha256"] != item["request_sha256"]
+                        or decision["response_sha256"] != digest(response)
+                        or decision["decision_sha256"] != digest(decision["decision"])
+                        or not order["REQUEST"][rid] < order["RESPONSE"][rid] < order["DECISION"][rid]):
+                    continue
+                stamps = (request["started_at_ms"], response["available_at_ms"], decision["available_at_ms"])
+                if any(type(value) is not int or value <= 0 for value in stamps) or not stamps[0] <= stamps[1] <= stamps[2]:
+                    continue
+                if type(response["returncode"]) is not int or response["returncode"] != 0:
+                    continue
+                envelope = strict(response["stdout"])
+                outputs = envelope.get("outputs")
+                if (envelope.get("ok") is not True or not isinstance(outputs, list)
+                        or len(outputs) != 1 or not isinstance(outputs[0], dict)
+                        or not isinstance(outputs[0].get("text"), str)):
+                    continue
+                value = strict(outputs[0]["text"])
+                if (not isinstance(value, dict) or set(value) != {"action", "confidence", "rationale"}
+                        or value["action"] not in ("BUY", "SELL", "HOLD")
+                        or type(value["confidence"]) not in (int, float)
+                        or not math.isfinite(value["confidence"]) or not 0 <= value["confidence"] <= 1
+                        or not isinstance(value["rationale"], str) or value != decision["decision"]):
+                    continue
+                # The logical model name can be a historical alias. Bind the
+                # actual provider/model to the exact original CLI controls.
+                provider, model = envelope.get("provider"), envelope.get("model")
+                control = request["model_controls"]["model"]
+                if (not isinstance(provider, str) or not provider or not isinstance(model, str) or not model
+                        or control != provider + "/" + model):
+                    continue
+                completed[rid] = {
+                    "request_id": rid, "request_sha256": item["request_sha256"],
+                    "response_sha256": digest(response), "decision_sha256": decision["decision_sha256"],
+                    "request_started_at_ms": stamps[0], "response_available_at_ms": stamps[1],
+                    "decision_available_at_ms": stamps[2], "action": value["action"],
+                    "model_id": behavior_model_id, "provider_model": control,
+                }
+            except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
+                continue
+    return completed
+
+
+class RegistrationSource(ResidentIngress):
+    """Reuse verified segment bytes; invalidate completion evidence with ingress."""
+    def __init__(self, registration, period_sha256, behavior_model_id):
+        super().__init__(registration, period_sha256)
+        self.behavior_model_id = behavior_model_id
+        self.completion_identity, self.completions = None, {}
+
+    def read_successes(self):
+        from hepta_decision_attribution import _verified_producer_graphs
+        from laya_cell.financial_forward_source import ingress_identity
+        manifest, requests, bindings, issues = self.read()
+        if self.completion_identity != self.identity:
+            graphs, _ = _verified_producer_graphs(
+                manifest["journal_directory"], "EUR.USD", self.period, segment_cache=self.cache)
+            W.require(self.identity == ingress_identity(self.registration, self.period),
+                      "SUPERVISOR_SOURCE_CHANGED_DURING_RECOVERY_CHECK")
+            self.completions = successful_decisions(
+                requests, graphs, self.registration["sha256"], self.behavior_model_id)
+            self.completion_identity = self.identity
+        return manifest, requests, bindings, issues, self.completions
+
+
+def fresh_successful_decision(now, requests, completed, maximum_age):
+    latest_request, _ = fresh_request(now, requests, maximum_age)
+    latest = max((value["decision_available_at_ms"] for value in completed.values()), default=None)
+    eligible = [value for value in completed.values()
+                if value["request_started_at_ms"] == latest_request
+                and 0 <= now - value["request_started_at_ms"] <= maximum_age
+                and value["request_started_at_ms"] <= value["response_available_at_ms"]
+                <= value["decision_available_at_ms"] <= now]
+    witness = max(eligible, key=lambda value: (value["decision_available_at_ms"], value["request_id"]), default=None)
+    return latest, witness
+
+
 def phase(now, plan):
     if now < plan["input_start_ms"]: return "WAIT_FIXED_FUTURE_START"
     if now < plan["input_end_ms"]: return "COLLECTING_FIXED_INPUT_WINDOW"
@@ -29,7 +128,7 @@ def phase(now, plan):
     return "WAIT_FINAL_ASSESSMENT"
 
 
-def ensure_activation(config, study, template, root):
+def ensure_activation(config, study, template, root, *, source_recovery=None):
     path = root / "plan.json"
     if path.exists():
         W.require((root / "registration.json").exists(), "SUPERVISOR_INCOMPLETE_REGISTRATION")
@@ -46,7 +145,7 @@ def ensure_activation(config, study, template, root):
         activation = W.read(activation_path)
         W.require(activation["plan_id"] == plan["plan_id"] and activation["supervisor_config_sha256"] == config["_sha256"], "SUPERVISOR_ACTIVATION_CHANGED")
     else:
-        W.durable_once(activation_path, {"plan_id": plan["plan_id"], "activated_at_ms": W.clock_ms(), "supervisor_config_sha256": config["_sha256"], "study_config_sha256": config["study_config_sha256"], "predictor_config_sha256": W.sha(predictor_path), "broker_orders_sent": 0})
+        W.durable_once(activation_path, {"plan_id": plan["plan_id"], "activated_at_ms": W.clock_ms(), "supervisor_config_sha256": config["_sha256"], "study_config_sha256": config["study_config_sha256"], "predictor_config_sha256": W.sha(predictor_path), "broker_orders_sent": 0, **({"source_recovery_witness": source_recovery} if source_recovery is not None else {})})
     return plan, predictor_path
 
 
@@ -73,8 +172,6 @@ def run(config):
     stopping = [False]
     def stop(*_): stopping[0] = True
     for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, stop)
-    source = ResidentIngress(study["producer_registration"], study["period_sha256"])
-    guard = original_guard(template)
     children, retries, last_exits = {}, {}, {}
     launcher = str(ROOT / "scripts/run_verified_weight_research.py")
     def spawn(role, args):
@@ -89,30 +186,54 @@ def run(config):
             command = [config["python"], "-B", launcher, "--manifest", config["release_manifest"], "--sha256", config["release_manifest_sha256"], "--target", role, "--", *args]
             children[role] = subprocess.Popen(command)
     def stop_child(role):
-        child = children.pop(role, None)
-        if child is not None and child.poll() is None:
+        child = children.get(role)
+        if child is None: return
+        if child.poll() is None:
             child.terminate()
             try: child.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()
-            last_exits[role] = {"code": child.returncode, "observed_at_ms": W.clock_ms()}
+        last_exits[role] = {"code": child.returncode, "observed_at_ms": W.clock_ms()}
+        children.pop(role)
+    status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1",
+              "at_ms": W.clock_ms(), "state": "STARTING", "broker_orders_sent": 0,
+              "automatic_selection": False, "supervisor_running": True}
     try:
+        source = RegistrationSource(study["producer_registration"], study["period_sha256"], study["behavior_model_id"])
+        guard = original_guard(template)
         while not stopping[0]:
             now = W.clock_ms()
-            status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1", "at_ms": now, "broker_orders_sent": 0, "automatic_selection": False, "child_exits": dict(last_exits)}
+            status = {"schema": "heptatrader.weight-shadow-supervisor-status.v1", "at_ms": now, "broker_orders_sent": 0, "automatic_selection": False, "supervisor_running": True, "child_exits": dict(last_exits)}
             try:
                 pinned_json(config["study_config_path"], config["study_config_sha256"])
                 if not (root / "plan.json").exists():
-                    _, requests, _, issues = source.read()
-                    latest, fresh = fresh_request(now, requests, 60000)
-                    status.update(state="ARMED_WAIT_FRESH_ORIGINAL_REQUEST", latest_original_request_at_ms=latest, source_issues=issues)
+                    _, requests, _, issues, completed = source.read_successes()
+                    latest, _ = fresh_request(now, requests, 60000)
+                    success_at, recovery = fresh_successful_decision(now, requests, completed, 60000)
+                    status.update(state="ARMED_WAIT_SUCCESSFUL_ORIGINAL_DECISION",
+                                  latest_original_request_at_ms=latest,
+                                  latest_successful_original_decision_at_ms=success_at,
+                                  source_recovery_witness=recovery, source_issues=issues)
                     native_stop = os.path.lexists(config["native_stop_marker"])
                     status["native_stop_present"] = native_stop
                     if native_stop: status["state"] = "ARMED_NATIVE_STOP_ACTIVE"
-                    if not issues and fresh and not native_stop:
+                    if not issues and recovery is not None and not native_stop:
                         admission = guard.check()
-                        if admission.get("admit_new_worker") is True: ensure_activation(config, study, template, root)
+                        if admission.get("admit_new_worker") is True:
+                            # Admission may take time. Revalidate source and age
+                            # before allocating an irreversible fixed window.
+                            _, requests, _, issues, completed = source.read_successes()
+                            latest, _ = fresh_request(W.clock_ms(), requests, 60000)
+                            success_at, recovery = fresh_successful_decision(W.clock_ms(), requests, completed, 60000)
+                            native_stop = os.path.lexists(config["native_stop_marker"])
+                            status.update(latest_original_request_at_ms=latest,
+                                          latest_successful_original_decision_at_ms=success_at,
+                                          source_recovery_witness=recovery, source_issues=issues,
+                                          native_stop_present=native_stop)
+                            if native_stop: status["state"] = "ARMED_NATIVE_STOP_ACTIVE"
+                            if not issues and recovery is not None and not native_stop:
+                                ensure_activation(config, study, template, root, source_recovery=recovery)
                         else: status.update(state="ARMED_WAIT_ORIGINAL_SOURCE_AND_RESOURCES", admission_reasons=admission.get("reasons", []))
                 if (root / "plan.json").exists():
                     plan, predictor_path = ensure_activation(config, study, template, root)
@@ -141,9 +262,34 @@ def run(config):
                 if stopping[0]: break
                 time.sleep(1)
     finally:
-        stop_child("predictor")
-        stop_child("evaluator")
-        os.close(lock)
+        failure = sys.exc_info()[1]
+        cleanup_errors = []
+        # Attempt both cleanups even if one child cannot be stopped. Retain an
+        # unconfirmed child's actual state instead of reporting a false exit.
+        for role in ("predictor", "evaluator"):
+            try: stop_child(role)
+            except Exception as exc:
+                cleanup_errors.append((role, exc))
+        stopped_at = W.clock_ms()
+        status.update(at_ms=stopped_at, stopped_at_ms=stopped_at, supervisor_running=False,
+                      child_exits=dict(last_exits),
+                      children={name: {"pid": child.pid, "running": child.poll() is None}
+                                for name, child in children.items()})
+        if failure is not None or cleanup_errors:
+            error = failure if failure is not None else cleanup_errors[0][1]
+            status.update(state="FAILED", reason=type(error).__name__ + ":" + str(error)[:300])
+            if cleanup_errors:
+                status["cleanup_errors"] = [{"role": role, "reason": type(exc).__name__ + ":" + str(exc)[:300]}
+                                            for role, exc in cleanup_errors]
+        elif status.get("state") != "FINAL_ASSESSMENT_AVAILABLE":
+            status.update(state="STOPPED", stop_reason="SUPERVISOR_STOP_REQUESTED")
+        try:
+            W.atomic(root / "supervisor-status.json", status)
+        finally:
+            os.close(lock)
+        if failure is None and cleanup_errors:
+            raise cleanup_errors[0][1]
+    return status
 
 
 def main():
