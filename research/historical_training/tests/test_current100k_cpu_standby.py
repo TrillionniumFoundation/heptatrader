@@ -457,4 +457,5 @@ class FutureRegistrationTests(unittest.TestCase):
         for text in ('CPUQuota=400%','CPUWeight=500','TimeoutStartSec=240','Restart=no','KillMode=control-group'):
             self.assertIn(text,unit)
         default=stage.finite_unit('predict','/new/config','a'*64,'/new/release','/python',6)
-        self.assertIn('CPUQuota=150%',default)
+        for text in ('CPUQuota=400%','CPUWeight=500','MemoryLow=768M'):
+            self.assertIn(text,default)
