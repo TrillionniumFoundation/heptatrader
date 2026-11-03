@@ -64,7 +64,7 @@ def ingress(registration,period_sha256):
  return _capture_ingress(registration,period_sha256)[1]
 
 
-def _ingress(registration,period_sha256):
+def _ingress(registration,period_sha256,*,segment_cache=None):
  from hepta_decision_attribution import read_private,strict,digest as provenance_digest,_verified_producer_graphs,verified_bindings
  raw=read_private(registration['manifest'],65536)
  if hashlib.sha256(raw).hexdigest()!=registration['sha256']:raise ContractError('REGISTERED_PRODUCER_CHANGED')
@@ -72,7 +72,9 @@ def _ingress(registration,period_sha256):
  if m.get('instrument')!='EUR.USD' or m.get('execution_domain')!='PAPER' or m.get('period_sha256')!=period_sha256:
   raise ContractError('FORWARD_PRODUCER_SCOPE')
  directory=Path(m['journal_directory']);request_records={}
- try:graphs,witnesses=_verified_producer_graphs(directory,'EUR.USD',period_sha256,request_records=request_records)
+ try:
+  cache_args={} if segment_cache is None else {'segment_cache':segment_cache}
+  graphs,witnesses=_verified_producer_graphs(directory,'EUR.USD',period_sha256,request_records=request_records,**cache_args)
  except ValueError as exc:
   # Preserve the forward reader's existing diagnostics for shared checks.
   errors={'ATTRIBUTION_HASH':'FORWARD_SOURCE_HASH','ATTRIBUTION_CHAIN_GAP':'FORWARD_CHAIN_DISCONTINUITY',
