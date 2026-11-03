@@ -84,7 +84,7 @@ class CatBoostCPU:
             'fit_seconds':time.perf_counter()-start,'parameter_updates':'TRAINED_BOOSTED_TREES','test_used':False}
         return self
     def predict_proba(self,x):
-        p=np.asarray(self.model.predict_proba(arrays(x)),dtype=np.float64)
+        p=np.asarray(self.model.predict_proba(arrays(x),thread_count=self.threads),dtype=np.float64)
         if p.shape[1]!=7:
             out=np.zeros((len(p),7)); classes=np.asarray(self.model.classes_,dtype=int)
             need(len(classes)==p.shape[1] and (classes>=0).all() and (classes<7).all(),'CATBOOST_CLASS_MAPPING')
@@ -116,7 +116,8 @@ def restore(state):
         from research.neuron_learning.laya_cell.integrity import sha_file
         import catboost
         pin=state['model_file']; need(sha_file(Path(pin['path']))==pin['sha256'],'CATBOOST_FILE_CHANGED')
-        model=CatBoostCPU(); model.model=catboost.CatBoostClassifier(); model.model.load_model(pin['path'])
+        threads=state['parameters']['thread_count']
+        model=CatBoostCPU(threads=threads); model.model=catboost.CatBoostClassifier(); model.model.load_model(pin['path'])
     else:
         raise ValueError('UNSUPPORTED_SAVED_MODEL')
     model.receipt=state

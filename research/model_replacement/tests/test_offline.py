@@ -1,5 +1,5 @@
 """Synthetic contract tests only; no fixtures are reported as market evidence."""
-import copy, hashlib, json, os, tempfile, time, unittest
+import copy, hashlib, json, os, sys, tempfile, time, types, unittest
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
@@ -88,6 +88,19 @@ class DataTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractError,'SOURCE_PREFIX_HASH_CHANGED'): verify_prefixes(pins,set())
 
 class FitTests(unittest.TestCase):
+    def test_restored_catboost_preserves_prediction_cpu_limit(self):
+        calls=[]
+        class FakeModel:
+            def load_model(self,path): pass
+            def predict_proba(self,x,*,thread_count):
+                calls.append(thread_count); return np.full((len(x),7),1/7)
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'model.cbm'; path.write_bytes(b'synthetic contract fixture')
+            state={'kind':'CATBOOST_CPU','parameters':{'thread_count':3},
+                   'model_file':{'path':str(path),'sha256':sha_file(path)}}
+            with patch.dict(sys.modules,{'catboost':types.SimpleNamespace(CatBoostClassifier=FakeModel)}):
+                loaded=restore(state); loaded.predict_proba([[1.,2.]])
+        self.assertEqual(calls,[3])
     def test_linear_updates_parameters_train_only_scaler_and_restores(self):
         x=np.linspace(-2,2,120)[:,None]; y=(x[:,0]>0).astype(np.int64)+2
         model=LinearSoftmax(steps=200).fit(x,y,x,y)
