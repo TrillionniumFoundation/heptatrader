@@ -9,6 +9,7 @@ import argparse, fcntl, json, math, os, random, signal, time
 from collections import Counter
 from pathlib import Path
 from . import current100k_weight_shadow as W
+from .current100k_outcome_export import write_outcome_snapshot
 
 def clusters(rows):
  intervals=sorted(((r['opened_at_ms']//W.DAY_MS,r['closed_at_ms']//W.DAY_MS,r) for r in rows),key=lambda v:(v[0],v[1],v[2]['command_id']))
@@ -231,6 +232,7 @@ class Evaluator:
    W.durable_once(folder/(record_id+'.json'),row)
    pointer={'record_id':record_id}
    if not (folder/'current.json').exists() or W.read(folder/'current.json')!=pointer:W.atomic(folder/'current.json',pointer)
+  if self.strict_review:result['outcome_set_snapshot']=write_outcome_snapshot(self.root,result,results)
   W.atomic(self.root/self.assessment_name,result)
   return result
  def step(self):
@@ -367,6 +369,7 @@ def strict_source_unavailable(output_root,plan,error,now,*,source_issues=()):
  for row in rows:
   folder=root/'outcomes'/row['command_id'];record_id=W.digest(row)
   W.durable_once(folder/(record_id+'.json'),row);W.atomic(folder/'current.json',{'record_id':record_id})
+ result['outcome_set_snapshot']=write_outcome_snapshot(root,result,rows)
  if now>=plan['outcome_end_ms']:
   receipt={'schema':STRICT_FAILURE_SCHEMA,'plan_id':plan['plan_id'],'outcome_end_ms':plan['outcome_end_ms'],
            'as_of_ms':now,'assessment':result,'original_window_modified':False,'broker_orders_sent':0}

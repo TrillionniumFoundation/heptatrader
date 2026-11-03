@@ -34,6 +34,38 @@ hashes, and the new verifier implementation hashes. Original reports, prediction
 and request receipts remain unchanged. Repeating the command preserves the same
 window and does not resubmit inference. Strict review refuses registration.
 
+## Ordered export for the weight workbench
+
+New independent strict reviews also publish
+`outcome-sets/<document-digest>.json` before the assessment. Its
+`outcome_set_snapshot` pointer contains the raw file SHA-256, row count and the
+existing ordered `outcome_set_digest`. The exporter receives the exact list from
+the same evaluation. It preserves source ordering, status, missing-command
+denominators, targets, predictions and original timestamps. Source canonical JSON
+continues to use `ensure_ascii=True`.
+
+Source-unavailable assessments export their censored known-command list before
+the final unavailable receipt is sealed. The original lower-bound denominator
+and any unenumerated retained commands remain explicit; no observed credit is
+restored. Restarting a sealed final failure retains the same snapshot pointer
+and original assessment clock. Existing terminal receipts are never backfilled.
+
+`current100k_outcome_export.py` is pinned in the review's implementation hashes.
+It uses complete temporary-file publication, a create-only link and directory
+fsync before the assessment references the snapshot. A failed export does not
+advance the assessment. An old review without this snapshot remains an explicit
+missing export: sorting its individual outcome folders cannot reliably recover
+the original list order.
+
+This addition is for a new immutable independent-review release and output
+directory. Existing continuation allowlists, registered plans, predictor source,
+candidate hashes, original reports and window dates are unchanged. Deploying the
+new review requires its own pinned release; no running release is rewritten.
+
+The export is compatible with the runtime's Current100k USD handoff. It introduces
+no new scoring or statistical rule, registration, model inference, selection or
+trade authority.
+
 Omit --once for a resident observer that checks every 60 seconds and exits
 successfully after writing its final assessment at or after the original outcome
 deadline. The ordinary evaluator retains its existing 10-second loop. New normal
