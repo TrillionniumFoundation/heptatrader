@@ -34,6 +34,82 @@ hashes, and the new verifier implementation hashes. Original reports, prediction
 and request receipts remain unchanged. Repeating the command preserves the same
 window and does not resubmit inference. Strict review refuses registration.
 
+## Ordered export for the weight workbench
+
+New independent strict reviews also publish
+`outcome-sets/<document-digest>.json` before the assessment. Its
+`outcome_set_snapshot` pointer contains the raw file SHA-256, row count and the
+existing ordered `outcome_set_digest`. The exporter receives the exact list from
+the same evaluation. It preserves source ordering, status, missing-command
+denominators, targets, predictions and original timestamps. Source canonical JSON
+continues to use `ensure_ascii=True`.
+
+Source-unavailable assessments export their censored known-command list before
+the final unavailable receipt is sealed. The original lower-bound denominator
+and any unenumerated retained commands remain explicit; no observed credit is
+restored. Restarting a sealed final failure retains the same snapshot pointer
+and original assessment clock. Existing terminal receipts are never backfilled.
+
+`current100k_outcome_export.py` is pinned in the review's implementation hashes.
+It uses complete temporary-file publication, a create-only link and directory
+fsync before the assessment references the snapshot. A failed export does not
+advance the assessment. An old review without this snapshot remains an explicit
+missing export: sorting its individual outcome folders cannot reliably recover
+the original list order.
+
+This addition is for a new immutable independent-review release and output
+directory. Existing continuation allowlists, registered plans, predictor source,
+candidate hashes, original reports and window dates are unchanged. Deploying the
+new review requires its own pinned release; no running release is rewritten.
+
+The export is compatible with the runtime's Current100k USD handoff. It introduces
+no new scoring or statistical rule, registration, model inference, selection or
+trade authority.
+
+## Permanent missing predictions and comparison eligibility
+
+An original request terminal of
+`NO_PREDICTION_BEFORE_ORIGINAL_COMMAND` is immutable in the existing ledger.
+A later fill, closure, fee record, inference retry or runtime repair cannot turn
+that request into a successful original pre-command prediction. When the number
+of proven permanent misses exceeds the plan's frozen
+`maximum_unresolved_at_final`, formal comparison success is already impossible.
+The schedule still remains `PENDING` until the original deadline.
+
+Independent strict reviews now attach separate `comparison_eligibility` metadata.
+`IRRECOVERABLY_INELIGIBLE` and
+`formal_success_possible_under_frozen_rule=false` require supported, verified
+negative evidence. The original state, dates, heads, outcome rows/digest,
+denominator, scoring functions and statistical comparisons remain unchanged.
+This field is not an early final protocol report. The status file repeats the
+separate eligibility status so that `PENDING` does not imply recoverability.
+
+`PreopenEvidence.permanent_prediction_failure` captures the original terminal,
+input record, protocol, command reference and ledger binding without writing to
+the source. It checks fixed source pins, request and producer identity, the exact
+original command and full current binding, the negative terminal's scope, and
+request/PREPARED/terminal/binding/review time ordering. It exports a digest-bound
+proof with the original safe terminal/reference records and raw byte hashes.
+It does not export request text or account data. The currently supported terminal
+is exactly `NO_PREDICTION_BEFORE_ORIGINAL_COMMAND`; other statuses do not
+automatically establish permanent ineligibility.
+
+Missing or unsupported evidence yields `UNKNOWN` and a null formal-success flag.
+Invalid proof material adds an independent evidence error without changing the
+existing scoring or source issues. `CENSORED` alone never proves an irreversible
+miss, and no absence of negative evidence is interpreted as positive eligibility.
+If current source replay is unavailable, this metadata becomes `UNKNOWN`; the
+existing immutable prior assessment and `last_completed_assessment` reference
+retain any earlier verified negative result. Unknown current evidence does not
+erase that historical fact or restore formal eligibility.
+
+Covered OBSERVED rows remain available for descriptive diagnostics even after the
+family becomes irrecoverably ineligible. Their metrics cannot repair missing
+pre-command evidence or produce comparative selection credit. The runtime USD
+handoff checks proof digests, original safe receipt bytes, command population,
+clock order and the exact frozen limit. The original strict evaluator remains
+responsible for full private request and ledger verification.
+
 Omit --once for a resident observer that checks every 60 seconds and exits
 successfully after writing its final assessment at or after the original outcome
 deadline. The ordinary evaluator retains its existing 10-second loop. New normal
@@ -89,5 +165,33 @@ attempt/original-command receipts with unchanged terminal/binding files, and
 strict-loop final exit. All rejected commands remain in the denominator.
 
 The cache tracks every prediction and pre-open receipt read during validation.
-These are software checks, not prospective financial performance results. The
-first actual new opening and settled future outcomes still require observation.
+These are software checks, not prospective financial performance results. Actual
+pre-command publications and settled future outcomes require separate original
+lineage evidence. The export suite additionally checks permanent-negative
+receipts, invalid/unsupported evidence, exact original-command binding, retained
+observed diagnostics and source-loss history without altering the final clock.
+
+## Independent original-source verification at 2026-11-03 15:40:59.250 UTC
+
+The separately qualified 447-Python-file release completed a strict original
+replay and runtime import. It retained nine original commands: four OBSERVED,
+two PENDING and three CENSORED, with a complete current replay. The verified
+permanent-unresolved lower bound is three, so comparison eligibility is
+`IRRECOVERABLY_INELIGIBLE` and formal success under the frozen rule is false.
+The original source state remains PENDING until its fixed deadline. No early
+final state, replacement outcome or reduced denominator was introduced.
+
+The evaluation took 2.866407579 seconds. Original plan/configuration/head pins,
+existing immutable request and command receipts, and the captured journal/OMS
+prefixes compared unchanged before and after. Normal later append events remain
+allowed. The runtime handoff file SHA-256 is
+`142e3029ad0ce75218c2aab7bcf01c4f358e1d51a766034754f9a002a75a304d`;
+its canonical document digest is
+`5f1516ed04b5204cf25dc2831c5c589f3946f561b8432f308568dc2b8b28fdaf`.
+
+This release separately passed 16 export/eligibility tests, 20 shared-feature
+tests and three cross-repository handoffs on Pocket4, with no skips. These are
+the latest focused suites; earlier suite counts above are historical and are
+not added again. The [new shared-feature family](current100k-shared-features-20261103.md)
+has its own registration and future population. It cannot repair or inherit
+the failed old window.

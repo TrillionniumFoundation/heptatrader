@@ -28,6 +28,7 @@ def runtime_pins(c):
   'research/neuron_learning/laya_cell/current100k_weight_shadow.py',
   'research/weight_edit/current100k_study.py','research/weight_edit/batch_feature.py'}
  if c.get('encoder_device','cpu')=='hip':required.add('research/neuron_learning/laya_cell/current100k_hip_encoder.py')
+ if c.get('shared_feature_source') is not None:required.add('research/neuron_learning/laya_cell/current100k_shared_features.py')
  require(required<=set(inventory),'PREOPEN_RUNTIME_INVENTORY')
  for name,want in inventory.items():
   p=Path(name);require(not p.is_absolute() and '..' not in p.parts,'PREOPEN_RUNTIME_PATH')
@@ -121,6 +122,15 @@ def run(c):
  if c.get('encoder_device','cpu')=='cpu':
   os.environ.update(HIP_VISIBLE_DEVICES='',ROCR_VISIBLE_DEVICES='',CUDA_VISIBLE_DEVICES='')
  os.sched_setaffinity(0,c['cpu_affinity'])
+ if c.get('shared_feature_source') is not None:
+  from laya_cell.current100k_shared_features import run_shared_features
+  shared=run_shared_features(c)
+  if not shared.get('handoff_to_guarded_encoder',False):return shared
+  # The shared observer has closed its ledger before the original guarded
+  # encoder path reopens it. Both paths retain the same new plan and clock.
+  # Shared observation may last days; recheck all physical dependencies before
+  # admitting the encoder, including files outside the shared source pins.
+  validate_config(c)
  hip_config=None
  if c.get('encoder_device','cpu')=='hip':
   from laya_cell.current100k_hip_encoder import hip_binding,environment_is_bound
