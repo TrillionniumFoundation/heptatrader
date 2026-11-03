@@ -72,6 +72,8 @@ def stage_inputs(stage_path, stage_sha256):
         if shared is None: shared = common
         need(common == shared, 'WARM_ACTIVATION_ROLE_CONFIGS_DISAGREE')
         configs[role] = c
+    worker_profile = 'cpu-standby-v2' if configs['registrar'].get('cpu_standby_profile') is not None else 'warm-flat-v1'
+    need(stage.get('worker_profile', 'warm-flat-v1') == worker_profile, 'WARM_ACTIVATION_WORKER_PROFILE_CHANGED')
     request = pinned_json(stage['registration_request'], stage['registration_request_sha256'])
     need(stage.get('registration_scope', 'SAME_PRODUCER_REFIT')
          == request.get('registration_scope', 'SAME_PRODUCER_REFIT'), 'WARM_ACTIVATION_REGISTRATION_SCOPE_CHANGED')
@@ -110,13 +112,25 @@ def cpu_checks(stage, budget):
              'WARM_ACTIVATION_CPU_CLOSURE_FAILED:' + role)
 
 
+def predictor_start_ms(plan):
+    start = plan['input_start_ms']
+    if plan.get('cpu_standby_profile') is not None:
+        from laya_cell.current100k_cpu_standby import check_profile, PROFILE
+        check_profile(plan['cpu_standby_profile'])
+        need(plan.get('warm_flat_profile') is None, 'MIXED_FINITE_WORKER_PROFILE')
+        start -= PROFILE['preroll_ms']
+        need(start > plan['registered_at_ms'], 'CPU_PREROLL_MUST_FOLLOW_REGISTRATION')
+    return start
+
+
 def plan_timer(service, plan, mode):
     from finite_plan_calendar import calendar_terms
     from laya_cell.financial_forward_protocol import validate_plan
     validate_plan(plan)
     need(mode in ('predict', 'evaluate'), 'WARM_ACTIVATION_TIMER_ROLE')
     end = plan['input_end_ms'] if mode == 'predict' else plan['outcome_end_ms']
-    terms = calendar_terms(plan['input_start_ms'], end, step_seconds=1 if mode == 'predict' else 60)
+    start = predictor_start_ms(plan) if mode == 'predict' else plan['input_start_ms']
+    terms = calendar_terms(start, end, step_seconds=1 if mode == 'predict' else 60)
     if mode == 'evaluate':
         final = datetime.fromtimestamp((plan['outcome_end_ms'] + TERMINAL_EVALUATION_DELAY_MS + 999) // 1000, timezone.utc)
         terms.append(final.strftime('%Y-%m-%d %H:%M:%S UTC'))
@@ -133,6 +147,9 @@ def role_candidates(stage, configs, plan, priority):
     need(plan['trial'] == stage['expected_trial'] and plan['registry_root'] == stage['forward_root']
          and plan['worker_runtime_inventory_digest'] == configs['registrar']['worker_runtime_inventory_digest'],
          'WARM_ACTIVATION_SIGNED_PLAN_SCOPE_CHANGED')
+    need(plan.get('cpu_standby_profile') == configs['registrar'].get('cpu_standby_profile'),
+         'WARM_ACTIVATION_SIGNED_WORKER_PROFILE_CHANGED')
+    worker_profile = 'cpu-standby-v2' if plan.get('cpu_standby_profile') is not None else 'warm-flat-v1'
     output = Path(stage['forward_root']) / 'activation' / plan['plan_id']
     documents = {}; units = {}; choices = {}
     for role, mode in (('predictor', 'predict'), ('evaluator', 'evaluate')):
@@ -141,7 +158,8 @@ def role_candidates(stage, configs, plan, priority):
         path = output / (role + '-' + digest(c) + '.json'); data = canonical(c) + b'\n'
         documents[str(path)] = data; checksum = hashlib.sha256(data).hexdigest()
         name = f'heptatrader-current100k-warm-trial{plan["trial"]}-{role}.service'
-        text = finite_unit(mode, path, checksum, Path(stage['release']), c['python'] if mode == 'predict' else '/usr/bin/python3', plan['trial'])
+        text = finite_unit(mode, path, checksum, Path(stage['release']), c['python'] if mode == 'predict' else '/usr/bin/python3',
+                           plan['trial'], worker_profile=worker_profile)
         units[name] = text.encode(); units[name.removesuffix('.service') + '.timer'] = plan_timer(name, plan, mode).encode()
         choices[role] = {'path': str(path), 'sha256': checksum, 'service': name,
             'timer': name.removesuffix('.service') + '.timer', 'config': c}
@@ -322,7 +340,7 @@ def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadlin
     # before its original input start. A later published-plan invocation may
     # repair only that same window, explicitly reporting lost initial coverage.
     if eligibility['state'] != 'REGISTRATION_ALREADY_COMPLETE_VERIFIED_NO_WRITE':
-        budget.constrain(plan['input_start_ms'] - 1)
+        budget.constrain(predictor_start_ms(plan) - 1)
     else: budget.constrain(window['effective_deadline_ms'])
     root = Path(config['forward_root'])
     lock_path = root / 'activation.lock'; lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -351,6 +369,7 @@ def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadlin
             'unit_sha256': {name: hashlib.sha256(raw).hexdigest() for name, raw in roles['units'].items()},
             'registration_performed': registration['registration_performed'],
             'activation_before_input_start': int(time.time() * 1000) < plan['input_start_ms'],
+            'activation_before_predictor_start': int(time.time() * 1000) < predictor_start_ms(plan),
             'wake_elapsed_seconds': time.monotonic() - budget.started,
             'wake_budget_ms': ACTIVATION_BUDGET_MS}
         atomic(root / 'activation-status.json', result)

@@ -48,6 +48,11 @@ def validate_bound_plan(plan,c):
   from .current100k_warm_flat import check_profile
   check_profile(plan['warm_flat_profile'])
   if 'current100k_warm_flat.py' not in plan.get('runtime_sha256',{}):raise ContractError('VALUE_WARM_PLAN_SOURCE_PIN_REQUIRED')
+ if plan.get('cpu_standby_profile') is not None:
+  from .current100k_cpu_standby import check_profile,MODULE
+  check_profile(plan['cpu_standby_profile'])
+  if plan.get('warm_flat_profile') is not None:raise ContractError('VALUE_CPU_STANDBY_MIXED_PROFILE')
+  if MODULE not in plan.get('runtime_sha256',{}):raise ContractError('VALUE_CPU_STANDBY_PLAN_SOURCE_PIN_REQUIRED')
  scope=plan.get('behavior_scope',{})
  if (scope.get('behavior_profile')!=BEHAVIOR or scope.get('reference_notional_usd')!=100000
      or scope.get('quantity') is not None or plan.get('producer_registration',{}).get('sha256')!=scope.get('producer_manifest_sha256') or scope.get('instrument')!='EUR.USD' or scope.get('currency')!='USD'
@@ -192,6 +197,11 @@ def _prepare_registration(config,candidate_directory,dataset_path,prior_candidat
   check_profile(config['warm_flat_profile']);check_source_pin(config)
   plan['warm_flat_profile']=dict(config['warm_flat_profile'])
   plan['runtime_sha256']['current100k_warm_flat.py']=sha_file(source/'current100k_warm_flat.py')
+ if config.get('cpu_standby_profile') is not None:
+  from .current100k_cpu_standby import check_source_pin,MODULE
+  check_source_pin(config)
+  plan['cpu_standby_profile']=dict(config['cpu_standby_profile'])
+  plan['runtime_sha256'][MODULE]=sha_file(source/MODULE)
  plan['plan_id']=digest(plan);validate_bound_plan(plan,c)
  return plan
 

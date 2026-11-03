@@ -25,6 +25,9 @@ def validate_runtime(c):
  if c.get('warm_flat_profile') is not None:
   from .current100k_warm_flat import check_source_pin
   check_source_pin(c)
+ if c.get('cpu_standby_profile') is not None:
+  from .current100k_cpu_standby import check_source_pin
+  check_source_pin(c)
 
 
 def acquire_value_resources(gate,subject):
@@ -36,6 +39,8 @@ def acquire_value_resources(gate,subject):
 
 
 def run(c,mode):
+ if mode=='predict' and c.get('cpu_standby_profile') is not None:
+  raise ContractError('VALUE_CPU_STANDBY_PARENT_ENTRY_REQUIRED')
  if mode=='predict' and c.get('warm_flat_profile') is not None:
   raise ContractError('VALUE_WARM_PARENT_ENTRY_REQUIRED')
  from .financial_forward_predict import PhaseClock,RegisteredPlanSnapshot,request_event
@@ -158,7 +163,10 @@ def main():
  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
  try:
   try:
-   if a.mode=='predict' and c.get('warm_flat_profile') is not None:
+   if a.mode=='predict' and c.get('cpu_standby_profile') is not None:
+    from .current100k_cpu_standby import run_parent
+    result=run_parent(c,a.config,fd)
+   elif a.mode=='predict' and c.get('warm_flat_profile') is not None:
     from .current100k_warm_flat import run_parent
     result=run_parent(c,a.config,fd)
    else:result=run(c,a.mode)

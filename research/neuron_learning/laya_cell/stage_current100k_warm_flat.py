@@ -257,9 +257,23 @@ def check_history(paths, prior_path, data, registration_scope='SAME_PRODUCER_REF
     return prior, len(history) + 1
 
 
-def finite_unit(mode, config, config_sha, release, python, trial):
+def select_worker_profile(config, name):
+    """Only the new staged copy changes; existing signed plans are not edited."""
+    need(name in ('warm-flat-v1', 'cpu-standby-v2'), 'UNKNOWN_FINITE_WORKER_PROFILE')
+    config.pop('warm_flat_profile', None); config.pop('cpu_standby_profile', None)
+    if name == 'warm-flat-v1':
+        from laya_cell.current100k_warm_flat import PROFILE
+        config['warm_flat_profile'] = copy.deepcopy(PROFILE)
+    else:
+        from laya_cell.current100k_cpu_standby import PROFILE
+        config['cpu_standby_profile'] = copy.deepcopy(PROFILE)
+    return config
+
+
+def finite_unit(mode, config, config_sha, release, python, trial, *, worker_profile='warm-flat-v1'):
     need(mode in ('predict', 'evaluate') and all(not re.search(r'[\s%]', str(p))
          for p in (config, release, python)), 'FINITE_WARM_UNIT_PATH_SCOPE')
+    need(worker_profile in ('warm-flat-v1', 'cpu-standby-v2'), 'UNKNOWN_FINITE_WORKER_PROFILE')
     return '\n'.join(('[Unit]', 'StartLimitIntervalSec=10s', 'StartLimitBurst=12',
         f'Description=HeptaTrader independent Current100k warm trial {trial} {mode}', '',
         '[Service]', 'Type=oneshot',
@@ -288,6 +302,7 @@ def main():
     p.add_argument('--registration-scope', choices=('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE'),
                    default='SAME_PRODUCER_REFIT')
     p.add_argument('--resume-staging', action='store_true')
+    p.add_argument('--worker-profile', choices=('warm-flat-v1', 'cpu-standby-v2'), default='warm-flat-v1')
     a = p.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     for path, wanted in ((a.fit_stage, a.fit_stage_sha256),
@@ -310,7 +325,6 @@ def main():
     from laya_cell import current100k_forward as registration_contract
     from laya_cell.financial_value_profile import CENTERED_RESIDUAL_PROFILE
     from laya_cell.financial_forward_witness import verify_trust
-    from laya_cell.current100k_warm_flat import PROFILE
     from laya_cell import resident_hip_runtime as hip
     from laya_cell.immutable_files import write_immutable
 
@@ -410,7 +424,7 @@ def main():
     for role, original in originals.items():
         config = role_configuration(original, new_fit, consumer, producer, release, inventory,
                                             a.forward_root, candidate_dir, dataset_path)
-        config['warm_flat_profile'] = copy.deepcopy(PROFILE)
+        select_worker_profile(config, a.worker_profile)
         path = a.evidence_root / (role + '-' + digest(config) + '.json')
         write_once(path, config); configs[role] = config; paths[role] = path
     pinned = [*a.legacy_plan, prior_candidate, candidate_dir / 'candidate.json',
@@ -454,7 +468,8 @@ def main():
         name = f'heptatrader-current100k-warm-trial{trial}-{role}.service'
         path = a.evidence_root / (name + '.candidate')
         text = finite_unit(mode, paths[role], sha(paths[role]), release,
-                           fit['python'] if mode == 'predict' else '/usr/bin/python3', trial)
+                           fit['python'] if mode == 'predict' else '/usr/bin/python3', trial,
+                           worker_profile=a.worker_profile)
         write_immutable(path, text.encode(), 0o400, 'FINITE_WARM_UNIT_CANDIDATE_CHANGED')
         units[role] = {'name': name, 'candidate': str(path), 'sha256': sha(path)}
     need(git('rev-parse', 'HEAD') == a.expected_head and not git('status', '--porcelain', '--untracked-files=all'),
@@ -462,6 +477,7 @@ def main():
     need(not a.forward_root.exists() and 'torch' not in sys.modules, 'STAGING_MUST_NOT_REGISTER_OR_LOAD_GPU')
     from activate_current100k_warm_stage import ACTIVATION_PROFILE
     receipt = {'schema': 'heptatrader.current100k-warm-flat-stage.v1', 'state': 'STAGED_CPU_VERIFIED_NOT_REGISTERED',
+        'worker_profile': a.worker_profile,
         'source_commit': a.expected_head, 'release': str(release), 'release_id': release_id,
         'fit_stage': str(a.fit_stage), 'fit_stage_sha256': a.fit_stage_sha256,
         'prior_forward_stage': str(a.prior_forward_stage), 'prior_forward_stage_sha256': a.prior_forward_stage_sha256,

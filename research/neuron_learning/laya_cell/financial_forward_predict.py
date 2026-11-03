@@ -53,6 +53,9 @@ def pin(config,plan):
   if config.get('warm_flat_profile') is not None or plan.get('warm_flat_profile') is not None:
    from .current100k_warm_flat import check_binding
    check_binding(config,plan)
+  if config.get('cpu_standby_profile') is not None or plan.get('cpu_standby_profile') is not None:
+   from .current100k_cpu_standby import check_binding
+   check_binding(config,plan)
   validate_bound_plan(plan,c)
  return c
 

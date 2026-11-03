@@ -109,8 +109,13 @@ def registration_inputs(c, request_path, request_sha256, *, now_ms=None):
          'INDEPENDENT_WARM_REGISTRATION_REQUEST_REQUIRED')
     for path, expected in request['input_sha256'].items():
         need(sha(path) == expected, 'REGISTRATION_ORIGINAL_INPUT_CHANGED')
-    check_profile(c.get('warm_flat_profile'))
-    need(c.get('warm_flat_profile') is not None, 'EXPLICIT_WARM_PROFILE_REQUIRED')
+    if c.get('cpu_standby_profile') is not None:
+        from laya_cell.current100k_cpu_standby import check_profile as check_cpu_profile
+        check_cpu_profile(c['cpu_standby_profile'])
+        need(c.get('warm_flat_profile') is None, 'MIXED_FINITE_WORKER_PROFILE')
+    else:
+        check_profile(c.get('warm_flat_profile'))
+        need(c.get('warm_flat_profile') is not None, 'EXPLICIT_WARM_PROFILE_REQUIRED')
     actual_paths = {str(path) for root in request['legacy_plans_roots']
                     for path in Path(root).glob('*/plan.json')}
     need(actual_paths == set(request['legacy_plan_paths']),
