@@ -30,6 +30,12 @@ class ObserverTests(unittest.TestCase):
             'ORIGINAL_REQUEST_OBSERVED', 'REQUEST_FRESHNESS_EXPIRED_WITHOUT_SIGNED_PREDICTION'])
         self.assertEqual(list(self.trial.iterdir()), [])
 
+    def test_startup_validation_delay_does_not_drop_requests_from_observation_start(self):
+        observer = observation.Observer(self.trial, self.plan, self.events.append, started_ms=1000)
+        observer.source(self.requests, [], 90000)
+        self.assertEqual(self.events[0]['request_id'], 'request')
+        self.assertEqual(self.events[0]['request_age_ms'], 88900)
+
     def test_exact_denial_keeps_request_and_timestamp_not_nearby_state(self):
         self.observer.source(self.requests, [], 1200)
         path = self.put(self.root / 'denial.json', {'subject': {'plan_id': 'plan', 'requests': ['request']},

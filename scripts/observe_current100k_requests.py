@@ -238,6 +238,7 @@ def main():
     parser.add_argument('--poll-ms', type=int, default=500)
     parser.add_argument('--duration-seconds', type=int, default=0)
     args = parser.parse_args(); os.umask(0o077)
+    observation_started_ms = int(time.time()*1000)
     if not 250 <= args.poll_ms <= 5000 or not 0 <= args.duration_seconds <= 86400:
         raise ValueError('OBSERVER_BOUNDED_SAMPLING_REQUIRED')
     if bool(args.producer_manifest) != bool(args.producer_manifest_sha256):
@@ -279,7 +280,8 @@ def main():
         raise ValueError('OBSERVER_EXPLICIT_PRODUCER_CHANGED')
     journal = Path(read(registration['manifest'])['journal_directory'])
     events = DirectoryEvents([journal, denial_root]); log = Log(output)
-    observer = Observer(root, plan, log.emit, producer_registration=registration)
+    observer = Observer(root, plan, log.emit, started_ms=observation_started_ms,
+                        producer_registration=registration)
     snapshot = VerifiedIngressSnapshot(registration, config['period_sha256'])
     stop = False
     def stopped(*_):
@@ -344,6 +346,7 @@ def main():
                     'registration_scope_state': observer.scope, 'producer_registration': registration,
                     'observed_config_forward_root': str(root),
                     'original_registration_validation': validation_method,
+                    'observation_started_at_ms': observation_started_ms,
                     'tracked_requests': len(observer.pending), 'events_written': log.events,
                     'ingress_full_scans': snapshot.full_scans, 'ingress_snapshot_reuses': snapshot.reuses,
                     'original_trial_modified': False, 'prediction_worker_launched': False, 'gpu_loaded': False,
