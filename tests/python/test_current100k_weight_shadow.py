@@ -116,6 +116,73 @@ class ShadowTests(ForwardScopeFixture, unittest.TestCase):
         fills = {opening['command_id']: 2001, closing['command_id']: 2500}
         return report, times, fills, commands
 
+    def completed_assessment_fixture(self, root=None):
+        root = self.study if root is None else root
+        result = E.assessment(self.p, [self.score(self.seal()),
+                              {'command_id': 'unresolved-original', 'status': 'CENSORED'}], 4000)
+        W.atomic(root / 'assessment.json', result)
+        return result, (root / 'assessment.json').read_bytes()
+
+    def test_final_read_failure_is_immutable_and_does_not_redate_last_assessment(self):
+        prior, original = self.completed_assessment_fixture()
+        plan_bytes = (self.study / 'plan.json').read_bytes()
+        registration = (self.study / 'registration.json').read_bytes()
+        now = self.p['outcome_end_ms'] + 17
+        # Real missing reward-config file fails inside Evaluator.__init__.
+        with patch('sys.argv', ['evaluator', '--root', str(self.study)]), \
+             patch.object(W, 'clock_ms', return_value=now), patch.object(E.signal, 'signal'), \
+             patch('builtins.print'), patch.object(E.time, 'sleep', side_effect=AssertionError('must finish')):
+            E.main()
+        terminal_path = self.study / 'terminal-unavailable.json'
+        terminal = E.read_terminal_unavailable(self.study, self.p)
+        self.assertEqual(terminal['state'], 'FINAL_UNAVAILABLE_NO_SELECTION')
+        self.assertEqual(terminal['checked_at_ms'], now)
+        self.assertEqual(terminal['error']['type'], 'FileNotFoundError')
+        self.assertIn(self.p['reward_config_path'], terminal['error']['message'])
+        self.assertNotIn('as_of_ms', terminal)
+        self.assertFalse(terminal['current_replay_complete'])
+        for key in ('observed_trades', 'original_command_count', 'prediction_coverage'):
+            self.assertIsNone(terminal[key])
+            self.assertEqual(terminal['last_completed_assessment'][key], prior[key])
+        self.assertEqual(terminal['last_completed_assessment']['as_of_ms'], prior['as_of_ms'])
+        self.assertEqual(terminal['last_completed_assessment']['sha256'], hashlib.sha256(original).hexdigest())
+        saved = Path(terminal['last_completed_assessment']['snapshot_path'])
+        self.assertEqual(W.read(saved), prior)
+        self.assertEqual(W.sha(saved), terminal['last_completed_assessment']['snapshot_sha256'])
+        frozen_terminal = terminal_path.read_bytes()
+        with patch('sys.argv', ['evaluator', '--root', str(self.study)]), \
+             patch.object(W, 'clock_ms', return_value=now + 90000), patch.object(E.signal, 'signal'), \
+             patch('builtins.print'), patch.object(E, 'Evaluator', side_effect=AssertionError('terminal is final')):
+            E.main()
+        self.assertEqual(terminal_path.read_bytes(), frozen_terminal)
+        self.assertEqual((self.study / 'assessment.json').read_bytes(), original)
+        self.assertEqual((self.study / 'plan.json').read_bytes(), plan_bytes)
+        self.assertEqual((self.study / 'registration.json').read_bytes(), registration)
+        self.assertFalse(W.read(self.study / 'evaluator-status.json')['financial_candidate_selected'])
+
+    def test_read_failure_before_fixed_end_is_not_a_terminal(self):
+        _, original = self.completed_assessment_fixture()
+        with patch('sys.argv', ['evaluator', '--root', str(self.study), '--once']), \
+             patch.object(W, 'clock_ms', return_value=self.p['outcome_end_ms'] - 1), \
+             patch.object(E.signal, 'signal'), patch('builtins.print'):
+            E.main()
+        self.assertEqual(W.read(self.study / 'evaluator-status.json')['state'], 'UNAVAILABLE_NO_SELECTION')
+        self.assertFalse((self.study / 'terminal-unavailable.json').exists())
+        self.assertEqual((self.study / 'assessment.json').read_bytes(), original)
+
+    def test_partial_source_at_final_cannot_overwrite_assessment_with_zero_population(self):
+        from laya_cell import financial_forward_source, resident_rewards
+        evaluator = self.evaluator_fixture()
+        _, original = self.completed_assessment_fixture(evaluator.root)
+        for complete, issues in ((False, []), (True, [{'reason': 'INGRESS_READ_FAILED'}])):
+            with self.subTest(complete=complete), \
+                 patch.object(W, 'clock_ms', return_value=self.p['outcome_end_ms']), \
+                 patch.object(financial_forward_source, 'ingress', return_value=({}, {}, [], issues)), \
+                 patch.object(resident_rewards, 'current', return_value={'components': {'EUR.USD': {'ledger_complete': complete}}}):
+                with self.assertRaisesRegex(W.EvidenceError, 'FINAL_SOURCE_UNAVAILABLE'):
+                    evaluator.snapshot()
+            self.assertEqual((evaluator.root / 'assessment.json').read_bytes(), original)
+
     def test_request_before_window_with_fill_inside_is_excluded_in_both_replay_states(self):
         evaluator = self.evaluator_fixture(input_start_ms=1001)
         for complete in (False, True):

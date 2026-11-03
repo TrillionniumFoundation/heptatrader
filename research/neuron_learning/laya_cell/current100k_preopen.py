@@ -31,20 +31,55 @@ def publish_once(path,value):
  finally:tmp.unlink(missing_ok=True)
  return sha
 
+class SourceSnapshotBusy(ContractError):
+ """No coherent new snapshot was obtained; no inference authority is granted."""
+ def __init__(self,reason,attempts):
+  super().__init__("PREOPEN_SOURCE_SNAPSHOT_BUSY:"+reason);self.reason=reason;self.attempts=attempts
+
 class ResidentIngress:
- """Source bytes/health are revalidated, only decoded prefixes are reused."""
- def __init__(self,registration,period_sha256):
+ """Verified snapshots with bounded retries for ordinary append/read races."""
+ TRANSIENT=frozenset(("PREOPEN_SOURCE_CHANGED_DURING_CAPTURE","ATTRIBUTION_SOURCE_CHANGED_DURING_READ"))
+ def __init__(self,registration,period_sha256,*,max_capture_attempts=3,retry_budget_ms=150,
+              retry_delay_ms=10,clock=wall_ms,monotonic_ns=time.monotonic_ns,sleep=time.sleep):
+  require(type(max_capture_attempts)is int and 1<=max_capture_attempts<=5,"PREOPEN_CAPTURE_ATTEMPT_BOUND")
+  require(1<=retry_delay_ms<=20 and retry_delay_ms<=retry_budget_ms<=250,"PREOPEN_CAPTURE_RETRY_BOUND")
   self.registration=copy.deepcopy(registration);self.period=period_sha256
   self.cache=VerifiedSegmentCache();self.identity=None;self.value=None;self.full_scans=0;self.reuses=0
- def read(self):
+  self.max_capture_attempts=max_capture_attempts;self.retry_budget_ms=retry_budget_ms;self.retry_delay_ms=retry_delay_ms
+  self.clock=clock;self.monotonic_ns=monotonic_ns;self.sleep=sleep
+  self.capture_conflicts=0;self.capture_retries=0;self.busy_returns=0
+ def _capture_once(self):
   before=ingress_identity(self.registration,self.period)
   if before==self.identity:self.reuses+=1;return copy.deepcopy(self.value)
   value=_ingress(self.registration,self.period,segment_cache=self.cache)
   require(before==ingress_identity(self.registration,self.period),"PREOPEN_SOURCE_CHANGED_DURING_CAPTURE")
   self.identity,self.value=before,value;self.full_scans+=1;return copy.deepcopy(value)
+ def read(self,*,retry_deadline_ms=None):
+  started=self.monotonic_ns();cutoff=started+int(self.retry_budget_ms*1000000)
+  if retry_deadline_ms is not None:
+   require(type(retry_deadline_ms)is int,"PREOPEN_CAPTURE_DEADLINE_TYPE")
+   cutoff=min(cutoff,started+max(0,retry_deadline_ms-self.clock())*1000000)
+  attempts=0;reason="RETRY_DEADLINE_REACHED"
+  while attempts<self.max_capture_attempts:
+   if self.monotonic_ns()>=cutoff or (retry_deadline_ms is not None and self.clock()>=retry_deadline_ms):break
+   attempts+=1
+   if attempts>1:self.capture_retries+=1
+   try:return self._capture_once()
+   except ValueError as exc:
+    if str(exc) not in self.TRANSIENT:raise
+    reason=str(exc);self.capture_conflicts+=1
+   if attempts>=self.max_capture_attempts:break
+   remaining=cutoff-self.monotonic_ns()
+   if retry_deadline_ms is not None:remaining=min(remaining,(retry_deadline_ms-self.clock())*1000000)
+   delay=int(self.retry_delay_ms*1000000)
+   if remaining<=delay:break
+   self.sleep(delay/1e9)
+  self.busy_returns+=1;raise SourceSnapshotBusy(reason,attempts)
+ def read_with_deadline(self,deadline_ms):return self.read(retry_deadline_ms=deadline_ms)
  def statistics(self):
   return {"source_captures":self.full_scans,"source_snapshot_reuses":self.reuses,
-   "segment_bytes_read":self.cache.bytes_read,"new_records_decoded":self.cache.records_parsed,"segment_cache_reuses":self.cache.reuses}
+   "segment_bytes_read":self.cache.bytes_read,"new_records_decoded":self.cache.records_parsed,"segment_cache_reuses":self.cache.reuses,
+   "source_capture_conflicts":self.capture_conflicts,"source_capture_retries":self.capture_retries,"source_busy_returns":self.busy_returns}
 
 class RequestLedger:
  """Durable original requests form the restart cursor; uncertain attempts never rerun."""
@@ -119,6 +154,23 @@ class RequestLedger:
    elif now>=self.deadline(r):self.finish(rid,"REQUEST_EXPIRED_NO_BACKDATING",deadline_ms=self.deadline(r))
    else:result.append(item)
   return sorted(result,key=lambda x:(self.deadline(x["request"]),x["request"]["request_id"]))
+ def pending_retry_deadline_ms(self):
+  """Expire known inputs before retrying; never renew an original deadline."""
+  deadlines=[];now=self.clock()
+  for rid in sorted(self.known):
+   if self.terminal(rid) is not None:continue
+   item=self.input_cache.get(rid)
+   if item is None:
+    item=load(self.folder(rid)/"input.json")["request_item"];self.input_cache[rid]=item
+   r=item["request"];deadline=self.deadline(r)
+   if now<r["started_at_ms"]:self.finish(rid,"CLOCK_REVERSED_NO_PREDICTION")
+   elif now>=deadline:self.finish(rid,"REQUEST_EXPIRED_NO_BACKDATING",deadline_ms=deadline)
+   else:deadlines.append(deadline)
+  return min(deadlines,default=None)
+ def source_busy(self,reason):
+  self.pending_retry_deadline_ms()
+  for rid in sorted(self.known):
+   if self.terminal(rid) is None:self.wait(rid,reason)
  def attempt(self,item,predict_and_seal):
   r=item["request"];rid=r["request_id"];folder=self.observe(item)
   if folder is None:return None
@@ -217,7 +269,7 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
  """
  require(1<=max_seconds<=1800 and .05<=poll_seconds<=2,"PREOPEN_RESIDENT_BOUNDS")
  require(1<=guard_check_seconds<=5 and 60<=cooldown_seconds<=900,"PREOPEN_HANDOFF_BOUNDS")
- start=monotonic();admitted=ready=False;warm_count=attempts=source_errors=0
+ start=monotonic();admitted=ready=False;warm_count=attempts=source_errors=source_busy=0
  next_guard=start;reason="BOUNDED_SESSION_COMPLETE";restart_not_before=ledger.restart_not_before()
  reservation=None;cleanup_started=False
  def cleanup():
@@ -231,7 +283,10 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
    if reservation is not None:ledger.close_lease(reservation,cleanup_evidence)
  ledger.recover()
  def capture():
-  _,requests,bindings,issues=source.read();pending=ledger.pending(requests)
+  deadline=ledger.pending_retry_deadline_ms()
+  bounded=getattr(source,"read_with_deadline",None)
+  _,requests,bindings,issues=bounded(deadline) if bounded is not None else source.read()
+  pending=ledger.pending(requests)
   if not issues:
    for binding in bindings:ledger.reconcile(binding)
   return pending,issues
@@ -276,6 +331,18 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
        require(not after_forward_issues,"PREOPEN_SOURCE_CHANGED_DURING_FORWARD")
      if reason=="OTHER_REGISTERED_WORKER_WAITING":break
     sleep(poll_seconds)
+   except SourceSnapshotBusy as exc:
+    # No old or unverified snapshot can reach inference while the source settles.
+    source_busy+=1;ledger.source_busy(str(exc));ledger.incident(str(exc))
+    if admitted and not ready:raise
+    if ledger.clock()>=ledger.protocol["input_end_ms"]:reason="FIXED_INPUT_WINDOW_CLOSED";break
+    if stop() or monotonic()-start>=max_seconds:break
+    if admitted and yield_requested():reason="OTHER_REGISTERED_WORKER_WAITING";break
+    if admitted and monotonic()>=next_guard:
+     next_guard=monotonic()+guard_check_seconds;check=gate.check()
+     if check.get("admit_new_worker")is not True:
+      reason="GUARD_WITHDREW:"+",".join(check.get("reasons",[]))[:350];break
+    sleep(min(poll_seconds,max(0,max_seconds-(monotonic()-start))))
    except Exception as exc:
     source_errors+=1;ledger.incident(type(exc).__name__+":"+str(exc)[:600])
     if admitted:
@@ -286,11 +353,13 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
   if stop():reason="SUPERVISOR_STOP"
   # Record requests crossing the final poll/window boundary without inference.
   try:capture()
+  except SourceSnapshotBusy as exc:
+   source_busy+=1;ledger.source_busy(str(exc));ledger.incident("FINAL_CAPTURE_BUSY:"+str(exc))
   except Exception as exc:
    source_errors+=1;ledger.incident("FINAL_CAPTURE:"+type(exc).__name__+":"+str(exc)[:600])
   cleanup()
   result={"schema":"heptatrader.preopen-resident-session.v1","plan_id":ledger.protocol["plan_id"],"ended_at_ms":ledger.clock(),
-   "reason":reason,"model_loads":warm_count,"request_attempts":attempts,"source_error_observations":source_errors,
+   "reason":reason,"model_loads":warm_count,"request_attempts":attempts,"source_error_observations":source_errors,"source_busy_observations":source_busy,
    "resident_seconds":monotonic()-start,"source":source.statistics(),"broker_orders_sent":0,"training_steps":0,
    "old_trial_modified":False,"restart_not_before_ms":ledger.restart_not_before()}
   publish_once(ledger.root/("session-"+uuid.uuid4().hex+".json"),result);return result

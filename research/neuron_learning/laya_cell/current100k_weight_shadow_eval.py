@@ -121,6 +121,10 @@ class Evaluator:
   report=current(self.config,now)
   if not report.get('components',{}).get('EUR.USD',{}).get('ledger_complete'):
    issues.append({'reason':'CURRENT_LEDGER_REPLAY_UNAVAILABLE'})
+  # A partial final replay cannot establish the population denominator. Keep
+  # the last completed assessment intact; main publishes a separate failure.
+  if now>=p['outcome_end_ms'] and issues:
+   raise W.EvidenceError('FINAL_SOURCE_UNAVAILABLE:'+json.dumps(issues,sort_keys=True)[:2000])
   times,command_fills,execution_commands=execution_index(report['source_prefix']) if report.get('source_prefix') else ({},{},{})
   return self.evaluate_snapshot(requests,bindings,report,times,command_fills,execution_commands,now,issues)
  def evaluate_snapshot(self,requests,bindings,report,times,command_fills,execution_commands,now,issues=()):
@@ -194,13 +198,59 @@ class Evaluator:
   self.last_identity=identity if identity==after else None;self.last_result=result;self.last_read_ms=now
   return result
 
+TERMINAL_UNAVAILABLE_SCHEMA='heptatrader.current100k-weight-shadow-terminal-unavailable.v1'
+
+def read_terminal_unavailable(root,plan):
+ path=Path(root)/'terminal-unavailable.json'
+ if not path.exists():return None
+ value=W.read(path)
+ W.require(value.get('schema')==TERMINAL_UNAVAILABLE_SCHEMA and value.get('plan_id')==plan['plan_id'],'SHADOW_TERMINAL_IDENTITY')
+ W.require(value.get('state')=='FINAL_UNAVAILABLE_NO_SELECTION' and value.get('current_replay_complete')is False,'SHADOW_TERMINAL_STATE')
+ W.require(value.get('outcome_end_ms')==plan['outcome_end_ms'] and W.integer(value['checked_at_ms'])>=plan['outcome_end_ms'],'SHADOW_TERMINAL_BEFORE_FIXED_END')
+ W.require(all(value.get(k)is False for k in ('financial_candidate_selected','canonical_agentd_accepted','trade_authority')),'SHADOW_TERMINAL_NO_AUTHORITY')
+ W.require(all(value.get(k)is None for k in ('observed_trades','original_command_count','prediction_coverage')),'SHADOW_TERMINAL_UNKNOWN_COVERAGE')
+ W.require(isinstance(value.get('error'),dict) and isinstance(value['error'].get('type'),str) and isinstance(value['error'].get('message'),str),'SHADOW_TERMINAL_ERROR')
+ return value
+
+def publish_final_unavailable(root,plan,error,*,checked_at_ms=None,diagnostics=None):
+ """A separate immutable failure receipt; never re-date or overwrite an assessment."""
+ root=Path(root);W.validate_plan(plan)
+ checked=W.clock_ms() if checked_at_ms is None else W.integer(checked_at_ms)
+ W.require(checked>=plan['outcome_end_ms'],'SHADOW_TERMINAL_BEFORE_FIXED_END')
+ existing=read_terminal_unavailable(root,plan)
+ if existing is not None:return existing
+ prior=None;prior_error=None;path=root/'assessment.json'
+ if path.exists():
+  try:
+   raw=path.read_bytes();value=json.loads(raw)
+   W.require(value.get('schema')=='heptatrader.current100k-weight-shadow-assessment.v1' and value.get('plan_id')==plan['plan_id'],'SHADOW_PRIOR_ASSESSMENT_SCOPE')
+   W.require(type(value.get('as_of_ms'))is int and plan['registered_at_ms']<=value['as_of_ms']<=checked,'SHADOW_PRIOR_ASSESSMENT_CLOCK')
+   prior={'path':str(path),'sha256':W.hashlib.sha256(raw).hexdigest(),
+          **{k:value.get(k) for k in ('as_of_ms','state','observed_trades','original_command_count','prediction_coverage')}}
+   # Also pin the complete old report independently of its mutable live pointer.
+   saved=root/'finalization-assessments'/(W.digest(value)+'.json')
+   W.durable_once(saved,value)
+   prior.update(snapshot_path=str(saved),snapshot_sha256=W.sha(saved))
+  except (OSError,ValueError,KeyError,TypeError) as exc:
+   prior_error={'type':type(exc).__name__,'message':str(exc)[:2000]}
+ receipt={'schema':TERMINAL_UNAVAILABLE_SCHEMA,'plan_id':plan['plan_id'],'state':'FINAL_UNAVAILABLE_NO_SELECTION',
+          'checked_at_ms':checked,'outcome_end_ms':plan['outcome_end_ms'],'current_replay_complete':False,
+          'error':{'type':type(error).__name__,'message':str(error)[:2000]},'diagnostics':diagnostics,
+          'last_completed_assessment':prior,'last_assessment_read_error':prior_error,
+          'observed_trades':None,'original_command_count':None,'prediction_coverage':None,
+          'reasons':['FINAL_SOURCE_OR_EVALUATOR_UNAVAILABLE'],'financial_candidate_selected':False,
+          'canonical_agentd_accepted':False,'trade_authority':False,'broker_orders_sent':0}
+ W.durable_once(root/'terminal-unavailable.json',receipt)
+ return read_terminal_unavailable(root,plan)
+
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,required=True)
  parser.add_argument('--register',type=Path);parser.add_argument('--once',action='store_true')
  args=parser.parse_args();os.umask(0o077)
  if args.register:
   print(json.dumps(W.freeze(W.read(args.register),args.root)));return
- worker=Evaluator(args.root);fd=os.open(args.root/'evaluator.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+ plan=W.ShadowStore(args.root).plan;worker=None
+ fd=os.open(args.root/'evaluator.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);stopping=False
  def stop(*_):
   nonlocal stopping
@@ -208,13 +258,24 @@ def main():
  signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
  try:
   while not stopping:
+   terminal=None;finished=False
    try:
-    result=worker.step();status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
-    status.update(at_ms=W.clock_ms(),financial_candidate_selected=False,broker_orders_sent=0,replay_skipped=result.get('replay_skipped',False))
+    terminal=read_terminal_unavailable(args.root,plan)
+    if terminal is None:
+     if worker is None:worker=Evaluator(args.root)
+     result=worker.step();status={k:result[k] for k in ('plan_id','as_of_ms','state','observed_trades','original_command_count','reasons')}
+     status.update(at_ms=W.clock_ms(),financial_candidate_selected=False,broker_orders_sent=0,replay_skipped=result.get('replay_skipped',False))
+     finished=result['as_of_ms']>=plan['outcome_end_ms'] and result['state'].startswith('FINAL_')
    except Exception as exc:
-    status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':W.clock_ms(),'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
+    checked=W.clock_ms()
+    status={'state':'UNAVAILABLE_NO_SELECTION','at_ms':checked,'reason':str(exc)[:220],'financial_candidate_selected':False,'broker_orders_sent':0}
+    if checked>=plan['outcome_end_ms']:
+     terminal=publish_final_unavailable(args.root,plan,exc,checked_at_ms=checked)
+   if terminal is not None:
+    status={k:terminal[k] for k in ('plan_id','state','checked_at_ms','observed_trades','original_command_count','prediction_coverage','error','last_completed_assessment','reasons','financial_candidate_selected','broker_orders_sent')}
+    status.update(at_ms=W.clock_ms(),terminal_report_path=str(args.root/'terminal-unavailable.json'));finished=True
    W.atomic(args.root/'evaluator-status.json',status);print(json.dumps(status),flush=True)
-   if args.once:break
+   if args.once or finished:break
    for _ in range(10):
     if stopping:break
     time.sleep(1)
