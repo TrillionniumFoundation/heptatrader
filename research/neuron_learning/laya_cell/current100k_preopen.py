@@ -271,23 +271,127 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
                  stop=lambda:False,sleep=time.sleep,monotonic=time.monotonic):
  """One prewarmed model in the original lease, with bounded fair handoff.
 
- Collection precedes admission and continues during cooldown. A crash cannot
- trigger immediate reacquisition: a durable reservation sets the next start.
+ A past-only stale quote may suspend inference in an already warm lease for at
+ most 15 cumulative monotonic seconds per session (three maximum 5s checks).
+ It grants no new admission, renews no deadline, and never skips source capture.
+ Synchronous reads are not preemptible; every return is checked before inference.
  """
  require(1<=max_seconds<=1800 and .05<=poll_seconds<=2,"PREOPEN_RESIDENT_BOUNDS")
  require(1<=guard_check_seconds<=5 and 60<=cooldown_seconds<=900,"PREOPEN_HANDOFF_BOUNDS")
  start=monotonic();admitted=ready=False;warm_count=attempts=source_errors=source_busy=0
  next_guard=start;reason="BOUNDED_SESSION_COMPLETE";restart_not_before=ledger.restart_not_before()
- reservation=None;cleanup_started=False
+ reservation=None;cleanup_started=False;last_guard=None
+ hold=None;hold_seconds=0.;hold_count=hold_resumptions=0;hold_budget_seconds=15.
+ policy="EXISTING_WARM_PAST_QUOTE_HOLD_15S_CUMULATIVE_V1"
+ def proof(check,before,after,*,stale):
+  """Interpret this pinned guard call only; never read a cached admission file."""
+  try:
+   if (check.get("schema")!="heptatrader.resident-resource-admission.v1"
+       or check.get("role")!="value-predictor" or check.get("existing_workers_interrupted")is not False
+       or check.get("admit_new_worker")is not (not stale)
+       or check.get("reasons")!=(["LATEST_SOURCE_QUOTE_NOT_FRESH"] if stale else [])):return None
+   at=check["at_ms"];p=check["original_live_source_evidence"]
+   if (type(at)is not int or not before<=at<=after or after-at>5000
+       or p.get("schema")!="heptatrader.original-live-freshness.v1"
+       or p.get("source_ttl_ms")!=5000 or p.get("quote_timestamp_rewritten")is not False
+       or p.get("cached_continuity_not_efficacy")is not True
+       or type(p.get("broker_queries_sent"))is not int or p["broker_queries_sent"]!=0):return None
+   observed,known,continuity=(p[k] for k in ("quote_observed_at_ms","quote_known_at_ms","continuity_at_ms"))
+   if (any(type(v)is not int for v in (observed,known,continuity))
+       or not 0<observed<=known<=at or not 0<continuity<=at or at-continuity>120000):return None
+   age=at-observed
+   if (stale and age<=5000) or (not stale and not 0<=after-observed<=5000):return None
+   pin,live=p["pinned_prefix"],p["verified_live_prefix"]
+   if (not isinstance(pin,dict) or not isinstance(live,dict)
+       or not isinstance(pin.get("path"),str) or not Path(pin["path"]).is_absolute()
+       or pin["path"]!=live.get("path") or type(pin.get("bytes"))is not int
+       or type(live.get("bytes"))is not int or not 0<pin["bytes"]<=live["bytes"]<=64*1024*1024
+       or any(not isinstance(v,str) or re.fullmatch("[0-9a-f]{64}",v)is None
+              for v in (pin.get("sha256"),live.get("sha256"),p.get("continuity_prefix_digest")))
+       or p.get("quote_receipt") is None):return None
+   return p
+  except (KeyError,TypeError,ValueError,AttributeError):return None
+ def finish_hold(outcome):
+  nonlocal hold,hold_seconds,hold_resumptions
+  if hold is None:return
+  elapsed=monotonic()-hold["started_tick"]
+  require(elapsed>=0,"PREOPEN_QUOTE_HOLD_CLOCK_REVERSED")
+  hold_seconds+=elapsed
+  record={"schema":"heptatrader.preopen-quote-hold-end.v1","policy":policy,
+   "plan_id":ledger.protocol["plan_id"],"lease_id":reservation["lease_id"],"hold_id":hold["id"],
+   "entry_sha256":hold["entry_sha256"],"ended_at_ms":ledger.clock(),"reason":outcome,
+   "elapsed_seconds":elapsed,"cumulative_hold_seconds":hold_seconds,
+   "request_attempts_during_hold":attempts-hold["attempts"],"new_lease_acquired":False,
+   "request_deadlines_renewed":False,"broker_orders_sent":0}
+  publish_once(ledger.root/("quote-hold-end-"+hold["id"]+".json"),record)
+  if outcome=="FRESH_GUARD_AND_CURRENT_SOURCE":hold_resumptions+=1
+  hold=None
  def cleanup():
-  nonlocal cleanup_started,admitted
+  nonlocal cleanup_started,admitted,ready
   if cleanup_started:return
-  cleanup_started=True
-  # A failure keeps the original lease until process exit, as the GPU owner does.
-  cleanup_evidence=close_model()
-  if admitted:
-   gate.release();admitted=False
-   if reservation is not None:ledger.close_lease(reservation,cleanup_evidence)
+  cleanup_started=True;ready=False
+  # Audit failure must not prevent the existing strict model/lease cleanup.
+  try:finish_hold(reason)
+  finally:
+   cleanup_evidence=close_model()
+   if admitted:
+    gate.release();admitted=False
+    if reservation is not None:ledger.close_lease(reservation,cleanup_evidence)
+ def boundary():
+  nonlocal reason
+  if ledger.clock()>=ledger.protocol["input_end_ms"]:reason="FIXED_INPUT_WINDOW_CLOSED"
+  elif stop():reason="SUPERVISOR_STOP"
+  elif monotonic()-start>=max_seconds:reason="BOUNDED_SESSION_COMPLETE"
+  elif admitted and yield_requested():reason="OTHER_REGISTERED_WORKER_WAITING"
+  elif hold is not None and monotonic()>=hold["deadline_tick"]:reason="STALE_QUOTE_WARM_HOLD_BOUND"
+  else:return False
+  return True
+ def guard_due():
+  if monotonic()>=next_guard:return True
+  if hold is not None:return last_guard is not None
+  if not ready or last_guard is None:return True
+  return proof(last_guard,last_guard.get("at_ms"),ledger.clock(),stale=False) is None
+ def check_admitted(source_ready):
+  nonlocal ready,next_guard,last_guard,reason,hold,hold_count,source_errors
+  ready=False;before=ledger.clock();tick=monotonic();next_guard=tick+guard_check_seconds
+  try:check=gate.check()
+  except Exception as exc:
+   source_errors+=1;reason="SOURCE_OR_RESIDENT_FAILURE_HANDOFF"
+   ledger.incident("GUARD_CHECK:"+type(exc).__name__+":"+str(exc)[:600]);return False
+  after=ledger.clock()
+  last_guard=None
+  if boundary():return False
+  if check.get("admit_new_worker")is True:
+   # A successful check that expires during a synchronous call is not authority.
+   if proof(check,before,after,stale=False) is None:
+    reason="GUARD_WITHDREW:CURRENT_QUOTE_PROOF_INVALID_OR_EXPIRED";return False
+   last_guard=check
+   if source_ready:
+    finish_hold("FRESH_GUARD_AND_CURRENT_SOURCE");ready=True
+   return True
+  p=proof(check,before,after,stale=True)
+  if admitted and warm_count and reservation is not None and p is not None:
+   if hold is None:
+    remaining=hold_budget_seconds-hold_seconds
+    if remaining<=0:reason="STALE_QUOTE_WARM_HOLD_BOUND";return False
+    started=monotonic();identifier=uuid.uuid4().hex
+    deadline=min(start+max_seconds,started+remaining,
+                 started+max(0,ledger.protocol["input_end_ms"]-after)/1000)
+    entry={"schema":"heptatrader.preopen-quote-hold.v1","policy":policy,
+     "plan_id":ledger.protocol["plan_id"],"lease_id":reservation["lease_id"],"hold_id":identifier,
+     "started_at_ms":after,"guard_checked_at_ms":check["at_ms"],"guard_report_sha256":digest(check),
+     "source_evidence":p,"cumulative_hold_budget_seconds":hold_budget_seconds,
+     "prior_hold_seconds":hold_seconds,"deadline_monotonic_seconds":deadline,
+     "input_end_ms":ledger.protocol["input_end_ms"],"inference_ready":False,
+     "new_lease_acquired":False,"request_deadlines_renewed":False,"broker_orders_sent":0}
+    entry_sha=publish_once(ledger.root/("quote-hold-"+identifier+".json"),entry)
+    hold={"id":identifier,"entry_sha256":entry_sha,"started_tick":started,
+          "deadline_tick":deadline,"attempts":attempts};hold_count+=1
+   return not boundary()
+  reason="GUARD_WITHDREW:"+",".join(check.get("reasons",[]))[:350];return False
+ def wait_seconds():
+  if hold is None:return poll_seconds
+  return min(poll_seconds,max(0,hold["deadline_tick"]-monotonic()))
  ledger.recover()
  def capture():
   deadline=ledger.pending_retry_deadline_ms()
@@ -302,61 +406,57 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
    pending=[]
    try:
     pending,issues=capture()
-    if ledger.clock()>=ledger.protocol["input_end_ms"]:reason="FIXED_INPUT_WINDOW_CLOSED";break
+    if boundary():break
     if issues:
      why="SOURCE_PROVENANCE:"+json.dumps(issues,sort_keys=True)[:600];ledger.incident(why)
      for item in pending:ledger.wait(item["request"]["request_id"],why)
      if admitted:reason="SOURCE_CHANGED_HANDOFF";break
-     sleep(poll_seconds);continue
-    if admitted and yield_requested():reason="OTHER_REGISTERED_WORKER_WAITING";break
-    if monotonic()>=next_guard:
+     sleep(wait_seconds());continue
+    if admitted and guard_due():
+     if not check_admitted(True):
+      for item in pending:ledger.wait(item["request"]["request_id"],reason)
+      break
+    elif not admitted and monotonic()>=next_guard:
      next_guard=monotonic()+guard_check_seconds
-     if admitted:
-      check=gate.check()
-      if check.get("admit_new_worker")is not True:
-       reason="GUARD_WITHDREW:"+",".join(check.get("reasons",[]))[:350]
-       for item in pending:ledger.wait(item["request"]["request_id"],reason)
-       break
-     elif ledger.clock()>=restart_not_before:
+     if ledger.clock()>=restart_not_before:
       admitted=gate.acquire({"plan_id":ledger.protocol["plan_id"],"purpose":"FROZEN_PREOPEN_RESEARCH_RESIDENT"})
       if admitted:
        reservation=ledger.reserve_lease(max_seconds-(monotonic()-start),cooldown_seconds)
-       warm();warm_count+=1;ready=True
+       warm();warm_count+=1
        pending,after_warm_issues=capture()
        require(not after_warm_issues,"PREOPEN_SOURCE_CHANGED_DURING_WARMUP")
+       if boundary() or not check_admitted(True):break
     if not ready:
-     why="RESEARCH_LEASE_COOLDOWN" if ledger.clock()<restart_not_before else "SHARED_RESOURCE_OR_SOURCE"
+     why=("STALE_QUOTE_WARM_HOLD_NO_INFERENCE" if hold is not None else
+          "RESEARCH_LEASE_COOLDOWN" if ledger.clock()<restart_not_before else "SHARED_RESOURCE_OR_SOURCE")
      for item in pending:ledger.wait(item["request"]["request_id"],why)
     if ready:
+     handoff=False
      for item in pending:
-      if stop() or monotonic()-start>=max_seconds:break
-      if yield_requested():reason="OTHER_REGISTERED_WORKER_WAITING";break
+      if boundary():handoff=True;break
+      if guard_due():
+       if not check_admitted(True):handoff=True;break
+       if not ready:break
       if ledger.terminal(item["request"]["request_id"]) is None:
        ledger.attempt(item,predict_and_seal);attempts+=1
-       # A completed original command always disqualifies late computation.
        _,after_forward_issues=capture()
        require(not after_forward_issues,"PREOPEN_SOURCE_CHANGED_DURING_FORWARD")
-     if reason=="OTHER_REGISTERED_WORKER_WAITING":break
-    sleep(poll_seconds)
+     if handoff:break
+    sleep(wait_seconds())
    except SourceSnapshotBusy as exc:
-    # No old or unverified snapshot can reach inference while the source settles.
     source_busy+=1;ledger.source_busy(str(exc));ledger.incident(str(exc))
-    if admitted and not ready:raise
-    if ledger.clock()>=ledger.protocol["input_end_ms"]:reason="FIXED_INPUT_WINDOW_CLOSED";break
-    if stop() or monotonic()-start>=max_seconds:break
-    if admitted and yield_requested():reason="OTHER_REGISTERED_WORKER_WAITING";break
+    if admitted and not warm_count:raise
+    if boundary():break
     if admitted and monotonic()>=next_guard:
-     next_guard=monotonic()+guard_check_seconds;check=gate.check()
-     if check.get("admit_new_worker")is not True:
-      reason="GUARD_WITHDREW:"+",".join(check.get("reasons",[]))[:350];break
-    sleep(min(poll_seconds,max(0,max_seconds-(monotonic()-start))))
+     if not check_admitted(False):break
+    sleep(wait_seconds())
    except Exception as exc:
     source_errors+=1;ledger.incident(type(exc).__name__+":"+str(exc)[:600])
     if admitted:
      reason="SOURCE_OR_RESIDENT_FAILURE_HANDOFF"
-     if not ready:raise
+     if not warm_count:raise
      break
-    sleep(poll_seconds)
+    sleep(wait_seconds())
   if stop():reason="SUPERVISOR_STOP"
   # Record requests crossing the final poll/window boundary without inference.
   try:capture()
@@ -368,6 +468,8 @@ def run_resident(source,ledger,warm,predict_and_seal,close_model,gate,*,max_seco
   result={"schema":"heptatrader.preopen-resident-session.v1","plan_id":ledger.protocol["plan_id"],"ended_at_ms":ledger.clock(),
    "reason":reason,"model_loads":warm_count,"request_attempts":attempts,"source_error_observations":source_errors,"source_busy_observations":source_busy,
    "resident_seconds":monotonic()-start,"source":source.statistics(),"broker_orders_sent":0,"training_steps":0,
-   "old_trial_modified":False,"restart_not_before_ms":ledger.restart_not_before()}
+   "old_trial_modified":False,"restart_not_before_ms":ledger.restart_not_before(),
+   "quote_hold_policy":policy,"quote_hold_budget_seconds":hold_budget_seconds,"quote_hold_count":hold_count,
+   "quote_hold_seconds":hold_seconds,"quote_hold_resumptions":hold_resumptions}
   publish_once(ledger.root/("session-"+uuid.uuid4().hex+".json"),result);return result
  finally:cleanup()
