@@ -81,7 +81,8 @@ uses serial encoding to avoid a prior full-batch UMA spike.
   staging profile can therefore acquire the original Gate before the input
   window, prepare CPU state, prove all model/head tensors are CPU and no GPU
   runtime/device ownership exists, release the lease, and reacquire the original
-  Gate for a later real request. This lifecycle is not implemented here.
+  Gate for a later real request. The opt-in implementation and its separate
+  historical hardware diagnostic are described below.
 * `resident_hip_runtime.activate` must precede the first Torch import. A CPU
   staging child cannot import Torch and then activate HIP on demand. It must
   select HIP first without initializing a GPU, and must pass a fresh inherited
@@ -108,3 +109,62 @@ python -B -m unittest discover -s research/current100k_cold_start -p 'test_*.py'
 
 These tests use no Torch or GPU. The actual loader, sandbox and HIP benchmark
 must be exercised on Pocket4; local mocks are not a claim of GPU success.
+
+## CPU standby and numerical parity diagnostic
+
+The future signed worker is described in [CPU_STANDBY_V2.md](CPU_STANDBY_V2.md).
+Before selecting it, run the separate historical diagnostic as the ordinary
+runtime owner under the intended CPU quota/weight. Retain the original
+configuration and reuse the exact request ID/SHA from `serial-02/input-proof.json`:
+
+```bash
+/usr/bin/python3 -B /absolute/path/cpu_standby_diagnostic.py \
+  --config /absolute/path/original-predictor-CONFIG_SHA256.json \
+  --sha256 CONFIG_SHA256 \
+  --request-id SERIAL02_REQUEST_ID --request-sha256 SERIAL02_REQUEST_SHA256 \
+  --threads 2 --timeout-seconds 120 \
+  --output /absolute/path/new-cpu-standby-parity-01
+```
+
+Keep `benchmark.py` adjacent to the diagnostic. `input-proof.json` records both
+diagnostic source hashes plus the immutable runtime/config/plan/head/request
+identity. The actual selected release's loader must explicitly expose
+`enforce_gpu`; preflight checks this before original Guard admission. Legacy
+258 head behavior uses the already verified exact source-hash compatibility
+path, including its original unclamped USD conversion.
+
+The diagnostic uses the signed historical plan only as input provenance. It
+does **not** opt that plan into v2. After the first original admission, the child
+installs the original sandbox, proves the original role key is unreadable,
+selects accepted HIP before Torch, and loads actual CPU weights/head. It hashes
+all parameters and registered buffers, including nonpersistent buffers, and
+the serial BUY/SELL tokenizer input IDs/masks. Both processes then close their
+initial heavy descriptors. The parent independently verifies the child's FD
+table, waits one fixed second with CPU state resident, revalidates the original
+inputs, and reacquires the original Gate. Only a newly transferred locked FD
+permits GPU setup and inference.
+
+It first measures CPU-to-GPU copy and actual serial inference. Then, while
+holding that fresh lease, it destroys the first model and requires zero Torch
+GPU allocation before loading the original direct-GPU model. It compares all
+initial parameter/buffer hashes, tokenizer tensors, post-inference state,
+features and USD values. No relaxed tolerance turns differences into a pass.
+An exact result exits 0; original Guard denial exits 3; numerical differences
+exit 4 and remain explicit in the report. Other errors preserve partial receipts
+and exit with their actual failure. No model survives the finite child.
+
+Read `cpu-ready.json`, `cpu-idle.json`, `fresh-admission.json`, `report.json` and
+`lifecycle.json` together. In particular, require CPU-only/no-GPU-FD proof, both
+initial copies closed, a fresh original positive admission, the exact parity
+fields, and actual reap before final lease release. `parity-state-hashes.json`
+contains the complete per-tensor comparison evidence; no bearer or signing key
+is captured.
+
+`fresh_admission_to_staged_result` includes the fresh original source recheck,
+descriptor delivery, first GPU setup, copy and serial prediction. CPU preload
+and CPU hash instrumentation occurred earlier. Publication/signing/fsync is not
+measured. The direct loader runs second in the same process with uncontrolled
+OS/compiler caches; its time is not another process-cold benchmark. The report
+identifies the exact historical loader/head version tested. A future change to
+either still needs its own parity evidence; this does not certify unexecuted
+code paths or a different centered head.
