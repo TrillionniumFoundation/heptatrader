@@ -13,6 +13,26 @@ def sha_file(path):return _original_sha_file(Path(path))
 from .resident_store import write_once,atomic
 from .financial_forward_protocol import RULE,feature_text,validate_plan,validate_candidate
 from .financial_forward_source import ingress,file_identity
+from .file_digest_cache import FileDigestCache
+
+
+def request_event(plan,item,stage,**detail):
+ """Bounded local diagnostics, never a prediction or an admission receipt.
+
+ Journal capture supplies persistence without another synchronous file write in
+ the deadline path. Do not include prompts, signing material, or model outputs.
+ """
+ request=item['request']
+ event={'schema':'heptatrader.current100k-request-event.v1','stage':stage,
+  'observed_at_ms':int(time.time()*1000),'plan_id':plan['plan_id'],
+  'candidate_id':plan.get('candidate_id'),'request_id':request.get('request_id'),
+  'request_sha256':item.get('request_sha256'),'request_started_at_ms':request['started_at_ms'],
+  'request_source_written_at_ms':item.get('source_written_at_ms'),
+  'producer_manifest_sha256':item.get('producer_manifest_sha256'),
+  'observational_only':True,'broker_orders_sent':0,**detail}
+ try:print(json.dumps(event,sort_keys=True,allow_nan=False),flush=True)
+ except OSError:return False
+ return True
 
 
 def pin(config,plan):
@@ -39,7 +59,8 @@ def pin(config,plan):
 class RegisteredPlanSnapshot:
  """Reuse a fully verified registration only within this bounded process.
 
- Frozen bytes remain SHA-pinned on every use. The costly per-training-row
+ Frozen bytes remain identity-checked on every use; changed files are SHA-read
+ again. The cache lives only inside this verified process. The per-training-row
  journal replay repeats only when an original witness file changes.
  """
  def __init__(self,config,path,plan):
@@ -47,7 +68,7 @@ class RegisteredPlanSnapshot:
   self.path=Path(path);self.plan=copy.deepcopy(plan);self.config=copy.deepcopy(config)
   if plan['period_sha256']!=config['period_sha256']:raise ContractError('PREDICT_PERIOD_SCOPE')
   if read_json(self.path)!=plan:raise ContractError('VALUE_REGISTERED_PLAN_BYTES_MISMATCH')
-  self.pins={};self.full_validations=0;self.reuses=0
+  self.pins={};self.full_validations=0;self.reuses=0;self.pin_hashes=FileDigestCache()
   def add(path,want):
    name=str(Path(path))
    if name in self.pins and self.pins[name]!=want:raise ContractError('VALUE_PIN_COLLISION')
@@ -70,7 +91,7 @@ class RegisteredPlanSnapshot:
   self._validate()
  def _verify_pins(self):
   for path,want in self.pins.items():
-   if sha_file(path)!=want:raise ContractError('VALUE_REGISTERED_TURN_BYTES_CHANGED:'+path)
+   if self.pin_hashes.sha256(path)!=want:raise ContractError('VALUE_REGISTERED_TURN_BYTES_CHANGED:'+path)
  def _source_identity(self):return [(p,file_identity(p)) for p in self.source_paths]
  def _validate(self):
   from .financial_forward_evaluate import validate_registration
@@ -180,7 +201,9 @@ class Predictor:
    'ingress_full_scans':sum(x.full_scans for x in self.ingress_snapshots.values()),
    'ingress_snapshot_reuses':sum(x.reuses for x in self.ingress_snapshots.values()),
    'registration_full_validations':sum(x.full_validations for x in self.registered_plans.values()),
-   'registration_snapshot_reuses':sum(x.reuses for x in self.registered_plans.values())}
+   'registration_snapshot_reuses':sum(x.reuses for x in self.registered_plans.values()),
+   'registration_pin_hashes':{key:value.pin_hashes.stats() for key,value in self.registered_plans.items()
+                             if hasattr(value,'pin_hashes')}}
  def load(self):
   if self.raw is not None:return
   import torch
@@ -202,6 +225,7 @@ class Predictor:
   if now-r['started_at_ms']>60000:
    write_once(folder/'failure.json',{'reason':'REQUEST_ALREADY_OLD_NO_BACKDATING','observed_at_ms':now,'request_id':rid});return None
   phases=PhaseClock()
+  request_event(plan,item,'PREDICTION_ENTERED')
   try:
    budget=PublicationBudget(plan,r,int(time.time()*1000))
    prepared=self.registered_plans.get(plan['plan_id'])
@@ -240,12 +264,18 @@ class Predictor:
     'side_choice_provided_to_trader':False,'output_scope':'CONDITIONAL_ROUNDTRIP_NET_USD_NOT_TRADE_SIGNAL',
     'both_action_conditions_committed_without_response_input':True,'broker_orders_sent':0}
    started=time.perf_counter()
-   try:return publish_prediction(self.c,plan,r,folder,payload,budget)
+   try:
+    committed=publish_prediction(self.c,plan,r,folder,payload,budget)
+    request_event(plan,item,'PREDICTION_COMMITTED',computed_at_ms=computed,
+     committed_at_ms=committed['committed_at_ms'],prediction_phases_ms=dict(phases.phases),
+     request_to_computed_ms=computed-r['started_at_ms'])
+    return committed
    finally:self.publication_timings_ms.append((time.perf_counter()-started)*1000.)
   except Exception as exc:
    failure={'reason':type(exc).__name__+':'+str(exc)[:220],'observed_at_ms':int(time.time()*1000),'request_id':rid,
             'prediction_phases_ms':dict(phases.phases)}
    self.current_prediction_failures.append(failure);write_once(folder/'failure.json',failure)
+   request_event(plan,item,'PREDICTION_FAILED',reason=failure['reason'],prediction_phases_ms=dict(phases.phases))
    return None
  def step(self):
   if sha_file(Path(self.c['period_path']))!=self.c['period_sha256']:raise ContractError('FINANCIAL_PREDICT_PERIOD_CHANGED')

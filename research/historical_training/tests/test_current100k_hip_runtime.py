@@ -119,6 +119,7 @@ class FinancialHipTests(unittest.TestCase):
         self.enter(patch.object(worker, 'validate_runtime'))
         self.enter(patch.object(worker.time, 'time', return_value=T / 1000))
         self.enter(patch('laya_cell.financial_forward_witness.verify_trust'))
+        self.enter(patch('laya_cell.financial_forward_evaluate.validate_registration_header'))
         self.enter(patch.object(prediction, 'RegisteredPlanSnapshot',
                          return_value=SimpleNamespace(full_validations=1, reuses=0)))
         snapshot = SimpleNamespace(full_scans=1, reuses=0, read=lambda *args: ({}, {
@@ -136,6 +137,24 @@ class FinancialHipTests(unittest.TestCase):
         self.assertIn(self.context['readonly'][0], self.sandbox.call_args.args[0]['read_only_paths'])
         self.prove.assert_called_once_with(self.context, 'AFTER_TORCH_BEFORE_MODEL')
         self.assertFalse((Path(c['output_root']) / 'candidate.json').exists())
+
+    def test_idle_predictor_defers_training_replay_and_never_takes_gpu_lease(self):
+        c = self.worker_config(); self.install_gate()
+        empty = SimpleNamespace(full_scans=1, reuses=0, read=lambda *args: ({}, {}, [], []))
+        with patch('laya_cell.financial_forward_source.VerifiedIngressSnapshot', return_value=empty), \
+                patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=AssertionError('idle replay')) as replay:
+            result = worker.run(c, 'predict')
+        self.assertEqual(result['state'], 'WAIT_FRESH_ORIGINAL_REQUEST')
+        self.assertEqual(result['front_timing']['registration_full_validations'], 0)
+        replay.assert_not_called(); self.gate_type.assert_not_called()
+        self.assertEqual(self.trace, [])
+
+    def test_fresh_predictor_still_validates_training_before_resource_admission(self):
+        c = self.worker_config(); self.install_gate()
+        with patch.object(prediction, 'RegisteredPlanSnapshot', side_effect=ContractError('TRAINING_WITHDRAWN')):
+            with self.assertRaisesRegex(ContractError, 'TRAINING_WITHDRAWN'):
+                worker.run(c, 'predict')
+        self.gate_type.assert_not_called(); self.assertEqual(self.trace, [])
 
     def test_trial_denied_gate_never_loads_gpu_or_creates_output(self):
         c = self.trial_config()

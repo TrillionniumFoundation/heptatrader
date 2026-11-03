@@ -187,8 +187,13 @@ class RegisteredTurnTests(unittest.TestCase):
   patch('laya_cell.financial_forward_predict.validate_plan',return_value=self.plan).start()
   self.snap=RegisteredPlanSnapshot(self.c,self.path,self.plan)
  def test_full_bound_validation_once_for_same_turn(self):
+  before=self.snap.pin_hashes.stats()
   self.snap.candidate(self.c,self.plan);self.snap.candidate(self.c,self.plan)
   self.assertEqual(self.verifier.call_count,1);self.assertEqual(self.snap.reuses,2)
+  after=self.snap.pin_hashes.stats()
+  self.assertEqual(after['bytes_read'],before['bytes_read'])
+  self.assertEqual(after['misses'],before['misses'])
+  self.assertGreater(after['hits'],before['hits'])
  def test_frozen_head_hash_checked_even_if_mtime_restored(self):
   st=self.head.stat();self.head.write_bytes(b'weights-B');os.utime(self.head,ns=(st.st_atime_ns,st.st_mtime_ns))
   with self.assertRaisesRegex(ContractError,'BYTES_CHANGED'):self.snap.candidate(self.c,self.plan)

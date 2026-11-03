@@ -38,10 +38,10 @@ def acquire_value_resources(gate,subject):
 def run(c,mode):
  if mode=='predict' and c.get('warm_flat_profile') is not None:
   raise ContractError('VALUE_WARM_PARENT_ENTRY_REQUIRED')
- from .financial_forward_predict import PhaseClock,RegisteredPlanSnapshot
+ from .financial_forward_predict import PhaseClock,RegisteredPlanSnapshot,request_event
  clock=PhaseClock();started_ms=int(time.time()*1000)
  validate_runtime(c);clock.mark('worker_runtime_validation')
- from .financial_forward_evaluate import validate_registration
+ from .financial_forward_evaluate import validate_registration,validate_registration_header
  from .financial_forward_witness import verify_trust
  from .current100k_forward import PLAN_SCHEMA
  from . import resident_hip_runtime as hip_runtime
@@ -49,9 +49,10 @@ def run(c,mode):
  if len(plans)!=1:raise ContractError('EXACTLY_ONE_CURRENT100K_FORWARD_PLAN')
  plan=read_json(plans[0]);clock.mark('trust_and_plan_read')
  hip_runtime.check_plan(c,plan)
- prepared=RegisteredPlanSnapshot(c,plans[0],plan) if mode=='predict' else None
- if prepared is None:validate_registration(c,plans[0],plan)
- clock.mark('registration_validation')
+ prepared=None
+ if mode=='predict':validate_registration_header(c,plans[0],plan)
+ else:validate_registration(c,plans[0],plan)
+ clock.mark('registration_header_validation' if mode=='predict' else 'registration_validation')
  if plan.get('schema')!=PLAN_SCHEMA:raise ContractError('CURRENT100K_PLAN_REQUIRED')
  if plan.get('worker_runtime_inventory_digest')!=c['worker_runtime_inventory_digest']:raise ContractError('PLAN_WORKER_RUNTIME_CHANGED')
  now=int(time.time()*1000);snapshot=None
@@ -63,7 +64,7 @@ def run(c,mode):
   timing={**front,'worker_phases_ms':dict(clock.phases),
    'ingress_full_scans':snapshot.full_scans if snapshot else 0,
    'ingress_snapshot_reuses':snapshot.reuses if snapshot else 0,
-   'registration_full_validations':prepared.full_validations if prepared else 1,
+   'registration_full_validations':prepared.full_validations if prepared else int(mode!='predict'),
    'registration_snapshot_reuses':prepared.reuses if prepared else 0}
   status={'at_ms':int(time.time()*1000),'state':state,'plan_id':plan['plan_id'],
    'input_start_ms':plan['input_start_ms'],'input_end_ms':plan['input_end_ms'],'front_timing':timing,
@@ -85,15 +86,24 @@ def run(c,mode):
     if not isinstance(rid,str) or rid in ('','.','..') or Path(rid).name!=rid:raise ContractError('REQUEST_PATH_ESCAPE')
     request=item['request'];folder=root/'plans'/plan['plan_id']/'predictions'/rid
     if (plan['input_start_ms']<=request['started_at_ms']<=now<plan['input_end_ms'] and now-request['started_at_ms']<60000
-        and request['position_at_request']==0 and not (folder/'commit.json').exists() and not (folder/'failure.json').exists()):fresh.append(rid)
+        and request['position_at_request']==0 and not (folder/'commit.json').exists() and not (folder/'failure.json').exists()):
+     fresh.append(rid);request_event(plan,item,'REQUEST_OBSERVED',worker_started_at_ms=started_ms,
+      request_age_ms=now-request['started_at_ms'],worker_phases_ms=dict(clock.phases))
    if not fresh:
     return wait_status('WAIT_FRESH_ORIGINAL_REQUEST',sealed_predictions=len(list((root/'plans'/plan['plan_id']/'predictions').glob('*/commit.json'))))
+   # Complete the original training/candidate proof only for an actual fresh
+   # request, still before Guard admission or any import/creation of GPU state.
+   prepared=RegisteredPlanSnapshot(c,plans[0],plan);clock.mark('registration_validation')
    from historical_training.resident_resource_guard import Gate,verify_config
    guard=read_json(Path(c['guard_config']));original=verify_config(guard)
    hip_runtime.check_guard_selection(c,original);gate=Gate(guard,'value-predictor')
    admitted=acquire_value_resources(gate,{'plan_id':plan['plan_id'],'requests':fresh})
    clock.mark('resource_admission')
-   if not admitted:return wait_status('HOLD_SHARED_RESOURCE_OR_SOURCE')
+   admission=getattr(gate,'last_admission',None)
+   for rid in fresh:request_event(plan,requests[rid],
+    'RESOURCE_ADMITTED' if admitted else 'RESOURCE_DENIED',
+    resource_admission=admission,worker_phases_ms=dict(clock.phases))
+   if not admitted:return wait_status('HOLD_SHARED_RESOURCE_OR_SOURCE',request_ids=fresh,resource_admission=admission)
    hip_context=hip_runtime.prepare_worker(c,'predict')
   from sandbox import enter
   enter({'output_dir':str(root),'period_path':c['period_path'],'legacy_capture':plan['training_dataset_path'],
