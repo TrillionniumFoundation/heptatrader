@@ -122,12 +122,12 @@ configuration and reuse the exact request ID/SHA from `serial-02/input-proof.jso
   --config /absolute/path/original-predictor-CONFIG_SHA256.json \
   --sha256 CONFIG_SHA256 \
   --request-id SERIAL02_REQUEST_ID --request-sha256 SERIAL02_REQUEST_SHA256 \
-  --threads 2 --timeout-seconds 120 \
-  --output /absolute/path/new-cpu-standby-parity-01
+  --threads 2 --timeout-seconds 120 --comparison-mode separate-process \
+  --output /absolute/path/new-cpu-standby-parity-03
 ```
 
-Keep `benchmark.py` adjacent to the diagnostic. `input-proof.json` records both
-diagnostic source hashes plus the immutable runtime/config/plan/head/request
+Keep `benchmark.py` and `direct_gpu_comparison.py` adjacent to the diagnostic.
+`input-proof.json` records all three diagnostic source hashes plus the immutable runtime/config/plan/head/request
 identity. The actual selected release's loader must explicitly expose
 `enforce_gpu`; preflight checks this before original Guard admission. Legacy
 258 head behavior uses the already verified exact source-hash compatibility
@@ -144,27 +144,42 @@ table, waits one fixed second with CPU state resident, revalidates the original
 inputs, and reacquires the original Gate. Only a newly transferred locked FD
 permits GPU setup and inference.
 
-It first measures CPU-to-GPU copy and actual serial inference. Then, while
-holding that fresh lease, it destroys the first model and requires zero Torch
-GPU allocation before loading the original direct-GPU model. It compares all
-initial parameter/buffer hashes, tokenizer tensors, post-inference state,
-features and USD values. No relaxed tolerance turns differences into a pass.
+It first measures CPU-to-GPU copy and actual serial inference. The default
+`separate-process` comparison saves the completed CPU outputs and all state
+hashes, destroys the first model, records any residual allocation, and lets the
+child exit naturally. The parent retains the GPU lease through actual exit and
+reap. Natural teardown is bounded by ten seconds and the overall deadline;
+timeout/error triggers terminate/kill/reap and prevents the second model.
+
+Only after the first process is reaped and its lease released does the parent
+revalidate the original inputs and make a third original Guard admission. A
+denial preserves the staged evidence without starting a baseline child. A new
+direct-GPU child inherits the newly acquired original descriptor, installs the
+original sandbox, selects accepted HIP before Torch, rechecks the admission
+before its first GPU API, and runs the original GPU loader. It retains the
+descriptor through actual exit. The CPU-only parent then compares all initial
+parameter/buffer hashes, tokenizer tensors, post-inference state, features and
+USD values. The processes never overlap. No relaxed tolerance turns differences into a pass.
 An exact result exits 0; original Guard denial exits 3; numerical differences
 exit 4 and remain explicit in the report. Other errors preserve partial receipts
 and exit with their actual failure. No model survives the finite child.
 
 Read `cpu-ready.json`, `cpu-idle.json`, `fresh-admission.json`, `report.json` and
 `lifecycle.json` together. In particular, require CPU-only/no-GPU-FD proof, both
-initial copies closed, a fresh original positive admission, the exact parity
-fields, and actual reap before final lease release. `parity-state-hashes.json`
+initial copies closed, fresh original positive admissions, the exact parity
+fields, and actual reap before each GPU lease release. `direct-proof.json` pins
+the original and staged evidence; the second child can write only its separate
+`direct-baseline` directory. `parity-state-hashes.json`
 contains the complete per-tensor comparison evidence; no bearer or signing key
 is captured.
 
 `fresh_admission_to_staged_result` includes the fresh original source recheck,
 descriptor delivery, first GPU setup, copy and serial prediction. CPU preload
 and CPU hash instrumentation occurred earlier. Publication/signing/fsync is not
-measured. The direct loader runs second in the same process with uncontrolled
-OS/compiler caches; its time is not another process-cold benchmark. The report
+measured. In separate-process mode the direct loader runs in a new interpreter
+with uncontrolled OS/compiler caches. Its separately reported admission,
+loading and inference times include explicit parity instrumentation and are not
+a controlled storage-cold comparison. The report
 identifies the exact historical loader/head version tested. A future change to
 either still needs its own parity evidence; this does not certify unexecuted
 code paths or a different centered head.
@@ -176,15 +191,19 @@ These files survive a later comparison or cleanup failure and remain explicitly
 historical diagnostic results, with no forward seal.
 
 After first-model destruction the diagnostic writes
-`allocation-after-destroy.json` **before** enforcing zero allocated GPU bytes.
+`allocation-after-destroy.json` before exiting the staged process.
 It records allocated/reserved bytes, Torch allocator statistics, bounded segment
 metadata and a bounded list of live GPU tensors (shape, dtype, storage size,
 hashed storage identity and referrer types/key names). It never captures tensor
-contents in that inspection, calls a global compiler/runtime reset or lowers the
-zero requirement. Nonzero allocation prevents the second model load; actual
-process exit/reap still precedes final heavy-lease release. This distinguishes
+contents in that inspection or calls a global compiler/runtime reset. The
+second model always starts in a separate process after actual exit/reap and
+original lease release, even if allocation is already zero. This distinguishes
 Python references from possible native/context-lifetime allocation without
 pretending a per-process cache must disappear when one model is deleted.
+The optional original `--comparison-mode same-process` diagnostic retains its
+strict zero-allocation assertion; nonzero allocation prevents a second load in
+that interpreter. It is not the default comparison and does not clear native
+BLAS workspaces to force a pass.
 
 To also exercise the future standalone tokenizer adapter, add the exact source
 file and SHA:
@@ -207,7 +226,9 @@ proof that its optimized branch ran. The extra tokenizer load/inference is
 separate from the first staged prediction's timing.
 
 Diagnostic RSS/GPU peaks include verification hashing, optional comparison and
-any second load. They are not the production worker's peak working set. A later
-two-process comparison can avoid requiring context-lifetime allocations to clear
-in one interpreter, but each process must receive its own newly admitted
-original lease and the first must be reaped before admitting the second.
+the direct loader. Separate-process peak fields are the maximum of each
+process's observed peak, never their sum. They are not the production worker's
+peak working set, and UMA process RSS and GPU allocation must not be added.
+`lifecycle.json` preserves staged/direct exit codes and each reap/lease release.
+Local subprocess fixtures verify these transitions and fresh flock acquisition;
+they do not substitute for the actual hardware proof.

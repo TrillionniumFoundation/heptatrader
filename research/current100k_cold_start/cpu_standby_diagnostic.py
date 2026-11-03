@@ -6,7 +6,7 @@ forward seal, synthetic request, trading command or model update. Both models
 use the selected immutable release's actual loader, tokenizer and value API.
 """
 from __future__ import annotations
-import argparse, array, ctypes, gc, hashlib, importlib.util, json, os
+import argparse, array, ctypes, gc, hashlib, importlib.util, json, math, os, struct
 from pathlib import Path
 import resource, select, signal, socket, subprocess, sys, time
 
@@ -24,7 +24,9 @@ def canonical(value): return json.dumps(value, sort_keys=True, separators=(',', 
 
 
 def source_pins():
-    return {name: bench.sha(Path(__file__).with_name(name)) for name in (Path(__file__).name, 'benchmark.py')}
+    names = [Path(__file__).name, 'benchmark.py']
+    if Path(__file__).with_name('direct_gpu_comparison.py').is_file(): names.append('direct_gpu_comparison.py')
+    return {name: bench.sha(Path(__file__).with_name(name)) for name in names}
 
 
 def comparison_source(path, expected):
@@ -98,6 +100,7 @@ class Channel:
                 if (level, kind) == (socket.SOL_SOCKET, socket.SCM_RIGHTS):
                     values = array.array('i'); values.frombytes(data[:len(data)-len(data)%size]); received.extend(values)
                 else: unexpected = True
+            need(raw or controls, 'CHILD_CHANNEL_EOF')
             need(not unexpected and raw and not flags & (socket.MSG_TRUNC|socket.MSG_CTRUNC)
                  and len(received) <= 1, 'BAD_CONTROL_OR_TRUNCATED_PACKET')
             value = json.loads(raw)
@@ -156,6 +159,69 @@ def same_request(item, current):
          ('request', 'request_sha256', 'producer_manifest_sha256', 'source_record_sha256')), 'ORIGINAL_REQUEST_CHANGED')
 
 
+def float32_record(values, shape):
+    need(shape in ([2, 768], [2]), 'CPU_COMPARISON_SHAPE')
+    if len(shape) == 2:
+        need(type(values) is list and len(values) == shape[0]
+             and all(type(row) is list and len(row) == shape[1] for row in values), 'CPU_FEATURE_SHAPE')
+        flat = [value for row in values for value in row]
+    else:
+        need(type(values) is list and len(values) == shape[0], 'CPU_VALUE_SHAPE'); flat = values
+    need(all(type(value) in (int, float) and math.isfinite(value) for value in flat), 'CPU_NONFINITE_COMPARISON')
+    raw = struct.pack('='+str(len(flat))+'f', *flat)
+    return {'shape': shape, 'dtype': 'torch.float32', 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def compare_completed_children(proof, staged, states, direct, future):
+    """CPU-only exact comparison after both model processes have been reaped."""
+    item = proof['request_item']; plan = proof['plan']; candidate = proof['candidate']
+    for document in (staged, direct):
+        need(document['scope'] == SCOPE and document['config_sha256'] == proof['config_sha256']
+             and document['plan_id'] == plan['plan_id'] and document['candidate_id'] == candidate['candidate_id']
+             and document['request_id'] == item['request']['request_id']
+             and document['request_sha256'] == item['request_sha256'], 'COMPLETED_CHILD_IDENTITY')
+    need(direct['base_id'] == candidate['base_id'] and direct['head_sha256'] == plan['head_tensor_sha256'], 'DIRECT_HEAD_IDENTITY')
+    need(all(type(value) is dict and value for value in (states.get('cpu_initial'), states.get('staged_after'),
+             direct.get('initial_state'), direct.get('after_state')))
+         and all(type(value) is list and len(value) == 2 for value in (states.get('cpu_tokenizer'), direct.get('tokenizer'))),
+         'COMPLETED_CHILD_STATE_REQUIRED')
+    staged_features = float32_record(staged['features'], [2,768]); direct_features = float32_record(direct['features'], [2,768])
+    staged_values = float32_record(staged['values'], [2]); direct_values = float32_record(direct['values'], [2])
+    need(staged_features == staged['staged']['feature_record'] and direct_features == direct['inference']['feature_record'],
+         'CPU_SERIALIZED_FEATURE_DIGEST_CHANGED')
+    initial = diff_state(states['cpu_initial'], direct['initial_state']); after = diff_state(states['staged_after'], direct['after_state'])
+    tokens = states['cpu_tokenizer'] == direct['tokenizer']
+    historical = initial['exact'] and after['exact'] and tokens and staged_features == direct_features and staged_values == direct_values
+    need(type(future) is dict and type(future.get('requested')) is bool, 'FUTURE_TOKENIZER_RESULT_SCOPE')
+    if proof.get('comparison_tokenizer') is not None:
+        need(future.get('requested') is True and future.get('source') == proof['comparison_tokenizer'], 'FUTURE_TOKENIZER_RESULT_PIN')
+    else: need(future['requested'] is False, 'UNREQUESTED_FUTURE_TOKENIZER_RESULT')
+    exact = historical and (not future['requested'] or future.get('exact') is True)
+    result = {'state': 'HISTORICAL_PARITY_EXACT' if exact else 'HISTORICAL_PARITY_DIFFERENCE_REVIEW_REQUIRED',
+        'scope': SCOPE, 'exact_parity': exact, 'historical_loader_exact_parity': historical, 'future_tokenizer_parity': future,
+        'forward_seal_created': False, 'broker_orders_sent': 0, 'v2_plan_registered': False, 'optimizer_used': False,
+        'publish_path_exercised': False, 'config_sha256': proof['config_sha256'], 'plan_id': plan['plan_id'],
+        'plan_sha256': proof['plan_sha256'], 'candidate_id': candidate['candidate_id'], 'base_id': candidate['base_id'],
+        'head_sha256': plan['head_tensor_sha256'], 'request_id': item['request']['request_id'], 'request_sha256': item['request_sha256'],
+        'producer_manifest_sha256': item['producer_manifest_sha256'], 'model_api': proof['model_api'],
+        'source_record_sha256': item['source_record_sha256'], 'source_prefix': item['source_prefix'],
+        'source_sha256': proof['source_sha256'], 'cpu_proof': staged['cpu_proof'],
+        'initial_parameters_and_all_buffers': initial, 'after_inference_parameters_and_all_buffers': after,
+        'tokenizer_input_ids_and_masks_exact': tokens, 'features_bitwise_equal': staged_features == direct_features,
+        'values_bitwise_equal': staged_values == direct_values,
+        'feature_max_absolute_difference': max(abs(a-b) for left,right in zip(staged['features'],direct['features']) for a,b in zip(left,right)),
+        'value_max_absolute_difference_usd': max(abs(a-b) for a,b in zip(staged['values'],direct['values'])),
+        'staged': staged['staged'], 'direct': direct['inference'], 'timing_ms': dict(staged['timing_ms']),
+        'direct_child_timing_ms': direct['timing_ms'], 'hip_runtime_proof': staged['hip_runtime_proof'],
+        'direct_hip_runtime_proof': direct['hip_runtime_proof'], 'comparison_mode': 'separate-process',
+        'model_processes_never_overlap': True, 'rss_and_gpu_bytes_are_not_additive': True,
+        'process_cold_cache_state_uncontrolled': True, 'cgroup_before': staged['cgroup_before'], 'cgroup_after': direct['cgroup_after']}
+    result['timing_ms']['direct_model_and_head_load'] = direct['timing_ms']['model_and_head_load']
+    for field in ('max_process_rss_bytes','max_gpu_allocated_bytes','max_gpu_reserved_bytes'):
+        result[field] = max(staged[field], direct[field])
+    return result
+
+
 def reap(process):
     if process.poll() is not None: return True
     try: process.terminate()
@@ -169,10 +235,54 @@ def reap(process):
     return process.poll() is not None
 
 
+def original_guard_recheck(gate, config):
+    need(bench.sha(config['guard_config']) == config['guard_config_sha256'], 'ORIGINAL_GUARD_CHANGED')
+    paths = list(sys.path)
+    try: report = gate.check()
+    finally: sys.path[:] = paths
+    need(report.get('admit_new_worker') is True, 'ORIGINAL_GUARD_RECHECK_DENIED')
+
+
+def start_direct_child(config, original_proof_path, proof, output, gate, checked_ns):
+    from laya_cell import resident_hip_runtime as hip
+    need(gate.lease.fd is not None and source_pins() == proof['source_sha256']
+         and 'direct_gpu_comparison.py' in proof['source_sha256'], 'DIRECT_SOURCE_OR_LEASE_CHANGED')
+    destination = output/'direct-baseline'; destination.mkdir(mode=0o700, exist_ok=False)
+    direct_proof = {'scope': SCOPE, 'original_input_proof_path': str(original_proof_path),
+        'original_input_proof_sha256': bench.sha(original_proof_path),
+        'staged_result_path': str(output/'staged-result.json'), 'staged_result_sha256': bench.sha(output/'staged-result.json'),
+        'staged_state_path': str(output/'staged-state-hashes.json'), 'staged_state_sha256': bench.sha(output/'staged-state-hashes.json'),
+        'admission': gate.last_admission, 'checked_ns': checked_ns, 'parent_pid': os.getpid(),
+        'heavy_lock_path': str(gate.lease.path), 'heavy_lock_identity': bench.lock_identity(gate.lease.fd),
+        'output_dir': str(destination), 'source_sha256': proof['source_sha256']}
+    path = output/'direct-proof.json'; bench.write(path, direct_proof); pin = bench.sha(path)
+    environment = hip.worker_environment(config) or dict(os.environ)
+    environment.update(PYTHONDONTWRITEBYTECODE='1', OMP_NUM_THREADS=str(proof['threads']), OPENBLAS_NUM_THREADS='1',
+                       TOKENIZERS_PARALLELISM='false', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
+    process = subprocess.Popen([config['python'], '-B', str(Path(__file__).with_name('direct_gpu_comparison.py')),
+        '--proof', str(path), '--proof-sha256', pin, '--heavy-fd', str(gate.lease.fd)],
+        env=environment, stdin=subprocess.DEVNULL, close_fds=True, pass_fds=(gate.lease.fd,))
+    return process, path, pin
+
+
+def wait_direct_child(process, gate, config, deadline, *, timeout_reason='DIRECT_CHILD_FIXED_TIMEOUT'):
+    checked = time.monotonic()
+    while process.poll() is None:
+        need(time.monotonic() < deadline, timeout_reason)
+        if time.monotonic()-checked >= 5:
+            original_guard_recheck(gate, config); checked = time.monotonic()
+        time.sleep(.05)
+    return process.returncode
+
+
 def parent(args):
     started = time.monotonic_ns(); started_at = int(time.time()*1000)
     comparison = comparison_source(getattr(args, 'comparison_tokenizer_source', None),
                                    getattr(args, 'comparison_tokenizer_sha256', None))
+    comparison_mode = getattr(args, 'comparison_mode', 'separate-process')
+    need(comparison_mode in ('same-process', 'separate-process'), 'COMPARISON_MODE')
+    if comparison_mode == 'separate-process':
+        need('direct_gpu_comparison.py' in source_pins(), 'DIRECT_COMPARISON_SOURCE_REQUIRED')
     config, guard, plan_path, plan, candidate, api, requests = original_inputs(args)
     item = bench.select_request(requests, args.request_id, plan, started_at)
     need(not args.request_sha256 or item['request_sha256'] == args.request_sha256, 'REQUEST_SHA256_CHANGED')
@@ -187,6 +297,8 @@ def parent(args):
     gate = Gate(guard, 'value-predictor'); process = channel = None; reaped = True
     phase = 'INITIAL_ADMISSION'; error = None; code = 3; receipt = None
     deadline = time.monotonic()+args.timeout_seconds; initial_closed = False; idle_until = None; fresh_granted = False
+    staged_reaped = staged_released = direct_granted = direct_started = direct_reaped = False
+    staged_receipt = None; staged_exit = direct_exit = None
     try:
         if not acquire_value_resources(gate, {'diagnostic': SCOPE, 'phase': 'CPU_PRELOAD', 'plan_id': plan['plan_id']}):
             bench.write(output/'report.json', {'state': 'HELD_ORIGINAL_GUARD_NO_MODEL_LOADED',
@@ -196,6 +308,7 @@ def parent(args):
         proof = {'schema': 'heptatrader.cpu-standby-historical-diagnostic.v1', 'scope': SCOPE,
             'source_sha256': source_pins(), 'config_path': str(args.config.resolve()), 'config_sha256': args.sha256,
             'comparison_tokenizer': comparison,
+            'comparison_mode': comparison_mode,
             'plan_path': str(plan_path), 'plan_sha256': bench.sha(plan_path), 'plan': plan, 'candidate': candidate,
             'request_item': item, 'model_api': api, 'admission': gate.last_admission, 'checked_ns': admitted_ns,
             'parent_pid': os.getpid(), 'heavy_lock_path': str(gate.lease.path),
@@ -218,17 +331,14 @@ def parent(args):
         while True:
             # Accounting of completed work precedes later resource/drain checks.
             ready = channel.receive(0)
-            if ready is not None and phase == 'GPU_PARITY':
+            if ready is not None and phase == 'GPU_PARITY' and ready[0].get('kind') == 'DONE':
                 message, _ = expect(ready, 'DONE', ('report_sha256', 'exact_parity'))
+                need(comparison_mode == 'same-process', 'SEPARATE_PROCESS_RESULT_REQUIRED')
                 need(type(message['exact_parity']) is bool and bench.sha(output/'report.json') == message['report_sha256'], 'REPORT_PIN')
                 receipt = message; code = 0 if message['exact_parity'] else 4; phase = 'COMPLETE'; break
             need(time.monotonic() < deadline, 'FIXED_TIMEOUT')
             if time.monotonic()-last_guard >= 5:
-                need(bench.sha(config['guard_config']) == config['guard_config_sha256'], 'ORIGINAL_GUARD_CHANGED')
-                paths = list(sys.path)
-                try: report = gate.check()
-                finally: sys.path[:] = paths
-                need(report.get('admit_new_worker') is True, 'ORIGINAL_GUARD_RECHECK_DENIED')
+                original_guard_recheck(gate, config)
                 last_guard = time.monotonic()
             child_code = process.poll()
             if ready is None: ready = channel.receive(0 if child_code is not None else .25)
@@ -252,9 +362,77 @@ def parent(args):
                         'parent_observed_child_gpu_device_fds': [], 'fixed_idle_seconds': 1})
                     print(json.dumps({'phase': phase, 'scope': SCOPE, 'initial_lease_released': True}), flush=True)
                 elif phase == 'GPU_PARITY':
-                    message, _ = expect(ready, 'DONE', ('report_sha256', 'exact_parity'))
-                    need(type(message['exact_parity']) is bool and bench.sha(output/'report.json') == message['report_sha256'], 'REPORT_PIN')
-                    receipt = message; code = 0 if message['exact_parity'] else 4; phase = 'COMPLETE'; break
+                    if comparison_mode == 'same-process':
+                        message, _ = expect(ready, 'DONE', ('report_sha256', 'exact_parity'))
+                        need(type(message['exact_parity']) is bool and bench.sha(output/'report.json') == message['report_sha256'], 'REPORT_PIN')
+                        receipt = message; code = 0 if message['exact_parity'] else 4; phase = 'COMPLETE'; break
+                    message, _ = expect(ready, 'STAGED_DONE', ('files_sha256',))
+                    files = message['files_sha256']; required = {'staged-result.json','staged-state-hashes.json','allocation-after-destroy.json'}
+                    if comparison is not None: required.add('future-tokenizer-result.json')
+                    need(type(files) is dict and set(files) == required
+                         and all(bench.sha(output/name) == pin for name,pin in files.items()), 'STAGED_RESULT_PINS')
+                    staged_receipt = message
+                    # The second model cannot exist until the entire first
+                    # process (including persistent HIP workspace) has exited.
+                    # Give interpreter/ROCm teardown a bounded natural exit;
+                    # timeout/error falls through to terminate/kill/reap in
+                    # finally, retaining the lease and preventing baseline.
+                    phase = 'STAGED_PROCESS_EXIT'
+                    staged_exit = wait_direct_child(process, gate, config, min(deadline, time.monotonic()+10),
+                        timeout_reason='STAGED_CHILD_NATURAL_EXIT_TIMEOUT')
+                    reaped = True; staged_reaped = True
+                    need(staged_exit == 0, 'STAGED_CHILD_FAILED:'+str(staged_exit))
+                    gate.record_native_exit(staged_exit, {'diagnostic': SCOPE, 'phase': 'STAGED_PROCESS_REAPED'})
+                    gate.release(); need(gate.lease.fd is None, 'STAGED_GPU_LEASE_NOT_RELEASED')
+                    staged_released = True; channel.close(); channel = None; process = None
+                    phase = 'DIRECT_ORIGINAL_ADMISSION'
+                    current_config, _, current_plan_path, current_plan, current_candidate, current_api, current = original_inputs(args)
+                    need(current_config == config and current_plan_path == plan_path and current_plan == plan
+                         and current_candidate == candidate and current_api == api, 'ORIGINAL_INPUT_CHANGED_BETWEEN_CHILDREN')
+                    same_request(item, current.get(item['request']['request_id']))
+                    need(source_pins() == proof['source_sha256'] and time.monotonic() < deadline, 'DIRECT_SOURCE_OR_DEADLINE_CHANGED')
+                    if not acquire_value_resources(gate, {'diagnostic': SCOPE, 'phase': 'DIRECT_GPU_BASELINE',
+                            'plan_id': plan['plan_id'], 'request_id': item['request']['request_id'],
+                            'request_sha256': item['request_sha256']}):
+                        bench.write(output/'report.json', {'state': 'DIRECT_ORIGINAL_GUARD_DENIED_NO_SECOND_GPU_CHILD',
+                            'scope': SCOPE, 'admission': gate.last_admission, 'staged_child_reaped': True,
+                            'staged_gpu_lease_released_after_reap': True, 'forward_seal_created': False, 'broker_orders_sent': 0})
+                        phase = 'DIRECT_GUARD_DENIED'; break
+                    direct_granted = True; checked_ns = time.monotonic_ns()
+                    process, direct_path, direct_pin = start_direct_child(config, proof_path, proof, output, gate, checked_ns)
+                    direct_started = True
+                    reaped = False; phase = 'DIRECT_GPU_BASELINE'
+                    direct_exit = wait_direct_child(process, gate, config, deadline)
+                    reaped = True; direct_reaped = True
+                    need(direct_exit == 0, 'DIRECT_CHILD_FAILED:'+str(direct_exit))
+                    direct = bench.read(output/'direct-baseline/result.json')
+                    need(direct['direct_proof_sha256'] == direct_pin
+                         and direct['original_input_proof_sha256'] == bench.sha(proof_path)
+                         and direct['source_sha256'] == proof['source_sha256'], 'DIRECT_RESULT_PROOF_PIN')
+                    # Check that the completed first-child evidence remained
+                    # unchanged through the direct child and original Guard.
+                    need(all(bench.sha(output/name) == pin for name,pin in files.items()), 'STAGED_INPUT_CHANGED_BETWEEN_CHILDREN')
+                    staged = bench.read(output/'staged-result.json'); states = bench.read(output/'staged-state-hashes.json')
+                    future = (bench.read(output/'future-tokenizer-result.json')['future_tokenizer_parity']
+                              if comparison is not None else {'requested':False})
+                    report = compare_completed_children(proof, staged, states, direct, future)
+                    allocation = bench.read(output/'allocation-after-destroy.json')
+                    report.update(first_model_gpu_allocated_bytes_after_destroy=allocation['first_model_memory_allocated_bytes'],
+                        first_model_memory_released_by='PROCESS_EXIT_AND_REAP', staged_child_exit_code=staged_exit,
+                        direct_child_exit_code=direct_exit, direct_proof_sha256=direct_pin,
+                        staged_result_files_sha256=files, direct_result_sha256=bench.sha(output/'direct-baseline/result.json'))
+                    for field in ('max_process_rss_bytes','max_gpu_allocated_bytes','max_gpu_reserved_bytes'):
+                        report[field] = max(report[field], allocation[field])
+                    bench.write(output/'parity-state-hashes.json', {'cpu_initial': states['cpu_initial'],
+                        'staged_after': states['staged_after'], 'direct_initial': direct['initial_state'],
+                        'direct_after': direct['after_state'], 'cpu_tokenizer': states['cpu_tokenizer'],
+                        'direct_tokenizer': direct['tokenizer'],
+                        'future_tokenizer': (bench.read(output/'future-tokenizer-result.json')['tokenizer_tensors']
+                                             if comparison is not None else None)})
+                    bench.write(output/'report.json', report)
+                    receipt = {'kind':'PARENT_TWO_PROCESS_COMPARISON', 'report_sha256':bench.sha(output/'report.json'),
+                               'exact_parity':report['exact_parity']}
+                    code = 0 if report['exact_parity'] else 4; phase = 'COMPLETE'; break
                 else: expect(ready, 'NO_MESSAGE_IS_VALID_IN_THIS_PHASE')
             if phase == 'CPU_IDLE' and time.monotonic() >= idle_until:
                 need(gate.lease.fd is None, 'FRESH_GATE_REQUIRES_CLOSED_INITIAL_LEASE')
@@ -282,13 +460,23 @@ def parent(args):
     finally:
         if process is not None:
             reaped = reap(process)
+            if direct_started:
+                direct_reaped = reaped; direct_exit = process.returncode
+            else:
+                staged_reaped = reaped; staged_exit = process.returncode
             if reaped: gate.record_native_exit(process.returncode, {'diagnostic': SCOPE, 'phase': phase})
         if channel is not None: channel.close()
         if reaped: gate.release()
+        if staged_reaped and fresh_granted and not direct_granted: staged_released = gate.lease.fd is None
         bench.write(output/'lifecycle.json', {'scope': SCOPE, 'phase': phase, 'initial_lease_released': initial_closed,
             'child_reaped': reaped, 'fresh_admission_granted': fresh_granted,
             'fresh_lease_released_after_reap': (reaped and gate.lease.fd is None) if fresh_granted else None,
             'completion_receipt': receipt, 'error': None if error is None else type(error).__name__+':'+str(error)[:400],
+            'comparison_mode': comparison_mode, 'staged_completion_receipt': staged_receipt,
+            'staged_child_reaped': staged_reaped, 'staged_gpu_lease_released_after_reap': staged_released,
+            'direct_original_admission_granted': direct_granted, 'direct_child_started': direct_started, 'direct_child_reaped': direct_reaped,
+            'direct_lease_released_after_reap': (reaped and gate.lease.fd is None) if direct_started else None,
+            'staged_child_exit_code': staged_exit, 'direct_child_exit_code': direct_exit,
             'forward_seal_created': False, 'broker_orders_sent': 0, 'parent_imported_torch': 'torch' in sys.modules})
     if error is not None: raise error
     need(reaped, 'CHILD_NOT_REAPED'); return code
@@ -470,6 +658,7 @@ def child(args):
     raw = raw.to(device); head = head.to(device); torch.cuda.synchronize(); copied = time.monotonic_ns()
     staged_features, staged_values, staged = infer(torch, value_module, raw, tokenizer, head, rows, api, candidate.get('readout_profile'))
     staged_timing = {'original_front_and_cpu_admission': proof['original_front_and_cpu_admission_ms'],
+        'child_bootstrap_sandbox': (before_torch-child_started)/1e6,
         'torch_cpu_import': (after_torch-before_torch)/1e6, 'cpu_model_and_head_load': (cpu_loaded-after_torch)/1e6,
         'cpu_parity_hashing': (cpu_ready_ns-cpu_loaded)/1e6,
         'fresh_admission_to_first_gpu_api': (gpu_start-fresh['checked_ns'])/1e6,
@@ -516,7 +705,16 @@ def child(args):
     allocation = allocation_snapshot(torch)
     bench.write(output/'allocation-after-destroy.json', {'scope': SCOPE,
         'fresh_original_lease_still_held': True, 'first_model_memory_allocated_bytes': released_bytes,
+        'max_process_rss_bytes': int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024,
+        'max_gpu_allocated_bytes': torch.cuda.max_memory_allocated(), 'max_gpu_reserved_bytes': torch.cuda.max_memory_reserved(),
         'direct_model_load_permitted': released_bytes == 0, **allocation})
+    if proof.get('comparison_mode') == 'separate-process':
+        names = ['staged-result.json','staged-state-hashes.json','allocation-after-destroy.json']
+        if comparison is not None: names.append('future-tokenizer-result.json')
+        channel.send('STAGED_DONE', {'files_sha256': {name:bench.sha(output/name) for name in names}})
+        # Persistent native workspace is released by real process exit. No
+        # second model is admitted or loaded in this interpreter, at any size.
+        return 0
     need(released_bytes == 0, 'FIRST_MODEL_GPU_ALLOCATION_NOT_RELEASED:'+str(released_bytes))
     direct_start = time.monotonic_ns()
     raw, tokenizer, direct_base = load_verified_laya(base, base_manifest, enforce_gpu=True)
@@ -575,6 +773,7 @@ def main():
     parser.add_argument('--request-id', default='latest-flat'); parser.add_argument('--request-sha256')
     parser.add_argument('--output', type=Path); parser.add_argument('--threads', type=int, choices=range(1,5), default=2)
     parser.add_argument('--comparison-tokenizer-source', type=Path); parser.add_argument('--comparison-tokenizer-sha256')
+    parser.add_argument('--comparison-mode', choices=('same-process','separate-process'), default='separate-process')
     parser.add_argument('--timeout-seconds', type=int, default=120)
     parser.add_argument('--child-proof', type=Path); parser.add_argument('--child-proof-sha256')
     parser.add_argument('--heavy-fd', type=int); parser.add_argument('--socket-fd', type=int)

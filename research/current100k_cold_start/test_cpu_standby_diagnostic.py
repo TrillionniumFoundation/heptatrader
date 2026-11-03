@@ -62,6 +62,17 @@ class Boundaries(unittest.TestCase):
         process=Mock();process.poll.side_effect=[None,0];process.terminate.side_effect=ProcessLookupError()
         self.assertTrue(diag.reap(process));process.wait.assert_called_once_with(timeout=10)
 
+    def test_socket_eof_is_reported_as_child_exit_not_bad_control(self):
+        left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close);right.close()
+        with self.assertRaisesRegex(ValueError,'CHILD_CHANNEL_EOF'):
+            diag.Channel(left,'proof').receive(0)
+
+    def test_cpu_float32_comparison_preserves_sign_bits_and_rejects_invalid_values(self):
+        self.assertNotEqual(diag.float32_record([0.,1.],[2]),diag.float32_record([-0.,1.],[2]))
+        for values in ([True,1.],[float('nan'),1.],[1.],[[1.],[2.]]):
+            with self.assertRaises(ValueError):diag.float32_record(values,[2])
+
 
 class ProcessLifecycle(unittest.TestCase):
     def setUp(self):
@@ -70,19 +81,22 @@ class ProcessLifecycle(unittest.TestCase):
         self.root=Path(self.temporary.name);previous=os.umask(0o077);self.addCleanup(os.umask,previous)
         from historical_training import resident_resource_guard as guard
         from laya_cell import financial_forward_source as source, resident_hip_runtime as hip
-        self.children=[];self.events=[];self.deny_initial=False;self.deny_fresh=False
+        self.children=[];self.events=[];self.deny_initial=False;self.deny_fresh=False;self.deny_direct=False
+        self.fail_direct=False
         self.item={'request':{'request_id':'r','started_at_ms':int(time.time()*1000)-10000,
             'position_at_request':0,'model_id':'actor'},'request_sha256':'request',
             'producer_manifest_sha256':'producer','source_record_sha256':'record','source_prefix':{'fixture':True}}
-        plan={'plan_id':'plan','behavior_scope':{'behavior_model_id':'actor'},'producer_registration':{'sha256':'producer'}}
+        plan={'plan_id':'plan','behavior_scope':{'behavior_model_id':'actor'},'producer_registration':{'sha256':'producer'},
+              'head_tensor_sha256':'head'}
+        candidate={'candidate_id':'candidate','base_id':'base'}
         plan_path=self.root/'old-plan.json';diag.bench.write(plan_path,plan)
         guard_path=self.root/'guard.json';diag.bench.write(guard_path,{})
         config={'forward_root':str(self.root/'original-forward'),'python':sys.executable,
             'guard_config':str(guard_path),'guard_config_sha256':diag.bench.sha(guard_path),'period_sha256':'period'}
         config_path=self.root/'config.json';diag.bench.write(config_path,config)
         self.args=SimpleNamespace(config=config_path,sha256=diag.bench.sha(config_path),request_id='r',
-            request_sha256='request',output=self.root/'diagnostic',threads=2,timeout_seconds=20)
-        self.stack.enter_context(patch.object(diag,'original_inputs',return_value=(config,{},plan_path,plan,{}, {},{'r':self.item})))
+            request_sha256='request',output=self.root/'diagnostic',threads=2,timeout_seconds=20,comparison_mode='same-process')
+        self.stack.enter_context(patch.object(diag,'original_inputs',return_value=(config,{},plan_path,plan,candidate, {},{'r':self.item})))
         self.stack.enter_context(patch.object(source,'ingress',return_value=({}, {'r':self.item}, [], [])))
         self.stack.enter_context(patch.object(hip,'worker_environment',return_value=dict(os.environ)))
         # Cross-process /proc FD observation is forbidden by this executor.
@@ -94,8 +108,9 @@ class ProcessLifecycle(unittest.TestCase):
             def check(self):return {'role':'value-predictor','admit_new_worker':True,'reasons':[],'at_ms':int(time.time()*1000)}
             def acquire(self,subject):
                 case.assertIsNone(self.lease.fd);self.calls+=1;case.events.append(('acquire',subject['phase']))
+                if self.calls==3:case.assertTrue(case.children and all(child.poll() is not None for child in case.children))
                 self.last_admission=self.check()
-                if (self.calls==1 and case.deny_initial) or (self.calls==2 and case.deny_fresh):
+                if (self.calls==1 and case.deny_initial) or (self.calls==2 and case.deny_fresh) or (self.calls==3 and case.deny_direct):
                     self.last_admission.update(admit_new_worker=False,reasons=['FIXTURE_ORIGINAL_HOLD']);return False
                 return self.lease.acquire()
             def release(self):
@@ -117,14 +132,38 @@ d.expect(ch.receive(4),'RELEASE_INITIAL');os.close(int(sys.argv[4]));ch.send('CP
 message,fd=d.expect(ch.receive(6),'RUN_GPU_PARITY',('admission_sha256',),descriptor=True)
 assert d.bench.lock_identity(fd)==p['heavy_lock_identity']
 Path(sys.argv[5]).write_text('fixture-only: no actual GPU')
-d.bench.write(out/'report.json',{'test_fixture_not_hardware':True,'exact_parity':True})
-ch.send('DONE',{'report_sha256':d.bench.sha(out/'report.json'),'exact_parity':True})
+if p['comparison_mode']=='same-process':
+ d.bench.write(out/'report.json',{'test_fixture_not_hardware':True,'exact_parity':True})
+ ch.send('DONE',{'report_sha256':d.bench.sha(out/'report.json'),'exact_parity':True})
+else:
+ features=[[.25]*768,[-.25]*768];values=[-10.,-9.]
+ staged={'scope':d.SCOPE,'phase':'STAGED_GPU_INFERENCE_COMPLETE','config_sha256':p['config_sha256'],'plan_id':p['plan']['plan_id'],'candidate_id':p['candidate']['candidate_id'],'request_id':'r','request_sha256':'request','source_sha256':p['source_sha256'],'features':features,'values':values,'cpu_proof':{'fixture':True},'staged':{'feature_record':d.float32_record(features,[2,768])},'timing_ms':{'fixture':1},'hip_runtime_proof':{'fixture':True},'cgroup_before':{},'max_process_rss_bytes':100,'max_gpu_allocated_bytes':200,'max_gpu_reserved_bytes':300,'direct_loader_parity_proven':False,'forward_seal_created':False,'broker_orders_sent':0}
+ d.bench.write(out/'staged-result.json',staged)
+ d.bench.write(out/'staged-state-hashes.json',{'cpu_initial':{'p':'hash'},'staged_after':{'p':'hash'},'cpu_tokenizer':[{},{}]})
+ d.bench.write(out/'allocation-after-destroy.json',{'first_model_memory_allocated_bytes':33554432,'max_process_rss_bytes':150,'max_gpu_allocated_bytes':200,'max_gpu_reserved_bytes':300})
+ names=['staged-result.json','staged-state-hashes.json','allocation-after-destroy.json']
+ ch.send('STAGED_DONE',{'files_sha256':{name:d.bench.sha(out/name) for name in names}})
+ import time;time.sleep(.15) # Natural interpreter teardown must not be terminated.
+''')
+        direct_fixture=self.root/'direct.py'
+        direct_fixture.write_text('''import importlib.util,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('diag',sys.argv[1]);d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
+p=d.bench.read(sys.argv[2]);assert d.bench.lock_identity(int(sys.argv[3]))==p['heavy_lock_identity']
+if sys.argv[4]=='True':raise SystemExit(9)
+original=d.bench.read(p['original_input_proof_path']);staged=d.bench.read(p['staged_result_path']);states=d.bench.read(p['staged_state_path'])
+result={**staged,'base_id':'base','head_sha256':'head','direct_proof_sha256':d.bench.sha(sys.argv[2]),'original_input_proof_sha256':p['original_input_proof_sha256'],'source_sha256':p['source_sha256'],'initial_state':states['cpu_initial'],'after_state':states['staged_after'],'tokenizer':states['cpu_tokenizer'],'inference':staged['staged'],'timing_ms':{'model_and_head_load':2.},'cgroup_after':{}}
+d.bench.write(Path(p['output_dir'])/'result.json',result)
 ''')
         actual_popen=subprocess.Popen
         def spawn(argv,**kwargs):
             def arg(name):return argv[argv.index(name)+1]
-            process=actual_popen([sys.executable,'-B',str(fixture),str(Path(diag.__file__)),arg('--child-proof'),
-                arg('--socket-fd'),arg('--heavy-fd'),str(self.marker)],pass_fds=kwargs['pass_fds'],
+            if '--proof' in argv:
+                command=[sys.executable,'-B',str(direct_fixture),str(Path(diag.__file__)),arg('--proof'),arg('--heavy-fd'),str(self.fail_direct)]
+            else:
+                command=[sys.executable,'-B',str(fixture),str(Path(diag.__file__)),arg('--child-proof'),
+                         arg('--socket-fd'),arg('--heavy-fd'),str(self.marker)]
+            process=actual_popen(command,pass_fds=kwargs['pass_fds'],
                 stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
             self.children.append(process)
             def cleanup():
@@ -152,6 +191,50 @@ ch.send('DONE',{'report_sha256':d.bench.sha(out/'report.json'),'exact_parity':Tr
         self.deny_initial=True
         with redirect_stdout(io.StringIO()):self.assertEqual(diag.parent(self.args),3)
         self.spawn.assert_not_called();self.assertFalse(self.marker.exists())
+
+    def test_two_model_processes_never_overlap_and_use_three_fresh_admissions(self):
+        self.args.comparison_mode='separate-process'
+        with redirect_stdout(io.StringIO()):self.assertEqual(diag.parent(self.args),0)
+        self.assertEqual(len(self.children),2)
+        self.assertEqual(self.events,[('acquire','CPU_PRELOAD'),('release',1),('acquire','GPU_PARITY'),
+                                     ('release',2),('acquire','DIRECT_GPU_BASELINE'),('release',3)])
+        receipt=diag.bench.read(self.args.output/'lifecycle.json')
+        for field in ('initial_lease_released','staged_child_reaped','staged_gpu_lease_released_after_reap',
+                      'direct_original_admission_granted','direct_child_started','direct_child_reaped',
+                      'direct_lease_released_after_reap','fresh_lease_released_after_reap'):
+            self.assertTrue(receipt[field],field)
+        self.assertEqual(receipt['staged_child_exit_code'],0)
+        self.assertEqual(receipt['direct_child_exit_code'],0)
+        self.assertFalse(receipt['parent_imported_torch'])
+        report=diag.bench.read(self.args.output/'report.json')
+        self.assertTrue(report['exact_parity']);self.assertTrue(report['model_processes_never_overlap'])
+        self.assertEqual(report['first_model_gpu_allocated_bytes_after_destroy'],33554432)
+        self.assertEqual(report['first_model_memory_released_by'],'PROCESS_EXIT_AND_REAP')
+        self.assertEqual(report['max_process_rss_bytes'],150)
+        self.assertEqual(report['timing_ms']['direct_model_and_head_load'],2.)
+        self.assertTrue((self.args.output/'parity-state-hashes.json').is_file())
+
+    def test_third_original_guard_denial_preserves_staged_result_without_baseline_child(self):
+        self.args.comparison_mode='separate-process';self.deny_direct=True
+        with redirect_stdout(io.StringIO()):self.assertEqual(diag.parent(self.args),3)
+        self.assertEqual(len(self.children),1)
+        receipt=diag.bench.read(self.args.output/'lifecycle.json')
+        self.assertTrue(receipt['staged_child_reaped']);self.assertTrue(receipt['staged_gpu_lease_released_after_reap'])
+        self.assertFalse(receipt['direct_original_admission_granted']);self.assertFalse(receipt['direct_child_started'])
+        self.assertIsNone(self.gate.lease.fd)
+        self.assertTrue((self.args.output/'staged-result.json').is_file())
+        self.assertFalse((self.args.output/'direct-baseline').exists())
+
+    def test_failed_direct_child_is_reaped_before_its_fresh_lease_releases(self):
+        self.args.comparison_mode='separate-process';self.fail_direct=True
+        with self.assertRaisesRegex(ValueError,'DIRECT_CHILD_FAILED:9'),redirect_stdout(io.StringIO()):
+            diag.parent(self.args)
+        receipt=diag.bench.read(self.args.output/'lifecycle.json')
+        self.assertTrue(receipt['staged_child_reaped']);self.assertTrue(receipt['direct_child_reaped'])
+        self.assertTrue(receipt['direct_lease_released_after_reap']);self.assertIsNone(self.gate.lease.fd)
+        self.assertEqual(receipt['direct_child_exit_code'],9)
+        self.assertIsNone(receipt['completion_receipt'])
+        self.assertTrue((self.args.output/'staged-result.json').is_file())
 
 
 if __name__=='__main__':unittest.main()
