@@ -50,7 +50,12 @@ def _private(path, want_dir=False):
     return st
 
 
-def _read_page(path, *, size_error, expected=None):
+def _page_version(st):
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns,
+            st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
+
+
+def _read_page(path, *, size_error, expected=None, versions=None):
     """Hash and parse one bounded private page snapshot, not two path opens."""
     _private(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -75,6 +80,12 @@ def _read_page(path, *, size_error, expected=None):
         if length > MAX_PAGE_BYTES:
             raise ContractError("SOURCE_ARCHIVE_PIN_HASH" if expected is not None else "JSON_SIZE_BOUND")
         raw = b"".join(chunks)
+        if versions is not None:
+            version = _page_version(st)
+            if (version != _page_version(os.fstat(fd)) or
+                    version != _page_version(path.lstat())):
+                raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
+            versions[str(path)] = version
     finally:
         os.close(fd)
     if expected is not None and (len(raw) != expected["bytes"] or
@@ -187,7 +198,7 @@ def _verify_covered_inventory(config, paths, pages):
     return len(names)
 
 
-def _load_pages(config):
+def _load_pages(config, *, versions=None):
     root = directory(config)
     if not root.exists():
         return [], [], []
@@ -201,7 +212,7 @@ def _load_pages(config):
     for i, path in enumerate(discovered):
         if path.name != f"page-{i:08d}.json":
             raise ContractError("SOURCE_ARCHIVE_PAGE_SEQUENCE")
-        raw, doc = _read_page(path, size_error="SOURCE_ARCHIVE_PAGE_SIZE")
+        raw, doc = _read_page(path, size_error="SOURCE_ARCHIVE_PAGE_SIZE", versions=versions)
         _page_source_paths(doc)
         if (type(doc["index"]) is not int
             or doc["index"] != i or doc["previous_sha256"] != previous
@@ -327,7 +338,7 @@ def verify_prefix(pin, *, sealed=False, prefer_uncached=False, read_stats=None):
         os.close(fd)
 
 
-def verify_page_pin(pin):
+def _page_pin_path(pin):
     if (type(pin) is not dict or set(pin) != {
         "schema", "path", "bytes", "sha256", "index", "previous_sha256", "period_sha256"
     } or pin.get("schema") != PIN_SCHEMA):
@@ -340,6 +351,11 @@ def verify_page_pin(pin):
         type(pin["bytes"]) is not int or pin["bytes"] <= 0 or
         type(pin["sha256"]) is not str or len(pin["sha256"]) != 64):
         raise ContractError("SOURCE_ARCHIVE_PIN_PATH")
+    return path
+
+
+def verify_page_pin(pin):
+    path = _page_pin_path(pin)
     _private(path.parent, want_dir=True)
     data, doc = _read_page(path, size_error="JSON_SIZE_BOUND", expected=pin)
     _page_source_paths(doc)
@@ -380,15 +396,27 @@ def verify_archive_pin_sequence(pins):
     if first.get("index") != 0 or first.get("previous_sha256") != GENESIS:
         raise ContractError("SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY")
     feed = path.parent.parent
-    _, _, recorded = _load_pages({"feed_directory": str(feed),
-                                   "period_sha256": period})
+    versions = {}
+    pages, _, recorded = _load_pages({"feed_directory": str(feed),
+                                     "period_sha256": period}, versions=versions)
     if len(recorded) < len(pins):
         raise ContractError("SOURCE_ARCHIVE_PIN_NOT_CHECKPOINTED")
     skipped = set()
     for i, pin in enumerate(pins):
         if pin != recorded[i]:
             raise ContractError("SOURCE_ARCHIVE_PAGE_PROOF_DISCONTINUITY")
-        page = verify_page_pin(pin)
+        # _load_pages already hashed and checked these exact page bytes against
+        # the complete ledger. Keep the strict external pin type/path checks
+        # (bool/float values can compare equal to integers), and reject changes
+        # since that descriptor-bound snapshot before reading its originals.
+        # This state lives only in this call; every later call rereads all pages.
+        path = _page_pin_path(pin)
+        _private(path.parent, want_dir=True)
+        if _page_version(path.lstat()) != versions[str(path)]:
+            raise ContractError("SOURCE_ARCHIVE_PIN_HASH")
+        page = pages[i]
+        for prefix in page["prefixes"]:
+            verify_prefix(prefix, sealed=True)
         skipped.update(page.get("skipped_paths", []))
     # Only the frozen page prefix owns this proof. Later appended pages must
     # not retroactively add raw-source requirements to an older dataset.

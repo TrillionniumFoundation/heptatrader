@@ -208,6 +208,141 @@ class SourceArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError,'PAGE_CHECKPOINT_COUNT'):
             verify_source_prefixes({'source_prefixes':pins})
 
+    def test_frozen_page_proof_reads_each_page_once_and_all_selected_originals(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        page_paths=list(directory(self.c).glob('page-*.json'))
+        originals=list(self.feed.glob('segment-*/quotes.jsonl'))
+        by_inode={(p.stat().st_dev,p.stat().st_ino):p for p in page_paths+originals}
+        page_bytes={p.read_bytes() for p in page_paths}
+        read=os.read
+        sha256=archive.hashlib.sha256
+        for frozen_count in (3,5):
+            with self.subTest(frozen_count=frozen_count):
+                counts={};hashes=[]
+                def counted_read(fd,size):
+                    raw=read(fd,size);st=os.fstat(fd)
+                    path=by_inode.get((st.st_dev,st.st_ino))
+                    if path is not None:counts[path]=counts.get(path,0)+len(raw)
+                    return raw
+                def counted_hash(raw=b'',*args,**kwargs):
+                    if raw and raw in page_bytes:hashes.append(raw)
+                    return sha256(raw,*args,**kwargs)
+                with patch.object(archive.os,'read',counted_read), \
+                     patch.object(archive.hashlib,'sha256',counted_hash):
+                    self.assertEqual(archive.verify_archive_pin_sequence(pins[:frozen_count]),set())
+                self.assertEqual(len(hashes),len(page_paths))
+                for page in page_paths:self.assertEqual(counts[page],page.stat().st_size)
+                selected=sorted(originals)[:frozen_count*PAGE_SIZE]
+                self.assertEqual(set(counts)-set(page_paths),set(selected))
+                for path in selected:self.assertEqual(counts[path],path.stat().st_size)
+
+    def test_frozen_pin_numeric_equality_does_not_relax_integer_types(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        for field,value in [('index',False),('index',0.0),('bytes',float(pins[0]['bytes']))]:
+            with self.subTest(field=field,value=value):
+                altered=[{**pins[0],field:value}]+pins[1:]
+                with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PIN_PATH'):
+                    archive.verify_archive_pin_sequence(altered)
+
+    def test_frozen_prefix_still_checks_pages_appended_after_its_freeze(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        page=directory(self.c)/'page-00000004.json'
+        page.write_bytes(page.read_bytes().replace(b'"index":4',b'"index":3'))
+        with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PAGE_CHAIN'):
+            archive.verify_archive_pin_sequence(pins[:3])
+
+    def test_page_change_after_registry_read_is_rejected_before_originals(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        page=Path(pins[0]['path']);original=page.read_bytes()
+        load_pages=archive._load_pages
+        for replacement in (False,True):
+            with self.subTest(replacement=replacement):
+                page.write_bytes(original)
+                def changed(*args,**kwargs):
+                    result=load_pages(*args,**kwargs)
+                    if replacement:
+                        temporary=page.with_suffix('.replacement')
+                        temporary.write_bytes(original);temporary.chmod(0o600)
+                        os.replace(temporary,page)
+                    else:
+                        before=page.stat()
+                        page.write_bytes(original.replace(b'"index":0',b'"index":1'))
+                        os.utime(page,ns=(before.st_atime_ns,before.st_mtime_ns))
+                    return result
+                with patch.object(archive,'_load_pages',changed), \
+                     patch.object(archive,'verify_prefix') as verify:
+                    with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PIN_HASH'):
+                        archive.verify_archive_pin_sequence(pins)
+                    verify.assert_not_called()
+
+    def test_page_change_during_descriptor_read_is_rejected(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        page=Path(pins[0]['path']);identity=(page.stat().st_dev,page.stat().st_ino)
+        read=os.read;changed=False
+        def changed_read(fd,size):
+            nonlocal changed
+            raw=read(fd,size);st=os.fstat(fd)
+            if not changed and raw and (st.st_dev,st.st_ino)==identity:
+                changed=True
+                before=page.stat()
+                page.write_bytes(page.read_bytes().replace(b'"index":0',b'"index":1'))
+                os.utime(page,ns=(before.st_atime_ns,before.st_mtime_ns))
+            return raw
+        with patch.object(archive.os,'read',changed_read):
+            with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PIN_HASH'):
+                archive.verify_archive_pin_sequence(pins)
+        self.assertTrue(changed)
+
+    def test_leaf_link_switch_after_pin_path_check_is_not_followed(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        page=Path(pins[0]['path'])
+        target=page.parent/'same-content-private-target'
+        target.write_bytes(page.read_bytes());target.chmod(0o600)
+        pin_path=archive._page_pin_path
+        real_stat=Path.stat;switched=False
+        def switch_after_check(pin):
+            nonlocal switched
+            checked=pin_path(pin)
+            if checked==page:
+                link=page.parent/'replacement-link'
+                link.symlink_to(target)
+                os.replace(link,page)
+                switched=True
+            return checked
+        def no_follow_leaf(path,*args,**kwargs):
+            if switched and path==page and kwargs.get('follow_symlinks',True):
+                raise AssertionError('final identity check followed the switched leaf')
+            return real_stat(path,*args,**kwargs)
+        with patch.object(archive,'_page_pin_path',switch_after_check), \
+             patch.object(Path,'stat',no_follow_leaf), \
+             patch.object(archive,'verify_prefix') as verify:
+            with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PIN_HASH'):
+                archive.verify_archive_pin_sequence(pins)
+            verify.assert_not_called()
+        self.assertTrue(switched)
+
+    def test_later_call_rereads_pages_instead_of_reusing_an_old_proof(self):
+        from laya_cell import source_archive as archive
+        self.archive()
+        _,_,pins=archive._load_pages(self.c)
+        archive.verify_archive_pin_sequence(pins)
+        page=Path(pins[0]['path'])
+        page.write_bytes(page.read_bytes().replace(b'"index":0',b'"index":1'))
+        with self.assertRaisesRegex(ContractError,'SOURCE_ARCHIVE_PAGE_CHAIN'):
+            archive.verify_archive_pin_sequence(pins)
+
     def test_dataset_proof_rejects_page_after_unsealed_source(self):
         self.archive()
         _,pins=read_quotes(self.c,int(time.time()*1000))
