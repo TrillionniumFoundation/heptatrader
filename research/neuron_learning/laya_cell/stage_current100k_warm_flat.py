@@ -91,15 +91,17 @@ def main():
                 else: raise ValueError('OTHER_ROLE_KEY_READABLE:' + other)
             write_once(root / 'sandbox-registrar.json', {**restrictions, 'role': role,
                 'other_role_keys_denied': denied, 'canonical_owner_key_access': False})
-            from laya_cell.current100k_forward import register, SAME_PRODUCER_REFIT
+            from laya_cell.current100k_forward import register
             plan = register(c, Path(request['candidate_directory']), Path(request['dataset_path']),
                 Path(request['prior_candidate_path']), [Path(path) for path in request['legacy_plans_roots']],
-                registration_scope=SAME_PRODUCER_REFIT, prior_plan_path=Path(request['prior_plan_path']),
+                registration_scope=request['registration_scope'], prior_plan_path=Path(request['prior_plan_path']),
                 input_start_delay_ms=request['input_start_delay_ms'], admission_check=admission, root_parent_fd=root_parent_fd)
     if plan['trial'] != request['expected_trial']: raise ValueError('INDEPENDENT_WARM_TRIAL_HISTORY_CHANGED')
     path = root / 'plans' / plan['plan_id'] / 'plan.json'
     print(json.dumps({'state': ('REGISTRATION_ALREADY_COMPLETE_DURABLE_VERIFIED' if already_registered
-        else 'REGISTERED_SAME_PRODUCER_WARM_PROFILE'), 'registration_performed': not already_registered, 'trial': plan['trial'],
+        else ('REGISTERED_SAME_PRODUCER_WARM_PROFILE' if request['registration_scope'] == 'SAME_PRODUCER_REFIT'
+              else 'REGISTERED_NEW_PRODUCER_SCOPE_WARM_PROFILE')),
+        'registration_scope': request['registration_scope'], 'registration_performed': not already_registered, 'trial': plan['trial'],
         'plan_path': str(path), 'plan_sha256': sha(path), 'plan_id': plan['plan_id'],
         'input_start_ms': plan['input_start_ms'], 'input_end_ms': plan['input_end_ms'],
         'outcome_end_ms': plan['outcome_end_ms'], 'gpu_loaded': False, 'keys_created': 0,
@@ -195,7 +197,7 @@ def training_readonly_paths(data, dataset):
     return [str(dataset), *sorted(paths)]
 
 
-def check_history(paths, prior_path, data):
+def check_history(paths, prior_path, data, registration_scope='SAME_PRODUCER_REFIT'):
     from laya_cell.financial_forward_protocol import validate_plan
     from historical_training.common import read
     history = [read(path) for path in paths]
@@ -209,10 +211,22 @@ def check_history(paths, prior_path, data):
     need(prior in history and prior['trial'] == len(history)
          and set(prior.get('old_trial_ids_retained', []))
              == {plan['plan_id'] for plan in history if plan['plan_id'] != prior['plan_id']}
-         and prior['producer_registration']['sha256'] == data['producer_manifest_sha256']
          and prior['period_sha256'] == data['period_sha256']
          and {row['behavior_scope']['model_id'] for row in data['rows']}
              == {prior['behavior_scope']['behavior_model_id']}, 'SAME_PRODUCER_BEHAVIOR_AND_PRIOR_REQUIRED')
+    if registration_scope == 'SAME_PRODUCER_REFIT':
+        need(prior['producer_registration']['sha256'] == data['producer_manifest_sha256'],
+             'SAME_PRODUCER_BEHAVIOR_AND_PRIOR_REQUIRED')
+    elif registration_scope == 'NEW_PRODUCER_SCOPE':
+        need(prior['producer_registration']['sha256'] != data['producer_manifest_sha256'],
+             'NEW_PRODUCER_SCOPE_REQUIRES_CHANGED_REGISTERED_PRODUCER')
+        need(not ({rid for p in history for rid in p['training_input_ids']}
+                    & {row['input_id'] for row in data['rows']})
+             and not ({rid for p in history for rid in p['training_reward_ids']}
+                    & {row['reward_id'] for row in data['rows']}),
+             'NEW_PRODUCER_SCOPE_HISTORICAL_TRAINING_OVERLAP')
+    else:
+        raise ValueError('CURRENT100K_REGISTRATION_SCOPE_UNKNOWN')
     # An independent trial may be prepared while the prior trial still runs.
     # The old outcome window need not be over; none of its bytes are changed.
     return prior, len(history) + 1
@@ -244,6 +258,8 @@ def main():
                  'guard-config-sha256', 'candidate-id', 'dataset-sha256'):
         p.add_argument('--' + name, required=True)
     p.add_argument('--legacy-plan', type=Path, action='append', required=True)
+    p.add_argument('--registration-scope', choices=('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE'),
+                   default='SAME_PRODUCER_REFIT')
     a = p.parse_args(); os.umask(0o077)
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     for path, wanted in ((a.fit_stage, a.fit_stage_sha256),
@@ -294,7 +310,7 @@ def main():
     prior_stage = read(a.prior_forward_stage); prior_path = Path(prior_stage['registration']['plan_path'])
     need(sha(prior_path) == prior_stage['registration']['plan_sha256'], 'ORIGINAL_TRIAL_PLAN_CHANGED')
     for path in a.legacy_plan: checked(path)
-    prior, trial = check_history(a.legacy_plan, prior_path, data)
+    prior, trial = check_history(a.legacy_plan, prior_path, data, a.registration_scope)
     legacy_roots = list(dict.fromkeys(str(path.parent.parent) for path in a.legacy_plan))
     need({str(path) for root in legacy_roots for path in Path(root).glob('*/plan.json')}
          == {str(path) for path in a.legacy_plan}, 'COMPLETE_HISTORY_PATHS_REQUIRED')
@@ -322,6 +338,18 @@ def main():
         need(directory.is_absolute() and directory.resolve() == directory and not directory.exists()
              and not directory.is_relative_to(Path(prior['registry_root'])), 'NEW_SEPARATE_FORWARD_AND_EVIDENCE_ROOTS_REQUIRED')
 
+    prior_training = {'dataset_path': str(dataset_path), 'read_only_paths': training_readonly_paths(data, dataset_path)}
+    prior_candidate = Path(prior['candidate_directory']) / 'candidate.json'
+    if a.registration_scope == 'NEW_PRODUCER_SCOPE':
+        # Validate before publishing any new release/configuration files.
+        historical_candidate = validate_value_candidate(prior_candidate.parent)
+        lineage_config = {**originals['registrar'], 'producer_registration': consumer['registration']}
+        registration_contract._new_producer_lineage(lineage_config, data, historical_candidate,
+            prior_candidate.parent, [read(path) for path in a.legacy_plan], prior_path)
+        old_dataset = Path(prior['training_dataset_path'])
+        prior_training['read_only_paths'] = list(dict.fromkeys([
+            *prior_training['read_only_paths'], *training_readonly_paths(read(old_dataset), old_dataset)]))
+
     files = assemble_files(repo, owner, wrapper)
     inventory = {name: sha(path) for name, path in files.items()}
     launcher = LAUNCHER.encode()
@@ -344,13 +372,12 @@ def main():
         config['warm_flat_profile'] = copy.deepcopy(PROFILE)
         path = a.evidence_root / (role + '-' + digest(config) + '.json')
         write_once(path, config); configs[role] = config; paths[role] = path
-    prior_training = {'dataset_path': str(dataset_path), 'read_only_paths': training_readonly_paths(data, dataset_path)}
-    prior_candidate = Path(prior['candidate_directory']) / 'candidate.json'
     pinned = [*a.legacy_plan, prior_candidate, candidate_dir / 'candidate.json',
               candidate_dir / 'value-head.safetensors', dataset_path, Path(prior_training['dataset_path'])]
     request = {'schema': 'heptatrader.current100k-warm-registration-request.v1', 'expected_trial': trial,
-        'registration_scope': 'SAME_PRODUCER_REFIT', 'input_start_delay_ms': 900000,
-        'registration_not_before_ms': prior['outcome_end_ms'],
+        'registration_scope': a.registration_scope, 'input_start_delay_ms': 900000,
+        'registration_not_before_ms': (prior['outcome_end_ms'] if a.registration_scope == 'SAME_PRODUCER_REFIT'
+                                       else candidate['created_at_ms']),
         'candidate_directory': str(candidate_dir), 'dataset_path': str(dataset_path),
         'prior_candidate_path': str(prior_candidate), 'prior_plan_path': str(prior_path),
         'legacy_plans_roots': legacy_roots, 'legacy_plan_paths': [str(path) for path in a.legacy_plan],
@@ -393,7 +420,7 @@ def main():
         'fit_stage': str(a.fit_stage), 'fit_stage_sha256': a.fit_stage_sha256,
         'prior_forward_stage': str(a.prior_forward_stage), 'prior_forward_stage_sha256': a.prior_forward_stage_sha256,
         'candidate_id': candidate['candidate_id'], 'dataset_sha256': a.dataset_sha256, 'rows': candidate['rows'],
-        'expected_trial': trial, 'forward_root': str(a.forward_root),
+        'expected_trial': trial, 'forward_root': str(a.forward_root), 'registration_scope': a.registration_scope,
         'prior_outcome_end_ms': prior['outcome_end_ms'], 'registration_scheduled': False,
         'registration_publish_profile': getattr(registration_contract, 'REGISTRATION_PUBLISH_PROFILE', None),
         'registration_activation_profile': ACTIVATION_PROFILE,

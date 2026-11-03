@@ -29,6 +29,7 @@ class StageBoundaryTests(unittest.TestCase):
              'input_end_ms': 3+RULE['window_ms'], 'outcome_end_ms': 3+RULE['window_ms']+RULE['closure_grace_ms'],
              'training_mean_usd': 0., 'producer_registration': {'manifest': '/original/manifest.json', 'sha256': 'p'*64},
              'period_sha256': 'q'*64, 'behavior_scope': {'behavior_model_id': 'behavior'},
+             'training_input_ids': ['old-input'], 'training_reward_ids': ['old-reward'],
              'candidate_directory': str(self.root/'original-candidate')}
         p['plan_id'] = digest(p); path = self.root/'old-plans'/p['plan_id']/'plan.json'
         path.parent.mkdir(parents=True); path.write_bytes(raw(p)+b'\n'); return path
@@ -164,6 +165,45 @@ class StageBoundaryTests(unittest.TestCase):
         with patch.object(module.time, 'time', return_value=end/1000):
             with self.assertRaises(StopBeforeEffect): module.main()
         effects['producer'].assert_called_once(); effects['sandbox'].assert_called_once()
+
+    def test_new_producer_history_keeps_budget_and_rejects_historical_overlap(self):
+        data = {**self.data, 'producer_manifest_sha256': 'n'*64,
+                'rows': [{'behavior_scope': {'model_id': 'behavior'}, 'input_id': 'new-input', 'reward_id': 'new-reward'}]}
+        before = self.prior.read_bytes()
+        prior, trial = stage.check_history([self.prior], self.prior, data, 'NEW_PRODUCER_SCOPE')
+        self.assertEqual(trial, 2); self.assertEqual(self.prior.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, 'CHANGED_REGISTERED_PRODUCER'):
+            stage.check_history([self.prior], self.prior, self.data, 'NEW_PRODUCER_SCOPE')
+        for field, old in [('input_id', 'old-input'), ('reward_id', 'old-reward')]:
+            changed = copy.deepcopy(data); changed['rows'][0][field] = old
+            with self.assertRaisesRegex(ValueError, 'HISTORICAL_TRAINING_OVERLAP'):
+                stage.check_history([self.prior], self.prior, changed, 'NEW_PRODUCER_SCOPE')
+
+    def test_new_scope_precheck_uses_completed_fit_and_existing_lineage_contract(self):
+        module, effects, config_path = self.fixture('register')
+        c = json.loads(config_path.read_text())
+        c['producer_registration'] = {'manifest': '/new/manifest.json', 'sha256': 'n'*64}
+        request_path = self.root / 'request.json'; request = json.loads(request_path.read_text())
+        dataset = self.root / 'new-dataset.json'
+        dataset.write_bytes(raw({'rows': [{'row_id': str(i)} for i in range(32)]}))
+        request.update(registration_scope='NEW_PRODUCER_SCOPE', registration_not_before_ms=10,
+                       dataset_path=str(dataset))
+        request_path.write_bytes(raw(request))
+        candidate = {'rows': 32, 'dataset_sha256': stage.sha(dataset), 'row_ids': [str(i) for i in range(32)], 'created_at_ms': 10}
+        trial = types.ModuleType('historical_training.current100k_value_trial')
+        trial.selected_rows = Mock()
+        with patch('laya_cell.current100k_forward.validate_value_candidate', return_value=candidate), \
+                patch.dict(sys.modules, {trial.__name__: trial}), \
+                patch('laya_cell.current100k_forward._new_producer_lineage') as lineage:
+            result, prior = registration_precheck.registration_inputs(c, request_path, stage.sha(request_path), now_ms=20)
+            self.assertEqual(result['registration_scope'], 'NEW_PRODUCER_SCOPE')
+            self.assertGreater(prior['outcome_end_ms'], 20)
+            lineage.assert_called_once()
+            self.assertEqual(lineage.call_args.args[0]['producer_registration'], c['producer_registration'])
+            self.assertFalse((self.root/'new-forward').exists())
+            with patch('laya_cell.current100k_forward.validate_value_candidate', return_value={**candidate, 'rows': 31}):
+                with self.assertRaisesRegex(ValueError, 'COMPLETED_FIT_REQUIRED'):
+                    registration_precheck.registration_inputs(c, request_path, stage.sha(request_path), now_ms=20)
     def test_outer_stage_parser_reaches_original_uid_guard(self):
         arguments = ['stage']
         for name in ('repo', 'fit-stage', 'prior-forward-stage', 'guard-config', 'forward-root', 'evidence-root'):

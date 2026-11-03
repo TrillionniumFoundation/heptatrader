@@ -88,6 +88,12 @@ class PreparationTests(unittest.TestCase):
     def test_implicit_same_producer_scope_remains_compatible_with_original_registrar(self):
         self.plan.pop('registration_scope'); write(self.plan_path,self.plan)
         self.assertEqual(self.prepare()['plan_id'],self.plan['plan_id'])
+    def test_explicit_new_scope_must_match_stage_before_priority_preparation(self):
+        self.plan['registration_scope']='NEW_PRODUCER_SCOPE';write(self.plan_path,self.plan)
+        with self.assertRaisesRegex(ValueError,'PLAN_SCOPE_CHANGED'):self.prepare()
+        self.assertFalse(self.output.exists())
+        self.stage['registration_scope']='NEW_PRODUCER_SCOPE'
+        self.assertEqual(self.prepare()['plan_id'],self.plan['plan_id'])
     def test_bad_signature_and_missing_seal_refuse_before_output(self):
         self.validator.side_effect=ValueError('SIGNATURE_INVALID')
         with self.assertRaisesRegex(ValueError,'SIGNATURE_INVALID'):self.prepare()

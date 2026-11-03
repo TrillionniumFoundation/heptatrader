@@ -82,6 +82,20 @@ class RequestAuditTests(unittest.TestCase):
         self.assertEqual(result['events'][0]['scope'], 'NEARBY_SERVICE_EVENT_NOT_CAUSAL_PROOF')
         self.assertEqual(result['events'][1]['scope'], 'EXACT_REQUEST_ID')
 
+    def test_exact_guard_denials_require_request_plan_and_fresh_time(self):
+        folder = self.root / 'denials'
+        def record(name, plan, stamp, rid='request'):
+            self.put(folder / (name + '.json'), {'subject': {'plan_id': plan, 'requests': [rid]},
+                'decision': {'at_ms': stamp, 'admit_new_worker': False, 'reasons': ['OTHER_RESEARCH_WORKER_ACTIVE']}})
+        record('early', 'plan', 1500); record('late', 'plan', 7000)
+        record('wrong-plan', 'other-plan', 1500); record('pre-request', 'plan', 999)
+        record('expired', 'plan', 61000); record('other-request', 'plan', 1500, 'other')
+        found = audit.request_denials(folder, self.inspect()['cases'])['request']
+        self.assertEqual([event['decision_at_ms'] for event in found], [1500, 7000])
+        self.assertTrue(found[0]['before_original_open']); self.assertFalse(found[1]['before_original_open'])
+        self.assertEqual(found[0]['reasons'], ['OTHER_RESEARCH_WORKER_ACTIVE'])
+        self.assertEqual(len(found[0]['sha256']), 64)
+
 
 if __name__ == '__main__':
     unittest.main()

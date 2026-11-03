@@ -203,7 +203,9 @@ def _inputs(stage, config, plan_path, plan):
     seal_path = path.with_name('registration.json')
     seal_sha = checksum(owned_bytes(seal_path))
     need(plan.get('schema') == 'heptatrader.current100k-value-forward-plan.v1'
-         and plan.get('registration_scope', 'SAME_PRODUCER_REFIT') == 'SAME_PRODUCER_REFIT'
+         and plan.get('registration_scope', 'SAME_PRODUCER_REFIT') in ('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE')
+         and plan.get('registration_scope', 'SAME_PRODUCER_REFIT')
+             == stage.get('registration_scope', 'SAME_PRODUCER_REFIT')
          and type(plan.get('trial')) is int and plan['trial'] == stage['expected_trial']
          and plan.get('candidate_id') == stage['candidate_id']
          and plan.get('registry_root') == config['forward_root']

@@ -67,6 +67,48 @@ def journal_near(started_ms, request_id, unit, *, runner=subprocess.run):
         'complete': len(events) <= 256, 'matched_events': len(events)}
 
 
+def request_denials(folder, cases):
+    """Read the existing Guard's immutable, request-bound first-denial records."""
+    by_request = {case['request_id']: case for case in cases}
+    folder = Path(folder)
+    if not folder.is_dir() or not by_request:
+        return {}
+    try:
+        command = ['rg', '-l', '-F', '--glob', '*.json']
+        for rid in by_request:
+            command += ['-e', rid]
+        result = subprocess.run([*command, '--', str(folder)], text=True,
+            capture_output=True, timeout=30)
+        if result.returncode not in (0, 1):
+            raise ValueError('GUARD_DENIAL_SEARCH_UNAVAILABLE')
+        paths = [Path(line) for line in result.stdout.splitlines()]
+    except FileNotFoundError:
+        paths = list(folder.glob('*.json'))
+    found = {rid: [] for rid in by_request}
+    for path in paths:
+        if path.parent != folder or path.is_symlink() or not path.is_file() or path.stat().st_size > 2*1024**2:
+            raise ValueError('GUARD_DENIAL_RECORD_PATH_OR_SIZE')
+        raw = path.read_bytes(); value = json.loads(raw)
+        subject = value.get('subject', {}); decision = value.get('decision', {})
+        ids = subject.get('requests', [])
+        if subject.get('warm_anchor_request') is not None:
+            ids = [*ids, subject['warm_anchor_request']]
+        for rid in set(ids) & set(by_request):
+            case = by_request[rid]; started = case['request_started_at_ms']; stamp = decision.get('at_ms')
+            if (subject.get('plan_id') != case['plan_id'] or type(stamp) is not int or type(started) is not int
+                    or not started <= stamp < started + 60000 or decision.get('admit_new_worker') is not False):
+                continue
+            opened = case['opened_at_ms']
+            found[rid].append({'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest(),
+                'request_id': rid, 'decision_at_ms': stamp, 'request_age_ms': stamp-started,
+                'before_original_open': stamp < opened if type(opened) is int else None,
+                'reasons': decision.get('reasons', []),
+                'scope': 'EXACT_REQUEST_FIRST_DENIAL_PER_SUBJECT_AND_REASON_NOT_ALL_RETRIES'})
+    for events in found.values():
+        events.sort(key=lambda event: event['decision_at_ms'])
+    return found
+
+
 def inspect(root, plans, requests_by_plan, *, journal=None):
     cases = []
     for plan in plans:
@@ -154,6 +196,16 @@ def main():
     result = inspect(root, plans, requests,
         journal=(lambda stamp, rid: journal_near(stamp, rid, args.journal_unit)) if args.with_journal else None)
     result['current_ingress_issues'] = issues
+    guard_path = Path(config['guard_config']); guard_raw = guard_path.read_bytes()
+    if config.get('guard_config_sha256') and hashlib.sha256(guard_raw).hexdigest() != config['guard_config_sha256']:
+        raise ValueError('GUARD_CONFIG_CHANGED')
+    denials = request_denials(Path(json.loads(guard_raw)['state_root']) / 'denials', result['cases'])
+    for case in result['cases']:
+        case['exact_request_denials'] = denials.get(case['request_id'], [])
+        if case['exact_request_denials'] and not case['prediction_exists']:
+            case['root_cause_status'] = ('EXACT_REQUEST_ADMISSION_DENIALS_BEFORE_OPEN_RECORDED'
+                if any(event['before_original_open'] for event in case['exact_request_denials'])
+                else 'EXACT_REQUEST_ADMISSION_DENIALS_AFTER_OPEN_RECORDED')
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

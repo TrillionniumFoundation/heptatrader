@@ -498,11 +498,14 @@ def run_parent(config, config_path, controller_fd):
     fresh = fresh_ids(root, plan, requests, now)
     if not fresh: return status('WAIT_FRESH_ORIGINAL_REQUEST')
     anchor = request_item(requests, fresh[-1], plan, now)
+    from .financial_forward_predict import request_event
+    request_event(plan,anchor,'WARM_ANCHOR_OBSERVED',request_age_ms=now-anchor['request']['started_at_ms'])
     epoch = {'anchor_request_id': anchor['request']['request_id'],
              'anchor_request_sha256': anchor['request_sha256'], 'anchor_started_at_ms': anchor['request']['started_at_ms']}
     try: flat_epoch(requests, bindings, epoch)
     except ContractError as exc:
         if str(exc) in ('VALUE_WARM_ORIGINAL_PREPARED_OBSERVED', 'VALUE_WARM_ORIGINAL_NONFLAT_OBSERVED'):
+            request_event(plan,anchor,'WARM_START_SKIPPED',reason=str(exc))
             return status('WAIT_NEXT_REAL_FLAT_REQUEST', reason=str(exc))
         raise
     if prepared is None:
@@ -517,7 +520,9 @@ def run_parent(config, config_path, controller_fd):
     from .current100k_forward_worker import acquire_value_resources
     wrapper = original_guard(config); gate = Gate(wrapper, 'value-predictor')
     if not acquire_value_resources(gate, {'plan_id': plan['plan_id'], 'warm_anchor_request': anchor['request']['request_id']}):
+        request_event(plan,anchor,'RESOURCE_DENIED',resource_admission=gate.last_admission)
         return status('HOLD_SHARED_RESOURCE_OR_SOURCE', resource_admission=gate.last_admission)
+    request_event(plan,anchor,'RESOURCE_ADMITTED',resource_admission=gate.last_admission)
     process = channel = session = None; reaped = True; error = None
     reason = 'SESSION_COMPLETE'; inflight = None; ready = False; completed = 0; committed = 0
     budget = None; previous_signals = {}
@@ -581,11 +586,16 @@ def run_parent(config, config_path, controller_fd):
                     channel.send(packet(session, 'PREDICT', seq, request_id=item['request']['request_id'],
                         request_sha256=item['request_sha256'], admission_sha256=wanted))
                     inflight = item
+                    request_event(plan,item,'WARM_REQUEST_DISPATCHED',warm_session_id=session['session_id'],
+                        warm_request_sequence=seq)
     except StopChild:
         reason = 'CONTROLLER_DRAIN_REQUESTED'
     except BaseException as exc:
         error = exc; reason = str(exc)[:220]
     finally:
+        if inflight is not None:
+            request_event(plan,inflight,'WARM_REQUEST_DRAINED',reason=reason,
+                warm_session_id=session['session_id'] if session else None)
         # Stop and reap before closing the parent's descriptor. If SIGKILL has
         # not reaped a child, leave this fd open until parent process exit; the
         # child also retains its copy and prevents a new worker handoff.

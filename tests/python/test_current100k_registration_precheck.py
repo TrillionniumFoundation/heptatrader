@@ -128,6 +128,7 @@ class ImportedSourcePinTests(unittest.TestCase):
         mapping.update({
             'historical_training.common': 'research/historical_training/common.py',
             'historical_training.current100k': 'research/historical_training/current100k.py',
+            'historical_training.current100k_value_trial': 'research/historical_training/current100k_value_trial.py',
             'laya_cell.financial_forward_protocol': 'learn/laya_cell/financial_forward_protocol.py',
             'laya_cell.current100k_warm_flat': 'learn/laya_cell/current100k_warm_flat.py',
             'laya_cell.financial_forward_source': 'learn/laya_cell/financial_forward_source.py',

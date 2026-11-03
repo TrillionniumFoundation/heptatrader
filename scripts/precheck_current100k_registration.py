@@ -58,6 +58,7 @@ def check_precheck_source(c):
     modules.update({
         'historical_training.common': 'research/historical_training/common.py',
         'historical_training.current100k': 'research/historical_training/current100k.py',
+        'historical_training.current100k_value_trial': 'research/historical_training/current100k_value_trial.py',
         'laya_cell.financial_forward_protocol': 'learn/laya_cell/financial_forward_protocol.py',
         'laya_cell.current100k_warm_flat': 'learn/laya_cell/current100k_warm_flat.py',
         'laya_cell.financial_forward_source': 'learn/laya_cell/financial_forward_source.py',
@@ -88,7 +89,7 @@ def registration_state(c, request):
     from laya_cell.current100k_forward import registration_state as inspect_existing
     return inspect_existing(c, Path(request['candidate_directory']), Path(request['dataset_path']),
         Path(request['prior_candidate_path']), [Path(path) for path in request['legacy_plans_roots']],
-        registration_scope='SAME_PRODUCER_REFIT', prior_plan_path=Path(request['prior_plan_path']),
+        registration_scope=request.get('registration_scope', 'SAME_PRODUCER_REFIT'), prior_plan_path=Path(request['prior_plan_path']),
         input_start_delay_ms=request['input_start_delay_ms'])
 
 
@@ -103,7 +104,7 @@ def registration_inputs(c, request_path, request_sha256, *, now_ms=None):
     request = read(request_path)
     need(request['schema'] == 'heptatrader.current100k-warm-registration-request.v1'
          and type(request['expected_trial']) is int and request['expected_trial'] >= 2
-         and request.get('registration_scope') == 'SAME_PRODUCER_REFIT'
+         and request.get('registration_scope') in ('SAME_PRODUCER_REFIT', 'NEW_PRODUCER_SCOPE')
          and request['input_start_delay_ms'] == 900000,
          'INDEPENDENT_WARM_REGISTRATION_REQUEST_REQUIRED')
     for path, expected in request['input_sha256'].items():
@@ -122,12 +123,28 @@ def registration_inputs(c, request_path, request_sha256, *, now_ms=None):
          'WARM_REGISTRATION_COMPLETE_HISTORY_REQUIRED')
     prior = read(request['prior_plan_path'])
     need(prior in history and prior['trial'] == request['expected_trial'] - 1
-         and prior['producer_registration'] == c['producer_registration']
          and str(Path(prior['candidate_directory']) / 'candidate.json') == request['prior_candidate_path'],
          'WARM_SAME_PRODUCER_PRIOR_PLAN_CHANGED')
     now = check_wake_deadline(None, now_ms=now_ms)
+    if request['registration_scope'] == 'SAME_PRODUCER_REFIT':
+        need(prior['producer_registration'] == c['producer_registration'],
+             'WARM_SAME_PRODUCER_PRIOR_PLAN_CHANGED')
+        not_before = prior['outcome_end_ms']
+    else:
+        from laya_cell.current100k_forward import validate_value_candidate, _new_producer_lineage
+        candidate = validate_value_candidate(Path(request['candidate_directory']))
+        previous = validate_value_candidate(Path(request['prior_candidate_path']).parent)
+        data = read(request['dataset_path'])
+        from historical_training.current100k_value_trial import selected_rows
+        selected_rows(data, data)
+        need(32 <= candidate['rows'] <= 64 and candidate['dataset_sha256'] == sha(request['dataset_path'])
+             and candidate['row_ids'] == [row['row_id'] for row in data['rows']],
+             'NEW_PRODUCER_SCOPE_COMPLETED_FIT_REQUIRED')
+        _new_producer_lineage(c, data, previous, Path(request['prior_candidate_path']).parent,
+            history, Path(request['prior_plan_path']))
+        not_before = candidate['created_at_ms']
     need(type(request.get('registration_not_before_ms')) is int
-         and request['registration_not_before_ms'] == prior['outcome_end_ms']
+         and request['registration_not_before_ms'] == not_before
          and now >= request['registration_not_before_ms'],
          'WARM_WAIT_PRIOR_OUTCOME_END_NO_REGISTRATION')
     validate_config({'automatic_trading': False, 'automatic_training': False,

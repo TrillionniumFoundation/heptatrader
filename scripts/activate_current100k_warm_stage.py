@@ -73,6 +73,8 @@ def stage_inputs(stage_path, stage_sha256):
         need(common == shared, 'WARM_ACTIVATION_ROLE_CONFIGS_DISAGREE')
         configs[role] = c
     request = pinned_json(stage['registration_request'], stage['registration_request_sha256'])
+    need(stage.get('registration_scope', 'SAME_PRODUCER_REFIT')
+         == request.get('registration_scope', 'SAME_PRODUCER_REFIT'), 'WARM_ACTIVATION_REGISTRATION_SCOPE_CHANGED')
     release = Path(stage['release']); launcher = release / 'bin/current100k-warm-launch.py'
     need(stage['pythonpath'] == ':'.join(str(release / part) for part in ('research', 'learn', 'scripts')),
          'WARM_ACTIVATION_PYTHONPATH_CHANGED')
@@ -257,6 +259,7 @@ def activate(stage_path, stage_sha256, selection_path, selection_sha256, deadlin
     registration = child(stage, [*stage['explicit_argv']['registrar'], '--wake-deadline-ms', str(deadline_ms)],
                          timeout=budget.timeout(REGISTRAR_TIMEOUT_SECONDS))
     need(registration.get('state') in ('REGISTERED_SAME_PRODUCER_WARM_PROFILE',
+         'REGISTERED_NEW_PRODUCER_SCOPE_WARM_PROFILE',
          'REGISTRATION_ALREADY_COMPLETE_DURABLE_VERIFIED'), 'WARM_ACTIVATION_REGISTRAR_RESULT_UNKNOWN')
     observed = registration_state(config, request)
     need(observed['state'] == 'PUBLISHED', 'WARM_ACTIVATION_SIGNED_PLAN_NOT_PUBLISHED')
