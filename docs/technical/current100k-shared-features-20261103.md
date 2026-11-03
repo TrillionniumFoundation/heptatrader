@@ -341,6 +341,15 @@ verified. The independently enabled strict-review service was active/running;
 its assessment was PENDING, with a complete current replay, zero commands and
 OBSERVED outcomes, and UNKNOWN/null comparison eligibility.
 
+At 16:00:14.785 UTC, one bounded read-only ingress capture confirmed why the
+population was empty: five original requests had arrived since the new input
+start, all with a nonzero position and none eligible under the flat-request
+rule. The source contained 201 requests in total, latest at 15:59:07.364 UTC,
+with no source issues, capture conflicts, retries or busy returns. There were
+zero collector incidents. The audit neither observed requests into the ledger
+nor ran any model. The remaining first-publication requirement is a naturally
+occurring eligible request followed by valid source and new pre-open seals.
+
 The collector and strict reviewer remain bounded by their own frozen deadlines.
 These deployment receipts add evidence without rewriting the candidate
 preparation's earlier `cross_plan_shared_encoding_verified:false` field. A live
