@@ -98,19 +98,20 @@ def _ingress(registration,period_sha256):
  # manifest and checks all original REQUEST/RESPONSE/DECISION/COMMAND links.
  cache={(str(directory),'EUR.USD',period_sha256):(graphs,witnesses)}
  verified,problems=verified_bindings(registration,'EUR.USD',period_sha256,directory_cache=cache);issues+=problems
- normalized=[]
+ normalized=[];by_command={}
  for b in bindings:
   cmd=b['command'];cid=cmd.get('command_id');rid=b['request_id']
   if cid not in verified or rid not in requests:continue
   r=requests[rid]
   if verified[cid]['request_id']!=rid or b['request_sha256']!=r['request_sha256']:raise ContractError('FORWARD_BINDING_MISMATCH')
-  if any(x['command']['command_id']==cid for x in normalized):
-   prior=next(x for x in normalized if x['command']['command_id']==cid)
+  prior=by_command.get(cid)
+  if prior is not None:
    if prior['request_id']!=rid:raise ContractError('MULTIPLE_REQUESTS_FOR_COMMAND')
    continue
   normalized.append({'command':cmd,'request_id':rid,'request_sha256':r['request_sha256'],
    'request_started_at_ms':r['request']['started_at_ms'],'producer_manifest_sha256':registration['sha256'],
    'decision_sha256':b['decision_sha256']})
+  by_command[cid]=normalized[-1]
  return m,requests,normalized,issues
 
 

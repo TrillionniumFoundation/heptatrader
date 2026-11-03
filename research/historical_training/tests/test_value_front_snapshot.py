@@ -96,6 +96,65 @@ class SourceFixture(unittest.TestCase):
   collected={};graphs=attribution._verified_producer_graphs(self.journal,'EUR.USD',self.period_sha,request_records=collected)
   self.assertEqual(graphs,attribution._verified_producer_graphs(self.journal,'EUR.USD',self.period_sha))
   self.assertEqual(collected['producer'],[(record,expected[1]['fresh']['source_prefix'])])
+ def normalization_fixture(self,bindings,verified,reader=None):
+  # Isolate only normalization after graph verification. The real-journal test
+  # above retains the chain, provenance and single-read contract independently.
+  request_records=[r for r in self.records if r['kind']=='REQUEST']
+  prefix={'path':str(self.segment),'bytes':self.segment.stat().st_size,'sha256':sha_file(self.segment)}
+  graphs=[('producer',self.registration['sha256'],{},{},{},
+           [(value,i) for i,value in enumerate(bindings)],False,{})]
+  def graph(*args,**kwargs):
+   kwargs['request_records']['producer']=[(r,prefix) for r in request_records]
+   return graphs,{}
+  with patch.object(attribution,'_verified_producer_graphs',side_effect=graph) as scan, \
+       patch.object(attribution,'verified_bindings',return_value=(verified,[])) as verifier:
+   result=(reader or source._ingress)(self.registration,self.period_sha)
+  scan.assert_called_once();verifier.assert_called_once()
+  self.assertIs(verifier.call_args.kwargs['directory_cache'][(str(self.journal),'EUR.USD',self.period_sha)][0],graphs)
+  return result
+ def normalization_binding(self,cid,marker=1,rid='fresh'):
+  request=next(r['data'] for r in self.records if r['kind']=='REQUEST' and r['data']['request_id']==rid)
+  return {'command':{'command_id':cid,'created_at_ms':request['started_at_ms']+marker,
+                    'instrument':'EUR.USD','kind':'OPEN','side':'BUY'},
+          'request_id':rid,'request_sha256':digest(request),'decision_sha256':str(marker)}
+ def test_normalization_keeps_order_first_duplicate_and_call_local_state(self):
+  bindings=[self.normalization_binding('second',1),self.normalization_binding('first',2),
+            self.normalization_binding('second',3),self.normalization_binding('third',4)]
+  verified={cid:{'request_id':'fresh'} for cid in ('first','second','third')}
+  result=self.normalization_fixture(bindings,verified)[2]
+  self.assertEqual([x['command']['command_id'] for x in result],['second','first','third'])
+  self.assertEqual(result[0]['decision_sha256'],'1')
+  self.assertIs(result[0]['command'],bindings[0]['command'])
+  later=self.normalization_fixture(bindings[2:],verified)[2]
+  self.assertEqual(later[0]['decision_sha256'],'3')
+ def test_normalization_skips_unverified_inputs_before_preserving_mismatch_error(self):
+  missing=self.normalization_binding('not-verified');missing['request_sha256']='wrong'
+  absent=self.normalization_binding('absent');absent['request_id']='not-present'
+  good=self.normalization_binding('good')
+  verified={'absent':{'request_id':'not-present'},'good':{'request_id':'fresh'}}
+  result=self.normalization_fixture([missing,absent,good],verified)[2]
+  self.assertEqual([x['command']['command_id'] for x in result],['good'])
+  for change in ('request_sha256','verified_request'):
+   bad=self.normalization_binding('good');proof={'good':{'request_id':'fresh'}}
+   if change=='request_sha256':bad['request_sha256']='wrong'
+   else:proof['good']['request_id']='another'
+   with self.subTest(change=change),self.assertRaisesRegex(ContractError,'FORWARD_BINDING_MISMATCH'):
+    self.normalization_fixture([bad],proof)
+ def test_normalization_does_not_compare_every_prior_command(self):
+  class CountedId(str):
+   comparisons=0
+   __hash__=str.__hash__
+   def __eq__(self,other):
+    CountedId.comparisons+=1
+    return str.__eq__(self,other)
+  ids=[CountedId('command-%04d'%i) for i in range(256)]
+  bindings=[self.normalization_binding(cid) for cid in ids]
+  verified={cid:{'request_id':'fresh'} for cid in ids}
+  CountedId.comparisons=0
+  result=self.normalization_fixture(bindings,verified)[2]
+  comparisons=CountedId.comparisons
+  self.assertEqual(len(result),len(ids))
+  self.assertLess(comparisons,2*len(ids))
  def change_during_ingress(self,change):
   verify=attribution._verified_producer_graphs
   def scan(*args,**kwargs):
