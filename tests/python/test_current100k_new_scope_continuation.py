@@ -256,6 +256,24 @@ class ActivationHandoffTests(unittest.TestCase):
         self.assertEqual(result['plan_id'], 'new-plan'); self.observer.assert_called_once()
         self.assertEqual(json.loads((self.root / 'CONTINUATION_COMPLETE.json').read_bytes()), result)
 
+    def test_standby_profile_deployment_never_claims_observed_standby_or_preopen_success(self):
+        self.request['worker_profile'] = self.stage['worker_profile'] = 'cpu-standby-v2'
+        self.request['worker_profile_evidence'] = {'report': {'path': '/pinned/report.json', 'sha256': 'a'*64},
+            'lifecycle': {'path': '/pinned/lifecycle.json', 'sha256': 'b'*64}}
+        self.stage_path.chmod(0o600); self.stage_path.write_bytes(continuation.canonical(self.stage)+b'\n')
+        self.wake['stage_sha256'] = continuation.sha(self.stage_path)
+        wake_path = self.root / 'registration-wake/WAKE_STAGE.json'
+        wake_path.chmod(0o600); wake_path.write_bytes(continuation.canonical(self.wake)+b'\n')
+        self.activate(); result = self.run_handoff()
+        self.assertEqual(result['worker_profile'], 'cpu-standby-v2')
+        self.assertEqual(result['worker_profile_evidence'], self.request['worker_profile_evidence'])
+        self.assertFalse(result['current100k_p0_closed'])
+        self.assertFalse(result['same_request_preopen_prediction_chain_verified'])
+        self.assertIsNone(result['first_flat_request_still_requires_cold_model_start'])
+        self.assertIsNone(result['cpu_standby_observed_before_first_request'])
+        self.assertEqual(result['remaining_timing_risk'],
+            'CPU_STANDBY_AND_FRESH_ADMISSION_REQUIRE_ORIGINAL_REQUEST_OBSERVATION')
+
     def test_unverified_observer_does_not_complete_deployment_acceptance(self):
         self.activate(); self.observer.return_value = ({'service': 'reader'}, False)
         result = self.run_handoff()

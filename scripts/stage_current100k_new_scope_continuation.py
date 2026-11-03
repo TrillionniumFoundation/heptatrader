@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Pin a detached executor and stage/install one Current100k continuation timer.
 
-All source and original preparation inputs are explicit. This command does
-not stop an existing preparation watcher. Its original lock must be released
-normally before the new timer can select a cohort. No trading unit is touched.
+All source and original preparation inputs are explicit. A separately pinned
+pre-fit predecessor may be retired by --install; only its exact timer is
+disabled after both original mutexes are held. A running service is never
+killed. No trading unit, producer, preparation request, or cohort is changed.
 """
 from __future__ import annotations
 import argparse
@@ -45,13 +46,19 @@ def main():
     # A 61-second cadence explores both phases without inventing a request.
     parser.add_argument('--activation-readmission-seconds', type=int, default=61)
     parser.add_argument('--activation-events', type=int, default=120)
+    parser.add_argument('--worker-profile', choices=('warm-flat-v1', 'cpu-standby-v2'), default='warm-flat-v1')
+    for name in ('report', 'lifecycle'):
+        parser.add_argument('--worker-profile-evidence-' + name, type=Path)
+        parser.add_argument('--worker-profile-evidence-' + name + '-sha256')
+    parser.add_argument('--supersedes-request', type=Path)
+    parser.add_argument('--supersedes-request-sha256')
     parser.add_argument('--install', action='store_true')
     args = parser.parse_args(); os.umask(0o077); sys.dont_write_bytecode = True
     need(os.geteuid() != 0, 'ORIGINAL_UNPRIVILEGED_USER_REQUIRED')
     source = Path(__file__).resolve().parent.parent
     need(source == args.repo, 'STAGER_SELECTED_SOURCE_REQUIRED'); exact_source(source, args.expected_head)
     sys.path[:0] = [str(source / part) for part in ('research', 'research/neuron_learning', 'scripts')]
-    from continue_current100k_new_scope import SCHEMA, pinned
+    from continue_current100k_new_scope import SCHEMA, pinned, predecessor_inputs, hardware_evidence
     from laya_cell.stage_current100k_warm_flat import checked
     prep = pinned(args.preparation_request, args.preparation_request_sha256)
     template = pinned(args.fit_template, args.fit_template_sha256)
@@ -68,6 +75,7 @@ def main():
              and all(output == other or not output.is_relative_to(other) for other in outputs),
              'SEPARATE_OUTPUT_ROOTS_REQUIRED')
     request = {'schema': SCHEMA, 'source_repository': str(args.source_directory), 'source_commit': args.expected_head,
+        'worker_profile': args.worker_profile,
         'preparation_request': str(args.preparation_request), 'preparation_request_sha256': args.preparation_request_sha256,
         'preparation_source_commit': prep['source_commit'],
         'fit_template': str(args.fit_template), 'fit_template_sha256': args.fit_template_sha256,
@@ -78,6 +86,24 @@ def main():
         'activation_readmission_seconds': args.activation_readmission_seconds, 'activation_events': args.activation_events,
         'automatic_training': True, 'automatic_normal_registration_activation': True,
         'trade_authority': False, 'old_trials_modified': False}
+    evidence = {}
+    for name in ('report', 'lifecycle'):
+        path = getattr(args, 'worker_profile_evidence_' + name)
+        checksum = getattr(args, 'worker_profile_evidence_' + name + '_sha256')
+        need((path is None) == (checksum is None), 'HARDWARE_EVIDENCE_PATH_AND_HASH_REQUIRED')
+        if path is not None:
+            evidence[name] = {'path': str(path), 'sha256': checksum}
+    need((args.supersedes_request is None) == (args.supersedes_request_sha256 is None),
+         'PREDECESSOR_PATH_AND_HASH_REQUIRED')
+    if evidence:
+        request['worker_profile_evidence'] = evidence
+    if args.supersedes_request is not None:
+        request['supersedes_continuation'] = {'request': str(args.supersedes_request),
+            'sha256': args.supersedes_request_sha256}
+    predecessor_inputs(request)
+    prior_path, prior_sha = next((path, value) for path, value in prep['legacy_plans_sha256'].items()
+                                if Path(path).parent.name == prep['prior_plan_id'])
+    hardware_evidence(request, pinned(prior_path, prior_sha), prior_sha, source_root=source)
     if args.source_directory.exists():
         exact_source(args.source_directory, args.expected_head)
     else:
@@ -104,7 +130,8 @@ def main():
     need(check.returncode == 0, 'INPUT_CHECK_FAILED:' + check.stderr[-1000:])
     proof = json.loads(check.stdout)
     need(proof['state'] == 'CONTINUATION_INPUTS_VERIFIED_NO_TRAINING_OR_REGISTRATION'
-         and proof['gpu_loaded'] is False, 'CPU_ONLY_CHECK_REQUIRED')
+         and proof['gpu_loaded'] is False and proof['worker_profile'] == args.worker_profile,
+         'CPU_ONLY_CHECK_REQUIRED')
     installation = None
     if args.install:
         result = subprocess.run([*command, '--install'], cwd=args.source_directory, env=environment,
@@ -113,6 +140,7 @@ def main():
         installation = json.loads(result.stdout)
     print(json.dumps({'state': 'PERSISTENT_NEW_SCOPE_CONTINUATION_INSTALLED' if installation else 'CONTINUATION_STAGED_NOT_INSTALLED',
         'request': str(request_path), 'request_sha256': request_sha, 'source_commit': args.expected_head,
+        'worker_profile': args.worker_profile, 'worker_profile_evidence': request.get('worker_profile_evidence'),
         'preparation_request_unchanged': hashlib.sha256(checked(args.preparation_request)).hexdigest()
             == args.preparation_request_sha256,
         'explicit_argv': command, 'cpu_check': proof, 'installation': installation,

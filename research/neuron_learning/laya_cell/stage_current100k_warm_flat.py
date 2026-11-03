@@ -407,7 +407,8 @@ def main():
         'guard_config': str(a.guard_config), 'guard_config_sha256': a.guard_config_sha256,
         'candidate_id': a.candidate_id, 'dataset_sha256': a.dataset_sha256,
         'legacy_plans_sha256': {str(path): sha(path) for path in a.legacy_plan},
-        'registration_scope': a.registration_scope, 'forward_root': str(a.forward_root),
+        'registration_scope': a.registration_scope, 'worker_profile': a.worker_profile,
+        'forward_root': str(a.forward_root),
         'release': str(release), 'runtime_inventory_sha256': release_id,
         'training_performed': False, 'registration_performed': False, 'broker_orders_sent': 0,
     }, resume=a.resume_staging)

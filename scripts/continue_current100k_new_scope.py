@@ -11,6 +11,7 @@ automatically retried. No driver, Gateway, order, label, or old plan is changed.
 from __future__ import annotations
 import argparse
 import copy
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -28,6 +29,7 @@ from prepare_current100k_new_scope import (
 from observe_current100k_requests import read
 
 SCHEMA = 'heptatrader.current100k-newscope-continuation.v1'
+WORKER_PROFILES = ('warm-flat-v1', 'cpu-standby-v2')
 
 
 def need(value, reason):
@@ -48,17 +50,132 @@ def pinned(path, checksum):
     return json.loads(raw)
 
 
-def source_check(request):
-    source = Path(request['source_repository'])
-    need(source.is_absolute() and source.resolve() == source
-         and Path(__file__).resolve() == source / 'scripts/continue_current100k_new_scope.py',
-         'SELECTED_SOURCE_REQUIRED')
+def repository_check(source, expected):
+    source = Path(source)
+    need(source.is_absolute() and source.resolve() == source, 'CANONICAL_SOURCE_REQUIRED')
     command = ['git', '-C', str(source)]
     head = subprocess.check_output([*command, 'rev-parse', 'HEAD'], text=True, timeout=20).strip()
     dirty = subprocess.check_output([*command, 'status', '--porcelain', '--untracked-files=all'],
         text=True, timeout=20).strip()
-    need(head == request['source_commit'] and not dirty, 'EXACT_CLEAN_CONTINUATION_SOURCE_REQUIRED')
+    need(head == expected and not dirty, 'EXACT_CLEAN_CONTINUATION_SOURCE_REQUIRED')
     return source
+
+
+def source_check(request):
+    source = Path(request['source_repository'])
+    need(Path(__file__).resolve() == source / 'scripts/continue_current100k_new_scope.py', 'SELECTED_SOURCE_REQUIRED')
+    return repository_check(source, request['source_commit'])
+
+
+def worker_profile(request):
+    # An absent field retains the semantics of an already sealed v1 request.
+    profile = request.get('worker_profile', 'warm-flat-v1')
+    need(profile in WORKER_PROFILES, 'WORKER_PROFILE_REQUIRED')
+    return profile
+
+
+def hardware_evidence(request, prior, prior_sha, *, source_root=None):
+    pin = request.get('worker_profile_evidence')
+    if worker_profile(request) == 'warm-flat-v1':
+        need(pin is None, 'V1_HAS_NO_STANDBY_HARDWARE_SELECTION')
+        return None
+    need(isinstance(pin, dict) and set(pin) == {'report', 'lifecycle'}, 'CPU_STANDBY_HARDWARE_PROOF_REQUIRED')
+    for name in ('report', 'lifecycle'):
+        need(isinstance(pin[name], dict) and set(pin[name]) == {'path', 'sha256'},
+             'CPU_STANDBY_HARDWARE_REPORT_AND_LIFECYCLE_PINS_REQUIRED')
+    evidence = pinned(pin['report']['path'], pin['report']['sha256'])
+    lifecycle = pinned(pin['lifecycle']['path'], pin['lifecycle']['sha256'])
+    need(evidence.get('state') == 'HISTORICAL_PARITY_EXACT'
+         and evidence.get('scope') == 'HISTORICAL_CPU_STANDBY_PARITY_NOT_REGISTERED_FORWARD_PROFILE'
+         and evidence.get('exact_parity') is True and evidence.get('historical_loader_exact_parity') is True
+         and evidence.get('plan_id') == prior['plan_id'] and evidence.get('plan_sha256') == prior_sha
+         and all(evidence.get(key) == prior[key] for key in ('candidate_id', 'base_id'))
+         and evidence.get('head_sha256') == prior['head_tensor_sha256'],
+         'CPU_STANDBY_HARDWARE_PROOF_OR_PRIOR_CHANGED')
+    cpu = evidence.get('cpu_proof', {})
+    need(cpu.get('all_parameters_and_buffers_cpu') is True and cpu.get('cuda_initialized') is False
+         and cpu.get('gpu_device_fds') == [], 'CPU_STANDBY_HARDWARE_NOT_CPU_ONLY')
+    need(all(evidence.get(key) is True for key in ('tokenizer_input_ids_and_masks_exact',
+         'features_bitwise_equal', 'values_bitwise_equal'))
+         and evidence.get('initial_parameters_and_all_buffers', {}).get('exact') is True
+         and evidence.get('after_inference_parameters_and_all_buffers', {}).get('exact') is True
+         and evidence.get('feature_max_absolute_difference') == 0
+         and evidence.get('value_max_absolute_difference_usd') == 0,
+         'CPU_STANDBY_HARDWARE_PARITY_NOT_EXACT')
+    need(all(evidence.get(key) is False for key in ('forward_seal_created', 'v2_plan_registered',
+         'optimizer_used', 'publish_path_exercised')) and evidence.get('broker_orders_sent') == 0,
+         'CPU_STANDBY_HARDWARE_DIAGNOSTIC_SCOPE_CHANGED')
+    # A child writes report.json before its parent reaps it. A report alone is
+    # never evidence that the original lease survived until exit and released.
+    need(lifecycle.get('scope') == evidence['scope'] and lifecycle.get('phase') == 'COMPLETE'
+         and lifecycle.get('error') is None and 'error' in lifecycle
+         and all(lifecycle.get(key) is True for key in ('child_reaped', 'initial_lease_released',
+             'fresh_admission_granted', 'fresh_lease_released_after_reap'))
+         and lifecycle.get('parent_imported_torch') is False
+         and lifecycle.get('completion_receipt', {}).get('report_sha256') == pin['report']['sha256']
+         and lifecycle.get('completion_receipt', {}).get('exact_parity') is True
+         and lifecycle.get('forward_seal_created') is False and lifecycle.get('broker_orders_sent') == 0,
+         'CPU_STANDBY_HARDWARE_LIFECYCLE_NOT_COMPLETE')
+    # The selected hardware comparison destroys the first process before a
+    # separately admitted baseline. Residual process-owned HIP workspace is
+    # recorded, not treated as live memory after the process has been reaped.
+    need(evidence.get('comparison_mode') == lifecycle.get('comparison_mode') == 'separate-process'
+         and evidence.get('model_processes_never_overlap') is True
+         and evidence.get('first_model_memory_released_by') == 'PROCESS_EXIT_AND_REAP'
+         and all(lifecycle.get(key) is True for key in ('staged_child_reaped',
+             'staged_gpu_lease_released_after_reap', 'direct_original_admission_granted',
+             'direct_child_started', 'direct_child_reaped', 'direct_lease_released_after_reap'))
+         and lifecycle['completion_receipt'].get('kind') == 'PARENT_TWO_PROCESS_COMPARISON'
+         and type(lifecycle.get('staged_child_exit_code')) is int
+         and type(evidence.get('staged_child_exit_code')) is int
+         and lifecycle['staged_child_exit_code'] == evidence['staged_child_exit_code'] == 0
+         and type(lifecycle.get('direct_child_exit_code')) is int
+         and type(evidence.get('direct_child_exit_code')) is int
+         and lifecycle.get('direct_child_exit_code') == evidence.get('direct_child_exit_code') == 0
+         and lifecycle.get('staged_completion_receipt', {}).get('files_sha256')
+             == evidence.get('staged_result_files_sha256')
+         and isinstance(evidence.get('staged_result_files_sha256'), dict)
+         and set(evidence['staged_result_files_sha256']) == {'staged-result.json', 'staged-state-hashes.json',
+             'allocation-after-destroy.json', 'future-tokenizer-result.json'},
+         'CPU_STANDBY_TWO_CHILD_LIFECYCLE_NOT_COMPLETE')
+    # The old baseline used AutoTokenizer on both paths. Require a separate
+    # comparison against this future executor's tokenizer implementation too.
+    source = Path(source_root if source_root is not None else request['source_repository'])
+    future = evidence.get('future_tokenizer_parity', {})
+    need(all(future.get(key) is True for key in ('requested', 'exact', 'tokenizer_input_ids_and_masks_exact',
+             'features_bitwise_equal', 'values_bitwise_equal', 'private_module_only_no_laya_module_replaced',
+             'same_original_gpu_model_and_head'))
+         and future.get('feature_max_absolute_difference') == 0
+         and future.get('value_max_absolute_difference_usd') == 0
+         and future.get('source', {}).get('sha256') == sha(source / 'research/neuron_learning/laya_cell/tokenizer.py'),
+         'CPU_STANDBY_FUTURE_TOKENIZER_PARITY_OR_SOURCE_CHANGED')
+    return {'report': evidence, 'lifecycle': lifecycle}
+
+
+def predecessor_inputs(request):
+    pin = request.get('supersedes_continuation')
+    if pin is None:
+        return None
+    need(isinstance(pin, dict) and set(pin) == {'request', 'sha256'}, 'PREDECESSOR_PIN_REQUIRED')
+    old = pinned(pin['request'], pin['sha256'])
+    need(old.get('schema') == SCHEMA and old.get('supersedes_continuation') is None
+         and worker_profile(old) == 'warm-flat-v1', 'ONLY_ORIGINAL_V1_PREDECESSOR_SUPPORTED')
+    same = ('preparation_request', 'preparation_request_sha256', 'preparation_source_commit',
+            'fit_template', 'fit_template_sha256', 'prior_forward_stage', 'prior_forward_stage_sha256',
+            'guard_config', 'guard_config_sha256', 'fit_timeout_seconds', 'activation_readmission_seconds',
+            'activation_events', 'automatic_training', 'automatic_normal_registration_activation',
+            'trade_authority', 'old_trials_modified')
+    need(all(key in old and old[key] == request.get(key) for key in same), 'PREDECESSOR_CONTRACT_CHANGED')
+    old_root = Path(old['controller_root'])
+    need(Path(pin['request']) == old_root / 'CONTINUATION_REQUEST.json'
+         and old_root.is_absolute() and old_root.resolve() == old_root, 'PREDECESSOR_CANONICAL_REQUEST_REQUIRED')
+    repository_check(old['source_repository'], old['source_commit'])
+    protected = [Path(old[key]) for key in ('controller_root', 'fit_output_root', 'forward_root', 'source_repository')]
+    for key in ('controller_root', 'fit_output_root', 'forward_root', 'source_repository'):
+        output = Path(request[key])
+        need(all(not output.is_relative_to(path) and not path.is_relative_to(output) for path in protected),
+             'PREDECESSOR_OUTPUTS_MUST_REMAIN_SEPARATE')
+    return {'request': old, 'path': pin['request'], 'sha256': pin['sha256'], 'root': old_root}
 
 
 def load_inputs(request):
@@ -91,6 +208,10 @@ def load_inputs(request):
          and len({plan['plan_id'] for plan in history}) == len(history), 'COMPLETE_HISTORY_REQUIRED')
     prior = max(history, key=lambda plan: plan['trial'])
     need(prior['plan_id'] == prep['prior_plan_id'], 'PRIOR_TRIAL_CHANGED')
+    prior_sha = next(value for path, value in prep['legacy_plans_sha256'].items()
+                     if Path(path).parent.name == prior['plan_id'])
+    hardware = hardware_evidence(request, prior, prior_sha, source_root=source)
+    predecessor = predecessor_inputs(request)
     roots = {Path(path).parent.parent for path in prep['legacy_plans_sha256']}
     need({str(path) for root in roots for path in root.glob('*/plan.json')}
          == set(prep['legacy_plans_sha256']), 'HISTORY_CHANGED_NO_REALLOCATION')
@@ -124,7 +245,8 @@ def load_inputs(request):
              'SEPARATE_CANONICAL_OUTPUT_ROOTS_REQUIRED')
     need(len(set(outputs)) == len(outputs), 'DISTINCT_OUTPUT_ROOTS_REQUIRED')
     return {'source': source, 'prep_path': prep_path, 'prep': prep, 'consumer': consumer,
-        'history': history, 'prior': prior, 'template': template, 'wrapper': wrapper, 'owner': owner}
+        'history': history, 'prior': prior, 'template': template, 'wrapper': wrapper, 'owner': owner,
+        'worker_profile': worker_profile(request), 'hardware_evidence': hardware, 'predecessor': predecessor}
 
 
 def environment(root, layout=('research', 'learn', 'scripts')):
@@ -287,12 +409,14 @@ def warm_stage(request, inputs, fit_path, candidate, readiness):
             '--guard-config', request['guard_config'], '--guard-config-sha256', request['guard_config_sha256'],
             '--candidate-id', candidate['candidate_id'], '--dataset-sha256', readiness['dataset_sha256'],
             '--forward-root', request['forward_root'], '--evidence-root', str(output),
-            '--registration-scope', 'NEW_PRODUCER_SCOPE', '--resume-staging']
+            '--registration-scope', 'NEW_PRODUCER_SCOPE', '--resume-staging',
+            '--worker-profile', worker_profile(request)]
         for legacy in inputs['prep']['legacy_plans_sha256']:
             command += ['--legacy-plan', legacy]
         result = child(command, inputs['source'], 600, layout=('research', 'research/neuron_learning', 'scripts'))
         need(result.returncode == 0 and path.exists(), 'WARM_STAGE_FAILED:' + result.stderr[-600:])
     stage = read(path)
+    need(stage.get('worker_profile', 'warm-flat-v1') == worker_profile(request), 'WARM_STAGE_WORKER_PROFILE_CHANGED')
     need(stage['candidate_id'] == candidate['candidate_id'] and stage['dataset_sha256'] == readiness['dataset_sha256']
          and stage['expected_trial'] == readiness['expected_trial'] and stage['registration_scope'] == 'NEW_PRODUCER_SCOPE'
          and stage['forward_root'] == request['forward_root'] and stage['source_commit'] == request['source_commit']
@@ -373,6 +497,8 @@ def plan_observer(request, stage, activation):
 
 
 def handoff(request, stage_path, stage):
+    profile = worker_profile(request)
+    need(stage.get('worker_profile', 'warm-flat-v1') == profile, 'WARM_STAGE_WORKER_PROFILE_CHANGED')
     root = Path(request['controller_root']); selection_path = root / 'SELECTION_REQUEST.json'
     registration = pinned(stage['registration_request'], stage['registration_request_sha256'])
     first_ms = ((registration['registration_not_before_ms']+999)//1000)*1000
@@ -434,9 +560,14 @@ def handoff(request, stage_path, stage):
                 'role_configs_verified': proof['role_configs_verified'],
                 'timers_enabled_active_and_next_event_verified': proof['timers_enabled_active_and_next_event_verified'],
                 'same_request_preopen_prediction_chain_verified': False,
-                'first_flat_request_still_requires_cold_model_start': True,
+                'worker_profile': profile,
+                'worker_profile_evidence': request.get('worker_profile_evidence'),
+                'activation_before_predictor_start': status.get('activation_before_predictor_start'),
+                'first_flat_request_still_requires_cold_model_start': True if profile == 'warm-flat-v1' else None,
+                'cpu_standby_observed_before_first_request': None,
                 'required_empirical_validation': 'SAME_IDENTITY_REQUEST_START_LE_COMPUTED_LE_COMMITTED_LT_MIN_OPEN_FIRST_FILL',
-                'remaining_timing_risk': 'FIRST_FLAT_REQUEST_COLD_START_MAY_MISS_ORIGINAL_OPEN'}
+                'remaining_timing_risk': ('FIRST_FLAT_REQUEST_COLD_START_MAY_MISS_ORIGINAL_OPEN'
+                    if profile == 'warm-flat-v1' else 'CPU_STANDBY_AND_FRESH_ADMISSION_REQUIRE_ORIGINAL_REQUEST_OBSERVATION')}
             write_once(root / 'CONTINUATION_COMPLETE.json', complete)
             return complete
     return {'state': 'WAITING_NORMAL_FINITE_REGISTRATION_AND_ACTIVATION'
@@ -465,6 +596,172 @@ def service_units(request_path, request_sha, request):
         '', '[Timer]', 'OnCalendar=*-*-* *:*:00', 'AccuracySec=1s', 'RandomizedDelaySec=0', 'Persistent=true',
         'Unit=' + name + '.service', '', '[Install]', 'WantedBy=timers.target', ''))
     return {name+'.service': service, name+'.timer': timer}
+
+
+def predecessor_no_effects(previous):
+    """A profile handoff is allowed only before the old executor staged a fit."""
+    old = previous['request']; root = previous['root']
+    need(sha(previous['path']) == previous['sha256'], 'PREDECESSOR_REQUEST_CHANGED')
+    allowed = {'CONTINUATION_REQUEST.json', 'continuation.lock', 'status.json', 'status.json.next'}
+    need(root.is_dir() and {p.name for p in root.iterdir()} <= allowed,
+         'PREDECESSOR_HAS_STAGING_OR_UNKNOWN_EFFECTS')
+    need(all(not Path(old[key]).exists() and not Path(old[key]).is_symlink()
+             for key in ('fit_output_root', 'forward_root')), 'PREDECESSOR_HAS_FIT_OR_FORWARD_OUTPUT')
+
+
+def native_continuation_unit(name):
+    # The warm-role inspector intentionally accepts only predictor/evaluator
+    # names. Continuation inspection has its own narrow, request-derived scope.
+    need(re.fullmatch(r'heptatrader-current100k-newscope-[0-9a-f]{12}\.(service|timer)', name),
+         'CONTINUATION_UNIT_NAME_SCOPE')
+    keys = ('LoadState', 'ActiveState', 'SubState', 'FragmentPath', 'DropInPaths',
+            'NeedDaemonReload', 'ExecStart', 'UnitFileState', 'MainPID', 'NextElapseUSecRealtime',
+            'WorkingDirectory', 'Environment', 'Type')
+    result = subprocess.run(['systemctl', '--user', 'show', name, '--no-pager',
+        '--property=' + ','.join(keys)], stdin=subprocess.DEVNULL,
+        text=True, capture_output=True, timeout=15)
+    values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    need(result.returncode in (0, 1) and values.get('LoadState') in ('loaded', 'not-found'),
+         'CONTINUATION_UNIT_INSPECTION_FAILED')
+    return values
+
+
+def verified_continuation_units(expected, *, timer_state=None):
+    from activate_current100k_warm_stage import owned_bytes
+    observed = {}
+    for name, text in expected.items():
+        path = Path.home() / '.config/systemd/user' / name
+        need(owned_bytes(path) == text.encode(), 'CONTINUATION_UNIT_BYTES_CHANGED:' + name)
+        value = native_continuation_unit(name)
+        need(value.get('LoadState') == 'loaded' and value.get('FragmentPath') == str(path)
+             and not value.get('DropInPaths') and value.get('NeedDaemonReload') == 'no',
+             'CONTINUATION_LOADED_UNIT_CHANGED:' + name)
+        if name.endswith('.service'):
+            command = next(line.removeprefix('ExecStart=') for line in text.splitlines() if line.startswith('ExecStart='))
+            directory = next(line.removeprefix('WorkingDirectory=') for line in text.splitlines()
+                             if line.startswith('WorkingDirectory='))
+            environment = [line.removeprefix('Environment=') for line in text.splitlines()
+                           if line.startswith('Environment=')]
+            need('argv[]=' + command + ' ;' in value.get('ExecStart', '')
+                 and value.get('WorkingDirectory') == directory and value.get('Type') == 'oneshot'
+                 and sorted(shlex.split(value.get('Environment', ''))) == sorted(environment),
+                 'CONTINUATION_LOADED_EXECUTOR_CHANGED')
+        elif timer_state == 'retired':
+            need(value.get('ActiveState') == 'inactive' and value.get('UnitFileState') == 'disabled',
+                 'PREDECESSOR_TIMER_NOT_RETIRED')
+        elif timer_state == 'waiting':
+            need(value.get('ActiveState') == 'active' and value.get('SubState') == 'waiting'
+                 and value.get('UnitFileState') == 'enabled'
+                 and value.get('NextElapseUSecRealtime') not in (None, '', '0', 'infinity'),
+                 'CONTINUATION_TIMER_NOT_WAITING')
+        observed[name] = value
+    return observed
+
+
+def predecessor_units(previous, *, retired=False):
+    expected = service_units(Path(previous['path']), previous['sha256'], previous['request'])
+    return verified_continuation_units(expected, timer_state='retired' if retired else None)
+
+
+def predecessor_idle(observed):
+    return all(value.get('MainPID', '0') == '0' and value.get('ActiveState') in ('inactive', 'failed')
+               for name, value in observed.items() if name.endswith('.service'))
+
+
+def supersession_binding(request):
+    return {'schema': 'heptatrader.current100k-continuation-supersession.v1',
+        'request_sha256': sha(Path(request['controller_root']) / 'CONTINUATION_REQUEST.json'),
+        'supersedes_continuation': request['supersedes_continuation'],
+        'preparation_request': request['preparation_request'],
+        'preparation_request_sha256': request['preparation_request_sha256'],
+        'worker_profile': worker_profile(request), 'worker_profile_evidence': request.get('worker_profile_evidence')}
+
+
+@contextmanager
+def predecessor_lock(request, inputs, *, require_installed):
+    previous = inputs.get('predecessor')
+    if previous is None:
+        yield None
+        return
+    fd = os.open(previous['root'] / 'continuation.lock',
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            need(False, 'PREDECESSOR_BUSY_NO_FORCE_STOP')
+        predecessor_no_effects(previous)
+        if require_installed:
+            marker = Path(request['controller_root']) / 'PREDECESSOR_HANDOFF.json'
+            need(marker.is_file(), 'PREDECESSOR_HANDOFF_NOT_COMPLETE')
+            proof = read(marker)
+            need(proof.get('binding') == supersession_binding(request), 'PREDECESSOR_HANDOFF_BINDING_CHANGED')
+            for path, checksum in proof['preserved_cohort_sha256'].items():
+                need(sha(path) == checksum, 'PREDECESSOR_FROZEN_COHORT_CHANGED')
+            need(predecessor_idle(predecessor_units(previous, retired=True)), 'PREDECESSOR_STILL_RUNNING')
+        # Retain the old mutex through the whole new step, including training.
+        # An accidentally re-enabled old timer cannot execute in parallel.
+        yield previous
+    finally:
+        os.close(fd)
+
+
+def install_continuation(request_path, request_sha, request, inputs):
+    units = service_units(request_path, request_sha, request)
+    if inputs.get('predecessor') is None:
+        install_units(units)
+        verified_continuation_units(units, timer_state='waiting')
+        return None
+    from laya_cell.stage_current100k_warm_flat import stage_json
+    root = Path(request['controller_root']); binding = supersession_binding(request)
+    with predecessor_lock(request, inputs, require_installed=False) as previous:
+        prep_fd = os.open(inputs['prep_path'].parent / 'preparation.lock',
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            try:
+                fcntl.flock(prep_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                need(False, 'PREPARATION_BUSY_NO_TIMER_HANDOFF')
+            predecessor_units(previous)
+            need(sha(inputs['prep_path']) == request['preparation_request_sha256'], 'ORIGINAL_PREPARATION_CHANGED')
+            cohort = {str(path): sha(path) for name in ('FROZEN_NEW_PRODUCER_32.json', 'READY_FOR_GUARDED_FIT.json')
+                      if (path := inputs['prep_path'].parent / name).exists()}
+            stage_json(root / 'PREDECESSOR_HANDOFF_INTENT.json', binding)
+            timer = next(name for name in service_units(Path(previous['path']), previous['sha256'], previous['request'])
+                         if name.endswith('.timer'))
+            # Stop only the exact old timer. Never kill a running old service.
+            subprocess.run(['systemctl', '--user', 'disable', '--now', timer], check=True,
+                capture_output=True, text=True, timeout=30)
+            deadline = time.monotonic() + 15
+            while True:
+                old_units = predecessor_units(previous, retired=True)
+                if predecessor_idle(old_units):
+                    break
+                need(time.monotonic() < deadline, 'PREDECESSOR_DID_NOT_EXIT_NORMALLY_NO_FORCE_STOP')
+                time.sleep(.1)
+            predecessor_no_effects(previous)
+            marker = root / 'PREDECESSOR_HANDOFF.json'
+            if marker.exists():
+                old_proof = read(marker)
+                need(old_proof.get('binding') == binding, 'PREDECESSOR_HANDOFF_BINDING_CHANGED')
+                for path, checksum in old_proof['preserved_cohort_sha256'].items():
+                    need(sha(path) == checksum, 'PREDECESSOR_FROZEN_COHORT_CHANGED')
+            install_units(units)
+            loaded = verified_continuation_units(units, timer_state='waiting')
+            need(sha(inputs['prep_path']) == request['preparation_request_sha256']
+                 and all(sha(path) == checksum for path, checksum in cohort.items()), 'PREPARATION_OR_COHORT_CHANGED_DURING_HANDOFF')
+            if marker.exists():
+                return read(marker)
+            result = {'state': 'PREDECESSOR_TIMER_RETIRED_NEW_TIMER_VERIFIED', 'binding': binding,
+                'at_ms': int(time.time()*1000), 'preserved_cohort_sha256': cohort,
+                'predecessor_units': old_units, 'new_units': loaded,
+                'old_request_modified': False, 'training_started_by_installer': False,
+                'current100k_p0_closed': False, 'same_request_preopen_prediction_chain_verified': False,
+                'broker_orders_sent': 0}
+            stage_json(marker, result)
+            return result
+        finally:
+            os.close(prep_fd)
 
 
 def step(request, inputs):
@@ -497,28 +794,35 @@ def main():
     source = Path(__file__).resolve().parent.parent
     sys.path[:0] = [str(source / part) for part in ('research', 'research/neuron_learning', 'scripts')]
     request = pinned(args.request, args.sha256); inputs = load_inputs(request)
+    need(args.request == Path(request['controller_root']) / 'CONTINUATION_REQUEST.json', 'CANONICAL_REQUEST_PATH_REQUIRED')
     if args.check_only:
         print(json.dumps({'state': 'CONTINUATION_INPUTS_VERIFIED_NO_TRAINING_OR_REGISTRATION',
             'source_commit': request['source_commit'], 'preparation_source_commit': request['preparation_source_commit'],
             'minimum_rows': MIN_ROWS, 'expected_trial': inputs['prep']['expected_trial'], 'gpu_loaded': False,
+            'worker_profile': worker_profile(request), 'worker_profile_evidence': request.get('worker_profile_evidence'),
+            'predecessor_handoff_required': inputs.get('predecessor') is not None,
             'broker_orders_sent': 0, 'unit_candidates': service_units(args.request, args.sha256, request)}, sort_keys=True))
         return
     root = Path(request['controller_root']); root.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_once(root / 'CONTINUATION_REQUEST.json', request)
     if args.install:
-        units = service_units(args.request, args.sha256, request); install_units(units)
+        units = service_units(args.request, args.sha256, request)
+        supersession = install_continuation(args.request, args.sha256, request, inputs)
         print(json.dumps({'state': 'PERSISTENT_NEW_SCOPE_CONTINUATION_INSTALLED',
             'request_sha256': args.sha256, 'units': list(units), 'training_started_by_installer': False,
+            'worker_profile': worker_profile(request), 'predecessor_handoff': supersession,
             'broker_orders_sent': 0}, sort_keys=True)); return
     lock = os.open(root / 'continuation.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            summary = step(request, inputs)
+            with predecessor_lock(request, inputs, require_installed=True):
+                summary = step(request, inputs)
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             summary = {'state': 'NEW_SCOPE_CONTINUATION_BLOCKED', 'reason': str(error)[-1000:],
                 'automatic_retraining_after_unknown_effect': False}
         summary = {**summary, 'at_ms': int(time.time()*1000), 'source_commit': request['source_commit'],
+            'worker_profile': worker_profile(request),
             'preparation_source_commit': request['preparation_source_commit'],
             'preparation_request_sha256': request['preparation_request_sha256'], 'broker_orders_sent': 0}
         write_status(root, summary); print(json.dumps(summary, sort_keys=True), flush=True)
