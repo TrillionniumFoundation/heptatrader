@@ -337,6 +337,18 @@ class WakeCandidateTests(unittest.TestCase):
         self.deadline += 24*3600000
         with self.assertRaisesRegex(ValueError, 'FINITE_CALENDAR_BOUND'):
             self.prepare(readmission_seconds=60)
+
+    def test_finite_61_second_readmissions_do_not_lock_to_stale_120_second_producer_phase(self):
+        self.deadline = self.request['registration_not_before_ms'] + (119*61+1)*1000
+        result = self.prepare(readmission_seconds=61)
+        seconds = [int(datetime.strptime(value, '%Y-%m-%d %H:%M:%S UTC').replace(tzinfo=timezone.utc).timestamp())
+                   for value in result['calendars_utc']]
+        self.assertEqual(len(seconds), 120)
+        self.assertEqual(len({value % 120 for value in seconds}), 120)
+        # Every possible fixed source phase has actual wake opportunities in
+        # the original strict freshness bound. The registrar still rechecks it.
+        for source_phase in range(120):
+            self.assertTrue(any(0 <= (value-source_phase) % 120 < 60 for value in seconds))
     def test_finite_wake_deadline_must_follow_earliest_time(self):
         self.deadline = self.request['registration_not_before_ms']
         with self.assertRaisesRegex(ValueError, 'FINITE_DEADLINE_REQUIRED'):

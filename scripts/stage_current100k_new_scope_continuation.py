@@ -40,7 +40,10 @@ def main():
                  'prior-forward-stage-sha256', 'guard-config-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--fit-timeout-seconds', type=int, default=600)
-    parser.add_argument('--activation-readmission-seconds', type=int, default=120)
+    # The original producer has an observed 120-second cadence. A 120-second
+    # registration timer could repeatedly sample only its stale half-cycle.
+    # A 61-second cadence explores both phases without inventing a request.
+    parser.add_argument('--activation-readmission-seconds', type=int, default=61)
     parser.add_argument('--activation-events', type=int, default=120)
     parser.add_argument('--install', action='store_true')
     args = parser.parse_args(); os.umask(0o077); sys.dont_write_bytecode = True
