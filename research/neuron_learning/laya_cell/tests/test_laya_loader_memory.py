@@ -142,9 +142,11 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         return value
 
     def setUp(self):
-        self.assertFalse(torch.cuda.is_initialized())
-        self.start_patch(patch.object(torch.cuda, '_lazy_init',
-                                      side_effect=AssertionError('GPU initialization forbidden')))
+        initialized = torch.cuda.is_initialized()
+        guard = self.start_patch(patch.object(torch.cuda, '_lazy_init',
+                                              side_effect=AssertionError('GPU initialization forbidden')))
+        self.addCleanup(lambda: self.assertEqual(torch.cuda.is_initialized(), initialized))
+        self.addCleanup(guard.assert_not_called)
         rng = torch.get_rng_state().clone()
         self.addCleanup(torch.set_rng_state, rng)
         self.future_flags = (torch.__future__.get_swap_module_params_on_conversion(),
@@ -207,7 +209,6 @@ class LayaLoaderMemoryTests(unittest.TestCase):
         self.manifest = {'tiny_stub_manifest': True}
 
     def tearDown(self):
-        self.assertFalse(torch.cuda.is_initialized())
         self.assertEqual(self.future_flags,
                          (torch.__future__.get_swap_module_params_on_conversion(),
                           torch.__future__.get_overwrite_module_params_on_conversion()))

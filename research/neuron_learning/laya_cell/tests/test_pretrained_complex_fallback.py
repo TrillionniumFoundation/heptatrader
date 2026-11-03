@@ -8,7 +8,8 @@ from laya_cell import model
 
 class PretrainedComplexFallbackTests(unittest.TestCase):
     def test_complex_buffers_keep_dtype_and_imaginary_values(self):
-        self.assertFalse(torch.cuda.is_initialized())
+        initialized = torch.cuda.is_initialized()
+        self.addCleanup(lambda: self.assertEqual(torch.cuda.is_initialized(), initialized))
         original = torch.nn.Module()
         for dtype, name in ((torch.complex64, 'c64'), (torch.complex128, 'c128')):
             original.register_buffer(name, torch.tensor([1+2j, -3+4j, 0-5j], dtype=dtype, device='cpu'))
@@ -26,9 +27,10 @@ class PretrainedComplexFallbackTests(unittest.TestCase):
                 observed.append((tensor.dtype, kwargs['dtype']))
                 return tensor_to(tensor, **dict(kwargs, device='cpu'))
             return tensor_to(tensor, *args, **kwargs)
-        with patch.object(torch.cuda, '_lazy_init', side_effect=AssertionError('GPU forbidden')), \
+        with patch.object(torch.cuda, '_lazy_init', side_effect=AssertionError('GPU forbidden')) as guard, \
                 patch.object(torch.Tensor, 'to', transfer):
             returned = model._to_pretrained_gpu_fp32(actual, torch.device('cuda'))
+        guard.assert_not_called()
         self.assertIs(returned, actual)
         self.assertEqual(observed, [(torch.complex64, None), (torch.complex128, None),
                                     (torch.float64, torch.float32), (torch.int64, None)])
@@ -37,7 +39,6 @@ class PretrainedComplexFallbackTests(unittest.TestCase):
             self.assertEqual(value.dtype, wanted.dtype)
             self.assertEqual(value.device.type, 'cpu')
             self.assertTrue(torch.equal(value.view(torch.uint8), wanted.view(torch.uint8)), name)
-        self.assertFalse(torch.cuda.is_initialized())
 
 
 if __name__ == '__main__':

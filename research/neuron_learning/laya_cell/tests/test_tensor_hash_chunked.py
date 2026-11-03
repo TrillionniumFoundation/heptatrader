@@ -1,5 +1,8 @@
 """CPU byte parity and copy-lifetime checks; no full model or GPU allocation."""
 import hashlib
+import json
+import subprocess
+import sys
 from types import SimpleNamespace
 import unittest
 import weakref
@@ -42,14 +45,13 @@ class SyntheticGpuTensor:
 
 class ChunkedTensorHashTests(unittest.TestCase):
     def setUp(self):
+        initialized = torch.cuda.is_initialized()
         self.gpu_guard = patch.object(torch.cuda, '_lazy_init',
                                       side_effect=AssertionError('GPU initialization forbidden'))
-        self.gpu_guard.start()
+        guard = self.gpu_guard.start()
         self.addCleanup(self.gpu_guard.stop)
-        self.assertFalse(torch.cuda.is_initialized())
-
-    def tearDown(self):
-        self.assertFalse(torch.cuda.is_initialized())
+        self.addCleanup(lambda: self.assertEqual(torch.cuda.is_initialized(), initialized))
+        self.addCleanup(guard.assert_not_called)
 
     def test_exact_bytes_across_dtypes_and_odd_chunk_boundaries(self):
         base = torch.arange(35, device='cpu').reshape(5, 7)
@@ -164,6 +166,55 @@ class ChunkedTensorHashTests(unittest.TestCase):
         self.assertEqual(actual, expected.hexdigest())
         self.assertEqual(sizes, [limit, 13])
         self.assertTrue(all(ref() is None for ref in copies))
+
+
+class ColdCpuProxyProcessTests(unittest.TestCase):
+    def test_loader_and_hash_cases_remain_cold_in_fresh_interpreter(self):
+        # The learning lane shares one process with other Torch tests. Preserve
+        # the cold-state contract in one exec, with the same visible devices,
+        # interpreter and import roots, rather than assuming suite order.
+        code = r'''
+import json
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path[:] = json.loads(sys.argv[1])
+import torch
+
+case = unittest.TestCase()
+case.assertFalse(torch.cuda.is_initialized(), 'fresh interpreter already initialized GPU')
+names = (
+    'laya_cell.tests.test_laya_loader_memory.LayaLoaderMemoryTests',
+    'laya_cell.tests.test_pretrained_complex_fallback.PretrainedComplexFallbackTests',
+    'laya_cell.tests.test_tensor_hash_chunked.ChunkedTensorHashTests',
+    'laya_cell.tests.test_contracts.AdapterTests.test_toy_rng_is_cpu_only_deterministic_and_restored',
+)
+with patch.object(torch.cuda, '_lazy_init',
+                  side_effect=AssertionError('GPU initialization forbidden in cold subprocess')) as guard:
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+    for name in names:
+        selected = loader.loadTestsFromName(name)
+        case.assertGreater(selected.countTestCases(), 0, name)
+        suite.addTests(selected)
+    case.assertFalse(loader.errors, loader.errors)
+    case.assertFalse(torch.cuda.is_initialized(), 'CPU test imports initialized GPU')
+    expected = suite.countTestCases()
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    guard.assert_not_called()
+    case.assertFalse(torch.cuda.is_initialized(), 'CPU proxy tests initialized GPU')
+    case.assertEqual(result.testsRun, expected)
+    case.assertFalse(result.skipped, result.skipped)
+    case.assertTrue(result.wasSuccessful())
+print(json.dumps({'tests_run': result.testsRun, 'gpu_initialized': torch.cuda.is_initialized()}))
+'''
+        result = subprocess.run([sys.executable, '-c', code, json.dumps(sys.path)],
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertGreater(receipt['tests_run'], 0)
+        self.assertIs(receipt['gpu_initialized'], False)
 
 
 if __name__ == '__main__':

@@ -16,13 +16,27 @@ class Toy(nn.Module):
  def forward(self,input_ids,attention_mask,marker_pos,marker_mask,qtype):
   h=self.dropout(self.encoder(input_ids));m=torch.gather(h,1,marker_pos[...,None].expand(-1,-1,h.shape[-1]));return self.scorer(m).squeeze(-1).masked_fill(~marker_mask,-1e4),self.act_head(h[:,0])
 def toy():
- with torch.random.fork_rng():torch.manual_seed(20261007);return Toy().eval()
+ with torch.random.fork_rng(devices=[]):torch.random.default_generator.manual_seed(20261007);return Toy().eval()
 def batch():return {'input_ids':torch.arange(14).reshape(2,7),'attention_mask':torch.ones(2,7,dtype=torch.int64),'marker_pos':torch.arange(7).expand(2,-1),'marker_mask':torch.ones(2,7,dtype=torch.bool),'qtype':torch.zeros(2,dtype=torch.int64)}
 def datum():
  history=[{'t':T+i*10000,'bid':'1.00000','ask':'1.00002','mid':1.00001} for i in range(6)];inp={'scope':'scope','quotes':history,'input_kind':'EXACT_REMOTE_INPUT','source_input_id':'input1'};anchor=history[-1]['t']
  s={'input_snapshot':inp,'sample_id':digest(inp),'scope':'scope','anchor_ms':anchor,'known_at_ms':anchor+100,'reference_mid':1.00001,'input_gap':False,'source_input_id':'input1','targets':[.02,None],'label_reasons':['OBSERVED','OUTCOME_NOT_MATURE'],'outcome_receipts':[{'observed_at_ms':anchor+300000,'available_at_ms':anchor+300100,'target_scaled':.02},None],'teacher':None}
  d={'schema':'heptatrader.neuron-dataset.v1','source_kind':'REAL_PAPER_RUNTIME','scope':'scope','instrument':'EUR.USD','samples':[s]};w={'training_end_ms':anchor+301000,'validation_start_ms':anchor+901000,'validation_end_ms':anchor+1901000};return s,d,w
 class AdapterTests(unittest.TestCase):
+ def test_toy_rng_is_cpu_only_deterministic_and_restored(self):
+  before=torch.get_rng_state().clone();initialized=torch.cuda.is_initialized()
+  forbidden=AssertionError('CPU toy must not access GPU RNG')
+  with patch.object(torch.cuda,'device_count',side_effect=forbidden), \
+       patch.object(torch.cuda,'manual_seed_all',side_effect=forbidden), \
+       patch.object(torch.cuda,'get_rng_state',side_effect=forbidden), \
+       patch.object(torch.cuda,'set_rng_state',side_effect=forbidden), \
+       patch.object(torch.cuda,'_lazy_init',side_effect=forbidden):
+   first=toy();second=toy()
+  self.assertTrue(torch.equal(before,torch.get_rng_state()))
+  self.assertEqual(torch.cuda.is_initialized(),initialized)
+  self.assertEqual(set(first.state_dict()),set(second.state_dict()))
+  for name,value in first.state_dict().items():
+   self.assertEqual(value.device.type,'cpu');self.assertTrue(torch.equal(value,second.state_dict()[name]),name)
  def test_zero_delta(self):
   m=toy();a=m(**batch())[0].detach().clone();c=TradingDecisionCell(m,'1'*64);torch.testing.assert_close(c(**batch())[0],a,atol=0,rtol=0)
  def test_trainable_mask(self):
