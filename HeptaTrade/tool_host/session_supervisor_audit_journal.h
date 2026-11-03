@@ -3,6 +3,8 @@
 #include "session_supervisor_protocol.h"
 
 #include <cstdint>
+#include <chrono>
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -29,6 +31,10 @@ struct ToolDecisionAuditRecord
     std::string toolName;
     std::string expectedSchemaHash;
     std::string requestFingerprint;
+    // Trusted Gateway-only hash of the same read arguments, excluding the
+    // per-call id/deadline. Empty keeps exact per-request durable auditing.
+    std::string observationGroup;
+    std::string observationResponseFingerprint;
     std::string phase;
     std::string outcome;
     std::string reasonCode;
@@ -41,6 +47,7 @@ struct SessionSupervisorAuditCapacity
     std::uint64_t maximumBytes = 0;
     std::uint64_t safetyReserveBytes = 0;
     std::uint64_t observationsShed = 0;
+    std::uint64_t observationsCoalesced = 0;
 };
 
 class SessionSupervisorAuditJournal
@@ -61,8 +68,9 @@ public:
     bool AppendPaperRecoveryFinalization(const SessionSupervisorLeaseRecord& original,
                 const SessionSupervisorLeaseRecord& recovery, const std::string& trigger,
                 const std::string& phase, const std::string& outcome, std::string& reason);
-    // A shed observation returns true with OBSERVATION_SHED and a counter,
-    // never a durable receipt. Mutation/unknown records are never shed.
+    // Shed/coalesced observations return true with an explicit reason and
+    // counter, never a per-call durable receipt. Mutation/unknown records
+    // remain durable. Only repeated successful bound reads may coalesce.
     bool AppendToolDecision(const ToolDecisionAuditRecord& record, std::string& reason);
 
     SessionSupervisorAuditCapacity CapacitySnapshot() const;
@@ -80,6 +88,11 @@ private:
         std::int64_t modifiedNanoseconds = 0;
         std::int64_t changedSeconds = 0;
         std::int64_t changedNanoseconds = 0;
+    };
+    struct ObservationWindow
+    {
+        std::chrono::steady_clock::time_point expires;
+        std::string responseFingerprint;
     };
 
     static std::string HexEncode(const std::string& value);
@@ -99,13 +112,18 @@ private:
     enum class RecordClass { Observation, Admission, Safety };
     bool AppendRecord(const std::string& recordType, const std::string& payload,
                       std::string& reason, RecordClass recordClass,
-                      bool waitForLock = true);
+                      bool waitForLock = true,
+                      const std::string& observationKey = std::string(),
+                      const std::string& observationResponse = std::string(),
+                      bool invalidateObservations = false);
     bool ValidateOpenFile(FileState& state, std::string& reason) const;
 
     mutable std::mutex m_mutex;
     std::uint64_t m_maximumBytes;
     std::uint64_t m_safetyReserveBytes;
     std::uint64_t m_observationsShed = 0;
+    std::uint64_t m_observationsCoalesced = 0;
+    std::map<std::string, ObservationWindow> m_observationWindows;
     int m_changeFd = -1;
     int m_fd;
     std::string m_path;

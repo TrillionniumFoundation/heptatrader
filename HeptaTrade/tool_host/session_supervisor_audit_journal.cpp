@@ -307,7 +307,7 @@ bool SessionSupervisorAuditJournal::AppendPaperRecoveryFinalization(
 bool SessionSupervisorAuditJournal::AppendToolDecision(
     const ToolDecisionAuditRecord& record, std::string& reason)
 {
-    const std::string payload =
+    std::string payload =
         "daemon_identity=" + record.daemonIdentity + "\n" +
         "peer_uid=" + (record.peerCredentialAvailable ?
             std::to_string(record.peerUid) : std::string()) + "\n" +
@@ -330,18 +330,46 @@ bool SessionSupervisorAuditJournal::AppendToolDecision(
         record.peerCredentialAvailable && !record.agentId.empty() &&
         !record.sessionId.empty() && (record.toolName == "trade.cancel_order" ||
         record.toolName == "trade.flatten_position");
+    std::string observationKey;
+    if (observation && record.outcome == "ok" && record.peerCredentialAvailable &&
+        !record.agentId.empty() && !record.sessionId.empty() &&
+        record.observationGroup.compare(0, 7, "sha256:") == 0 &&
+        IsLowerHex(record.observationGroup.substr(7), 64) &&
+        record.observationResponseFingerprint.compare(0, 7, "sha256:") == 0 &&
+        IsLowerHex(record.observationResponseFingerprint.substr(7), 64) &&
+        (record.toolName == "system.get_health" || record.toolName == "market.get_quote" ||
+         record.toolName == "orders.list" || record.toolName == "portfolio.list_positions" ||
+         record.toolName == "system.tools.list"))
+    {
+        std::string scope;
+        for (const auto& value : {record.daemonIdentity, std::to_string(record.peerUid),
+                 record.executionDomain, record.agentId, record.sessionId, record.account,
+                 record.venue, record.environment, record.toolName, record.expectedSchemaHash,
+                 record.observationGroup})
+            scope += std::to_string(value.size()) + ":" + value;
+        observationKey = Sha256Hex(scope);
+        if (observationKey.empty())
+        { reason = "SUPERVISOR_AUDIT_DIGEST_FAILED"; return false; }
+        payload += "\nobservation_sampling_window_ms=5000\nobservation_response_fingerprint=" +
+            record.observationResponseFingerprint;
+    }
     return AppendRecord("tool-decision", payload, reason,
-        boundExit ? RecordClass::Safety : (observation ? RecordClass::Observation : RecordClass::Admission));
+        boundExit ? RecordClass::Safety : (observation ? RecordClass::Observation : RecordClass::Admission),
+        true, observationKey, record.observationResponseFingerprint,
+        observation && record.outcome != "ok");
 }
 
 bool SessionSupervisorAuditJournal::AppendRecord(
     const std::string& recordType, const std::string& payload, std::string& reason,
-    RecordClass recordClass, bool waitForLock)
+    RecordClass recordClass, bool waitForLock, const std::string& observationKey,
+    const std::string& observationResponse, bool invalidateObservations)
 {
     std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
     if (waitForLock) lock.lock();
     else if (!lock.try_lock()) { reason = "SUPERVISOR_AUDIT_BUSY"; return false; }
     if (m_fd < 0) { reason = "SUPERVISOR_AUDIT_NOT_INITIALIZED"; return false; }
+    if (recordClass != RecordClass::Observation || invalidateObservations)
+        m_observationWindows.clear();
     if (::flock(m_fd, LOCK_EX | (waitForLock ? 0 : LOCK_NB)) != 0)
     {
         reason = !waitForLock && (errno == EWOULDBLOCK || errno == EAGAIN) ?
@@ -366,6 +394,8 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     const bool fullVerificationRequired = ok && !cacheStateVerified;
     if (fullVerificationRequired)
     {
+        // A peer write or unexpected file change starts a fresh sample window.
+        m_observationWindows.clear();
         m_cacheValid = false;
         cacheStateVerified = false;
         ok = LoadChain(m_fd, currentState.fileSize, nextSequence,
@@ -426,6 +456,23 @@ bool SessionSupervisorAuditJournal::AppendRecord(
             "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED" : "SUPERVISOR_AUDIT_SIZE_LIMIT";
         return false;
     }
+    const auto steadyNow = std::chrono::steady_clock::now();
+    if (ok && !observationKey.empty())
+    {
+        const auto found = m_observationWindows.find(observationKey);
+        if (found != m_observationWindows.end() && steadyNow < found->second.expires &&
+            observationResponse == found->second.responseFingerprint)
+        {
+            // File identity, chain integrity, size and capacity were checked
+            // above even for this non-durable diagnostic. The first sample in
+            // every window already crossed the normal fdatasync barrier.
+            if (m_observationsCoalesced != std::numeric_limits<std::uint64_t>::max())
+                ++m_observationsCoalesced;
+            ::flock(m_fd, LOCK_UN);
+            reason = "SUPERVISOR_AUDIT_OBSERVATION_COALESCED";
+            return true;
+        }
+    }
     const std::string recordHash = ok ? Sha256Hex(unsignedLine) : std::string();
     if (ok && recordHash.empty())
     {
@@ -481,6 +528,7 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     ::flock(m_fd, LOCK_UN);
     if (!ok)
     {
+        m_observationWindows.clear();
         if (writeAttempted || !cacheStateVerified) m_cacheValid = false;
         if (reason.empty())
             reason = saved == 0 ? "SUPERVISOR_AUDIT_WRITE_FAILED" : std::strerror(saved);
@@ -491,6 +539,21 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     m_chainedRecords = chainedRecords + 1;
     m_previousHash = recordHash;
     m_cacheValid = true;
+    if (recordClass != RecordClass::Observation)
+        m_observationWindows.clear();
+    else if (!observationKey.empty())
+    {
+        for (auto it = m_observationWindows.begin(); it != m_observationWindows.end();)
+        {
+            if (it->second.expires <= steadyNow) it = m_observationWindows.erase(it);
+            else ++it;
+        }
+        // Bound memory. A full table pays the ordinary durable cost; it never
+        // discards a new identity or authorizes a read using another scope.
+        if (m_observationWindows.size() < 128 || m_observationWindows.count(observationKey))
+            m_observationWindows[observationKey] = {
+                steadyNow + std::chrono::seconds(5), observationResponse};
+    }
     reason.clear();
     return true;
 }
@@ -973,6 +1036,7 @@ SessionSupervisorAuditCapacity SessionSupervisorAuditJournal::CapacitySnapshot()
     result.maximumBytes = m_maximumBytes;
     result.safetyReserveBytes = m_safetyReserveBytes;
     result.observationsShed = m_observationsShed;
+    result.observationsCoalesced = m_observationsCoalesced;
     return result;
 }
 

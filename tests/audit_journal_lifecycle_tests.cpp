@@ -8,12 +8,14 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static int failSyncAt = 0;
 static bool failDataSync = false;
+static unsigned dataSyncCalls = 0;
 static int crashRename = 0;
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd)
@@ -24,6 +26,7 @@ extern "C" int __wrap_fsync(int fd)
 extern "C" int __real_fdatasync(int);
 extern "C" int __wrap_fdatasync(int fd)
 {
+    ++dataSyncCalls;
     if (failDataSync) { failDataSync = false; errno = EIO; return -1; }
     return __real_fdatasync(fd);
 }
@@ -107,6 +110,86 @@ void VerifyCount(const std::string& path, std::uint64_t expected)
     if (!SessionSupervisorAuditJournal::Verify(path, records, reason)) std::cerr << reason << '\n';
     assert(SessionSupervisorAuditJournal::Verify(path, records, reason));
     assert(records == expected);
+}
+void TestBoundedSuccessfulObservationCoalescing()
+{
+    {
+        Fixture baseline; SessionSupervisorAuditJournal original; std::string why;
+        assert(original.Init(baseline.path, why));
+        const auto first = dataSyncCalls;
+        for (unsigned n = 0; n < 20; ++n)
+            assert(original.AppendToolDecision(Record("market.get_quote"), why));
+        assert(dataSyncCalls == first + 20);
+        VerifyCount(baseline.path, 20);
+    }
+    Fixture f; SessionSupervisorAuditJournal journal; std::string reason;
+    assert(journal.Init(f.path, reason));
+    auto read = Record("market.get_quote");
+    read.observationGroup = "sha256:" + std::string(64, 'a');
+    read.observationResponseFingerprint = "sha256:" + std::string(64, 'c');
+    const auto before = dataSyncCalls;
+    for (unsigned n = 0; n < 20; ++n)
+    {
+        read.toolCallId = "read-" + std::to_string(n);
+        read.requestFingerprint = "per-request-" + std::to_string(n);
+        assert(journal.AppendToolDecision(read, reason));
+        assert(n == 0 ? reason.empty() : reason == "SUPERVISOR_AUDIT_OBSERVATION_COALESCED");
+    }
+    assert(dataSyncCalls == before + 1);
+    assert(journal.CapacitySnapshot().observationsCoalesced == 19);
+    VerifyCount(f.path, 1);
+    // A new argument scope is a fresh durable sample, even in the same second.
+    read.observationGroup = "sha256:" + std::string(64, 'b');
+    assert(journal.AppendToolDecision(read, reason) && reason.empty());
+    read.sessionId = "second-owner";
+    assert(journal.AppendToolDecision(read, reason) && reason.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5050));
+    assert(journal.AppendToolDecision(read, reason) && reason.empty());
+    VerifyCount(f.path, 4);
+    auto mutation = Record("trade.place_order");
+    assert(journal.AppendToolDecision(mutation, reason) && reason.empty());
+    // A mutation boundary clears earlier observation windows.
+    assert(journal.AppendToolDecision(read, reason) && reason.empty());
+    assert(dataSyncCalls == before + 6);
+    VerifyCount(f.path, 6);
+}
+void TestCoalescingCannotHideFailureOrIntegrityChange()
+{
+    for (unsigned kind = 0; kind < 3; ++kind)
+    {
+        Fixture f; SessionSupervisorAuditJournal journal; std::string reason;
+        assert(journal.Init(f.path, reason));
+        auto read = Record("system.get_health");
+        read.observationGroup = "sha256:" + std::string(64, 'a');
+        read.observationResponseFingerprint = "sha256:" + std::string(64, 'c');
+        assert(journal.AppendToolDecision(read, reason));
+        if (kind == 0)
+        {
+            read.outcome = "permission_denied";
+            const auto before = dataSyncCalls;
+            assert(journal.AppendToolDecision(read, reason) && reason.empty());
+            assert(journal.AppendToolDecision(read, reason) && reason.empty());
+            assert(dataSyncCalls == before + 2);
+            VerifyCount(f.path, 3);
+        }
+        else if (kind == 1)
+        {
+            failDataSync = true;
+            assert(!journal.AppendToolDecision(Record("trade.cancel_order"), reason));
+            assert(journal.AppendToolDecision(read, reason) && reason.empty());
+            assert(journal.CapacitySnapshot().observationsCoalesced == 0);
+        }
+        else
+        {
+            assert(::stat(f.path.c_str(), &maskedIdentity) == 0);
+            const int fd = ::open(f.path.c_str(), O_WRONLY | O_CLOEXEC); assert(fd >= 0);
+            assert(::pwrite(fd, "2", 1, 5) == 1); assert(::fsync(fd) == 0); ::close(fd);
+            maskTimes = true;
+            assert(!journal.AppendToolDecision(read, reason));
+            maskTimes = false;
+            assert(journal.CapacitySnapshot().observationsCoalesced == 0);
+        }
+    }
 }
 void TestSameMetadataRewriteInvalidatesCache()
 {
@@ -392,6 +475,8 @@ void TestMissingAndCorruptHistory()
 }
 int main()
 {
+    TestBoundedSuccessfulObservationCoalescing();
+    TestCoalescingCannotHideFailureOrIntegrityChange();
     TestSameMetadataRewriteInvalidatesCache();
     TestSupervisorAdmissionPreservesExitReserve();
     TestUnknownSupervisorOperationCannotClaimSafetyCapacity();
@@ -403,5 +488,6 @@ int main()
     TestSyncFailuresAndRetry();
     TestCrashCuts();
     TestMissingAndCorruptHistory();
-    std::cout << "audit capacity, segments, handoff, sync failure, crash cuts, history rejection: PASS\n";
+    std::cout << "audit observation sampling: 20 repeated reads, 20 baseline fdatasync vs 1 grouped fdatasync\n"
+              << "audit capacity, segments, handoff, sync failure, crash cuts, history rejection: PASS\n";
 }

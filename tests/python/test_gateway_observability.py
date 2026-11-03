@@ -48,9 +48,13 @@ class GatewayObservabilityTests(unittest.TestCase):
         text = report.gateway_prometheus(value, summary)
         self.assertIn("hepta_gateway_audit_bytes 8192", text)
         self.assertIn("hepta_gateway_audit_observations_shed_total 2", text)
+        value["audit_log"]["observations_coalesced"] = 17
+        self.assertIn("hepta_gateway_audit_observations_coalesced_total 17",
+                      report.gateway_prometheus(value, summary))
         for key, bad in (("known", 1), ("bytes", -1), ("bytes", 16385),
                          ("maximum_bytes", 0), ("safety_reserve_bytes", 8192),
-                         ("observations_shed", True)):
+                         ("observations_shed", True), ("observations_coalesced", True),
+                         ("observations_coalesced", -1)):
             altered = copy.deepcopy(value); altered["audit_log"][key] = bad
             with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
                 report.validate_gateway(altered)

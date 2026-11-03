@@ -51,7 +51,8 @@ inline std::string GatewayObservation(const UnixToolServerHealth& h,
             << ",\"bytes\":" << auditCapacity->bytes
             << ",\"maximum_bytes\":" << auditCapacity->maximumBytes
             << ",\"safety_reserve_bytes\":" << auditCapacity->safetyReserveBytes
-            << ",\"observations_shed\":" << auditCapacity->observationsShed << '}';
+            << ",\"observations_shed\":" << auditCapacity->observationsShed
+            << ",\"observations_coalesced\":" << auditCapacity->observationsCoalesced << '}';
     }
     out << '}';
     return out.str();

@@ -486,6 +486,8 @@ def validate_audit_capacity(value):
         raise ValueError("invalid audit capacity presence")
     for key in ("bytes", "maximum_bytes", "safety_reserve_bytes", "observations_shed"):
         uint(value.get(key))
+    if "observations_coalesced" in value:
+        uint(value["observations_coalesced"])
     maximum, reserve = value["maximum_bytes"], value["safety_reserve_bytes"]
     if (not 0 < maximum <= 1073741824 or not 0 < reserve < maximum // 2 or
             (value["known"] and value["bytes"] > maximum) or
@@ -593,6 +595,8 @@ def gateway_prometheus(latest, summary):
         validate_audit_capacity(audit)
         lines.append(f"hepta_gateway_audit_capacity_known {int(audit['known'])}")
         lines.append(f"hepta_gateway_audit_observations_shed_total {audit['observations_shed']}")
+        if "observations_coalesced" in audit:
+            lines.append(f"hepta_gateway_audit_observations_coalesced_total {audit['observations_coalesced']}")
         if audit["known"]:
             for key in ("bytes", "maximum_bytes", "safety_reserve_bytes"):
                 lines.append(f"hepta_gateway_audit_{key} {audit[key]}")

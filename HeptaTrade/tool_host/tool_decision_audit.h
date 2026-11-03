@@ -6,8 +6,8 @@
 #include <cstdint>
 #include <string>
 
-// Converts Gateway decisions into a secret-free, durable audit record.  The
-// session token and preview permit are never accepted by this interface.
+// Records critical Gateway decisions durably and samples repeated successful
+// routine reads. Session tokens and preview permits never enter the journal.
 class ToolDecisionAudit
 {
 public:
@@ -28,7 +28,8 @@ public:
                        TradingToolResult& result) const;
 
 private:
-    static std::string RequestFingerprint(const TradingToolHostRequest& request);
+    static std::string RequestFingerprint(const TradingToolHostRequest& request,
+                                         bool observationGroup = false);
     bool Append(bool peerCredentialAvailable, std::uint32_t peerUid,
                 const TradingToolHostRequest* request,
                 const TradingToolHostSessionBinding* binding,
@@ -36,7 +37,8 @@ private:
                 const std::string& phase,
                 const std::string& outcome,
                 const std::string& reasonCode,
-                std::string& reason) const;
+                std::string& reason,
+                const TradingToolResult* response = nullptr) const;
 
     SessionSupervisorAuditJournal* m_journal;
     bool m_allowMissingForTests;

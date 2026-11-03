@@ -90,7 +90,7 @@ void ToolDecisionAudit::AppendOutcome(
     std::string auditReason;
     if (Append(peerCredentialAvailable, peerUid, request, binding, mutation,
         "outcome", TradingToolRegistry::StatusName(result.status),
-        result.reasonCode, auditReason))
+        result.reasonCode, auditReason, &result))
         return;
     // A mutation crossed a durable intent barrier before dispatch. If only
     // its outcome record fails, never misreport it as a definite rejection:
@@ -112,7 +112,7 @@ bool ToolDecisionAudit::Append(
     const std::string& phase,
     const std::string& outcome,
     const std::string& reasonCode,
-    std::string& reason) const
+    std::string& reason, const TradingToolResult* response) const
 {
     if (m_journal == nullptr)
     {
@@ -146,6 +146,33 @@ bool ToolDecisionAudit::Append(
             reason = "TOOL_DECISION_FINGERPRINT_FAILED";
             return false;
         }
+        // Only successful, authenticated routine reads are sampled. Keep
+        // actual arguments in the group: different instruments, cursor values,
+        // schemas or owner identities cannot share one observation window.
+        if (!mutation && phase == "outcome" && outcome == "ok" && response != nullptr &&
+            binding != nullptr && binding->enabled && peerCredentialAvailable &&
+            binding->peerUid == peerUid &&
+            (record.toolName == "system.get_health" ||
+             record.toolName == "market.get_quote" ||
+             record.toolName == "orders.list" ||
+             record.toolName == "portfolio.list_positions" ||
+             record.toolName == "system.tools.list"))
+        {
+            record.observationGroup = RequestFingerprint(*request, true);
+            std::ostringstream returned;
+            AppendValue(returned, "status", outcome);
+            AppendValue(returned, "tool_name", response->toolName);
+            AppendValue(returned, "reason_code", response->reasonCode);
+            AppendValue(returned, "detail", response->detail);
+            AppendValue(returned, "order_id", Number(response->orderId));
+            AppendValue(returned, "payload", response->payloadJson);
+            record.observationResponseFingerprint = Sha256(returned.str());
+            if (record.observationGroup.empty() || record.observationResponseFingerprint.empty())
+            {
+                reason = "TOOL_DECISION_FINGERPRINT_FAILED";
+                return false;
+            }
+        }
     }
     if (mutation && request != nullptr && binding != nullptr &&
         peerCredentialAvailable && binding->peerUid == peerUid && binding->enabled)
@@ -171,17 +198,17 @@ bool ToolDecisionAudit::Append(
 }
 
 std::string ToolDecisionAudit::RequestFingerprint(
-    const TradingToolHostRequest& request)
+    const TradingToolHostRequest& request, bool observationGroup)
 {
     // Intentionally omit sessionToken and previewPermit.  Both are
     // credentials, not request identity suitable for an audit stream.
     std::ostringstream canonical;
-    AppendValue(canonical, "tool_call_id", request.toolCallId);
+    if (!observationGroup) AppendValue(canonical, "tool_call_id", request.toolCallId);
     AppendValue(canonical, "tool_name", request.call.name);
     AppendValue(canonical, "protocol_min", Number(request.protocolMinVersion));
     AppendValue(canonical, "protocol_max", Number(request.protocolMaxVersion));
     AppendValue(canonical, "schema_hash", request.expectedSchemaHash);
-    AppendValue(canonical, "queue_deadline", Number(request.queueDeadlineAtMs));
+    if (!observationGroup) AppendValue(canonical, "queue_deadline", Number(request.queueDeadlineAtMs));
     AppendValue(canonical, "cancel_tool_call_id", request.cancelToolCallId);
     AppendValue(canonical, "target_tool_name", request.call.targetToolName);
     AppendValue(canonical, "instrument", request.call.instrument);
