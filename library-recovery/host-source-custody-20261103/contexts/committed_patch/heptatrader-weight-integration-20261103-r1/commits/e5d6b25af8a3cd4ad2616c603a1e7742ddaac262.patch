@@ -1,0 +1,766 @@
+From e5d6b25af8a3cd4ad2616c603a1e7742ddaac262 Mon Sep 17 00:00:00 2001
+From: Tomasrgbsf <tomasbraynt@gmail.com>
+Date: Tue, 3 Nov 2026 05:33:24 -0500
+Subject: [PATCH] Add bounded Current100k weight study and paired CPU encoder
+
+---
+ research/weight_edit/README.md                | 111 ++++++
+ research/weight_edit/RESULTS.md               |  96 ++++++
+ research/weight_edit/batch_feature.py         |  24 ++
+ research/weight_edit/benchmark_resident.py    |  37 ++
+ research/weight_edit/current100k_study.py     | 322 ++++++++++++++++++
+ .../weight_edit/test_current100k_study.py     |  73 ++++
+ research/weight_edit/weight_recipes.py        |  36 ++
+ 7 files changed, 699 insertions(+)
+ create mode 100644 research/weight_edit/README.md
+ create mode 100644 research/weight_edit/RESULTS.md
+ create mode 100644 research/weight_edit/batch_feature.py
+ create mode 100644 research/weight_edit/benchmark_resident.py
+ create mode 100644 research/weight_edit/current100k_study.py
+ create mode 100644 research/weight_edit/test_current100k_study.py
+ create mode 100644 research/weight_edit/weight_recipes.py
+
+diff --git a/research/weight_edit/README.md b/research/weight_edit/README.md
+new file mode 100644
+index 0000000..e980a3f
+--- /dev/null
++++ b/research/weight_edit/README.md
+@@ -0,0 +1,111 @@
++# Current100k weight study
++
++This research tool inspects and edits a frozen monetary readout. It does not submit
++orders, change resident services, replace production weights, or claim prospective
++performance from already inspected labels.
++
++## Private inputs and outputs
++
++Keep real prompts, labels, checkpoints, features and results outside Git. Prepare a
++private `snapshot/` with `candidate.json`, `value-head.safetensors`,
++`dataset-selected.json`, and `source-manifest.json`. The manifest's `files` maps each
++filename to its SHA-256 and source path. The tool verifies those hashes, ordered row
++IDs, label identity, and each feature-text hash before proceeding.
++
++The fixed encoder is loaded through the existing verified Laya loader, with
++`enforce_gpu=False`. Encoding uses the exact complete feature text, no truncation,
++a 2,048-token ceiling, one row per batch, last hidden state, attention-mask mean
++pooling, and FP32 L2 normalization to 768 features. The cache binds the ordered text
++hashes, model and tokenizer file identities, loader/reference source hashes,
++PyTorch/Transformers versions and explicit CPU backend. GPU output logs are only
++used to report cross-backend discrepancies; all paired candidate scores share the
++same CPU feature matrix.
++
++Run with low scheduling priority and environment thread limits set **before Python
++starts**. PyTorch's thread setting alone may not limit a third-party BLAS pool.
++On a shared machine select two available CPU cores with `taskset` if needed.
++
++```bash
++env OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 NUMEXPR_NUM_THREADS=2 \
++  nice -n 19 /path/to/venv/bin/python -B current100k_study.py extract \
++  --study /private/study --runtime /pinned/current100k/runtime \
++  --base /pinned/laya/base --threads 2
++
++env OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
++  nice -n 19 /path/to/venv/bin/python -B current100k_study.py analyze \
++  --study /private/study --threads 2
++```
++
++The extractor is resumable from individually committed feature files. A completed
++manifest is immutable: use a new study directory for a new extraction contract.
++Only private files are written. At least 6 GiB MemAvailable is required before
++loading and at least 3 GiB before a forward pass. No GPU is selected or initialized.
++
++## Fixed comparisons
++
++| Arm | Operation | Interpretation |
++| --- | --- | --- |
++| parent | unchanged head | Current frozen baseline |
++| bias_shift_mean | change one bias to remove mean residual | Calibration on known labels |
++| constant_mean | zero weights and training-mean bias | Analytic baseline; not the original norm-constrained candidate class |
++| constant_median | zero weights and training-median bias | Analytic MAE baseline; same qualification |
++| ridge_normcap_0p1 | linear least-squares fit with joint weight/bias norm at most 0.1 | Closed-form data fitting, with scalar constraint solve |
++| sgd16_reference | original zero-init, 16 SGD steps at lr 0.05, Smooth L1, original bounds | Reproduction of original update count; not an equal-time control |
++| sgd_head_budget_2s | zero-init SGD with two-second construction ceiling and 8,192-step cap | Equal maximum head-construction budget; actual utilization reported |
++| covariance_direction_patch | mean correction plus one centered residual-covariance direction, clipped to joint norm bound | Label-dependent local fitting |
++| common_direction_half_ablation | subtract half the weight component along feature mean; compensate the bias to preserve the mean | Mechanistic ablation, not new knowledge |
++
++Each candidate is serialized as FP32 safetensors, reloaded, and evaluated through a
++real `nn.Linear` forward pass. Actual changed coordinates, parameter/delta norms,
++file hashes and module-forward equality are recorded. The original 0.1 joint norm
++bound applies to research candidates. Constant baselines are explicitly marked
++`analytic_baseline` if their bias alone exceeds it; they are not falsely presented
++as eligible production candidates. Development metrics use raw outputs. A future
++collector must apply its frozen output bound consistently to all arms and retain
++raw values.
++
++The four input probes (action flip, JSON reserialization control, 10-pip common
++price shift, trend reversal preserving spreads) on four fixed rows measure input
++sensitivity only. They do not create real outcome labels. All 54 historical labels
++were viewed before this work; the tool makes no blind holdout or winner-selection
++claim. Future efficacy requires a new frozen prospective window with original
++request/command identity and pre-open predictions.
++
++## Resident integration
++
++`WarmCpuEncoder(runtime, base, threads=2, batch_size=1)` loads one CPU encoder. Call
++`encode_request(request)` with the exact pre-open REQUEST dictionary. It returns
++`features` and `feature_text_sha256` for BUY and SELL, `base_id`, `feature_profile`,
++`backend`, receipts, and `computed_at_ms`. Share those two vectors across all small
++heads; never load an encoder per candidate. The caller owns scheduling, leases,
++original-request verification, durable pre-open sealing and eventual outcome joins.
++This helper alone does not confer trading or production authority.
++
++## Verification
++
++`test_current100k_study.py` checks the SGD common-mode recurrence, an actual
++serialized/reloaded single-bias forward, constrained norm behavior, malformed or
++nonfinite head rejection, and immutable conflicting-result rejection. It needs
++PyTorch and safetensors but no pretrained model or market data.
++
++## Resource and loader details
++
++Loader and relative imports use a private package rooted in the pinned runtime,
++so an already imported newer `laya_cell` cannot silently redirect the loader.
++The returned receipt includes the actual loader SHA-256. Optional threads=4 and
++batch_size=2 jointly encode both actions under a distinct backend identity.
++The actual four-request CPU benchmark took 14.23 to 22.51 seconds and did not
++meet the pre-open deadline. This option is not a demonstrated latency fix.
++
++Shared feature extraction is accounted separately from candidate construction.
++The base recipe group and each extra recipe have a two-second ceiling; the SGD
++loop admits steps only until 1.95 seconds with an 8,192-step cap. A 50 ms finish
++allowance is checked. Actual wall/CPU utilization is retained; equal allowance
++does not imply equal consumption. No transformer backpropagation occurs.
++Closed-form fitting still uses labels and is not data-free skill injection.
++
++Seven tests additionally cover private package isolation and bounded SGD/local
++patch behavior. `RESULTS.md` records aggregate findings without real prompts,
++row identifiers, individual labels, vectors or weights. The full evidence stays
++in the private study. Future efficacy requires new original requests, pre-open
++sealing, valid paired outcomes and the full evaluation horizon.
+diff --git a/research/weight_edit/RESULTS.md b/research/weight_edit/RESULTS.md
+new file mode 100644
+index 0000000..571edc1
+--- /dev/null
++++ b/research/weight_edit/RESULTS.md
+@@ -0,0 +1,96 @@
++# Current100k readout study, 2026-11-03
++
++## Scope and result
++
++The frozen model has a normalized 768-dimensional encoder output and a 769-parameter
++FP32 monetary head. All 54 historical labels had already been inspected. These
++are development results, with no held-out, prospective or profitability claim.
++A single bias edit improves mean calibration. The constrained analytic readout
++and SGD given the same two-second construction ceiling achieve essentially
++identical errors. Direct editing has not beaten that training control.
++
++No production model, service or trading authority was changed. Private prompts,
++labels, features and weights remain on Pocket4. Every candidate was serialized,
++reloaded and checked by actual FP32 nn.Linear forward on the same CPU features.
++
++| Arm | MAE USD | RMSE USD | Output std USD | Joint L2 |
++| --- | ---: | ---: | ---: | ---: |
++| Parent | 16.786469 | 23.379921 | 0.005976 | 0.072193 |
++| Bias mean correction | 16.334965 | 23.263678 | 0.005976 | 0.090183 |
++| Constant mean | 16.335332 | 23.265109 | 0 | 0.125266 |
++| Constant median | 16.167994 | 23.373604 | 0 | 0.147760 |
++| Constrained analytic readout | 16.345895 | 23.223326 | 0.092902 | 0.100000 |
++| Original 16-step SGD | 16.786469 | 23.379920 | 0.005976 | 0.072193 |
++| Two-second-ceiling SGD | 16.345895 | 23.223326 | 0.092903 | 0.100000 |
++| Common-direction half ablation | 16.786175 | 23.379925 | 0.004252 | 0.080682 |
++| Covariance-direction patch | 16.312187 | 23.227420 | 0.081987 | 0.100000 |
++
++Constants are analytic baselines outside the original norm constraint. Other arms
++satisfy joint L2 <= 0.1 within FP32 tolerance. Scores above are raw; future scoring
++must apply the fixed 15 USD cap uniformly and retain raw predictions.
++
++The one-coordinate bias edit is -0.0232850835 scaled units. Its measured forward
++shift agrees with the formula within 0.000000954 USD. CPU parent outputs differ
++from original GPU logs by at most 0.000003815 USD. No paired metric mixes backends.
++
++## Measured mechanism
++
++Feature cosine min/median/max is 0.986923 / 0.996844 / 0.999349. Mean-vector norm is
++0.998225 and centered RMS distance is 0.059563. Centered rank is 53 and entropy
++effective rank 13.485: a strong common component, not literally identical vectors.
++
++For these 54 vectors, any linear head with weight norm <= 0.1 has output std at
++most 0.354269 USD and pair separation at most 1.617224 USD. Target std is 23.265109
++USD. The std bound is 100 * 0.1 * largest_centered_singular_value / sqrt(54), an
++operator-norm bound independent of optimizer. It is an empirical limitation of
++this feature matrix and constraint, not proof of future impossibility or that all
++target variation is predictable.
++
++With identical unit features and bias, zero-init SGD at lr .05 in Smooth L1's
++quadratic region predicts mean_target * (1 - .9**16) = -10.205356 USD. Actual mean
++is -10.198044 USD, a 0.007312 USD difference. Original clipping is inactive and
++residuals remain within beta=1. This supports underconverged common-mean fitting.
++
++Four fixed requests were probed. Maximum parent change: action flip 0.001566 USD;
++10-pip price shift 0.037657 USD; supported trend reversal 0.011801 USD. JSON
++reserialization has zero difference. One reversal exceeds 2,048 tokens and is
++recorded unsupported without truncation. These are sensitivity tests, not outcomes.
++
++## Cost and pre-open feasibility
++
++The 54 original forward receipts sum to 309.988 seconds; 15 valid probes sum to
++76.620 seconds. Extraction resumed after a context-limit failure: final-manifest
++wall time covers only the last invocation, not the total extraction cost.
++
++The base recipe group used 0.9702 wall / 0.8940 CPU seconds. The extra SGD arm
++reached 8,192 steps in 1.0524 wall / 1.0569 CPU seconds. The covariance patch used
++0.000603 wall / 0.000770 CPU seconds. All fit the two-second allowance; utilization
++differs and shared encoder cost is separate. The 16-step arm is only a reference.
++
++Warmed CPU, four threads, joint BUY/SELL batch2 took 22.512, 19.524, 14.225, 15.956
++seconds for four historical requests. Load took 3.804 seconds and peak RSS was
++2,770,612,224 bytes. GPU was uninitialized. Features and parent scores matched the
++single-row CPU cache exactly. This misses the approximately 5.6-second pre-open
++window. A separate authorized, resource-admitted HIP experiment is still needed.
++No prospective plan should be frozen on an unproven backend.
++
++Seven numerical/identity tests passed without loading a pretrained model. Future
++benefit needs new pre-open requests, valid paired outcomes and the full horizon.
++
++## Private evidence identities
++
++Root: `/home/alex/.local/state/heptatrader/operator-evidence/current100k-weight-study-20261103-r1`.
++
++| Artifact | SHA-256 |
++| --- | --- |
++| Original head | `1f3071b3b1aaa89966b2d72abb2aec3f0841e2eb9bb24964abc54f30ac22b759` |
++| Frozen dataset | `cfd5d40c9979c5f4a3a4c0b2b14c731ba44663b9e6e3058553cec7feda37aa35` |
++| `features/original-fp32.safetensors` | `22d0afbf910ae6b7161b6c5476fdf8e6e921895514c6b6842d0e239f4cc8c483` |
++| `candidate-bundle.json` | `9068e3c6bbb6f753646e9b5fccc354099e3fd51107ce603d26961fbcc7b191b7` |
++| `summary.json` | `06fd382620851b9aa1534d11b928ee7f604307f151eaccd76df857940d53eb9f` |
++| `batch2-threads4-benchmark.json` | `cc2282ffe20469d03cd1b58b994789315929eedd91b4940b96f0db1bce60d302` |
++| Actual pinned loader model.py | `eb1603de93f3ed833b7cd2f47ea8bb085efb65180ea04a918b470a598ea5910b` |
++
++The private candidate bundle lists exact per-arm paths/hashes and all training
++identities. Its 54-row dataset is development-only; no arm has been selected for
++live trading from these scores.
+diff --git a/research/weight_edit/batch_feature.py b/research/weight_edit/batch_feature.py
+new file mode 100644
+index 0000000..0b18ab0
+--- /dev/null
++++ b/research/weight_edit/batch_feature.py
+@@ -0,0 +1,24 @@
++"""Optional resident CPU batch-two feature path; distinct backend receipt."""
++import hashlib,time
++
++
++def encode_pair(encoder,request):
++    from torch.nn import functional as F
++    try:from .current100k_study import memory_guard,PROFILE
++    except ImportError:from current100k_study import memory_guard,PROFILE
++    memory_guard();torch=encoder.torch;started=time.monotonic()
++    sides=('BUY','SELL');texts=[encoder.feature_text(request,side) for side in sides]
++    batch=encoder.tokenizer(texts,padding=True,truncation=False,return_tensors='pt')
++    if batch['input_ids'].shape[1]>2048:raise RuntimeError('CONTEXT_EXCEEDS_2048_NO_TRUNCATION')
++    batch={k:v.to('cpu') for k,v in batch.items() if k in ('input_ids','attention_mask','token_type_ids')}
++    with torch.inference_mode():
++        hidden=encoder.raw.encoder(**batch).last_hidden_state
++        mask=batch['attention_mask'].unsqueeze(-1).to(hidden.dtype)
++        x=F.normalize(((hidden*mask).sum(1)/mask.sum(1).clamp_min(1)).float(),p=2,dim=1).detach().cpu()
++    if x.shape!=(2,768) or not torch.isfinite(x).all():raise RuntimeError('FEATURE_SHAPE_OR_NUMBER')
++    seconds=time.monotonic()-started
++    return {'features':{side:x[i].tolist() for i,side in enumerate(sides)},
++            'feature_text_sha256':{side:hashlib.sha256(texts[i].encode()).hexdigest() for i,side in enumerate(sides)},
++            'feature_profile':PROFILE,'backend':'LAYA_CPU_FP32_BATCH2_MAX2048_NO_TRUNCATION_V1',
++            'threads':encoder.threads,'batch_size':2,'actual_loader_sha256':encoder.actual_loader_sha256,'base_id':encoder.base_id,'computed_at_ms':int(time.time()*1000),
++            'receipts':{side:{'tokens':int(batch['attention_mask'][i].sum()),'batch_seconds':seconds,'shared_batch':True,'dtype':'float32','device':'cpu'} for i,side in enumerate(sides)}}
+diff --git a/research/weight_edit/benchmark_resident.py b/research/weight_edit/benchmark_resident.py
+new file mode 100644
+index 0000000..773226d
+--- /dev/null
++++ b/research/weight_edit/benchmark_resident.py
+@@ -0,0 +1,37 @@
++"""One CPU model load: known-row batch-two latency and numeric parity only."""
++import argparse,inspect,json,os,resource,time
++from pathlib import Path
++import current100k_study as study
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__)
++    for name in ('study','runtime','base'):p.add_argument('--'+name,required=True)
++    p.add_argument('--threads',type=int,choices=(2,4),default=4)
++    args=p.parse_args();root=Path(args.study);torch=study.configure_cpu(args.threads)
++    from safetensors.torch import load_file
++    _,candidate,rows=study.snapshot(root);identity=json.loads((root/'features/identity.json').read_text())
++    started=time.monotonic();encoder=study.WarmCpuEncoder(args.runtime,args.base,threads=args.threads,batch_size=2)
++    load_seconds=time.monotonic()-started
++    module=study.pinned_module(Path(args.runtime)/'learn/laya_cell','model')
++    actual_loader_sha=study.sha(inspect.getfile(module))
++    if actual_loader_sha!=identity['model_loader_sha256']:raise RuntimeError('ACTUAL_LOADER_DIFFERS_FROM_FEATURE_CACHE')
++    cache=load_file(str(root/'features/original-fp32.safetensors'))['features']
++    parent=load_file(str(root/'snapshot/value-head.safetensors'));results=[]
++    for i in sorted(set((0,len(rows)//3,2*len(rows)//3,len(rows)-1))):
++        request=rows[i]['source_request']['request'];t=time.monotonic();doc=encoder.encode_request(request);wall=time.monotonic()-t
++        side=rows[i]['action'];opposite='SELL' if side=='BUY' else 'BUY'
++        if doc['feature_text_sha256'][side]!=rows[i]['feature_text_sha256']:raise RuntimeError('REQUEST_FEATURE_IDENTITY')
++        pair={k:torch.tensor(v,dtype=torch.float32).reshape(1,768) for k,v in doc['features'].items()}
++        flip=load_file(str(root/'features/probes'/f'row-{i:04d}-action_flip.safetensors'))['features']
++        reference={side:cache[i:i+1],opposite:flip}
++        results.append({'row_index':i,'wall_seconds':wall,'backend':doc['backend'],
++                        'max_feature_abs_difference':max(float((pair[k]-reference[k]).abs().max()) for k in pair),
++                        'max_parent_usd_difference':max(float((study.head_forward(parent,pair[k])-study.head_forward(parent,reference[k])).abs().max()) for k in pair),
++                        'token_counts':{k:v['tokens'] for k,v in doc['receipts'].items()}})
++        study.log('resident_batch_probe',**results[-1])
++    report={'schema':'heptatrader.current100k-batch2-benchmark.v1','scope':'KNOWN_DEVELOPMENT_REQUESTS_NOT_PROSPECTIVE','samples':results,'load_seconds':load_seconds,'threads':args.threads,'batch_size':2,'cpu_affinity':sorted(os.sched_getaffinity(0)),'actual_loader_path':inspect.getfile(module),'actual_loader_sha256':actual_loader_sha,'gpu_initialized':torch.cuda.is_initialized(),'max_rss_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'total_seconds':time.monotonic()-started}
++    study.json_write(root/f'batch2-threads{args.threads}-benchmark.json',report)
++    study.log('resident_benchmark_complete',total_seconds=report['total_seconds'])
++
++if __name__=='__main__':main()
+diff --git a/research/weight_edit/current100k_study.py b/research/weight_edit/current100k_study.py
+new file mode 100644
+index 0000000..0e21d10
+--- /dev/null
++++ b/research/weight_edit/current100k_study.py
+@@ -0,0 +1,322 @@
++#!/usr/bin/env python3
++"""CPU-only frozen Current100k readout study; historical labels are already viewed.
++
++Writes private research candidates. No broker, service or production publication.
++"""
++from __future__ import annotations
++import argparse, datetime, hashlib, json, os, resource, sys, time
++from pathlib import Path
++
++PROFILE = "MASKED_MEAN_L2_NORMALIZED_FP32_768"
++BACKEND = "LAYA_CPU_FP32_SINGLE_ROW_MAX2048_NO_TRUNCATION_V1"
++ARMS = ("parent", "bias_shift_mean", "constant_mean", "constant_median", "ridge_normcap_0p1", "sgd16_reference", "sgd_head_budget_2s", "common_direction_half_ablation", "covariance_direction_patch")
++
++
++def sha(path):
++    h = hashlib.sha256()
++    with Path(path).open("rb") as f:
++        for block in iter(lambda: f.read(8*1024*1024), b""): h.update(block)
++    return h.hexdigest()
++
++
++def digest(b): return hashlib.sha256(b).hexdigest()
++
++
++def log(event, **kwargs):
++    print(json.dumps(dict(event=event, utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), **kwargs)), flush=True)
++
++
++def json_write(path, value):
++    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++    blob = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()+b"\n"
++    if path.exists():
++        if path.read_bytes() != blob: raise RuntimeError("IMMUTABLE_CONFLICT:"+str(path))
++        return
++    temp = path.with_name(path.name+".partial-"+str(os.getpid()))
++    with temp.open("xb") as f: f.write(blob); f.flush(); os.fsync(f.fileno())
++    temp.chmod(0o400); os.replace(temp, path)
++
++
++def tensors_write(path, tensors):
++    from safetensors.torch import save_file
++    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++    if path.exists(): raise RuntimeError("TENSOR_EXISTS:"+str(path))
++    temp = path.with_name(path.name+".partial-"+str(os.getpid()))
++    save_file({k:v.detach().cpu().contiguous() for k,v in tensors.items()},str(temp))
++    with temp.open("rb") as f: os.fsync(f.fileno())
++    temp.chmod(0o400); os.replace(temp,path)
++
++
++def memory_guard(min_mib=3072):
++    mem = dict(line.split(":",1) for line in Path("/proc/meminfo").read_text().splitlines())
++    available = int(mem["MemAvailable"].split()[0])//1024
++    if available < min_mib: raise RuntimeError("MEMORY_PRESSURE_PAUSE:"+str(available))
++    return available
++
++
++_configured = False
++
++def configure_cpu(threads=2):
++    global _configured
++    os.environ.update(HF_HUB_OFFLINE="1",TRANSFORMERS_OFFLINE="1",USE_TF="0",TOKENIZERS_PARALLELISM="false",HIP_VISIBLE_DEVICES="",ROCR_VISIBLE_DEVICES="",CUDA_VISIBLE_DEVICES="",OPENBLAS_NUM_THREADS=str(threads),OMP_NUM_THREADS=str(threads),MKL_NUM_THREADS=str(threads),NUMEXPR_NUM_THREADS=str(threads))
++    import torch
++    if not _configured:
++        torch.set_num_threads(threads); torch.set_num_interop_threads(1); _configured=True
++    return torch
++
++
++def snapshot(study):
++    root=study/"snapshot"; manifest=json.loads((root/"source-manifest.json").read_text())
++    for name, receipt in manifest["files"].items():
++        if sha(root/name)!=receipt["sha256"]: raise RuntimeError("SNAPSHOT_HASH:"+name)
++    candidate=json.loads((root/"candidate.json").read_text()); data=json.loads((root/"dataset-selected.json").read_text()); rows=data["rows"]
++    if candidate["row_ids"]!=[r["row_id"] for r in rows]: raise RuntimeError("ROW_ORDER_IDENTITY")
++    if [float(v) for v in candidate["target_net_usd"]]!=[float(r["net_usd"]) for r in rows]: raise RuntimeError("LABEL_IDENTITY")
++    for r in rows:
++        if digest(r["feature_text"].encode())!=r["feature_text_sha256"]: raise RuntimeError("FEATURE_TEXT_IDENTITY")
++    return manifest,candidate,rows
++
++
++def pinned_module(directory, module):
++    import importlib
++    import importlib.util
++    directory=Path(directory).resolve();name="_hepta_weight_runtime_"+digest(str(directory).encode())[:16]
++    if name not in sys.modules:
++        spec=importlib.util.spec_from_file_location(name,directory/"__init__.py",submodule_search_locations=[str(directory)])
++        if spec is None or spec.loader is None:raise RuntimeError("PINNED_PACKAGE_UNAVAILABLE")
++        package=importlib.util.module_from_spec(spec);sys.modules[name]=package
++        try:spec.loader.exec_module(package)
++        except BaseException:
++            sys.modules.pop(name,None);raise
++    return importlib.import_module(name+"."+module)
++
++
++class WarmCpuEncoder:
++    """Load once, then share one feature vector per action across all readouts.
++
++    Runtime must be the pinned production source snapshot, never a mutable tree.
++    ``encode_request`` consumes the exact pre-open REQUEST dictionary.
++    """
++    def __init__(self,runtime,base,threads=2,batch_size=1):
++        if threads not in (1,2,4) or batch_size not in (1,2):raise ValueError("CPU_RESOURCE_PROFILE")
++        self.threads=threads;self.batch_size=batch_size
++        self.torch=configure_cpu(threads); self.runtime=Path(runtime); self.base=Path(base)
++        memory_guard(6144)
++        loader_module=pinned_module(self.runtime/"learn/laya_cell","model")
++        load_verified_laya=loader_module.load_verified_laya
++        self.actual_loader_path=str(Path(loader_module.__file__).resolve());self.actual_loader_sha256=sha(self.actual_loader_path)
++        self.feature_text=pinned_module(self.runtime/"research/paired_net_100k_preflight","core").feature_text
++        self.manifest=json.loads((self.base/"base-manifest.json").read_text())
++        self.raw,self.tokenizer,self.base_id=load_verified_laya(self.base,self.manifest,enforce_gpu=False)
++        if next(self.raw.parameters()).device.type!="cpu": raise RuntimeError("CPU_REQUIRED")
++        self.raw.requires_grad_(False).eval()
++    def encode_text(self,text):
++        from torch.nn import functional as F
++        memory_guard(); started=time.monotonic(); torch=self.torch
++        batch=self.tokenizer([text],padding=True,truncation=False,return_tensors="pt")
++        if batch["input_ids"].shape[1]>2048: raise RuntimeError("CONTEXT_EXCEEDS_2048_NO_TRUNCATION")
++        batch={k:v.to("cpu") for k,v in batch.items() if k in ("input_ids","attention_mask","token_type_ids")}
++        with torch.inference_mode():
++            hidden=self.raw.encoder(**batch).last_hidden_state
++            mask=batch["attention_mask"].unsqueeze(-1).to(hidden.dtype)
++            pooled=(hidden*mask).sum(1)/mask.sum(1).clamp_min(1)
++            x=F.normalize(pooled.float(),p=2,dim=1).detach().cpu()
++        if x.shape!=(1,768) or not torch.isfinite(x).all(): raise RuntimeError("FEATURE_SHAPE_OR_NUMBER")
++        return x,{"tokens":int(batch["attention_mask"].sum()),"seconds":time.monotonic()-started,"dtype":"float32","device":"cpu","feature_bytes_sha256":digest(x.numpy().tobytes())}
++    def encode_request(self,request):
++        if self.batch_size==2:
++            try:from .batch_feature import encode_pair
++            except ImportError:from batch_feature import encode_pair
++            return encode_pair(self,request)
++        result={}; hashes={}; timings={}
++        for side in ("BUY","SELL"):
++            text=self.feature_text(request,side); x,receipt=self.encode_text(text)
++            result[side]=x[0].tolist(); hashes[side]=digest(text.encode()); timings[side]=receipt
++        return {"features":result,"feature_text_sha256":hashes,"feature_profile":PROFILE,"backend":BACKEND,"threads":self.threads,"batch_size":self.batch_size,"actual_loader_sha256":self.actual_loader_sha256,"base_id":self.base_id,"receipts":timings,"computed_at_ms":int(time.time()*1000)}
++
++
++def perturbations(row):
++    text=row["feature_text"]; side=row["action"]; opposite="SELL" if side=="BUY" else "BUY"
++    marker="selected action="+side
++    if text.count(marker)!=1: raise RuntimeError("ACTION_MARKER")
++    yield "action_flip",text.replace(marker,"selected action="+opposite,1)
++    prefix="Recent authoritative quotes="; start=text.index(prefix)+len(prefix)
++    quotes,length=json.JSONDecoder().raw_decode(text[start:]); anchor=float(quotes[0]["mid"])
++    for name in ("quote_reserialized","price_shift_10pips","trend_reversed"):
++        output=[]
++        for q in quotes:
++            v=dict(q)
++            if name=="price_shift_10pips":
++                for k in ("bid","ask","mid"):v[k]=float(q[k])+.001
++            elif name=="trend_reversed":
++                v["bid"],v["ask"],v["mid"]=2*anchor-float(q["ask"]),2*anchor-float(q["bid"]),2*anchor-float(q["mid"])
++            output.append(v)
++        yield name,text[:start]+json.dumps(output,separators=(",",":"))+text[start+length:]
++
++
++def extract(args):
++    torch=configure_cpu(args.threads)
++    from safetensors.torch import load_file
++    study=Path(args.study); manifest,candidate,rows=snapshot(study); started=time.monotonic()
++    base_manifest=json.loads((Path(args.base)/"base-manifest.json").read_text())
++    import transformers
++    identity={"profile":PROFILE,"backend":BACKEND,"base_id":candidate["base_id"],"base_files":base_manifest["files"],"dataset_sha256":manifest["files"]["dataset-selected.json"]["sha256"],"ordered_feature_text_sha256":[r["feature_text_sha256"] for r in rows],"model_loader_sha256":sha(Path(args.runtime)/"learn/laya_cell/model.py"),"feature_reference_source_sha256":sha(Path(args.runtime)/"learn/laya_cell/financial_value_train.py"),"torch":torch.__version__,"transformers":transformers.__version__,"threads":args.threads,"truncation":False,"max_tokens":2048,"batch_size":1}
++    json_write(study/"features/identity.json",identity)
++    log("loading_cpu_encoder",memory_available_mib=memory_guard(6144))
++    encoder=WarmCpuEncoder(args.runtime,args.base,args.threads)
++    if encoder.base_id!=candidate["base_id"]: raise RuntimeError("BASE_ID_MISMATCH")
++    log("loaded_cpu_encoder",load_seconds=time.monotonic()-started)
++    vectors=[]; receipts=[]
++    for i,row in enumerate(rows):
++        p=study/"features/rows"/(f"{i:04d}-"+row["feature_text_sha256"][:16]+".safetensors"); rp=p.with_suffix(".json")
++        if p.exists() and rp.exists():
++            receipt=json.loads(rp.read_text())
++            if receipt["row_id"]!=row["row_id"] or receipt["file_sha256"]!=sha(p):raise RuntimeError("CACHE_IDENTITY")
++            x=load_file(str(p))["features"]
++        else:
++            x,receipt=encoder.encode_text(row["feature_text"]);tensors_write(p,{"features":x})
++            receipt.update(index=i,row_id=row["row_id"],input_id=row["input_id"],input_started_at_ms=row["input_started_at_ms"],feature_text_sha256=row["feature_text_sha256"],file_sha256=sha(p));json_write(rp,receipt)
++        vectors.append(x);receipts.append(receipt)
++        if i%6==0 or i==len(rows)-1:log("features",completed=i+1,total=len(rows),seconds=time.monotonic()-started)
++    x=torch.cat(vectors);p=study/"features/original-fp32.safetensors"
++    if not p.exists():tensors_write(p,{"features":x})
++    elif not torch.equal(load_file(str(p))["features"],x):raise RuntimeError("AGGREGATE_CACHE_CONFLICT")
++    json_write(study/"features/rows.json",receipts)
++    probes=[]
++    for i in sorted(set((0,len(rows)//3,2*len(rows)//3,len(rows)-1))):
++        for name,text in perturbations(rows[i]):
++            p=study/"features/probes"/f"row-{i:04d}-{name}.safetensors";rp=p.with_suffix(".json");text_hash=digest(text.encode())
++            if rp.exists():
++                receipt=json.loads(rp.read_text())
++                if receipt["feature_text_sha256"]!=text_hash:raise RuntimeError("PROBE_CACHE_IDENTITY")
++                if receipt.get("supported",True) and receipt["file_sha256"]!=sha(p):raise RuntimeError("PROBE_CACHE_HASH")
++            else:
++                try:
++                    xp,receipt=encoder.encode_text(text);tensors_write(p,{"features":xp})
++                    receipt.update(path=str(p),file_sha256=sha(p),supported=True)
++                except RuntimeError as exc:
++                    if str(exc)!="CONTEXT_EXCEEDS_2048_NO_TRUNCATION":raise
++                    receipt={"supported":False,"reason":str(exc),"seconds":0,"truncation_applied":False}
++                receipt.update(row_index=i,row_id=rows[i]["row_id"],variant=name,feature_text_sha256=text_hash,counterfactual_not_new_market_label=True);json_write(rp,receipt)
++            probes.append(receipt);log("probe",row=i,variant=name,seconds=receipt["seconds"],supported=receipt.get("supported",True))
++    json_write(study/"features/probes.json",probes)
++    json_write(study/"features/manifest.json",{"schema":"heptatrader.weight-feature-cache.v1","identity":identity,"features_sha256":sha(study/"features/original-fp32.safetensors"),"rows_sha256":sha(study/"features/rows.json"),"rows":len(rows),"probe_count":len(probes),"labels_previously_viewed":True,"gpu_initialized":torch.cuda.is_initialized(),"wall_seconds":time.monotonic()-started,"max_rss_bytes":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024})
++    log("extraction_complete",seconds=time.monotonic()-started,rows=len(rows),probes=len(probes))
++
++
++def metric(pred,target):
++    import numpy as np
++    p,y=np.asarray(pred,dtype=float),np.asarray(target,dtype=float)
++    return {"n":len(y),"mae_usd":float(np.mean(np.abs(p-y))),"rmse_usd":float(np.sqrt(np.mean((p-y)**2))),"mean_prediction_usd":float(p.mean()),"prediction_std_usd":float(p.std()),"min_prediction_usd":float(p.min()),"max_prediction_usd":float(p.max())}
++
++
++def fit_recipes(x,y,parent):
++    """Closed-form fitting still uses labels; common-direction ablation does not."""
++    import torch
++    from torch.nn import functional as F
++    x,y=x.double(),y.double();w,b=parent["value.weight"].double(),parent["value.bias"].double()
++    result={"parent":{k:v.clone().float() for k,v in parent.items()}}
++    before=F.linear(x,w,b).flatten()
++    result["bias_shift_mean"]={"value.weight":w.float(),"value.bias":(b+(y-before).mean()).float()}
++    for name,center in (("constant_mean",y.mean()),("constant_median",torch.quantile(y,.5))):
++        result[name]={"value.weight":torch.zeros_like(w).float(),"value.bias":center.reshape(1).float()}
++    z=torch.cat((x,torch.ones(len(x),1,dtype=x.dtype)),dim=1)
++    eigenvalues,vectors=torch.linalg.eigh(z@z.T/len(z)); eigenvalues=eigenvalues.clamp_min(0);rhs=vectors.T@y
++    def solve(lam):return z.T@(vectors@(rhs/(eigenvalues+lam)))/len(z)
++    low,high=1e-10,1.
++    while solve(high).norm()>.1:high*=2
++    for _ in range(64):
++        mid=(low+high)/2
++        if solve(mid).norm()>.1:low=mid
++        else:high=mid
++    theta=solve(high)
++    result["ridge_normcap_0p1"]={"value.weight":theta[:768].reshape(1,768).float(),"value.bias":theta[768:].float()}
++    head=torch.nn.Linear(768,1,dtype=torch.float32)
++    with torch.no_grad():head.weight.zero_();head.bias.zero_()
++    optimizer=torch.optim.SGD(head.parameters(),lr=.05);step_losses=[]
++    for _ in range(16):
++        optimizer.zero_grad(set_to_none=True);loss=F.smooth_l1_loss(head(x.float()).flatten(),y.float());loss.backward()
++        torch.nn.utils.clip_grad_norm_(head.parameters(),1.,error_if_nonfinite=True);optimizer.step()
++        with torch.no_grad():
++            norm=torch.cat((head.weight.flatten(),head.bias)).norm()
++            if norm>.1:head.weight.mul_(.1/norm);head.bias.mul_(.1/norm)
++        step_losses.append(float(loss.detach()))
++    result["sgd16_reference"]={"value.weight":head.weight.detach().clone(),"value.bias":head.bias.detach().clone()}
++    mu=x.mean(0);u=F.normalize(mu,dim=0);removed=.5*(w.flatten()@u)*u
++    result["common_direction_half_ablation"]={"value.weight":(w-removed).float(),"value.bias":(b+removed@mu).float()}
++    return result,{"ridge_lagrange_multiplier":high,"ridge_constraint":"joint_weight_bias_l2<=0.1","ridge_loss":"mean_squared_scaled_loss","sgd_steps":16,"sgd_lr":.05,"sgd_huber_step_losses":step_losses}
++
++
++def head_forward(tensors,x):
++    import torch
++    from torch.nn import functional as F
++    if set(tensors)!={"value.weight","value.bias"} or tensors["value.weight"].shape!=(1,768) or tensors["value.bias"].shape!=(1,):raise RuntimeError("HEAD_SCHEMA")
++    if any(v.dtype!=torch.float32 or not torch.isfinite(v).all() for v in tensors.values()):raise RuntimeError("HEAD_DTYPE_OR_NUMBER")
++    head=torch.nn.Linear(768,1,dtype=torch.float32).requires_grad_(False)
++    head.load_state_dict({"weight":tensors["value.weight"],"bias":tensors["value.bias"]},strict=True)
++    with torch.inference_mode():
++        actual=head(x.float()).flatten()*100.;direct=F.linear(x.float(),tensors["value.weight"],tensors["value.bias"]).flatten()*100.
++    if not torch.equal(actual,direct):raise RuntimeError("FORWARD_MISMATCH")
++    return actual
++
++
++def analyze(args):
++    torch=configure_cpu(args.threads)
++    from safetensors.torch import load_file
++    study=Path(args.study);manifest,candidate,rows=snapshot(study)
++    fm=json.loads((study/"features/manifest.json").read_text());fp=study/"features/original-fp32.safetensors"
++    if fm["features_sha256"]!=sha(fp):raise RuntimeError("FEATURE_HASH")
++    x=load_file(str(fp))["features"]
++    if x.shape!=(len(rows),768) or not torch.isfinite(x).all():raise RuntimeError("FEATURE_SHAPE_OR_NUMBER")
++    y=torch.tensor([float(r["net_usd"])/100 for r in rows],dtype=torch.float64)
++    parent=load_file(str(study/"snapshot/value-head.safetensors"))
++    t=time.monotonic();cpu_started=time.process_time();recipes,info=fit_recipes(x,y,parent);base_seconds=time.monotonic()-t
++    if base_seconds>2.05:raise RuntimeError("BASE_CONSTRUCTION_BUDGET_EXCEEDED")
++    info["base_group_compute"]={"wall_seconds":base_seconds,"cpu_seconds":time.process_time()-cpu_started,"wall_budget_seconds":2.0,"shared_feature_cost_excluded":True}
++    try:from .weight_recipes import augment_recipes
++    except ImportError:from weight_recipes import augment_recipes
++    extra,extra_info=augment_recipes(x,y,parent);recipes.update(extra);info.update(extra_info);fit_seconds=time.monotonic()-t
++    cosine=x.double()@x.double().T;off=cosine[~torch.eye(len(x),dtype=torch.bool)]
++    centered=x.double()-x.double().mean(0);s=torch.linalg.svdvals(centered);power=s.square();prob=power/power.sum();nonzero=prob>0
++    geometry={"mean_feature_norm":float(x.mean(0).norm()),"centered_rms_l2":float(centered.square().sum(1).mean().sqrt()),"pairwise_cosine_min":float(off.min()),"pairwise_cosine_median":float(off.median()),"pairwise_cosine_max":float(off.max()),"centered_effective_rank":float(torch.exp(-(prob[nonzero]*prob[nonzero].log()).sum())),"centered_numeric_rank_rtol_1e6":int((s>s[0]*1e-6).sum()),"centered_singular_values":s.tolist(),"top1_centered_energy_share":float(power[0]/power.sum()),"top5_centered_energy_share":float(power[:5].sum()/power.sum()),"feature_total_variance":float(power.sum()/len(x)),"any_head_norm_0p1_prediction_std_upper_bound_usd":float(10*s[0]/len(x)**.5),"any_head_norm_0p1_pair_difference_upper_bound_usd":float(10*torch.cdist(x.double(),x.double()).max()),"label_std_usd":float((100*y).std(correction=0))}
++    json_write(study/"geometry.json",geometry);comparisons={};candidates=[]
++    for name in ARMS:
++        tensors=recipes[name];directory=study/"candidates"/name;path=directory/"value-head.safetensors"
++        if not path.exists():tensors_write(path,tensors)
++        loaded=load_file(str(path))
++        if any(not torch.equal(loaded[k],tensors[k]) for k in tensors):raise RuntimeError("CANDIDATE_READBACK:"+name)
++        prediction=head_forward(loaded,x);result=metric(prediction.numpy(),(100*y).numpy());comparisons[name]=result
++        coords={key:(v.reshape(-1)!=parent[key].reshape(-1)).nonzero().flatten().tolist() for key,v in loaded.items()}
++        norm=float(torch.cat([loaded[k].flatten().double() for k in sorted(loaded)]).norm())
++        delta=float(torch.cat([(loaded[k]-parent[k]).flatten().double() for k in sorted(loaded)]).norm())
++        patch={"schema":"heptatrader.weight-head-patch.v1","name":name,"candidate_path":str(path),"sha256":sha(path),"base_head_sha256":manifest["files"]["value-head.safetensors"]["sha256"],"dataset_sha256":manifest["files"]["dataset-selected.json"]["sha256"],"feature_profile":PROFILE,"backend":BACKEND,"dtype":"float32","changed_coordinates":coords,"changed_parameter_count":sum(map(len,coords.values())),"parameter_l2":norm,"delta_l2":delta,"kind":"analytic_baseline" if name.startswith("constant_") else "research_candidate","joint_parameter_norm_le_0p1":norm<=.100001,"labels_used":name not in ("parent","common_direction_half_ablation"),"formula":"raw_USD=100*Linear768(features)","module_forward_and_formula_identical":True,"research_only":True,"labels_previously_viewed":True,"prospective_efficacy_claim":False,"trade_authority":False}
++        if not name.startswith("constant_") and norm>.100001:raise RuntimeError("RESEARCH_HEAD_NORM_CAP:"+name)
++        json_write(directory/"patch.json",patch);json_write(directory/"metrics.json",dict(scope="KNOWN_54_DEVELOPMENT_ROWS_NOT_BLIND",**result))
++        candidates.append({k:patch[k] for k in ("name","candidate_path","sha256","kind","parameter_l2","changed_parameter_count")})
++    probes=[]
++    for receipt in json.loads((study/"features/probes.json").read_text()):
++        if not receipt.get("supported",True):
++            probes.append(receipt);continue
++        p=Path(receipt["path"])
++        if sha(p)!=receipt["file_sha256"]:raise RuntimeError("PROBE_HASH")
++        probe=load_file(str(p))["features"];original=x[receipt["row_index"]:receipt["row_index"]+1]
++        probes.append({"row_index":receipt["row_index"],"variant":receipt["variant"],"feature_delta_l2":float((probe-original).norm()),"cosine":float((probe*original).sum()),"delta_prediction_usd":{name:float((head_forward(v,probe)-head_forward(v,original))[0]) for name,v in recipes.items()},"interpretation":"INPUT_SENSITIVITY_ONLY_NO_NEW_OUTCOME_LABEL"})
++    json_write(study/"sensitivity.json",probes)
++    # All 54 labels were already inspected. No pseudo-blind split or selection.
++    before=head_forward(parent,x);recorded=torch.tensor(candidate["diagnostic"]["after_scaled"])*100
++    shift=recipes["bias_shift_mean"]["value.bias"]-parent["value.bias"]
++    actual_delta=head_forward(recipes["bias_shift_mean"],x)-before
++    report={"schema":"heptatrader.current100k-weight-study.v1","rows":len(rows),"feature_profile":PROFILE,"backend":BACKEND,"feature_sha256":sha(fp),"geometry":geometry,"fit_seconds":fit_seconds,"fit_info":info,"comparisons":comparisons,"cpu_vs_recorded_gpu_prediction_max_abs_usd":float((before-recorded).abs().max()),"bias_delta_scaled":float(shift[0]),"bias_actual_forward_delta_max_error_usd":float((actual_delta-100*shift).abs().max()),"candidates":candidates,"research_only":True,"labels_previously_viewed":True,"future_evaluation_required":True,"automatic_selection":False,"broker_orders_sent":0,"output_limit_usd":15.,"output_note":"Development raw scores; prospective collector applies its pinned bound uniformly."}
++    json_write(study/"summary.json",report)
++    bundle={"schema":"heptatrader.current100k-weight-candidates.v1","feature_profile":PROFILE,"backend":BACKEND,"input_width":768,"output_scale_usd":100.,"base_id":candidate["base_id"],"source_dataset_sha256":manifest["files"]["dataset-selected.json"]["sha256"],"training_input_ids":[r["input_id"] for r in rows],"training_reward_ids":[r["reward_id"] for r in rows],"training_input_cutoff_ms":max(r["input_started_at_ms"] for r in rows),"candidates":candidates,"research_only":True,"trade_authority":False,"labels_previously_viewed":True}
++    json_write(study/"candidate-bundle.json",bundle)
++    log("analysis_complete",geometry=geometry,comparisons=comparisons,cpu_vs_recorded_gpu_prediction_max_abs_usd=report["cpu_vs_recorded_gpu_prediction_max_abs_usd"])
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__);p.add_argument("mode",choices=("extract","analyze"));p.add_argument("--study",required=True);p.add_argument("--runtime");p.add_argument("--base");p.add_argument("--threads",type=int,choices=(1,2),default=2);args=p.parse_args()
++    if args.mode=="extract" and (not args.runtime or not args.base):p.error("extract requires --runtime and --base")
++    os.umask(0o077);{"extract":extract,"analyze":analyze}[args.mode](args)
++
++
++if __name__=="__main__":main()
+diff --git a/research/weight_edit/test_current100k_study.py b/research/weight_edit/test_current100k_study.py
+new file mode 100644
+index 0000000..04ee00e
+--- /dev/null
++++ b/research/weight_edit/test_current100k_study.py
+@@ -0,0 +1,73 @@
++"""Small numerical/identity tests; no pretrained model or market data required."""
++import json
++from pathlib import Path
++import tempfile
++import unittest
++import current100k_study as study
++
++torch=study.configure_cpu(1)
++
++class ReadoutStudyTests(unittest.TestCase):
++    def setUp(self):
++        self.x=torch.zeros(12,768);self.x[:,0]=1
++        self.y=torch.linspace(-.3,.1,12,dtype=torch.float64)
++        self.zero={"value.weight":torch.zeros(1,768),"value.bias":torch.zeros(1)}
++
++    def test_sgd_common_direction_matches_exact_recurrence(self):
++        arms,_=study.fit_recipes(self.x,self.y,self.zero)
++        got=study.head_forward(arms["sgd16_reference"],self.x)
++        want=float(self.y.mean())*(1-.9**16)*100
++        self.assertLess(float((got-want).abs().max()),3e-6)
++
++    def test_bias_changes_one_coordinate_and_real_forward(self):
++        self.zero["value.weight"][0,0]=.02
++        arms,_=study.fit_recipes(self.x,self.y,self.zero)
++        head=arms["bias_shift_mean"]
++        self.assertTrue(torch.equal(head["value.weight"],self.zero["value.weight"]))
++        from safetensors.torch import load_file
++        with tempfile.TemporaryDirectory() as d:
++            p=Path(d)/"head.safetensors";study.tensors_write(p,head)
++            loaded=load_file(str(p))
++            got=study.head_forward(loaded,self.x)
++            self.assertLess(float((got-float(self.y.mean())*100).abs().max()),3e-6)
++
++    def test_constrained_solve_norm_and_baseline_classification(self):
++        self.y.fill_(-.2)
++        arms,_=study.fit_recipes(self.x,self.y,self.zero)
++        ridge=arms["ridge_normcap_0p1"]
++        norm=torch.cat((ridge["value.weight"].flatten(),ridge["value.bias"])).norm()
++        self.assertLessEqual(float(norm),.100001)
++        self.assertGreater(float(arms["constant_mean"]["value.bias"].abs()),.1)
++
++    def test_reject_bad_shape_and_nonfinite_head(self):
++        with self.assertRaises(RuntimeError):study.head_forward({"value.weight":torch.zeros(1,767),"value.bias":torch.zeros(1)},self.x)
++        self.zero["value.bias"][0]=float("nan")
++        with self.assertRaises(RuntimeError):study.head_forward(self.zero,self.x)
++
++    def test_pinned_module_does_not_reuse_another_package(self):
++        with tempfile.TemporaryDirectory() as d:
++            a=Path(d)/"a";b=Path(d)/"b";a.mkdir();b.mkdir()
++            for p,v in ((a,"one"),(b,"two")):
++                (p/"__init__.py").write_text("")
++                (p/"core.py").write_text("value="+repr(v))
++            self.assertEqual(study.pinned_module(a,"core").value,"one")
++            self.assertEqual(study.pinned_module(b,"core").value,"two")
++
++    def test_time_budget_training_and_covariance_patch_are_bounded(self):
++        from weight_recipes import augment_recipes
++        arms,info=augment_recipes(self.x,self.y,self.zero)
++        for head in arms.values():
++            norm=torch.cat((head["value.weight"].flatten(),head["value.bias"])).norm()
++            self.assertLessEqual(float(norm),.100001)
++        cost=info["additional_compute"]["sgd_head_budget_2s"]
++        self.assertGreater(cost["steps"],16)
++        self.assertLessEqual(cost["steps"],8192)
++        self.assertLessEqual(cost["wall_seconds"],2.05)
++
++    def test_frozen_output_refuses_conflicting_rewrite(self):
++        with tempfile.TemporaryDirectory() as d:
++            p=Path(d)/"result.json";study.json_write(p,{"identity":"a"});study.json_write(p,{"identity":"a"})
++            with self.assertRaises(RuntimeError):study.json_write(p,{"identity":"b"})
++            self.assertEqual(json.loads(p.read_text()),{"identity":"a"})
++
++if __name__=="__main__":unittest.main()
+diff --git a/research/weight_edit/weight_recipes.py b/research/weight_edit/weight_recipes.py
+new file mode 100644
+index 0000000..5f09bfe
+--- /dev/null
++++ b/research/weight_edit/weight_recipes.py
+@@ -0,0 +1,36 @@
++"""Two bounded readout comparisons; all label-dependent edits are data fitting."""
++import time
++
++
++def augment_recipes(x,y,parent):
++    import torch
++    from torch.nn import functional as F
++    x,y=x.double(),y.double();w,b=parent['value.weight'].double(),parent['value.bias'].double()
++    output={};costs={};clock=time.perf_counter();cpu=time.process_time()
++    head=torch.nn.Linear(768,1,dtype=torch.float32)
++    with torch.no_grad():head.weight.zero_();head.bias.zero_()
++    optimizer=torch.optim.SGD(head.parameters(),lr=.05);steps=0;cap=8192
++    xf,yf=x.float(),y.float();last_loss=None
++    while steps<cap and time.perf_counter()-clock<1.95:
++        optimizer.zero_grad(set_to_none=True);loss=F.smooth_l1_loss(head(xf).flatten(),yf);loss.backward()
++        torch.nn.utils.clip_grad_norm_(head.parameters(),1.,error_if_nonfinite=True);optimizer.step()
++        with torch.no_grad():
++            norm=torch.cat((head.weight.flatten(),head.bias)).norm()
++            if norm>.1:head.weight.mul_(.1/norm);head.bias.mul_(.1/norm)
++        steps+=1;last_loss=float(loss.detach())
++    output['sgd_head_budget_2s']={'value.weight':head.weight.detach().clone(),'value.bias':head.bias.detach().clone()}
++    costs['sgd_head_budget_2s']={'wall_seconds':time.perf_counter()-clock,'cpu_seconds':time.process_time()-cpu,'steps':steps,'step_cap':cap,'last_loss':last_loss,'stop':'step_cap' if steps==cap else 'wall_budget'}
++    clock=time.perf_counter();cpu=time.process_time()
++    mu=x.mean(0);xc=x-mu;pred=F.linear(x,w,b).flatten();residual=y-pred
++    covariance=xc.T@(residual-residual.mean());u=F.normalize(covariance,dim=0)
++    a=xc@u;den=float(a.square().sum());alpha=float(a@(residual-residual.mean()))/den if den>1e-20 else 0.
++    theta=torch.cat((w.flatten(),b+residual.mean()));direction=torch.cat((u,-(mu@u).reshape(1)))
++    aa=float(direction@direction);bb=2*float(theta@direction);cc=float(theta@theta)-.1**2
++    allowed=(-bb+max(0.,bb*bb-4*aa*cc)**.5)/(2*aa) if aa>0 else 0.
++    alpha=max(0.,min(alpha,allowed));patched=theta+alpha*direction
++    output['covariance_direction_patch']={'value.weight':patched[:768].reshape(1,768).float(),'value.bias':patched[768:].float()}
++    costs['covariance_direction_patch']={'wall_seconds':time.perf_counter()-clock,'cpu_seconds':time.process_time()-cpu,'alpha':alpha,'label_dependent_closed_form_fit':True}
++    for name,cost in costs.items():
++        cost.update(wall_budget_seconds=2.,shared_feature_cost_excluded=True)
++        if cost['wall_seconds']>2.05:raise RuntimeError('CONSTRUCTION_BUDGET_EXCEEDED:'+name)
++    return output,{'additional_compute':costs,'budget_protocol':'EACH_CONSTRUCTION_AT_MOST_2_SECONDS; TRAINING_8192_STEP_CAP; SHARED_FEATURE_COST_SEPARATE'}
+-- 
+2.43.0
+

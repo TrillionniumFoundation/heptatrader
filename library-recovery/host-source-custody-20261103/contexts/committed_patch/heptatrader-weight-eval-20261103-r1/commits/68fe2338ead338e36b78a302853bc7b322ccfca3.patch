@@ -1,0 +1,219 @@
+From 68fe2338ead338e36b78a302853bc7b322ccfca3 Mon Sep 17 00:00:00 2001
+From: Tomasrgbsf <tomasbraynt@gmail.com>
+Date: Tue, 3 Nov 2026 05:35:06 -0500
+Subject: [PATCH] fix: pin HIP proofs and head arithmetic in weight shadow
+
+---
+ .../current100k-weight-shadow-20261103.md     | 26 +++++++++-
+ .../laya_cell/current100k_weight_shadow.py    | 33 ++++++++++--
+ .../python/test_current100k_weight_shadow.py  | 51 +++++++++++++++++++
+ 3 files changed, 105 insertions(+), 5 deletions(-)
+
+diff --git a/docs/technical/current100k-weight-shadow-20261103.md b/docs/technical/current100k-weight-shadow-20261103.md
+index 11c8373..9e593c1 100644
+--- a/docs/technical/current100k-weight-shadow-20261103.md
++++ b/docs/technical/current100k-weight-shadow-20261103.md
+@@ -28,6 +28,8 @@ Complete config shape (placeholders must be replaced with measured private data)
+   },
+   "parent_arm": "parent", "encoder_backend": "<adapter backend>",
+   "encoder_threads": 2, "encoder_batch_size": 1,
++  "head_execution_backend": "TORCH_CPU_FP32",
++  "hip_runtime_manifest_sha256": null,
+   "training_dataset_path": "/private/training/dataset.json",
+   "training_dataset_sha256": "<dataset SHA256>",
+   "training_producer_manifest_sha256": "<training producer SHA256>",
+@@ -47,12 +49,34 @@ training labels can still be revalidated. Real prompts, features, orders,
+ outcomes and filled configs stay private and are never committed to GitHub.
+ 
+ The resident collector owns one encoder. `HeadEnsemble(plan)` loads only small
+-FP32 CPU heads; `predict(features_by_side)` applies all heads to the same BUY/SELL
++FP32 heads; `predict(features_by_side)` applies all heads to the same BUY/SELL
+ features in one linear operation. Features are Current100k 100,000 USD-context,
+ mask-mean pooled, L2-normalized 768-vectors. Outputs are multiplied by 100 and
+ clipped to +/-15 USD; raw values remain. A constant baseline may exceed a trained
+ head's parameter norm. Zero and raw frozen training mean are separate benchmarks.
+ 
++Execution devices are fixed before collection. Encoder backend names use the
++`LAYA_CPU_FP32_` or `LAYA_HIP_FP32_` prefix; unknown devices fail registration.
++`head_execution_backend` defaults to `TORCH_CPU_FP32`. The numeric profile is
++derived from both fields, rather than labeling HIP-derived features as CPU
++encoder output. Every arm uses the same frozen head execution backend.
++
++| Encoder | Head arithmetic | Frozen numeric profile |
++| --- | --- | --- |
++| CPU FP32 | CPU FP32 | `TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15` |
++| HIP FP32 | CPU FP32 | `LAYA_HIP_FP32_ENCODER_TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15` |
++| HIP FP32 | HIP FP32 | `TORCH_HIP_FP32_SHARED_LINEAR_USD100_CLIP15` |
++
++The mixed profile transfers each shared feature vector to CPU once; it does not
++run another encoder. Explicit HIP head arithmetic requires a working ROCm torch
++runtime. Benchmark measurements must pin the exact backend, threads and batch
++size used by the collector; a development CPU cache is not a HIP timing result.
++HIP encoders require the accepted runtime manifest SHA256 in the plan and each
++feature document, plus the existing `resident_hip_runtime` BEFORE_PUBLISH proof
++for target `predict`. The store validates that proof both when sealing and when
++reading a publication. CPU plans require no HIP selection or HIP proof. This
++proof validates runtime-library mapping; it does not grant worker admission.
++
+ `ShadowStore(root).seal(request_item, feature_document, predictions)` accepts
+ schema `heptatrader.current100k-shadow-features.v1`, request ID/hash, producer hash,
+ period hash, base ID, input start, actual feature-completion time, backend,
+diff --git a/research/neuron_learning/laya_cell/current100k_weight_shadow.py b/research/neuron_learning/laya_cell/current100k_weight_shadow.py
+index 3469271..21ab8ca 100644
+--- a/research/neuron_learning/laya_cell/current100k_weight_shadow.py
++++ b/research/neuron_learning/laya_cell/current100k_weight_shadow.py
+@@ -26,6 +26,18 @@ def integer(value):
+  require(type(value)is int and 0<=value<2**63,'SHADOW_INTEGER');return value
+ def finite(value):
+  require(type(value)in(int,float) and math.isfinite(value),'SHADOW_NONFINITE');return float(value)
++def numeric_profile(encoder_backend,head_backend='TORCH_CPU_FP32'):
++ """Name both execution devices; frozen HIP features may feed cheap CPU heads."""
++ require(isinstance(encoder_backend,str),'SHADOW_ENCODER_EXECUTION_PROFILE')
++ backend=encoder_backend.upper()
++ cpu=backend=='CPU_FP32' or backend.startswith('LAYA_CPU_FP32_')
++ hip=backend=='HIP_FP32' or backend.startswith('LAYA_HIP_FP32_')
++ require(cpu or hip,'SHADOW_ENCODER_EXECUTION_PROFILE')
++ require(head_backend in ('TORCH_CPU_FP32','TORCH_HIP_FP32'),'SHADOW_HEAD_EXECUTION_PROFILE')
++ if head_backend=='TORCH_HIP_FP32':
++  require(hip,'SHADOW_ENCODER_HEAD_DEVICE_MISMATCH')
++  return 'TORCH_HIP_FP32_SHARED_LINEAR_USD100_CLIP15'
++ return ('LAYA_HIP_FP32_ENCODER_' if hip else '')+'TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15'
+ def durable_once(path,value):
+  write_once(path,value)
+  fd=os.open(Path(path).parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+@@ -50,8 +62,10 @@ def validate_plan(p):
+  for arm,h in heads.items():
+   safe_id(arm);hash_value(h['sha256']);require(Path(h['path']).is_absolute() and isinstance(h.get('construction_kind'),str),'SHADOW_HEAD_BINDING')
+  require(p.get('cluster_policy')=='UTC_DAYS_MERGED_BY_OVERLAPPING_EPISODES' and p.get('bootstrap_repetitions')==2000 and p.get('bootstrap_seed')==20261103,'SHADOW_INFERENCE_RULE_CHANGED')
+- require(p.get('numeric_profile')=='TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15','SHADOW_NUMERIC_PROFILE')
+  require(isinstance(p.get('encoder_backend'),str) and 0<len(p['encoder_backend'])<=160 and type(p.get('encoder_threads'))is int and 1<=p['encoder_threads']<=64 and p.get('encoder_batch_size') in (1,2),'SHADOW_ENCODER_EXECUTION_PROFILE')
++ require(p.get('numeric_profile')==numeric_profile(p['encoder_backend'],p.get('head_execution_backend','TORCH_CPU_FP32')),'SHADOW_NUMERIC_PROFILE')
++ if 'HIP' in p['numeric_profile']:hash_value(p.get('hip_runtime_manifest_sha256'))
++ else:require(p.get('hip_runtime_manifest_sha256')is None,'SHADOW_CPU_HAS_HIP_RUNTIME')
+  require(p['cross_producer_transfer']==(p['training_producer_manifest_sha256']!=p['producer_registration']['sha256']),'SHADOW_TRANSFER_LINEAGE')
+ 
+ def freeze(c,root):
+@@ -75,7 +89,8 @@ def freeze(c,root):
+  require(c['training_cutoff_ms']>=max(r['input_started_at_ms'] for r in rows) and c['labels_observed_at_ms']>=data.get('observed_at_ms',0),'SHADOW_TRAINING_TIME_CHANGED')
+  keys=('base_id','behavior_model_id','period_sha256','producer_registration','heads','parent_arm','training_dataset_sha256','training_dataset_path','training_mean_usd','training_input_ids','training_reward_ids','training_row_ids','training_cutoff_ms','labels_observed_at_ms','reward_config_path','reward_config_sha256','training_producer_manifest_sha256','encoder_backend','encoder_threads','encoder_batch_size')
+  p={k:copy.deepcopy(c[k]) for k in keys};now=clock_ms();start=now+300000
+- p.update(schema=PLAN_SCHEMA,registered_at_ms=now,input_start_ms=start,input_end_ms=start+RULE['window_ms'],outcome_end_ms=start+RULE['window_ms']+RULE['closure_grace_ms'],rule=copy.deepcopy(RULE),feature_profile=FEATURE_PROFILE,numeric_profile='TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15',claim_scope='PROSPECTIVE_VALUE_RESEARCH_ONLY',trade_authority=False,automatic_selection=False,actor_update=False,cluster_policy='UTC_DAYS_MERGED_BY_OVERLAPPING_EPISODES',bootstrap_repetitions=2000,bootstrap_seed=20261103,historical_trials_modified=False,labels_viewed_rows_are_development=True,cross_producer_transfer=c['training_producer_manifest_sha256']!=c['producer_registration']['sha256'],official_registration_rule='NEW_PRODUCER_SCOPE_REQUIRED_FOR_FORMAL_ADOPTION')
++ head_backend=c.get('head_execution_backend','TORCH_CPU_FP32')
++ p.update(schema=PLAN_SCHEMA,registered_at_ms=now,input_start_ms=start,input_end_ms=start+RULE['window_ms'],outcome_end_ms=start+RULE['window_ms']+RULE['closure_grace_ms'],rule=copy.deepcopy(RULE),feature_profile=FEATURE_PROFILE,numeric_profile=numeric_profile(p['encoder_backend'],head_backend),head_execution_backend=head_backend,hip_runtime_manifest_sha256=c.get('hip_runtime_manifest_sha256'),claim_scope='PROSPECTIVE_VALUE_RESEARCH_ONLY',trade_authority=False,automatic_selection=False,actor_update=False,cluster_policy='UTC_DAYS_MERGED_BY_OVERLAPPING_EPISODES',bootstrap_repetitions=2000,bootstrap_seed=20261103,historical_trials_modified=False,labels_viewed_rows_are_development=True,cross_producer_transfer=c['training_producer_manifest_sha256']!=c['producer_registration']['sha256'],official_registration_rule='NEW_PRODUCER_SCOPE_REQUIRED_FOR_FORMAL_ADOPTION')
+  p['plan_id']=digest(p);validate_plan(p);root.mkdir(mode=0o700,parents=True,exist_ok=True);root.chmod(0o700)
+  durable_once(root/'plan.json',p)
+  receipt={'plan_id':p['plan_id'],'plan_sha256':sha(root/'plan.json'),'durable_at_ms':clock_ms(),'local_receipt_only':True}
+@@ -87,6 +102,12 @@ def validate_features(features):
+   require(isinstance(values,list) and len(values)==768,'SHADOW_FEATURE_SHAPE');values=[finite(v) for v in values]
+   require(abs(math.fsum(v*v for v in values)-1.)<=.001,'SHADOW_FEATURE_NOT_L2_NORMALIZED')
+ 
++def validate_runtime_proof(plan,features):
++ from .resident_hip_runtime import check_publication_proof
++ manifest=plan.get('hip_runtime_manifest_sha256')
++ require(features.get('hip_runtime_manifest_sha256')==manifest,'SHADOW_HIP_RUNTIME_MISMATCH')
++ check_publication_proof(features.get('hip_runtime_proof'),manifest,'predict')
++
+ def validate_predictions(p,predictions):
+  require(isinstance(predictions,dict) and set(predictions)==set(p['heads']),'SHADOW_ARM_COVERAGE')
+  for arm,v in predictions.items():
+@@ -105,15 +126,17 @@ class HeadEnsemble:
+   import torch
+   from safetensors.torch import load_file
+   self.torch=torch;self.plan=plan;self.arms=sorted(plan['heads']);weights=[];biases=[]
++  self.device='cuda' if plan.get('head_execution_backend')=='TORCH_HIP_FP32' else 'cpu'
++  if self.device=='cuda':require(torch.version.hip is not None and torch.cuda.is_available(),'SHADOW_HIP_UNAVAILABLE')
+   for arm in self.arms:
+    h=plan['heads'][arm];require(sha(h['path'])==h['sha256'],'SHADOW_HEAD_CHANGED:'+arm)
+    ts=load_file(h['path'],device='cpu');require(set(ts)=={'value.weight','value.bias'},'SHADOW_HEAD_KEYS')
+    w,b=ts['value.weight'],ts['value.bias'];require(w.shape==(1,768) and b.shape==(1,) and w.dtype==b.dtype==torch.float32,'SHADOW_HEAD_SHAPE_DTYPE')
+    require(bool(torch.isfinite(w).all() and torch.isfinite(b).all()),'SHADOW_HEAD_NONFINITE');weights.append(w.detach());biases.append(b.detach())
+-  self.weights=torch.cat(weights).contiguous();self.biases=torch.cat(biases).contiguous()
++  self.weights=torch.cat(weights).contiguous().to(self.device);self.biases=torch.cat(biases).contiguous().to(self.device)
+  def predict(self,features_by_side):
+   torch=self.torch;validate_features(features_by_side)
+-  x=torch.tensor([features_by_side[s] for s in SIDES],dtype=torch.float32,device='cpu')
++  x=torch.tensor([features_by_side[s] for s in SIDES],dtype=torch.float32,device=self.device)
+   with torch.inference_mode():values=torch.nn.functional.linear(x,self.weights,self.biases).tolist()
+   result={}
+   for i,arm in enumerate(self.arms):
+@@ -139,6 +162,7 @@ class ShadowStore:
+   require(r['model_id']==p['behavior_model_id'] and r['position_at_request']==0,'SHADOW_BEHAVIOR_SCOPE')
+   f=feature_document;require(f.get('schema')==FEATURE_SCHEMA and f.get('feature_profile')==FEATURE_PROFILE,'SHADOW_FEATURE_SCHEMA')
+   require(f.get('backend')==p['encoder_backend'] and f.get('encoder_threads')==p['encoder_threads'] and f.get('encoder_batch_size')==p['encoder_batch_size'],'SHADOW_ENCODER_PROFILE_MISMATCH')
++  validate_runtime_proof(p,f)
+   for k,want in (('request_id',rid),('request_sha256',request_item['request_sha256']),('producer_manifest_sha256',p['producer_registration']['sha256']),('period_sha256',p['period_sha256']),('base_id',p['base_id']),('input_started_at_ms',r['started_at_ms'])):
+    require(f.get(k)==want,'SHADOW_FEATURE_IDENTITY:'+k)
+   require(r['started_at_ms']<=integer(f['computed_at_ms'])<=now,'SHADOW_FEATURE_CLOCK')
+@@ -163,6 +187,7 @@ class ShadowStore:
+   require(publication['commit_sha256']==sha(folder/'commit.json') and publication['prediction_sha256']==commit['prediction_sha256']==sha(folder/'prediction.json') and publication['features_sha256']==commit['features_sha256']==sha(folder/'features.json'),'SHADOW_COMMIT_CHANGED')
+   require(publication['request_sha256']==value['request_sha256'] and self.plan['input_start_ms']<=value['input_started_at_ms']<=value['computed_at_ms']<=publication['seal_durable_completed_at_ms']<self.plan['input_end_ms'],'SHADOW_SEAL_TIME_ORDER')
+   require(observed['publication_sha256']==sha(folder/'publication.json') and publication['seal_durable_completed_at_ms']<=observed['publication_durability_observed_at_ms']<self.plan['input_end_ms'],'SHADOW_PUBLICATION_OBSERVATION')
++  features=read(folder/'features.json');require(value['feature_digest']==digest(features),'SHADOW_FEATURE_DIGEST_CHANGED');validate_runtime_proof(self.plan,features)
+   validate_predictions(self.plan,value['predictions'])
+   return {**value,'committed_at_ms':observed['publication_durability_observed_at_ms'],'seal_durable_completed_at_ms':observed['publication_durability_observed_at_ms'],'publication_durability_observed_at_ms':observed['publication_durability_observed_at_ms'],'prediction_sha256':publication['prediction_sha256'],'publication_path':str(folder/'publication.json'),'publication_sha256':sha(folder/'publication.json'),'observation_path':str(folder/'observation.json'),'observation_sha256':sha(folder/'observation.json')}
+  def remember_commands(self,bindings):
+diff --git a/tests/python/test_current100k_weight_shadow.py b/tests/python/test_current100k_weight_shadow.py
+index 12427da..2fbe883 100644
+--- a/tests/python/test_current100k_weight_shadow.py
++++ b/tests/python/test_current100k_weight_shadow.py
+@@ -90,6 +90,57 @@ class ShadowTests(ForwardScopeFixture, unittest.TestCase):
+         self.assertFalse(report['financial_candidate_selected'])
+         self.assertIsNone(report['paired_comparisons']['patch vs parent']['final_cluster_interval'])
+ 
++    def test_encoder_and_head_devices_have_distinct_frozen_numeric_profiles(self):
++        backend = 'LAYA_HIP_FP32_SINGLE_ROW_MAX2048_NO_TRUNCATION_V1'
++        mixed = 'LAYA_HIP_FP32_ENCODER_TORCH_CPU_FP32_SHARED_LINEAR_USD100_CLIP15'
++        self.assertEqual(W.numeric_profile(backend), mixed)
++        self.assertEqual(W.numeric_profile(backend, 'TORCH_HIP_FP32'),
++                         'TORCH_HIP_FP32_SHARED_LINEAR_USD100_CLIP15')
++        with self.assertRaises(W.EvidenceError):
++            W.numeric_profile('cpu_fp32', 'TORCH_HIP_FP32')
++        with self.assertRaises(W.EvidenceError):
++            W.numeric_profile('UNKNOWN_BACKEND')
++        plan = copy.deepcopy(self.p)
++        plan['encoder_backend'] = backend
++        plan['hip_runtime_manifest_sha256'] = 'a' * 64
++        plan['plan_id'] = W.digest({k: v for k, v in plan.items() if k != 'plan_id'})
++        with self.assertRaises(W.EvidenceError):
++            W.validate_plan(plan)
++        plan['numeric_profile'] = mixed
++        plan['plan_id'] = W.digest({k: v for k, v in plan.items() if k != 'plan_id'})
++        W.validate_plan(plan)
++
++    def test_cpu_cannot_carry_a_hip_publication_proof(self):
++        self.f['hip_runtime_proof'] = {'schema': 'UNSELECTED_TEST_PROOF'}
++        with self.assertRaises(ValueError):
++            self.seal()
++
++    def test_hip_manifest_and_before_publication_proof_are_required(self):
++        self.p.update(encoder_backend='LAYA_HIP_FP32_SINGLE_ROW_MAX2048_NO_TRUNCATION_V1',
++                      hip_runtime_manifest_sha256='a' * 64)
++        self.p['numeric_profile'] = W.numeric_profile(self.p['encoder_backend'])
++        self.p['plan_id'] = W.digest({k: v for k, v in self.p.items() if k != 'plan_id'})
++        hip_root = self.root / 'hip-study'
++        W.durable_once(hip_root / 'plan.json', self.p)
++        W.durable_once(hip_root / 'registration.json', {
++            'plan_id': self.p['plan_id'], 'plan_sha256': W.sha(hip_root / 'plan.json'), 'durable_at_ms': 4})
++        self.store = W.ShadowStore(hip_root)
++        self.f.update(backend=self.p['encoder_backend'], hip_runtime_manifest_sha256='b' * 64)
++        with self.assertRaises(ValueError):
++            self.seal()
++        self.f['hip_runtime_manifest_sha256'] = 'a' * 64
++        with self.assertRaises(ValueError):
++            self.seal()
++        from laya_cell.resident_hip_runtime import LIBRARIES
++        self.f['hip_runtime_proof'] = {
++            'schema': 'heptatrader.resident-hip-runtime-proof.v1', 'phase': 'BEFORE_PUBLISH',
++            'target': 'predict', 'manifest_sha256': 'a' * 64, 'candidate_sha256': 'c' * 64,
++            'pid': 123, 'worker_admission_granted': False, 'extra_gpu_probe_performed': False,
++            'libraries': {name: {'loaded': True, 'sha256': 'c' * 64, 'device_major': 1,
++                                 'device_minor': 1, 'inode': 123} for name in LIBRARIES}}
++        pred = self.seal()
++        self.assertEqual(self.score(pred)['status'], 'OBSERVED')
++
+     def test_publication_attests_after_commit_fsync_and_is_idempotent(self):
+         calls = []
+         original = W.durable_once
+-- 
+2.43.0
+
