@@ -29,7 +29,8 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     adapterConfig.port = m_config.profile.port;
     adapterConfig.clientId = m_config.profile.clientId;
     adapterConfig.account = m_config.profile.account;
-    adapterConfig.readOnly = m_config.profile.observationOnly;
+    adapterConfig.readOnly = m_config.profile.observationOnly ||
+        m_startupRecoveryReadOnly.load();
     adapterConfig.observabilityLogPath =
         m_config.stateDirectory + "/ib-observability.jsonl";
     for (std::map<std::string, InstrumentRef>::const_iterator it =
@@ -50,7 +51,7 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
         adapterConfig.authoritativeCashFxStartupObservedBalances[it->first] =
             baseline->second.observedCashBalance;
     }
-    adapterConfig.risk.enableOrderSubmission = !m_config.profile.observationOnly;
+    adapterConfig.risk.enableOrderSubmission = !adapterConfig.readOnly;
     adapterConfig.risk.maxOrderQuantity = m_config.profile.maxOrderQuantity;
     adapterConfig.risk.maxDailyOrders = 100000;
     adapterConfig.risk.maxPriceDeviationBps = 0.0;
@@ -230,6 +231,20 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
                 reason, "IB_PAPER_STARTUP_MARKET_DATA_FARM_LOST_DURING_REFRESH");
         const IBAuthoritativeRecoveryAuditSnapshot recovery =
             m_adapter->GetAuthoritativeRecoveryAuditSnapshot();
+        if (CanKeepOriginalOrderEvidenceReadOnly(
+                m_config.originalOrderRecoveryReadOnly, m_config.profile.userScope,
+                m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
+                startupConnectionEpoch, m_pendingOriginalOrderEvidence,
+                recovery.active, recovery.terminal))
+        {
+            // Original ownership was recovered before Connect. Retain the
+            // same receiver; informational risk cannot advance a checkpoint.
+            m_recoveryReason = StartupRecoveryReadOnlyReason();
+            m_adapter->ReqRiskRefresh();
+            NotifyTestStage("startup_original_evidence_read_only");
+            reason.clear();
+            return true;
+        }
         if (recovery.risk.reasonCode ==
             "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH") {
             if (CanKeepFxCashMismatchReadOnly(m_config.profile.userScope,
@@ -271,11 +286,16 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
     }
     if (risk.reasonCode == "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH")
         return CleanupStartupSnapshotFailure(reason, risk.reasonCode);
-    if (CanKeepPendingOrderReadOnly(m_config.profile.userScope,
+    const bool originalOwnersBound = !m_config.originalOrderRecoveryReadOnly ||
+        m_pendingOriginalOrderEvidence.empty() ||
+        CanKeepOriginalOrderEvidenceReadOnly(true, m_config.profile.userScope,
+            m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
+            startupConnectionEpoch, m_pendingOriginalOrderEvidence, active, terminal);
+    if (originalOwnersBound && CanKeepPendingOrderReadOnly(m_config.profile.userScope,
             m_adapter->IsConnected(), m_adapter->IsEventStreamAuthoritative(),
             startupConnectionEpoch, active, terminal)) {
         m_startupRecoveryReadOnly.store(true);
-        m_recoveryReason = "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
+        m_recoveryReason = StartupRecoveryReadOnlyReason();
         // This read is intentionally not a recovery-audit barrier. Do not
         // checkpoint or grant mutation authority from these informational data.
         const bool requested = m_adapter->ReqRiskRefresh();

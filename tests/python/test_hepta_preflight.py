@@ -80,6 +80,7 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
     }
     path = root / "share/heptatrader/heptatrader-build-info.json"
     path.write_text(json.dumps(build_info, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o644)  # Match the frozen package manifest under a restrictive umask.
     return root
 
 

@@ -240,6 +240,8 @@ def _copy_member(stream: BinaryIO, target: Path, mode: int) -> None:
             shutil.copyfileobj(stream, output, length=1024 * 1024)
             output.flush()
             os.fsync(output.fileno())
+        # os.open() applies the caller umask; preserve the validated archive mode.
+        os.fchmod(descriptor, mode)
         metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)

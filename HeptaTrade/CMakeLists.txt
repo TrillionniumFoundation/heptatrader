@@ -579,3 +579,11 @@ if(HEPTA_ENABLE_IBAPI AND WIN32)
             "HEPTA_ENABLE_IBAPI=ON but no DLL found in IBAPI_BIN=${IBAPI_BIN}")
     endif()
 endif()
+
+# Offline, stdin-only inspection: never installed and no trading runtime linked.
+add_executable(hepta_fx_restart_diagnose EXCLUDE_FROM_ALL
+    ../tools/hepta_fx_restart_diagnose.cpp
+    execution/ib_paper_fx_cash_restart_catchup.cpp)
+target_include_directories(hepta_fx_restart_diagnose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(hepta_fx_restart_diagnose PRIVATE cxx_std_17)
+target_link_libraries(hepta_fx_restart_diagnose PRIVATE OpenSSL::Crypto)

@@ -61,11 +61,12 @@ bool BasicBaselineValid(
 }
 } // namespace
 
-bool ApplyIbPaperFxCashRestartCatchUp(
+static bool ApplyIbPaperFxCashRestartCatchUpImpl(
     const std::vector<OmsJournalEvent>& events,
     const IbPaperFxCashRestartCatchUpContext& context,
     std::map<std::string, IbPaperFxCashBaseline>& baselines,
-    std::string& reason)
+    std::string& reason,
+    IbPaperFxCashCatchUpAssessment* assessment)
 {
     reason.clear();
     if (!BasicBaselineValid(baselines, context))
@@ -306,10 +307,141 @@ bool ApplyIbPaperFxCashRestartCatchUp(
             zeroFillCancellations.find(item.first) == zeroFillCancellations.end())
         {
             reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
+            // Legacy callers still fail at the same point. Inspection may
+            // identify an exactly bound original owner for observation only.
+            if (!assessment) return false;
+            const SubmittedIdentity& identity = item.second;
+            const std::string side = NormalizeSide(identity.side);
+            if (context.brokerClientId < 0 ||
+                identity.brokerClientId != context.brokerClientId ||
+                identity.commandId.empty() || identity.correlationId.empty() ||
+                identity.acceptanceCommandId != identity.commandId ||
+                (side != "BUY" && side != "SELL") ||
+                baselines.find(identity.instrument) == baselines.end())
+                return false;
+            // A skipped conflicting or cross-epoch economic record cannot be
+            // reclassified as a clean pending owner. Retain its original epoch;
+            // this path never rewrites a callback to match the acceptance.
+            for (const OmsJournalEvent* execution : executions)
+            {
+                const auto& event = *execution;
+                const bool claimsOwner = event.orderId == item.first ||
+                    (!event.reqId.empty() && event.reqId == identity.commandId) ||
+                    (!event.venueCorrelationId.empty() &&
+                     event.venueCorrelationId == identity.correlationId);
+                if (!claimsOwner) continue;
+                if (event.orderId != item.first ||
+                    event.reqId != identity.commandId ||
+                    event.venueCorrelationId != identity.correlationId ||
+                    event.traceId != identity.sessionId ||
+                    event.account != context.account ||
+                    event.executionDomain != identity.executionDomain ||
+                    event.strategy != "agent-native" ||
+                    event.instrument != identity.instrument ||
+                    NormalizeSide(event.side) != side ||
+                    event.brokerClientId != context.brokerClientId ||
+                    event.brokerServiceEpoch != identity.serviceEpoch ||
+                    event.brokerConnectionEpoch != identity.connectionEpoch ||
+                    event.brokerExecutionId.empty() ||
+                    event.tsMs <= 0 ||
+                    static_cast<std::uint64_t>(event.tsMs) < identity.sentAtMs ||
+                    !std::isfinite(event.qty) || event.qty <= 0.0 ||
+                    event.qty > identity.quantity ||
+                    !std::isfinite(event.price) || event.price <= 0.0)
+                    return false;
+            }
+            // Non-cancellation orderStatus is not settlement evidence.
+            // Malformed or unbound observations also cannot open the narrowly
+            // scoped receiver path; cross-epoch evidence remains unproven.
+            for (const OmsJournalEvent* status : statuses)
+            {
+                const auto& event = *status;
+                const bool claimsOwner = event.orderId == item.first ||
+                    (!event.reqId.empty() && event.reqId == identity.commandId) ||
+                    (!event.venueCorrelationId.empty() &&
+                     event.venueCorrelationId == identity.correlationId);
+                if (!claimsOwner) continue;
+                if (event.orderId != item.first ||
+                    event.reqId != identity.commandId ||
+                    event.venueCorrelationId != identity.correlationId ||
+                    event.traceId != identity.sessionId ||
+                    event.account != context.account ||
+                    event.executionDomain != identity.executionDomain ||
+                    event.strategy != "agent-native" ||
+                    event.instrument != identity.instrument ||
+                    NormalizeSide(event.side) != side ||
+                    event.brokerClientId != context.brokerClientId ||
+                    event.brokerServiceEpoch != identity.serviceEpoch ||
+                    event.brokerConnectionEpoch != identity.connectionEpoch ||
+                    event.brokerCallbackType != "orderStatus" ||
+                    event.status.empty() || !event.brokerExecutionId.empty() ||
+                    event.tsMs <= 0 ||
+                    static_cast<std::uint64_t>(event.tsMs) < identity.sentAtMs ||
+                    !std::isfinite(event.qty) || event.qty < 0.0 ||
+                    event.qty > identity.quantity ||
+                    !std::isfinite(event.price) || event.price < 0.0 ||
+                    !std::isfinite(event.brokerRemainingQuantity) ||
+                    event.brokerRemainingQuantity < 0.0 ||
+                    event.brokerRemainingQuantity > identity.quantity ||
+                    (event.qty > 0.0 && event.price <= 0.0) ||
+                    (event.status == "Filled" && event.qty != identity.quantity))
+                {
+                    reason = "IB_FX_CASH_RESTART_CATCHUP_STATUS_EVIDENCE_UNPROVEN";
+                    return false;
+                }
+            }
+            IbPaperPendingOriginalOrder pending;
+            pending.orderId = item.first;
+            pending.commandId = identity.commandId;
+            pending.correlationId = identity.correlationId;
+            pending.sessionId = identity.sessionId;
+            pending.instrument = identity.instrument;
+            pending.side = identity.side;
+            assessment->pending.push_back(pending);
         }
+    if (assessment && !assessment->pending.empty())
+    {
+        assessment->disposition =
+            IbPaperFxCashCatchUpDisposition::AwaitOriginalOrderEvidence;
+        assessment->reason =
+            "IB_FX_CASH_RESTART_CATCHUP_ACCEPTED_ORDER_EVIDENCE_PENDING";
+        return false;
+    }
 
     baselines.swap(advanced);
     reason.clear();
     return true;
+}
+
+bool ApplyIbPaperFxCashRestartCatchUp(
+    const std::vector<OmsJournalEvent>& events,
+    const IbPaperFxCashRestartCatchUpContext& context,
+    std::map<std::string, IbPaperFxCashBaseline>& baselines,
+    std::string& reason)
+{
+    return ApplyIbPaperFxCashRestartCatchUpImpl(
+        events, context, baselines, reason, nullptr);
+}
+
+IbPaperFxCashCatchUpAssessment InspectIbPaperFxCashRestartCatchUp(
+    const std::vector<OmsJournalEvent>& events,
+    const IbPaperFxCashRestartCatchUpContext& context,
+    const std::map<std::string, IbPaperFxCashBaseline>& baselines)
+{
+    IbPaperFxCashCatchUpAssessment result;
+    auto scratch = baselines;
+    std::string reason;
+    if (ApplyIbPaperFxCashRestartCatchUpImpl(
+            events, context, scratch, reason, &result))
+    {
+        result.disposition = IbPaperFxCashCatchUpDisposition::Complete;
+        result.reason.clear();
+    }
+    else if (result.disposition !=
+             IbPaperFxCashCatchUpDisposition::AwaitOriginalOrderEvidence)
+    {
+        result.pending.clear();
+        result.reason = reason;
+    }
+    return result;
 }

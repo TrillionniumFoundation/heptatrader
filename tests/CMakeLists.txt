@@ -287,6 +287,12 @@ add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile
 target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
 
+add_executable(hepta_ib_original_order_evidence_tests
+    ib_original_order_evidence_tests.cpp
+    ../HeptaTrade/execution/ib_paper_execution_runtime_config.cpp)
+target_link_libraries(hepta_ib_original_order_evidence_tests PRIVATE hepta_ib_paper_policy)
+hepta_register_core_test(hepta_ib_original_order_evidence_tests)
+
 add_executable(hepta_ib_live_terminal_reconciliation_tests
     ib_live_terminal_reconciliation_tests.cpp)
 target_link_libraries(hepta_ib_live_terminal_reconciliation_tests
@@ -409,6 +415,10 @@ target_link_libraries(hepta_ib_full_runtime_recovery_tests PRIVATE
     hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
     hepta_authoritative_state hepta_risk_engine hepta_typed_tool_protocol)
 hepta_register_core_test(hepta_ib_full_runtime_recovery_tests)
+add_test(NAME hepta_ib_original_pending_readonly_runtime_tests
+    COMMAND hepta_ib_full_runtime_recovery_tests --original-pending-readonly-only)
+set_tests_properties(hepta_ib_original_pending_readonly_runtime_tests
+    PROPERTIES LABELS "core" TIMEOUT 300)
 
 # Deliberate local operator target only: no ordinary ctest, no installation,
 # no default build, and no direct gateway access from the CLI. The runner

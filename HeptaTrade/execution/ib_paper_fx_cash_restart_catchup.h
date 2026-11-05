@@ -17,6 +17,37 @@ struct IbPaperFxCashRestartCatchUpContext
     int brokerClientId = -1; // required for zero-fill terminal evidence
 };
 
+// A classification, never a permit to connect, trade, checkpoint, or promote.
+enum class IbPaperFxCashCatchUpDisposition
+{
+    InvalidEvidence = 0,
+    Complete,
+    AwaitOriginalOrderEvidence
+};
+struct IbPaperPendingOriginalOrder
+{
+    long orderId = -1;
+    std::string commandId;
+    std::string correlationId;
+    std::string sessionId;
+    std::string instrument;
+    std::string side;
+};
+struct IbPaperFxCashCatchUpAssessment
+{
+    IbPaperFxCashCatchUpDisposition disposition =
+        IbPaperFxCashCatchUpDisposition::InvalidEvidence;
+    std::vector<IbPaperPendingOriginalOrder> pending;
+    std::string reason;
+};
+
+// Does not modify baselines. The legacy Apply function retains its exact
+// fail-closed boolean contract and error strings.
+IbPaperFxCashCatchUpAssessment InspectIbPaperFxCashRestartCatchUp(
+    const std::vector<OmsJournalEvent>& events,
+    const IbPaperFxCashRestartCatchUpContext& context,
+    const std::map<std::string, IbPaperFxCashBaseline>& baselines);
+
 bool ApplyIbPaperFxCashRestartCatchUp(
     const std::vector<OmsJournalEvent>& events,
     const IbPaperFxCashRestartCatchUpContext& context,

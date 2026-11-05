@@ -40,6 +40,10 @@ struct IbPaperExecutionRuntimeConfig
     ExecutionGatewayContextBinding gatewayContextBinding;
 
     IbPaperExecutionProfileConfig profile;
+    // Explicit original-owner observation mode. False preserves the existing
+    // startup rejection. True permanently disables mutations/checkpoints for
+    // this process, including after late evidence or a successful snapshot.
+    bool originalOrderRecoveryReadOnly = false;
     std::string stateDirectory;
     std::string journalPath;
     std::string controlDirectory;

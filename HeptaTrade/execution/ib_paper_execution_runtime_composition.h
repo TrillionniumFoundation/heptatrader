@@ -6,6 +6,7 @@
 
 #include "execution_authority.h"
 #include "ib_paper_execution_runtime_config.h"
+#include "ib_paper_fx_cash_restart_catchup.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../adapter_ib/ib_gateway_adapter.h"
 #include "../events/execution_event_hub.h"
@@ -223,10 +224,13 @@ private:
         std::chrono::steady_clock::time_point now) noexcept;
     const char* StartupRecoveryReadOnlyReason() const noexcept {
         if (m_config.profile.observationOnly) return "IB_OBSERVATION_ONLY";
+        if (m_config.originalOrderRecoveryReadOnly)
+            return "IB_PAPER_ORIGINAL_OWNER_RECOVERY_READ_ONLY";
         return m_startupFxCashMismatchReadOnly.load() ?
             "IB_FX_CASH_ATTESTED_BALANCE_MISMATCH" :
             "IB_PAPER_TERMINAL_DOWNLOAD_INCOMPLETE";
     }
+    bool VerifyPendingOriginalOwners(std::string& reason) const;
     bool AllowsRiskIncrease(std::string& reason) const;
     bool AllowsAuthoritativeFlatten(
         std::string& reason, bool requireSettledQuote = false) const;
@@ -430,6 +434,8 @@ private:
     // Latched for this process. Only a new complete startup may clear it;
     // late callbacks cannot silently turn a diagnostic service into a trader.
     std::atomic<bool> m_startupRecoveryReadOnly{false};
+    bool m_coordinatorRecoveryVerified = false;
+    std::vector<IbPaperPendingOriginalOrder> m_pendingOriginalOrderEvidence;
     std::atomic<bool> m_startupFxCashMismatchReadOnly{false};
     std::atomic<std::uint64_t> m_reconnectConnectionEpoch{0};
     int m_reconnectAttempt = 0;
