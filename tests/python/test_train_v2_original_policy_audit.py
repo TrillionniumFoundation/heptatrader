@@ -189,6 +189,7 @@ class OriginalPolicyAuditTests(unittest.TestCase):
     def test_group_readable_destination_rejected(self):
         root = self.root / "public"
         root.mkdir(mode=0o750)
+        root.chmod(0o750)  # Do not let an inherited umask make this fixture private.
         with self.assertRaisesRegex(ValueError, "PRIVATE_OUTPUT_DIRECTORY_REQUIRED"):
             a.write_once(root / "nope.json", {"assessment": "HOLD"})
         self.assertFalse((root / "nope.json").exists())

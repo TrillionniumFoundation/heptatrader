@@ -171,6 +171,7 @@ class OriginalQuoteContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)/"world"
             root.mkdir(mode=0o755)
+            root.chmod(0o755)  # Preserve the negative control under a strict CI umask.
             with self.assertRaisesRegex(NativeHold,"PRIVATE_OUTPUT_DIR_REQUIRED"):
                 write_once_private(root/"bad.json",{"a":1})
 

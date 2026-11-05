@@ -63,4 +63,3 @@ int main(int argc,char**) {
              "\"model_forwards\":0,\"promotion_authority\":false,\"qualification\":false}\n";
     return complete?0:pending?3:2;
 }
-

@@ -234,6 +234,7 @@
         "scripts/hepta_ib_runtime_report.py",
         "HeptaTrade/cli/hepta_ib_profile.cpp",
         "scripts/hepta_fx_readonly_probe.py",
+        "tools/hepta_fx_restart_diagnose.cpp",
         "scripts/hepta_fx_tick_by_tick_probe.py",
         "scripts/hepta_fx_tbt_midpoint_control.py",
         "scripts/hepta_fx_source_evidence.py",

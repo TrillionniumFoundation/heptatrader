@@ -108,4 +108,3 @@ int main() {
  <<",\"passed\":"<<cases<<",\"production_types\":true,\"legacy_fail_closed_preserved\":true,"
  "\"cross_epoch_not_rewritten\":true,\"model_forwards\":0,\"broker_requests\":0,\"qualification\":false}\n";
 }
-
