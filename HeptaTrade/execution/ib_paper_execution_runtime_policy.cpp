@@ -128,7 +128,8 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
     };
     m_coordinator.reset(new ExecutionCoordinator(m_journal, callbacks));
     std::string recovery;
-    if (!m_coordinator->RecoverFromJournal(recovery)) m_recoveryReason = recovery;
+    m_coordinatorRecoveryVerified = m_coordinator->RecoverFromJournal(recovery);
+    if (!m_coordinatorRecoveryVerified) m_recoveryReason = recovery;
     NotifyTestStage("coordinator_ready");
 }
 IBAuthoritativeCorrelationSnapshot

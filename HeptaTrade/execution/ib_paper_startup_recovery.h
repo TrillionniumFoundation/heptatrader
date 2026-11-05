@@ -1,5 +1,6 @@
 #pragma once
 #include "../adapter_ib/ib_gateway_adapter.h"
+#include "ib_paper_fx_cash_restart_catchup.h"
 
 // Availability fallback, never terminal evidence or permission to trade.
 // Keep the exact live connection when a complete, correlated active-order
@@ -22,6 +23,34 @@ inline bool CanKeepPendingOrderReadOnly(
         if (item.first.empty() || item.second < 0 || !active.activeOrderIds.count(item.second) ||
             !bound.insert(item.second).second) return false;
     return bound == active.activeOrderIds;
+}
+
+// The existing incomplete-history availability rule plus the exact original
+// pending owners. A complete snapshot of unrelated correlated orders is not
+// sufficient. This never attests a fill, cancellation, balance, or utility.
+inline bool CanKeepOriginalOrderEvidenceReadOnly(
+    bool explicitlyRequested, bool userScope, bool connected,
+    bool eventStreamAuthoritative, std::uint64_t epoch,
+    const std::vector<IbPaperPendingOriginalOrder>& pending,
+    const IBAuthoritativeCorrelationSnapshot& active,
+    const IBAuthoritativeTerminalCorrelationSnapshot& terminal)
+{
+    if (!explicitlyRequested || pending.empty() ||
+        !CanKeepPendingOrderReadOnly(userScope, connected,
+            eventStreamAuthoritative, epoch, active, terminal))
+        return false;
+    std::set<long> seen;
+    for (const auto& owner : pending)
+    {
+        const auto found = active.activeOrderIdsByCorrelation.find(owner.correlationId);
+        if (owner.orderId < 0 || owner.commandId.empty() ||
+            owner.correlationId.empty() || !seen.insert(owner.orderId).second ||
+            found == active.activeOrderIdsByCorrelation.end() ||
+            found->second != owner.orderId ||
+            active.activeOrderIds.count(owner.orderId) == 0)
+            return false;
+    }
+    return true;
 }
 
 // A verified cash discrepancy is a trading fence, not a transport failure.

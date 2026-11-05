@@ -520,10 +520,41 @@ bool IbPaperExecutionRuntimeComposition::StartIpcAndPublishReady(
     return true;
 }
 
+bool IbPaperExecutionRuntimeComposition::VerifyPendingOriginalOwners(
+    std::string& reason) const
+{
+    if (!m_coordinator || !m_coordinatorRecoveryVerified)
+    {
+        reason = "IB_PAPER_ORIGINAL_OWNER_RECOVERY_PROJECTION_REQUIRED";
+        return false;
+    }
+    for (const auto& pending : m_pendingOriginalOrderEvidence)
+    {
+        ExecutionOrderOwner owner;
+        if (m_coordinator->TryGetOrderOwner(pending.orderId, owner) !=
+                ExecutionOrderOwnerLookupStatus::Found ||
+            owner.agentId != m_config.gatewayContextBinding.agentId ||
+            owner.account != m_config.profile.account ||
+            owner.executionDomain != m_config.gatewayContextBinding.executionDomain ||
+            owner.strategy != "agent-native" ||
+            owner.commandId != pending.commandId ||
+            owner.venueCorrelationId != pending.correlationId ||
+            owner.sessionId != pending.sessionId ||
+            owner.instrument != pending.instrument || owner.side != pending.side)
+        {
+            reason = "IB_PAPER_ORIGINAL_OWNER_RECOVERY_BINDING_INVALID";
+            return false;
+        }
+    }
+    reason.clear();
+    return true;
+}
+
 bool IbPaperExecutionRuntimeComposition::Start(std::string& reason)
 {
     if (StartupCancellationRequested(reason)) return false;
-    if (m_config.profile.observationOnly) m_startupRecoveryReadOnly.store(true);
+    if (m_config.profile.observationOnly || m_config.originalOrderRecoveryReadOnly)
+        m_startupRecoveryReadOnly.store(true);
     if (!ValidateStartupContract(reason) ||
         !PrepareExecutionFoundation(reason))
         return false;
@@ -531,6 +562,9 @@ bool IbPaperExecutionRuntimeComposition::Start(std::string& reason)
     // can arrive. Otherwise restart reconciliation would durably retain a
     // callback but lose its owner-scoped events.wait/recent_orders routing.
     BuildCoordinator();
+    if (m_config.originalOrderRecoveryReadOnly &&
+        !VerifyPendingOriginalOwners(reason))
+    { CloseUnconsumedListenFds(); return false; }
     if (m_terminalLatchPresent)
     {
         if (!BuildTerminalControlAuthority(reason))

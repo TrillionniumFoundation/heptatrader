@@ -198,6 +198,7 @@ bool HasDisabledResidualConfiguration(
     const std::map<std::string, std::string>& values)
 {
     static const char* keys[] = {
+        "HEPTA_IB_PAPER_ORIGINAL_ORDER_RECOVERY_READ_ONLY",
         "HEPTA_IB_PAPER_OBSERVATION_ONLY", "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_CRYPTO_AGENT_ID", "HEPTA_IB_PAPER_CRYPTO_SESSION_ID", "HEPTA_IB_PAPER_ACCOUNT", "HEPTA_IB_PAPER_HOST",
         "HEPTA_IB_PAPER_PORT", "HEPTA_IB_PAPER_CLIENT_ID",
         "HEPTA_IB_PAPER_MAX_ORDER_QTY",
@@ -273,6 +274,7 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     if (!Enabled())
     {
         if (mode != IbPaperExecutionRuntimeMode::Disabled || profile.enabled ||
+            originalOrderRecoveryReadOnly ||
             !profile.account.empty() || !profile.host.empty() || profile.port != 0 ||
             profile.clientId != 0 || !profile.stateDirectory.empty() ||
             !profile.authorizationCredentialPath.empty() ||
@@ -302,6 +304,12 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     if (mode != IbPaperExecutionRuntimeMode::Paper || !profile.enabled)
     {
         reason = "IB_PAPER_RUNTIME_MODE_UNSUPPORTED";
+        return false;
+    }
+    if (originalOrderRecoveryReadOnly &&
+        (!profile.userScope || profile.observationOnly))
+    {
+        reason = "IB_PAPER_ORIGINAL_OWNER_RECOVERY_SCOPE_INVALID";
         return false;
     }
     if (listenFd < 0 || eventListenFd < 0 || listenFd == eventListenFd)
@@ -523,6 +531,7 @@ bool IbPaperExecutionRuntimeConfig::FromEnvironment(
     int currentPid, IbPaperExecutionRuntimeConfig& config, std::string& reason)
 {
     static const char* keys[] = {
+        "HEPTA_IB_PAPER_ORIGINAL_ORDER_RECOVERY_READ_ONLY",
         "HEPTA_IB_PAPER_OBSERVATION_ONLY", "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_CRYPTO_AGENT_ID", "HEPTA_IB_PAPER_CRYPTO_SESSION_ID", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
         "HEPTA_IB_PAPER_HOST", "HEPTA_IB_PAPER_PORT",
         "HEPTA_IB_PAPER_CLIENT_ID", "HEPTA_IB_PAPER_MAX_ORDER_QTY",
@@ -579,6 +588,14 @@ bool IbPaperExecutionRuntimeConfig::FromValues(
         return false;
     }
     config.mode = IbPaperExecutionRuntimeMode::Paper;
+    const std::string originalRecovery =
+        ReadString(values, "HEPTA_IB_PAPER_ORIGINAL_ORDER_RECOVERY_READ_ONLY");
+    if (!originalRecovery.empty() && originalRecovery != "0" && originalRecovery != "1")
+    {
+        reason = "IB_PAPER_ORIGINAL_OWNER_RECOVERY_SELECTOR_INVALID";
+        return false;
+    }
+    config.originalOrderRecoveryReadOnly = originalRecovery == "1";
 
     if (!IbPaperExecutionProfileConfig::FromValues(values, config.profile, reason))
         return false;

@@ -384,6 +384,7 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
     std::string& reason)
 {
     reason.clear();
+    m_pendingOriginalOrderEvidence.clear();
     if (!m_config.profile.userScope) return true;
     if (m_config.fxCashBaselines.empty() ||
         !ValidateFxCashBaselineRecords(m_config.fxCashBaselines))
@@ -429,6 +430,23 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
     context.maxGrossPosition = m_config.profile.maxGrossPosition;
     context.brokerClientId = m_config.profile.clientId;
 
+    if (m_config.originalOrderRecoveryReadOnly)
+    {
+        const auto inspection = InspectIbPaperFxCashRestartCatchUp(
+            events, context, m_config.fxCashBaselines);
+        if (inspection.disposition != IbPaperFxCashCatchUpDisposition::Complete &&
+            inspection.disposition !=
+                IbPaperFxCashCatchUpDisposition::AwaitOriginalOrderEvidence)
+        {
+            reason = inspection.reason;
+            return false;
+        }
+        // Even complete evidence cannot unlatch this explicitly read-only
+        // process. No cash baseline is advanced by inspection.
+        m_pendingOriginalOrderEvidence = inspection.pending;
+        reason.clear();
+        return true;
+    }
     std::map<std::string, IbPaperFxCashBaseline> advanced =
         m_config.fxCashBaselines;
     if (!ApplyIbPaperFxCashRestartCatchUp(
@@ -447,6 +465,11 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
 bool IbPaperExecutionRuntimeComposition::PersistFxCashRestartCheckpoint(
     std::string& reason)
 {
+    if (m_startupRecoveryReadOnly.load())
+    {
+        reason = StartupRecoveryReadOnlyReason();
+        return false;
+    }
     if (!m_adapter)
     {
         reason = "IB_FX_CASH_RESTART_CHECKPOINT_SNAPSHOT_INCOMPLETE";

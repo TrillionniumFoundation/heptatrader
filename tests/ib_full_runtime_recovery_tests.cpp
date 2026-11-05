@@ -91,6 +91,8 @@ struct Shared {
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
     bool seeded=false;
+    bool pendingOriginalEvidence=false;
+    bool wrongPendingCorrelation=false;
     void signal(int code){std::lock_guard<std::mutex> lock(mutex);controls.push_back(code);}
     void injectError(const IBEvent& event){std::lock_guard<std::mutex> lock(mutex);injectedErrors.push_back(event);}
     void stage(const char* name){std::lock_guard<std::mutex> lock(mutex);++stages[name];}
@@ -115,6 +117,18 @@ struct IbFullRuntimeRecoveryAccess {
     }
     static bool riskReady(IbPaperExecutionRuntimeComposition& r,std::string& reason) {
         return r.AllowsRiskIncrease(reason);
+    }
+    static bool flattenReady(IbPaperExecutionRuntimeComposition& r,std::string& reason) {
+        return r.AllowsAuthoritativeFlatten(reason);
+    }
+    static bool checkpoint(IbPaperExecutionRuntimeComposition& r,std::string& reason) {
+        return r.PersistFxCashRestartCheckpoint(reason);
+    }
+    static bool readOnly(IbPaperExecutionRuntimeComposition& r) {
+        return r.m_startupRecoveryReadOnly.load();
+    }
+    static IbPaperFxCashBaseline cashBaseline(const IbPaperExecutionRuntimeComposition& r) {
+        return r.m_config.fxCashBaselines.at("EUR.USD");
     }
     static bool finalSend(IbPaperExecutionRuntimeComposition& r,
         const IBFinalOrderSendContext& context,const IBContractLite& contract,
@@ -170,6 +184,16 @@ public:
     }
     bool ReqAllOpenOrders()override{
         ++s->openCalls;
+        if(s->pendingOriginalEvidence) {
+            auto e=make(IBEventType::OpenOrder);e.id=801;e.contract=contract(false);
+            e.order.action="BUY";e.order.orderType="MKT";e.order.totalQuantity=25;
+            e.number=25;e.value="PreSubmitted";
+            std::string reason;
+            check(IbVenueCorrelationCodec::EncodeOrderRef(
+                "hepta-v1-sha256:"+std::string(64,s->wrongPendingCorrelation?'9':'a'),
+                e.order.orderRef,reason),"pending original correlation fixture");
+            events.push_back(e);
+        }
         if(s->activeOnReconnect&&s->connectCount>1){
             auto e=make(IBEventType::OpenOrder);e.id=999;e.contract=contract(false);
             e.order.action="BUY";e.order.orderType="MKT";e.order.totalQuantity=1;e.number=1;e.value="Submitted";
@@ -180,6 +204,7 @@ public:
     }
     bool ReqCompletedOrders()override {
         ++s->terminalCalls;
+        if(s->pendingOriginalEvidence) return true; // Explicit missing End fixture.
         if(s->seeded)for(int i=0;i<2;++i) {
             auto e=make(IBEventType::CompletedOrder);e.id=801+i;e.contract=contract(i==1);
             e.order.action="BUY";e.order.totalQuantity=i?.01:25;e.order.orderType="MKT";
@@ -967,8 +992,145 @@ static void configuredCryptoPositionPayload() {
         check(f.shared->orderCalls==0,"configured observation cannot call order methods");
     }
 }
+static void seedPendingOriginal(Fixture& f,bool requested) {
+    f.savedConfig.originalOrderRecoveryReadOnly=requested;
+    f.shared->pendingOriginalEvidence=true;
+    auto& baseline=f.savedConfig.fxCashBaselines.at("EUR.USD");
+    baseline.observedAtMs=ms()-1000;
+    const auto at=static_cast<std::int64_t>(baseline.observedAtMs)+10;
+    OmsJournal j;check(j.Init(f.savedConfig.journalPath),"private pending fixture journal");
+    OmsJournalEvent e;e.schemaVersion=4;e.tsMs=at;e.reqId="original-pending-eur";
+    e.clientReqId=e.reqId;e.traceId="session-fx";e.strategy="agent-native";
+    e.account="DU90001";e.venue="IB";e.executionDomain="PAPER";e.instrument="EUR.USD";
+    e.side="BUY";e.qty=25;e.price=1.12;e.requestHash="sha256:"+std::string(64,'d');
+    e.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'a');
+    e.source="agent.tool:fixture-fx";
+    e.eventType="order_intent";e.eventId="pending:intent";e.status="intent_recorded";
+    check(j.Append(e),"pending intent");
+    e.eventType="place_send_attempt";e.eventId="pending:attempt";e.status="send_attempt";
+    check(j.Append(e),"pending attempt");
+    e.eventType="place_sent";e.eventId="pending:sent";e.orderId=801;e.status="submitted";
+    e.tsMs=at+2;check(j.Append(e),"pending original send");
+    e.eventType="broker_order_accepted";e.eventId="pending:accepted";
+    e.source="agent:fixture-fx";e.tsMs=at+1;e.status="Accepted";
+    e.brokerServiceEpoch="synthetic-original-service";e.brokerConnectionEpoch=7;e.brokerClientId=701;
+    check(j.Append(e),"pending original acceptance");
+    e.eventType="broker_order_status";e.eventId="pending:status";e.tsMs=at+3;
+    e.status="PreSubmitted";e.brokerCallbackType="orderStatus";e.qty=0;e.price=0;
+    e.brokerRemainingQuantity=25;check(j.Append(e),"pending original status");
+}
+static bool checkpointAbsent(const Fixture& f) {
+    struct stat value;
+    return ::lstat((f.savedConfig.stateDirectory+"/ib-fx-cash-restart-attestation").c_str(),&value)!=0 &&
+        errno==ENOENT;
+}
+static void assertOriginalReadOnly(Fixture& f) {
+    const std::string expected="IB_PAPER_ORIGINAL_OWNER_RECOVERY_READ_ONLY";
+    std::string reason;
+    check(IbFullRuntimeRecoveryAccess::readOnly(*f.runtime),"explicit recovery latch remains set");
+    check(!IbFullRuntimeRecoveryAccess::riskReady(*f.runtime,reason)&&reason==expected,
+          "dedicated latch blocks risk increase independently of kill switch");
+    check(!IbFullRuntimeRecoveryAccess::flattenReady(*f.runtime,reason)&&reason==expected,
+          "dedicated latch blocks flatten");
+    check(!IbFullRuntimeRecoveryAccess::checkpoint(*f.runtime,reason)&&reason==expected,
+          "checkpoint internal final guard blocks writes");
+    auto& policy=IbFullRuntimeRecoveryAccess::policy(*f.runtime);
+    auto order=quoteRegressionOrder(false,"pending-readonly-place");
+    const auto placed=policy.PlaceOrder(order);
+    check(placed.status==ExecutionCommandStatus::Rejected,"read-only policy rejects place");
+    CancelOrderCommand cancel;cancel.context=order.context;
+    cancel.context.toolCallId="pending-readonly-cancel";cancel.orderId=801;
+    cancel.instrument="EUR.USD";cancel.side="BUY";
+    const auto cancelled=policy.CancelOrder(cancel);
+    check(cancelled.status==ExecutionCommandStatus::Rejected,"read-only policy rejects cancellation");
+    FlattenPositionCommand flat;flat.context=order.context;flat.context.toolCallId="pending-readonly-flatten";
+    flat.instrument="EUR.USD";flat.contract=f.savedConfig.quoteContracts.at("EUR.USD");
+    check(policy.PreviewFlattenPosition(flat).status==ExecutionCommandStatus::Rejected,
+          "read-only policy cannot mint flatten preview");
+    ExecutionReadCommand read;read.context=order.context;read.query="system.get_health";
+    std::map<std::string,std::string> health;
+    check(TypedToolProtocol::DecodeJsonObjectFields(policy.ReadAuthoritativeState(read).detail,health,reason),
+          "native read-only health JSON: "+reason);
+    check(health.at("startup_recovery_read_only")=="true"&&health.at("mutation_ready")=="false",
+          "health preserves read-only and no mutation qualification");
+    check(f.shared->orderCalls==0,"no PlaceOrder or CancelOrder wrapper method was invoked");
+    check(checkpointAbsent(f),"no cash checkpoint was created");
+    const auto original=f.savedConfig.fxCashBaselines.at("EUR.USD");
+    const auto current=IbFullRuntimeRecoveryAccess::cashBaseline(*f.runtime);
+    check(current.account==original.account&&current.instrument==original.instrument&&
+          current.currency==original.currency&&current.baselineCashBalance==original.baselineCashBalance&&
+          current.observedCashBalance==original.observedCashBalance&&
+          current.campaignExecutionDelta==original.campaignExecutionDelta&&
+          current.observedAtMs==original.observedAtMs&&current.proof==original.proof,
+          "all original cash baseline fields stay unchanged before and after late callback");
+}
+static void originalPendingReadOnlyCases() {
+    {Fixture f(false,false,true);seedPendingOriginal(f,false);f.start(f.savedConfig,true,false);
+     check(f.startFailure=="IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID",
+           "default behavior retains original failure");
+     check(f.shared->connectCount==0&&f.shared->orderCalls==0&&checkpointAbsent(f),
+           "default rejects before broker wrapper Connect or checkpoint");}
+    {Fixture f(false,false,true);seedPendingOriginal(f,true);
+     f.shared->wrongPendingCorrelation=true;f.start(f.savedConfig,true,false);
+     check(f.shared->orderCalls==0&&checkpointAbsent(f),
+           "unbound active correlation cannot qualify a receiver or checkpoint");}
+    {Fixture f(false,false,true);seedPendingOriginal(f,true);f.start(f.savedConfig,true);
+     check(f.shared->count("startup_original_evidence_read_only")==1,
+           "pending foundation reaches exact original-owner read-only receiver");
+     assertOriginalReadOnly(f);
+     ExecutionOrderOwner owner;check(f.runtime->Coordinator().GetOrderOwner(801,owner)&&
+         owner.commandId=="original-pending-eur"&&owner.agentId=="fixture-fx",
+         "original command ownership recovered before callbacks");
+     IBEvent e;e.type=IBEventType::ExecutionDetails;e.id=801;e.requestId=-1;
+     e.connectionEpoch=f.runtime->Adapter().GetConnectionEpoch();e.account="DU90001";e.brokerClientId=701;
+     e.key="SYNTH-LATE-PENDING";e.value="BOT";e.contract=contract(false);e.number=1.12;e.number2=25;
+     e.remainingQuantityKnown=false;
+     e.economics=CaptureIbExecutionEconomics(e.contract,111,900801,25,1.12,25,1.12,false);
+     std::string reason;check(IbVenueCorrelationCodec::EncodeOrderRef("hepta-v1-sha256:"+std::string(64,'a'),e.order.orderRef,reason),
+           "late callback correlation");
+     f.shared->injectError(e);
+     bool retained=false;const auto until=ms()+2000;
+     while(ms()<until&&!retained) {
+        std::ifstream in(f.savedConfig.journalPath);std::string line;
+        while(std::getline(in,line)){OmsJournalEvent event;
+          if(OmsJournal::ParseJsonLine(line,event)&&event.eventType=="broker_execution"&&
+             event.brokerExecutionId=="SYNTH-LATE-PENDING") {
+            check(event.reqId=="original-pending-eur"&&event.source=="agent:fixture-fx",
+                  "late execution keeps exact original owner");
+            check(event.brokerServiceEpoch==f.runtime->ServiceEpoch()&&
+                  event.brokerServiceEpoch!="synthetic-original-service",
+                  "new observation epoch is retained, never rewritten");
+            retained=true;
+          }}
+        if(!retained)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+     }
+     check(retained,"late original execution durably received");
+     check(f.runtime->Coordinator().GetOrderOwner(801,owner),"read-only late fill does not retire original owner");
+     assertOriginalReadOnly(f);}
+    {Fixture f(false,false,true);f.savedConfig.originalOrderRecoveryReadOnly=true;
+     f.start(f.savedConfig,true);assertOriginalReadOnly(f);
+     check(f.shared->count("startup_original_evidence_read_only")==0,
+           "complete/no-pending inspection still remains explicitly read-only");
+     f.shared->signal(1101);const auto until=ms()+6000;
+     while(ms()<until&&!f.runtime->HasFatalRuntimeError())std::this_thread::sleep_for(std::chrono::milliseconds(10));
+     check(f.runtime->HasFatalRuntimeError(),"unqualified read-only reconnect fails closed");
+     check(IbFullRuntimeRecoveryAccess::readOnly(*f.runtime)&&f.shared->orderCalls==0&&checkpointAbsent(f),
+           "reconnect failure cannot unlatch or checkpoint");}
+    std::cout<<"{\"schema\":\"hepta.original_pending_full_runtime.v1\",\"scenarios\":4,"
+      "\"default_reject_before_connect\":true,\"unbound_snapshot_rejected\":true,"
+      "\"late_original_callback_retained\":true,\"complete_stays_read_only\":true,"
+      "\"reconnect_fail_closed\":true,\"kernel_network_denied\":true,\"synthetic_inputs_only\":true,"
+      "\"af_unix_private_ipc_used\":true,\"cash_baseline_advanced\":false,"
+      "\"new_observation_epoch_preserved\":true,"
+      "\"broker_socket_calls\":0,\"order_method_calls\":0,\"checkpoint_writes\":0,"
+      "\"model_forwards\":0,\"promotion_authority\":false,\"predictive_value_qualification\":false}\n";
+}
+
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==2&&std::string(argv[1])=="--original-pending-readonly-only") {
+        originalPendingReadOnlyCases();return 0;
+    }
     if(argc==1||(argc==2&&std::string(argv[1])=="--configured-crypto-observation-only")) {
         configuredCryptoPositionPayload();
         if(argc==2){std::cout<<"PASS actual runtime portfolio explicit zero/nonzero/incomplete crypto evidence; kernel network denied; zero order methods\n";return 0;}
