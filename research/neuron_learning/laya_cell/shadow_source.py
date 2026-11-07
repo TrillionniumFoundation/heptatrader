@@ -57,15 +57,24 @@ def valid_quote(q,received,instrument,*,legacy_historical_expiry=False):
         raise ValueError('QUOTE_NUMERIC')
     return bid,ask
 
-def parse_native_quote_reply(returncode,stdout,received,instrument):
+def parse_native_quote_reply(returncode,stdout,received,instrument,*,stderr=''):
     """Fail closed on malformed gateway replies; never cache or refresh a quote.
 
     The original collector still owns its fixed read-only market.get_quote call.
     This pure parser has no broker client, subscription mutator or recovery
     commands. Recovering means accepting a *subsequent actual fresh quote*.
     """
-    if type(returncode) is not int or type(stdout) is not str:
+    if (type(returncode) is not int or type(stdout) is not str
+        or type(stderr) is not str):
         raise ValueError('QUOTE_TOOL_RESPONSE_TYPE')
+    if returncode and not stdout.strip():
+        # The native CLI can reject discovery before producing a JSON reply.
+        # Preserve only this reviewed complete machine code; arbitrary stderr,
+        # mixed messages and credentials must never enter source evidence.
+        reason=('DISCOVERY_LIST_REJECTED' if stderr in
+                ('DISCOVERY_LIST_REJECTED','DISCOVERY_LIST_REJECTED\n')
+                else 'QUOTE_TOOL_NO_JSON_REPLY')
+        raise ValueError(reason)
     try:
         obj=strict(stdout)
     except (ValueError,TypeError) as exc:
@@ -375,7 +384,7 @@ def collect(root,seconds):
                 p=subprocess.run([str(cli),'native','--io-timeout-ms','4000','--call-id','laya-shadow-read-'+uuid.uuid4().hex,
                     'call','market.get_quote','instrument=EUR.USD'],capture_output=True,text=True,timeout=8)
                 q=parse_native_quote_reply(p.returncode,p.stdout,
-                                            int(time.time()*1000),'EUR.USD')
+                                            int(time.time()*1000),'EUR.USD',stderr=p.stderr)
                 append('QUOTE',{k:q[k] for k in FIELDS if k in q})
             except Exception as exc:
                 reason=str(exc)
