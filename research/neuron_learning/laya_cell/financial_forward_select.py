@@ -22,7 +22,7 @@ def native(config,request):
  process=subprocess.run([str(p)],input=json.dumps(request,sort_keys=True,separators=(',',':')).encode(),capture_output=True,timeout=10)
  out=json.loads(process.stdout)
  if (type(out) is not dict or process.returncode
-     or out.get('native_source_sha')!='78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+     or out.get('native_source_sha')!='108bc534d33c7f9e48caa569c254253f6c356271'
      or out.get('effect_authority') is not False):
   raise ContractError('CANONICAL_VERIFIER_REJECTED:'+str(out.get('error') if isinstance(out,dict) else 'RESPONSE_SHAPE'))
  operation=request.get('operation')

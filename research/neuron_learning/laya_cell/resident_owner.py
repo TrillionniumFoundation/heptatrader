@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from .integrity import ContractError, canonical, digest, read_json, sha_file, validate_candidate_artifact
 from .resident_store import write_once
 
-PIN = '78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+PIN = '108bc534d33c7f9e48caa569c254253f6c356271'
 PAYLOAD_SCHEMA = 'heptatrader.laya-owner-payload.v1'
 ENROLLMENT_SCHEMA = 'heptatrader.canonical-laya-owner-enrollment.v1'
 ROUTE = 'CANONICAL_LAYA_PRICE_READONLY_V1'

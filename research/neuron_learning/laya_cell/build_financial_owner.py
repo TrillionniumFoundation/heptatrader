@@ -5,7 +5,7 @@ bytes are verified; only copied Cargo workspace membership is narrowed.
 """
 from pathlib import Path
 import argparse,hashlib,json,os,shutil,subprocess,tomllib
-PIN='78fdb0cf8537e3a84fc6e0a849707559c80881e8'
+PIN='108bc534d33c7f9e48caa569c254253f6c356271'
 PACKAGES=('hepta-types','hepta-learning-artifacts')
 def toml(v):
  if isinstance(v,bool):return 'true' if v else 'false'

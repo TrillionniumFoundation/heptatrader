@@ -22,6 +22,9 @@ from laya_cell.resident_store import write_once
 from laya_cell.tests.test_resident_price_calibration import population
 
 
+READONLY_OWNER_SDK = '108bc534d33c7f9e48caa569c254253f6c356271'
+
+
 def fixture():
     rows = population(); cutoff = 20000000
     reference = baselines.freeze(rows, cutoff)
@@ -359,6 +362,47 @@ class LayaOwnerTests(unittest.TestCase):
                     operation_id=request['operation_id'],
                     expected_registry_predecessor_head=request['expected_registry_predecessor_head'],
                     expected_withdrawal_head=request['expected_withdrawal_head'])
+
+
+    def test_read_receipts_require_the_current_owner_sdk(self):
+        binary = self.root / 'readonly-verifier-marker'
+        binary.write_bytes(b'synthetic transport marker, never executed')
+        config = {'canonical_verifier_binary': str(binary),
+                  'canonical_verifier_sha256': sha_file(binary)}
+        for operation, status in (
+                ('load_laya_selected', 'CANONICAL_LAYA_SELECTED_BYTES_LOADED'),
+                ('revalidate_laya_output', 'CANONICAL_LAYA_OUTPUT_REVALIDATED')):
+            base = {'status': status, 'selection_verified': True,
+                    'effect_authority': False, 'canonical_agentd_admitted': False,
+                    'product_consumed': False}
+            for source_pin in (READONLY_OWNER_SDK, '78fdb0cf8537e3a84fc6e0a849707559c80881e8',
+                               'f8c9419df6ddeb36ff8b522a50219981fb8d9345'):
+                receipt = {**base, 'native_source_sha': source_pin}
+                process = SimpleNamespace(returncode=0, stdout=canonical(receipt))
+                with self.subTest(operation=operation, source_pin=source_pin), \
+                     patch.object(owner.subprocess, 'run', return_value=process):
+                    if source_pin == READONLY_OWNER_SDK:
+                        self.assertEqual(owner.native(config, {'operation': operation}), receipt)
+                    else:
+                        with self.assertRaisesRegex(ContractError, 'CANONICAL_LAYA_VERIFIER_REJECTED'):
+                            owner.native(config, {'operation': operation})
+
+    def test_enrollment_requires_the_current_owner_sdk_before_transport(self):
+        path = self.root / 'readonly-owner-enrollment.json'
+        for source_pin in (READONLY_OWNER_SDK, '78fdb0cf8537e3a84fc6e0a849707559c80881e8',
+                           'f8c9419df6ddeb36ff8b522a50219981fb8d9345'):
+            host = {'schema': owner.ENROLLMENT_SCHEMA, 'route': owner.ROUTE,
+                    'native_source_sha': source_pin, 'effect_authority': False,
+                    'owner': {'required_current_head': {'synthetic_public_metadata_only': True}}}
+            path.write_bytes(canonical(host))
+            config = {'canonical_owner_registration': {'path': str(path), 'sha256': sha_file(path)}}
+            with self.subTest(source_pin=source_pin), patch.object(owner.subprocess, 'run') as transport:
+                if source_pin == READONLY_OWNER_SDK:
+                    self.assertEqual(owner.enrollment(config), host)
+                else:
+                    with self.assertRaisesRegex(ContractError, 'LAYA_OWNER_ENROLLMENT_CONTRACT'):
+                        owner.enrollment(config)
+                transport.assert_not_called()
 
 
     def qualified_plan(self, *, terminal=True, extra=None):
