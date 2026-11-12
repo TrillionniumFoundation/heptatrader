@@ -28,6 +28,25 @@ class ProgressTests(unittest.TestCase):
   path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(data));return path
  def collect(self,**kwargs):
   return progress.collect(self.home,self.runtime,self.units,NOW,**kwargs)
+ def test_driver_diagnostics_are_bound_to_durable_state_and_cannot_override_business(self):
+  path=self.state/'paper-driver/state.json'
+  state={'schema':'heptatrader.paper-driver.v1','instrument':'EUR.USD','pending':None,
+   'halt_new_entries':False,'resident_loop_progress':{'at_ms':NOW-86400000,'pid':7}}
+  self.write(path,state);raw=path.read_bytes()
+  sidecar=path.with_suffix('.observation.json')
+  observation={'schema':'heptatrader.driver-observation-state.v1','instrument':'EUR.USD',
+   'state_sha256':hashlib.sha256(raw).hexdigest(),
+   'fields':{'resident_loop_progress':{'at_ms':NOW,'pid':7},'last_error':''}}
+  self.write(sidecar,observation);sidecar.chmod(0o600)
+  out=self.collect()['trading']['drivers']['paper']
+  self.assertEqual(out['heartbeat']['freshness'],'FRESH')
+  self.assertEqual(path.read_bytes(),raw)
+  observation['fields']['halt_new_entries']=True
+  self.write(sidecar,observation)
+  out=self.collect()['trading']['drivers']['paper']
+  self.assertEqual(out['heartbeat']['freshness'],'STALE')
+  self.assertFalse(out['halt_new_entries'])
+  self.assertEqual(path.read_bytes(),raw)
  def service(self,name,module,cfg,active='inactive',enabled='disabled',extra=()):
   self.units[name]={'Id':name,'LoadState':'loaded','ActiveState':active,'SubState':'dead','MainPID':'0','UnitFileState':enabled,
    '_argv':['python','-m',module,'--config',str(cfg),*extra]}

@@ -61,6 +61,10 @@ class DriverInferenceModesTests(unittest.TestCase):
         stack.enter_context(patch.object(self.d, "now_ms", side_effect=lambda: self.clock[0]))
         stack.enter_context(patch.object(self.d, "load_state", return_value=self.state))
         stack.enter_context(patch.object(self.d, "snapshot", return_value=self.snap))
+        # Driver tests must not consume the logged-in user's real native marker.
+        stack.enter_context(patch.object(self.d, "maintenance_entry_hold_reason",
+            side_effect=lambda _home, _uid:
+                "PERSISTENT_MAINTENANCE_HOLD" if self.hold.exists() else None))
         self.renew = stack.enter_context(patch.object(self.d, "maybe_renew"))
         self.submit = stack.enter_context(patch.object(self.d, "prepare_send"))
         self.worker = stack.enter_context(patch.object(self.d, "ModelWorker"))
@@ -129,6 +133,30 @@ class DriverInferenceModesTests(unittest.TestCase):
         state_path = self.home / ".local/state/heptatrader/paper-driver/state.json"
         # The same existing atomic state writer persists this observation.
         self.assertEqual(__import__("json").loads(state_path.read_text())["resident_loop_progress"], progress)
+
+    def test_resident_hold_ticks_publish_progress_without_repeated_durable_writes(self):
+        self.make_hold()
+        waits = []
+        def next_tick(*_args):
+            waits.append(self.clock[0])
+            self.clock[0] += 10000
+            if len(waits) == 2:
+                self.d.signal.signal.call_args_list[0].args[1](signal.SIGTERM, None)
+        with self.harness([]) as stack:
+            stack.enter_context(patch.object(self.d, "wait_for_next_sample", side_effect=next_tick))
+            sync = stack.enter_context(patch.object(self.d.os, "fsync", wraps=os.fsync))
+            self.assertEqual(self.d.main(), 0)
+            self.assertEqual(sync.call_count, 2)  # Initial recovery checkpoint only.
+            self.worker.assert_not_called()
+            self.submit.assert_not_called()
+            self.quote.assert_not_called()
+        path = self.home / ".local/state/heptatrader/paper-driver/state.json"
+        saved = __import__("json").loads(path.read_text())
+        observation = __import__("json").loads(path.with_suffix(".observation.json").read_text())
+        self.assertNotIn("resident_loop_progress", saved)
+        self.assertEqual(observation["fields"]["resident_loop_progress"]["iteration"], 2)
+        self.assertIsNone(saved["pending"])
+        self.assertTrue(self.hold.exists())
 
     def test_driver_entry_halt_also_pauses_only_flat_inference(self):
         self.state["halt_new_entries"] = True

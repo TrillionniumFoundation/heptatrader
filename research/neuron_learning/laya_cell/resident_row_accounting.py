@@ -48,25 +48,24 @@ def receipt(reserved,steps,measured):
          'applied_count':len(applied),'rolled_back_count':len(rolled_back),
          'measurement_count':len(measured)}
 
+def episode_policy(objective):
+ # Admission and completion must select the same immutable episode validator.
+ from . import resident_training_v5 as v5
+ from . import resident_training_v6 as v6
+ from . import resident_training_v7 as v7
+ from . import resident_training_v8 as v8
+ for policy in (v8,v7,v6,v5):
+  if policy.enabled(objective):return policy
+ # Preserve the historical v4 validation and rejection for every other value.
+ from . import resident_training_v4 as v4
+ return v4
+
 def verify_candidate(job,candidate):
  # Do not retroactively strengthen or rewrite frozen historical receipts.
  version=job.get('training_row_accounting_schema')
  if version is None:return
  if version=='heptatrader.laya-gradient-row-accounting.v2':
-  from . import resident_training_v5 as v5
-  from . import resident_training_v6 as v6
-  from . import resident_training_v7 as v7
-  from . import resident_training_v8 as v8
-  if v8.enabled(job.get('objective')):
-   v8.verify_candidate(job,candidate);return
-  if v7.enabled(job.get('objective')):
-   v7.verify_candidate(job,candidate);return
-  if v6.enabled(job.get('objective')):
-   v6.verify_candidate(job,candidate);return
-  if v5.enabled(job.get('objective')):
-   v5.verify_candidate(job,candidate);return
-  from .resident_training_v4 import verify_candidate as verify_episode
-  verify_episode(job,candidate);return
+  episode_policy(job.get('objective')).verify_candidate(job,candidate);return
  if version!=SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
  wanted=job['training_row_ids'];got=candidate.get('row_accounting')
  if not isinstance(got,dict):raise ContractError('ROW_ACCOUNTING_RECEIPT_MISSING')

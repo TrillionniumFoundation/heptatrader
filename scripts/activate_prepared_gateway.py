@@ -490,16 +490,78 @@ def fresh_audit(plan, environment, owner):
 
 def read_tool(plan, environment, owner, tool, *fields):
     binary = pinned(plan["reader"])
-    result = subprocess.run([str(binary), "--socket", environment["HEPTA_TOOL_SOCKET"],
-        "--token-file", owner["token_path"], "--io-timeout-ms", "4000", "--call-id", "gateway-status-" + uuid.uuid4().hex,
-        "call", tool, *fields],
-        capture_output=True, timeout=12)
+    try:
+        result = subprocess.run([str(binary), "--socket", environment["HEPTA_TOOL_SOCKET"],
+            "--token-file", owner["token_path"], "--io-timeout-ms", "4000", "--call-id", "gateway-status-" + uuid.uuid4().hex,
+            "call", tool, *fields],
+            capture_output=True, timeout=12)
+    except subprocess.TimeoutExpired as error:
+        read_tool_failure(tool, "TIMEOUT", stdout=error.output, stderr=error.stderr, timeout=error.timeout)
+    except OSError as error:
+        read_tool_failure(tool, "OS_ERROR", os_errno=error.errno, error_type=type(error))
     pinned(plan["reader"])
-    value = strict(result.stdout) if result.stdout else {}
+    try:
+        value = strict(result.stdout) if result.stdout else {}
+    except (ValueError, UnicodeError, RecursionError):
+        read_tool_failure(tool, "INVALID_JSON", result)
+    if not isinstance(value, dict):
+        read_tool_failure(tool, "INVALID_ENVELOPE", result)
     payload = value.get("payload") or {}
     if result.returncode or value.get("status") != "ok" or value.get("tool") != tool or not isinstance(payload, dict):
-        fail("NATIVE_READ_NOT_CONFIRMED:" + tool)
+        read_tool_failure(tool, "REPLY_NOT_CONFIRMED", result, envelope=value)
     return payload
+
+
+def read_tool_failure(tool, kind, result=None, *, stdout=None, stderr=None, os_errno=None,
+        error_type=RuntimeError, timeout=None, envelope=None):
+    """Retain bounded diagnostics in the existing error receipt, never a permit.
+
+    No command, token path, raw output or arbitrary exception text is retained.
+    This function does not retry a read or any control RPC. Existing typed
+    startup waits remain with their callers; audit freshness is unchanged.
+    """
+    rc = result.returncode if result is not None else None
+    if result is not None:
+        stdout, stderr = result.stdout, result.stderr
+    details = {"kind": kind, "returncode": rc if type(rc) is int and -255 <= rc <= 255 else None,
+        "stdout_bytes": len(stdout or b""), "stderr_bytes": len(stderr or b"")}
+    if type(os_errno) is int and 0 <= os_errno <= 255:
+        details["os_errno"] = os_errno
+    # Reuse the maintenance latch's strict, <=4 KiB native error projection.
+    # Additional stderr codes are literal reasons from the pinned native CLI.
+    codes = driver.latch.NATIVE_READ_STDERR_CODES | {
+        "SOCKET_CONNECT_FAILED", "FRAME_WRITE_TIMEOUT", "FRAME_HEADER_TIMEOUT", "FRAME_BODY_TIMEOUT",
+        "INVALID_RESULT_ENVELOPE", "UNKNOWN_RESULT_STATUS", "RESULT_TOOL_MISMATCH"}
+    if type(stderr) is bytes and len(stderr) <= 128:
+        code = stderr.decode("ascii", errors="replace").strip()
+        if code in codes:
+            details["client_reason"] = code
+    if rc == 9:
+        code = driver.latch._native_error_reason(stdout, tool)
+        # Canonical syntax alone is not a secret filter. Retain only literal
+        # read-registry / remote-Execution reasons proven by native source.
+        if code in {"READ_TOOL_FAILED", "TOOL_HANDLER_UNAVAILABLE", "REMOTE_EXECUTION_DISABLED",
+                "EXECUTION_SERVICE_EPOCH_MISMATCH", "EXECUTION_SERVICE_EPOCH_CHANGED",
+                "EXECUTION_GATEWAY_DAEMON_IDENTITY_UNAVAILABLE", "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH",
+                "EXECUTION_GATEWAY_CONTEXT_MISMATCH"}:
+            details["reason_code"] = code
+    if envelope is not None:
+        status = envelope.get("status")
+        details["status"] = status if status in (
+            "ok", "error", "permission_denied", "invalid_tool", "rejected", "duplicate", "uncertain") else "UNKNOWN"
+        details["tool_matches"] = envelope.get("tool") == tool
+        details["payload_object"] = isinstance(envelope.get("payload"), dict)
+    message = "NATIVE_READ_NOT_CONFIRMED:" + tool + ":" + json.dumps(details, sort_keys=True, separators=(",", ":"))
+    # Preserve OS exception types/errno: existing native maintenance explicitly
+    # treats FileNotFoundError and PermissionError as bounded startup waits.
+    # Suppress contexts that could retain argv, paths, or arbitrary output.
+    if issubclass(error_type, OSError):
+        raise error_type(os_errno, message) from None
+    if kind == "TIMEOUT":
+        # Keep the original timeout type/budget without exposing its argv or
+        # retaining partial output. Existing callers still see a timeout.
+        raise subprocess.TimeoutExpired(message, timeout) from None
+    raise RuntimeError(message) from None
 
 
 def original_command(plan, environment, owner, audit):
@@ -560,6 +622,167 @@ def interactive_process_identity(proof):
     except (KeyError, TypeError):
         return None
     return value
+
+
+def prepared_reconnect_pristine(state, resume):
+    allowed = {"schema", "plan_sha256", "status", "phase", "snapshot", "markers",
+        "stopped_controllers", "error", "rollback", "prepared_reconnects",
+        "prepared_lease_successors", "effective_snapshot"}
+    return (resume and state.get("phase") == "PREPARED" and not set(state) - allowed
+        and state.get("stopped_controllers") == []
+        and state.get("rollback") in (None, "NO_PROCESS_FORCED_OR_REPLACED")
+        and state["snapshot"].get("native_execution") is None)
+
+
+def prepared_reconnect_effects(state, resume):
+    if not prepared_reconnect_pristine(state, resume):
+        fail("PREPARED_RECONNECT_CONTROL_EFFECTS_NOT_EMPTY")
+
+
+def lease_successor_snapshot(snapshot, rows):
+    """Current authenticated successor, not a claim about the historical RPC."""
+    if equivalent(rows, snapshot["records"]):
+        return snapshot, []
+    old_rows = {row["token_sha256"]: row for row in snapshot["records"]}
+    new_rows = {row["token_sha256"]: row for row in rows}
+    if len(new_rows) != len(rows) or list(old_rows) != list(new_rows):
+        fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+    candidate = json.loads(json.dumps(snapshot))
+    owners = {owner["token_sha256"]: owner for owner in candidate["owners"]}
+    changes = []
+    for token, old in old_rows.items():
+        row = new_rows[token]
+        if equivalent(row, old):
+            continue
+        if (token not in owners or owners[token]["resident"] is None
+                or old.get("paper") is not True or old.get("watch") is not False
+                or old.get("recovery_only") is not False or set(row) != set(old)
+                or any(not equivalent(row[key], old[key]) for key in old if key not in ("generation", "expires_at_ms"))
+                or type(row["generation"]) is not int or not 0 < row["generation"] < 2**64
+                or row["generation"] != old["generation"] + 1
+                or type(row["expires_at_ms"]) is not int or not 0 < row["expires_at_ms"] < 2**64
+                or row["expires_at_ms"] <= old["expires_at_ms"]):
+            fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+        owner = owners[token]
+        if not equivalent(owner["record"], old) or owner["state_generation"] != old["generation"]:
+            fail("PREPARED_LEASE_SUCCESSOR_ORIGINAL_BINDING_CHANGED")
+        owner["record"] = json.loads(json.dumps(row))
+        owner["state_generation"] = row["generation"]
+        changes.append({"token_sha256": token, "old_generation": old["generation"],
+            "new_generation": row["generation"], "old_expires_at_ms": old["expires_at_ms"],
+            "new_expires_at_ms": row["expires_at_ms"]})
+    if not changes:
+        fail("PREPARED_LEASE_SUCCESSOR_CATALOG_CHANGED")
+    candidate["records"] = json.loads(json.dumps(rows))
+    # The transaction deadline is deliberately not the new lease expiry.
+    return candidate, changes
+
+
+def effective_snapshot(state):
+    original = state["snapshot"]
+    if "effective_snapshot" not in state and "prepared_lease_successors" not in state:
+        return original
+    records = state.get("prepared_lease_successors")
+    actual = state.get("effective_snapshot")
+    if not isinstance(records, list) or not records or not isinstance(actual, dict):
+        fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+    previous = original
+    witnesses = {digest(json.dumps(record, sort_keys=True)): record for record in state.get("prepared_reconnects", [])}
+    for record in records:
+        if (not isinstance(record, dict) or record.get("schema") != "heptatrader.gateway-lease-successor.v1"
+                or record.get("plan_sha256") != state["plan_sha256"]
+                or not equivalent(record.get("markers"), state["markers"])
+                or record.get("deadline_ms") != original["deadline"]
+                or not equivalent(record.get("before_catalog"), previous["records"])
+                or record.get("reconnect_receipt_sha256") not in witnesses):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        witness = witnesses[record["reconnect_receipt_sha256"]]
+        if (witness.get("plan_sha256") != state["plan_sha256"]
+                or not equivalent(witness.get("markers"), state["markers"])
+                or witness.get("deadline_ms") != original["deadline"]
+                or not equivalent(witness.get("original_snapshot"), previous)):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        previous, changes = lease_successor_snapshot(previous, record["after_catalog"])
+        if not changes or not equivalent(changes, record.get("successors")):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+        audits = {audit["token_sha256"]: audit for audit in witness.get("audits", [])}
+        if (len(audits) != len(previous["owners"]) or any(
+                owner["token_sha256"] not in audits
+                or audits[owner["token_sha256"]].get("generation") != owner["state_generation"]
+                or audits[owner["token_sha256"]].get("original_command_sha256") != digest(owner["command"])
+                for owner in previous["owners"])):
+            fail("PREPARED_LEASE_SUCCESSOR_RECEIPT_INVALID")
+    if prepared_reconnect_pristine(state, True):
+        if not equivalent(actual, previous):
+            fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_SNAPSHOT_CHANGED")
+    else:
+        # Later phases mutate only the effective catalog, owner recovery
+        # records, TCP witness and (downwards) the recovery deadline.
+        fixed = set(previous) - {"owners", "records", "interactive", "deadline"}
+        if (set(actual) != set(previous) or any(not equivalent(actual[key], previous[key]) for key in fixed)
+                or type(actual["deadline"]) is not int or actual["deadline"] > original["deadline"]
+                or len(actual["owners"]) != len(previous["owners"])):
+            fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_SNAPSHOT_CHANGED")
+        for old, owner in zip(previous["owners"], actual["owners"]):
+            if set(owner) != set(old) or any(not equivalent(owner[key], old[key]) for key in old if key != "record"):
+                fail("PREPARED_LEASE_SUCCESSOR_EFFECTIVE_OWNER_CHANGED")
+    return actual
+
+
+def prepared_processes_unchanged(home, snapshot):
+    for unit in (GATEWAY, *driver.DRIVER_UNITS):
+        if os.path.lexists(home / ".config/systemd/user" / (unit + ".d") / POLICY):
+            fail("PREPARED_RECONNECT_EXISTING_STOP_POLICY")
+    for unit, expected in snapshot["service_policy"].items():
+        if driver.unit_properties(unit, tuple(expected), "PREPARED_ORIGINAL_POLICY") != expected:
+            fail("PREPARED_RECONNECT_SERVICE_POLICY_CHANGED")
+    for owner in snapshot["owners"]:
+        observed = controller(owner["instrument"], home)
+        for key in ("instrument", "unit", "state_path", "lock_path", "token_path", "token_sha256",
+                    "command", "state_generation", "correlation"):
+            if not equivalent(observed[key], owner[key]):
+                fail("PREPARED_RECONNECT_CONTROLLER_STATE_CHANGED:" + key)
+        if owner["resident"] is not None:
+            original = dict(owner["resident"], pid_key=tuple(owner["resident"]["pid_key"]))
+            driver.same_driver(original, driver.running_driver(owner["unit"], owner["instrument"]))
+    observed = gateway(snapshot["gateway"]["binary"])
+    same_gateway(snapshot["gateway"], observed)
+    return observed
+
+
+def held_native_authority(plan, snapshot, owner):
+    health = read_tool(plan, snapshot["environment"], owner, "system.get_health")
+    native = health.get("execution_authoritative_health") or {}
+    epoch = health.get("execution_service_epoch")
+    generation = health.get("execution_service_fencing_generation")
+    if (native.get("source") != "IB" or native.get("authoritative") is not True
+            or native.get("native_new_risk_guard_blocked") is not True or native.get("mutation_ready") is not False
+            or native.get("owner_fenced") is not False
+            or native.get("owner_recovery_only") is not owner["record"]["recovery_only"]
+            or type(epoch) is not str or not 0 < len(epoch) <= 128
+            or type(generation) is not int or not 0 < generation < 2**64):
+        fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_INVALID")
+    return epoch, generation
+
+
+def effective_interactive(snapshot, state):
+    if "interactive_refresh" in state or "prepared_reconnects" not in state:
+        return snapshot["interactive"]
+    previous = snapshot["interactive"]
+    records = state["prepared_reconnects"]
+    if not isinstance(records, list) or not records:
+        fail("PREPARED_RECONNECT_RECEIPT_INVALID")
+    for record in records:
+        if (not isinstance(record, dict) or record.get("plan_sha256") != state["plan_sha256"]
+                or not equivalent(record.get("markers"), state["markers"])
+                or not equivalent(record.get("previous_witness"), previous)
+                or not isinstance(record.get("witness"), dict)
+                or interactive_process_identity(previous) is None
+                or not equivalent(interactive_process_identity(previous),
+                                  interactive_process_identity(record["witness"]))):
+            fail("PREPARED_RECONNECT_RECEIPT_INVALID")
+        previous = record["witness"]
+    return previous
 
 
 def put_owned(path, raw, expected=None):
@@ -783,7 +1006,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             state = strict(read_private(checkpoint, 1048576))
             if state.get("plan_sha256") != plan_sha or state.get("status") == "COMPLETE":
                 fail("RESUMABLE_MAINTENANCE_CHECKPOINT_REQUIRED")
-            snapshot = state["snapshot"]
+            snapshot = effective_snapshot(state)
             native_maintenance.reconcile_release(sys.modules[__name__], home, snapshot, state)
             state.update(status="RUNNING")
             state.pop("error", None)
@@ -811,7 +1034,7 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             actual = observe_controller_start(owner, controller_observations.get(unit))
             controller_observations[unit] = actual
             return actual
-        def context(*, expected_interactive=None, allow_reconnect_refresh=True):
+        def context(*, expected_interactive=None, allow_reconnect_refresh=True, allow_lease_successor=False):
             check_lock_binding()
             if not equivalent(driver.marker_identity(home), state["markers"]):
                 fail("MAINTENANCE_MARKERS_CHANGED")
@@ -890,16 +1113,49 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 fail("MAINTENANCE_TTL_BUDGET_EXHAUSTED")
             for item in snapshot["packages"].values():
                 pinned(item["binary"])
-            expected = snapshot["interactive"] if expected_interactive is None else expected_interactive
+            expected = effective_interactive(snapshot, state) if expected_interactive is None else expected_interactive
+            if (not changing_native and resume and state.get("phase") == "PREPARED"
+                    and allow_reconnect_refresh and expected_interactive is None):
+                # A lease can advance without a TCP reconnect. Reconcile it
+                # before any stop/fence intent, through the same fresh proof.
+                rows = catalog(plan, snapshot["environment"])
+                pristine = prepared_reconnect_pristine(state, resume)
+                if not equivalent(rows, snapshot["records"]):
+                    if pristine:
+                        if not allow_lease_successor:
+                            fail("PREPARED_LEASE_SUCCESSOR_REQUIRES_RESUME_BOUNDARY")
+                        refresh_interactive_witness(interactive, allow_lease_successor=True)
+                        return
+                    # Existing all-frozen flows can fence successive owners
+                    # while phase is still PREPARED. Keep that original flow,
+                    # but never reconcile another lease after control intent.
+                    generations = {row["token_sha256"]: row["generation"] for row in rows}
+                    if any(generations.get(owner["token_sha256"]) != owner["state_generation"]
+                            for owner in snapshot["owners"]):
+                        fail("PREPARED_RECONNECT_CONTROL_EFFECTS_NOT_EMPTY")
+                if pristine and allow_lease_successor and state.get("prepared_lease_successors"):
+                    prepared_reconnect_effects(state, resume)
+                    prepared_processes_unchanged(home, snapshot)
+                    authority = held_native_authority(plan, snapshot, snapshot["owners"][0])
+                    if any(not equivalent(previous.get("native_authority"), authority)
+                            for previous in state["prepared_reconnects"]):
+                        fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
             if not changing_native and not equivalent(interactive, expected):
                 if not allow_reconnect_refresh or expected_interactive is not None:
                     fail("INTERACTIVE_BROKER_CHANGED")
-                refresh_interactive_witness(interactive)
+                refresh_interactive_witness(interactive, allow_lease_successor=allow_lease_successor)
 
-        def refresh_interactive_witness(interactive):
-            # This is a resume-only recovery boundary, never permission to
-            # ignore changed sockets before the original Gateway is drained.
-            if (not resume or state.get("gateway_stopped") is not True or state.get("owners_fenced") is not True
+        def refresh_interactive_witness(interactive, *, allow_lease_successor=False):
+            nonlocal snapshot
+            before_snapshot = snapshot
+            proof_snapshot = snapshot
+            successors = []
+            # PREPARED may reconcile only before any upgrade control intent.
+            # The existing post-stop recovery keeps its original restrictions.
+            prepared = resume and state.get("phase") == "PREPARED"
+            if prepared:
+                prepared_reconnect_effects(state, resume)
+            if not prepared and (not resume or state.get("gateway_stopped") is not True or state.get("owners_fenced") is not True
                     or state.get("phase") not in ("GATEWAY_STOPPED", "GATEWAY_STARTED")
                     or state.get("stopping") or state.get("starting_controller") or state.get("controllers_started")
                     or any(any(name in progress for name in ("resume_sent", "resume_sent_at_ms", "state_synced"))
@@ -909,39 +1165,56 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
             current_identity = interactive_process_identity(interactive)
             if original_identity is None or current_identity is None or not equivalent(original_identity, current_identity):
                 fail("INTERACTIVE_BROKER_IDENTITY_CHANGED")
-            for owner in snapshot["owners"]:
-                resident = owner["resident"]
-                if resident is not None:
-                    status = driver.fence.show_unit(owner["unit"])
-                    if (owner["unit"] not in state["stopped_controllers"]
-                            or status["ActiveState"] != "inactive" or status["MainPID"] not in ("", "0")
-                            or driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"])):
-                        fail("RECONNECT_CONTROLLERS_NOT_NATURALLY_STOPPED")
-            selected = state.get("selected_release")
-            if selected not in snapshot["packages"]:
-                fail("RECONNECT_SELECTED_GATEWAY_UNKNOWN")
-            binary = snapshot["packages"][selected]["binary"]
-            observed_gateway = gateway(binary)
-            if state.get("gateway_started"):
-                same_gateway(state["gateway_started"], observed_gateway)
+            native_before = None
+            if prepared:
+                binary = snapshot["gateway"]["binary"]
+                native_before = held_native_authority(plan, snapshot, snapshot["owners"][0])
+                if any(not equivalent(previous.get("native_authority"), native_before)
+                        for previous in state.get("prepared_reconnects", [])):
+                    fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
+            else:
+                for owner in snapshot["owners"]:
+                    resident = owner["resident"]
+                    if resident is not None:
+                        status = driver.fence.show_unit(owner["unit"])
+                        if (owner["unit"] not in state["stopped_controllers"]
+                                or status["ActiveState"] != "inactive" or status["MainPID"] not in ("", "0")
+                                or driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"])):
+                            fail("RECONNECT_CONTROLLERS_NOT_NATURALLY_STOPPED")
+                selected = state.get("selected_release")
+                if selected not in snapshot["packages"]:
+                    fail("RECONNECT_SELECTED_GATEWAY_UNKNOWN")
+                binary = snapshot["packages"][selected]["binary"]
+                observed_gateway = gateway(binary)
+                if state.get("gateway_started"):
+                    same_gateway(state["gateway_started"], observed_gateway)
             rows = catalog(plan, snapshot["environment"])
-            if not equivalent(rows, snapshot["records"]):
+            if prepared:
+                proof_snapshot, successors = lease_successor_snapshot(snapshot, rows)
+                if successors and not allow_lease_successor:
+                    fail("PREPARED_LEASE_SUCCESSOR_REQUIRES_RESUME_BOUNDARY")
+                observed_gateway = prepared_processes_unchanged(home, proof_snapshot)
+                if successors:
+                    bind_owners(rows, proof_snapshot["owners"], proof_snapshot["environment"], deadline=snapshot["deadline"])
+            elif not equivalent(rows, snapshot["records"]):
                 fail("RECONNECT_ORIGINAL_CATALOG_CHANGED")
             paper = {row["token_sha256"]: row for row in rows if row["paper"] is True}
-            if set(paper) != {owner["token_sha256"] for owner in snapshot["owners"]}:
+            if set(paper) != {owner["token_sha256"] for owner in proof_snapshot["owners"]}:
                 fail("RECONNECT_WRITING_OWNER_SET_CHANGED")
             observations = []
             authority = None
-            for owner in snapshot["owners"]:
+            for owner in proof_snapshot["owners"]:
                 row = paper[owner["token_sha256"]]
-                if (not equivalent(row, owner["record"]) or row["recovery_only"] is not True
-                        or row["generation"] != owner["state_generation"]
-                        or row["recovery_command_sha256"] != digest(owner["command"])):
+                if (not equivalent(row, owner["record"]) or row["generation"] != owner["state_generation"]
+                        or (not prepared and (row["recovery_only"] is not True
+                            or row["recovery_command_sha256"] != digest(owner["command"])))):
                     fail("RECONNECT_ORIGINAL_RECOVERY_SCOPE_CHANGED")
                 audit = fresh_audit(plan, snapshot["environment"], owner)
                 original_command(plan, snapshot["environment"], owner, audit)
                 reply = audit["reply"]
                 current_authority = (reply["service_epoch"], reply["service_fencing_generation"], reply["broker_connection_epoch"])
+                if prepared and current_authority[:2] != native_before:
+                    fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
                 if authority is not None and current_authority != authority:
                     fail("RECONNECT_NATIVE_AUTHORITIES_CHANGED")
                 authority = current_authority
@@ -973,12 +1246,49 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 fail("RECONNECT_FRESH_AUDIT_EXPIRED")
             for owner in snapshot["owners"]:
                 resident = owner["resident"]
-                if resident and driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"]):
+                if not prepared and resident and driver.pid_key(resident["status"]["MainPID"]) == tuple(resident["pid_key"]):
                     fail("RECONNECT_CONTROLLERS_NOT_NATURALLY_STOPPED")
-            snapshot["interactive"] = interactive
-            state["interactive_refresh"] = {"at_ms": now_ms(), "gateway_pid_key": observed_gateway["pid_key"],
+            receipt = {"at_ms": now_ms(), "gateway_pid_key": observed_gateway["pid_key"],
                 "gateway_binary_sha256": binary["sha256"], "witness_sha256": digest(json.dumps(interactive, sort_keys=True)),
                 "audits": observations}
+            if prepared:
+                prepared_reconnect_effects(state, resume)
+                prepared_processes_unchanged(home, proof_snapshot)
+                for owner in proof_snapshot["owners"]:
+                    if held_native_authority(plan, proof_snapshot, owner) != native_before:
+                        fail("PREPARED_RECONNECT_NATIVE_AUTHORITY_CHANGED")
+                context(expected_interactive=interactive, allow_reconnect_refresh=False)
+                if not equivalent(catalog(plan, snapshot["environment"]), rows):
+                    fail("RECONNECT_CATALOG_CHANGED_DURING_AUDIT")
+                check_lock_binding()
+                if not equivalent(driver.marker_identity(home), state["markers"]):
+                    fail("MAINTENANCE_MARKERS_CHANGED")
+                if any(not 0 <= now_ms() - item["at_ms"] <= MAX_AUDIT_AGE_MS for item in observations):
+                    fail("RECONNECT_FRESH_AUDIT_EXPIRED")
+                receipt.update(schema="heptatrader.gateway-prepared-reconnect.v1", plan_sha256=state["plan_sha256"],
+                    markers=state["markers"], deadline_ms=snapshot["deadline"], native_authority=native_before,
+                    previous_witness=effective_interactive(snapshot, state), witness=interactive,
+                    original_snapshot=json.loads(json.dumps(before_snapshot)))
+                history = [*state.get("prepared_reconnects", []), receipt]
+                updates = {"prepared_reconnects": history}
+                if successors:
+                    successor_receipt = {"schema": "heptatrader.gateway-lease-successor.v1",
+                        "at_ms": now_ms(), "plan_sha256": state["plan_sha256"], "markers": state["markers"],
+                        "deadline_ms": state["snapshot"]["deadline"],
+                        "before_catalog": json.loads(json.dumps(before_snapshot["records"])),
+                        "after_catalog": json.loads(json.dumps(rows)), "successors": successors,
+                        "reconnect_receipt_sha256": digest(json.dumps(receipt, sort_keys=True)),
+                        "historical_control_operation": "NOT_INFERRED"}
+                    updates.update(effective_snapshot=proof_snapshot,
+                        prepared_lease_successors=[*state.get("prepared_lease_successors", []), successor_receipt])
+                if len(json.dumps(dict(state, **updates), sort_keys=True).encode()) >= 1048576:
+                    fail("PREPARED_RECONNECT_RECEIPT_BOUND")
+                effective_snapshot(dict(state, **updates))
+                state.update(updates)
+                snapshot = proof_snapshot
+            else:
+                snapshot["interactive"] = interactive
+                state["interactive_refresh"] = receipt
             save()  # Operational witness only; the authenticated catalog is never written.
 
         def controlled_stop(unit, original, audit, *, selected_policy):
@@ -1012,7 +1322,9 @@ def maintenance_upgrade(plan, plan_sha, *, home=None, resume=False, native_fallb
                 driver.ctl("daemon-reload")
         save()
         try:
-            context()
+            # Freeze the effective lease before taking a fresh stop audit.
+            # Later drift must retain the hold for another same-plan resume.
+            context(allow_lease_successor=True)
             if state.get("starting_controller"):
                 unit = state["starting_controller"]
                 owner = next(owner for owner in snapshot["owners"] if owner["unit"] == unit)

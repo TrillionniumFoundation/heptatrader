@@ -12,6 +12,7 @@ import stat
 import subprocess
 import time
 from hepta_maintenance_latch import native_marker_origin, resume_guidance
+from hepta_decision_attribution import merge_driver_observation
 
 SCHEMA = "heptatrader.progress.v1"
 CORE_UNITS = (
@@ -835,8 +836,10 @@ def trading_progress(home, runtime, units, now_ms, max_age_ms):
     for lane in ("paper", "crypto"):
         path = root / (lane + "-driver") / "state.json"
         data, meta = observe(path, now_ms, max_age_ms)
-        # Heartbeat, pauses and model chronology share this one file's read time.
-        driver_observed_ms = meta["freshness_as_of_ms"]
+        if meta["available"]:
+            data = merge_driver_observation(path, data, meta["sha256"])
+        # Evaluate freshness after reading the durable state and its bound diagnostics.
+        driver_observed_ms = observation_time(now_ms)
         loop = data.get("resident_loop_progress") or {}
         if not isinstance(loop, dict):
             loop = {}

@@ -85,6 +85,7 @@ class _SealedOriginalProofs:
         self._signature = None
         self._full_at = self._last_clock = self._last_wall = None
         self.full_verifications = self.full_bytes = self.reuses = self.invalidations = 0
+        self.targeted_invalidations = 0
         self.read_stats = {}
         self.last_full_wall_ms = None
 
@@ -97,17 +98,25 @@ class _SealedOriginalProofs:
     def begin(self, pins, wall_ms):
         stamp = self._clock()
         signature = tuple(digest(pin) for pin in pins)
-        changed = self._watch.changed()
+        changed = self._watch.changed_paths()
         regressed = ((self._last_clock is not None and stamp < self._last_clock) or
                      (self._last_wall is not None and wall_ms < self._last_wall))
         expired = self._full_at is None or not 0 <= (stamp-self._full_at)*1000 < self.reverify_ms
-        self._force = (changed or regressed or expired or signature != self._signature
+        self._force = (changed is None or regressed or expired or signature != self._signature
                        or not self._watch.available)
         if self._force:
             self.invalidations += bool(self._entries)
             self.close()
             self._signature = signature
             self._watch.arm_many([pin["path"] for pin in pins])
+        else:
+            # A continuously observed, unchanged source population can keep
+            # unrelated SHA receipts. Never reset their original deadline.
+            affected = set(self._entries).intersection(changed)
+            self.invalidations += bool(affected)
+            self.targeted_invalidations += len(affected)
+            for path in affected:
+                self._entries.pop(path)
         self._last_clock, self._last_wall = stamp, wall_ms
         self._stamp, self._wall_ms = stamp, wall_ms
         self._pass_watched = self._watch.available
@@ -168,7 +177,8 @@ class _SealedOriginalProofs:
         return parsed
 
     def finish(self):
-        changed = self._watch.changed() if self._pass_watched else False
+        events = self._watch.changed_paths() if self._pass_watched else frozenset()
+        changed = events is None or bool(events)
         if len(self._versions) != self._pin_count:
             self.close()
             raise ContractError("READINESS_ORIGINAL_PROOF_INCOMPLETE")
@@ -178,7 +188,8 @@ class _SealedOriginalProofs:
         # Check events again after walking identities, including overflow and
         # changes racing the last source parse or a directory replacement.
         if self._pass_watched:
-            changed = self._watch.changed() or changed or not self._watch.available
+            events = self._watch.changed_paths()
+            changed = events is None or bool(events) or changed or not self._watch.available
         if changed:
             self.close()
             raise ContractError("READINESS_ORIGINAL_CHANGED_DURING_PASS")
@@ -201,6 +212,7 @@ class _SealedOriginalProofs:
             "original_proof_full_sha256_bytes": self.full_bytes,
             "original_proof_reuses": self.reuses,
             "original_proof_invalidations": self.invalidations,
+            "original_proof_targeted_invalidations": self.targeted_invalidations,
             "original_proof_last_full_at_ms": self.last_full_wall_ms,
             "sealed_reverify_read_policy": "OPTIONAL_RWF_DONTCACHE",
             "sealed_reverify_io": dict(self.read_stats),

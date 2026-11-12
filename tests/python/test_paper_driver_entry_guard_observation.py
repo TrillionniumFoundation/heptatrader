@@ -2,8 +2,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from contextlib import ExitStack
 from unittest import mock
-import copy,importlib.util,json,os,signal,subprocess,sys,unittest
+import copy,hashlib,importlib.util,json,os,signal,subprocess,sys,unittest
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/"scripts"))
+from hepta_decision_attribution import merge_driver_observation
 spec=importlib.util.spec_from_file_location("guard_observation_driver",ROOT/"scripts/heptatrader_paper_driver.py")
 driver=importlib.util.module_from_spec(spec);spec.loader.exec_module(driver)
 
@@ -73,7 +75,12 @@ class EntryGuardObservabilityTests(unittest.TestCase):
                 if ticks[0]>loops:raise AssertionError("loop did not stop")
             patch(driver.time,"sleep",side_effect=sleep);patch(sys,"argv",["driver","--instrument","BTC.USD"])
             self.assertEqual(driver.main(),0);self.assertEqual(ticks[0],loops)
-            self.assertEqual(json.loads(state_path.read_text()),state)
+            raw=state_path.read_bytes();durable=json.loads(raw)
+            self.assertEqual(driver.durable_state_signature(durable),driver.durable_state_signature(state))
+            # Validate sidecar ownership against the real owner of fixture files.
+            with mock.patch.object(os,"geteuid",return_value=uid):
+                observed=merge_driver_observation(state_path,durable,hashlib.sha256(raw).hexdigest())
+            self.assertEqual(observed,state)
             self.assertTrue(all(c.args[1]=="market.get_quote" for c in native.call_args_list))
             return dict(state=copy.deepcopy(state),writes=writes,timeline=timeline,run=run,send=send,
                         cli=str(home/".local/bin/heptatrader"))

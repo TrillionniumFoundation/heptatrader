@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from historical_training.resident_resource_guard import guarded_trainer_class
 from laya_cell.promotion import PROTOCOL
-from laya_cell.resident import Supervisor, training_forward_window
+from laya_cell.resident import Supervisor, training_forward_window, next_new_candidate_training_wakeup
 from laya_cell.resident_plan_admission import PROFILE
 from laya_cell.resident_store import database,admit_job
 from laya_cell.integrity import digest
@@ -27,6 +27,26 @@ def window(now):
 
 
 class TrainingWindowTests(unittest.TestCase):
+    def test_fresh_weekend_wakeup_uses_new_york_dst_not_fixed_utc(self):
+        now=at('2026-10-30T15:00:00+00:00')
+        preview=training_forward_window(window(now),RULE,now)
+        self.assertFalse(preview['ready'])
+        self.assertIsNone(preview['next_training_at_ms'])
+        result=next_new_candidate_training_wakeup(RULE,now)
+        self.assertEqual(result['next_training_at_ms'],at('2026-11-01T22:15:00+00:00'))
+        self.assertTrue(result['fresh_collection_and_admission_required'])
+        self.assertFalse(result['existing_candidate_window_changed'])
+        self.assertFalse(result['trial_allocated'])
+        self.assertFalse(result['future_data_availability_proven'])
+
+    def test_spring_dst_wakeup_and_daily_reopen_are_calendar_derived(self):
+        cases=(('2027-03-12T16:00:00+00:00','2027-03-14T21:15:00+00:00'),
+               ('2026-10-19T21:05:00+00:00','2026-10-19T21:15:00+00:00'))
+        for current,expected in cases:
+            with self.subTest(current=current):
+                result=next_new_candidate_training_wakeup(RULE,at(current))
+                self.assertEqual(result['next_training_at_ms'],at(expected))
+
     def test_open_morning_leaves_full_timeout_and_original_evaluation(self):
         now=at('2026-10-20T08:30:00+00:00')
         w=window(now);before=copy.deepcopy(w)
@@ -113,6 +133,26 @@ class TrainingWindowSchedulingTests(unittest.TestCase):
         gate.release.assert_called_once()
         collect.assert_called_once()
 
+    def test_weekend_hold_advertises_fresh_wakeup_without_collecting(self):
+        service,gate,collect,_=self.subject(at('2026-10-30T15:00:00+00:00'))
+        result=service.step()
+        self.assertEqual(result['next_training_at_ms'],at('2026-11-01T22:15:00+00:00'))
+        self.assertIsNone(result['training_window_preflight']['next_training_at_ms'])
+        self.assertEqual(result['new_candidate_wakeup']['scope'],'NEW_CANDIDATE_AFTER_FRESH_DATA_COLLECTION')
+        self.assertFalse(result['training_data_refresh_performed'])
+        gate.acquire.assert_not_called()
+        collect.assert_not_called()
+
+    def test_collected_expired_window_is_not_given_a_fresh_wakeup(self):
+        now=at('2026-10-30T15:00:00+00:00')
+        service,_,_,_=self.subject(now)
+        original=window(now-86400001);before=copy.deepcopy(original)
+        with patch('laya_cell.resident.next_new_candidate_training_wakeup',side_effect=AssertionError('RENEWAL')):
+            result=service._training_window_wait(now,{},window=original)
+        self.assertIsNone(result['next_training_at_ms'])
+        self.assertIsNone(result['new_candidate_wakeup'])
+        self.assertEqual(original,before)
+
     def test_slow_collect_rechecks_original_window_before_row_reservation(self):
         now=at('2026-10-19T08:30:00+00:00')
         service,gate,collect,clock=self.subject(now)
@@ -142,8 +182,12 @@ class TrainingWindowSchedulingTests(unittest.TestCase):
         ids=[digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']]) for r in rows]
         self.assertTrue(admit_job(service.db,'old','old-fingerprint',now-1800000,{},[ids[0]]))
         collect.side_effect=None;collect.return_value=({},rows,{'window':window(now)},None)
+        queries=[]
+        service.db.set_trace_callback(queries.append)
         with patch('laya_cell.resident.admit_job',return_value=False) as admission:
             result=service.step()
+        service.db.set_trace_callback(None)
+        self.assertFalse(any('SELECT 1 FROM consumed_rows' in query for query in queries))
         self.assertEqual(result['state'],'JOB_ALREADY_ADMITTED')
         job=admission.call_args.args[4]
         self.assertEqual(job['selection_context'],{'pool_count':63,'pool_row_ids_digest':digest(sorted(ids[1:]))})

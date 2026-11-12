@@ -126,7 +126,7 @@ class FrozenFutilityTests(unittest.TestCase):
             code.write_text("# fixture\\n")
             plan = self.plan()
             rule = plan["rule"]
-            # Slot 2 is expired, while slot 3 is inside its 90 s prewarm.
+            # Slot 2 is expired, while slot 3 is inside its prewarm window.
             plan.update(
                 scope=sha_file(period),
                 start_ms=int(time.time() * 1000) + 30000

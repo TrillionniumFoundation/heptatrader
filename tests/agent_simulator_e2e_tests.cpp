@@ -634,25 +634,37 @@ void TestAgentToolSocketToSimulatorLifecycle()
 	expiryQueued.toolCallId = "expiry-queued";
 	std::string expiryQueuedResponse;
 	std::size_t expiredSessions = 0;
-	std::atomic<bool> reapStarted(false);
 	std::atomic<bool> reapFinished(false);
-	bool reapAccepted = false;
+	const std::uint64_t reapAt =
+		static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) + 2000;
 	std::thread reapThread([&]() {
-		reapStarted.store(true, std::memory_order_release);
-		reapAccepted = supervisor.ReapExpired(
-			static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) + 2000,
-			expiredSessions, reason);
+		WaitForFixture([&]() {
+			std::size_t batch = 0;
+			std::string reapReason;
+			if (!supervisor.ReapExpired(reapAt, batch, reapReason))
+			{
+				assert(reapReason == "SUPERVISOR_MAINTENANCE_BUSY");
+				return false;
+			}
+			// A bounded maintenance pass can yield before reaching this lease.
+			expiredSessions += batch;
+			assert(expiredSessions <= 1);
+			return expiredSessions == 1;
+		});
 		reapFinished.store(true, std::memory_order_release);
 	});
-	WaitForFixture([&]() { return reapStarted.load(std::memory_order_acquire); });
-	usleep(50000);
-	assert(!reapFinished.load(std::memory_order_acquire));
+	// Ordinary observations must not hold expiry/revocation behind their callback.
+	WaitForFixture([&]() { return reapFinished.load(std::memory_order_acquire); });
+	reapThread.join();
+	assert(expiredSessions == 1);
+	assert(!releaseExpiryBlocker.load(std::memory_order_acquire));
 	releaseExpiryBlocker.store(true, std::memory_order_release);
 	expiryBlockerThread.join();
-	reapThread.join();
-	assert(reapAccepted && expiredSessions == 1);
 	expiryQueuedResponse = InvokeSocket(socketPath, registry, expiryQueued);
-	assert(expiryBlockerResponse.find("\"status\":\"ok\"") != std::string::npos);
+	assert(expiryBlockerResponse.find("SESSION_REVOKED") != std::string::npos);
+	assert(expiryBlockerResponse.find("\"status\":\"ok\"") == std::string::npos);
+	assert(expiryBlockerResponse.find("\"bid\":") == std::string::npos);
+	assert(expiryBlockerResponse.find("\"snapshot_version\":") == std::string::npos);
 	assert(expiryQueuedResponse.find("SESSION_NOT_FOUND") != std::string::npos);
 	std::string blockerResponse;
 	TradingToolHostRequest blockerQuote;

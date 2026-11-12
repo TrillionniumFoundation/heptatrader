@@ -141,6 +141,17 @@ class PredictBasePreflightTests(unittest.TestCase):
                 patch('builtins.__import__', side_effect=metadata_only_import):
             return self.predict(self.config, self.plan_path, 0)
 
+    def test_worker_timing_uses_shared_lead_without_retiming_input_deadline(self):
+        original = self.plan_path.read_bytes()
+        with self.assertRaises(ModelBoundary):
+            self.call_predict()
+        phase = integrity.read_json(self.plan_path.parent/'phase-000.json')
+        self.assertEqual(phase['prewarm_start_ms'], self.plan['start_ms']-30000)
+        self.assertEqual(phase['slot_start_ms'], self.plan['start_ms'])
+        self.assertEqual(phase['fixed_input_deadline_ms'],
+                         self.plan['start_ms']+self.plan['rule']['input_grace_ms'])
+        self.assertEqual(self.plan_path.read_bytes(), original)
+
     def test_verified_loader_base_id_is_manifest_digest(self):
         manifest = integrity.read_json(self.manifest_path)
         self.assertEqual(integrity.verify_snapshot(self.base, manifest), integrity.digest(manifest))

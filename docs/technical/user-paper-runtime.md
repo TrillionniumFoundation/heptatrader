@@ -20,6 +20,12 @@ installed as data under `share/heptatrader/user-systemd`; link those into
 whitelist is part of this profile. Updates must stop the service before replacing
 its current program selection and must preserve journal/lease state.
 
+These are relocatable deployment assets, not a complete per-user installer.
+The canonical Execution unit does not yet bind a versioned startup helper.
+The final host integration must supply that binding before replacing the
+packaged tmpfiles configuration with a directory-only version, as described
+under [native startup binding](#native-startup-binding-and-tmpfiles).
+
 ## Explicit trust boundary
 
 Gateway, Execution and client share the operator UID. Socket permissions and the
@@ -247,12 +253,35 @@ Cumulative counters are not rates; high RSS or cgroup stalls do not prove which
 workload caused host pressure. Diagnostic errors never change admission, widen a
 threshold, extend a frozen window, interrupt a process or grant resume authority.
 
-The user tmpfiles configuration likewise creates an empty `0440` independent
-startup hold on a fresh runtime. Ordinary `paper-on` cannot remove it, and an
-explicit `--resume-native-hold --check` preserves it. Updating or reinstalling
-this configuration does not rewrite an existing marker, including an old
-unrecognized payload; neither tmpfiles nor startup silently converts or releases
-that protection.
+### Native startup binding and tmpfiles
+
+The packaged user tmpfiles configuration retains an empty `0440` independent
+hold as a bootstrap fallback. Its `f` rule runs on every applicable `--create`,
+including an unrelated global `systemd-tmpfiles --user --create`; it is not
+limited to boot. After an explicit resume removes the marker, another create
+can therefore pause the strategy again without restarting Execution. This
+possible mechanism does not identify the writer of a historical marker.
+
+A final deployment with the exact, unique, loaded `native-startup-hold` hook
+described above can omit only the `f .../control/kill-switch` rule from its
+deployed user tmpfiles configuration. Preserve the directory and interlock
+rules. Changing the configuration does not remove a present hold or authorize
+resume. Before that change, compare the manager's loaded hook with the original
+helper or operator-manifest pin; an on-disk drop-in alone is insufficient.
+Startup creates an absent marker under the original operator lock and preserves
+existing safe marker bytes and the durable maintenance record.
+
+The canonical source rule cannot be removed independently of that final binding:
+the source Execution unit has no startup hook, and the repository currently has
+no first-install user-profile integration command. The stop-fence installer and
+Gateway/driver activation tools operate on existing deployments; they do not
+install this startup binding. Keep the package relocatable: the release builder
+uses a temporary CMake install prefix that is deleted after packaging, so that
+prefix must never be rendered into a runtime hook. Final host integration must
+use the actual versioned helper path and installation layout, reconcile only
+its owned startup drop-in, and verify that the loaded hook remains unique.
+Neither the package initializer nor startup silently converts or releases an
+existing unknown marker.
 
 The runtime-directory preparation unit has no default dependency on basic.target;
 it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.

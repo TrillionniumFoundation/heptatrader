@@ -330,10 +330,26 @@ existing artifacts, plans, slots and results are not upgraded or backfilled.
 The evaluator processes known failed or expired slots before admission, then
 dispatches eligible prediction workers before decoding mature outcome archives.
 Plans with an eligible current-runtime slot take priority over historical CPU
-closeout. The original 90-second prewarm and fixed input/outcome deadlines stay
-unchanged. The wall clock is checked again after resource preflight immediately
-before process creation, so an expensive check cannot start an already missed
-slot. No historical slot is rescheduled or filled later.
+closeout. New evaluator releases use a 30-second model-preparation lead, shared
+by scheduling, worker timing, status and futility receipts. This shortens the
+time a prepared child holds the heavy-worker lease before its slot. The existing
+Guard's longest idle poll delay is ten seconds; its original
+resource checks and bounded denial retries still decide admission.
+
+This lead belongs to the evaluator runtime pinned by each newly registered
+plan. The trainer and evaluator must declare the same evaluator source pin for
+new plans. Keep unfinished plans on their original runtime and lead; an upgrade
+must not edit their pins or re-time their slots. The 120-second registration lead,
+fixed input/outcome deadlines and statistical rules remain unchanged. The wall
+clock is checked again after resource preflight immediately before process
+creation, so an expensive check cannot start an already missed slot. No
+historical slot is rescheduled or filled later.
+
+Model-ready timing includes less than the complete input path: optional source
+decoding may still run until the original slot start. That preparation selects
+no input and grants no source authority. The worker waits for the fixed slot,
+rehashes the original source at use and retains its original input deadline;
+insufficient preparation time or resource pressure does not extend the window.
 
 New plans declare `FIXED_SLOT_DURABLE_PUBLICATION_V1`. The existing phase file
 records model-ready time, remaining input budget, the fixed input and prediction

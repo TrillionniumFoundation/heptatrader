@@ -3,7 +3,7 @@ from __future__ import annotations
 import json,os,sqlite3
 from pathlib import Path
 from .integrity import ContractError,canonical,read_json,digest
-from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,checked_ids,verify_candidate
+from .resident_row_accounting import SCHEMA as ROW_ACCOUNTING_SCHEMA,checked_ids,verify_candidate,episode_policy
 
 
 def write_once(path,value):
@@ -43,18 +43,7 @@ def put_meta(db,key,value):db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)'
 def admit_job(db,job_id,fingerprint,created_ms,job,rows):
  if job.get('training_row_accounting_schema') is not None:
   if job['training_row_accounting_schema']=='heptatrader.laya-gradient-row-accounting.v2':
-   from . import resident_training_v5 as v5
-   from . import resident_training_v6 as v6
-   from . import resident_training_v7 as v7
-   from . import resident_training_v8 as v8
-   if v8.enabled(job.get('objective')):
-    v8.check_job(job)
-   elif v7.enabled(job.get('objective')):v7.check_job(job)
-   elif v6.enabled(job.get('objective')):v6.check_job(job)
-   elif v5.enabled(job.get('objective')):v5.check_job(job)
-   else:
-    from .resident_training_v4 import check_job
-    check_job(job)
+   episode_policy(job.get('objective')).check_job(job)
   elif job['training_row_accounting_schema']!=ROW_ACCOUNTING_SCHEMA:raise ContractError('ROW_ACCOUNTING_SCHEMA')
   checked_ids(rows,16)
   if rows!=job.get('training_row_ids') or fingerprint!=digest(rows):raise ContractError('ROW_ACCOUNTING_JOB_BINDING')

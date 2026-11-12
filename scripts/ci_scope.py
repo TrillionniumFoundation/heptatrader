@@ -5,7 +5,9 @@ Repository docs and unconsumed research notes are prose. Research contracts,
 configuration and documents consumed by source/build inputs keep full feedback. Verified operator tools
 run every core/source Python test. Ordinary Python changes in the Laya and
 historical-research packages also run the complete learning lane. Package tests
-are discovered, not registered one filename/version at a time. Native interfaces,
+are discovered, not registered one filename/version at a time. Train-v2 Python
+consumers keep all core/source tests, including their root-level fixtures.
+Native interfaces,
 shared contracts, build/install inputs and uncertain changes retain full CI.
 Verified installed-release validation keeps native/package and Python feedback.
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import json
 import re
 import subprocess
 import sys
@@ -39,6 +42,8 @@ VERIFIED_PYTHON_GROUPS = (
     frozenset({"scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
     frozenset({"scripts/activate_prepared_gateway.py", "scripts/native_execution_maintenance.py",
                "tests/python/test_activate_prepared_gateway.py",
+               "tests/python/test_managed_broker_maintenance.py",
+               "tests/python/test_gateway_prepared_reconnect.py",
                "tests/python/test_native_execution_maintenance.py"}),
     frozenset({"scripts/hepta_runtime_identity.py", "tests/python/test_runtime_identity.py",
                "scripts/activate_prepared_driver.py", "tests/python/test_activate_prepared_driver.py"}),
@@ -97,10 +102,11 @@ VERIFIED_HELPER_DEPENDENCIES = {
                    "tests/python/test_paper_driver.py"}),
     ),
     "scripts/hepta_progress.py": (
-        frozenset({"hepta_maintenance_latch"}),
+        frozenset({"hepta_maintenance_latch", "hepta_decision_attribution"}),
         frozenset({"scripts/heptatrader-user", "cmake/HeptaInstall.cmake",
                    "tests/python/test_cmake_install_behavior.py",
-                   "scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py"}),
+                   "scripts/hepta_maintenance_latch.py", "tests/python/test_hepta_maintenance_latch.py",
+                   "scripts/hepta_decision_attribution.py", "tests/python/test_driver_observation_state.py"}),
     ),
     "scripts/hepta_verified_loader.py": (
         frozenset(),
@@ -207,6 +213,18 @@ PYTHON_LEARNING_PACKAGES = {
         "research/historical_training/common.py",
     ),
 }
+# Train-v2 is consumed by core Python fixtures; it is neither a CMake input nor
+# a Laya learning dependency. Its shared contracts/native adapters stay outside
+# ordinary consumer scoping, and non-Python configuration remains full CI.
+PYTHON_CORE_PACKAGES = {
+    "research/train_v2": (
+        "scripts/run_python_tests.py", "research/train_v2/contracts.py",
+    ),
+}
+PYTHON_PACKAGES = PYTHON_LEARNING_PACKAGES | PYTHON_CORE_PACKAGES
+PYTHON_PACKAGE_TESTS = {
+    "research/train_v2": ("tests/python", "test_train_v2_*.py"),
+}
 # These names describe shared interfaces/installation, not ordinary consumers.
 # Non-Python inputs (Rust/C++/CMake/lockfiles/configuration) never enter this rule.
 PYTHON_BOUNDARY = re.compile(
@@ -250,11 +268,16 @@ VERIFIED_PYTHON_LEARNING_GROUPS = (
 )
 
 
-def learning_package(path: str) -> str | None:
-    for package in PYTHON_LEARNING_PACKAGES:
-        if not path.startswith(package + "/"):
+def python_package(path: str) -> str | None:
+    for package in PYTHON_PACKAGES:
+        if path.startswith(package + "/"):
+            relative = path[len(package) + 1:]
+        elif (package in PYTHON_PACKAGE_TESTS and
+              str(Path(path).parent) == PYTHON_PACKAGE_TESTS[package][0] and
+              fnmatch.fnmatchcase(Path(path).name, PYTHON_PACKAGE_TESTS[package][1])):
+            relative = Path(path).name
+        else:
             continue
-        relative = path[len(package) + 1:]
         parts = relative.split("/")
         if (not relative.endswith(".py") or
                 not (len(parts) == 1 or len(parts) == 2 and parts[0] == "tests"
@@ -364,8 +387,8 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
         return full
     groups = VERIFIED_PYTHON_GROUPS + VERIFIED_PYTHON_LEARNING_GROUPS + (RELEASE_VALIDATION_GROUP,)
     allowed = frozenset.union(*groups)
-    packages = {learning_package(path) for path in changed}
-    if any(path not in allowed and learning_package(path) is None for path in changed):
+    packages = {python_package(path) for path in changed}
+    if any(path not in allowed and python_package(path) is None for path in changed):
         return full
     packages.discard(None)
     needed = set(changed)
@@ -381,8 +404,9 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
         helpers = [path for path in VERIFIED_HELPER_DEPENDENCIES if path in needed]
     try:
         for package in packages:
-            needed.update(PYTHON_LEARNING_PACKAGES[package])
-            tests = list((root / package / "tests").glob("test_*.py"))
+            needed.update(PYTHON_PACKAGES[package])
+            directory, pattern = PYTHON_PACKAGE_TESTS.get(package, (package + "/tests", "test_*.py"))
+            tests = list((root / directory).glob(pattern))
             if not tests:
                 return full
             needed.update(str(path.relative_to(root)) for path in tests)
@@ -401,7 +425,7 @@ def scope_for_paths(paths: list[str] | None, root: Path = ROOT) -> dict[str, boo
     return {
         "run_native": release_validation,
         "run_python": True,
-        "run_learning": bool(packages) or any(group.intersection(changed)
+        "run_learning": bool(packages & PYTHON_LEARNING_PACKAGES.keys()) or any(group.intersection(changed)
                                               for group in VERIFIED_PYTHON_LEARNING_GROUPS),
     }
 
@@ -433,6 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "github":
         for name, enabled in scope.items():
             print(f"{name}={str(enabled).lower()}")
+        print("lanes=" + json.dumps([name.removeprefix("run_")
+                                     for name, enabled in scope.items() if enabled],
+                                    separators=(",", ":")))
         return 0
     if not scope["run_python"]:
         print("DOCS_ONLY: preserve documentation checks.")

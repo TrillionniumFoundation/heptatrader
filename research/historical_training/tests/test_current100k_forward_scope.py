@@ -19,6 +19,12 @@ class ValueScopeTests(unittest.TestCase):
   (self.root/'candidate.json').write_text(json.dumps(c));return c
  def test_valid_current_scope_has_no_actor_selection(self):
   self.write();c=validate_value_candidate(self.root);self.assertFalse(c['scorer_or_actor_updated'])
+ def test_readout_profile_is_explicit_and_exact(self):
+  from laya_cell.financial_value_profile import CENTERED_RESIDUAL_PROFILE
+  self.write({**self.c,'readout_profile':dict(CENTERED_RESIDUAL_PROFILE)})
+  self.assertEqual(validate_value_candidate(self.root)['readout_profile'],CENTERED_RESIDUAL_PROFILE)
+  self.write({**self.c,'readout_profile':{**CENTERED_RESIDUAL_PROFILE,'steps':17}})
+  with self.assertRaisesRegex(ContractError,'READOUT_PROFILE_CHANGED'):validate_value_candidate(self.root)
  def test_every_actor_or_authority_claim_refused(self):
   for k in ['scorer_or_actor_updated','on_policy_policy_gradient','automatic_selection','canonical_owner_accepted']:
    c=copy.deepcopy(self.c);c[k]=True;self.write(c)
@@ -133,6 +139,14 @@ class ForwardScopeFixture:
   self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
 
 class BoundPlanEvidenceReuseTests(ForwardScopeFixture,unittest.TestCase):
+ def test_future_plan_cannot_drop_or_change_frozen_readout_profile(self):
+  from laya_cell.current100k_forward import validate_bound_plan
+  from laya_cell.financial_value_profile import CENTERED_RESIDUAL_PROFILE
+  self.candidate['readout_profile']=dict(CENTERED_RESIDUAL_PROFILE)
+  with self.assertRaisesRegex(ContractError,'PLAN_SCOPE'):validate_bound_plan(self.plan,self.candidate)
+  self.plan['readout_profile']=dict(CENTERED_RESIDUAL_PROFILE)
+  self.plan['plan_id']=digest({k:v for k,v in self.plan.items() if k!='plan_id'})
+  self.assertEqual(validate_bound_plan(self.plan,self.candidate),self.plan)
  def test_candidate_runtime_selection_cannot_be_dropped_or_changed_by_plan(self):
   from laya_cell.current100k_forward import validate_bound_plan
   self.candidate['hip_runtime_manifest_sha256']='1'*64

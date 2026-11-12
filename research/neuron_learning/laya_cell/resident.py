@@ -71,6 +71,29 @@ def training_forward_window(window,rule,now_ms):
          'future_data_availability_proven':False}
 
 
+def next_new_candidate_training_wakeup(rule,now_ms):
+ """Find an advisory wakeup for fresh collection, without renewing any window.
+
+ A closed weekend may extend beyond today's 24-hour preview. At each future
+ regular opening, ask the same calendar whether a newly collected 24-hour
+ window could fit the unchanged training budget and full original trial.
+ Actual collection, resource admission and registration must all run again.
+ """
+ from .resident_plan_calendar import upcoming_regular_openings
+ next_at=None
+ for opening in upcoming_regular_openings(now_ms):
+  preview={'training_end_ms':opening,'validation_start_ms':opening+1,
+           'validation_end_ms':opening+86400000}
+  if training_forward_window(preview,rule,opening)['ready']:
+   next_at=opening
+   break
+ return {'next_training_at_ms':next_at,'checked_at_ms':now_ms,
+         'scope':'NEW_CANDIDATE_AFTER_FRESH_DATA_COLLECTION',
+         'fresh_collection_and_admission_required':True,
+         'existing_candidate_window_changed':False,'trial_allocated':False,
+         'future_data_availability_proven':False}
+
+
 def check_owner_handoff_runtime(config):
  """Reject an incomplete typed-v8 handoff package before importing its code."""
  if not training_v8.enabled(config.get('objective')) and config.get('canonical_owner_registration') is None:
@@ -617,12 +640,18 @@ class Supervisor:
   if window is None:
    window={'training_end_ms':now,'validation_start_ms':now+1,'validation_end_ms':now+86400000}
   trial=get_meta(self.db,'evaluation_trial',0)+1
-  decision=training_forward_window(window,rule_for_trial(trial,self.c.get('promotion_protocol')),now)
+  rule=rule_for_trial(trial,self.c.get('promotion_protocol'))
+  decision=training_forward_window(window,rule,now)
   if decision['ready']:return None
+  wakeup=None
+  next_at=decision['next_training_at_ms']
+  if next_at is None and not collected:
+   wakeup=next_new_candidate_training_wakeup(rule,now)
+   next_at=wakeup['next_training_at_ms']
   return self.write_status(storage=self.storage,state='HOLD_NEW_TRAINING_FORWARD_WINDOW',
     waiting_stage='NEW_TRAINING_FORWARD_WINDOW_PREFLIGHT',
     reason=decision['reason'],training_window_preflight=decision,
-    next_training_at_ms=decision['next_training_at_ms'],
+    next_training_at_ms=next_at,new_candidate_wakeup=wakeup,
     training_data_refresh_performed=collected,rows_reserved=False,trial_allocated=False,**queue)
  def _training_wait_preflight(self,now,queue):
   cadence=self._training_cadence_wait(now,queue)
@@ -695,7 +724,7 @@ class Supervisor:
   new=[]
   for r in rows:
    key=digest([r['sample_id'],r['horizon_sec'],r['outcome_receipt_digest']])
-   if not self.db.execute('SELECT 1 FROM consumed_rows WHERE id=?',(key,)).fetchone():new.append((key,r))
+   if key not in reserved:new.append((key,r))
   state={'mature_rows':len(rows),'new_mature_rows':len(new),'feed':quality,**queue,'reward_reason':rewards['reason']}
   if len(new)<16:
    _input_wait.remember(self.c,reserved,now,_input_before,quality=quality,mature_rows=len(rows),new_mature_rows=len(new),clock_complete=quality.get('training_input_clock_complete') is True,next_input_ms=quality.get('next_training_input_ms'))
@@ -725,7 +754,7 @@ class Supervisor:
   job=attach_input(job)
   job_path=self.root/'jobs'/(job_id+'.json');write_once(job_path,job)
   if not admit_job(self.db,job_id,fingerprint,now,job,row_ids):return self.write_status(storage=self.storage,state='JOB_ALREADY_ADMITTED',**state)
-  self.write_status(state='TRAINING_ON_GFX1150',active_job=job_id,**state)
+  self.write_status(storage=self.storage,state='TRAINING_ON_GFX1150',active_job=job_id,**state)
   with self.db:self.db.execute('UPDATE jobs SET status=? WHERE id=?',('RUNNING',job_id))
   log=self.root/'logs'/(job_id+'.log');log.parent.mkdir(mode=0o700,exist_ok=True)
   failure=None

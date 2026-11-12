@@ -266,6 +266,30 @@ class ProspectiveEvaluatorDiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original_plan)
         self.assertEqual(list(self.folder.glob('outcome-*.json')), [])
 
+    def test_suppression_receipt_uses_the_same_thirty_second_window(self):
+        self.make_futile()
+        for slot in range(3):
+            self.outcome(slot, evaluated_at_ms=self.now-90001)
+        before = self.files()
+        receipt = self.folder / 'futility-suppression-003.json'
+        for offset, accepted in ((-90000, False), (-30001, False), (-30000, True),
+                                 (self.plan['rule']['input_grace_ms'], True),
+                                 (self.plan['rule']['input_grace_ms']+1, False)):
+            with self.subTest(offset=offset):
+                if accepted:
+                    binding = evaluation._futility_suppression_receipt(
+                        self.path, self.plan, 3, at_ms=self.now+offset)
+                    self.assertEqual(binding['at_ms'], self.now+offset)
+                    self.assertEqual(binding, evaluation._futility_suppression_receipt(
+                        self.path, self.plan, 3))
+                    receipt.unlink()
+                else:
+                    with self.assertRaisesRegex(ContractError, 'FUTILITY_SUPPRESSION_RECEIPT_CHANGED'):
+                        evaluation._futility_suppression_receipt(
+                            self.path, self.plan, 3, at_ms=self.now+offset)
+                    self.assertFalse(receipt.exists())
+                self.assertEqual(self.files(), before)
+
     def test_actual_suppression_is_immutable_and_preserves_prior_denial(self):
         self.make_futile()
         engine = self.engine()
