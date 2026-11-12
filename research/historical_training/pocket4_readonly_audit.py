@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Read-only Pocket4 EUR/USD historical-bar and PAPER strategy-PnL auditor.
+
+No IB connection, imports of broker clients, file mutation, or order authority.
+Reads a stable snapshot of existing files and prints JSON to stdout.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import time
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+
+def decimal(value):
+    try:
+        v = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("INVALID_NUMERIC_VALUE") from None
+    if not v.is_finite():
+        raise ValueError("NONFINITE_NUMERIC_VALUE")
+    return v
+
+
+MAX_SOURCE_BYTES = 128 * 1024 * 1024
+
+
+def read_stable(path: Path) -> bytes:
+    """Read once from a regular file; detect concurrent append/rewrite and symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("SOURCE_OPEN_FAILED:" + str(path)) from error
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_SOURCE_BYTES:
+            raise ValueError("UNSAFE_OR_OVERSIZED_SOURCE:" + str(path))
+        raw = source.read(MAX_SOURCE_BYTES + 1)
+        after = os.fstat(source.fileno())
+        if (len(raw) > MAX_SOURCE_BYTES or
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise ValueError("SOURCE_CHANGED_DURING_READ")
+    return raw
+
+
+def decode_strict(raw: bytes):
+    def unique_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("DUPLICATE_JSON_KEY:" + key)
+            value[key] = item
+        return value
+
+    def invalid_constant(_):
+        raise ValueError("NONFINITE_JSON")
+
+    return json.loads(raw, parse_constant=invalid_constant,
+                      object_pairs_hook=unique_pairs)
+
+
+def load(path: Path):
+    return decode_strict(read_stable(path))
+
+
+def audit_pnl(report):
+    if report.get("scope") != "STRATEGY_PERIOD_NOT_ACCOUNT_NAV":
+        raise ValueError("UNEXPECTED_PNL_SCOPE")
+    totals = report["totals"]
+    components = report["components"]
+    if not components:
+        raise ValueError("EMPTY_COMPONENTS")
+    keys = ("gross_total_pnl", "net_total_pnl", "fees_paid", "realized_gross_pnl", "unrealized_gross_pnl")
+    for key in keys:
+        actual = decimal(totals[key])
+        computed = sum((decimal(item[key]) for item in components), Decimal(0))
+        if abs(actual - computed) > Decimal("0.000001"):
+            raise ValueError("TOTALS_MISMATCH:" + key)
+    if abs(decimal(totals["gross_total_pnl"]) -
+           decimal(totals["realized_gross_pnl"]) -
+           decimal(totals["unrealized_gross_pnl"])) > Decimal("0.000001"):
+        raise ValueError("TOTALS_REALIZED_UNREALIZED_MISMATCH")
+    for item in components:
+        if abs(decimal(item["gross_total_pnl"]) - decimal(item["fees_paid"]) - decimal(item["net_total_pnl"])) > Decimal("0.000001"):
+            raise ValueError("COMPONENT_FEE_MISMATCH:" + str(item.get("instrument")))
+        if abs(decimal(item["gross_total_pnl"]) - decimal(item["realized_gross_pnl"]) -
+               decimal(item["unrealized_gross_pnl"])) > Decimal("0.000001"):
+            raise ValueError("COMPONENT_REALIZED_UNREALIZED_MISMATCH:" + str(item.get("instrument")))
+    all_reported_fees = (totals.get("fees_complete") is True and
+                         all(item.get("fees_complete") is True for item in components))
+    complete_strategy_ledger = (report.get("complete") is True and
+                                all(item.get("ledger_complete") is True and
+                                    item.get("valuation_complete") is True
+                                    for item in components))
+    valid_until_ms = report.get("valid_until_ms")
+    quote_fresh = (type(valid_until_ms) is int and
+                   valid_until_ms > int(time.time() * 1000))
+    return {
+        "reported_execution_fee_coverage": all_reported_fees,
+        "complete_strategy_ledger": complete_strategy_ledger,
+        "mark_current_at_audit": quote_fresh,
+        "account_nav_is_not_implied": True,
+        "period_id": report["period_id"],
+        "observed_at_ms": report["observed_at_ms"],
+        "currency": report["currency"],
+        "gross_total_pnl": str(decimal(totals["gross_total_pnl"])),
+        "fees_paid": str(decimal(totals["fees_paid"])),
+        "net_total_pnl": str(decimal(totals["net_total_pnl"])),
+        "account_all_in_pnl_known": report.get("all_in_account_net_pnl") is not None,
+        "strategy_components": [{
+            "instrument": item["instrument"],
+            "position": str(item["position"]),
+            "gross": str(decimal(item["gross_total_pnl"])),
+            "fees": str(decimal(item["fees_paid"])),
+            "net": str(decimal(item["net_total_pnl"])),
+            "execution_count": item["execution_count"],
+            "fee_coverage": item.get("fees_complete") is True,
+            "excluded_costs": item.get("excluded_costs", []),
+            "additional_net_pnl_required_to_break_even": str(
+                max(Decimal(0), -decimal(item["net_total_pnl"]))),
+            "fee_per_execution_not_per_roundtrip": (
+                str(decimal(item["fees_paid"]) / decimal(item["execution_count"]))
+                if item["execution_count"] else None),
+        } for item in components],
+    }
+
+
+def audit_bars(dataset, expected_sha):
+    if expected_sha is not None and len(expected_sha) != 64:
+        raise ValueError("BAD_EXPECTED_SHA256")
+    raw = read_stable(dataset)
+    sha = hashlib.sha256(raw).hexdigest()
+    if expected_sha is not None and sha != expected_sha:
+        raise ValueError("DATASET_SHA256_MISMATCH")
+    # Input is a retained IB historical bar research artifact, not an executable
+    # tick-accurate spread or a point-in-time forecasting evidence source.
+    d = decode_strict(raw)
+    if d.get("research_only_revised_not_contemporaneous") is not True:
+        raise ValueError("HISTORICAL_SOURCE_CLASSIFICATION_MISSING")
+    rows = d["bars"]
+    if not rows:
+        raise ValueError("EMPTY_BARS")
+    prev = None
+    equal_close = 0
+    identical_ohlc = 0
+    for bar in rows:
+        ts = bar["time"]
+        if type(ts) is not int or (prev is not None and ts <= prev):
+            raise ValueError("BAR_TIMESTAMP_NOT_STRICTLY_ASCENDING")
+        prev = ts
+        bid, ask = bar["bid"], bar["ask"]
+        delta = decimal(ask["close"]) - decimal(bid["close"])
+        if delta < 0:
+            raise ValueError("CROSSED_CLOSE")
+        equal_close += delta == 0
+        identical_ohlc += bid == ask
+    return {
+        "dataset_sha256": sha,
+        "bar_count": len(rows),
+        "first_epoch_s": rows[0]["time"],
+        "last_epoch_s": rows[-1]["time"],
+        "zero_close_spread_count": equal_close,
+        "zero_close_spread_fraction": equal_close / len(rows),
+        "identical_bid_ask_ohlc_count": identical_ohlc,
+        "history_not_executable_spread": True,
+        "history_not_contemporaneous_prediction_evidence": True,
+    }
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--pnl", type=Path, required=True)
+    p.add_argument("--dataset", type=Path, required=True)
+    p.add_argument("--dataset-sha256")
+    args = p.parse_args()
+    try:
+        result = {"schema": "heptatrader.pocket4-readonly-audit.v1",
+                  "trading_authority": False, "model_promotion": False,
+                  "pnl": audit_pnl(load(args.pnl)),
+                  "historical": audit_bars(args.dataset, args.dataset_sha256)}
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
+        print(json.dumps({"schema": "heptatrader.pocket4-readonly-audit.v1",
+                          "status": "REJECTED", "reason": str(exc)}))
+        raise SystemExit(2) from None
+
+
+if __name__ == "__main__":
+    main()
