@@ -57,22 +57,67 @@ def valid_quote(q,received,instrument,*,legacy_historical_expiry=False):
         raise ValueError('QUOTE_NUMERIC')
     return bid,ask
 
-def parse_native_quote_reply(returncode,stdout,received,instrument):
+def _native_error_reason(raw,*,plain=False):
+    """Read a bounded diagnostic code, never quote data or arbitrary stderr."""
+    if type(raw) is not str or len(raw)>4096:return None
+    reason=None
+    try:
+        obj=strict(raw)
+        if type(obj) is dict and obj.get('status')!='ok':
+            reason=obj.get('reason_code')
+    except (ValueError,TypeError,RecursionError):
+        if plain:reason=raw.rstrip('\n')
+    if (type(reason) is str and 1<=len(reason)<=100
+        and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in reason)):
+        return reason
+    return None
+
+def native_quote_diagnostic(returncode,stdout,stderr):
+    """Bounded provenance of decoded process output, not a market observation.
+
+    Fingerprints identify UTF-8 re-encoding of captured text, not original wire
+    bytes. Raw stderr can contain private paths and is deliberately not stored.
+    """
+    if type(returncode) is not int or type(stdout) is not str or type(stderr) is not str:
+        raise ValueError('QUOTE_TOOL_RESPONSE_TYPE')
+    reason=None;origin=None
+    if returncode:
+        reason=_native_error_reason(stdout)
+        if reason is not None:origin='STDOUT_ERROR_ENVELOPE'
+        else:
+            reason=_native_error_reason(stderr,plain=True)
+            if reason is not None:origin='STDERR_DIAGNOSTIC'
+        if reason is None:
+            reason='QUOTE_TOOL_SIGNALLED' if returncode<0 else 'QUOTE_TOOL_EXIT_NONZERO'
+            origin='PROCESS_EXIT'
+    return {'schema':'heptatrader.quote-tool-diagnostic.v1',
+            'exit_code':returncode,'reason_code':reason,'reason_origin':origin,
+            'stdout_chars':len(stdout),'stderr_chars':len(stderr),
+            'stdout_text_sha256':hashlib.sha256(stdout.encode('utf-8',errors='replace')).hexdigest(),
+            'stderr_text_sha256':hashlib.sha256(stderr.encode('utf-8',errors='replace')).hexdigest(),
+            'diagnostic_only_not_quote_authority':True}
+
+def parse_native_quote_reply(returncode,stdout,received,instrument,*,stderr=''):
     """Fail closed on malformed gateway replies; never cache or refresh a quote.
 
     The original collector still owns its fixed read-only market.get_quote call.
     This pure parser has no broker client, subscription mutator or recovery
     commands. Recovering means accepting a *subsequent actual fresh quote*.
     """
-    if type(returncode) is not int or type(stdout) is not str:
+    if type(returncode) is not int or type(stdout) is not str or type(stderr) is not str:
         raise ValueError('QUOTE_TOOL_RESPONSE_TYPE')
+    # A native client or its verified launcher can fail before emitting a JSON
+    # envelope. Preserve that failure instead of reporting malformed quote JSON.
+    # Even a valid quote-shaped stdout cannot be accepted on a nonzero exit.
+    if returncode:
+        raise ValueError(native_quote_diagnostic(returncode,stdout,stderr)['reason_code'])
     try:
         obj=strict(stdout)
     except (ValueError,TypeError) as exc:
         raise ValueError('QUOTE_TOOL_JSON_INVALID') from None
     if type(obj) is not dict:
         raise ValueError('QUOTE_TOOL_RESPONSE_SHAPE')
-    if returncode or obj.get('status')!='ok':
+    if obj.get('status')!='ok':
         reason=obj.get('reason_code')
         if (type(reason) is not str or not 1<=len(reason)<=100
             or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789'
@@ -371,16 +416,22 @@ def collect(root,seconds):
                 append('FAILURE',{'reason':'ACCOUNTING_PERIOD_CHANGED'});break
             if os.fstat(fd).st_size>MAX_BYTES-65536:
                 append('FAILURE',{'reason':'SOURCE_STORAGE_BOUND'});break
+            completed_probe=None
             try:
                 p=subprocess.run([str(cli),'native','--io-timeout-ms','4000','--call-id','laya-shadow-read-'+uuid.uuid4().hex,
                     'call','market.get_quote','instrument=EUR.USD'],capture_output=True,text=True,timeout=8)
+                completed_probe=p
                 q=parse_native_quote_reply(p.returncode,p.stdout,
-                                            int(time.time()*1000),'EUR.USD')
+                                            int(time.time()*1000),'EUR.USD',stderr=p.stderr)
                 append('QUOTE',{k:q[k] for k in FIELDS if k in q})
             except Exception as exc:
                 reason=str(exc)
                 if len(reason)>100 or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in reason):reason=type(exc).__name__
-                append('FAILURE',{'reason':reason,'quote_timestamp_rewritten':False})
+                failure={'reason':reason,'quote_timestamp_rewritten':False}
+                if completed_probe is not None:
+                    failure['tool_diagnostic']=native_quote_diagnostic(
+                        completed_probe.returncode,completed_probe.stdout,completed_probe.stderr)
+                append('FAILURE',failure)
             next_probe=time.monotonic()+backoff.delay_seconds
         append('END',{'broker_orders_sent':0})
     finally:os.close(fd)
@@ -393,3 +444,4 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);parser.add_argument('--seconds',type=int,default=1200)
     args=parser.parse_args();os.umask(0o077);collect(args.output,args.seconds)
 if __name__=='__main__':main()
+
