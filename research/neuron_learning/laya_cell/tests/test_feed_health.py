@@ -238,4 +238,3 @@ class HistoricalSeedTests(unittest.TestCase):
             with mock.patch("laya_cell.shadow_source.valid_quote",return_value=(Decimal("1.1"),Decimal("1.2"))):
                 last,outage=historical_last_quote(root,"a"*64)
             self.assertEqual(last["observed_at_ms"],older);self.assertTrue(outage)
-

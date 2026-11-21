@@ -40,7 +40,7 @@ class NativeQuoteDiagnosticsTests(unittest.TestCase):
                     'DISCOVERY_LIST_REJECTED\n','UPSTREAM_UNAVAILABLE')
 
     def test_nonzero_exit_never_accepts_quote_shaped_stdout(self):
-        self.reject(1,json.dumps({'status':'ok','payload':quote()}),'','QUOTE_TOOL_EXIT_NONZERO')
+        self.reject(1,json.dumps({'status':'ok','payload':quote()}),'','QUOTE_TOOL_UNAVAILABLE')
 
     def test_stderr_quote_is_never_a_quote_source(self):
         valid=json.dumps({'status':'ok','payload':quote()})

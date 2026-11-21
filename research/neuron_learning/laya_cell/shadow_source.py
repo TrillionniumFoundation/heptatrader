@@ -90,6 +90,15 @@ def native_quote_diagnostic(returncode,stdout,stderr):
         if reason is None:
             reason='QUOTE_TOOL_SIGNALLED' if returncode<0 else 'QUOTE_TOOL_EXIT_NONZERO'
             origin='PROCESS_EXIT'
+            # Preserve the established rejection code for a returned envelope,
+            # including status=ok paired with an unsuccessful process exit.
+            # New pre-envelope diagnostics must not change that caller contract.
+            if returncode>0 and len(stdout)<=4096:
+                try:
+                    if type(strict(stdout)) is dict:
+                        reason='QUOTE_TOOL_UNAVAILABLE'
+                except (ValueError,TypeError,RecursionError):
+                    pass
     return {'schema':'heptatrader.quote-tool-diagnostic.v1',
             'exit_code':returncode,'reason_code':reason,'reason_origin':origin,
             'stdout_chars':len(stdout),'stderr_chars':len(stderr),
@@ -444,4 +453,3 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);parser.add_argument('--seconds',type=int,default=1200)
     args=parser.parse_args();os.umask(0o077);collect(args.output,args.seconds)
 if __name__=='__main__':main()
-

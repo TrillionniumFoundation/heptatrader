@@ -31,3 +31,4 @@ jobs:
             laya_cell.tests.test_native_quote_diagnostics \
             laya_cell.tests.test_feed_health \
             laya_cell.tests.test_shadow_source
+          python3 -m unittest discover -v -s tests/python -p test_original_quote_transport_faults.py
