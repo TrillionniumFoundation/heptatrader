@@ -233,12 +233,16 @@ def _copy_member(stream: BinaryIO, target: Path, mode: int) -> None:
     descriptor = os.open(
         target,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-        mode,
+        0o600,
     )
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as output:
             shutil.copyfileobj(stream, output, length=1024 * 1024)
             output.flush()
+            # Creation permissions are filtered by the caller's umask. Restore
+            # only the already-approved archive mode on this exact descriptor,
+            # after writing the payload and before checking its final identity.
+            os.fchmod(descriptor, mode)
             os.fsync(output.fileno())
         metadata = os.fstat(descriptor)
         if (

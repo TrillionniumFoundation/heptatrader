@@ -96,7 +96,7 @@ class FeedHealthTests(unittest.TestCase):
                 counter[0]+=1
                 return float(counter[0])
             with patch("laya_cell.shadow_source.Path.home",return_value=h), \
-                 patch("laya_cell.shadow_source.subprocess.run",return_value=SimpleNamespace(returncode=0,stdout='not-json')), \
+                 patch("laya_cell.shadow_source.subprocess.run",return_value=SimpleNamespace(returncode=0,stdout='not-json',stderr='')), \
                  patch("laya_cell.shadow_source.time.monotonic",side_effect=monotonic), \
                  patch("laya_cell.shadow_source.time.sleep"), \
                  patch("laya_cell.shadow_source.signal.signal"):
@@ -150,7 +150,7 @@ class QuoteProbeBackoffTests(unittest.TestCase):
                 self.assertEqual(argv[-3:], ["call", "market.get_quote", "instrument=EUR.USD"])
                 probes.append(clock[0])
                 clock[0] += 0.01
-                return SimpleNamespace(returncode=0, stdout="invalid")
+                return SimpleNamespace(returncode=0, stdout="invalid", stderr="")
             def heartbeat(path, value):
                 snapshots.append(json.loads(json.dumps(value)))
                 atomic_status(path, value)
@@ -187,7 +187,7 @@ class QuoteProbeBackoffTests(unittest.TestCase):
                 if clock[0] >= 20:
                     handlers[signal.SIGTERM](signal.SIGTERM, None)
             with patch("laya_cell.shadow_source.Path.home", return_value=home), \
-                 patch("laya_cell.shadow_source.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="invalid")), \
+                 patch("laya_cell.shadow_source.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="invalid", stderr="")), \
                  patch("laya_cell.shadow_source.time.time", side_effect=lambda: closed + clock[0]), \
                  patch("laya_cell.shadow_source.time.monotonic", side_effect=lambda: clock[0]), \
                  patch("laya_cell.shadow_source.time.sleep", side_effect=sleep), \
