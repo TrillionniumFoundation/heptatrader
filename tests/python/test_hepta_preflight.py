@@ -17,7 +17,6 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-os.umask(0o022)
 
 # Source checkouts may be group-writable under a developer umask. Normalize
 # only the test loader directory; production preflight remains strict.
@@ -80,6 +79,7 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
     }
     path = root / "share/heptatrader/heptatrader-build-info.json"
     path.write_text(json.dumps(build_info, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o644)
     return root
 
 

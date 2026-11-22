@@ -209,6 +209,29 @@ class ReleaseSimulatorSmokeTests(unittest.TestCase):
                  "hepta_agent_simulator_e2e_tests").is_file()
             )
 
+    def test_approved_archive_modes_survive_restrictive_umask(self) -> None:
+        for mask in (0o022, 0o027, 0o077):
+            with self.subTest(umask=oct(mask)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact = root / "release.tar.gz"
+                package(artifact)
+                previous = os.umask(mask)
+                try:
+                    candidate = root / "candidate"
+                    smoke._extract_release(artifact, candidate)
+                    manifest = candidate / "manifest.json"
+                    executable = (candidate / "libexec/heptatrader/"
+                                  "hepta_agent_simulator_e2e_tests")
+                    self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o644)
+                    self.assertEqual(stat.S_IMODE(executable.stat().st_mode), 0o755)
+                    self.assertEqual(manifest.read_bytes(), b"{}\n")
+                    completed = subprocess.run(
+                        [str(executable)], capture_output=True, timeout=10
+                    )
+                    self.assertEqual(completed.returncode, 0)
+                finally:
+                    os.umask(previous)
+
     def test_private_snapshot_is_bound_before_preflight_and_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
