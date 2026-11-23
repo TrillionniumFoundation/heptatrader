@@ -21,6 +21,24 @@
     "original_quote_source": "IB_TOOL_GATEWAY/PAPER/EUR.USD",
     "window_backfills": 0
   },
+  "original_observability_review": {
+    "execution_or_terminal_cancel_matched": 0,
+    "matching_status": "PreSubmitted",
+    "no_connection_epoch_field": true,
+    "nonterminal_original_callback_timestamp_and_client_match": true,
+    "observation_end_ms": 1793768522572,
+    "observation_start_ms": 1793690131987,
+    "order_id_match": true,
+    "original_accepted_ms": 1793745120569,
+    "original_last_oms_status_ms": 1793745122709,
+    "raw_tail_records": 33582,
+    "records_with_explicit_order_id": 1,
+    "remaining_quantity_matches": true,
+    "scoped_matching_records": 1,
+    "tail_sha256": "5019777429c5d8387408d6aa4c5c11997e29637fadb99115b563e44d3b516140",
+    "total_order_execution_or_completed_after_original_start_window": 1,
+    "zero_filled": true
+  },
   "physical_cutover": {
     "at_ms": 1795399018527,
     "broker_orders_sent": 0,
@@ -56,6 +74,20 @@
     "state": "VERIFIED",
     "trainer_and_evaluator_pids_unchanged": true,
     "unit_sha256": "a77c14d2ff8694936a8d2e1c7d268943898b0e30e3333722ae4c3cd8b2efc54e"
+  },
+  "post_cutover_operational_readiness": {
+    "at_ms": 1795399289203,
+    "counts": {
+      "INPUT_UNAVAILABLE": 24
+    },
+    "orders_sent": 0,
+    "published_at_ms": 1795399289236,
+    "source_assessed_at_ms": 1795399034202,
+    "source_revalidation_pending": true,
+    "state": "HOLD_NEW_FUSION_WINDOW",
+    "trading_authority": false,
+    "unusable": 24,
+    "usable": 0
   },
   "post_cutover_readback": {
     "at_ms": 1795399076407,
