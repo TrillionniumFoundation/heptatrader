@@ -1,0 +1,134 @@
+{
+  "accounting_period_sha256": "61995fcedc2993d7ac33d2ed86c9613068c5a3ecd0d1c377e612639cd5a0958f",
+  "forward_history": {
+    "allocations": 0,
+    "distinct_jobs": 45,
+    "latest_original_window_end_ms": 1793916900959,
+    "matched_reasons": {
+      "EXACT_REQUIRED_PRIOR_NO_POSSIBLE_STRICT_GAIN": 26,
+      "NO_CONTINUOUS_OPEN_WINDOW_FITS": 18
+    },
+    "no_forward_trial_receipts": 45,
+    "not_in_authoritative_scheduler": 1,
+    "scheduler_completed_matches": 44
+  },
+  "live_limits": {
+    "affected_services": [
+      "heptatrader-laya-feed.service"
+    ],
+    "labels_added": 0,
+    "order_sends": 0,
+    "original_quote_source": "IB_TOOL_GATEWAY/PAPER/EUR.USD",
+    "window_backfills": 0
+  },
+  "physical_cutover": {
+    "at_ms": 1795399018527,
+    "broker_orders_sent": 0,
+    "first_observation": {
+      "at_ms": 1795399020683,
+      "diagnostic": {
+        "diagnostic_only_not_quote_authority": true,
+        "exit_code": 4,
+        "reason_code": "SOCKET_CONNECT_FAILED",
+        "reason_origin": "STDERR_DIAGNOSTIC",
+        "schema": "heptatrader.quote-tool-diagnostic.v1",
+        "stderr_chars": 22,
+        "stderr_text_sha256": "24e3dd7eaa4e1a1261ecb380ff2f334f68d082855a28dd9948f8858176d6edda",
+        "stdout_chars": 0,
+        "stdout_text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "kind": "FAILURE",
+      "reason": "SOCKET_CONNECT_FAILED",
+      "row_sha256": "7b1f9805cdc70954526701e73f6a575abefd41159eedc652cf1ddfc22d30ae59",
+      "segment": "segment-1795399020530249739-ab814c0d"
+    },
+    "new_collector_sha256": "d129a9520bbd9779e51d1174668e9dc949aa4ee4f48cd2e724c926596c3621c6",
+    "new_config_sha256": "fe9c7d0f2872ffe850e04406407878814e73e3234eb01a486848ea24e0313114",
+    "new_release_id": "cfd9bff500eac0332dfcba2d51db254ed48c419291ca55bbb909b3266c53ee71",
+    "old_chain_head": "2354349fb2012441ab550905aef1e9a73cf99981cf083bddd5468f4213a894d9",
+    "old_collector_sha256": "f91d3d81b517d53958103da79a96fc9c5fd86916bc0718e1199526fabcc3c52f",
+    "old_segment": "segment-1795397719275191853-bafc4b12",
+    "old_segment_closed": true,
+    "resource_override_hashes_unchanged": true,
+    "schema": "heptatrader.research-feed-cutover.v1",
+    "scope": "read-only resident quote feed",
+    "source_period_sha256": "61995fcedc2993d7ac33d2ed86c9613068c5a3ecd0d1c377e612639cd5a0958f",
+    "state": "VERIFIED",
+    "trainer_and_evaluator_pids_unchanged": true,
+    "unit_sha256": "a77c14d2ff8694936a8d2e1c7d268943898b0e30e3333722ae4c3cd8b2efc54e"
+  },
+  "post_cutover_readback": {
+    "at_ms": 1795399076407,
+    "broker_orders_sent": 0,
+    "chain_head": "a2723290c24bfee821515362e8ff27719febe1f7f26a0520aba21c23e0dd5e10",
+    "complete_release_verified": true,
+    "diagnostic_rows": 13,
+    "effective_working_directory_matches": true,
+    "failure_reasons": {
+      "SOCKET_CONNECT_FAILED": 13
+    },
+    "first_failure": 1795399020683,
+    "header_collector": "d129a9520bbd9779e51d1174668e9dc949aa4ee4f48cd2e724c926596c3621c6",
+    "last_observation": 1795399072689,
+    "member_count": 108,
+    "quotes": 0,
+    "segment": "segment-1795399020530249739-ab814c0d",
+    "service": "active",
+    "trainer_blockers": [
+      "HOST_FULL_MEMORY_PSI_PRESSURE",
+      "HOLD_NEW_TRAINING_RESOURCE_OR_SOURCE"
+    ],
+    "trainer_job_counts": {
+      "ADMITTED": 0,
+      "COMPLETED": 114,
+      "FAILED": 2,
+      "RUNNING": 0
+    },
+    "unit_sha256": "a77c14d2ff8694936a8d2e1c7d268943898b0e30e3333722ae4c3cd8b2efc54e",
+    "validated_prefix": "bea885366fad365620724b07b92d4ae30c4f51157ac9e91166f37d89529a644d"
+  },
+  "reviewed_head": "ab60609fa494063a9b283fd977eaa21e50302795",
+  "source_repository": "TrillionniumFoundation/heptatrader",
+  "staging": {
+    "changed": [
+      "learn/laya_cell/shadow_source.py"
+    ],
+    "expected_new_config_sha256": "fe9c7d0f2872ffe850e04406407878814e73e3234eb01a486848ea24e0313114",
+    "new_collector_sha256": "d129a9520bbd9779e51d1174668e9dc949aa4ee4f48cd2e724c926596c3621c6",
+    "new_inventory_sha": "cfd9bff500eac0332dfcba2d51db254ed48c419291ca55bbb909b3266c53ee71",
+    "new_unit_sha256": "a77c14d2ff8694936a8d2e1c7d268943898b0e30e3333722ae4c3cd8b2efc54e",
+    "old_collector_sha256": "f91d3d81b517d53958103da79a96fc9c5fd86916bc0718e1199526fabcc3c52f",
+    "old_unit_sha256": "4fd990ea03699b1e046f4cd357deca7b45481e393d59e6e289fc6ea6d3abb7f6",
+    "original_installer_excludes_test_assets": 20,
+    "resource_override_sha256": {
+      "50-CPUQuota.conf": "3715bd9812abd154f7108e750b6f2ad78bc061014cb7fa865bd46ed002e31eea",
+      "50-CPUWeight.conf": "e838b756036ac8cfe40ebd89b5ca81308cdb939d3dbe8594cde8269c72dbfd95",
+      "50-MemoryLow.conf": "3192d4677e83d9fc6110aa2cd76178808011d49ea312cd1d7078357a7cb5b690"
+    },
+    "source_head": "ab60609fa494063a9b283fd977eaa21e50302795",
+    "source_repo": "TrillionniumFoundation/heptatrader",
+    "test_summary": [
+      "Ran 52 tests in 0.024s",
+      "",
+      "OK"
+    ],
+    "tested_once_without_systemd": true,
+    "total_files": 108
+  },
+  "upstream": {
+    "complete_journal_bytes": 53092563,
+    "execution_reason": "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID",
+    "gateway_reason": "TOOL_GATEWAY_EXECUTION_EVENT_READINESS_TIMEOUT",
+    "input_windows_unavailable": 24,
+    "matches_previously_reviewed_complete_journal": true,
+    "operational_source_readiness": "HOLD_NEW_FUSION_WINDOW",
+    "original_fx_restart_attestation_reverified": true,
+    "original_fx_restart_attestation_sha256": "d8cd76d6474bd318bbc30b7be80399fbb017f58cd8ec755bb9f942b17e57b447",
+    "prior_reconciliation": "PreSubmitted; zero filled; positive remaining; no matching execution or authoritative terminal cancellation",
+    "prior_snapshot": "API_AVAILABLE_CURRENT_DAY_NOT_ALL_HISTORY",
+    "scope": "candidate filenames in Downloads, Documents, execution, operator-evidence; depth <=3; bounded filename and extension selection",
+    "scoped_new_broker_document_candidates": 0,
+    "sha256": "1ca0aac88a70ba36cac799b2e6b91805f2a08ab2debc5cf0682a8048a04a2e80"
+  },
+  "utc_date": "2026-11-23"
+}
