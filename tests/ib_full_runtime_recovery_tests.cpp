@@ -90,6 +90,9 @@ struct Shared {
     std::atomic<int> cashBalanceOverride{0};
     std::atomic<bool> farmAcknowledged{true}, activeOnReconnect{false};
     std::atomic<bool> emitRetiredCashCancelErrors{false};
+    // Offline only: original observed 2104:hfarm -> dispatched EUR -> 2119:cashfarm.
+    std::atomic<int> initialObservationScenario{0};
+    std::atomic<bool> initialReadOnlyConnect{false}, omitAccountSummaryEnd{false};
     bool seeded=false;
     void signal(int code){std::lock_guard<std::mutex> lock(mutex);controls.push_back(code);}
     void injectError(const IBEvent& event){std::lock_guard<std::mutex> lock(mutex);injectedErrors.push_back(event);}
@@ -107,6 +110,36 @@ public:IbPaperKillSwitchObservation Observe()const override {
     IbPaperKillSwitchObservation x;x.state=IbPaperKillSwitchState::Disarmed;return x;
 }};
 struct IbFullRuntimeRecoveryAccess {
+    // This exercises the actual native quote store and market.get_quote read
+    // branch without starting a broker adapter, background thread or socket.
+    // It is a payload/freshness regression, not a live startup qualification.
+    static ExecutionCommandResult quoteReadWithLocalTicks(
+        std::uint64_t bidAt, std::uint64_t askAt,
+        double bid, double ask, std::uint64_t cycleAt) {
+        IbPaperExecutionRuntimeConfig config;config.quoteMaxAgeMs=5000;
+        IbPaperExecutionRuntimeComposition r(config);
+        r.m_quoteSubscriptions.reset(
+            new IBAuthoritativeQuoteSubscriptionSet(r.m_authoritativeSnapshots,1000001));
+        std::map<std::string,IBContractLite> contracts;
+        contracts["EUR.USD"]=contract(false);
+        std::string reason;
+        check(r.m_quoteSubscriptions->Configure(contracts,"EUR.USD",reason),
+              "native quote timestamp fixture config: "+reason);
+        const auto plan=r.m_quoteSubscriptions->BeginCycle(101,7,cycleAt);
+        check(plan.accepted&&plan.subscriptions.size()==1,
+              "native quote timestamp fixture cycle");
+        const int request=plan.subscriptions[0].requestId;
+        check(r.m_quoteSubscriptions->RecordDispatchResult(7,request,true,cycleAt),
+              "synthetic quote dispatch witness");
+        IBEvent e;e.type=IBEventType::TickPrice;e.connectionEpoch=101;e.id=request;
+        e.key="1";e.number=bid;
+        r.m_quoteSubscriptions->ConsumeTick(e,bidAt);
+        e.key="2";e.number=ask;
+        r.m_quoteSubscriptions->ConsumeTick(e,askAt);
+        ExecutionReadCommand read;read.query="market.get_quote";
+        read.instrument="EUR.USD";read.context.toolCallId="quote-leg-regression";
+        return r.PolicyAuthoritativeRead(read);
+    }
     static IbPaperExecutionPolicyAuthority& policy(IbPaperExecutionRuntimeComposition& r) {
         return *r.m_policyAuthority;
     }
@@ -130,6 +163,9 @@ class FullBroker final:public IIBApiWrapper {
     std::map<int,IBContractLite> quotes;
     IBCashFarmAdmissionMarker farm;
     std::uint64_t sequence=0;
+    std::uint64_t initialQuoteStartedAt=0;
+    unsigned initialFarmPhase=0;
+    bool initialOldBidSent=false;
     IBEvent make(IBEventType type)const {
         IBEvent e;e.type=type;e.connectionEpoch=epoch;e.account="DU90001";e.brokerClientId=701;return e;
     }
@@ -140,12 +176,62 @@ class FullBroker final:public IIBApiWrapper {
         if(code==2104){cashReady=true;s->farmAcknowledged=true;farm.ObserveReady(epoch,++sequence);}
         events.push_back(e);
     }
+    void initialFarmControl(int code,const std::string& farmName,std::uint64_t eventEpoch=0) {
+        auto e=make(IBEventType::Error);e.id=-1;e.key=std::to_string(code);
+        e.value=code==2104&&farmName=="hfarm"?"\\u5e02\\u573a\\u6570\\u636e\\u573a\\u8fde\\u63a5\\u6b63\\u5e38:hfarm":
+            code==2119&&farmName=="cashfarm"?"\\u6b63\\u5728\\u8fde\\u63a5\\u5e02\\u573a\\u6570\\u636e\\u573a:cashfarm":"OFFLINE_SYNTHETIC_FARM:"+farmName;
+        if(eventEpoch)e.connectionEpoch=eventEpoch;
+        if(code==2119||code==2103){cashReady=false;farm.ObserveWarning(e.connectionEpoch,++sequence);}
+        if(code==2104){cashReady=true;farm.ObserveReady(e.connectionEpoch,++sequence);}
+        events.push_back(e);
+    }
+    void initialTick(int leg) {
+        for(const auto& q:quotes) {
+            auto e=make(IBEventType::TickPrice);e.id=q.first;e.key=std::to_string(leg);
+            e.number=leg==1?1.12:1.1201;events.push_back(e);
+        }
+    }
+    void driveInitialObservationFixture() {
+        if(!initialQuoteStartedAt)return;
+        const int scenario=s->initialObservationScenario.load();
+        const auto elapsed=ms()-initialQuoteStartedAt;
+        // 791 ms is the actual first-run request -> connecting-callback interval.
+        // Only the post-warning recovery callbacks below are synthetic additions.
+        const std::uint64_t warningAfter=scenario==9?1:791;
+        if((scenario==4||scenario==12)&&!initialOldBidSent&&elapsed>=100) {
+            initialTick(1);
+            if(scenario==12)initialTick(2);
+            initialOldBidSent=true;
+        }
+        if(initialFarmPhase==0&&elapsed>=warningAfter) {
+            initialFarmPhase=1;
+            if(scenario==5)initialFarmControl(2103,"cashfarm");
+            else if(scenario==6){auto e=make(IBEventType::ConnectionClosed);events.push_back(e);connected=false;}
+            else if(scenario==7)initialFarmControl(10197,"cashfarm");
+            else initialFarmControl(2119,"cashfarm");
+        }
+        if(initialFarmPhase==1&&elapsed>=warningAfter+100) {
+            initialFarmPhase=2;
+            if(scenario==1||scenario==4||scenario==11)initialFarmControl(2104,"cashfarm");
+            else if(scenario==3)initialFarmControl(2104,"hfarm");
+            else if(scenario==8)initialFarmControl(2104,"cashfarm",epoch+1);
+        }
+        if(initialFarmPhase>=2&&elapsed>=warningAfter+120&&ms()-lastTicks>80) {
+            lastTicks=ms();
+            if(scenario!=4)initialTick(1);
+            initialTick(2);
+        }
+    }
 public:
     explicit FullBroker(std::shared_ptr<Shared> v):s(v){}
     void SetConnectionEpoch(std::uint64_t e)override{epoch=e;farm.Reset(e);}
     std::uint64_t GetConnectionEpoch()const override{return epoch;}
-    bool Connect(const IBConnectParams&)override {
-        connected=true;++s->connectCount;control(2104);
+    bool Connect(const IBConnectParams& params)override {
+        connected=true;++s->connectCount;
+        if(s->initialObservationScenario.load()) {
+            s->initialReadOnlyConnect=params.readOnly;
+            initialFarmControl(2104,"hfarm");
+        } else control(2104);
         if(s->connectCount>1)control(s->reconnectCode.load());
         return true;
     }
@@ -157,7 +243,7 @@ public:
         for(const auto& row:std::map<std::string,std::string>{{"AccountReady:","true"},{"NetLiquidation:USD","1000000"},{"CashBalance:EUR",s->cashBalanceOverride.load()!=0?std::to_string(s->cashBalanceOverride.load()):(s->seeded?"1025":"1000")}}) {
             auto e=make(IBEventType::AccountValue);e.key=row.first;e.value=row.second;events.push_back(e);
         }
-        events.push_back(make(IBEventType::AccountSummaryEnd));return true;
+        if(!s->omitAccountSummaryEnd)events.push_back(make(IBEventType::AccountSummaryEnd));return true;
     }
     bool ReqPositions()override {
         ++s->positionCalls;
@@ -210,6 +296,7 @@ public:
         if(c.secType=="CASH"&&!cashReady)return false;
         check(!quotes.count(id),"request must be unique");quotes[id]=c;lastTicks=0;
         if(c.secType=="CASH")++s->fxQuoteRequests;else ++s->btcQuoteRequests;
+        if(s->initialObservationScenario.load()&&c.secType=="CASH")initialQuoteStartedAt=ms();
         return true;
     }
     bool CancelMktData(int id)override {
@@ -232,7 +319,8 @@ public:
     bool PlaceOrder(long,const IBContractLite&,const IBOrderLite&)override {++s->orderCalls;throw std::runtime_error("NO_ORDER_TRANSPORT");}
     bool CancelOrder(long)override {++s->orderCalls;throw std::runtime_error("NO_CANCEL_TRANSPORT");}
     bool PollOnce(int)override {
-        if(ms()-lastTicks>80) {
+        if(s->initialObservationScenario.load())driveInitialObservationFixture();
+        if(!s->initialObservationScenario.load()&&ms()-lastTicks>80) {
             lastTicks=ms();
             for(const auto& q:quotes)if((q.second.secType=="CASH" ?
                 cashReady&&s->emitFxQuotes.load() : s->emitBtcQuotes.load()))for(int leg=1;leg<=2;++leg){
@@ -967,8 +1055,119 @@ static void configuredCryptoPositionPayload() {
         check(f.shared->orderCalls==0,"configured observation cannot call order methods");
     }
 }
+static void quoteLegTimestampPayload() {
+    const auto now=ms();
+    check(now>60000,"quote timestamp fixture clock");
+    struct Case {
+        const char* name;std::uint64_t bidAt,askAt;double bid,ask;
+        const char* rejection;
+    };
+    const Case cases[]={
+        {"both_fresh",now-200,now-100,1.10,1.11,""},
+        {"old_bid_fresh_ask",now-6000,now-100,1.10,1.11,""},
+        {"fresh_bid_old_ask",now-100,now-6000,1.10,1.11,""},
+        {"both_old",now-7000,now-6000,1.10,1.11,"AUTHORITATIVE_QUOTE_STALE"},
+        {"zero_bid_timestamp",0,now-100,1.10,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_ask_timestamp",now-100,0,1.10,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_bid_price",now-200,now-100,0.0,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_ask_price",now-200,now-100,1.10,0.0,"AUTHORITATIVE_QUOTE_UNREADY"}
+    };
+    for(const auto& c:cases) {
+        const auto result=IbFullRuntimeRecoveryAccess::quoteReadWithLocalTicks(
+            c.bidAt,c.askAt,c.bid,c.ask,now-60000);
+        if(*c.rejection) {
+            check(result.status==ExecutionCommandStatus::Rejected&&
+                  result.reasonCode==c.rejection&&result.detail.empty(),
+                  std::string(c.name)+": existing native rejection preserved");
+            continue;
+        }
+        check(result.status==ExecutionCommandStatus::Accepted,
+              std::string(c.name)+": existing native liveness read remains accepted");
+        std::map<std::string,std::string> fields;std::string reason;
+        check(TypedToolProtocol::DecodeJsonObjectFields(result.detail,fields,reason),
+              "native quote timestamp JSON: "+reason);
+        const auto newest=c.bidAt>c.askAt?c.bidAt:c.askAt;
+        check(fields.at("bid_observed_at_ms")==std::to_string(c.bidAt)&&
+              fields.at("ask_observed_at_ms")==std::to_string(c.askAt)&&
+              fields.at("observed_at_ms")==std::to_string(newest)&&
+              fields.at("stale_after_ms")==std::to_string(newest+5000),
+              std::string(c.name)+": exact individual timestamps and original max liveness");
+        check(fields.at("timestamp_source")=="\"RUNTIME_TICK_APPLY_LOCAL_EPOCH_MS\""&&
+              fields.at("subscription_id")=="\"IB:101:7:1000001\""&&
+              std::stod(fields.at("bid"))==c.bid&&std::stod(fields.at("ask"))==c.ask,
+              "side timestamps, price and identity come from the same native quote copy");
+    }
+}
+static void initialObservationFarmWarmup() {
+    for(int scenario=1;scenario<=12;++scenario) {
+        Fixture f(false,false,true);
+        f.shared->initialObservationScenario=scenario;
+        f.shared->omitAccountSummaryEnd=scenario==11||scenario==12;
+        // Ordinary user PAPER may expose unquoted control once its economic
+        // barrier is complete. Keep that original barrier pending here so the
+        // pre-existing startup farm-loss branch is actually exercised.
+        f.shared->omitPositions=scenario==10;
+        auto& c=f.savedConfig;
+        c.profile.observationOnly=scenario!=10;
+        c.profile.userCryptoAgentId.clear();c.profile.userCryptoSessionId.clear();
+        c.profile.userQuoteContracts="EUR.USD|EUR|CASH|IDEALPRO|USD";
+        c.primaryQuoteInstrument=c.profile.userPrimaryQuoteInstrument="EUR.USD";
+        c.quoteContracts.erase("BTC.USD");
+        if(c.profile.observationOnly)c.fxCashBaselines.clear();
+        c.readinessTimeoutMs=1000;c.initialConnectTimeoutMs=1000;c.reconnectTimeoutMs=2500;
+        std::string auth,reason;
+        check(c.profile.BuildAuthorizationCredential(auth,reason),"initial observation fixture profile: "+reason);
+        check(::unlink(c.authorizationCredentialPath.c_str())==0,"replace only this synthetic fixture profile");
+        writePrivate(c.authorizationCredentialPath,auth+"\n");
+        f.start(c,true,scenario==1);
+        check(f.shared->orderCalls==0,"initial farm wait cannot call order/cancel methods");
+        check(f.shared->connectCount==1&&f.shared->fxQuoteRequests==1,
+              "bounded initial wait keeps exactly one original native quote request");
+        if(c.profile.observationOnly) {
+            check(f.shared->initialReadOnlyConnect,"actual native wrapper connect remains read-only");
+            check(f.shared->openCalls==0&&f.shared->terminalCalls==0&&f.shared->execCalls==0&&f.shared->positionCalls==0,
+                  "observation cannot request economic order/position recovery");
+            check(::access((c.stateDirectory+"/ib-fx-cash-restart-attestation").c_str(),F_OK)!=0,
+                  "observation must not create a financial restart checkpoint");
+        }
+        if(scenario==1) {
+            check(f.shared->count("observation_initial_farm_connecting")==1,
+                  "actual native first-pair wait consumed the named connecting event");
+            const auto h=f.runtime->QuoteHealthForObservation();
+            const auto q=h.contracts.find("EUR.USD");
+            check(q!=h.contracts.end()&&q->second.dispatchAccepted&&q->second.quote.HasQuote(),
+                  "positive case uses actual later synthetic native BID and ASK callbacks");
+            const auto snapshot=f.runtime->AuthoritativeSnapshotForObservation(ms());
+            const auto stored=snapshot.quotes.find("EUR.USD");
+            check(snapshot.quotesState.complete&&stored!=snapshot.quotes.end()&&
+                  stored->second.value.bid==q->second.quote.bid&&stored->second.value.ask==q->second.quote.ask,
+                  "first actual pair republished a complete authoritative quote domain");
+            check(f.runtime->IsMutationBlocked(&reason),"observation profile blocks mutation even with unheld test kill reader");
+        } else {
+            check(!f.startFailure.empty(),"negative initial warmup leaves explicit native failure");
+            if(scenario==9||scenario==10||scenario==12)
+            {
+                check(f.shared->count("observation_initial_farm_connecting")==0,
+                      "in-admission, ordinary PAPER and complete-pair failures never enter the observation wait");
+                check(f.startFailure=="IB_PAPER_MARKET_DATA_FARM_LOST_DURING_REFRESH",
+                      "original native farm-loss reason remains unchanged");
+            }
+        }
+        std::cout<<"initial_observation_farm scenario="<<scenario
+                 <<" ready="<<(scenario==1?"true":"false")<<" reason="<<f.startFailure
+                 <<" order_calls="<<f.shared->orderCalls.load()<<"\n";
+    }
+}
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==1||(argc==2&&std::string(argv[1])=="--quote-leg-timestamps-only")) {
+        quoteLegTimestampPayload();
+        if(argc==2){std::cout<<"PASS 8 native quote leg timestamp controls; original max-liveness and rejection semantics preserved; no broker adapter started\n";return 0;}
+    }
+    if(argc==1||(argc==2&&std::string(argv[1])=="--initial-observation-farm-only")) {
+        initialObservationFarmWarmup();
+        if(argc==2){std::cout<<"PASS 12 full-runtime initial observation farm controls; synthetic post-prefix recovery; kernel network denied; zero order methods\n";return 0;}
+    }
     if(argc==1||(argc==2&&std::string(argv[1])=="--configured-crypto-observation-only")) {
         configuredCryptoPositionPayload();
         if(argc==2){std::cout<<"PASS actual runtime portfolio explicit zero/nonzero/incomplete crypto evidence; kernel network denied; zero order methods\n";return 0;}

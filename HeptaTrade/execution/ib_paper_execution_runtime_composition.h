@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ib_cumulative_execution_evidence.h"
+#include "ib_observation_initial_farm.h"
 
 #include "execution_runtime_observation.h"
 
@@ -299,7 +300,8 @@ private:
         const IBAuthoritativeQuoteSubscriptionPlan& plan,
         std::string& reason, std::uint64_t expectedConnectionEpoch);
     AdapterControlAction HandleMarketDataFarmControl(
-        int controlErrorCode, std::uint64_t eventEpoch);
+        int controlErrorCode, std::uint64_t eventEpoch,
+        const std::string& farmId = std::string());
     AdapterControlAction HandleStartupBrokerControl(
         const IBEvent& event, int controlErrorCode);
     AdapterControlAction HandleReconnectBrokerControl(
@@ -413,6 +415,9 @@ private:
     // Epoch of the positive CASH-farm 2104 witness.  A readiness bit without
     // this binding could leak across a reconnect boundary.
     std::atomic<std::uint64_t> m_startupMarketDataFarmEpoch;
+    // Only the first observation-only CASH pair may await a named 2119 farm.
+    // Protected by m_authoritativeQuoteSendMutex; never active at a send fence.
+    IbObservationInitialFarmWarmup m_observationInitialFarmWarmup;
     std::atomic<bool> m_reconnectPending;
     std::atomic<bool> m_reconnectTransportConnected;
     std::atomic<bool> m_reconnectUpstreamUnavailable;

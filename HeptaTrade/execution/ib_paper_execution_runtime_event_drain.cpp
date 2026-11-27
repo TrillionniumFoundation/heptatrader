@@ -115,7 +115,7 @@ bool IbPaperExecutionRuntimeComposition::DisconnectAndDrainBoundaryEvents(
 
 IbPaperExecutionRuntimeComposition::AdapterControlAction
 IbPaperExecutionRuntimeComposition::HandleMarketDataFarmControl(
-    int controlErrorCode, std::uint64_t eventEpoch)
+    int controlErrorCode, std::uint64_t eventEpoch, const std::string& farmId)
 {
     if (controlErrorCode == 2119)
     {
@@ -125,6 +125,51 @@ IbPaperExecutionRuntimeComposition::HandleMarketDataFarmControl(
         m_startupMarketDataFarmRestored.store(false);
         m_startupMarketDataFarmEpoch.store(0);
         NotifyTestStage("broker_startup_market_data_farm_waiting");
+        {
+            std::lock_guard<std::recursive_mutex> quoteLock(
+                m_authoritativeQuoteSendMutex);
+            if (m_config.profile.userScope && m_config.profile.observationOnly &&
+                m_startupBrokerPhase.load() && !m_reconnectPending.load() &&
+                m_observationInitialFarmWarmup.Armed())
+            {
+                const auto health = m_quoteSubscriptions ?
+                    m_quoteSubscriptions->GetHealth() : IBAuthoritativeQuoteSubscriptionHealth();
+                const auto primary = health.contracts.find(m_config.primaryQuoteInstrument);
+                // This is only the initial first-pair wait. Once a complete
+                // pair has been published, retain the original farm-loss
+                // failure; an Upsert cannot rebuild an invalidated domain.
+                if (health.complete || (primary != health.contracts.end() &&
+                                        primary->second.quote.HasQuote()))
+                {
+                    MarkFatalRuntimeError(
+                        "IB_PAPER_MARKET_DATA_FARM_LOST_DURING_REFRESH");
+                    return AdapterControlAction::Consumed;
+                }
+                const bool active = health.connectionEpoch == eventEpoch &&
+                    health.generation != 0 && primary != health.contracts.end() &&
+                    primary->second.active && primary->second.requestId > 0 &&
+                    primary->second.dispatchAccepted && !primary->second.nativeRequestRejected;
+                const auto observedAtMs = m_testHooks.quoteClockMs ?
+                    m_testHooks.quoteClockMs() : NowEpochMs();
+                if (active && m_observationInitialFarmWarmup.ObserveConnecting(
+                        farmId, eventEpoch, std::chrono::steady_clock::now(), observedAtMs))
+                {
+                    // Keep the already-sent ticker while its actual farm connects.
+                    // No new send, callback restamp, financial recovery or first-ready.
+                    const auto invalidated = m_authoritativeSnapshots.InvalidateQuotes(
+                        observedAtMs, "ib.observation_initial_farm_connecting");
+                    if (!invalidated.accepted)
+                    {
+                        MarkFatalRuntimeError("IB_OBSERVATION_INITIAL_QUOTE_INVALIDATION_FAILED");
+                        return AdapterControlAction::Consumed;
+                    }
+                    NotifyTestStage("observation_initial_farm_connecting");
+                    return AdapterControlAction::Consumed;
+                }
+                MarkFatalRuntimeError("IB_OBSERVATION_INITIAL_FARM_WARMUP_INVALID");
+                return AdapterControlAction::Consumed;
+            }
+        }
         if (farmWasRestored)
         {
             bool quoteActive = false;
@@ -141,6 +186,13 @@ IbPaperExecutionRuntimeComposition::HandleMarketDataFarmControl(
     }
     if (controlErrorCode == 2104)
     {
+        {
+            std::lock_guard<std::recursive_mutex> quoteLock(
+                m_authoritativeQuoteSendMutex);
+            m_observationInitialFarmWarmup.ObserveReady(
+                farmId, eventEpoch, std::chrono::steady_clock::now(),
+                m_testHooks.quoteClockMs ? m_testHooks.quoteClockMs() : NowEpochMs());
+        }
         m_startupMarketDataFarmWaiting.store(false);
         m_startupMarketDataFarmRestored.store(true);
         m_startupMarketDataFarmEpoch.store(eventEpoch);

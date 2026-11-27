@@ -560,6 +560,12 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                << "\"subscription_state\":\"active\","
                << "\"observed_at_ms\":" << observedAtMs << ','
                << "\"stale_after_ms\":" << staleAfterMs << ','
+               // Keep the existing liveness timestamp and its read/send
+               // semantics. These are local tick-apply times from the SAME
+               // copied quote; they do not claim exchange event timestamps.
+               << "\"bid_observed_at_ms\":" << subscription->second.quote.bidObservedAtMs << ','
+               << "\"ask_observed_at_ms\":" << subscription->second.quote.askObservedAtMs << ','
+               << "\"timestamp_source\":\"RUNTIME_TICK_APPLY_LOCAL_EPOCH_MS\","
                << "\"stale\":false,\"bid\":"
                << subscription->second.quote.bid << ",\"ask\":"
                << subscription->second.quote.ask << "}";

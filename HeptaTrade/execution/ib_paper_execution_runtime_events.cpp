@@ -452,7 +452,8 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
         (m_startupBrokerPhase.load() || m_reconnectPending.load()) &&
         marketDataFarmControl)
         return HandleMarketDataFarmControl(controlErrorCode,
-                                           event.connectionEpoch);
+                                           event.connectionEpoch,
+                                           IbMarketDataFarmId(event.value));
     if (brokerControlError && m_startupBrokerPhase.load())
     {
         const AdapterControlAction action =

@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,10 @@ from paired_net_100k_preflight.core import feature_text
 
 class ShadowTests(ForwardScopeFixture, unittest.TestCase):
     def setUp(self):
+        # The evaluator CLI sets a process-private mask. These in-process
+        # fixtures must restore their caller's mask even on a failed CLI path.
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
         ForwardScopeFixture.setUp(self)
         self.study = self.root / 'study'
         self.study.mkdir()
@@ -979,6 +984,24 @@ class SettlementReconciliationTests(unittest.TestCase):
                     self.assertFalse(f.binding_path.exists())
                 self.assert_protected(f)
 
+
+
+class ShadowFixtureMaskTests(unittest.TestCase):
+    def test_failed_cli_cannot_change_callers_umask(self):
+        previous_umask = os.umask(0o022)
+        try:
+            fixture = ShadowTests('runTest')
+            try:
+                fixture.setUp()
+                with patch('sys.argv', ['evaluator', '--root', str(fixture.root / 'missing-study')]):
+                    with self.assertRaisesRegex(W.EvidenceError, 'INVALID_OR_OVERSIZED_FILE'):
+                        E.main()
+            finally:
+                fixture.doCleanups()
+            observed_umask = os.umask(0o022)
+            self.assertEqual(observed_umask, 0o022)
+        finally:
+            os.umask(previous_umask)
 
 if __name__ == '__main__':
     unittest.main()
