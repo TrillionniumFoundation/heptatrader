@@ -12,6 +12,7 @@ from laya_cell.resident_source_policy import (
     RECENT,RUNTIME_PIN,declared_profile,read_for_future_plan)
 from laya_cell.resident import Supervisor,config_check
 from laya_cell.promotion import RULE
+from laya_cell.tests.test_prediction_admission import raw_objective
 
 
 class FutureReaderPlanTests(unittest.TestCase):
@@ -129,7 +130,7 @@ class FutureReaderPlanTests(unittest.TestCase):
   job={"output_directory":str(cand),"parent_directory":str(temp/"parent"),
        "parent_id":"parent-id"}
   candidate={
-   "candidate_id":"candidate-id","dataset_id":"dataset-id",
+   "candidate_id":"candidate-id","dataset_id":"dataset-id","objective":raw_objective(),
    "parent_id":"parent-id","plasticity":{"proposal_digest":"b"*64}}
   object_=Supervisor.__new__(Supervisor)
   object_.c={"evaluation_directory":str(evaluation),"control_directory":str(control),
@@ -160,7 +161,7 @@ class FutureReaderPlanTests(unittest.TestCase):
              "runtime_sha256":{},"period_sha256":"a"*64}
   object_.root=control;object_.db=sqlite3.connect(":memory:")
   self.addCleanup(object_.db.close)
-  candidate={"candidate_id":"legacy-id","dataset_id":"ds","parent_id":"prior",
+  candidate={"candidate_id":"legacy-id","dataset_id":"ds","parent_id":"prior","objective":raw_objective(),
              "plasticity":{"proposal_digest":"b"*64}}
   job={"output_directory":str(cand),"parent_directory":str(temp/"prior"),
        "parent_id":"prior"}

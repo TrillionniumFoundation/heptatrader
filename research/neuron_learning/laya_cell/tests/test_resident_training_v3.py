@@ -293,6 +293,7 @@ class V3ConfigurationAndPlanTests(unittest.TestCase):
    job={'output_directory':td,'parent_directory':td,'parent_id':'parent'}
    for policy in (v2,v3):
     candidate={'candidate_id':'candidate','objective':copy.deepcopy(policy.OBJECTIVE),
+               'action_output_profile':policy.ACTION_OUTPUT,
                'price_baselines':profile,'action_training_profile':None,'action_optimizer_admitted':False}
     plan=service._evaluation_plan('job',candidate,job,1,cutoff+60000)
     self.assertEqual(plan['rule']['horizon_ms'],300000)

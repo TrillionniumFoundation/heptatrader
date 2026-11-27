@@ -20,6 +20,7 @@ from laya_cell import resident_training_v6 as v6, resident_training_v7 as v7
 from laya_cell import resident_training_v8 as v8
 from laya_cell import resident_price_input, resident_price_calibration
 from laya_cell import resident_price_baselines, resident_parent_calibration
+from laya_cell.tests.test_prediction_admission import raw_objective
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'resident_predict.py'
@@ -109,7 +110,7 @@ class PredictBasePreflightTests(unittest.TestCase):
         adapter = directory / 'adapter.safetensors'
         adapter.write_bytes(b'SYNTHETIC_NOT_TENSORS')
         value = {'base_id': base_id, 'parent_id': parent_id,
-                 'objective': {'schema': 'heptatrader.laya-resident-objective.v1'},
+                 'objective': raw_objective(),
                  'adapter_sha256': integrity.sha_file(adapter)}
         value['candidate_id'] = integrity.digest(value)
         (directory / 'candidate.json').write_text(json.dumps(value))

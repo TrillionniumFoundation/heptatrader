@@ -122,6 +122,8 @@ class ClosedActionEpisodeTests(unittest.TestCase):
         refs = baselines.freeze(price_rows, original.CUTOFF)
         raw = [[.6, .1, .05, .05, .07, .08, .05] for _ in price_rows]
         candidate.update(objective=deepcopy(v5.OBJECTIVE), action_training_profile=self.profile,
+                         action_output_profile=v5.ACTION_OUTPUT,
+                         action_optimizer_admitted=bool(self.profile['action_optimizer_admitted']),
                          price_baselines=refs, closed_action_source_id=self.source['source_id'],
                          closed_action_source_sha256=self.sha, action_phase=self.phase(),
                          action_update_steps=16, adapter_sha256='b'*64,
