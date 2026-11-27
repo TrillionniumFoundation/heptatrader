@@ -64,6 +64,39 @@ def admitted_receipt(digest: str) -> dict:
 
 
 class ReleaseSimulatorSmokeTests(unittest.TestCase):
+    def test_extraction_preserves_approved_modes_with_private_umask(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "release.tar.gz"
+            package(artifact)
+            destination = root / "slot"
+            previous_mask = os.umask(0o077)
+            try:
+                package_root = smoke._extract_release(artifact, destination)
+            finally:
+                os.umask(previous_mask)
+            self.assertEqual(package_root, "heptatrader-test-core")
+            for relative, expected_mode, expected_bytes in (
+                ("manifest.json", 0o644, b"{}\n"),
+                ("libexec/heptatrader/hepta_agent_simulator_e2e_tests",
+                 0o755, b"#!/bin/sh\nexit 0\n"),
+            ):
+                with self.subTest(relative=relative):
+                    target = destination / relative
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), expected_mode)
+                    self.assertEqual(target.read_bytes(), expected_bytes)
+
+    def test_extraction_mode_error_is_not_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "release.tar.gz"
+            package(artifact)
+            destination = root / "slot"
+            with mock.patch.object(smoke.os, "fchmod", side_effect=PermissionError("mode refused")):
+                with self.assertRaisesRegex(PermissionError, "mode refused"):
+                    smoke._extract_release(artifact, destination)
+            self.assertFalse(destination.exists())
+
     def assert_installed_fifo_refused(self, *, replace_regular):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

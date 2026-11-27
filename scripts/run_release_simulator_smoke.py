@@ -239,6 +239,9 @@ def _copy_member(stream: BinaryIO, target: Path, mode: int) -> None:
         with os.fdopen(descriptor, "wb", closefd=False) as output:
             shutil.copyfileobj(stream, output, length=1024 * 1024)
             output.flush()
+            # os.open applies umask; retain the approved archive mode on this
+            # exclusively created descriptor before syncing and checking it.
+            os.fchmod(output.fileno(), mode)
             os.fsync(output.fileno())
         metadata = os.fstat(descriptor)
         if (

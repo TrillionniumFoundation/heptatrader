@@ -13,6 +13,7 @@ from laya_cell import resident_plan_admission as admission
 from laya_cell.integrity import ContractError, canonical, digest, read_json
 from laya_cell.resident import Supervisor
 from laya_cell.resident_store import database, admit_job, complete_job, get_meta, put_meta, write_once
+from laya_cell.tests.test_prediction_admission import raw_objective
 from laya_cell.shadow_source import SCHEMA as QUOTE_SCHEMA, read_source
 
 NOW = int(datetime(2026, 10, 12, 10, tzinfo=timezone.utc).timestamp() * 1000)
@@ -67,6 +68,7 @@ class RegistrationTests(unittest.TestCase):
                "parent_id": "c" * 64, "dataset_sha256": "f" * 64,
                "native_binary_sha256": "9" * 64}
         candidate = {
+            "objective": raw_objective(),
             "created_at_ms": now - 1000, "trained_until_ms": now - 2000,
             "window": {"training_end_ms": now - 2000,
                        "validation_start_ms": now - 1999,
