@@ -183,6 +183,7 @@ def predict(config,plan_path,slot):
  candidate=validate_parent(candidate_dir);parent=validate_parent(parent_dir)
  if candidate['candidate_id']!=plan['candidate_id'] or parent['candidate_id']!=candidate['parent_id']:
   raise ContractError('PREDICT_CANDIDATE_PARENT_CHANGED')
+ training_v2.require_prediction_contract(candidate)
  objective=candidate.get('objective')
  if (not isinstance(objective,dict) or objective.get('schema') not in
      ('heptatrader.laya-resident-objective.v1',training_v2.SCHEMA,training_v3.SCHEMA,training_v4.SCHEMA,training_v5.SCHEMA,training_v6.SCHEMA,training_v7.SCHEMA,training_v8.SCHEMA)):

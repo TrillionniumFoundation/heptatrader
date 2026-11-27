@@ -351,6 +351,7 @@ class Supervisor:
   self.register_evaluation(row['id'],candidate,job)
   return True
  def _evaluation_plan(self,job_id,candidate,job,trial,now):
+  training_v2.require_prediction_contract(candidate)
   from .resident_evaluate import PUBLICATION_PROFILE
   rule=rule_for_trial(trial,protocol_for_job(self.c,job));start=now+FORWARD_LEAD_MS
   plan={'schema':'heptatrader.laya-resident-future-plan.v1','job_id':job_id,'candidate_id':candidate['candidate_id'],
@@ -445,8 +446,9 @@ class Supervisor:
     from .resident_plan_admission import _unreserved_history
     current=_unreserved_history(self)
    else:current=get_meta(self.db,'evaluation_trial',0)
-   trial=current+1;put_meta(self.db,'evaluation_trial',trial)
-  plan=self._evaluation_plan(job_id,candidate,job,trial,int(time.time()*1000))
+   trial=current+1
+   plan=self._evaluation_plan(job_id,candidate,job,trial,int(time.time()*1000))
+   put_meta(self.db,'evaluation_trial',trial)
   plan['plan_id']=digest(plan);write_once(path,plan)
   self._write_evaluation_handoff(candidate,job)
  def _check_power_trial_history(self,config):

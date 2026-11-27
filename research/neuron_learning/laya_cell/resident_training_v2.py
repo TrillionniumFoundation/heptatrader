@@ -32,6 +32,88 @@ def enabled(value):
     return isinstance(value, dict) and value.get('schema') == SCHEMA
 
 
+# Keep the raw-output worker contract here without importing its Torch module.
+_RAW_PREDICTION_OBJECTIVE = {'schema': 'heptatrader.laya-resident-objective.v1',
+ 'primary': 'OBSERVED_FUTURE_MID_INTERVAL_CROSS_ENTROPY',
+ 'auxiliary_teacher_weight': 0.1,
+ 'action_loss_weight': 0.01,
+ 'action_target': 'FROZEN_PARENT_ANSWER_CORRECTNESS_ACT_VS_ESCALATE',
+ 'financial_reward_policy': 'EXACT_BEHAVIOR_BOUND_ROUNDTRIP_ONLY_NO_OFFPOLICY_POLICY_GRADIENT',
+ 'optimizer': 'AdamW',
+ 'optimizer_reset_each_job': True,
+ 'learning_rate': 0.0001,
+ 'weight_decay': 0.0,
+ 'gradient_norm_cap': 1.0,
+ 'max_steps': 16,
+ 'max_rows': 64,
+ 'minimum_new_rows': 16,
+ 'automatic_execution_selection': False}
+
+
+def require_prediction_contract(candidate):
+    """Check candidate output semantics before a new plan or model load.
+
+    Existing parent-artifact validation remains separate: a frozen predecessor
+    can have a different output policy from the candidate being evaluated.
+    """
+    objective = candidate.get('objective') if isinstance(candidate, dict) else None
+    if not isinstance(objective, dict):
+        raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
+    schema = objective.get('schema')
+    if schema == _RAW_PREDICTION_OBJECTIVE['schema']:
+        if objective != _RAW_PREDICTION_OBJECTIVE:
+            raise ContractError('PREDICTION_OBJECTIVE_CHANGED')
+        if any(key in candidate for key in (
+                'action_output_profile', 'action_training_profile',
+                'action_optimizer_admitted', 'action_unsupported_reason',
+                'price_output_profile', 'price_calibration')):
+            raise ContractError('PREDICTION_RAW_OUTPUT_METADATA')
+        return
+    policy = None
+    if schema == SCHEMA:
+        expected = OBJECTIVE
+    else:
+        from . import resident_training_v3 as v3
+        from . import resident_training_v4 as v4
+        from . import resident_training_v5 as v5
+        from . import resident_training_v6 as v6
+        from . import resident_training_v7 as v7
+        from . import resident_training_v8 as v8
+        policy = next((p for p in (v3, v4, v5, v6, v7, v8)
+                       if p.enabled(objective)), None)
+        if policy is None:
+            raise ContractError('UNKNOWN_RESIDENT_OBJECTIVE')
+        if policy is not v3:
+            policy.check_objective(objective)
+        expected = policy.OBJECTIVE
+    if objective != expected:
+        raise ContractError('PREDICTION_OBJECTIVE_CHANGED')
+    price_output = getattr(policy, 'PRICE_OUTPUT', None)
+    if price_output is None:
+        if any(key in candidate for key in ('price_output_profile', 'price_calibration')):
+            raise ContractError('PREDICTION_PRICE_OUTPUT_UNSUPPORTED')
+    elif candidate.get('price_output_profile') != price_output:
+        raise ContractError('PRICE_CALIBRATION_OUTPUT_PROFILE_CHANGED')
+    if (candidate.get('action_output_profile') != ACTION_OUTPUT
+            or 'action_training_profile' not in candidate
+            or type(candidate.get('action_optimizer_admitted')) is not bool):
+        raise ContractError('ACTION_TRAINING_PROFILE_CHANGED')
+    calibration = candidate['action_training_profile']
+    if calibration is None:
+        if candidate['action_optimizer_admitted'] or price_output is not None:
+            raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
+        return
+    from .resident_action_v2_research import _check_profile
+    try:
+        _check_profile(calibration)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ContractError('ACTION_TRAINING_PROFILE_CHANGED') from exc
+    if calibration['action_optimizer_admitted'] != candidate['action_optimizer_admitted']:
+        raise ContractError('ACTION_TRAINING_SUPPORT_CHANGED')
+    if policy is not None and calibration.get('batch_balance_strategy') != policy.ACTION_BALANCE:
+        raise ContractError('ACTION_BATCH_BALANCE_PROFILE_CHANGED')
+
+
 def select_covered_rows(new_rows):
     """Cover each horizon's chronology without looking at labels or scores."""
     groups = defaultdict(list)
