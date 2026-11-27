@@ -13,6 +13,10 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     std::chrono::steady_clock::time_point deadline)
 {
     if (AbortStartupIfCancelled(reason)) return false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+        m_observationInitialFarmWarmup.Reset();
+    }
     if (m_injectedApi)
         m_adapter.reset(new HeptaIBGatewayAdapter(
             std::move(m_initialApi), m_testHooks.reconnectApiFactory));
@@ -176,6 +180,16 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
         return CleanupStartupSnapshotFailure(reason, reason);
     }
     if (m_config.profile.observationOnly) {
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+            // The formal send/admission/settlement above is unchanged. In
+            // particular 2119 inside that transaction remains a hard failure.
+            if (m_config.profile.userScope && m_config.quoteContracts.size() == 1 &&
+                PrimaryQuoteRequiresCashMarketDataFarm(
+                    m_config.quoteContracts, m_config.primaryQuoteInstrument))
+                m_observationInitialFarmWarmup.Arm(startupConnectionEpoch, deadline,
+                    m_testHooks.quoteClockMs ? m_testHooks.quoteClockMs() : NowEpochMs());
+        }
         // Obtain the configured account's real download and the existing quote
         // subscription witnesses. Do not require or fabricate a financial NAV,
         // original order history or FX cash checkpoint for a read-only reader.
@@ -191,11 +205,27 @@ bool IbPaperExecutionRuntimeComposition::WaitForAuthoritativeSnapshots(
             bool ready=false;
             {
                 std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
-                ready=m_quoteSubscriptions && m_quoteSubscriptions->GetHealth().ReadyForOperations();
+                const auto health = m_quoteSubscriptions ?
+                    m_quoteSubscriptions->GetHealth() : IBAuthoritativeQuoteSubscriptionHealth();
+                const auto primary = health.contracts.find(m_config.primaryQuoteInstrument);
+                ready = m_quoteSubscriptions && health.ReadyForOperations() &&
+                    health.connectionEpoch == startupConnectionEpoch && health.generation != 0 &&
+                    primary != health.contracts.end() &&
+                    m_observationInitialFarmWarmup.CanFinish(startupConnectionEpoch,
+                        std::chrono::steady_clock::now(),
+                        m_testHooks.quoteClockMs ? m_testHooks.quoteClockMs() : NowEpochMs(),
+                        primary->second.quote.bidObservedAtMs,
+                        primary->second.quote.askObservedAtMs, m_config.quoteMaxAgeMs,
+                        kMarketDataAdmissionStabilityWindowMs);
             }
             if (m_adapter->IsConnected() && m_adapter->IsEventStreamAuthoritative() &&
+                m_adapter->GetConnectionEpoch() == startupConnectionEpoch &&
                 risk.accountComplete && risk.accountGeneration &&
                 risk.connectionEpoch==startupConnectionEpoch && ready) {
+                {
+                    std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                    m_observationInitialFarmWarmup.Complete();
+                }
                 m_startupRecoveryReadOnly.store(true);
                 m_recoveryReason="IB_OBSERVATION_ONLY";
                 reason.clear(); return true;
