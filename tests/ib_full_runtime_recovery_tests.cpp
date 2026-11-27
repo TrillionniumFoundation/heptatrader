@@ -110,6 +110,36 @@ public:IbPaperKillSwitchObservation Observe()const override {
     IbPaperKillSwitchObservation x;x.state=IbPaperKillSwitchState::Disarmed;return x;
 }};
 struct IbFullRuntimeRecoveryAccess {
+    // This exercises the actual native quote store and market.get_quote read
+    // branch without starting a broker adapter, background thread or socket.
+    // It is a payload/freshness regression, not a live startup qualification.
+    static ExecutionCommandResult quoteReadWithLocalTicks(
+        std::uint64_t bidAt, std::uint64_t askAt,
+        double bid, double ask, std::uint64_t cycleAt) {
+        IbPaperExecutionRuntimeConfig config;config.quoteMaxAgeMs=5000;
+        IbPaperExecutionRuntimeComposition r(config);
+        r.m_quoteSubscriptions.reset(
+            new IBAuthoritativeQuoteSubscriptionSet(r.m_authoritativeSnapshots,1000001));
+        std::map<std::string,IBContractLite> contracts;
+        contracts["EUR.USD"]=contract(false);
+        std::string reason;
+        check(r.m_quoteSubscriptions->Configure(contracts,"EUR.USD",reason),
+              "native quote timestamp fixture config: "+reason);
+        const auto plan=r.m_quoteSubscriptions->BeginCycle(101,7,cycleAt);
+        check(plan.accepted&&plan.subscriptions.size()==1,
+              "native quote timestamp fixture cycle");
+        const int request=plan.subscriptions[0].requestId;
+        check(r.m_quoteSubscriptions->RecordDispatchResult(7,request,true,cycleAt),
+              "synthetic quote dispatch witness");
+        IBEvent e;e.type=IBEventType::TickPrice;e.connectionEpoch=101;e.id=request;
+        e.key="1";e.number=bid;
+        r.m_quoteSubscriptions->ConsumeTick(e,bidAt);
+        e.key="2";e.number=ask;
+        r.m_quoteSubscriptions->ConsumeTick(e,askAt);
+        ExecutionReadCommand read;read.query="market.get_quote";
+        read.instrument="EUR.USD";read.context.toolCallId="quote-leg-regression";
+        return r.PolicyAuthoritativeRead(read);
+    }
     static IbPaperExecutionPolicyAuthority& policy(IbPaperExecutionRuntimeComposition& r) {
         return *r.m_policyAuthority;
     }
@@ -1025,6 +1055,49 @@ static void configuredCryptoPositionPayload() {
         check(f.shared->orderCalls==0,"configured observation cannot call order methods");
     }
 }
+static void quoteLegTimestampPayload() {
+    const auto now=ms();
+    check(now>60000,"quote timestamp fixture clock");
+    struct Case {
+        const char* name;std::uint64_t bidAt,askAt;double bid,ask;
+        const char* rejection;
+    };
+    const Case cases[]={
+        {"both_fresh",now-200,now-100,1.10,1.11,""},
+        {"old_bid_fresh_ask",now-6000,now-100,1.10,1.11,""},
+        {"fresh_bid_old_ask",now-100,now-6000,1.10,1.11,""},
+        {"both_old",now-7000,now-6000,1.10,1.11,"AUTHORITATIVE_QUOTE_STALE"},
+        {"zero_bid_timestamp",0,now-100,1.10,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_ask_timestamp",now-100,0,1.10,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_bid_price",now-200,now-100,0.0,1.11,"AUTHORITATIVE_QUOTE_UNREADY"},
+        {"zero_ask_price",now-200,now-100,1.10,0.0,"AUTHORITATIVE_QUOTE_UNREADY"}
+    };
+    for(const auto& c:cases) {
+        const auto result=IbFullRuntimeRecoveryAccess::quoteReadWithLocalTicks(
+            c.bidAt,c.askAt,c.bid,c.ask,now-60000);
+        if(*c.rejection) {
+            check(result.status==ExecutionCommandStatus::Rejected&&
+                  result.reasonCode==c.rejection&&result.detail.empty(),
+                  std::string(c.name)+": existing native rejection preserved");
+            continue;
+        }
+        check(result.status==ExecutionCommandStatus::Accepted,
+              std::string(c.name)+": existing native liveness read remains accepted");
+        std::map<std::string,std::string> fields;std::string reason;
+        check(TypedToolProtocol::DecodeJsonObjectFields(result.detail,fields,reason),
+              "native quote timestamp JSON: "+reason);
+        const auto newest=c.bidAt>c.askAt?c.bidAt:c.askAt;
+        check(fields.at("bid_observed_at_ms")==std::to_string(c.bidAt)&&
+              fields.at("ask_observed_at_ms")==std::to_string(c.askAt)&&
+              fields.at("observed_at_ms")==std::to_string(newest)&&
+              fields.at("stale_after_ms")==std::to_string(newest+5000),
+              std::string(c.name)+": exact individual timestamps and original max liveness");
+        check(fields.at("timestamp_source")=="\"RUNTIME_TICK_APPLY_LOCAL_EPOCH_MS\""&&
+              fields.at("subscription_id")=="\"IB:101:7:1000001\""&&
+              std::stod(fields.at("bid"))==c.bid&&std::stod(fields.at("ask"))==c.ask,
+              "side timestamps, price and identity come from the same native quote copy");
+    }
+}
 static void initialObservationFarmWarmup() {
     for(int scenario=1;scenario<=12;++scenario) {
         Fixture f(false,false,true);
@@ -1087,6 +1160,10 @@ static void initialObservationFarmWarmup() {
 }
 int main(int argc,char**argv){try{
     check(::geteuid()!=0,"unprivileged test required");prohibitNetworkAndExec();
+    if(argc==1||(argc==2&&std::string(argv[1])=="--quote-leg-timestamps-only")) {
+        quoteLegTimestampPayload();
+        if(argc==2){std::cout<<"PASS 8 native quote leg timestamp controls; original max-liveness and rejection semantics preserved; no broker adapter started\n";return 0;}
+    }
     if(argc==1||(argc==2&&std::string(argv[1])=="--initial-observation-farm-only")) {
         initialObservationFarmWarmup();
         if(argc==2){std::cout<<"PASS 12 full-runtime initial observation farm controls; synthetic post-prefix recovery; kernel network denied; zero order methods\n";return 0;}
