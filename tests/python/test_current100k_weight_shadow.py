@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,10 @@ from paired_net_100k_preflight.core import feature_text
 
 class ShadowTests(ForwardScopeFixture, unittest.TestCase):
     def setUp(self):
+        # The real evaluator CLI sets a private process mask. Give this fixture
+        # the same private tree without leaking that mask into later suites.
+        original_umask = os.umask(0o077)
+        self.addCleanup(os.umask, original_umask)
         ForwardScopeFixture.setUp(self)
         self.study = self.root / 'study'
         self.study.mkdir()
@@ -978,6 +983,31 @@ class SettlementReconciliationTests(unittest.TestCase):
                 if mode == 'original_command':
                     self.assertFalse(f.binding_path.exists())
                 self.assert_protected(f)
+
+
+class ShadowFixtureIsolationTests(unittest.TestCase):
+    def test_private_fixture_restores_caller_mask_after_cli(self):
+        previous_umask = os.umask(0o022)
+        try:
+            case = ShadowTests('test_final_read_failure_is_immutable_and_does_not_redate_last_assessment')
+            result = unittest.TestResult()
+            case.run(result)
+            self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+            self.assertEqual(os.umask(0o022), 0o022)
+        finally:
+            os.umask(previous_umask)
+
+    def test_fixture_initialization_failure_restores_caller_mask(self):
+        previous_umask = os.umask(0o027)
+        try:
+            case = ShadowTests('runTest')
+            with patch.object(ForwardScopeFixture, 'setUp', side_effect=RuntimeError('fixture failure')):
+                with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+                    case.setUp()
+            case.doCleanups()
+            self.assertEqual(os.umask(0o027), 0o027)
+        finally:
+            os.umask(previous_umask)
 
 
 if __name__ == '__main__':
