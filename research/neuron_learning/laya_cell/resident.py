@@ -136,6 +136,9 @@ def config_check(config):
    raise ContractError('RESIDENT_V8_RUNTIME_PINS_REQUIRED')
  from .resident_parent_calibration import check_config as check_parent_calibration
  check_parent_calibration(config)
+ if 'price_return_contract' in config:
+  from .resident_price_return import check_config as check_return
+  check_return(config)
  from .resident_trial_stop import check_config as check_trial_stop_config
  check_trial_stop_config(config)
  from .resident_parent_action_cache import check_config as check_parent_action_cache
@@ -410,6 +413,17 @@ class Supervisor:
    plan.update(comparison)
   from .resident_hip_runtime import bind_plan
   bind_plan(self.c,plan)
+  # Bind the frozen job, never the controller's possibly newer contract. A
+  # pending legacy job stays legacy across an opt-in configuration reload.
+  if 'price_return_contract' in job or 'price_return_contract' in candidate:
+   from .resident_price_return import matching,bind_rule,PINS
+   plan.update(matching(job,candidate))
+   plan['rule']=bind_rule(plan['rule'],job)
+   for name in PINS:
+    expected=job.get('runtime_sha256',{}).get(name)
+    if expected is None or self.c.get('runtime_sha256',{}).get(name)!=expected:
+     raise ContractError('PRICE_RETURN_PLAN_RUNTIME_CHANGED')
+    plan['evaluation_runtime_sha256'][name]=expected
   if rule.get('schema')==MATCHED_PARENT_SCHEMA:validate_plan_rule(plan)
   return plan
  def _write_evaluation_handoff(self,candidate,job,writer=write_once):

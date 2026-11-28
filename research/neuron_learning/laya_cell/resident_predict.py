@@ -228,6 +228,9 @@ def predict(config,plan_path,slot):
   if (input_binding!=price_input.bindings(parent,objective_schema=training_policy.SCHEMA) or price_input.check_bindings(plan)!=input_binding):
    raise ContractError('V7_PREDICT_INPUT_PROFILE_CHANGED')
  parent_calibration.verify_plan(plan,candidate,parent,sha_file(parent_dir/'candidate.json'))
+ if 'price_return_contract' in plan or 'price_return_contract' in candidate:
+  from .resident_price_return import matching
+  matching(plan,candidate)
  timing['candidate_validation_ms']=round((time.monotonic()-validation_started)*1000,3)
  if int(time.time()*1000)>late:raise ContractError('SLOT_ALREADY_MISSED')
  base_manifest=read_json(Path(config['base_directory'])/'base-manifest.json')
@@ -279,9 +282,17 @@ def predict(config,plan_path,slot):
   fixed_prediction_deadline_ms=anchor+rule['horizon_ms'],
   input_quote_age_ms=int(time.time()*1000)-anchor,contiguous_history_reset=sample.get('contiguous_history_reset_at_gap',False))
  atomic(stage,timing)
+ prediction_input_id=digest(row['state'])
+ if 'price_return_contract' in plan:
+  from .resident_price_return import input_id as return_input_id
+  prediction_input_id=return_input_id(row['state'],plan)
  input_record={'schema':'heptatrader.laya-committed-input.v1','plan_id':plan['plan_id'],'slot':slot,
-  'candidate_id':candidate['candidate_id'],'input_id':digest(row['state']),'sample':sample,'state':row['state'],
+  'candidate_id':candidate['candidate_id'],'input_id':prediction_input_id,'sample':sample,'state':row['state'],
   'source_prefixes':prefixes,'committed_at_ms':int(time.time()*1000)}
+ if 'price_return_contract' in plan:
+  from .resident_price_return import matching,check_anchor
+  check_anchor(plan['price_return_contract'],anchor)
+  input_record.update(matching(plan))
  if plan.get('future_source_read_profile') is not None:
   input_record['source_read_profile']=source_profile
  if v7:
@@ -320,13 +331,16 @@ def predict(config,plan_path,slot):
  result={'schema':'heptatrader.resident-forward-prediction.v1','candidate_id':candidate['candidate_id'],
   'parent_id':parent['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,
   'created_at_ms':available,'anchor_ms':anchor,'trained_until_ms':candidate['trained_until_ms'],
-  'input_id':digest(row['state']),'input':row['state'],'sample_id':sample['sample_id'],'reference_mid':sample['reference_mid'],
+  'input_id':prediction_input_id,'input':row['state'],'sample_id':sample['sample_id'],'reference_mid':sample['reference_mid'],
   'candidate_probs':probs,'candidate_act_escalate_probs':action,'parent_probs':parent_probs,
   'bootstrap_model_id':bootstrap['model_id'],'bootstrap_point_bps':point,'horizon_sec':300,
   'action_head_is_trade_permission':False,'remote_comparison':'NO_IDENTICAL_EXPORTED_INPUT_NO_EXTRA_MODEL_CALL',
   'gpu_arch':str(torch.cuda.get_device_properties(0).gcnArchName),'broker_orders_sent':0}
  if plan.get('future_source_read_profile') is not None:
   result['source_read_profile']=source_profile
+ if 'price_return_contract' in plan:
+  from .resident_price_return import matching
+  result.update(matching(plan))
  if v2:result['action_output_profile']=training_v2.ACTION_OUTPUT;result['action_inference']=action_report
  if v2:result['price_baseline_forecast']=price_reference_forecast
  if v5:

@@ -243,6 +243,9 @@ def training_rows_for_job(job):
     path = Path(job['dataset'])
     _need(sha_file(path) == job['dataset_sha256'], 'PRICE_CALIBRATION_DATASET_CHANGED')
     dataset = read_json(path, 64*1024**2)
+    if 'price_return_contract' in job or 'price_return_contract' in dataset:
+        from .resident_price_return import matching
+        matching(job, dataset)
     rows, _ = rows_for_training(dataset, job['window'])
     rows = timed_rows(rows, dataset)
     wanted = set(job['training_row_ids'])

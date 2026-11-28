@@ -69,6 +69,17 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
                     outcome.get("prediction_file_sha256")!=sha_file(pp)):
                 raise ContractError("V2_CLOSED_SOURCE_PREDICTION_CHANGED")
             pred=read_json(pp,32*1024)
+            exact_return=any('price_return_contract' in item for item in (plan,pred,outcome))
+            if exact_return:
+                from .resident_price_return import matching,verify_outcome
+                from .promotion import validate_plan_rule
+                matching(plan,pred,outcome)
+                validate_plan_rule(plan)
+                verify_outcome(plan,outcome)
+                if (outcome.get('anchor_ms')!=pred.get('anchor_ms')
+                        or type(pred.get('reference_mid')) is not float
+                        or outcome.get('reference_mid_hex')!=pred['reference_mid'].hex()):
+                    raise ContractError('PRICE_RETURN_FROZEN_PREDICTION_ENDPOINT_CHANGED')
             anchor=pred.get("anchor_ms")
             start=plan["start_ms"]+i*spacing
             if (pred.get("parent_id")!=parent_id or
@@ -84,10 +95,14 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
                     not anchor+horizon<=outcome["outcome_ms"]<=outcome["evaluated_at_ms"]<=cutoff_ms):
                 raise ContractError("V2_CLOSED_SOURCE_PREDICTION_NONCAUSAL")
             state=pred.get("input")
+            expected_input_id=digest(state)
+            if exact_return:
+                from .resident_price_return import input_id
+                expected_input_id=input_id(state,plan)
             if (not isinstance(state,dict) or state.get("anchor_ms")!=anchor or
                     state.get("horizon_sec")!=horizon//1000 or
                     state.get("instrument")!="EUR.USD" or
-                    pred.get("input_id")!=digest(state) or
+                    pred.get("input_id")!=expected_input_id or
                     state.get("quantity")!="underlying MID return; not execution profit"):
                 raise ContractError("V2_CLOSED_SOURCE_INPUT_CHANGED")
             quotes=state.get("quotes")
@@ -126,7 +141,7 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
             ret=outcome.get("return_bps")
             if (type(target) is not int or not 0<=target<7 or
                     type(ret) not in (int,float) or not math.isfinite(ret) or
-                    target!=bisect_right(BIN_EDGES_BPS,ret)):
+                    (not exact_return and target!=bisect_right(BIN_EDGES_BPS,ret))):
                 raise ContractError("V2_CLOSED_SOURCE_PRICE_LABEL_CHANGED")
             expected_brier=sum((a-float(k==target))**2 for k,a in enumerate(probs))
             parent_correct=max(range(7),key=lambda k:probs[k])==target
@@ -157,6 +172,8 @@ def collect_parent_closed_train(root,parent_id,cutoff_ms):
                 "outcome_sha256":sha_file(of),
                 "original_outcome_receipt":outcome["outcome_receipt"],
                 "broker_orders_sent":0}
+            if exact_return:
+                row.update(matching(plan))
             rows.append(row)
     rows.sort(key=lambda row:(row["anchor_ms"],row["row_id"]))
     good=sum(r["parent_correct"] for r in rows)

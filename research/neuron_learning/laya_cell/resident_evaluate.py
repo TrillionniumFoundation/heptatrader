@@ -377,9 +377,27 @@ def _futility_suppression_receipt(path,plan,slot,*,at_ms=None):
 
 
 def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publication_record=None):
+ exact_return=None
+ if ('price_return_contract' in plan or 'price_return_contract' in prediction
+     or committed_input is not None and 'price_return_contract' in committed_input):
+  from .resident_price_return import matching,for_record,check_anchor
+  matching(plan,prediction)
+  if committed_input is not None:matching(plan,committed_input)
+  exact_return=for_record(plan)
+  if exact_return is not None:
+   validate_plan_rule(plan)
+   check_anchor(exact_return,prediction.get('anchor_ms'))
+   horizon=plan['rule']['horizon_ms']//1000
+   if (type(prediction.get('horizon_sec')) is not int or prediction['horizon_sec']!=horizon
+       or prediction.get('input',{}).get('horizon_sec')!=horizon):
+    raise ContractError('PRICE_RETURN_PREDICTION_HORIZON')
  if prediction.get('candidate_id')!=plan['candidate_id'] or prediction.get('plan_id')!=plan['plan_id'] or prediction.get('slot')!=slot:
   raise ContractError('PREDICTION_IDENTITY')
- if prediction.get('input_id')!=digest(prediction.get('input')):raise ContractError('PREDICTION_INPUT_HASH')
+ expected_input_id=digest(prediction.get('input'))
+ if exact_return is not None:
+  from .resident_price_return import input_id
+  expected_input_id=input_id(prediction.get('input'),plan)
+ if prediction.get('input_id')!=expected_input_id:raise ContractError('PREDICTION_INPUT_HASH')
  from .resident_price_input import verify_prediction as verify_price_input
  verify_price_input(plan,prediction)
  if plan.get('price_input_objective') is not None:
@@ -388,7 +406,7 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publicatio
   verify_committed_input(plan,committed_input,prediction)
  calibrated=price_calibration.verify_prediction(plan,prediction)
  parent_calibration.verify_prediction(plan,prediction)
- anchor=prediction['anchor_ms'];due=anchor+RULE['horizon_ms'];times=[q['t'] for q in quotes]
+ anchor=prediction['anchor_ms'];due=anchor+(plan['rule']['horizon_ms'] if exact_return is not None else RULE['horizon_ms']);times=[q['t'] for q in quotes]
  available=prediction['created_at_ms'];publication_missing=False
  if plan.get('prediction_publication_profile') is not None:
   if (plan['prediction_publication_profile']!=PUBLICATION_PROFILE
@@ -420,8 +438,14 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publicatio
  base={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'anchor_ms':anchor,
        'prediction_available_ms':available,'trained_until_ms':prediction['trained_until_ms'],
        'evaluated_at_ms':now_ms,'broker_orders_sent':0,'metric_scope':'PREDICTION_NOT_EXECUTION_PNL'}
+ if exact_return is not None:base['price_return_contract']=exact_return
  if reason:return {**base,'status':'CENSORED','reason':reason}
  value=(quotes[b]['mid']/quotes[a]['mid']-1)*10000;target=bisect_right(BIN_EDGES_BPS,value)
+ if exact_return is not None:
+  from .resident_price_return import witness
+  proof=witness(exact_return,anchor,quotes[a]['mid'],quotes[b]['mid'])
+  target=proof['return_bin_class']
+  base.update(proof,return_bps_scope='ROUNDED_DISPLAY_ONLY_EXACT_RATIO_CLASS')
  def score(probs):
   if len(probs)!=7 or any(type(x) not in (int,float) or not math.isfinite(x) or not 0<=x<=1 for x in probs) or abs(sum(probs)-1)>1e-5:
    raise ContractError('PROBABILITY_VECTOR')
@@ -447,11 +471,19 @@ def measure(plan,slot,prediction,quotes,now_ms,*,committed_input=None,publicatio
  if plan.get('price_baselines') is not None:
   comparison.update(price_baseline_profile_id=plan['price_baselines']['profile_id'],
    same_window_price_scores=price_refs.measure(plan['price_baselines'],prediction,target))
- return {**base,**comparison,'status':'OBSERVED','path_gap':False,'reason':None,'return_bps':value,'target_class':target,
+ result={**base,**comparison,'status':'OBSERVED','path_gap':False,'reason':None,'return_bps':value,'target_class':target,
   'candidate_brier':score(p),'parent_brier':score(parent),'candidate_hit':max(range(7),key=lambda i:p[i])==target,
   'bootstrap_hit':bisect_right(BIN_EDGES_BPS,prediction['bootstrap_point_bps'])==target,
   'action_head_brier':action_brier,
   'outcome_receipt':quotes[b]['receipt'],'outcome_ms':times[b]}
+ if exact_return is not None:
+  from .resident_price_return import endpoint_receipt_id,verify_outcome
+  result.update(horizon_sec=plan['rule']['horizon_ms']//1000,outcome_due_ms=due,
+   anchor_receipt=quotes[a]['receipt'],anchor_available_ms=quotes[a]['known_at_ms'],
+   outcome_available_ms=quotes[b]['known_at_ms'])
+  result['return_endpoint_receipt_id']=endpoint_receipt_id(result)
+  verify_outcome(plan,result)
+ return result
 
 
 class Evaluator:
@@ -695,6 +727,9 @@ class Evaluator:
       record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
        'reason':'PREDICTION_PROCESS_FAILED','detail':reason,'phase':failed['phase'],'evaluated_at_ms':now,
        **first_admission_provenance(path,plan,slot)}
+      if 'price_return_contract' in plan:
+       from .resident_price_return import matching
+       record.update(matching(plan))
       write_once(output,record);recorded.append(record);continue
      if now>end:
       provenance=first_admission_provenance(path,plan,slot)
@@ -708,6 +743,9 @@ class Evaluator:
         else 'NO_LOCAL_ADMISSION_OR_FUTILITY_RECEIPT')
       record={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'slot':slot,'status':'CENSORED',
        'reason':'NO_PREDICTION_IN_FIXED_SLOT','evaluated_at_ms':now,**provenance}
+      if 'price_return_contract' in plan:
+       from .resident_price_return import matching
+       record.update(matching(plan))
       write_once(output,record);recorded.append(record);continue
      # Cold model preparation occurs before, not inside, the fixed input slot.
      if now<start-PREDICTION_PREWARM_MS or len(self.tasks)>=2:continue

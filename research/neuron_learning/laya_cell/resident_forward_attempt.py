@@ -118,7 +118,12 @@ def readiness(service,request,now_ms,*,job):
           and prior.get('state')=='REJECTED','FORWARD_ATTEMPT_PREVIOUS_NOT_CLOSED_REJECTED')
     from .promotion import rule_for_trial,protocol_for_job
     previous=read_json(Path(request['previous_plan_path']))
-    _need(previous['rule']==rule_for_trial(previous['trial'],protocol_for_job(service.c,job)),
+    expected_rule=rule_for_trial(previous['trial'],protocol_for_job(service.c,job))
+    if 'price_return_contract' in job or 'price_return_contract' in previous:
+        from .resident_price_return import matching,bind_rule
+        matching(job,previous)
+        expected_rule=bind_rule(expected_rule,job)
+    _need(previous['rule']==expected_rule,
           'FORWARD_ATTEMPT_STATISTICAL_RULE_CHANGED')
     from .resident_plan_admission import KEY_PREFIX,registration_key
     key=registration_key(request['job_id'],request)

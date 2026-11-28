@@ -100,7 +100,7 @@ def read_quotes(config,now_ms,*,read_hints=None,training_view=None):
     return ordered,prefixes
 
 
-def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,objective=None,excluded_old_anchors=0):
+def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,objective=None,excluded_old_anchors=0,return_contract=None):
  """Choose before feature construction; every selected row is checked again below."""
  from data import sample_identity,observed_receipt,MAX_GAP_MS,TTL_MS
  from . import resident_training_v3 as v3
@@ -108,6 +108,9 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
  from . import resident_training_v7 as v7
  from . import resident_training_v8 as v8
  recent=objective is not None
+ if return_contract is not None:
+  from .resident_price_return import validate
+  validate(return_contract)
  if recent:(v8 if v8.enabled(objective) else v7 if v7.enabled(objective) else v6).check_objective(objective)
  times=[q['t'] for q in ordered]
  gap_prefix=[0]
@@ -116,6 +119,8 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
  rejected=Counter();candidates=[];mature=0
  if excluded_old_anchors:rejected['ANCHOR_OLDER_THAN_RECENCY_PROFILE']=excluded_old_anchors
  for i,anchor in enumerate(sampled):
+  if return_contract is not None and anchor['t']<return_contract['effective_from_anchor_ms']:
+   rejected['ANCHOR_BEFORE_PRICE_RETURN_ACTIVATION']+=1;continue
   if recent and anchor['t']<now_ms-v6.MAX_ROW_AGE_MS:
    rejected['ANCHOR_OLDER_THAN_RECENCY_PROFILE']+=1;continue
   # Match data.label before the anchor cap; late inputs cannot become labels.
@@ -137,7 +142,9 @@ def mature_anchor_indices(ordered,sampled,now_ms,scope,reserved_row_ids,*,object
   if abs(target)>8:
    rejected['RETURN_OUT_OF_PROFILE']+=1;continue
   source_id=digest(sample_identity(history,scope,'CAUSAL_QUOTE_WINDOW'))
-  outcome=observed_receipt(outcome_quote,v3.PRIMARY_HORIZON_SECONDS,target)
+  outcome=(observed_receipt(outcome_quote,v3.PRIMARY_HORIZON_SECONDS,target) if return_contract is None else
+   observed_receipt(outcome_quote,v3.PRIMARY_HORIZON_SECONDS,target,
+    return_contract=return_contract,anchor_ms=anchor['t'],reference_mid=anchor['mid']))
   key=digest([source_id,v3.PRIMARY_HORIZON_SECONDS,digest(outcome)])
   mature+=1
   if key in reserved_row_ids:
@@ -168,6 +175,10 @@ def collect(config,now_ms,*,reserved_row_ids=(),include_source_quotes=True):
  from . import resident_training_v7 as v7
  from . import resident_training_v8 as v8
  from .resident_row_accounting import row_id
+ return_contract=None
+ if 'price_return_contract' in config:
+  from .resident_price_return import check_config
+  return_contract=check_config(config)
  use_v3=v3.enabled(config.get('objective')) or v4.enabled(config.get('objective')) or v5.enabled(config.get('objective')) or v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))
  if v4.enabled(config.get('objective')):v4.check_objective(config['objective'])
  if v5.enabled(config.get('objective')):v5.check_objective(config['objective'])
@@ -191,6 +202,7 @@ def collect(config,now_ms,*,reserved_row_ids=(),include_source_quotes=True):
  if use_v3:
   options={'objective':config['objective']} if (v6.enabled(config.get('objective')) or v7.enabled(config.get('objective')) or v8.enabled(config.get('objective'))) else {}
   if view is not None:options['excluded_old_anchors']=view.excluded_old_anchors
+  if return_contract is not None:options['return_contract']=return_contract
   selected,pool=mature_anchor_indices(ordered,sampled,now_ms,scope,reserved,**options)
   indices=list(selected)
  else:
@@ -205,7 +217,7 @@ def collect(config,now_ms,*,reserved_row_ids=(),include_source_quotes=True):
   s=make_sample(history,anchor['known_at_ms'],scope,'CAUSAL_QUOTE_WINDOW')
   s['history_selection_version']='CONTIGUOUS_SELECTED_SUFFIX_V2'
   s['contiguous_history_reset_at_gap']=reset
-  s=label(s,ordered,times,now_ms)
+  s=label(s,ordered,times,now_ms) if return_contract is None else label(s,ordered,times,now_ms,return_contract=return_contract)
   if use_v3:
    outcome=s['outcome_receipts'][0]
    if (s['label_reasons'][0]!='OBSERVED' or outcome is None
@@ -216,13 +228,19 @@ def collect(config,now_ms,*,reserved_row_ids=(),include_source_quotes=True):
  seed=read_json(Path(config['seed_dataset']),64*1024**2)
  if sha_file(Path(config['seed_dataset']))!=config['seed_dataset_sha256']:raise ContractError('SEED_DATASET_CHANGED')
  if seed.get('scope')!=scope or seed.get('source_kind')!='REAL_PAPER_RUNTIME':raise ContractError('SEED_SCOPE')
- combined={s['sample_id']:s for s in seed['samples']}
+ # A newly registered exact-return contract cannot manufacture endpoint
+ # witnesses for old seed labels. Fresh original quotes above supply every
+ # selected post-activation outcome; the immutable seed bytes stay untouched.
+ combined=({s['sample_id']:s for s in seed['samples']} if return_contract is None else {})
  combined.update({s['sample_id']:s for s in samples})
  all_samples=sorted(combined.values(),key=lambda s:(s['anchor_ms'],s['sample_id']))
  dataset={'schema':'heptatrader.neuron-dataset.v1','source_kind':'REAL_PAPER_RUNTIME','instrument':'EUR.USD',
   'scope':scope,'frozen_at_ms':now_ms,'samples':all_samples,
   'source_prefixes':seed['source_prefixes']+prefixes,'exclusions':exclusions,
   'source_policy':'IMMUTABLE_REAL_PREFIXES_NO_MODEL_LABELS','broker_orders_sent':0}
+ if return_contract is not None:
+  from .resident_price_return import DATASET_SCHEMA
+  dataset.update(schema=DATASET_SCHEMA,price_return_contract=return_contract)
  window={'training_end_ms':now_ms,'validation_start_ms':now_ms+1,'validation_end_ms':now_ms+86400000}
  if use_v3:
   eligible,_=rows_for_training(dataset,window)

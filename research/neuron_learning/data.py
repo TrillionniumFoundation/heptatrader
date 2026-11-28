@@ -154,9 +154,13 @@ def sample_identity(qs,scope,kind,input_id=None):
             'input_kind':kind,'quotes':qs,'feature_version':FEATURE_VERSION}
 
 
-def observed_receipt(quote,horizon,target):
-    return {'source_receipt':quote['receipt'],'observed_at_ms':quote['t'],
+def observed_receipt(quote,horizon,target,*,return_contract=None,anchor_ms=None,reference_mid=None):
+    result={'source_receipt':quote['receipt'],'observed_at_ms':quote['t'],
             'available_at_ms':quote['known_at_ms'],'target_scaled':target,'horizon_sec':horizon}
+    if return_contract is not None:
+        from laya_cell.resident_price_return import witness
+        result.update(witness(return_contract,anchor_ms,reference_mid,quote['mid']))
+    return result
 
 
 def describe_sample(qs,known,scope,kind,input_id=None,teacher=None):
@@ -184,8 +188,11 @@ def make_sample(qs,known,scope,kind,input_id=None,teacher=None):
         'raw_features':features(qs,known)}
 
 
-def label(sample,quotes,times,now,*,gap_prefix=None):
+def label(sample,quotes,times,now,*,gap_prefix=None,return_contract=None):
     anchor=sample['anchor_ms'];start=bisect_left(times,anchor)
+    if return_contract is not None:
+        from laya_cell.resident_price_return import check_anchor
+        check_anchor(return_contract,anchor)
     for j,horizon in enumerate(HORIZONS):
         sample['targets'][j]=None;sample['outcome_receipts'][j]=None
         due=anchor+horizon*1000;end=bisect_left(times,due)
@@ -203,7 +210,9 @@ def label(sample,quotes,times,now,*,gap_prefix=None):
         target=10000*(quotes[end]['mid']/sample['reference_mid']-1)/100
         if abs(target)>8:
             sample['label_reasons'][j]='RETURN_OUT_OF_PROFILE';continue
-        receipt=observed_receipt(quotes[end],horizon,target)
+        receipt=(observed_receipt(quotes[end],horizon,target) if return_contract is None else
+                 observed_receipt(quotes[end],horizon,target,return_contract=return_contract,
+                                  anchor_ms=anchor,reference_mid=sample['reference_mid']))
         sample['targets'][j]=target;sample['outcome_receipts'][j]=receipt;sample['label_reasons'][j]='OBSERVED'
     return sample
 

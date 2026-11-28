@@ -150,9 +150,16 @@ def verify_committed_input(plan, record, prediction=None):
                                               rel_tol=1e-12, abs_tol=1e-12))
     except (KeyError, ValueError, TypeError):
         reference_matches = False
+    expected_input_id = digest(record.get('state'))
+    if 'price_return_contract' in plan or 'price_return_contract' in record:
+        from .resident_price_return import matching, input_id
+        matching(plan, record)
+        expected_input_id = input_id(record.get('state'), plan)
+        if prediction is not None:
+            matching(plan, prediction)
     if (record.get('plan_id') != plan.get('plan_id')
             or record.get('candidate_id') != plan.get('candidate_id')
-            or record.get('input_id') != digest(record.get('state'))
+            or record.get('input_id') != expected_input_id
             or sample.get('anchor_ms') != state['anchor_ms']
             or not reference_matches
             or any(record.get(key) != value for key, value in expected.items())):
