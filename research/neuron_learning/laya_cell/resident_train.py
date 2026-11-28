@@ -104,6 +104,36 @@ def _frozen_price_logits(cell, encoded, device, input_profile):
    return (logits,action) if parent else logits
   features,mask=inputs[key]
   return cell.model.scorer(features).squeeze(-1).float().masked_fill(~mask,-1e4)
+ def snapshot(selected):
+  """Export existing singleton eval inputs without calling the encoder.
+
+  Training batches are a distinct numerical contract and are never substituted
+  for a missing singleton. The returned CPU tensors own their storage.
+  """
+  if source_state()!=original_source:raise ContractError('PRICE_CACHE_UPSTREAM_CHANGED')
+  identities=[row_id(row) for row in selected]
+  if not identities or len(identities)>64 or len(set(identities))!=len(identities):
+   raise ContractError('PRICE_CACHE_SNAPSHOT_ROW_SET')
+  features=[];masks=[];total=0
+  for row,identity in zip(selected,identities):
+   if row_states.get(identity)!=digest({'state':row['state'],'question':row['question']}):
+    raise ContractError('PRICE_CACHE_INPUT_CHANGED')
+   key=(input_profile,(identity,),False)
+   if key not in inputs:raise ContractError('PRICE_CACHE_SNAPSHOT_SINGLETON_MISSING')
+   value,mask=inputs[key]
+   if (value.dtype!=torch.float32 or value.ndim!=3 or value.shape[0]!=1
+       or mask.dtype!=torch.bool or tuple(mask.shape)!=tuple(value.shape[:2])):
+    raise ContractError('PRICE_CACHE_SNAPSHOT_LAYOUT')
+   total+=value.numel()*value.element_size()+mask.numel()
+   if total>8*1024*1024:raise ContractError('PRICE_CACHE_SNAPSHOT_BYTE_LIMIT')
+   features.append(value.detach().to('cpu',copy=True).contiguous())
+   masks.append(mask.detach().to('cpu',copy=True).contiguous())
+  if len({tuple(value.shape) for value in features})!=1:
+   raise ContractError('PRICE_CACHE_SNAPSHOT_SHAPE_CHANGED')
+  if source_state()!=original_source:raise ContractError('PRICE_CACHE_UPSTREAM_CHANGED')
+  return {'features':torch.cat(features,dim=0),'marker_mask':torch.cat(masks,dim=0)}
+ forward.snapshot=snapshot
+ forward.snapshot_device=str(device)
  return forward
 
 def run_closed_action_phase(cell, source, profile, encoded, device, *, verify_frozen=True):
@@ -171,6 +201,10 @@ def run_job(c,*,old_learner_verified=False):
  started=time.monotonic();torch.manual_seed(20261007)
  from . import resident_parent_calibration as parent_calibration
  parent_calibration.check_config(c)
+ snapshot_module=None
+ if c.get('price_feature_snapshot_profile') is not None:
+  from . import resident_price_feature_snapshot as snapshot_module
+  snapshot_module.check_config(c)
  if not old_learner_verified:verify_old_learner_inactive()
  if c.get('objective') not in (OBJECTIVE,training_v2.OBJECTIVE,training_v3.OBJECTIVE,training_v4.OBJECTIVE,training_v5.OBJECTIVE,training_v6.OBJECTIVE,training_v7.OBJECTIVE,training_v8.OBJECTIVE) or c.get('profile')!=PROFILE:raise ContractError('RESIDENT_PROFILE_CHANGED')
  v8=training_v8.enabled(c['objective'])
@@ -354,8 +388,10 @@ def run_job(c,*,old_learner_verified=False):
    curve_points.append(episode_policy.point(epoch,after_scores,brier,steps,time.monotonic()-loaded_at))
    print(json.dumps({'training_curve_checkpoint':curve_points[-1],'training_only':True}),flush=True)
    cell.train(True)
- # The cache has no use outside this job's PRICE phase. ACT retains its own
- # full-cell inputs, which depend on the final updated PRICE probabilities.
+ # A declared diagnostic archive reuses only existing no-grad singleton inputs.
+ # ACT retains its own full-cell inputs, dependent on final PRICE probabilities.
+ feature_snapshot=(snapshot_module.prepare(c,parent,base_id,rows,price_logits)
+                   if snapshot_module is not None else None)
  price_logits=None
  action_phase=None;action_phase_timing=None
  if v5:
@@ -487,6 +523,8 @@ def run_job(c,*,old_learner_verified=False):
  if parent_action_cache_receipt is not None:
   from .resident_parent_action_cache import write_worker_output
   record['parent_action_cache']=write_worker_output(out,parent_action_cache_value,parent_action_cache_receipt)
+ if snapshot_module is not None:
+  record['price_feature_snapshot']=snapshot_module.publish(out,feature_snapshot)
  record['candidate_id']=digest(record);immutable(out/'candidate.json',record)
  parent_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY)
  try:os.fsync(parent_fd)

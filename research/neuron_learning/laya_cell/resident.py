@@ -140,6 +140,9 @@ def config_check(config):
  check_trial_stop_config(config)
  from .resident_parent_action_cache import check_config as check_parent_action_cache
  check_parent_action_cache(config)
+ if config.get('price_feature_snapshot_profile') is not None:
+  from .resident_price_feature_snapshot import check_config as check_price_snapshot
+  check_price_snapshot(config)
  budget_policy(config)
  check_protocol_config(config)
  if config.get('future_source_read_profile') is not None:

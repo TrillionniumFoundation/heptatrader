@@ -74,6 +74,9 @@ def _closed_config(config):
 
 def check_config(config):
     check_objective(config.get('objective'))
+    if config.get('price_feature_snapshot_profile') is not None:
+        from .resident_price_feature_snapshot import check_config as check_snapshot
+        check_snapshot(config)
     from .resident_parent_calibration import check_config as check_comparator
     check_comparator(config)
     parent_input = price_input.for_candidate(read_json(Path(config['initial_parent_directory']) / 'candidate.json'))
@@ -88,6 +91,9 @@ def check_config(config):
 
 def _checked_job(job):
     check_objective(job.get('objective'))
+    if job.get('price_feature_snapshot_profile') is not None:
+        from .resident_price_feature_snapshot import check_config as check_snapshot
+        check_snapshot(job)
     parent = validate_candidate_artifact(Path(job['parent_directory']))
     price_input.for_candidate(parent)
     if parent['candidate_id'] != job['parent_id']:
@@ -150,7 +156,8 @@ def verify_candidate(job, candidate):
 def configuration_for_release(config, runtime_directory, *, closed_action_source,
                                closed_action_source_sha256=None,
                                parent_calibration_comparator=False,
-                               matched_parent_screen=False):
+                               matched_parent_screen=False,
+                               price_feature_snapshot=False):
     result = previous.configuration_for_release(config, runtime_directory,
         closed_action_source=closed_action_source,
         closed_action_source_sha256=closed_action_source_sha256)
@@ -161,6 +168,11 @@ def configuration_for_release(config, runtime_directory, *, closed_action_source
     for name in (*RUNTIME_PINS, *owner_runtime_pins, *advisory_runtime_pins):
         result['runtime_sha256'][name] = sha_file(runtime / name)
     result['objective'] = deepcopy(OBJECTIVE)
+    if price_feature_snapshot:
+        from . import resident_price_feature_snapshot as snapshot
+        result[snapshot.FIELD] = snapshot.PROFILE
+        for name in snapshot.PINS:
+            result['runtime_sha256'][name] = sha_file(runtime / name)
     if parent_calibration_comparator or matched_parent_screen:
         from . import resident_parent_calibration as comparator
         result[comparator.FIELD] = comparator.PROFILE
