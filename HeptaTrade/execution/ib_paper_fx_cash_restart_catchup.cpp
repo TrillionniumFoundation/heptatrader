@@ -248,7 +248,7 @@ bool ApplyIbPaperFxCashRestartCatchUp(
         if (event.price <= 0.0) ignored |= FxCatchUpPriceNonpositive;
         if (ignored != 0)
         {
-            ignoredExecutionMasks[event.orderId] |= ignored;
+            if (diagnostic) ignoredExecutionMasks[event.orderId] |= ignored;
             continue;
         }
         if (!event.venueCorrelationId.empty() &&
