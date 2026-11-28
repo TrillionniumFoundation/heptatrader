@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -431,12 +432,21 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
 
     std::map<std::string, IbPaperFxCashBaseline> advanced =
         m_config.fxCashBaselines;
+    IbPaperFxCashRestartCatchUpDiagnostic diagnostic;
     if (!ApplyIbPaperFxCashRestartCatchUp(
-            events, context, advanced, reason))
+            events, context, advanced, reason, &diagnostic))
+    {
+        if (reason == "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID")
+            std::cerr << "IB FX CASH restart catch-up rejected: " << reason << " "
+                      << FormatIbPaperFxCashRestartCatchUpDiagnostic(diagnostic) << std::endl;
         return false;
+    }
     if (!ValidateFxCashBaselineRecords(advanced))
     {
         reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
+        diagnostic.code = IbPaperFxCashRestartCatchUpCode::AdvancedBaselineInvalid;
+        std::cerr << "IB FX CASH restart catch-up rejected: " << reason << " "
+                  << FormatIbPaperFxCashRestartCatchUpDiagnostic(diagnostic) << std::endl;
         return false;
     }
     m_config.fxCashBaselines.swap(advanced);
