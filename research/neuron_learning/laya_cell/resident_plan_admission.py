@@ -344,6 +344,9 @@ def _identity(service, job_id, candidate, job, *, attempt=None):
         identity.update(check_bindings(candidate))
     from .resident_parent_calibration import plan_binding
     identity.update(plan_binding(job, candidate))
+    if 'price_return_contract' in job or 'price_return_contract' in candidate:
+        from .resident_price_return import matching
+        identity.update(matching(job, candidate))
     return identity
 
 
@@ -383,9 +386,12 @@ def _check_record(record, identity):
                 or plan.get('evaluation_attempt') != identity.get('evaluation_attempt')
                 or plan.get('attempt_runtime_sha256') != record.get('attempt_runtime_sha256')):
             raise ContractError("FORWARD_RESERVED_PLAN_BINDING")
-        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec", "parent_calibration_comparator_profile", "parent_calibration_comparator"):
+        for name in ("price_output_profile", "price_calibration_profile_id", "price_calibration", "closed_action_source_id", "action_distribution_scope", "price_input_objective", "price_input_profile", "parent_price_input_profile", "action_input_profile", "price_input_spec", "parent_calibration_comparator_profile", "parent_calibration_comparator", "price_return_contract"):
             if name in identity and plan.get(name) != identity[name]:
                 raise ContractError("FORWARD_V5_RESERVED_PROFILE_CHANGED")
+        if 'price_return_contract' in identity or 'price_return_contract' in plan:
+            from .resident_price_return import matching
+            matching(identity, plan)
 
 
 def _unreserved_history(service):

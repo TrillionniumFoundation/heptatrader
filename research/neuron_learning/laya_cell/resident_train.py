@@ -192,6 +192,9 @@ def run_job(c,*,old_learner_verified=False):
  dataset_path=Path(c['dataset'])
  if sha_file(dataset_path)!=c['dataset_sha256']:raise ContractError('DATASET_CHANGED')
  dataset=read_json(dataset_path,64*1024**2);verify_source_prefixes(dataset)
+ if 'price_return_contract' in c or 'price_return_contract' in dataset:
+  from .resident_price_return import matching,check_config as check_return
+  check_return(c);matching(c,dataset)
  rows,exclusions=rows_for_training(dataset,c['window'])
  if v2:rows=training_policy.timed_rows(rows,dataset)
  if training_policy in (training_v3,training_v4,training_v5,training_v6,training_v7,training_v8):rows=training_v3.primary_rows(rows)
@@ -423,6 +426,9 @@ def run_job(c,*,old_learner_verified=False):
  if v7:
   record.update(**input_binding,parent_price_forward_receipts=parent_price_receipts,
    initial_child_price_forward_receipts=initial_child_receipts,initial_child_price_measurement=initial_child_measurement)
+ if 'price_return_contract' in c:
+  from .resident_price_return import matching
+  record.update(matching(c))
  if v2:
   record.update(selection_policy=training_policy.SELECTION,price_baselines=frozen_price_baselines,
    row_statistics=training_v2.coverage(rows,c['window']['training_end_ms']),

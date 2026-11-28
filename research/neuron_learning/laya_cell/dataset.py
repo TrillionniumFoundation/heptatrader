@@ -76,11 +76,16 @@ def teacher_bins(sample,horizon,cutoff):
  if abs(sum(masses)-1)>1e-8:return None
  return masses
 def rows_for_training(dataset,window):
- if dataset.get('schema')!='heptatrader.neuron-dataset.v1' or dataset.get('source_kind')!='REAL_PAPER_RUNTIME':raise ContractError('REAL_PAPER_DATASET_REQUIRED')
+ if dataset.get('schema') not in ('heptatrader.neuron-dataset.v1','heptatrader.neuron-dataset.v2') or dataset.get('source_kind')!='REAL_PAPER_RUNTIME':raise ContractError('REAL_PAPER_DATASET_REQUIRED')
+ exact_return='price_return_contract' in dataset
+ if (dataset['schema']=='heptatrader.neuron-dataset.v2')!=exact_return:raise ContractError('PRICE_RETURN_DATASET_VERSION')
  cutoff=integer(window['training_end_ms']);start=integer(window['validation_start_ms']);end=integer(window['validation_end_ms'])
  if not cutoff<start<end:raise ContractError('FIXED_CHRONOLOGICAL_WINDOW_REQUIRED')
  if dataset.get('instrument') not in {'EUR.USD','BTC.USD'}:raise ContractError('INSTRUMENT_NOT_REGISTERED')
  rows=[];exclusions=[]
+ if exact_return:
+  from .resident_price_return import for_record
+  for_record(dataset)
  for sample in dataset['samples']:
   anchor=integer(sample['anchor_ms'])
   for j,horizon in enumerate(HORIZONS):
@@ -94,8 +99,12 @@ def rows_for_training(dataset,window):
    if why:exclusions.append({'sample_id':sample['sample_id'],'horizon_sec':horizon,'reason':why});continue
    value=finite(value)
    if abs(value)>8 or abs(value-finite(outcome['target_scaled']))>1e-12:raise ContractError('OUTCOME_VALUE_OR_UNITS_MISMATCH')
+   target=bisect_right(BIN_EDGES_BPS,value*100)
+   if exact_return or any(key in outcome for key in ('price_return_contract','reference_mid_hex','outcome_mid_hex','return_bin_class')):
+    from .resident_price_return import target_class
+    target=target_class(dataset,sample,horizon,outcome)
    state=causal_state(sample,dataset['instrument'],horizon)
-   rows.append({'sample_id':sample['sample_id'],'horizon_sec':horizon,'anchor_ms':anchor,'state':state,'question':question(horizon),'target_class':bisect_right(BIN_EDGES_BPS,value*100),'outcome_receipt_digest':digest(outcome),'teacher_probs':teacher_bins(sample,horizon,cutoff)})
+   rows.append({'sample_id':sample['sample_id'],'horizon_sec':horizon,'anchor_ms':anchor,'state':state,'question':question(horizon),'target_class':target,'outcome_receipt_digest':digest(outcome),'teacher_probs':teacher_bins(sample,horizon,cutoff)})
  chosen={}
  for row in rows:
   key=(row['anchor_ms'],row['horizon_sec'],digest(row['state']))

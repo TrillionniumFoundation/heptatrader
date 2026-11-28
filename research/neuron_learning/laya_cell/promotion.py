@@ -47,8 +47,12 @@ def protocol_for_job(config,job):
 def validate_plan_rule(plan):
  from .resident_price_baselines import validate_value_rule
  validate_value_rule(plan)
- rule=plan.get('rule')
- if rule==RULE:return rule
+ registered_rule=plan.get('rule');rule=registered_rule
+ if ('price_return_contract' in plan
+     or isinstance(rule,dict) and 'price_return_contract' in rule):
+  from .resident_price_return import original_rule
+  rule=original_rule(plan)
+ if rule==RULE:return registered_rule
  schemas={SCHEMA:PROTOCOL,MATCHED_PARENT_SCHEMA:MATCHED_PARENT_PROTOCOL}
  if not isinstance(rule,dict) or rule.get('schema') not in schemas:raise ContractError('PROMOTION_RULE_CHANGED')
  if rule!=planned_rule(RULE,plan.get('trial'),schemas[rule['schema']]):raise ContractError('PROMOTION_RULE_CHANGED')
@@ -64,7 +68,7 @@ def validate_plan_rule(plan):
       or inputs['price_input_objective']!=price_input.V8_OBJECTIVE_SCHEMA
       or inputs['parent_price_input_profile']!=price_input.RAW):
    raise ContractError('MATCHED_PARENT_SCREEN_INPUTS_NOT_ISOLATED')
- return rule
+ return registered_rule
 
 
 def assess(plan,results,now_ms):
@@ -77,6 +81,14 @@ def assess(plan,results,now_ms):
   raise ContractError('EVALUATION_ATTEMPT_OUTCOME_PLAN_IDENTITY')
  base={'candidate_id':plan['candidate_id'],'plan_id':plan['plan_id'],'rule_id':digest(rule),
        'automatic_execution_selection':False,'canonical_owner_admitted':False,'promotion_performed':False}
+ if 'price_return_contract' in plan or any('price_return_contract' in r for r in results):
+  from .resident_price_return import matching,verify_outcome
+  for result in results:
+   matching(plan,result)
+   if result.get('plan_id')!=plan['plan_id']:
+    raise ContractError('PRICE_RETURN_OUTCOME_PLAN_IDENTITY')
+   if result.get('status')=='OBSERVED':verify_outcome(plan,result)
+  base.update(matching(plan))
  from . import resident_parent_calibration
  parent_comparison=resident_parent_calibration.assessment(plan,[r for r in results if r['status']=='OBSERVED'])
  if parent_comparison is not None:base['same_budget_calibrated_parent']=parent_comparison
