@@ -14,7 +14,7 @@ from laya_cell.resident_model import ResidentDecisionCell
 from laya_cell.resident_price_input import RAW
 from laya_cell import resident_price_feature_snapshot as snapshot
 from laya_cell.resident_train import _frozen_price_logits
-from test_resident_price_cache import RawDecisionModel, encode, rows
+from laya_cell.tests.test_resident_price_cache import RawDecisionModel, encode, rows
 
 
 class PriceFeatureSnapshotTests(unittest.TestCase):
