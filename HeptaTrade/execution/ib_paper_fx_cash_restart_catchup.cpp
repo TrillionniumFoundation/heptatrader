@@ -67,7 +67,47 @@ bool ApplyIbPaperFxCashRestartCatchUp(
     std::map<std::string, IbPaperFxCashBaseline>& baselines,
     std::string& reason)
 {
+    return ApplyIbPaperFxCashRestartCatchUp(events, context, baselines, reason, nullptr);
+}
+
+std::string FormatIbPaperFxCashRestartCatchUpDiagnostic(
+    const IbPaperFxCashRestartCatchUpDiagnostic& diagnostic)
+{
+    const char* code = "NONE";
+    switch (diagnostic.code)
+    {
+    case IbPaperFxCashRestartCatchUpCode::None: break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionCorrelationMismatch:
+        code = "EXECUTION_CORRELATION_MISMATCH"; break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionSideMismatch:
+        code = "EXECUTION_SIDE_MISMATCH"; break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionBaselineMissing:
+        code = "EXECUTION_BASELINE_MISSING"; break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionDeltaNonfinite:
+        code = "EXECUTION_DELTA_NONFINITE"; break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionGrossLimit:
+        code = "EXECUTION_GROSS_LIMIT"; break;
+    case IbPaperFxCashRestartCatchUpCode::ExecutionBalanceNonfinite:
+        code = "EXECUTION_BALANCE_NONFINITE"; break;
+    case IbPaperFxCashRestartCatchUpCode::UnresolvedAcceptedOrder:
+        code = "UNRESOLVED_ACCEPTED_ORDER"; break;
+    case IbPaperFxCashRestartCatchUpCode::AdvancedBaselineInvalid:
+        code = "ADVANCED_BASELINE_INVALID"; break;
+    }
+    return std::string("detail=") + code +
+        " ignored_execution_mask=" + std::to_string(diagnostic.ignoredExecutionMask) +
+        " economic_evidence_observed=" + (diagnostic.economicEvidenceObserved ? "1" : "0");
+}
+
+bool ApplyIbPaperFxCashRestartCatchUp(
+    const std::vector<OmsJournalEvent>& events,
+    const IbPaperFxCashRestartCatchUpContext& context,
+    std::map<std::string, IbPaperFxCashBaseline>& baselines,
+    std::string& reason,
+    IbPaperFxCashRestartCatchUpDiagnostic* diagnostic)
+{
     reason.clear();
+    if (diagnostic) *diagnostic = IbPaperFxCashRestartCatchUpDiagnostic();
     if (!BasicBaselineValid(baselines, context))
     {
         reason = "IB_FX_CASH_RESTART_CATCHUP_BASELINE_INVALID";
@@ -174,28 +214,47 @@ bool ApplyIbPaperFxCashRestartCatchUp(
     std::set<std::string> executionIds;
     std::set<long> completedOrders;
     std::set<long> economicEvidenceOrders;
+    std::map<long, std::uint32_t> ignoredExecutionMasks;
+    auto executionInvalid = [&](IbPaperFxCashRestartCatchUpCode code, long orderId) {
+        reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
+        if (diagnostic)
+        {
+            diagnostic->code = code;
+            const auto ignored = ignoredExecutionMasks.find(orderId);
+            diagnostic->ignoredExecutionMask = ignored == ignoredExecutionMasks.end() ? 0 : ignored->second;
+            diagnostic->economicEvidenceObserved = economicEvidenceOrders.count(orderId) != 0;
+        }
+        return false;
+    };
     for (const OmsJournalEvent* pointer : executions)
     {
         const OmsJournalEvent& event = *pointer;
         const auto submit = submitted.find(event.orderId);
         if (submit == submitted.end() || !submit->second.accepted)
             continue;
-        if (event.brokerServiceEpoch != submit->second.serviceEpoch ||
-            event.brokerConnectionEpoch != submit->second.connectionEpoch ||
-            event.traceId != submit->second.sessionId ||
-            event.account != context.account ||
-            event.strategy != "agent-native" ||
-            event.executionDomain != submit->second.executionDomain ||
-            event.instrument != submit->second.instrument ||
-            event.brokerExecutionId.empty() || !std::isfinite(event.qty) ||
-            event.qty <= 0.0 || event.qty > submit->second.quantity ||
-            !std::isfinite(event.price) || event.price <= 0.0)
+        std::uint32_t ignored = 0;
+        if (event.brokerServiceEpoch != submit->second.serviceEpoch) ignored |= FxCatchUpServiceEpoch;
+        if (event.brokerConnectionEpoch != submit->second.connectionEpoch) ignored |= FxCatchUpConnectionEpoch;
+        if (event.traceId != submit->second.sessionId) ignored |= FxCatchUpSession;
+        if (event.account != context.account) ignored |= FxCatchUpAccount;
+        if (event.strategy != "agent-native") ignored |= FxCatchUpStrategy;
+        if (event.executionDomain != submit->second.executionDomain) ignored |= FxCatchUpDomain;
+        if (event.instrument != submit->second.instrument) ignored |= FxCatchUpInstrument;
+        if (event.brokerExecutionId.empty()) ignored |= FxCatchUpExecutionIdMissing;
+        if (!std::isfinite(event.qty)) ignored |= FxCatchUpQuantityNonfinite;
+        if (event.qty <= 0.0) ignored |= FxCatchUpQuantityNonpositive;
+        if (event.qty > submit->second.quantity) ignored |= FxCatchUpQuantityExceedsSubmitted;
+        if (!std::isfinite(event.price)) ignored |= FxCatchUpPriceNonfinite;
+        if (event.price <= 0.0) ignored |= FxCatchUpPriceNonpositive;
+        if (ignored != 0)
+        {
+            if (diagnostic) ignoredExecutionMasks[event.orderId] |= ignored;
             continue;
+        }
         if (!event.venueCorrelationId.empty() &&
             event.venueCorrelationId != submit->second.correlationId)
         {
-            reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionCorrelationMismatch, event.orderId);
         }
         // Retain partial/full evidence even if a later callback claims no fill.
         economicEvidenceOrders.insert(event.orderId);
@@ -205,26 +264,23 @@ bool ApplyIbPaperFxCashRestartCatchUp(
         const std::string expectedSide = NormalizeSide(submit->second.side);
         if (side != expectedSide || (side != "BUY" && side != "SELL"))
         {
-            reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionSideMismatch, event.orderId);
         }
         if (event.qty < submit->second.quantity) continue;
         auto baseline = advanced.find(event.instrument);
         if (baseline == advanced.end())
         {
-            reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionBaselineMissing, event.orderId);
         }
         const double signedQuantity = side == "BUY" ? event.qty : -event.qty;
         const double nextDelta =
             baseline->second.campaignExecutionDelta + signedQuantity;
-        if (!std::isfinite(nextDelta) ||
-            std::fabs(nextDelta) > context.maxGrossPosition + 1e-6 ||
-            !std::isfinite(baseline->second.baselineCashBalance + nextDelta))
-        {
-            reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
-        }
+        if (!std::isfinite(nextDelta))
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionDeltaNonfinite, event.orderId);
+        if (std::fabs(nextDelta) > context.maxGrossPosition + 1e-6)
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionGrossLimit, event.orderId);
+        if (!std::isfinite(baseline->second.baselineCashBalance + nextDelta))
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::ExecutionBalanceNonfinite, event.orderId);
         baseline->second.campaignExecutionDelta = nextDelta;
         baseline->second.observedCashBalance =
             baseline->second.baselineCashBalance + nextDelta;
@@ -305,8 +361,7 @@ bool ApplyIbPaperFxCashRestartCatchUp(
             completedOrders.find(item.first) == completedOrders.end() &&
             zeroFillCancellations.find(item.first) == zeroFillCancellations.end())
         {
-            reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
-            return false;
+            return executionInvalid(IbPaperFxCashRestartCatchUpCode::UnresolvedAcceptedOrder, item.first);
         }
 
     baselines.swap(advanced);
