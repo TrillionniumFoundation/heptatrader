@@ -1,5 +1,6 @@
 """Source-loss closeout preserves the original window and revokes current credit."""
 import io
+import os
 import shutil
 import sys
 import unittest
@@ -32,15 +33,40 @@ class StrictSourceFailureTests(unittest.TestCase):
     def cli(self, now, *, once=False, worker=None):
         argv = ['evaluator', '--root', str(self.source), '--strict-preopen',
                 '--output-root', str(self.output)] + (['--once'] if once else [])
-        with patch.object(sys, 'argv', argv), patch.object(W, 'clock_ms', return_value=now), \
-                patch.object(E.time, 'sleep', side_effect=AssertionError('loop must exit')), \
-                redirect_stdout(io.StringIO()):
-            if worker is None:
-                E.main()
-            else:
-                with patch.object(E, 'Evaluator', return_value=worker):
+        # The real CLI owns a process-wide private umask. These in-process tests
+        # must restore their caller's mask before later permission fixtures run.
+        previous_umask = os.umask(0o077)
+        try:
+            with patch.object(sys, 'argv', argv), patch.object(W, 'clock_ms', return_value=now), \
+                    patch.object(E.time, 'sleep', side_effect=AssertionError('loop must exit')), \
+                    redirect_stdout(io.StringIO()):
+                if worker is None:
                     E.main()
+                else:
+                    with patch.object(E, 'Evaluator', return_value=worker):
+                        E.main()
+        finally:
+            os.umask(previous_umask)
         return W.read(self.output / 'assessment-strict.json')
+
+    def test_cli_preserves_caller_umask_after_success(self):
+        previous_umask = os.umask(0o027)
+        try:
+            with patch.object(self.worker, 'step', return_value=self.first):
+                self.cli(4000, once=True, worker=self.worker)
+            self.assertEqual(os.umask(0o027), 0o027)
+        finally:
+            os.umask(previous_umask)
+
+    def test_cli_preserves_caller_umask_after_initialization_failure(self):
+        previous_umask = os.umask(0o027)
+        try:
+            with patch.object(E, 'retained_review_plan', side_effect=RuntimeError('fixture failure')):
+                with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+                    self.cli(4000, once=True)
+            self.assertEqual(os.umask(0o027), 0o027)
+        finally:
+            os.umask(previous_umask)
 
     def assert_no_credit(self, result, *, final):
         self.assertEqual(result['state'], 'FINAL_INCOMPLETE' if final else 'PENDING')
